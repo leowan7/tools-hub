@@ -83,6 +83,30 @@
                 Defaults to 0.1 per the upstream README.
               </div>
             </div>
+
+            <div class="field-group">
+              <label for="fixed_positions" class="field-label">Fixed positions <span style="color: var(--text-tertiary); font-weight: 400;">(optional)</span></label>
+              <input type="text" name="fixed_positions" id="fixed_positions" {{ pre_value(pre_fill, "fixed_positions", "") }}
+                     class="field-input" style="max-width: 520px;" placeholder="A:1-44,46-66,68-88,90-113">
+              <div class="field-helper">
+                Positions to <strong>hold fixed</strong> — everything else in the
+                designed chain(s) gets redesigned. Leave blank to redesign the
+                whole chain. Positions are 1-indexed <em>within their chain</em>
+                (position 1 = first residue), not author residue numbers.
+                Use <code>CHAIN:list</code> groups separated by spaces, with
+                single positions or <code>lo-hi</code> ranges:
+                <code>A:1-44,46-66 B:5,7</code>. The chain prefix may be omitted
+                when only one chain is being designed.
+                To redesign a few liability positions, list the complement —
+                freezing all but 45, 67 and 89 of a 113-mer is
+                <code>A:1-44,46-66,68-88,90-113</code>.
+                Chains must be numbered from 1 with no gaps or insertion codes,
+                or a position stops landing on the residue you named. That is
+                checked against the real structure once the job starts, so a
+                chain that fails it comes back as a failed run rather than an
+                error on this page.
+              </div>
+            </div>
           </div>
 
           <div class="field-helper" style="margin-bottom: 1rem;">

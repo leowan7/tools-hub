@@ -94,6 +94,284 @@ NUM_SEQ_MAX = 1000
 TEMP_MIN = 0.01
 TEMP_MAX = 1.0
 
+# Name of the fixed-positions file handed to ProteinMPNN. One JSON object on one
+# line: {"<pdb_stem>": {"<chain>": [1-indexed positions to KEEP FIXED]}}, with an
+# entry for EVERY designed chain because upstream subscripts it bare.
+FIXED_POSITIONS_JSONL = "fixed_positions.jsonl"
+
+# Free POSITIONS (per chain, not per sequence-comparison) needed before low output
+# diversity counts as evidence that MPNN misbehaved. Below this, identical or
+# all-native samples are the expected result of a heavily constrained run rather
+# than a stub, and failing would bill a point-mutation scan and then reject its
+# correct answer. Used by both reject_stub and verify_fixed_positions, which face
+# the same question from opposite ends.
+MIN_FREE_TO_JUDGE_DIVERSITY = 10
+
+
+def _chain_ca_residues(pdb: Path) -> dict[str, dict[int, set[str]]]:
+    """Observed CA residues per chain: ``{chain: {resSeq: {iCode, ...}}}``.
+
+    Text parse rather than Bio.PDB: a fixed-column read has no version surface.
+    Encoding mirrors upstream's ``line.decode("utf-8", "ignore")`` so a stray byte
+    is skipped rather than killing the run with an uncaught UnicodeDecodeError.
+    """
+    obs: dict[str, dict[int, set[str]]] = {}
+    for line in pdb.read_text(encoding="utf-8", errors="ignore").splitlines():
+        # Short line: a truncated record would otherwise IndexError on line[26].
+        # Atom name compared the way upstream does it (line[12:16].strip()), so a
+        # left-aligned "CA  " is counted here exactly as it is there.
+        if len(line) < 27 or line[12:16].strip() != "CA":
+            continue
+        # " CA " in a HETATM record is usually a CALCIUM ION, not an alpha carbon.
+        # The one exception is MSE, which upstream rewrites to ATOM/MET and counts
+        # (protein_mpnn_utils.parse_PDB_biounits).
+        if not (line.startswith("ATOM") or line[:6] == "HETATM" and line[17:20] == "MSE"):
+            continue
+        # Upstream reads columns 22-27 as ONE token and only calls the last
+        # character an insertion code when it is alphabetic
+        # (``if resn[-1].isalpha(): resa, resn = resn[-1], int(resn[:-1])-1``).
+        # Splitting at a fixed 26 instead would read the 5-wide residue number
+        # "   31" as residue 3 with iCode "1" and refuse a perfectly ordinary
+        # chain. (Upstream also subtracts 1 from EVERY residue number, iCoded or
+        # not. Not reproduced here because a uniform offset cancels out of the
+        # min/max/range arithmetic these numbers are used for.)
+        token = line[22:27].strip()
+        icode = " "
+        if token and token[-1].isalpha():
+            token, icode = token[:-1], token[-1]
+        try:
+            resn = int(token)
+        except ValueError:
+            continue
+        # Key on residue identity (resSeq + iCode), never on atom count: a residue
+        # with alternate locations emits one " CA " per conformer, and upstream
+        # keeps only the first (``if atom not in xyz[resn][resa]``).
+        obs.setdefault(line[21], {}).setdefault(resn, set()).add(icode)
+    return obs
+
+
+def _chain_residue_counts(pdb: Path) -> dict[str, int]:
+    """Chain lengths AS PROTEINMPNN COUNTS THEM, which is not "residues present".
+
+    ``parse_PDB_biounits`` walks ``range(min_resn, max_resn+1)`` and appends a gap
+    token for every residue number absent from the file, so an unresolved loop
+    still occupies positions. Counting only observed residues disagrees with
+    upstream on any gapped chain -- measured on this repo's own 1jff_raw.pdb:
+    412 observed vs 438 counted -- and every 1-indexed position past the gap then
+    refers to a different residue than the caller meant.
+    """
+    counts: dict[str, int] = {}
+    for chain, res in _chain_ca_residues(pdb).items():
+        counts[chain] = sum(
+            len(res[r]) if r in res else 1 for r in range(min(res), max(res) + 1)
+        )
+    return counts
+
+
+def _designed_chains(chains_to_design: str) -> set[str]:
+    """Chain ids MPNN will actually design.
+
+    Mirrors upstream EXACTLY: protein_mpnn_run.py does
+    ``args.pdb_path_chains.split()`` -- whitespace only. Accepting commas here
+    would be worse than rejecting them: "A,B" would validate happily against
+    chains A and B, and upstream would then die on ``b['seq_chain_A,B']``
+    (KeyError) after the job was submitted, blaming its own parser rather than
+    the request. Refusing at pre-flight names the real problem for free.
+    """
+    return set((chains_to_design or "").split())
+
+
+def _header_chain_list(header: str, key: str) -> list[str] | None:
+    """Parse ``designed_chains=['A', 'C']`` off an MPNN native FASTA header.
+
+    Three outcomes, kept distinct because they mean different things:
+    None when the field is absent or its contents are not parseable (unknown MPNN
+    build -- no sound mapping), and [] only when the field is genuinely empty
+    (MPNN designed nothing, which is a hard failure the caller reports as such).
+    """
+    match = re.search(rf"{re.escape(key)}\s*=\s*\[([^\]]*)\]", header)
+    if match is None:
+        return None
+    inner = match.group(1).strip()
+    names = re.findall(r"['\"]([^'\"]+)['\"]", inner)
+    if inner and not names:
+        return None  # non-empty but unquoted/unknown shape: do not read as "empty"
+    return names
+
+
+def normalise_fixed_positions(
+    job_spec: dict[str, Any],
+    pdb: Path,
+    chains_to_design: str,
+) -> dict[str, list[int]]:
+    """Validate and normalise ``parameters.fixed_positions``.
+
+    SEMANTICS ARE PROTEINMPNN'S, DELIBERATELY UNCHANGED: the listed positions are
+    the ones held FIXED, 1-indexed within their chain. Callers usually hold the
+    complement ("the positions I want redesigned") and must invert before calling.
+    Mirroring upstream is worth the caller-side inversion — a wrapper that flipped
+    the sense would put two opposite conventions in one system, and the failure is
+    silent in both directions (freeze everything, or freeze nothing).
+
+    "1-indexed within their chain" is upstream's index into a GAP-FILLED span, not
+    a count of residues present, so chains with unresolved residues are refused
+    below rather than silently mis-indexed. On a contiguous chain the two coincide
+    and position i is simply the i-th residue.
+
+    Returns {} when the caller asked for nothing, which is the pre-existing
+    whole-chain-redesign behaviour.
+    """
+    # Guarded HERE, not in the caller: every route into this function passes a
+    # raw job_spec, and a truthy non-dict `parameters` (a string, a list, an int)
+    # raises AttributeError — which is neither TypeError nor ValueError, so it
+    # escapes every catch, kills the run, and writes no FAILED result at all.
+    raw_params = job_spec.get("parameters")
+    raw = raw_params.get("fixed_positions") if isinstance(raw_params, dict) else None
+    if raw in (None, {}, []):
+        return {}
+    if not isinstance(raw, dict):
+        _fail(
+            "preflight",
+            "fixed_positions",
+            "fixed_positions must be an object mapping chain -> list of "
+            f"1-indexed positions, got {type(raw).__name__}",
+        )
+
+    residues = _chain_ca_residues(pdb)
+    counts = _chain_residue_counts(pdb)
+    designed = _designed_chains(chains_to_design)
+    out: dict[str, list[int]] = {}
+    for chain, positions in raw.items():
+        chain = str(chain).strip()
+        # Two keys that differ only by whitespace collapse to one entry here, and
+        # the second would silently drop the first's positions.
+        if chain in out:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} appears more than once in fixed_positions "
+                "(keys differing only by surrounding whitespace); merge them",
+            )
+        if chain not in counts:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} is not in the input PDB (chains: "
+                f"{sorted(counts)})",
+            )
+        # Fixing positions on a chain MPNN was never asked to design is a no-op
+        # that reads as a successful freeze. Refuse it rather than honour it.
+        if chain not in designed:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} is not among the designed chains "
+                f"({sorted(designed)}); fixing positions there does nothing"
+                + (
+                    " — chains_to_design must be SPACE-separated: ProteinMPNN "
+                    "splits it on whitespace only, so a comma yields one token "
+                    "that matches no chain at all"
+                    if any("," in d for d in designed)
+                    else ""
+                ),
+            )
+        if not isinstance(positions, (list, tuple)):
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"fixed_positions[{chain!r}] must be a list, got "
+                f"{type(positions).__name__}",
+            )
+        # Plain ints only, no coercion. int() would turn 3.9 into 3, True into 1
+        # and "2" into 2 -- each of which then freezes a residue the caller never
+        # named and verifies perfectly, because whatever got frozen IS frozen.
+        # (It also keeps float('inf') from raising OverflowError, which is not a
+        # ValueError and would escape as an uncaught crash with no FAILED result.)
+        bad_type = [p for p in positions if isinstance(p, bool) or not isinstance(p, int)]
+        if bad_type:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"fixed_positions[{chain!r}] must contain plain ints, got "
+                f"{[type(p).__name__ for p in bad_type[:4]]}",
+            )
+        pos = sorted(set(positions))
+        n = counts[chain]
+        # A gap or an insertion code makes "position i" mean the i-th slot of
+        # upstream's gap-filled span rather than the i-th residue of the chain,
+        # and a caller counting residues off a sequence would freeze the wrong
+        # ones from there onward. Refuse instead of guessing which convention was
+        # meant. Whole-chain redesign is unaffected.
+        n_present = sum(len(v) for v in residues[chain].values())
+        lo, hi = min(residues[chain]), max(residues[chain])
+        # Insertion codes shift positions without leaving a gap, so the count
+        # check below cannot see them: 1, 2, 2B, 3 is 4 contiguous positions in
+        # which position 4 is author residue 3.
+        icoded = sorted(r for r, codes in residues[chain].items() if codes != {" "})
+        if icoded:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} has insertion codes at residue(s) "
+                f"{icoded[:8]}, which occupy ProteinMPNN positions of their own, "
+                "so a 1-indexed position stops matching the residue you named "
+                "from the first one onward. Renumber the chain sequentially "
+                "before fixing positions",
+            )
+        if n != n_present:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} is not contiguous: residues {lo}-{hi} span {n} "
+                f"ProteinMPNN positions but only {n_present} are present. Upstream "
+                "counts unresolved residues as positions, so a 1-indexed position "
+                "would not land on the residue you named. Renumber the chain "
+                "contiguously before fixing positions",
+            )
+        # An offset chain makes the two plausible conventions differ by exactly
+        # lo-1, and nothing in the request says which was meant. The bounds check
+        # only catches author numbers LARGER than the chain, so a chain numbered
+        # from 20 accepts author number 100 and silently freezes residue 119.
+        if lo != 1:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"chain {chain!r} is numbered {lo}-{hi}, not from 1, so a "
+                "ProteinMPNN position and an author residue number differ by "
+                f"{lo - 1} and the request does not say which it holds. Author "
+                f"residue r is position r-{lo - 1} here (so {lo + 7} -> 8). "
+                "Renumber the chain from 1, or subtract the offset yourself",
+            )
+        bad = [p for p in pos if p < 1 or p > n]
+        if bad:
+            # An off-by-one caller (0-indexed) lands here instead of silently
+            # freezing the wrong residues.
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"fixed_positions[{chain!r}] out of range for a {n}-residue "
+                f"chain (1-indexed): {bad[:8]}",
+            )
+        if len(pos) == n:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"fixed_positions[{chain!r}] fixes all {n} residues — there is "
+                "nothing left to design",
+            )
+        # Symmetric with the all-fixed case above. An explicit empty list is a
+        # whole-chain redesign wearing the shape of a freeze, which is precisely
+        # the confusion this whole check exists to prevent.
+        if not pos:
+            _fail(
+                "preflight",
+                "fixed_positions",
+                f"fixed_positions[{chain!r}] is empty — that requests a full "
+                "redesign of the chain. Omit the chain if that is the intent",
+            )
+        out[chain] = pos
+    return out
+
 
 # ===========================================================================
 # Result file writer
@@ -264,6 +542,7 @@ def run_mpnn(
     num_seq_per_target: int,
     sampling_temp: float,
     workdir: Path,
+    fixed_positions: dict[str, list[int]] | None = None,
 ) -> Path:
     """Invoke ``protein_mpnn_run.py`` and return the output directory.
 
@@ -280,6 +559,20 @@ def run_mpnn(
     if staged.resolve() != target_pdb.resolve():
         shutil.copy(target_pdb, staged)
 
+    designed = _designed_chains(chains_to_design)
+    if fixed_positions and len(staged.suffix) != 4:
+        # Upstream derives the dict key by stripping exactly four characters
+        # (`biounit[(fi+1):-4]`), which equals Path.stem only for a 4-char
+        # extension. A ".pdb1" would key as "x.p" there and "x" here: KeyError.
+        # Any 4-char suffix (.pdb, .PDB, .ent, .cif) is fine.
+        _fail(
+            "preflight",
+            "fixed_positions",
+            f"fixed positions need a 4-character file extension; got "
+            f"{staged.name!r}, whose MPNN dict key would not match the one "
+            "written here",
+        )
+
     cmd = [
         "python3",
         PROTEINMPNN_SCRIPT,
@@ -291,6 +584,29 @@ def run_mpnn(
         "--seed", "37",
         "--batch_size", "1",
     ]
+
+    if fixed_positions:
+        # EVERY designed chain needs an entry, empty list included. Upstream reads
+        # it as `fixed_position_dict[b['name']][letter]` -- a BARE subscript, run
+        # once per designed chain -- so a chain absent from this dict is a KeyError
+        # that kills the run after the GPU is paid for, not a default of "nothing
+        # fixed". Upstream's own make_fixed_positions_dict.py emits every chain the
+        # same way, and the `if fixed_pos_list:` guard beside that lookup is what
+        # makes the empty list a safe no-op.
+        payload = {c: fixed_positions.get(c, []) for c in sorted(designed)}
+        # ProteinMPNN keys this dict by the parsed PDB's name, which is the file
+        # stem of what we pass to --pdb_path. Derive it from `staged` rather than
+        # from the caller's id.
+        fp_path = workdir / FIXED_POSITIONS_JSONL
+        fp_path.write_text(json.dumps({staged.stem: payload}) + "\n")
+        cmd += ["--fixed_positions_jsonl", str(fp_path)]
+        logger.info(
+            "mpnn fixing %d position(s) across %d of %d designed chain(s): %s",
+            sum(len(v) for v in fixed_positions.values()),
+            len(fixed_positions),
+            len(designed),
+            payload,
+        )
     logger.info("mpnn cmd: %s", " ".join(cmd))
     try:
         result = subprocess.run(
@@ -383,6 +699,236 @@ def parse_mpnn_output(out_dir: Path, pdb_stem: str) -> list[dict[str, Any]]:
     return sequences
 
 
+def _native_record(out_dir: Path, pdb_stem: str) -> tuple[str, str] | None:
+    """The native (input) record MPNN echoes first, as ``(header, sequence)``.
+
+    The header is not decoration: it carries ``designed_chains=[...]``, which is
+    the only authoritative statement of what MPNN actually designed, and the only
+    sound way to map "/"-separated segments onto chain ids. The sequence carries
+    the same segmentation as every sampled record, which makes it the reference
+    for the fixed-position comparison.
+    """
+    fa_path = out_dir / "seqs" / f"{pdb_stem}.fa"
+    if not fa_path.is_file():
+        return None
+    header = None
+    for line in fa_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            header = line[1:]
+            continue
+        if header is not None and "sample=" not in header:
+            return header, line
+        header = None
+    return None
+
+
+def verify_fixed_positions(
+    sequences: list[dict[str, Any]],
+    native: tuple[str, str] | None,
+    fixed_positions: dict[str, list[int]],
+    chain_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Prove the freeze happened AND that a design happened. _fail if not.
+
+    The failure modes this guards are the ones that are SILENT upstream. Verified
+    against dauparas/ProteinMPNN@main rather than assumed — most ways of getting
+    this wrong actually crash, and only these do not:
+
+      1. A --fixed_positions_jsonl path that does not exist. protein_mpnn_run.py
+         does `if os.path.isfile(...): ... else: fixed_positions_dict = None`.
+         Upstream does print a notice, but run_mpnn captures stdout and never
+         reads it (only stderr, and only on a non-zero exit), so it is silent
+         HERE. Result: a full redesign that looks like a success, and a caller
+         splicing a "conserved" interface that was in fact rewritten.
+      2. A 0-indexed position. `fixed_position_mask[np.array(fixed_pos_list)-1]`
+         turns 0 into index -1, silently freezing the LAST residue of the chain.
+         (normalise_fixed_positions rejects 0 before it can get here; this is why.)
+
+    For contrast, the modes that do NOT need catching here because upstream dies
+    loudly: a dict key that does not match the parsed PDB name, and a designed
+    chain missing from the dict, are both bare subscripts (KeyError); a
+    --pdb_path_chains value MPNN cannot parse fails on `seq_chain_A,B` (KeyError).
+
+    What is measured:
+
+      * the native header's designed_chains=[...] must contain every chain we
+        asked to fix
+      * MPNN's own segment lengths must agree with the residue counts the bounds
+        check used, so a parser disagreement is loud instead of mis-indexed
+      * every fixed position must equal the native residue, and at least one
+        such comparison must actually have been made
+      * where enough positions were free to judge it, at least one must DIFFER
+        from native — otherwise nothing was designed at all and every assertion
+        above passes vacuously
+
+    Segments carry ONLY the designed chains, in alphabetical chain order
+    (protein_mpnn_run.py masks with chain_M and sorts via np.argsort before
+    joining), so the header list IS the segment mapping. Residue counts are a
+    cross-check and never the mapping: inferring chains from lengths makes any
+    two equal-length chains ambiguous and would refuse homodimers — after the
+    GPU had already been billed.
+    """
+    if not fixed_positions:
+        return {"checked": False, "reason": "no fixed positions requested"}
+    if not native:
+        _fail(
+            "verify",
+            "fixed_positions",
+            "fixed positions were requested but MPNN emitted no native record "
+            "to verify them against",
+        )
+
+    header, nat = native
+    designed = _header_chain_list(header, "designed_chains")
+    if designed is None:
+        _fail(
+            "verify",
+            "fixed_positions",
+            "MPNN's native FASTA header carries no designed_chains=[...] field, "
+            f"so there is no sound way to map segments onto chains: {header!r}",
+        )
+
+    missing = sorted(set(fixed_positions) - set(designed))
+    if missing:
+        _fail(
+            "verify",
+            "fixed_positions",
+            f"MPNN reports designed_chains={designed}, but positions were fixed "
+            f"on {missing}, which it did not design. Freezing residues in a chain "
+            "that was never designed proves nothing — check chains_to_design is "
+            "space-separated, since MPNN splits it on whitespace only",
+        )
+
+    nat_segs = nat.split("/")
+    if len(nat_segs) != len(designed):
+        _fail(
+            "verify",
+            "fixed_positions",
+            f"native record has {len(nat_segs)} segment(s) but its header lists "
+            f"designed_chains={designed}",
+        )
+    lengths = [len(s) for s in nat_segs]
+
+    # Our count vs MPNN's. A disagreement means the pre-flight bounds check ran
+    # against the wrong chain lengths, so positions may be off the end or simply
+    # the wrong residues. Name both numbers rather than trusting either.
+    disagree = [
+        (chain, chain_counts[chain], len(seg))
+        for chain, seg in zip(designed, nat_segs)
+        if chain in chain_counts and chain_counts[chain] != len(seg)
+    ]
+    if disagree:
+        _fail(
+            "verify",
+            "fixed_positions",
+            "residue counts disagree with MPNN's parser for "
+            + ", ".join(f"chain {c}: ours={o}, mpnn={m}" for c, o, m in disagree)
+            + " — the 1-indexed positions were bounds-checked against the wrong "
+            "lengths, so the freeze cannot be trusted",
+        )
+
+    # Free POSITIONS per chain, counted once and independently of how many
+    # sequences came back. Summing comparisons across sequences instead would
+    # make the threshold depend on num_seq_per_target: at the production n=8 it
+    # would trip at two free positions, the exact case it exists to protect.
+    free_positions = {
+        chain: lengths[idx]
+        - len({p for p in fixed_positions.get(chain, ()) if 1 <= p <= lengths[idx]})
+        for idx, chain in enumerate(designed)
+    }
+    free_changes = {chain: 0 for chain in designed}
+
+    n_checked = 0
+    for rec in sequences:
+        segs = (rec.get("seq") or "").split("/")
+        if [len(s) for s in segs] != lengths:
+            _fail(
+                "verify",
+                "fixed_positions",
+                f"designed record has segmentation {[len(s) for s in segs]} but "
+                f"the native record has {lengths}",
+            )
+        for idx, chain in enumerate(designed):
+            frozen = set(fixed_positions.get(chain, ()))
+            for p in range(1, lengths[idx] + 1):
+                same = segs[idx][p - 1] == nat_segs[idx][p - 1]
+                if p in frozen:
+                    if not same:
+                        _fail(
+                            "verify",
+                            "fixed_positions",
+                            f"position {p} of chain {chain} was requested FIXED "
+                            f"but MPNN returned {segs[idx][p - 1]!r} where the "
+                            f"input has {nat_segs[idx][p - 1]!r} — the "
+                            "fixed-positions file did not take effect",
+                        )
+                    n_checked += 1
+                elif not same:
+                    free_changes[chain] += 1
+
+    # A "pass" that asserted nothing is not a pass. Every requested position
+    # landing outside the emitted segment would otherwise return checked=True on
+    # zero comparisons — the same vacuous-success shape this whole function exists
+    # to refuse, one level up.
+    if n_checked == 0:
+        _fail(
+            "verify",
+            "fixed_positions",
+            f"no fixed position was actually compared: requested "
+            f"{ {k: len(v) for k, v in fixed_positions.items()} } against segment "
+            f"lengths {lengths} for chains {designed}",
+        )
+
+    # Without this the rest is satisfiable by doing nothing: a run that designs
+    # zero positions conserves every fixed position perfectly, and reject_stub is
+    # skipped precisely when few positions are free.
+    #
+    # Judged PER CHAIN. A global count lets one busy chain mask another that was
+    # never touched, which is the same vacuous pass at chain granularity.
+    judged = [c for c in designed if free_positions[c] >= MIN_FREE_TO_JUDGE_DIVERSITY]
+    dead = [c for c in judged if free_changes[c] == 0]
+    if dead:
+        _fail(
+            "verify",
+            "fixed_positions",
+            "not one free position changed in "
+            + ", ".join(f"chain {c} ({free_positions[c]} free)" for c in dead)
+            + f" across {len(sequences)} sequence(s) — MPNN returned the input "
+            "unchanged there, not a design, and the fixed-position check would "
+            "otherwise pass vacuously",
+        )
+
+    logger.info(
+        "fixed-position check ok — %d position-assertions across %d sequence(s); "
+        "free positions %s, changes %s; echo-judged chains: %s",
+        n_checked,
+        len(sequences),
+        free_positions,
+        free_changes,
+        judged or "none (too few free positions anywhere)",
+    )
+    return {
+        "checked": True,
+        "n_sequences": len(sequences),
+        "n_assertions": n_checked,
+        "free_positions": free_positions,
+        "free_changes": free_changes,
+        # True only when EVERY designed chain had enough free positions to judge.
+        # bool(judged) would report True while a second chain came back a verbatim
+        # native echo, and reject_stub's docstring leans on this flag as the
+        # compensating control for its own blind spot — so the two blind spots
+        # would line up instead of covering each other. False means a no-op could
+        # not be ruled out somewhere, NOT that the run failed verification.
+        "echo_judged": len(judged) == len(designed),
+        "echo_unjudged_chains": [c for c in designed if c not in judged],
+        "designed_chains": designed,
+        "fixed_positions": {k: len(v) for k, v in fixed_positions.items()},
+    }
+
+
 def _extract_metadata(header: str, key: str) -> str | None:
     """Pull a key=value metadatum from an MPNN FASTA header."""
     match = re.search(rf"{re.escape(key)}\s*=\s*([^,\s]+)", header)
@@ -391,7 +937,10 @@ def _extract_metadata(header: str, key: str) -> str | None:
     return match.group(1)
 
 
-def reject_stub(sequences: list[dict[str, Any]]) -> None:
+def reject_stub(
+    sequences: list[dict[str, Any]],
+    n_free_positions: int | None = None,
+) -> None:
     """Stub-rejection guard. Per ATOMIC-TOOLS.md D1 section.
 
     MPNN's silent-stub failure modes seen in practice:
@@ -404,7 +953,33 @@ def reject_stub(sequences: list[dict[str, Any]]) -> None:
        score/recovery spreads are tiny (< 0.01). The model technically
        ran but collapsed; results are not usable. Hard fail so we don't
        bill a user for useless output.
+
+    EVERY one of those reads low diversity as failure, which is right for a
+    whole-chain redesign and wrong for a constrained fixed-position run: freeze
+    105 of 110 residues and near-argmax sampling makes identical samples the
+    EXPECTED output, not a stub. The near-clone guard is worse still — it trips
+    at a Hamming distance of 2, which a 5-position redesign cannot exceed often.
+
+    ``n_free_positions`` is how much freedom MPNN had in the FREEST designed
+    chain — these guards compare whole concatenated sequences, so that is what
+    sets the diversity they should expect (None = whole-chain redesign, the
+    pre-existing behaviour). Below MIN_FREE_TO_JUDGE_DIVERSITY they genuinely
+    cannot separate a stub from a correct answer, so they are skipped rather than
+    guessed. The blind spot is then reported instead of papered over: the result
+    carries ``stub_check_skipped``, verify_fixed_positions still proves the freeze
+    held, and its ``echo_judged`` flag records whether a no-op could be ruled out.
     """
+    if (
+        n_free_positions is not None
+        and n_free_positions < MIN_FREE_TO_JUDGE_DIVERSITY
+    ):
+        logger.info(
+            "stub rejection skipped — only %d position(s) were free to change, "
+            "so identical samples are expected rather than diagnostic",
+            n_free_positions,
+        )
+        return
+
     seqs = [s.get("seq") or "" for s in sequences]
     if len(seqs) >= 2 and len(set(seqs)) == 1:
         _fail(
@@ -563,16 +1138,17 @@ def main() -> None:
     tier = str(payload.get("tier") or "").lower() or "standalone"
 
     chains_to_design = str(job_spec.get("target_chain") or "A").strip()
+    # A non-dict `parameters` (null, a string, a list) used to raise AttributeError
+    # here — outside the TypeError/ValueError catch, so the run died with no FAILED
+    # result written at all.
+    raw_params = job_spec.get("parameters")
+    params = raw_params if isinstance(raw_params, dict) else {}
     try:
-        num_seq_per_target = int(
-            job_spec.get("parameters", {}).get("num_seq_per_target", 5)
-        )
+        num_seq_per_target = int(params.get("num_seq_per_target", 5))
     except (TypeError, ValueError):
         num_seq_per_target = 5
     try:
-        sampling_temp = float(
-            job_spec.get("parameters", {}).get("sampling_temp", 0.1)
-        )
+        sampling_temp = float(params.get("sampling_temp", 0.1))
     except (TypeError, ValueError):
         sampling_temp = 0.1
 
@@ -590,15 +1166,86 @@ def main() -> None:
         workdir = Path(_td)
         try:
             target_pdb = resolve_input_pdb(payload, workdir)
+            # Validated against the REAL pdb, so chain names and bounds are checked
+            # against what MPNN will actually parse rather than what the caller
+            # believed it uploaded. Smoke tier ignores caller params entirely.
+            fixed_positions = (
+                {}
+                if tier == "smoke"
+                else normalise_fixed_positions(job_spec, target_pdb, chains_to_design)
+            )
+            chain_counts = _chain_residue_counts(target_pdb)
             out_dir = run_mpnn(
                 target_pdb=target_pdb,
                 chains_to_design=chains_to_design,
                 num_seq_per_target=num_seq_per_target,
                 sampling_temp=sampling_temp,
                 workdir=workdir,
+                fixed_positions=fixed_positions,
             )
             sequences = parse_mpnn_output(out_dir, pdb_stem=target_pdb.stem)
-            reject_stub(sequences)
+            # How much freedom MPNN actually had. Without this, freezing most of
+            # a binder makes identical samples — the correct answer — look like
+            # the silent-stub failure mode, and the run is rejected after it is
+            # paid for. None keeps the pre-existing behaviour for redesigns.
+            #
+            # The MAXIMUM across designed chains. No single scalar is right here
+            # — reject_stub compares whole concatenated sequences, so strictly the
+            # expected diversity follows the TOTAL free positions — and max is
+            # chosen because the two errors are not symmetric, not because it is
+            # exact:
+            #
+            #   * A false reject bills a rescue run and then hard-FAILs the user's
+            #     correct answer with a message blaming the model. Unrecoverable.
+            #     Summing does this to any multi-chain run frozen the way this
+            #     feature intends (two chains at 105-of-110 clears 10 and fails).
+            #   * A false accept is visible in the emitted result: free_changes
+            #     all-zero with echo_judged false and stub_check_skipped true is
+            #     the complete signature, which is what those fields are for.
+            #
+            # Not the minimum: one tight chain would switch the guard off for a
+            # co-designed chain that was entirely free — the normal shape here
+            # (freeze an interface, redesign a partner) — and would also lose the
+            # near-clone and tight-score detectors, which catch degenerate modes
+            # verify_fixed_positions cannot see because free_changes > 0 there.
+            #
+            # KNOWN HOLE: several chains each just under the threshold sum to
+            # plenty of freedom, and a genuine stub across all of them is skipped
+            # (2 chains x 9 free). Declared in the result rather than hidden. The
+            # exact fix is to run the stub guard PER CHAIN on segs[idx], gated on
+            # free_positions[chain], the way verify_fixed_positions computes
+            # `dead` — worth doing once something actually calls this.
+            n_free_max = None
+            if fixed_positions:
+                n_free_max = max(
+                    chain_counts.get(c, 0) - len(fixed_positions.get(c, ()))
+                    for c in _designed_chains(chains_to_design)
+                )
+            reject_stub(sequences, n_free_positions=n_free_max)
+            fixed_check = verify_fixed_positions(
+                sequences,
+                _native_record(out_dir, target_pdb.stem),
+                fixed_positions,
+                chain_counts,
+            )
+            # Whether the stub guard actually ran. Skipping it is correct when
+            # MPNN had too little freedom for diversity to mean anything, but it
+            # is a real blind spot and a consumer cannot otherwise tell a guarded
+            # run from an unguarded one — the log line is not machine-readable.
+            if n_free_max is not None:
+                fixed_check = {
+                    **fixed_check,
+                    "max_free_positions": n_free_max,
+                    "stub_check_skipped": n_free_max < MIN_FREE_TO_JUDGE_DIVERSITY,
+                }
+            # Smoke tier discarded the request above. Say that, rather than
+            # reporting the "nothing was asked for" reason and leaving a consumer
+            # unable to tell the two apart.
+            if tier == "smoke" and params.get("fixed_positions"):
+                fixed_check = {
+                    "checked": False,
+                    "reason": "smoke tier ignores caller fixed_positions",
+                }
         finally:
             # Archive the tree before TemporaryDirectory.__exit__ rmtrees it, on
             # EVERY exit path. Every _fail() above raises SystemExit from inside
@@ -616,6 +1263,10 @@ def main() -> None:
             "num_sequences": len(sequences),
             "sampling_temp": sampling_temp,
             "chains_designed": chains_to_design,
+            # Carried into the result so a consumer can tell a genuine
+            # fixed-position run from a whole-chain redesign without re-reading
+            # the request it was answering.
+            "fixed_positions_check": fixed_check,
             "runtime_seconds": runtime_seconds,
             "provider_job_id": os.environ.get("JOB_ID", ""),
         }

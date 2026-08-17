@@ -186,6 +186,244 @@ class TestBuildPayload:
 
 
 # ---------------------------------------------------------------------------
+# Test 3b — fixed_positions wiring (form field -> job_spec -> pipeline)
+#
+# The pipeline-side validation of fixed_positions lives in
+# tests/test_mpnn_fixed_positions.py. What is pinned HERE is only the wire:
+# that the form field parses, that the parsed shape survives into the payload,
+# and that run_pipeline.normalise_fixed_positions accepts that payload
+# unchanged. The last one is the reason this feature was unreachable before.
+# ---------------------------------------------------------------------------
+
+
+def _mini_pdb(chains: dict) -> str:
+    """Minimal CA-only PDB: chain id -> residue count, numbered from 1."""
+    lines, serial = [], 1
+    for chain, n in chains.items():
+        for i in range(1, n + 1):
+            lines.append(
+                f"ATOM  {serial:5d}  CA  ALA {chain}{i:4d}    "
+                f"{0.0:8.3f}{0.0:8.3f}{float(i):8.3f}  1.00  0.00           C"
+            )
+            serial += 1
+    return "\n".join(lines) + "\n"
+
+
+def _validated(**form):
+    form.setdefault("preset", "standalone")
+    return mpnn_mod.validate(form, {})
+
+
+class TestFixedPositionsWiring:
+    @pytest.mark.parametrize("chains", ["A", "A B", "A,B"])
+    def test_blank_field_leaves_the_payload_byte_identical(self, chains):
+        """The default path must not gain a key. Asserted as the full serialized
+        payload, not just "the key is absent", because the claim being made is
+        that a plain redesign submits what it submitted before this field
+        existed. Spelled out literally so it stays true when HEAD moves.
+
+        (The persisted ``inputs`` blob DOES gain two keys — that is a separate
+        thing, and every consumer of it was checked.)"""
+        inputs, err = _validated(chains_to_design=chains)
+        assert err is None
+        payload = mpnn_mod.build_payload(inputs, presigned_url="https://x")
+        expected = {
+            "target_chain": chains.replace(",", " "),
+            "parameters": {"num_seq_per_target": 50, "sampling_temp": 0.1},
+        }
+        assert json.dumps(payload, sort_keys=True) == json.dumps(
+            expected, sort_keys=True
+        )
+
+    def test_ranges_expand_inclusively(self):
+        inputs, err = _validated(chains_to_design="A", fixed_positions="A:1-4,9")
+        assert err is None
+        assert inputs["_fixed_positions"] == {"A": [1, 2, 3, 4, 9]}
+
+    def test_bare_list_binds_to_the_sole_designed_chain(self):
+        inputs, err = _validated(chains_to_design="C", fixed_positions="1-3,7")
+        assert err is None
+        assert inputs["_fixed_positions"] == {"C": [1, 2, 3, 7]}
+
+    def test_bare_list_is_refused_when_two_chains_are_designed(self):
+        """Guessing a chain here would freeze the wrong protomer on a homodimer
+        and verify perfectly, because whatever got frozen IS frozen."""
+        inputs, err = _validated(chains_to_design="A B", fixed_positions="1-3")
+        assert inputs is None
+        assert "must name its chain" in err
+
+    def test_groups_bind_to_their_own_chains(self):
+        inputs, err = _validated(
+            chains_to_design="A B", fixed_positions="A:1-3 B:5,7"
+        )
+        assert err is None
+        assert inputs["_fixed_positions"] == {"A": [1, 2, 3], "B": [5, 7]}
+
+    def test_freezing_a_chain_that_is_not_designed_is_refused(self):
+        """Upstream would KeyError on it after the job was billed."""
+        inputs, err = _validated(chains_to_design="A", fixed_positions="B:1-3")
+        assert inputs is None
+        assert "not among the chains to design" in err
+
+    def test_comma_separated_chains_still_resolve(self):
+        """chains_to_design normalises "A,B" to "A B" BEFORE the membership
+        check, so a comma in that field must not make B look undesigned."""
+        inputs, err = _validated(
+            chains_to_design="A,B", fixed_positions="B:1-3"
+        )
+        assert err is None
+        assert inputs["_fixed_positions"] == {"B": [1, 2, 3]}
+
+    def test_a_repeated_chain_is_refused_not_silently_overwritten(self):
+        inputs, err = _validated(
+            chains_to_design="A", fixed_positions="A:1-3 A:9"
+        )
+        assert inputs is None
+        assert "more than once" in err
+
+    @pytest.mark.parametrize(
+        "raw, fragment",
+        [
+            ("A:9-4", "backwards"),
+            # Just over the cap, not absurd: an unguarded build must FAIL this
+            # case cheaply. The billion-wide input lives in the timing test
+            # below, where an unguarded build hangs instead of failing.
+            ("A:1-20000", "spans more than"),
+            ("A:", "are empty"),
+            ("A:1-", "not a position or a range"),
+            ("A:x", "not a position or a range"),
+            ("A:1.5", "not a position or a range"),
+            ("A:-3", "not a position or a range"),
+        ],
+    )
+    def test_malformed_groups_are_refused(self, raw, fragment):
+        inputs, err = _validated(chains_to_design="A", fixed_positions=raw)
+        assert inputs is None, f"{raw!r} should not validate"
+        assert fragment in err, err
+
+    def test_many_small_ranges_cannot_walk_past_the_cap(self):
+        """The cap has to bound the CHAIN, not one token. A group holds
+        unlimited comma-separated tokens, so 200 in-cap ranges spell the same
+        multi-million-position request in ~3 KB — and the expansion is persisted
+        verbatim into tool_jobs.inputs and shipped to Modal."""
+        import time
+
+        body = ",".join(f"{1 + i * 10_000}-{(i + 1) * 10_000}" for i in range(200))
+        start = time.time()
+        inputs, err = _validated(chains_to_design="A", fixed_positions=f"A:{body}")
+        assert inputs is None, "200 chained in-cap ranges must not validate"
+        assert "exceed" in err, err
+        assert time.time() - start < 1.0
+
+    def test_the_cap_does_not_reject_a_real_chain(self):
+        """A titin-sized 9000-residue chain still validates. The cap exists to
+        stop an allocation, not to second-guess the structure — bounds are the
+        pipeline's job, against the real PDB."""
+        inputs, err = _validated(chains_to_design="A", fixed_positions="A:1-9000")
+        assert err is None, err
+        assert len(inputs["_fixed_positions"]["A"]) == 9000
+
+    @pytest.mark.parametrize("raw", ["A:0", "A:0-3", "0"])
+    def test_position_zero_is_refused(self, raw):
+        """Upstream turns 0 into np.array([0]) - 1 == -1 and silently freezes
+        the LAST residue. One of only two silent failure modes in the feature,
+        and an off-by-one (0-indexed) caller is the likeliest way to reach it."""
+        inputs, err = _validated(chains_to_design="A", fixed_positions=raw)
+        assert inputs is None, f"{raw!r} must not validate"
+        assert "1-indexed" in err, err
+
+    @pytest.mark.parametrize("gap", [" ", "  ", "\t", "\n", " \xa0"])
+    def test_groups_split_on_any_whitespace(self, gap):
+        """`.split()` with no argument, so a tab, a newline, a double space or a
+        pasted non-breaking space all separate groups. A `.split(" ")` would
+        pass the ordinary single-space case and mangle every other one."""
+        inputs, err = _validated(
+            chains_to_design="A B", fixed_positions=f"A:1-3{gap}B:5"
+        )
+        assert err is None, err
+        assert inputs["_fixed_positions"] == {"A": [1, 2, 3], "B": [5]}
+
+    def test_positions_are_persisted_sorted(self):
+        """Out-of-order input normalises. The pipeline re-sorts, so this is
+        about the blob that gets persisted and shown back, not correctness."""
+        inputs, err = _validated(chains_to_design="A", fixed_positions="A:9,2,5-6,2")
+        assert err is None
+        assert inputs["_fixed_positions"]["A"] == [2, 5, 6, 9]
+
+    def test_a_wide_range_is_refused_before_it_is_expanded(self):
+        """Not a style rule: without the span cap this allocates a
+        billion-element set from an unauthenticated text field.
+
+        Keep this AFTER the cheap over-cap case above: a build with the cap
+        removed hangs here rather than failing, so the fast case has to be the
+        one that reports the breakage."""
+        import time
+
+        start = time.time()
+        inputs, err = _validated(
+            chains_to_design="A", fixed_positions="A:1-999999999"
+        )
+        assert inputs is None and err
+        assert time.time() - start < 1.0
+
+    def test_field_is_stored_as_typed_for_clone_prefill(self):
+        """clone_from refills the form from inputs, dropping _-prefixed keys.
+        The raw string must survive under the FORM FIELD's own name or a cloned
+        run silently redesigns the whole chain."""
+        inputs, err = _validated(chains_to_design="A", fixed_positions=" A:1-4 ")
+        assert err is None
+        assert inputs["fixed_positions"] == "A:1-4"
+        prefill = {k: v for k, v in inputs.items() if not k.startswith("_")}
+        assert prefill["fixed_positions"] == "A:1-4"
+        assert "_fixed_positions" not in prefill
+
+    def test_payload_carries_the_parsed_positions(self):
+        inputs, _ = _validated(chains_to_design="A", fixed_positions="A:1-4,9")
+        payload = mpnn_mod.build_payload(inputs, presigned_url="https://x")
+        assert payload["parameters"]["fixed_positions"] == {"A": [1, 2, 3, 4, 9]}
+
+    def test_payload_survives_a_job_persisted_before_this_field_existed(self):
+        """build_payload also runs on cloned/re-submitted older inputs blobs."""
+        legacy = {
+            "target_chain": "A",
+            "num_seq_per_target": 5,
+            "sampling_temp": 0.1,
+        }
+        payload = mpnn_mod.build_payload(legacy, presigned_url="https://x")
+        assert "fixed_positions" not in payload["parameters"]
+
+    def test_payload_is_accepted_by_the_pipeline_unchanged(self, tmp_path):
+        """THE WIRE. What the adapter emits is fed verbatim to the pipeline
+        function that consumes it — including the JSON round-trip it makes on
+        the way to Modal — and comes back as the same positions."""
+        from tools.mpnn import run_pipeline as rp
+
+        inputs, err = _validated(chains_to_design="C", fixed_positions="C:1-2,4")
+        assert err is None
+        payload = mpnn_mod.build_payload(inputs, presigned_url="https://x")
+        payload = json.loads(json.dumps(payload))  # the trip through Modal
+
+        pdb = tmp_path / "design_001.pdb"
+        pdb.write_text(_mini_pdb({"A": 8, "C": 6}))
+        assert rp.normalise_fixed_positions(
+            payload, pdb, payload["target_chain"]
+        ) == {"C": [1, 2, 4]}
+
+    def test_the_pipeline_still_rejects_what_the_adapter_cannot_see(self, tmp_path):
+        """The adapter has no PDB, so bounds stay the pipeline's job. Pinned so
+        nobody "completes" the adapter check and drops the real one."""
+        from tools.mpnn import run_pipeline as rp
+
+        inputs, err = _validated(chains_to_design="C", fixed_positions="C:1-2,40")
+        assert err is None, "out-of-range is not knowable at the form"
+        payload = mpnn_mod.build_payload(inputs, presigned_url="https://x")
+        pdb = tmp_path / "design_001.pdb"
+        pdb.write_text(_mini_pdb({"A": 8, "C": 6}))
+        with pytest.raises(SystemExit):
+            rp.normalise_fixed_positions(payload, pdb, payload["target_chain"])
+
+
+# ---------------------------------------------------------------------------
 # Test 4 — Flask form + submit validation
 # ---------------------------------------------------------------------------
 
