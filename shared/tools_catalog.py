@@ -10,14 +10,19 @@ from flask import url_for
 from shared.feature_flags import tool_enabled
 from tools import base as tool_base
 
-# Static taglines for the hardcoded (non-adapter) tools. These three tools
+# Static taglines for the hardcoded (non-adapter) tools. These two tools
 # are not part of the GPU tool_base registry, so they are added to the
 # catalog directly.
 #
-# NOTE (blueprint refactor): the "developability" and "library_planner"
-# endpoint values become "tools.developability" / "tools.library_planner"
-# when those standalone routes move into the tools blueprint (Commit 7).
-# "scout.index" is already blueprint-qualified.
+# NOTE (blueprint refactor): the "developability" endpoint value becomes
+# "tools.developability" when that standalone route moves into the tools
+# blueprint (Commit 7). "scout.index" is already blueprint-qualified.
+#
+# The Yeast Display Library Planner was delisted 2026-08-17 at Leo's
+# request: dropping its entry here removes the tile from both the
+# homepage and /tools. Its route (tools.library_planner), templates, and
+# tools/library_planner package are deliberately left in place so
+# existing job links and job history keep resolving instead of 404ing.
 _HARDCODED_TOOLS: tuple[dict, ...] = (
     {
         "slug": "epitope-scout",
@@ -64,29 +69,6 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "external": False,
         "status": "live",
     },
-    {
-        "slug": "library-planner",
-        "name": "Yeast Display Library Planner",
-        "tagline": (
-            "Plan yeast display libraries with realistic diversity and "
-            "screen-size estimates for your scaffold and Kd target."
-        ),
-        "comparison_one_liner": (
-            "Pick the Library Planner when you have a binder design "
-            "shortlist and need to scope library size, diversification "
-            "scheme, and screening throughput before ordering DNA."
-        ),
-        "category": "Scope the target",
-        "smoke_runtime": "<5 s",
-        "pilot_runtime": "—",
-        "runtime_band": "<5 s",
-        "paper_citation": "—",
-        "paper_url": "",
-        "github_url": "",
-        "endpoint": "tools.library_planner",
-        "external": False,
-        "status": "live",
-    },
 )
 
 
@@ -103,11 +85,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "esmfold2-design": "Design binders",
     "boltzgen": "Design binders",
     "iggm": "Design binders",
+    "proteina": "Design binders",
     "mpnn": "Sequence on a backbone",
     "af2": "Structure prediction",
     "colabfold": "Structure prediction",
     "esmfold": "Structure prediction",
     "boltz2": "Structure prediction",
+    "opendde": "Structure prediction",
 }
 
 
@@ -117,10 +101,10 @@ def _build_tools_catalog() -> list[dict]:
 
     Each entry includes display name, tagline, category, route, and
     runtime bands so a single template can render the tile layout, the
-    comparison matrix, and the homepage cards from one source of truth. Hardcoded tools (Epitope Scout, Developability,
-    Library Planner) are included regardless of feature flags;
-    GPU adapters are filtered through ``tool_enabled`` so a flag-off
-    tool stays invisible to the catalog.
+    comparison matrix, and the homepage cards from one source of truth.
+    Hardcoded tools (Epitope Scout, Developability) are included
+    regardless of feature flags; GPU adapters are filtered through
+    ``tool_enabled`` so a flag-off tool stays invisible to the catalog.
     """
     import importlib  # noqa: PLC0415
 
