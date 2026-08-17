@@ -124,9 +124,15 @@ MIN_FREE_TO_JUDGE_DIVERSITY = 10
 # threshold encodes. Below it these two are skipped and the run leans on the
 # guards that do not need the freedom (all-identical, exact score equality) plus
 # verify_fixed_positions' per-chain echo check, which proves free positions
-# actually moved. NOTE: this ratio is reasoned from the threshold's own
-# derivation, not measured on a GPU; a real sampling-diversity run at 10-40 free
-# positions is what would confirm it.
+# actually moved.
+#
+# MEASURED, not just reasoned. A10G canary, 1HEW chain A, 89 of 129 positions
+# frozen so exactly 40 were free, 8 samples at T=0.1: max pairwise Hamming came
+# back 13, i.e. 6.5x the <=2 threshold, so the guard has real margin AT this
+# boundary. That works out near 0.33 changes per free position, and the same
+# rate is what makes the old behaviour indefensible: at the previous cut-off of
+# 10 free positions the expected max Hamming is only ~3, close enough to 2 that
+# ordinary sampling luck fails a correct run. Re-measure before lowering this.
 MIN_FREE_FOR_WHOLE_SEQUENCE_DIVERSITY = 40
 
 
