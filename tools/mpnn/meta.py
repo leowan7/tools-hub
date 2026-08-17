@@ -112,6 +112,21 @@ about: dict = {
                 "README."
             ),
         },
+        {
+            "name": "Fixed positions (optional)",
+            "explanation": (
+                "Positions to hold <strong>fixed</strong> inside a designed "
+                "chain; everything else in that chain is redesigned. Written "
+                "as <code>CHAIN:list</code> groups with single positions or "
+                "ranges &mdash; <code>A:1-44,46-66 B:5,7</code>. Positions are "
+                "1-indexed <em>within their chain</em>, not author residue "
+                "numbers, so the chain must be numbered from 1 with no gaps "
+                "or insertion codes. Use this to redesign a liability patch "
+                "while leaving a binding interface untouched: list the "
+                "complement of the patch. Leave blank to redesign the whole "
+                "chain."
+            ),
+        },
     ],
     "runtime_table": [
         {"preset": "standalone", "typical": "~1 min"},

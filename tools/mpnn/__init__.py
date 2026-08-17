@@ -14,6 +14,7 @@ candidate sequences. It runs on the Modal function
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Optional
 
 from tools.base import Preset, ToolAdapter, register
@@ -51,6 +52,151 @@ def _parse_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+# One entry of a fixed-positions group: "12" or "1-44".
+_RANGE_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+# Ceiling on expansion, applied BOTH per token and to the running per-chain
+# total. Per token alone is not a bound: a group holds unlimited comma-separated
+# tokens, so "A:1-10000,10001-20000,..." spells the same billion-position request
+# in a few KB and walks straight past a per-token check. The expanded set is
+# persisted verbatim into tool_jobs.inputs (jsonb) and shipped to Modal, and this
+# repo already carries the scar of a multi-MB blob wedging a job — see the
+# _RAW_VOLUME rationale in tools/mpnn/modal_app.py. No protein chain comes near
+# this, and normalise_fixed_positions refuses anything past the real chain length
+# anyway; this only has to stop the allocation from happening first.
+_MAX_FIXED_POSITIONS = 10_000
+
+# Ceiling on the RAW string, checked before it is split or expanded.
+# _MAX_FIXED_POSITIONS bounds the expanded set, which is not the same thing and
+# leaves two holes on the free side of the paywall:
+#   * CPU + storage. "A:" + "1," * 10_000_000 expands to the single position {1},
+#     so the expansion cap never fires, but it is a 20 MB request body (exactly
+#     MAX_CONTENT_LENGTH) that spends ~10 s in the split loop and is then written
+#     verbatim into tool_jobs.inputs, because ``fixed_raw`` is persisted as typed
+#     so clone_from can refill the field. That is the multi-MB-blob scar cited
+#     above, reproduced by the very cap meant to prevent it.
+#   * int() raises. CPython caps int(str) at 4300 digits (PY 3.11+), and
+#     _RANGE_RE happily matches more, so a single 4301-digit token turns
+#     ``int(match.group(1))`` into an uncaught ValueError. validate() is not
+#     wrapped by its caller, so that is a 500 on a plain form POST.
+# Holding the whole field under the digit limit closes the second by
+# construction rather than by a second check. No real request comes near: the
+# longest plausible input is the complement of a redesign patch on a long chain,
+# a few hundred bytes.
+_MAX_FIXED_RAW_CHARS = 4_000
+
+
+def _parse_fixed_positions(
+    raw: Any, designed_chains: list[str]
+) -> tuple[Optional[dict], Optional[str]]:
+    """Parse the fixed-positions field into ``{chain: [1-indexed ints]}``.
+
+    Syntax is whitespace-separated per-chain groups, each ``CHAIN:list``, where
+    list items are single positions or inclusive ranges:
+    ``A:1-44,46-66,68-88,90-113 B:5,7``. A bare list with no chain prefix is
+    accepted only when exactly one chain is being designed, mirroring the
+    bare-integer rule in ``base.parse_hotspot_residues``.
+
+    SENSE IS PROTEINMPNN'S: the positions listed are the ones held FIXED, which
+    is what ``run_pipeline.normalise_fixed_positions`` expects. Ranges exist so
+    that stating the complement of a small redesign patch stays short — freezing
+    everything but residues 45, 67 and 89 of a 113-mer is four tokens, not 110.
+
+    Only syntax and chain membership are checked here. Bounds, contiguity and
+    author-numbering are re-checked in the pipeline against the real parsed PDB,
+    which is the only place those are knowable.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return {}, None
+    # Before the split, not after: the cost this bounds is the split itself.
+    if len(text) > _MAX_FIXED_RAW_CHARS:
+        return None, (
+            f"Fixed positions is too long ({len(text)} characters, max "
+            f"{_MAX_FIXED_RAW_CHARS}). Use ranges rather than listing every "
+            "position individually — 1-44 rather than 1,2,3,…,44."
+        )
+    if not designed_chains:
+        return None, "Chains to design is required before fixing positions."
+
+    out: dict[str, list[int]] = {}
+    for group in text.split():
+        chain, _, body = group.rpartition(":")
+        if not chain:
+            if len(designed_chains) != 1:
+                return None, (
+                    f"Fixed positions {group!r} must name its chain when more "
+                    f"than one chain is being designed (e.g. "
+                    f"{designed_chains[0]}:1-44,46)."
+                )
+            chain = designed_chains[0]
+        if chain not in designed_chains:
+            return None, (
+                f"Fixed positions name chain {chain!r}, which is not among the "
+                f"chains to design ({', '.join(designed_chains)}). Freezing "
+                "positions on a chain MPNN was not asked to design does nothing."
+            )
+        # Rejected rather than merged, matching normalise_fixed_positions: two
+        # groups for one chain reads as additive but the second would win.
+        if chain in out:
+            return None, (
+                f"Chain {chain!r} appears more than once in fixed positions; "
+                "merge it into a single group."
+            )
+
+        positions: set[int] = set()
+        for item in body.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            match = _RANGE_RE.match(item)
+            if not match:
+                return None, (
+                    f"Fixed position {item!r} is not a position or a range "
+                    f"(e.g. 46 or 1-44)."
+                )
+            lo = int(match.group(1))
+            hi = int(match.group(2) or lo)
+            if hi < lo:
+                return None, f"Fixed position range {item!r} runs backwards."
+            # Positions are 1-indexed. 0 is refused HERE and not left to the
+            # pipeline because upstream ProteinMPNN turns it into
+            # np.array([0]) - 1 == -1 and silently freezes the LAST residue —
+            # one of only two silent failure modes in the whole feature (see
+            # verify_fixed_positions' docstring). An off-by-one caller is the
+            # likeliest way anyone reaches it.
+            if lo < 1:
+                return None, (
+                    f"Fixed position {item!r} is below 1. Positions are "
+                    "1-indexed within their chain; position 1 is the first "
+                    "residue."
+                )
+            if hi - lo >= _MAX_FIXED_POSITIONS:
+                return None, (
+                    f"Fixed position range {item!r} spans more than "
+                    f"{_MAX_FIXED_POSITIONS} positions."
+                )
+            positions.update(range(lo, hi + 1))
+            # Checked inside the loop, so a long comma list stops accumulating
+            # rather than being measured after it has already been built.
+            if len(positions) > _MAX_FIXED_POSITIONS:
+                return None, (
+                    f"Fixed positions for chain {chain!r} exceed "
+                    f"{_MAX_FIXED_POSITIONS} positions."
+                )
+
+        # An empty list is a whole-chain redesign wearing the shape of a freeze.
+        # normalise_fixed_positions refuses it too; refusing here names the typo
+        # before the job is submitted.
+        if not positions:
+            return None, (
+                f"Fixed positions for chain {chain!r} are empty. Drop the chain "
+                "if you meant to redesign all of it."
+            )
+        out[chain] = sorted(positions)
+    return out, None
 
 
 def validate(
@@ -102,12 +248,24 @@ def validate(
             f"sampling_temp must be between {TEMP_MIN} and {TEMP_MAX}.",
         )
 
+    fixed_raw = str(form.get("fixed_positions") or "").strip()
+    fixed_positions, fixed_err = _parse_fixed_positions(
+        fixed_raw, normalized_chains.split()
+    )
+    if fixed_err:
+        return None, fixed_err
+
     return (
         {
             "preset": preset,
             "target_chain": normalized_chains,
             "num_seq_per_target": num_seq_per_target,
             "sampling_temp": sampling_temp,
+            # Stored as typed so ``clone_from`` refills the field verbatim; the
+            # parsed form rides under an underscore key, which the clone route
+            # strips from pre_fill (same convention as _pdb_storage_path).
+            "fixed_positions": fixed_raw,
+            "_fixed_positions": fixed_positions,
             "target": f"Your uploaded PDB (chain(s) {normalized_chains})",
         },
         None,
@@ -121,12 +279,19 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     ``_input_presigned_url`` — this function does not embed it in the
     dict.
     """
+    parameters: dict[str, Any] = {
+        "num_seq_per_target": inputs["num_seq_per_target"],
+        "sampling_temp": inputs["sampling_temp"],
+    }
+    # Omitted entirely when nothing was frozen, so a plain redesign submits the
+    # byte-identical payload it did before this field existed.
+    # ``inputs.get`` because jobs persisted before this field have no such key.
+    fixed_positions = inputs.get("_fixed_positions")
+    if fixed_positions:
+        parameters["fixed_positions"] = fixed_positions
     return {
         "target_chain": inputs["target_chain"],
-        "parameters": {
-            "num_seq_per_target": inputs["num_seq_per_target"],
-            "sampling_temp": inputs["sampling_temp"],
-        },
+        "parameters": parameters,
     }
 
 
