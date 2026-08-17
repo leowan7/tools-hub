@@ -38,7 +38,6 @@ from flask import Blueprint, Response, g, jsonify, make_response, request
 
 from shared.api_auth import api_auth_required
 from shared.campaigns import (
-    API_TERMINAL_STATUSES,
     ASSAY_TYPES,
     IdempotentReplay,
     Campaign,
@@ -47,7 +46,6 @@ from shared.campaigns import (
     create_api_campaign,
     delete_api_campaign,
     get_campaign,
-    list_user_campaigns,
     transition_api_status,
 )
 from tools.platform_api.calibrated_targets import (

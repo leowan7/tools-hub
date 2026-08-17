@@ -106,17 +106,3 @@ def functional_amino_acid_space(positions: int) -> int:
     if positions < 1:
         raise ValueError("positions must be >= 1")
     return 20 ** positions
-
-
-def stop_free_fraction(scheme: str, positions: int) -> float:
-    """Return the fraction of a library free of stop codons.
-
-    Args:
-        scheme: One of NNK, NNS, NNN, trimer.
-        positions: Number of randomized positions.
-
-    Returns:
-        Float in [0, 1].
-    """
-    _validate(scheme, positions)
-    return (1.0 - STOP_FRACTION[scheme]) ** positions
