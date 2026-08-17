@@ -7,7 +7,6 @@ citation. Referenced by the ``candidate_table.html`` macro and the export routes
 
 from __future__ import annotations
 
-from typing import Optional
 
 GLOSSARY: dict[str, dict] = {
     "ranking_score": {
@@ -244,16 +243,3 @@ def format_value(metric_key: str, raw) -> str:
         return format(float(raw), fmt)
     except (TypeError, ValueError):
         return str(raw) if raw is not None else "—"
-
-
-def to_json_safe() -> dict:
-    """Return the glossary in a JSON-serialisable form for template injection."""
-    return {
-        k: {
-            "label": v["label"],
-            "definition": v["definition"],
-            "good_range": v["good_range"],
-            "citation": v["citation"],
-        }
-        for k, v in GLOSSARY.items()
-    }
