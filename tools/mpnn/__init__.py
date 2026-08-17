@@ -68,6 +68,25 @@ _RANGE_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
 # anyway; this only has to stop the allocation from happening first.
 _MAX_FIXED_POSITIONS = 10_000
 
+# Ceiling on the RAW string, checked before it is split or expanded.
+# _MAX_FIXED_POSITIONS bounds the expanded set, which is not the same thing and
+# leaves two holes on the free side of the paywall:
+#   * CPU + storage. "A:" + "1," * 10_000_000 expands to the single position {1},
+#     so the expansion cap never fires, but it is a 20 MB request body (exactly
+#     MAX_CONTENT_LENGTH) that spends ~10 s in the split loop and is then written
+#     verbatim into tool_jobs.inputs, because ``fixed_raw`` is persisted as typed
+#     so clone_from can refill the field. That is the multi-MB-blob scar cited
+#     above, reproduced by the very cap meant to prevent it.
+#   * int() raises. CPython caps int(str) at 4300 digits (PY 3.11+), and
+#     _RANGE_RE happily matches more, so a single 4301-digit token turns
+#     ``int(match.group(1))`` into an uncaught ValueError. validate() is not
+#     wrapped by its caller, so that is a 500 on a plain form POST.
+# Holding the whole field under the digit limit closes the second by
+# construction rather than by a second check. No real request comes near: the
+# longest plausible input is the complement of a redesign patch on a long chain,
+# a few hundred bytes.
+_MAX_FIXED_RAW_CHARS = 4_000
+
 
 def _parse_fixed_positions(
     raw: Any, designed_chains: list[str]
@@ -92,6 +111,13 @@ def _parse_fixed_positions(
     text = str(raw or "").strip()
     if not text:
         return {}, None
+    # Before the split, not after: the cost this bounds is the split itself.
+    if len(text) > _MAX_FIXED_RAW_CHARS:
+        return None, (
+            f"Fixed positions is too long ({len(text)} characters, max "
+            f"{_MAX_FIXED_RAW_CHARS}). Use ranges rather than listing every "
+            "position individually — 1-44 rather than 1,2,3,…,44."
+        )
     if not designed_chains:
         return None, "Chains to design is required before fixing positions."
 

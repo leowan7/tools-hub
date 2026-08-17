@@ -107,6 +107,28 @@ FIXED_POSITIONS_JSONL = "fixed_positions.jsonl"
 # the same question from opposite ends.
 MIN_FREE_TO_JUDGE_DIVERSITY = 10
 
+# Higher bar for the two guards that judge the WHOLE concatenated sequence
+# against an ABSOLUTE threshold -- max pairwise Hamming <= 2, and score/recovery
+# spread < 0.01. Both numbers were calibrated for a whole-chain redesign, where
+# ~110 positions are free and 2 differences is under 2% of what sampling could
+# have produced. Freedom is what makes them diagnostic, and MIN_FREE_TO_JUDGE_
+# DIVERSITY is not enough of it: at 10-40 free positions and the default
+# sampling_temp of 0.1, two samples landing within Hamming 2 is the EXPECTED
+# result, and score spread is computed from global_score, which covers the whole
+# complex and is therefore diluted by everything the caller froze. Turning these
+# back on at 10 hard-fails a correct constrained run after the GPU has already
+# run -- and "freeze a liability patch, redesign the rest" puts the primary use
+# case squarely in that band.
+#
+# 40 keeps 2 at or under 5% of achievable diversity, the ratio the original
+# threshold encodes. Below it these two are skipped and the run leans on the
+# guards that do not need the freedom (all-identical, exact score equality) plus
+# verify_fixed_positions' per-chain echo check, which proves free positions
+# actually moved. NOTE: this ratio is reasoned from the threshold's own
+# derivation, not measured on a GPU; a real sampling-diversity run at 10-40 free
+# positions is what would confirm it.
+MIN_FREE_FOR_WHOLE_SEQUENCE_DIVERSITY = 40
+
 
 def _chain_ca_residues(pdb: Path) -> dict[str, dict[int, set[str]]]:
     """Observed CA residues per chain: ``{chain: {resSeq: {iCode, ...}}}``.
@@ -151,14 +173,31 @@ def _chain_ca_residues(pdb: Path) -> dict[str, dict[int, set[str]]]:
 
 
 def _chain_residue_counts(pdb: Path) -> dict[str, int]:
-    """Chain lengths AS PROTEINMPNN COUNTS THEM, which is not "residues present".
+    """Chain lengths, counted to APPROXIMATE ProteinMPNN rather than to match it.
 
-    ``parse_PDB_biounits`` walks ``range(min_resn, max_resn+1)`` and appends a gap
-    token for every residue number absent from the file, so an unresolved loop
-    still occupies positions. Counting only observed residues disagrees with
-    upstream on any gapped chain -- measured on this repo's own 1jff_raw.pdb:
-    412 observed vs 438 counted -- and every 1-indexed position past the gap then
-    refers to a different residue than the caller meant.
+    The half that is exact: ``parse_PDB_biounits`` walks
+    ``range(min_resn, max_resn+1)`` and appends a gap token for every residue
+    number absent from the file, so an unresolved loop still occupies positions.
+    Counting only observed residues disagrees with upstream on any gapped chain
+    -- measured on this repo's own 1jff_raw.pdb: 412 observed vs 438 counted --
+    and every 1-indexed position past the gap then refers to a different residue
+    than the caller meant. That walk IS reproduced here.
+
+    The half that is NOT exact, stated plainly because an earlier version of this
+    docstring claimed otherwise: upstream sets ``seq[resn][resa]`` for EVERY atom
+    line, with no atom-name filter, while this reads only " CA ". A residue
+    resolved without its alpha carbon -- a terminal residue with N/C/O only, or a
+    non-protein residue parsed as ATOM -- counts for upstream and not here.
+    Verified against upstream 8907e667: identical on all four PDB fixtures in
+    this repo, divergent on those two synthetic cases.
+
+    Why that is safe rather than merely unnoticed. The CA-only span is always a
+    SUBSET of upstream's, so this count is always <= upstream's. A bounds check
+    against it therefore cannot let a position index past upstream's array, so
+    the failure mode is never a wrong residue silently frozen -- it is a chain
+    this refuses, or a length disagreement that ``verify_fixed_positions``
+    catches after the fact. The ``disagree`` check there, not this function, is
+    what actually holds the contract; treat that as load-bearing when editing.
     """
     counts: dict[str, int] = {}
     for chain, res in _chain_ca_residues(pdb).items():
@@ -1011,11 +1050,32 @@ def reject_stub(
             ),
         )
 
+    # The two guards below compare the whole concatenated sequence against an
+    # absolute threshold, so they are only diagnostic with enough free positions
+    # for that threshold to be a small fraction of achievable diversity. None
+    # means a whole-chain redesign, which always had the freedom.
+    whole_seq_diversity_judgeable = (
+        n_free_positions is None
+        or n_free_positions >= MIN_FREE_FOR_WHOLE_SEQUENCE_DIVERSITY
+    )
+    if not whole_seq_diversity_judgeable:
+        logger.info(
+            "near-clone and score-spread guards skipped — %d free position(s) "
+            "is below the %d needed for a whole-sequence threshold to be "
+            "diagnostic; all-identical and exact-score guards still applied",
+            n_free_positions,
+            MIN_FREE_FOR_WHOLE_SEQUENCE_DIVERSITY,
+        )
+
     # Near-clone detection: pairwise Hamming distance. If every pair of
     # sequences differs by <= 2 residues, the model has collapsed. Codex
     # P2 — the previous guards only tripped on bit-exact matches, which
     # missed this real ProteinMPNN degenerate mode.
-    if len(seqs) >= 3 and all(len(s) == len(seqs[0]) and s for s in seqs):
+    if (
+        whole_seq_diversity_judgeable
+        and len(seqs) >= 3
+        and all(len(s) == len(seqs[0]) and s for s in seqs)
+    ):
         max_pairwise_hamming = 0
         for i, s1 in enumerate(seqs):
             for s2 in seqs[i + 1:]:
@@ -1038,7 +1098,12 @@ def reject_stub(
     # 0.01) on both score AND recovery across >=3 samples. Covers the
     # failure mode where sampling injects residue diversity but the
     # probability landscape is collapsed.
-    if len(seqs) >= 3 and len(scores) >= 3 and len(recoveries) >= 3:
+    if (
+        whole_seq_diversity_judgeable
+        and len(seqs) >= 3
+        and len(scores) >= 3
+        and len(recoveries) >= 3
+    ):
         score_spread = max(scores) - min(scores)
         recovery_spread = max(recoveries) - min(recoveries)
         if score_spread < 0.01 and recovery_spread < 0.01:

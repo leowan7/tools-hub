@@ -850,6 +850,50 @@ def test_stub_guard_resumes_once_enough_positions_are_free():
         rp.reject_stub(identical, n_free_positions=n)
 
 
+def _near_clones(n_samples: int = 4) -> list[dict]:
+    """Distinct samples within Hamming 2 of each other, with score/recovery
+    spread deliberately wide so ONLY the near-clone guard is in play."""
+    base = "MKWVAHEDEL" * 4
+    out = []
+    for i in range(n_samples):
+        s = list(base)
+        s[i] = "G"                       # one substitution each -> pairwise <= 2
+        out.append(
+            {"seq": "".join(s), "score": 1.0 + i, "recovery": 0.1 + i}
+        )
+    return out
+
+
+def test_near_clone_guard_no_longer_false_fails_a_tight_constrained_run():
+    """The band MIN_FREE_TO_JUDGE_DIVERSITY alone left exposed. At 10-39 free
+    positions the old code turned the near-clone guard back on with its absolute
+    Hamming<=2 threshold, which was calibrated for a ~110-position whole-chain
+    redesign. A correct 20-position rescue run at T=0.1 lands inside it and was
+    hard-failed AFTER the GPU ran, blaming the model for the caller's own
+    constraint. Nothing here is a stub: the samples are all distinct."""
+    clones = _near_clones()
+    assert len({s["seq"] for s in clones}) == len(clones)
+    rp.reject_stub(clones, n_free_positions=20)
+
+
+def test_near_clone_guard_still_fires_once_the_freedom_makes_it_diagnostic():
+    """The loosening must be a band, not a hole — at full freedom the guard is
+    unchanged, which is the whole point of keeping the absolute threshold."""
+    clones = _near_clones()
+    with pytest.raises(SystemExit):
+        rp.reject_stub(clones, n_free_positions=rp.MIN_FREE_FOR_WHOLE_SEQUENCE_DIVERSITY)
+    with pytest.raises(SystemExit):
+        rp.reject_stub(clones, n_free_positions=None)
+
+
+def test_a_real_stub_is_still_caught_inside_the_loosened_band():
+    """The guards that do NOT need freedom stay on throughout. An all-identical
+    return is the actual silent-stub mode, and it must still fail at 20 free
+    positions even though the near-clone guard is skipped there."""
+    with pytest.raises(SystemExit):
+        rp.reject_stub(_seqs(*["MKWVAHEDEL"] * 8), n_free_positions=20)
+
+
 @pytest.mark.parametrize("bad", ["not-a-dict", ["a"], 7, True])
 def test_main_survives_a_non_dict_parameters_block(tmp_path, monkeypatch, bad):
     """`params.get(...)` on a truthy non-dict raises AttributeError, which is

@@ -240,6 +240,44 @@ class TestFixedPositionsWiring:
         assert err is None
         assert inputs["_fixed_positions"] == {"A": [1, 2, 3, 4, 9]}
 
+    def test_a_huge_digit_run_is_refused_not_raised(self):
+        """CPython caps int(str) at 4300 digits, and the range regex matches any
+        number of them, so an over-long token used to reach ``int()`` and raise
+        ValueError. Nothing wraps ``validate``, so that surfaced as a 500 on an
+        ordinary form POST — from an unauthenticated-cost path, before any GPU.
+
+        Asserting on the RETURN, not pytest.raises: the contract is that this
+        layer reports bad input, never that it explodes on it.
+        """
+        inputs, err = _validated(
+            chains_to_design="A", fixed_positions="A:" + "9" * 4301
+        )
+        assert inputs is None
+        assert "too long" in err
+
+    def test_a_multi_megabyte_field_is_refused_before_it_is_expanded(self):
+        """The expansion cap cannot catch this one. "1," ten million times
+        expands to the single position {1}, so _MAX_FIXED_POSITIONS never fires,
+        yet the raw string is ~20 MB — it burns seconds in the split loop and is
+        then persisted verbatim into tool_jobs.inputs, because the raw field is
+        stored as typed so clone_from can refill it. That is the multi-MB-blob
+        failure this module's own comments cite as a past scar.
+        """
+        inputs, err = _validated(
+            chains_to_design="A", fixed_positions="A:" + "1," * 10_000_000
+        )
+        assert inputs is None
+        assert "too long" in err
+
+    def test_a_realistic_complement_still_fits(self):
+        """The cap must not refuse the field's advertised use. Freezing
+        everything but a scattered patch on a long chain is the worst legitimate
+        case; it has to stay comfortably inside."""
+        body = ",".join(f"{i}-{i + 8}" for i in range(1, 900, 10))
+        inputs, err = _validated(chains_to_design="A", fixed_positions=f"A:{body}")
+        assert err is None
+        assert len(inputs["_fixed_positions"]["A"]) == 810
+
     def test_bare_list_binds_to_the_sole_designed_chain(self):
         inputs, err = _validated(chains_to_design="C", fixed_positions="1-3,7")
         assert err is None
