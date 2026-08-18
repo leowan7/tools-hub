@@ -439,14 +439,10 @@ def create_app() -> Flask:
     # render the shared about_panel macro without every render_template
     # call site needing to pass an explicit ``about=`` kwarg.
     def _tool_about(adapter):
-        import importlib  # noqa: PLC0415
+        from shared.tool_meta import meta_for  # noqa: PLC0415
         if adapter is None:
             return {}
-        try:
-            meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-        except ImportError:
-            return {}
-        return getattr(meta, "about", {}) or {}
+        return getattr(meta_for(adapter.slug), "about", {}) or {}
     flask_app.jinja_env.globals["tool_about"] = _tool_about
 
     # ``viewer_is_signed_in()`` — a jinja GLOBAL, not a context var, so

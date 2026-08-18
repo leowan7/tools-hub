@@ -117,3 +117,13 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A 5 to 10 minute fold. Its only scale parameter is how many
+# sequences you paste, which the user is already choosing
+# directly on the form.
+PILOT: dict | None = None

@@ -75,3 +75,13 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A single-sequence monomer fold finishes in well under a minute
+# and has no scale parameter to start small on. There is nothing a
+# pilot tier would reduce.
+PILOT: dict | None = None

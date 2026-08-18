@@ -70,6 +70,8 @@ from shared.storage import (
 )
 from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
+from shared.tool_meta import meta_for
+from shared.wallet_estimates import estimated_cost_for_tool
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
 
@@ -501,20 +503,17 @@ def _related_tool_cards(slug: str) -> list[dict]:
     Each card carries slug, short_name, one-line description, and
     the tool_form URL so the template stays declarative.
     """
-    import importlib  # noqa: PLC0415
     out: list[dict] = []
     for related_slug in _RELATED_TOOLS.get(slug, ()):
         related_adapter = tool_base.get(related_slug)
         if related_adapter is None or not tool_enabled(related_slug):
             continue
         blurb = related_adapter.blurb or ""
-        try:
-            rmeta = importlib.import_module(f"tools.{related_slug}.meta")
-            one_liner = getattr(rmeta, "comparison_one_liner", None)
-            if one_liner:
-                blurb = one_liner
-        except ImportError:
-            pass
+        one_liner = getattr(
+            meta_for(related_slug), "comparison_one_liner", None,
+        )
+        if one_liner:
+            blurb = one_liner
         out.append({
             "slug": related_slug,
             "short_name": _short_name_for_label(related_adapter.label),
@@ -522,6 +521,28 @@ def _related_tool_cards(slug: str) -> list[dict]:
             "url": url_for("tools.tool_form", tool=related_slug),
         })
     return out
+
+def _preset_runtime_text(meta, preset_slug: str) -> str | None:
+    """The typical runtime for ONE preset, or None.
+
+    Two sources because two generations of metadata are live:
+    ``PRESET_RUNTIME[slug]["typical_minutes"]`` (a bare number or
+    range, so the unit is appended here) and the older
+    ``preset_runtime_rows`` (already carries "min"). rfdiffusion and
+    pxdesign still only have the legacy rows, so a lookup that reads
+    PRESET_RUNTIME alone reports nothing for the two most-used design
+    tools.
+    """
+    if meta is None:
+        return None
+    entry = (getattr(meta, "PRESET_RUNTIME", None) or {}).get(preset_slug) or {}
+    if entry.get("typical_minutes"):
+        return f"{entry['typical_minutes']} min"
+    for row in getattr(meta, "preset_runtime_rows", None) or ():
+        if row.get("slug") == preset_slug and row.get("runtime"):
+            return row["runtime"]
+    return None
+
 
 def _runtime_band_for_adapter(adapter, meta) -> str:
     """Compute the same runtime band string used on the homepage cards.
@@ -532,20 +553,9 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     """
     if meta is None:
         return "—"
-    runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
-    legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-    legacy_by_slug = {
-        r.get("slug"): r.get("runtime")
-        for r in legacy_rows
-        if r.get("slug") and r.get("runtime")
-    }
     runtimes: list[str] = []
     for preset in adapter.presets:
-        entry = runtime_map.get(preset.slug) or {}
-        if entry.get("typical_minutes"):
-            rt = f"{entry['typical_minutes']} min"
-        else:
-            rt = legacy_by_slug.get(preset.slug)
+        rt = _preset_runtime_text(meta, preset.slug)
         if rt and rt not in runtimes:
             runtimes.append(rt)
     if len(runtimes) >= 2:
@@ -553,6 +563,37 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     if len(runtimes) == 1:
         return runtimes[0]
     return "—"
+
+
+def _pilot_context(adapter, meta) -> dict | None:
+    """The guided starter recipe for a tool, with its numbers derived.
+
+    ``tools/<slug>/meta.py`` declares only the WORDS and the parameter
+    set (``PILOT``); the price and the runtime are computed here from
+    the same two sources the rest of the app already uses —
+    ``shared.wallet_estimates.estimated_cost_for_tool`` and the
+    preset runtime map. A hand-written price in meta.py would be a
+    second rate card and would drift off the real one.
+
+    ``PILOT["params"]`` keys are FORM FIELD NAMES, so the same dict
+    both pre-fills the form (``?pilot=1``) and feeds the estimator —
+    which is what the form's own live estimate posts, so the two
+    numbers cannot disagree.
+
+    Returns None when the tool declares ``PILOT = None`` (the fast
+    predictors: a 40-second ESMFold run needs no pilot ceremony).
+    """
+    pilot = getattr(meta, "PILOT", None)
+    if not pilot:
+        return None
+    params = dict(pilot.get("params") or {})
+    return dict(
+        pilot,
+        params=params,
+        cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
+        runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
+        url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
+    )
 
 def _showcase_note(slug: str) -> dict | None:
     """The showcase card for a tool, with its URL resolved, or None."""
@@ -572,12 +613,7 @@ def _public_tool_context(adapter) -> dict:
     everyone — so this travels with every render and the explainer
     macros read it directly.
     """
-    import importlib  # noqa: PLC0415
-    tool_meta = None
-    try:
-        tool_meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-    except ImportError:
-        pass
+    tool_meta = meta_for(adapter.slug)
 
     short_name = _short_name_for_label(adapter.label)
     seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
@@ -635,6 +671,7 @@ def _public_tool_context(adapter) -> dict:
             if tech_slug else None
         ),
         "related_tools": _related_tool_cards(adapter.slug),
+        "pilot": _pilot_context(adapter, tool_meta),
         "prerequisite": _prerequisite_tool(adapter.slug),
         "showcase_note": _showcase_note(adapter.slug),
         "breadcrumbs": [
@@ -684,6 +721,15 @@ def tool_form(tool: str):
     public_ctx = _public_tool_context(adapter)
     login_next = url_for("tools.tool_form", tool=adapter.slug)
 
+    # Fifth pre-fill source, and the only one that works logged OUT:
+    # ``?pilot=1`` loads the tool's declared starter recipe. It is a
+    # constant from meta.py rather than anything owner-scoped, so
+    # unlike clone_from / from_job / handoff / resample_from it needs
+    # no user context and is resolved before the anonymous branch.
+    pilot_pre_fill: dict = {}
+    if request.args.get("pilot") and public_ctx.get("pilot"):
+        pilot_pre_fill = dict(public_ctx["pilot"]["params"])
+
     # Logged-out: same template, same URL, no user context loaded.
     # ``authenticated=False`` is what flips the shared macros —
     # submit_cta renders a sign-in link instead of a submit button,
@@ -694,7 +740,7 @@ def tool_form(tool: str):
             adapter.form_template,
             adapter=adapter,
             error=None,
-            pre_fill={},
+            pre_fill=pilot_pre_fill,
             pdb_source=None,
             workspace_ctx=None,
             wallet=None,
@@ -855,6 +901,13 @@ def tool_form(tool: str):
                     "source_job_id": src.id,
                 },
             )
+
+    # Pilot recipe, applied LAST and only as a fallback: a job-derived
+    # source (clone/handoff/resample) names a real earlier run and must
+    # win over a generic starter recipe if both query params are
+    # somehow present.
+    if pilot_pre_fill and not pre_fill:
+        pre_fill = dict(pilot_pre_fill)
 
     # The wallet estimate partial reads balance_usd for first paint
     # so the form lights up with the user's real balance even before

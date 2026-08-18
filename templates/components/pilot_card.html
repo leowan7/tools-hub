@@ -1,0 +1,59 @@
+{# pilot_card.html — the named starter recipe for one tool.
+
+A "pilot" is a small, cheap FIRST run on the user's OWN target, with
+the cost and the runtime stated before they commit. It formalises the
+"start with 4-8 designs, then scale" advice that was written as prose
+in five different meta.py files and implemented nowhere.
+
+The dict comes from ``tool_public_context(adapter).pilot``, built by
+``blueprints/tools.py::_pilot_context``. meta.py declares only the
+words and the parameter set; the PRICE AND THE RUNTIME ARE DERIVED —
+the price from ``estimated_cost_for_tool`` over the same params the
+form itself posts to /api/wallet/estimate, the runtime from the
+existing preset runtime map. Nothing here may hard-code either: a
+second hand-written rate card drifts off the real one within a month.
+
+``pilot`` is None for the fast predictors (esmfold, colabfold, af2),
+and this macro then renders nothing at all.
+
+Usage:
+
+    {% from "components/pilot_card.html" import pilot_card %}
+    {{ pilot_card(pilot) }}
+#}
+
+{% macro pilot_card(pilot) %}
+  {% if pilot %}
+    <aside class="panel about-panel">
+      <div class="panel-header">
+        <span class="panel-title">{{ pilot.label }}</span>
+      </div>
+      <div class="panel-body">
+        <p>{{ pilot.goal }}</p>
+
+        <h3>What you need</h3>
+        <p>{{ pilot.you_need }}</p>
+
+        <h3>What it costs</h3>
+        <p>
+          About <strong>${{ display_cost_usd(pilot.cost_usd) }}</strong>
+          {%- if pilot.runtime %}, and about {{ pilot.runtime }} of GPU
+          time{% endif %}. That is an estimate from these exact settings
+          &mdash; you are billed for the compute the job actually uses,
+          never more than the estimate.
+        </p>
+
+        <h3>Then what</h3>
+        <p>{{ pilot.next_step }}</p>
+
+        {# An <a>, deliberately. This panel sits beside a form the user
+           may not be allowed to POST; a <button> here would be a second
+           submitting control on an anonymously reachable page, which is
+           exactly the invariant tests/test_public_tool_pages.py guards. #}
+        <a href="{{ pilot.url }}" class="btn-secondary">
+          Load these settings &rarr;
+        </a>
+      </div>
+    </aside>
+  {% endif %}
+{% endmacro %}

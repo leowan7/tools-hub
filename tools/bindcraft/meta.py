@@ -131,3 +131,43 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 4 binders",
+    "goal": (
+        "Check that your target and the face you picked produce usable "
+        "designs before committing to a larger run."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb, .cif or .mmcif), the "
+        "chain ID it sits on, and at least one residue on the face you "
+        "want the binder to touch."
+    ),
+    "params": {
+        "preset": "pilot",
+        "num_designs": "4",
+    },
+    "next_step": (
+        "BindCraft costs more GPU per design than any other design tool "
+        "here, so 4 is the honest first step. If any of them scores "
+        "well, clone the run and raise the count."
+    ),
+}

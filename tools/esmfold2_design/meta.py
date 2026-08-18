@@ -178,3 +178,43 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: one seed",
+    "goal": (
+        "See what a single gradient-design run produces before "
+        "committing to a parallel sweep."
+    ),
+    "you_need": (
+        "A target sequence &mdash; one of the bundled presets, or a "
+        "single chain of 30 to 800 residues pasted in. No structure "
+        "file required."
+    ),
+    "params": {
+        "preset": "minibinder",
+        "n_seeds": "1",
+    },
+    "next_step": (
+        "Raise the seed count. Every seed gets its own GPU, so a sweep "
+        "finishes in about the same wall-clock time as one seed and "
+        "costs proportionally more."
+    ),
+}

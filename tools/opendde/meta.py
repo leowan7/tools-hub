@@ -102,3 +102,15 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# Deliberately None even though OpenDDE is neither fast nor cheap.
+# It has no scaling parameter the estimator honours, so the
+# smallest possible run is the only possible run (~$15) and a card
+# headed "pilot" over that number would be a lie. Give it a PILOT
+# if it ever gains a cheaper tier.
+PILOT: dict | None = None

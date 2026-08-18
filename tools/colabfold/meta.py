@@ -81,3 +81,12 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A 1 to 2 minute no-MSA fold with no scale parameter to start
+# small on. Nothing for a pilot tier to reduce.
+PILOT: dict | None = None

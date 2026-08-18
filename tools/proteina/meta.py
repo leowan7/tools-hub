@@ -247,3 +247,44 @@ about: dict = {
     "model_license_notice": model_license_notice,
     "reward_attributions": reward_attributions,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: one shard, 8 designs",
+    "goal": (
+        "Run the smallest complete unit of a Proteina search against "
+        "your own target and see what the reward stack returns."
+    ),
+    "you_need": (
+        "A structure file for your target and its chain ID &mdash; or a "
+        "chain and residue range such as <code>A1-150</code>. Hotspot "
+        "residues are optional, and are what aims the binder at one "
+        "specific face."
+    ),
+    "params": {
+        "preset": "protein_binder",
+        "num_designs": "8",
+    },
+    "next_step": (
+        "8 designs is one shard on one GPU. Raise the count and the run "
+        "fans out across GPUs as a campaign bounded by your wallet, "
+        "with a single ranked list pooled across every shard."
+    ),
+}

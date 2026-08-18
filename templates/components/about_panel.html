@@ -138,6 +138,8 @@ Usage:
 {# The public explainer. This content used to be the separate
    templates/tools/_preview.html page that logged-out visitors got
    INSTEAD of the form; the form is public now, so it moves here. #}
+{% from "components/pilot_card.html" import pilot_card %}
+
 {% macro about_public_explainer(adapter) %}
     {% set _pub = tool_public_context(adapter) %}
     {% set _meta = _pub.meta %}
@@ -159,6 +161,12 @@ Usage:
         </div>
       </aside>
     {% endif %}
+
+    {# After "Start here first" (you need hotspots before you can run
+       anything) and before every reference block: this is the one
+       panel in the rail that tells a first-time visitor what to
+       actually DO. Renders nothing for tools with PILOT = None. #}
+    {{ pilot_card(_pub.pilot) }}
 
     {% if _meta and _meta.comparison_one_liner %}
       <aside class="panel about-panel">
