@@ -9,7 +9,7 @@ Lifecycle
 ---------
 ::
 
-    record_signup_credit()                  # one-time $5 grant on first signup
+    record_signup_credit()                  # one-time SIGNUP_CREDIT_USD grant
         |
         v
     top_up_wallet()                         # Stripe Checkout success webhook
@@ -85,7 +85,20 @@ DEFAULT_DAILY_CAP_USD = Decimal("200.00")
 DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 
 # Signup credit grant amount.
-SIGNUP_CREDIT_USD = Decimal("5.00")
+#
+# Raised 5.00 -> 15.00 (2026-08-18). The tool pages now recommend a named
+# "pilot" as a new user's first run, and six of the ten pilots cost
+# $8.74-$12.59 -- so a $5 grant meant the very first action the site
+# recommended cost more than the balance it had just advertised, and a new
+# user's real first step was a top-up. 15.00 clears the most expensive pilot
+# with headroom.
+#
+# This number is user-visible in ~18 places. Do NOT hardcode it in copy:
+# templates read it through the ``signup_credit`` jinja global and Python
+# callers import this constant, both sourced from here. There is no env
+# override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
+# changed only the welcome email, never the grant.
+SIGNUP_CREDIT_USD = Decimal("15.00")
 
 # Send the low-balance email when balance drops below this.
 LOW_BALANCE_EMAIL_THRESHOLD = Decimal("5.00")

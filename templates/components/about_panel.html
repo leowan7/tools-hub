@@ -17,6 +17,23 @@ Consumes an ``about`` dict with this shape:
 
 Any missing field is silently skipped.
 
+This panel is also the explainer that used to live in the separate
+templates/tools/_preview.html shell — /tools/<slug> now renders the real
+form for everyone, so the preview's positioning line, score legend,
+prerequisite, related tools, FAQ and references have to land somewhere
+on this page. They render below the reference card, from
+``tool_public_context(adapter)``.
+
+The explainer renders in BOTH auth states, deliberately. It was
+logged-out-only when the form first went public; that deleted the score
+legend ("aim above roughly 0.7") for the one person who most needs it —
+the user who just submitted a run and is reading the number. It is
+working reference, not anonymous-only marketing.
+
+``tool_public_context`` is a jinja GLOBAL (app.py), not a context var:
+all 14 tool forms import this macro WITHOUT ``with context``, so a
+context variable would be invisible here.
+
 Usage:
 
     {% from "components/about_panel.html" import about_panel %}
@@ -24,6 +41,20 @@ Usage:
 #}
 
 {% macro about_panel(adapter, about) %}
+  {# ONE grid child. tool_form_layout is a two-column grid, so a second
+     top-level element here would drop into the LEFT column under the
+     form instead of continuing the right rail. Inline layout only —
+     no new class in static/style.css. The wrapper is unconditional so
+     the signed-in rail is laid out by the same rule as the anonymous
+     one. #}
+  <div class="tool-form-about-rail"
+       style="display: grid; gap: 1.25rem; align-content: start; min-width: 0;">
+    {{ about_reference_card(adapter, about) }}
+    {{ about_public_explainer(adapter) }}
+  </div>
+{% endmacro %}
+
+{% macro about_reference_card(adapter, about) %}
   <aside class="panel about-panel" aria-labelledby="about-panel-title-{{ adapter.slug }}">
     <div class="panel-header">
       <span class="panel-title" id="about-panel-title-{{ adapter.slug }}">About {{ adapter.label }}</span>
@@ -102,4 +133,185 @@ Usage:
       {% endif %}
     </div>
   </aside>
+{% endmacro %}
+
+{# The public explainer. This content used to be the separate
+   templates/tools/_preview.html page that logged-out visitors got
+   INSTEAD of the form; the form is public now, so it moves here. #}
+{% from "components/pilot_card.html" import pilot_card %}
+{% from "components/worked_example.html" import worked_example %}
+
+{% macro about_public_explainer(adapter) %}
+    {% set _pub = tool_public_context(adapter) %}
+    {% set _meta = _pub.meta %}
+    {% set _short = _pub.short_name or adapter.label %}
+
+    {# First in the rail, above the sibling comparison: on a form that
+       asks for hotspot residues this is the step BEFORE the run, not an
+       alternative to it. #}
+    {% if _pub.prerequisite %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">Start here first</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ _pub.prerequisite.why }}</p>
+          <a href="{{ _pub.prerequisite.url }}" class="btn-secondary">
+            Open {{ _pub.prerequisite.name }} &rarr;
+          </a>
+        </div>
+      </aside>
+    {% endif %}
+
+    {# After "Start here first" (you need hotspots before you can run
+       anything) and before every reference block: this is the one
+       panel in the rail that tells a first-time visitor what to
+       actually DO. Renders nothing for tools with PILOT = None. #}
+    {{ pilot_card(_pub.pilot) }}
+
+    {# Straight after the pilot card, because the two are one argument:
+       here is the run to start with, and here is what a run of this
+       tool actually returned. Renders nothing for the thirteen tools
+       with no captured payload. #}
+    {{ worked_example(adapter, _pub.example) }}
+
+    {% if _meta and _meta.comparison_one_liner %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">When to pick this tool</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ _meta.comparison_one_liner }}</p>
+        </div>
+      </aside>
+    {% endif %}
+
+    {% if _pub.showcase_note %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">{{ _pub.showcase_note.title }}</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ _pub.showcase_note.body }}</p>
+          <a href="{{ _pub.showcase_note.url }}" class="btn-secondary">{{ _pub.showcase_note.cta }}</a>
+        </div>
+      </aside>
+    {% endif %}
+
+    <aside class="panel about-panel">
+      <div class="panel-header">
+        <span class="panel-title">What good looks like</span>
+      </div>
+      <div class="panel-body">
+        <p>
+          Each tool reports a subset of these depending on whether it does
+          design, sequence recovery, or structure prediction.
+        </p>
+        <dl>
+          <dt><strong>ipTM</strong></dt>
+          {# Same correction as templates/help/tool_guide.html, and this is
+             the copy's THIRD home — an independent review found two of the
+             three. "The binder to target interface" is the metric's intent,
+             not what every tool stores: on a multi-chain target rfdiffusion,
+             pxdesign and bindcraft report a number computed over the whole
+             complex, and so did boltzgen before the August 2026 container
+             update. See shared/metric_glossary.py. #}
+          <dd>
+            Predicted confidence at an interface. Higher is better; aim above
+            roughly 0.7 on a tractable target. On a multi-chain target it may
+            cover the target's own chain&ndash;chain interface as well as the
+            binder's.
+          </dd>
+          <dt><strong>pLDDT</strong></dt>
+          <dd>
+            Per-residue confidence in the predicted fold. Higher means the
+            model is more sure of that part of the structure.
+          </dd>
+          <dt><strong>i_pAE and pAE</strong></dt>
+          <dd>
+            Predicted alignment error, at the interface (i_pAE) or across the
+            whole structure (pAE). Lower is better.
+          </dd>
+          <dt><strong>ProteinMPNN recovery</strong></dt>
+          <dd>
+            Fraction of native residues recovered when ProteinMPNN redesigns a
+            known sequence on its native backbone. Higher is better; well
+            calibrated above roughly 0.4 on diverse folds.
+          </dd>
+        </dl>
+      </div>
+    </aside>
+
+    {% if _pub.runtime_band and _pub.runtime_band != '—' %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">Typical runtime</span>
+        </div>
+        <div class="panel-body">
+          <p>
+            {{ _pub.runtime_band }} per run on a dedicated GPU. You pay only
+            for the compute a job delivers, drawn from your wallet balance.
+          </p>
+        </div>
+      </aside>
+    {% endif %}
+
+    {% if _pub.related_tools %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">Related tools on Ranomics</span>
+        </div>
+        <div class="panel-body">
+          <p>
+            If you are picking between {{ _short }} and a sibling algorithm,
+            these run on the same hub against the same target.
+          </p>
+          <dl>
+            {% for r in _pub.related_tools %}
+              <dt><a href="{{ r.url }}">Run {{ r.short_name }} online</a></dt>
+              {% if r.blurb %}<dd>{{ r.blurb }}</dd>{% endif %}
+            {% endfor %}
+          </dl>
+        </div>
+      </aside>
+    {% endif %}
+
+    {% if _meta and _meta.seo_faq %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">Questions people ask about {{ _short }}</span>
+        </div>
+        <div class="panel-body">
+          <dl>
+            {% for item in _meta.seo_faq %}
+              <dt><strong>{{ item.q }}</strong></dt>
+              <dd>{{ item.a }}</dd>
+            {% endfor %}
+          </dl>
+        </div>
+      </aside>
+    {% endif %}
+
+    {% if _meta and (_meta.paper_citation or _meta.paper_url or _meta.github_url or _pub.learn_more_url) %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">References</span>
+        </div>
+        <div class="panel-body">
+          {% if _meta.paper_citation %}<p>{{ _meta.paper_citation }}</p>{% endif %}
+          <ul>
+            {% if _meta.paper_url %}
+              <li><a href="{{ _meta.paper_url }}" target="_blank" rel="noopener noreferrer">Read the paper</a></li>
+            {% endif %}
+            {% if _meta.github_url %}
+              <li><a href="{{ _meta.github_url }}" target="_blank" rel="noopener noreferrer">Source code on GitHub</a></li>
+            {% endif %}
+            {% if _pub.learn_more_url %}
+              <li><a href="{{ _pub.learn_more_url }}" target="_blank" rel="noopener">How {{ _short }} works at Ranomics</a></li>
+            {% endif %}
+            <li><a href="{{ url_for('public.help_tool_guide', tool=adapter.slug) }}">Full guide</a></li>
+          </ul>
+        </div>
+      </aside>
+    {% endif %}
 {% endmacro %}

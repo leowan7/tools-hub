@@ -88,3 +88,62 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 2 nanobodies",
+    "goal": (
+        "Check that a VHH scaffold can be placed on the face you "
+        "picked at all, before scaling up."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb or .cif), the chain ID, "
+        "and at least one residue defining the face you want bound."
+    ),
+    # 2, not the form's default of 4. RFantibody prices in whole
+    # containers of two designs (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container and half the default's price,
+    # while 1 costs the same as 2. A pilot equal to the default was a
+    # button that promised a change it did not make.
+    "params": {
+        "preset": "pilot",
+        "num_designs": "2",
+    },
+    "next_step": (
+        "Two designs answer whether the epitope is reachable by a VHH "
+        "at all, not whether it is a good one. Roughly 1 in 5 clears "
+        "the confidence bar on a tractable target, so once these come "
+        "back scored, clone the run and raise the count to 10 or more "
+        "before reading anything into the numbers."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

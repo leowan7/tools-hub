@@ -439,15 +439,93 @@ def create_app() -> Flask:
     # render the shared about_panel macro without every render_template
     # call site needing to pass an explicit ``about=`` kwarg.
     def _tool_about(adapter):
-        import importlib  # noqa: PLC0415
+        from shared.tool_meta import meta_for  # noqa: PLC0415
         if adapter is None:
             return {}
-        try:
-            meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-        except ImportError:
-            return {}
-        return getattr(meta, "about", {}) or {}
+        return getattr(meta_for(adapter.slug), "about", {}) or {}
     flask_app.jinja_env.globals["tool_about"] = _tool_about
+
+    # ``viewer_is_signed_in()`` — a jinja GLOBAL, not a context var, so
+    # imported macros can read it. Jinja macros imported without
+    # ``with context`` see globals but not the calling template's
+    # context, and the three shared macros (submit_cta, about_panel,
+    # wallet/_partials) are imported that way by all 14 tool forms.
+    # Reading ``session`` here is also what makes it impossible to
+    # disagree with blueprints/tools.py::tool_form, which branches on
+    # the same key — including on the error re-render from tool_submit,
+    # where no ``authenticated`` kwarg is passed.
+    def _viewer_is_signed_in() -> bool:
+        return bool(session.get("user_email"))
+    flask_app.jinja_env.globals["viewer_is_signed_in"] = _viewer_is_signed_in
+
+    # Companion global: the login URL that returns to the page being
+    # rendered. Same reason — ``request`` is a context var, not a
+    # global, so a macro cannot reach it.
+    def _signin_url() -> str:
+        # full_path, NOT path. ``request.path`` dropped the query string,
+        # so /tools/rfdiffusion?pilot=1 emitted next=/tools/rfdiffusion:
+        # the visitor signed in and landed on a bare form with the pilot
+        # they had just chosen silently discarded — the feature
+        # evaporating at the exact moment they committed. Werkzeug
+        # always appends "?" to full_path, even with no query, hence the
+        # rstrip; on a query-less page this is byte-identical to before.
+        #
+        # SAFETY. ``next`` is an open-redirect sink, so this widens what
+        # feeds it. auth.login's POST branch (blueprints/auth.py) is the
+        # validator and it rejects anything not starting with "/" plus
+        # the two shapes browsers resolve to another origin, "//host"
+        # and "/\host". full_path is PATH_INFO + QUERY_STRING and cannot
+        # begin with a scheme, so it stays same-origin; the "//" case a
+        # request to //evil.com would produce is already refused there.
+        # Two things are worth saying plainly rather than leaning on.
+        # First, the GET branch does NOT validate — it renders whatever
+        # arrives straight into a hidden field — which is only safe
+        # because Jinja escapes it and the POST re-checks. Second, the
+        # blocklist is shape-based: it would not catch a value the
+        # browser normalises differently (a "/\t/host" style control
+        # character), and an allowlist built with urlsplit would be the
+        # durable form. Neither is reachable from here, since this
+        # function builds the value itself.
+        return url_for("auth.login", next=request.full_path.rstrip("?"))
+    flask_app.jinja_env.globals["signin_url"] = _signin_url
+
+    # No ``next=`` here on purpose: auth.signup's GET hardcodes
+    # next="/" (blueprints/auth.py:135) and never reads request.args,
+    # so a next param would be a decorative query string that lies
+    # about where the user lands. Sign-up goes through email
+    # confirmation anyway.
+    def _signup_url() -> str:
+        return url_for("auth.signup")
+    flask_app.jinja_env.globals["signup_url"] = _signup_url
+
+    # ``tool_public_context(adapter)`` — the explainer/SEO bundle that
+    # used to be assembled only for the (now deleted) logged-out
+    # preview shell. Exposed as a global for the same macro-context
+    # reason as above: components/about_panel.html renders it and is
+    # imported without context by all 14 tool forms.
+    def _tool_public_context(adapter):
+        if adapter is None:
+            return {}
+        from blueprints.tools import (  # noqa: PLC0415
+            _public_tool_context,
+        )
+        return _public_tool_context(adapter)
+    flask_app.jinja_env.globals["tool_public_context"] = _tool_public_context
+
+    # Signup credit, sourced from shared.wallet so the grant and every piece
+    # of copy quoting it move together. It was hardcoded as "$5" in ~18
+    # templates including legal/terms.html, which is how copy drifts away
+    # from the amount actually granted.
+    #   signup_credit()      -> "15" for prose ("start with $15 in your wallet")
+    #   signup_credit(True)  -> "15.00" where an exact figure reads better
+    def _signup_credit(exact: bool = False) -> str:
+        from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+
+        if exact:
+            return f"{SIGNUP_CREDIT_USD:.2f}"
+        return f"{SIGNUP_CREDIT_USD:.0f}"
+
+    flask_app.jinja_env.globals["signup_credit"] = _signup_credit
 
     # ``display_cost_usd(x)`` is the ONE 2dp rendering of a campaign cost, and
     # it rounds UP in Decimal. Exposed to templates because a page that formats

@@ -296,6 +296,11 @@ def api_wallet_estimate():
          "balance_usd": "5.0000",
          "ok": true}
 
+    No ``@login_required``: the tool form it feeds is public. With no
+    session the estimate and cap are still returned, ``balance_usd``
+    and ``balance_after_usd`` come back null, and every wallet-derived
+    block flag is false.
+
     All money values are returned as JSON strings to preserve
     Decimal precision through JSON's float coercion.
     """
@@ -385,6 +390,38 @@ def api_wallet_estimate():
     # the JS reads.
     hard_block = balance < estimate
     wallet_frozen = bool((wallet or {}).get("wallet_frozen"))
+
+    # ANONYMOUS CALLER. This endpoint has never been @login_required,
+    # but every balance-derived field assumed a wallet existed — with
+    # no session the "balance" was 0, which made ``hard_block`` true
+    # for every tool and painted "Estimate exceeds the ceiling for a
+    # single job. Run this as a campaign" over the estimate panel. Now
+    # that /tools/<slug> renders the real form to logged-out visitors,
+    # that is a page a stranger actually sees. Report the estimate and
+    # the cap, report the balance as null, and leave the wallet-derived
+    # gates off; the wallet partial drops its balance rows on the same
+    # signal, and the real spend gate is @login_required on submit.
+    if not user_id:
+        return jsonify({
+            "ok": True,
+            "tool_slug": tool_slug,
+            "estimate_usd": str(estimate),
+            "hard_cap_usd": str(hard_cap),
+            "balance_usd": None,
+            "balance_after_usd": None,
+            "self_serve_ceiling_usd": str(SELF_SERVE_CEILING_USD),
+            "exceeds_hard_cap": exceeds_hard_cap,
+            "exceeds_self_serve_ceiling": exceeds_self_serve,
+            "deficit_usd": "0",
+            "rounded_topup_usd": "0",
+            "scaled_hard_cap_usd": str(hard_cap),
+            "soft_block": False,
+            "hard_block": False,
+            "self_serve_block": exceeds_self_serve,
+            "confirm_band": exceeds_hard_cap,
+            "wallet_frozen": False,
+            "authenticated": False,
+        })
 
     return jsonify({
         "ok": True,
@@ -665,14 +702,11 @@ def wallet_checkout():
             + quote("Top up amount must be a number.")
         )
 
-    # If the gate flow passed a return path through the form, preserve
-    # it on the session so /account/topup-complete can route back to
-    # the original tool form. The decorator already stashes
-    # wallet_gate_form, so we only set return_url if the form sent one
-    # and the session has not already captured it.
-    next_url = (request.form.get("next") or "").strip()
-    if next_url and not session.get("wallet_gate_form"):
-        session["wallet_gate_form"] = {"return_url": next_url}
+    # NOTE: this used to stash request.form["next"] on the session as
+    # wallet_gate_form["return_url"]. Nothing ever read that key — the only
+    # reader, topup_complete(), reads gate_payload["tool"], which the
+    # wallet_guard decorator sets. It was a dead write of a user-controlled
+    # value into the session, so it is gone rather than validated.
 
     save_pm_raw = (
         request.form.get("save_payment_method") or ""

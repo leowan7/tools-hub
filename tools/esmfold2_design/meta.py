@@ -178,3 +178,65 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "A guided first run",
+    "goal": (
+        "See what a single gradient-design run produces before "
+        "committing to a parallel sweep. One seed is already the "
+        "smallest run this tool offers, so these are the form&rsquo;s "
+        "own defaults &mdash; a guided first run at the tool&rsquo;s "
+        "normal cost, not a cheaper trial."
+    ),
+    "you_need": (
+        "A target sequence &mdash; one of the bundled presets, or a "
+        "single chain of 30 to 800 residues pasted in. No structure "
+        "file required."
+    ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # Cost scales on n_seeds (one H100 container per seed) and n_seeds=1
+    # is both the form default and the field minimum, so $9.87 is the
+    # floor. batch_size does not move the price at all — 1, 2 and 3 all
+    # cost $9.87 — so dropping it would return fewer designs for the
+    # same money. Nothing on this form buys a cheaper first run.
+    "params": {
+        "preset": "minibinder",
+        "n_seeds": "1",
+    },
+    "next_step": (
+        "Raise the seed count. Every seed gets its own GPU, so a sweep "
+        "finishes in about the same wall-clock time as one seed and "
+        "costs proportionally more."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# The one archived payload (.deploy-logs/esmfold2-prewarm.log) is a
+# container prewarm whose single design was DROPPED by the filter, and
+# whose binder sequence is a poly-glycine / poly-leucine bundle that AF2
+# nonetheless scored at ipTM 0.956. Publishing 0.956 beside a junk
+# sequence would teach a reader to trust the number, which is the exact
+# opposite of the lesson.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

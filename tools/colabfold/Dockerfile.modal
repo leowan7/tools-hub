@@ -12,7 +12,16 @@
 # ``modal deploy`` cheaply (no GPU time spent) if ColabFold, the AF2
 # weights, or the smoke fixture are missing. See ATOMIC-TOOLS.md
 # "Required elements" #1.
-FROM runpod/base:0.6.2-cuda11.8.0
+#
+# PIN: by DIGEST, not by tag. Resolved 2026-08-17. Nothing in this repo records
+# which digest earlier deploys used, so treating this as the same content is an
+# inference, not a record — the image's own config blob predates every deploy
+# here, which is as far as the evidence goes. A bare tag can be overwritten
+# upstream, silently changing this image on the next rebuild with nothing in this
+# repo changing (Modal rebuilds on any tools/** push). To bump: re-verify, then
+#   docker buildx imagetools inspect runpod/base:0.6.2-cuda11.8.0
+# and paste the new digest here in the same commit.
+FROM runpod/base:0.6.2-cuda11.8.0@sha256:650a7c5bd37f989260476779a2d478ca2e31a7d8af68f01d6166b3b821fa9077
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

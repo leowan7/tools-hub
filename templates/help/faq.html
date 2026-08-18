@@ -26,7 +26,7 @@
   {"q": "How is my data handled?",
    "a": "Your uploads and results belong to your account and are tied to the email you signed in with. A job link opened under a different account will not show another user's results. See the privacy policy for the full detail."},
   {"q": "Can I run a tool to test it first?",
-   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $5 signup balance also covers a small first run to see real output on your target."},
+   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your ${{ signup_credit() }} signup balance also covers a small first run to see real output on your target."},
   {"q": "How long do runs take?",
    "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large campaign fans out across GPUs to finish sooner. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
@@ -180,7 +180,7 @@
         <p class="why-card-body">
           Your inputs are validated before any compute runs, so a bad chain
           ID or a malformed PDB is caught up front rather than after you have
-          paid. Your $5 signup balance also covers a small first run to see
+          paid. Your ${{ signup_credit() }} signup balance also covers a small first run to see
           real output on your target.
         </p>
       </article>

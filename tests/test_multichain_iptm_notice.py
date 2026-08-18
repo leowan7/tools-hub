@@ -1637,14 +1637,16 @@ def _scratch_job_dir():
 def _reachable_pages(flask_app) -> dict:
     """Every page the sweep can render, SIGNED OUT AND SIGNED IN.
 
-    THE SIGNED-IN PASS IS NOT AN EXTRA: being signed out is precisely what
-    selects ``templates/tools/_preview.html`` over
-    ``templates/tools/<slug>_form.html`` (blueprints/tools.tool_form branches
-    on ``session["user_email"]``), so a signed-out-only sweep structurally
-    cannot see the FORM — the surface a user reads immediately before spending
-    money. Measured, the signed-out pass reaches 46 pages and the signed-in
-    pass 65 of the same 83 rules, including 37 that answer a login redirect
-    when signed out.
+    THE SIGNED-IN PASS IS NOT AN EXTRA. It used to be load-bearing for a
+    different reason: being signed out selected ``templates/tools/_preview.html``
+    over ``templates/tools/<slug>_form.html``, so a signed-out-only sweep
+    structurally could not see the FORM. That preview shell is gone —
+    ``/tools/<slug>`` renders the real form in both auth states now — but the
+    signed-in pass still reaches strictly more: the ~37 rules that answer a
+    login redirect when signed out, and the wallet/balance rows the form only
+    renders when a wallet is in play. Measured before the change, the
+    signed-out pass reached 46 pages and the signed-in pass 65 of the same 83
+    rules.
 
     ``load_user_context`` is patched in every ``blueprints.*`` module that
     imported it, discovered by walking ``sys.modules`` rather than listed, so a
@@ -1806,16 +1808,33 @@ def test_no_general_page_states_iptm_as_the_binder_pair(flask_app):
         f"it is covering something other than what it claims. reached "
         f"{len(pages)} pages, missing {sorted(floor - describes_iptm)!r}"
     )
-    # AND THE TWO VARIANTS ARE DIFFERENT PAGES. Without this the signed-in
-    # pass could silently be serving the preview shell again — which is the
-    # whole defect it was added for — and the floor above would still pass.
-    assert 'name="target_chain"' in pages["/tools/rfdiffusion [signed in]"], (
-        "the signed-in sweep is not reaching the tool FORM; it is covering "
-        "the same preview shell twice"
+    # AND THE TWO VARIANTS ARE STILL DIFFERENT PAGES. This guard used to read
+    # "the form renders signed in and NOT signed out", which was true while a
+    # separate preview shell stood in for logged-out visitors. /tools/<slug>
+    # is public now — both passes render the FORM, deliberately — so the
+    # discriminator moves to the thing that genuinely differs: the wallet.
+    # An anonymous visitor has no balance, so the balance row and the top-up
+    # gate must be absent, and a signed-out pass that grew them would mean the
+    # sweep had somehow acquired a session.
+    signed_in = pages["/tools/rfdiffusion [signed in]"]
+    signed_out = pages["/tools/rfdiffusion [signed out]"]
+    assert 'name="target_chain"' in signed_in, (
+        "the signed-in sweep is not reaching the tool FORM"
     )
-    assert 'name="target_chain"' not in pages["/tools/rfdiffusion [signed out]"], (
-        "the signed-out sweep now renders the form, so the two passes are the "
-        "same page and one of them is redundant"
+    assert 'name="target_chain"' in signed_out, (
+        "the signed-out sweep is not reaching the tool FORM; /tools/<slug> "
+        "is a public GET since the Phase 1 redesign"
+    )
+    assert '<div class="wallet-topup-gate"' in signed_in, (
+        "the signed-in sweep is not rendering the wallet gate, so the two "
+        "passes are no longer distinguishable"
+    )
+    assert '<div class="wallet-topup-gate"' not in signed_out, (
+        "the signed-out sweep is rendering a wallet gate, so it is not "
+        "actually signed out"
+    )
+    assert "Sign in to run this" in signed_out, (
+        "the signed-out form must gate Submit behind a sign-in link"
     )
 
     offenders = {}

@@ -10,8 +10,11 @@ factory-local modal_client -> current_app.modal_client, and self-refs ->
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from flask import (
@@ -68,8 +71,14 @@ from shared.storage import (
     presigned_input_url,
     upload_input,
 )
-from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.tools_catalog import (
+    _build_tools_catalog,
+    _short_name_for_label,
+    group_catalog,
+)
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
+from shared.tool_meta import meta_for
+from shared.wallet_estimates import estimated_cost_for_tool
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
 
@@ -88,9 +97,16 @@ _PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
 
 
 @tools_bp.route("/developability", methods=["GET"])
-@login_required
 def developability():
-    """Render the Binder Developability Scout input form."""
+    """Render the Binder Developability Scout input form.
+
+    Open to anonymous visitors. Developability Scout is the only member of
+    the "See if a binder will hold up in the lab" catalog band, so gating it
+    made that whole band a login wall -- while its catalog card promises
+    "see how it works". There is nothing to gate: scoring is a pure function
+    over a pasted sequence with no GPU, no wallet charge, no storage write,
+    and no user identity. The trust boundary lives in developability_score.
+    """
     return render_template(
         "developability_form.html",
         error=None,
@@ -99,10 +115,27 @@ def developability():
     )
 
 @tools_bp.route("/developability/score", methods=["POST"])
-@login_required
 @idempotent()
 def developability_score():
-    """Validate input and render the developability results page."""
+    """Validate input and render the developability results page.
+
+    Anonymous like its GET: opening the form but redirecting the submit to
+    login would be exactly the "promise you do not keep" this redesign
+    exists to remove. Safe to open because the handler spends nothing and
+    persists nothing -- it calls score_developability(), a pure function
+    over the cleaned string, and renders a template.
+
+    The trust boundary is enforced below and is unchanged by opening the
+    route: FASTA headers stripped, length bounded to 10-2000 residues,
+    canonical amino acids only, chain_type checked against an allowlist.
+    That bounds the work any one anonymous request can ask for.
+
+    Deliberately NOT adding a per-IP rate limiter here: the repo has no HTTP
+    rate-limiting utility to reuse, and bolting a bespoke one onto this route
+    while /api/wallet/estimate (already anonymous, and it does an uncached DB
+    query) has none would be inconsistent. Request-rate control belongs at
+    the edge/proxy, not in one view.
+    """
     from tools.developability import score_developability  # noqa: PLC0415
 
     raw_sequence = request.form.get("sequence", "")
@@ -408,26 +441,110 @@ _RELATED_TOOLS: dict[str, tuple[str, ...]] = {
     "boltz2":      ("af2", "colabfold", "boltzgen"),
 }
 
+# Tools whose form asks the user to name the residues a binder should
+# engage. Every field on these forms is answerable by a bench biologist
+# except this one: the helper text documents the SYNTAX (comma
+# separated, original PDB numbering, prefix the chain) and never the
+# METHOD — how to decide WHICH residues. Epitope Scout is the answer to
+# that question and was linked from nowhere on these pages.
+#
+# Deliberately NOT folded into _RELATED_TOOLS: that block is headed "if
+# you are picking between <tool> and a sibling algorithm", and Scout is
+# not an alternative to RFdiffusion — it is the step before it. Mixing
+# the two would file a prerequisite under a heading that denies it is
+# one. Rendered as its own "start here first" panel instead.
+#
+# boltz2 also has a hotspot field and is excluded on purpose: its
+# hotspots are scored after the fold, not steered toward, so choosing
+# them well is not a precondition for the run being worth paying for.
+_HOTSPOT_TOOLS: frozenset[str] = frozenset({
+    "rfdiffusion", "bindcraft", "pxdesign", "rfantibody",
+    "boltzgen", "proteina", "iggm",
+})
+
+def _prerequisite_tool(slug: str) -> dict | None:
+    """Epitope Scout as a "run this first" step, or None.
+
+    Copy is read from shared.tools_catalog rather than restated here —
+    that hardcoded entry (Scout is not a registered adapter; it has no
+    tools/<slug>/meta.py) is already the source of truth for the
+    homepage tile and /tools, and a second hand-written tagline would
+    drift from it.
+    """
+    if slug not in _HOTSPOT_TOOLS:
+        return None
+    from shared.tools_catalog import _HARDCODED_TOOLS  # noqa: PLC0415
+    entry = next(
+        (t for t in _HARDCODED_TOOLS if t["slug"] == "epitope-scout"), None
+    )
+    if entry is None:
+        return None
+    try:
+        url = url_for(entry["endpoint"])
+    except Exception:  # noqa: BLE001 — endpoint not registered in this app
+        return None
+    return {
+        "name": entry["name"],
+        "url": url,
+        "tagline": entry["tagline"],
+        "why": (
+            "It scores your target's surface and ranks candidate epitopes, "
+            "which is how you decide what to type into Hotspot residues. "
+            "It is free and runs in about 30 seconds."
+        ),
+    }
+
+# Tools with a real, published run on /showcase. Rescued from the two
+# per-tool preview overrides (templates/tools/{rfdiffusion,boltzgen}_preview.html)
+# that the shared preview shell's removal took with it — that showcase
+# link was the only content in either file. Phase 3 of the redesign
+# replaces this with a per-tool worked example rendered through the
+# tool's own results partial; until then, the link is what we have.
+_SHOWCASE_NOTES: dict[str, dict[str, str]] = {
+    "rfdiffusion": {
+        "title": "A real RFdiffusion run",
+        "body": (
+            "The showcase has a real RFdiffusion run: 60 de novo binder "
+            "backbones generated against a target across five parallel "
+            "jobs, each fold shaped by diffusion rather than grafted onto "
+            "a known scaffold. RFdiffusion returns backbone geometry, the "
+            "starting fold you take into sequence design."
+        ),
+        "anchor": "03-rfdiffusion-platform-pilot",
+        "cta": "See the RFdiffusion run in the showcase",
+    },
+    "boltzgen": {
+        "title": "Real BoltzGen runs",
+        "body": (
+            "The showcase has two real BoltzGen runs with anonymized "
+            "targets: a nanobody discovery campaign that narrowed 2000 "
+            "designs to a validated panel of 12, scored by two independent "
+            "structure predictors, and a de novo minibinder campaign that "
+            "turned one interaction interface into 20,000 ranked designs "
+            "with a top tier scoring ipTM 0.98."
+        ),
+        "anchor": "01-boltzgen-vhh-immune-coreceptor",
+        "cta": "See real BoltzGen runs in the showcase",
+    },
+}
+
 def _related_tool_cards(slug: str) -> list[dict]:
     """Build the related-tools card list for the preview page.
 
     Each card carries slug, short_name, one-line description, and
     the tool_form URL so the template stays declarative.
     """
-    import importlib  # noqa: PLC0415
     out: list[dict] = []
     for related_slug in _RELATED_TOOLS.get(slug, ()):
         related_adapter = tool_base.get(related_slug)
         if related_adapter is None or not tool_enabled(related_slug):
             continue
         blurb = related_adapter.blurb or ""
-        try:
-            rmeta = importlib.import_module(f"tools.{related_slug}.meta")
-            one_liner = getattr(rmeta, "comparison_one_liner", None)
-            if one_liner:
-                blurb = one_liner
-        except ImportError:
-            pass
+        one_liner = getattr(
+            meta_for(related_slug), "comparison_one_liner", None,
+        )
+        if one_liner:
+            blurb = one_liner
         out.append({
             "slug": related_slug,
             "short_name": _short_name_for_label(related_adapter.label),
@@ -435,6 +552,28 @@ def _related_tool_cards(slug: str) -> list[dict]:
             "url": url_for("tools.tool_form", tool=related_slug),
         })
     return out
+
+def _preset_runtime_text(meta, preset_slug: str) -> str | None:
+    """The typical runtime for ONE preset, or None.
+
+    Two sources because two generations of metadata are live:
+    ``PRESET_RUNTIME[slug]["typical_minutes"]`` (a bare number or
+    range, so the unit is appended here) and the older
+    ``preset_runtime_rows`` (already carries "min"). rfdiffusion and
+    pxdesign still only have the legacy rows, so a lookup that reads
+    PRESET_RUNTIME alone reports nothing for the two most-used design
+    tools.
+    """
+    if meta is None:
+        return None
+    entry = (getattr(meta, "PRESET_RUNTIME", None) or {}).get(preset_slug) or {}
+    if entry.get("typical_minutes"):
+        return f"{entry['typical_minutes']} min"
+    for row in getattr(meta, "preset_runtime_rows", None) or ():
+        if row.get("slug") == preset_slug and row.get("runtime"):
+            return row["runtime"]
+    return None
+
 
 def _runtime_band_for_adapter(adapter, meta) -> str:
     """Compute the same runtime band string used on the homepage cards.
@@ -445,20 +584,9 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     """
     if meta is None:
         return "—"
-    runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
-    legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-    legacy_by_slug = {
-        r.get("slug"): r.get("runtime")
-        for r in legacy_rows
-        if r.get("slug") and r.get("runtime")
-    }
     runtimes: list[str] = []
     for preset in adapter.presets:
-        entry = runtime_map.get(preset.slug) or {}
-        if entry.get("typical_minutes"):
-            rt = f"{entry['typical_minutes']} min"
-        else:
-            rt = legacy_by_slug.get(preset.slug)
+        rt = _preset_runtime_text(meta, preset.slug)
         if rt and rt not in runtimes:
             runtimes.append(rt)
     if len(runtimes) >= 2:
@@ -467,23 +595,297 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
         return runtimes[0]
     return "—"
 
-def _template_exists(template_name: str) -> bool:
-    """True if Jinja can resolve ``template_name`` via the loader."""
+
+def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
+    """Map stored ``job.inputs`` keys onto the form's field names, in place.
+
+    ``clone_from`` copies ``job.inputs`` straight into ``pre_fill`` and
+    the form then looks each field up BY NAME. Where ``validate()``
+    stored something under a different name, or nested, the lookup
+    misses and the field silently falls back to its hard-coded default —
+    so a user cloning a 400-design run to re-run it gets a different
+    parameter set with no warning anywhere. That is a live bug
+    independent of the redesign; it is fixed here, once, rather than in
+    each form, because every clone for every tool passes through this
+    one function.
+
+    Four shapes, all measured against what ``validate()`` returns:
+
+    * ANY list-valued input, handled last and generically by
+      ``_as_form_text``: a stored list reaches Jinja unconverted and is
+      rendered with ``repr``, so cloning a Boltz-2 run put
+      ``[{'name': 'd0', 'sequence': ...}]`` into the FASTA textarea.
+      ``hotspot_residues`` (a list on six adapters) falls out of the same
+      rule rather than needing its own line, which is what it had.
+    * ``binder_length`` is stored as ``{"min": .., "max": ..}`` by
+      rfdiffusion and as ``[lo, hi]`` by proteina, while both forms ask
+      for it as two number inputs. bindcraft and boltzgen store the two
+      halves flat and are already fine; pxdesign stores a scalar under
+      the same name its single field uses, so ``isinstance`` is what
+      keeps this from corrupting it.
+    * MPNN calls the field ``chains_to_design`` and stores it as
+      ``target_chain``, so cloning an MPNN job silently reset the chain
+      selection to "A".
+
+    ``setdefault`` throughout: a key the form already reads under its
+    own name always wins over a derived one.
+    """
+    bl = pre_fill.get("binder_length")
+    if isinstance(bl, dict):
+        lo, hi = bl.get("min"), bl.get("max")
+    elif isinstance(bl, (list, tuple)) and len(bl) == 2:
+        lo, hi = bl[0], bl[1]
+    else:
+        lo = hi = None
+    if lo is not None:
+        pre_fill.setdefault("binder_length_min", lo)
+    if hi is not None:
+        pre_fill.setdefault("binder_length_max", hi)
+
+    if slug == "mpnn" and pre_fill.get("target_chain") is not None:
+        pre_fill.setdefault("chains_to_design", pre_fill["target_chain"])
+
+    # Every remaining list becomes text. LAST, so the shape-specific
+    # rules above still see the structure they were written against.
+    for key, value in pre_fill.items():
+        if isinstance(value, (list, tuple)):
+            pre_fill[key] = _as_form_text(value)
+
+
+def _as_form_text(value) -> str:
+    """Collapse a stored list into something a text control can render.
+
+    ``pre_fill`` reaches the templates as-is and every field reads it by
+    name, so anything that is not already a string is handed to Jinja and
+    stringified with ``repr``. ``boltz2`` stores ``binder_sequences`` as
+    ``[{"name": .., "sequence": ..}]`` and its textarea rendered exactly
+    that — ``[{'name': 'd0', 'sequence': 'QVRL...'}]`` — into a box the
+    user is asked to submit as FASTA. Cloning a Boltz-2 run therefore
+    produced a form that could not be submitted at all.
+
+    Fixed here rather than in boltz2_form.html because the defect is the
+    shape, not the tool: ``hotspot_residues`` is a list on six adapters
+    and was already being joined a few lines up, ``af2`` stores
+    ``fasta_records`` in the same record shape and af2_form.html carries
+    a hand-rolled Jinja loop to rebuild the FASTA. This is that logic,
+    once, on the one function every clone for every tool passes through.
+
+    Two shapes, both measured off the adapters' own ``validate()``:
+
+    * a list of records carrying ``sequence`` -> FASTA, which is what the
+      textareas ask for and what the parsers read back.
+    * a list of scalars -> comma-separated, which is what the single-line
+      fields (hotspots, epitopes, chains) ask for.
+
+    Anything else is joined on commas too. That can still be wrong for a
+    shape nobody has written yet, but it is never a ``repr`` in a form
+    field, which is the failure this exists to stop.
+    """
+    items = list(value)
+    if items and all(
+        isinstance(i, dict) and i.get("sequence") for i in items
+    ):
+        lines = []
+        for index, record in enumerate(items):
+            name = record.get("name") or record.get("header") or f"seq_{index}"
+            lines.append(f">{name}")
+            lines.append(str(record["sequence"]))
+        return "\n".join(lines)
+    return ",".join(str(i) for i in items)
+
+
+def _pilot_context(adapter, meta) -> dict | None:
+    """The guided starter recipe for a tool, with its numbers derived.
+
+    ``tools/<slug>/meta.py`` declares only the WORDS and the parameter
+    set (``PILOT``); the price and the runtime are computed here from
+    the same two sources the rest of the app already uses —
+    ``shared.wallet_estimates.estimated_cost_for_tool`` and the
+    preset runtime map. A hand-written price in meta.py would be a
+    second rate card and would drift off the real one.
+
+    ``PILOT["params"]`` keys are FORM FIELD NAMES, so the same dict
+    both pre-fills the form (``?pilot=1``) and feeds the estimator —
+    which is what the form's own live estimate posts, so the two
+    numbers cannot disagree.
+
+    Returns None when the tool declares ``PILOT = None`` (the fast
+    predictors: a 40-second ESMFold run needs no pilot ceremony).
+    """
+    pilot = getattr(meta, "PILOT", None)
+    if not pilot:
+        return None
+    params = dict(pilot.get("params") or {})
+    return dict(
+        pilot,
+        params=params,
+        cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
+        runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
+        url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
+    )
+
+
+@lru_cache(maxsize=None)
+def _example_result(slug: str) -> dict | None:
+    """``tools/<slug>/example/result.json``, or None.
+
+    A real ``job.result`` captured once from a completed run. Cached
+    for the process lifetime because the file is static and this is
+    read on every render of a public, crawlable page.
+    """
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "tools" / slug.replace("-", "_") / "example" / "result.json"
+    )
     try:
-        current_app.jinja_env.get_template(template_name)
-        return True
-    except Exception:
-        return False
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _example_context(adapter, meta) -> dict | None:
+    """The worked example for a tool: narration + the real payload.
+
+    Returns None unless BOTH halves are present. Narration with no
+    payload would render a description of results above an empty
+    results panel, and a payload with no narration is an unlabelled
+    table of numbers — either is worse than the tool simply not having
+    an example yet, which is the state of thirteen of the fourteen.
+    """
+    example = getattr(meta, "EXAMPLE", None)
+    if not example:
+        return None
+    result = _example_result(adapter.slug)
+    if result is None:
+        logger.warning(
+            "EXAMPLE declared for %s but example/result.json is missing "
+            "or unreadable; rendering no worked example", adapter.slug,
+        )
+        return None
+    return dict(example, result=result)
+
+def _showcase_note(slug: str) -> dict | None:
+    """The showcase card for a tool, with its URL resolved, or None."""
+    note = _SHOWCASE_NOTES.get(slug)
+    if not note:
+        return None
+    return dict(
+        note,
+        url=f"{url_for('public.showcase')}#{note['anchor']}",
+    )
+
+def _public_tool_context(adapter) -> dict:
+    """SEO + explainer context the tool page needs in BOTH auth states.
+
+    Memoised on ``flask.g`` — i.e. for the life of ONE request, and no
+    longer. Two callers build this per render: ``tool_form`` passes it
+    into the template, and the ``tool_public_context`` jinja global
+    (app.py) rebuilds it inside ``about_panel.html`` because macros are
+    imported without context. Each build runs ``_pilot_context`` ->
+    ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
+    an uncached Supabase SELECT on ``tool_jobs_p90``. /tools/<slug> is
+    publicly indexable now, so that was two network round trips per
+    crawler hit for one page.
+
+    ``flask.g`` rather than ``lru_cache`` deliberately: the dict holds
+    ``url_for(..., _external=True)`` breadcrumbs and a live price, so a
+    process-lifetime cache would pin the first request's host into every
+    later response and freeze the estimate against p90 drift.
+    """
+    cache = g.setdefault("_public_tool_ctx", {})
+    hit = cache.get(adapter.slug)
+    if hit is None:
+        hit = cache[adapter.slug] = _build_public_tool_context(adapter)
+    return hit
+
+
+def _build_public_tool_context(adapter) -> dict:
+    """Assemble the context. Call ``_public_tool_context`` instead."""
+    tool_meta = meta_for(adapter.slug)
+
+    short_name = _short_name_for_label(adapter.label)
+    seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
+    tech_slug = _RANOMICS_TECHNOLOGY_SLUGS.get(adapter.slug)
+
+    # SoftwareApplication + FAQPage JSON-LD, built here rather than in
+    # Jinja so base.html only has to dump it. Moved off the deleted
+    # tools/_preview.html; /tools/<slug> is the indexable URL now.
+    desc_src = (
+        getattr(tool_meta, "comparison_one_liner", None)
+        or adapter.blurb
+        or ""
+    )
+    software: dict = {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": short_name,
+        "applicationCategory": "ScientificApplication",
+        "operatingSystem": "Any (web-based)",
+    }
+    if desc_src:
+        software["description"] = str(desc_src)[:250]
+    if getattr(tool_meta, "paper_url", None):
+        software["citation"] = tool_meta.paper_url
+    if getattr(tool_meta, "github_url", None):
+        software["codeRepository"] = tool_meta.github_url
+
+    faq_items = getattr(tool_meta, "seo_faq", None) or ()
+    faq_ld = None
+    if faq_items:
+        faq_ld = {
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": item["q"],
+                    "acceptedAnswer": {
+                        "@type": "Answer", "text": item["a"],
+                    },
+                }
+                for item in faq_items
+            ],
+        }
+
+    return {
+        "meta": tool_meta,
+        "runtime_band": _runtime_band_for_adapter(adapter, tool_meta),
+        "seo_phrase": seo_phrase,
+        "seo_long": seo_long,
+        "title_phrase": _preview_title_phrase(adapter.slug),
+        "short_name": short_name,
+        "learn_more_url": (
+            f"https://www.ranomics.com/technology/{tech_slug}"
+            if tech_slug else None
+        ),
+        "related_tools": _related_tool_cards(adapter.slug),
+        "pilot": _pilot_context(adapter, tool_meta),
+        "example": _example_context(adapter, tool_meta),
+        "prerequisite": _prerequisite_tool(adapter.slug),
+        "showcase_note": _showcase_note(adapter.slug),
+        "breadcrumbs": [
+            {"name": "Home", "url": url_for("public.index", _external=True)},
+            {"name": "Tools", "url": url_for(
+                "tools.tools_comparison", _external=True
+            )},
+            {"name": short_name, "url": url_for(
+                "tools.tool_form", tool=adapter.slug, _external=True
+            )},
+        ],
+        "tool_seo": {"software": software, "faq": faq_ld},
+    }
 
 @tools_bp.route("/tools/<tool>", methods=["GET"])
 def tool_form(tool: str):
-    """Render a GPU tool's submission form, or a public preview if logged out.
+    """Render a GPU tool's submission form. Public GET; Submit is gated.
 
-    Logged-out branch (B2): render ``tools/<slug>_preview.html`` if
-    present, falling back to the shared ``tools/_preview.html`` shell.
-    The preview is indexable; the underlying run form is not. The
-    POST handler at /tools/<slug>/submit stays @login_required so
-    logged-out visitors cannot spawn jobs.
+    Anonymous visitors get the SAME form template and the same URL as
+    signed-in ones — they can read every field, see the live cost
+    estimate, and read the explainer, but the Submit button is
+    replaced by a sign-in CTA. The spend gate is unchanged and lives
+    where it always did: POST /tools/<slug>/submit and
+    /tools/<slug>/preflight are both @login_required, so a logged-out
+    visitor still cannot spawn a job.
 
     Logged-in pre-fill sources (query params, owner-scoped):
       * ``clone_from=<job_id>`` — reuse all inputs of an earlier job.
@@ -505,56 +907,58 @@ def tool_form(tool: str):
     if err:
         return err
 
-    # Logged-out: render the public preview shell. Per-tool override
-    # at templates/tools/<slug>_preview.html wins if present;
-    # otherwise fall through to the shared shell. The shared shell
-    # extends base.html and renders About + score legend + paper +
-    # "Sign in to run" CTA.
+    public_ctx = _public_tool_context(adapter)
+
+    # NOTE: there is no ``login_next`` here any more. It was computed on
+    # both render branches and passed into the template, but no template
+    # ever read it — the sign-in link lives in
+    # components/_signin_cta.html and gets its href from the
+    # ``signin_url()`` jinja global (app.py), because that file is
+    # reached through macros imported WITHOUT context and cannot see a
+    # context variable. A dead duplicate of a live helper is worse than
+    # nothing: the QC pass that found the dropped query string fixed it
+    # here, where it changes no behaviour at all. The real fix is in
+    # ``_signin_url``.
+
+    # Fifth pre-fill source, and the only one that works logged OUT:
+    # ``?pilot=1`` loads the tool's declared starter recipe. It is a
+    # constant from meta.py rather than anything owner-scoped, so
+    # unlike clone_from / from_job / handoff / resample_from it needs
+    # no user context and is resolved before the anonymous branch.
+    pilot_pre_fill: dict = {}
+    if request.args.get("pilot") and public_ctx.get("pilot"):
+        pilot_pre_fill = dict(public_ctx["pilot"]["params"])
+
+    # Logged-out: same template, same URL, no user context loaded.
+    # ``authenticated=False`` is what flips the shared macros —
+    # submit_cta renders a sign-in link instead of a submit button,
+    # about_panel renders the full public explainer, and the wallet
+    # panel drops the balance rows (balance_usd is None).
     if not session.get("user_email"):
-        import importlib  # noqa: PLC0415
-        preview_meta = None
-        try:
-            preview_meta = importlib.import_module(
-                f"tools.{adapter.slug}.meta"
-            )
-        except ImportError:
-            pass
-        runtime_band = _runtime_band_for_adapter(adapter, preview_meta)
-        seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
-        title_phrase = _preview_title_phrase(adapter.slug)
-        login_next = url_for("tools.tool_form", tool=adapter.slug)
-        per_tool_template = f"tools/{adapter.slug}_preview.html"
-        template_name = per_tool_template if _template_exists(
-            per_tool_template
-        ) else "tools/_preview.html"
-        short_name = _short_name_for_label(adapter.label)
-        tech_slug = _RANOMICS_TECHNOLOGY_SLUGS.get(adapter.slug)
-        learn_more_url = (
-            f"https://www.ranomics.com/technology/{tech_slug}"
-            if tech_slug else None
-        )
-        breadcrumbs = [
-            {"name": "Home", "url": url_for("public.index", _external=True)},
-            {"name": "Tools", "url": url_for(
-                "tools.tools_comparison", _external=True
-            )},
-            {"name": short_name, "url": url_for(
-                "tools.tool_form", tool=adapter.slug, _external=True
-            )},
-        ]
         return render_template(
-            template_name,
+            adapter.form_template,
             adapter=adapter,
-            meta=preview_meta,
-            runtime_band=runtime_band,
-            login_next=login_next,
-            seo_phrase=seo_phrase,
-            seo_long=seo_long,
-            title_phrase=title_phrase,
-            short_name=short_name,
-            learn_more_url=learn_more_url,
-            related_tools=_related_tool_cards(adapter.slug),
-            breadcrumbs=breadcrumbs,
+            error=None,
+            pre_fill=pilot_pre_fill,
+            pdb_source=None,
+            workspace_ctx=None,
+            wallet=None,
+            single_container_ceiling=None,
+            authenticated=False,
+            # SEO title/description only on the anonymous render —
+            # crawlers are always anonymous, and the signed-in page
+            # keeps the plain "<Tool> — Ranomics Tools" title it has
+            # always had.
+            page_title=(
+                f"{public_ctx['short_name']} Online | "
+                f"{public_ctx['title_phrase']} | Ranomics"
+            ),
+            page_description=(
+                f"Run {public_ctx['short_name']} online on a dedicated "
+                f"GPU through your browser. No install, no local CUDA. "
+                f"{public_ctx['seo_long']}."
+            ),
+            **public_ctx,
         )
 
     ctx = load_user_context()
@@ -594,10 +998,7 @@ def tool_form(tool: str):
                 k: v for k, v in (prior.inputs or {}).items()
                 if not k.startswith("_")
             }
-            # Normalize list-typed inputs back to form-friendly strings.
-            hs = pre_fill.get("hotspot_residues")
-            if isinstance(hs, list):
-                pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
+            _normalize_clone_pre_fill(adapter.slug, pre_fill)
             stored_path = (prior.inputs or {}).get("_pdb_storage_path")
             stored_name = (prior.inputs or {}).get("_pdb_filename")
             if stored_path and stored_name:
@@ -696,6 +1097,13 @@ def tool_form(tool: str):
                 },
             )
 
+    # Pilot recipe, applied LAST and only as a fallback: a job-derived
+    # source (clone/handoff/resample) names a real earlier run and must
+    # win over a generic starter recipe if both query params are
+    # somehow present.
+    if pilot_pre_fill and not pre_fill:
+        pre_fill = dict(pilot_pre_fill)
+
     # The wallet estimate partial reads balance_usd for first paint
     # so the form lights up with the user's real balance even before
     # the /api/wallet/estimate call returns. Falls back to 0 if the
@@ -721,6 +1129,8 @@ def tool_form(tool: str):
         workspace_ctx=workspace_ctx,
         wallet=wallet_for_form,
         single_container_ceiling=campaign_ceiling,
+        authenticated=True,
+        **public_ctx,
     )
 
 @tools_bp.route("/tools/<tool>/preflight", methods=["POST"])
@@ -1813,19 +2223,7 @@ def tools_comparison():
     # Group catalog into workflow-stage sections in a stable order.
     # The order mirrors the iteration loop a scientist walks through:
     # scope → design → sequence → predict → QC.
-    category_order = (
-        "Scope the target",
-        "Design binders",
-        "Sequence on a backbone",
-        "Structure prediction",
-        "Check developability",
-        "Other",
-    )
-    grouped: list[tuple[str, list[dict]]] = []
-    for category in category_order:
-        members = [t for t in catalog if t.get("category") == category]
-        if members:
-            grouped.append((category, members))
+    grouped = group_catalog(catalog)
 
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},

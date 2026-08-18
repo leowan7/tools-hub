@@ -19,6 +19,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
+# The signup credit is quoted in SEO copy that reaches JSON-LD structured
+# data, so it is read from the grant rather than retyped. It was hardcoded
+# as "$5" here and stayed that way when the grant went to $15.
+_SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
+
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
@@ -57,8 +64,9 @@ seo_faq: list[dict] = [
         "a": (
             "Billing is by the second of dedicated GPU time. A typical "
             "single-complex fold costs a few cents to a dollar from your "
-            "wallet. New accounts start with $5 of credit, which covers "
-            "many monomer folds or a handful of multimers."
+            "wallet. New accounts start with "
+            f"{_SIGNUP_CREDIT} of credit, which covers many monomer "
+            "folds or a handful of multimers."
         ),
     },
 ]
@@ -117,3 +125,24 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A 5 to 10 minute fold. Its only scale parameter is how many
+# sequences you paste, which the user is already choosing
+# directly on the form.
+PILOT: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# The one archived payload (.deploy-logs/af2-smoke-bug8-attempt3-run1
+# .log) is a deliberately degraded smoke fixture: 58-residue BPTI, MSA
+# off, one recycle, mean pLDDT 54. Real, but it measures the fixture
+# rather than the tool, and AF2's whole case is MSA-backed accuracy.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

@@ -116,3 +116,54 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 4 designs",
+    "goal": (
+        "See whether your target and the face you picked give designs "
+        "with usable AF2 confidence, before scaling."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb or .cif), the chain ID, "
+        "and at least one residue on the face you want bound."
+    ),
+    "params": {
+        "preset": "pilot",
+        "num_designs": "4",
+    },
+    "next_step": (
+        "If any of the four comes back with good interface confidence, "
+        "clone the run and raise the design count."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

@@ -72,7 +72,11 @@ class TestEstimateEndpointShape:
     """The endpoint must return the canonical JSON shape on every call."""
 
     def test_returns_json_with_expected_keys(self, client):
-        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
+        with patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value={"balance_usd": 5.0, "wallet_frozen": False},
+        ):
+            _login(client)
             resp = client.get(
                 "/api/wallet/estimate?tool=mpnn&num_seq_per_target=8"
             )
@@ -102,7 +106,16 @@ class TestEstimateEndpointShape:
         body = resp.get_json()
         assert body["error"] == "missing_tool_slug"
 
-    def test_returns_zero_balance_for_anonymous(self, client):
+    def test_returns_null_balance_for_anonymous(self, client):
+        """No session: real estimate, NULL balance, no wallet-derived gates.
+
+        ``/tools/<slug>`` renders the real run form to logged-out visitors,
+        and its estimate panel calls this endpoint. It used to report a $0
+        balance, which made ``hard_block`` true for every tool and painted
+        "Estimate exceeds the ceiling for a single job — run this as a
+        campaign" over the panel for every stranger who opened a tool page.
+        A null balance is the honest answer: there is no wallet yet.
+        """
         # No session, no wallet lookup expected.
         with patch("blueprints.wallet.get_or_create_wallet") as gow:
             resp = client.get(
@@ -110,7 +123,16 @@ class TestEstimateEndpointShape:
             )
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["balance_usd"] == "0"
+        assert body["ok"] is True
+        assert body["balance_usd"] is None
+        assert body["balance_after_usd"] is None
+        assert body["authenticated"] is False
+        # A real estimate still comes back — that is the whole point.
+        assert Decimal(body["estimate_usd"]) > 0
+        # None of the wallet-derived blocks may fire without a wallet.
+        assert body["soft_block"] is False
+        assert body["hard_block"] is False
+        assert body["deficit_usd"] == "0"
         # Anonymous request must not hit Supabase for a wallet row.
         gow.assert_not_called()
 

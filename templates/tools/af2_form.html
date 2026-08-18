@@ -4,9 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# D2 — AF2 standalone. Two-panel layout parallel to D1 MPNN: form on
@@ -149,10 +147,7 @@
     #af2-mode[data-mode="batch"] [data-show-when="standalone"] { display: none; }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -213,18 +208,20 @@
               {# Reconstruct the textarea value from whichever pre_fill
                  shape is available. Fresh POST with a validation error
                  resubmits the raw ``fasta`` string; a ``clone_from``
-                 clone loads the stored ``inputs`` which carry structured
-                 ``fasta_records`` (our persisted form). Without this
-                 fallback the clone link on the results page produces an
-                 empty textarea — Codex P2. #}
+                 clone loads the stored ``inputs``, which carry the
+                 structured ``fasta_records`` (our persisted form) and no
+                 ``fasta`` at all. Without this fallback the clone link on
+                 the results page produces an empty textarea — Codex P2.
+
+                 The record-list-to-FASTA rebuild that used to live here
+                 as a Jinja loop now happens once for every tool in
+                 blueprints/tools.py::_as_form_text, so by the time
+                 pre_fill reaches this template ``fasta_records`` is
+                 already the FASTA text. Reading it as a loop here would
+                 now iterate that string one character at a time. #}
               {% set _prefill_fasta = (pre_fill.get('fasta') if pre_fill else '') or '' %}
-              {% if not _prefill_fasta and pre_fill and pre_fill.get('fasta_records') %}
-                {% set _lines = [] %}
-                {% for _rec in pre_fill.get('fasta_records') %}
-                  {% set _ = _lines.append('>' ~ (_rec.get('header') or ('chain' ~ loop.index))) %}
-                  {% set _ = _lines.append(_rec.get('sequence') or '') %}
-                {% endfor %}
-                {% set _prefill_fasta = _lines | join('\n') %}
+              {% if not _prefill_fasta and pre_fill %}
+                {% set _prefill_fasta = pre_fill.get('fasta_records') or '' %}
               {% endif %}
               <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA</label>
               <textarea name="fasta" id="fasta" class="af2-fasta-textarea"
@@ -292,7 +289,15 @@
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
-          <button type="submit" class="btn-primary">Submit run</button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary">Submit run</button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
         </form>
       </div>
     </div>

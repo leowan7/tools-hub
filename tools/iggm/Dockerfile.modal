@@ -19,7 +19,16 @@
 # 16909543. run_pipeline runs design.py with cwd=/opt/IgGM, so the weights land
 # in /opt/IgGM/checkpoints == the mounted Volume. The staging smoke (I-1)
 # exercises the full path on the 8iv5 example before the flag flips on.
-FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
+#
+# PIN: by DIGEST, not by tag. Resolved 2026-08-17. Nothing in this repo records
+# which digest earlier deploys used, so treating this as the same content is an
+# inference, not a record — the image's own config blob predates every deploy
+# here, which is as far as the evidence goes. A bare tag can be overwritten
+# upstream, silently changing this image on the next rebuild with nothing in this
+# repo changing (Modal rebuilds on any tools/** push). To bump: re-verify, then
+#   docker buildx imagetools inspect pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
+# and paste the new digest here in the same commit.
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel@sha256:4f66166dd757752a6a6a9284686b4078e92337cd9d12d2e14d2d46274dfa9048
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

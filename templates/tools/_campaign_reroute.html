@@ -14,6 +14,32 @@
    different endpoint entirely). A reuse-token-only submit (no fresh file) is
    left on the single-job endpoint, where the server backstop returns the
    campaign pointer. Money path is untouched. #}
+{# The campaign CTA itself. Lives here rather than in the 5 form
+   templates so its auth guard exists ONCE — a per-form copy is how the
+   original anonymous-page work shipped a live "Start campaign" button
+   next to "Sign in to run this": type="button" means it is not a
+   <button type="submit">, so a "no submit button when logged out" check
+   passes over it, but its click handler calls form.submit() and POSTs
+   the form anyway. The invariant is "no control that can POST this form
+   is reachable anonymously", by ANY mechanism, so the button is not
+   rendered at all when logged out.
+
+   ``viewer_is_signed_in()`` is a jinja GLOBAL (app.py): this file is
+   imported WITHOUT ``with context`` by the form templates, so a context
+   variable would be invisible here. #}
+{% macro campaign_submit_btn() -%}
+{% if viewer_is_signed_in() %}
+          {# type="button" so the single-job wallet gate (which selects
+             button[type=submit]) never disables it — an over-ceiling
+             request is bounded by the campaign's own preauth, not the
+             single-job estimate. Hidden until the count exceeds the
+             ceiling with a fresh upload attached. #}
+          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
+            Start campaign
+          </button>
+{% endif %}
+{%- endmacro %}
+
 {% macro campaign_reroute_script() -%}
 <script>
   (function () {

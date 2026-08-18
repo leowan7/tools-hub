@@ -409,11 +409,11 @@ def test_no_email_money_figure_is_left_on_the_nearest_default():
         if any(d in line for d in ('"up"', '"down"', '"nearest"')):
             continue
         undirected.append((i, line.strip()[:100]))
-    # The signup credit is a fixed advertised amount read from an env var with a
-    # whole-dollar default, so NEAREST is deliberate there and nowhere else.
-    # Compared on CONTENT, not line number, so an unrelated edit above does not
-    # turn this red and teach the next reader to update the expectation blindly.
-    assert [text for _, text in undirected] == ["credit_usd = _money("], (
+    # Every outbound money figure now names its direction explicitly, including
+    # the signup credit -- it is a fixed advertised amount, so it passes
+    # "nearest" rather than relying on the implicit default. Nothing is allowed
+    # to sit on the default: an empty list is the whole expectation.
+    assert [text for _, text in undirected] == [], (
         "these email money figures have no explicit direction, so they round to "
         "NEAREST and understate about half the time:\n  "
         + "\n  ".join(f"{i}: {t}" for i, t in undirected)

@@ -247,3 +247,75 @@ about: dict = {
     "model_license_notice": model_license_notice,
     "reward_attributions": reward_attributions,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: one shard, 8 designs",
+    "goal": (
+        "Run the smallest complete unit of a Proteina search against "
+        "your own target and see what the reward stack returns."
+    ),
+    "you_need": (
+        "A structure file for your target and its chain ID &mdash; or a "
+        "chain and residue range such as <code>A1-150</code>. Hotspot "
+        "residues are optional, and are what aims the binder at one "
+        "specific face."
+    ),
+    # num_designs stays at 8 because 8 IS the floor: proteina is a
+    # fixed-container tool (compute_campaigns._FIXED_CONTAINER_TOOLS),
+    # one shard is one whole A100-80GB container, and the estimate is
+    # flat from 1 design to 8. Asking for fewer costs exactly the same
+    # and returns less, so there is no cheaper first run to offer.
+    #
+    # What the pilot does change is the length window. The form leaves
+    # both boxes blank, which silently means 60-120 rather than
+    # unconstrained; 60-100 is a narrower, more designable first search
+    # and makes the implicit default visible instead of leaving the
+    # user to discover it in the help text.
+    "params": {
+        "preset": "protein_binder",
+        "num_designs": "8",
+        "binder_length_min": "60",
+        "binder_length_max": "100",
+    },
+    "next_step": (
+        "8 designs is one shard on one GPU, and it costs the same as "
+        "one design would &mdash; a shard is a whole container. Raise "
+        "the count and the run fans out across GPUs as a campaign "
+        "bounded by your wallet, with a single ranked list pooled "
+        "across every shard. Widen the length window once you know the "
+        "target is workable."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# A real payload exists on disk (proteina_direct_out/smoke_result.json,
+# 2026-08-06) and is NOT shippable: it pre-dates the pLDDT polarity fix
+# in #129 (merged 9fbe547, 2026-08-09), so its af2_plddt column holds
+# 1 - pLDDT on every candidate. Publishing an inverted confidence column
+# as a worked example would teach the metric backwards. Its scores are
+# also degenerate (af2_iptm 0.09 to 0.10 across all 8, binder_scrmsd 34
+# to 41 A), so it is not a picture of a working run either. Capture a
+# post-fix delivered shard and this becomes a one-file change.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

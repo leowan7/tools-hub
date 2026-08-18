@@ -54,18 +54,27 @@
         based on parameters and historical compute time
       </span>
     </div>
+    {# ``balance_usd is none`` means "no wallet in play" — the anonymous
+       visitor on a public /tools/<slug> page. The estimate itself is
+       still live — /api/wallet/estimate carries no @login_required and
+       answers an anonymous caller with a real estimate and a NULL
+       balance — but printing "$0.00" as a balance and a negative
+       balance-after would be a lie, so both rows are dropped. The JS
+       null-guards every element it writes. #}
+    {% if balance_usd is not none %}
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Your balance</span>
       <span class="wallet-estimate-value" data-estimate-balance>
-        ${{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}
+        ${{ display_balance_usd(balance_usd) }}
       </span>
     </div>
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Balance after this job</span>
       <span class="wallet-estimate-value" data-estimate-balance-after>
-        ${{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}
+        ${{ display_balance_usd(balance_usd) }}
       </span>
     </div>
+    {% endif %}
 
     {# Burn-down billing notice (tier-collapse PR). Surfaces the
        consumption-based billing model + the no-refund-on-cancel rule
@@ -113,6 +122,11 @@
 {# ---------------- Moment 2 — Top up and run gate ---------------- #}
 
 {% macro wallet_topup_gate(tool_slug, balance_usd=None, topup_route=None) -%}
+  {# No wallet, no gate. An anonymous visitor cannot top up anything —
+     the sign-in CTA from submit_cta is the only action on that page —
+     and the gate's own submit button would otherwise be a second POST
+     control on a form they are not allowed to submit. #}
+  {% if balance_usd is not none %}
   <div class="wallet-topup-gate"
        id="wallet-topup-gate"
        data-tool-slug="{{ tool_slug }}"
@@ -157,6 +171,7 @@
       </span>
     </div>
   </div>
+  {% endif %}
 {%- endmacro %}
 
 {# ---------------- Estimate updater script ---------------- #}

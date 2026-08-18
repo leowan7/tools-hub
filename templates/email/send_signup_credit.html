@@ -1,9 +1,9 @@
-{# Welcome plus $5 signup credit confirmation.
+{# Welcome plus signup credit confirmation (amount from shared.wallet.SIGNUP_CREDIT_USD).
    Sender: shared.email.send_signup_credit_email
    Triggered first time a user_wallets row is created (idempotent).
    Variables:
      base_url       URL prefix for tools.ranomics.com (no trailing slash)
-     credit_usd     dollar amount of the signup credit (string, e.g. "5")
+     credit_usd     dollar amount of the signup credit (string, e.g. "15")
 #}
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
             color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;

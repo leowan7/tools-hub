@@ -25,7 +25,16 @@ on:
   push:
     branches: [main]
     paths:
+      # meta.py and example/ are WEB-TIER ONLY — no Dockerfile.modal COPYs
+      # them and no modal_app.py add_local_*s them (each only ships its own
+      # run_pipeline.py), so a copy edit there cannot change a container.
+      # Excluding them stops pure-copy PRs from redeploying all nine GPU
+      # images. The only importers are tools/pxdesign/__init__.py and
+      # tools/rfdiffusion/__init__.py, both re-exporting for templates.
+      # Order matters: a later negation wins over the earlier 'tools/**'.
       - 'tools/**'
+      - '!tools/**/meta.py'
+      - '!tools/**/example/**'
       - '.github/workflows/deploy-modal.yml'
   workflow_dispatch:
 

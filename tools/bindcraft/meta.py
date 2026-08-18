@@ -131,3 +131,65 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 2 trajectories",
+    "goal": (
+        "Check that your target parses, your hotspots resolve against "
+        "it, and the pipeline returns scored designs &mdash; before "
+        "committing to a run that hunts for hits."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb, .cif or .mmcif), the "
+        "chain ID it sits on, and at least one residue on the face you "
+        "want the binder to touch."
+    ),
+    # 2, not the form's default of 4. BindCraft prices in whole
+    # containers of two trajectories (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container — the smallest complete unit of
+    # work — and exactly half the price of the default. A pilot that
+    # restated the default was a button promising a change it did not
+    # make.
+    "params": {
+        "preset": "pilot",
+        "num_designs": "2",
+    },
+    "next_step": (
+        "Two trajectories tell you the setup works, not whether the "
+        "target is bindable &mdash; BindCraft burns more GPU per design "
+        "than anything else here, which is why the first step is this "
+        "small. Once it comes back clean, clone the run and raise the "
+        "count."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

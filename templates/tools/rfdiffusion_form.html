@@ -4,11 +4,9 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
-{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
 
-{% block title %}{{ adapter.label }} -- Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " -- Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# RFdiffusion form mirrors the rfantibody two-panel layout: form on
@@ -182,10 +180,7 @@
     }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -235,6 +230,7 @@
               name another (<code>A296,B264</code>).
               Click residues in the 3D viewer below to toggle them in and out of this list.
             </div>
+            {% include "tools/_hotspot_scout_hint.html" %}
 
             {# 3D hotspot picker -- mirrors rfantibody/boltzgen/bindcraft/pxdesign forms.
                Renders only after the user uploads a PDB; typed entry stays
@@ -257,12 +253,18 @@
             </div>
 
             <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+            {# pre_value, not a bare value=: rfdiffusion stores this
+               NESTED as binder_length={min,max}, so a name lookup found
+               nothing and the hard-coded attributes silently reset a
+               cloned run's length window to 55-65. blueprints/tools.py
+               ::_normalize_clone_pre_fill explodes the nested key into
+               the two names read here. #}
             <div class="rfdiffusion-binder-length">
               <input type="number" name="binder_length_min" id="binder_length_min"
-                     min="30" max="150" value="55" placeholder="min">
+                     min="30" max="150" {{ pre_value(pre_fill, "binder_length_min", "55") }} placeholder="min">
               <span class="sep">to</span>
               <input type="number" name="binder_length_max" id="binder_length_max"
-                     min="30" max="150" value="65" placeholder="max">
+                     min="30" max="150" {{ pre_value(pre_fill, "binder_length_max", "65") }} placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               Range RFdiffusion samples within. Default 55 to 65 residues
@@ -270,7 +272,10 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" min="1" max="1000" value="4"
+            {# pre_value, not a hard-coded value: this field ignored pre_fill
+               entirely, so ?clone_from= restored every input EXCEPT the design
+               count — silently re-running a 200-design job at 4. #}
+            <input type="number" name="num_designs" id="num_designs" min="1" max="1000" {{ pre_value(pre_fill, "num_designs", "4") }}
                    {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
@@ -311,19 +316,20 @@
                  data-ok="1"></div>
           {% endif %}
 
-          <button type="submit" class="btn-primary"
-                  id="tool-submit-btn"
-                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
-            Submit run
-          </button>
-          {# D1: campaign-mode CTA. type="button" so the single-job wallet gate
-             (which selects button[type=submit]) never disables it — an
-             over-ceiling request is bounded by the campaign's own preauth, not
-             the single-job estimate. Hidden until the count exceeds the
-             ceiling with a fresh upload attached. #}
-          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
-            Start campaign
-          </button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary"
+                    id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
+          {{ campaign_submit_btn() }}
         </form>
       </div>
     </div>
