@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from urllib.parse import urlsplit
 
 from flask import (
     Blueprint,
@@ -26,6 +27,56 @@ logger = logging.getLogger(__name__)
 auth_bp = Blueprint("auth", __name__)
 
 
+def safe_next(value: str | None, fallback: str = "/") -> str:
+    """Return ``value`` if it is a same-origin path, else ``fallback``.
+
+    This is an ALLOWLIST, not a blocklist. The previous shape-based
+    blocklist (startswith "/" and not "//" and not "/\\") was bypassable:
+    ``/\\t/evil.com`` passed all three checks, and the header layer then
+    STRIPPED the tab, shipping ``Location: //evil.com`` — a
+    protocol-relative URL, i.e. an off-site redirect. The stripping is
+    server-side, so no browser quirk is required.
+
+    Four complementary layers. Each is load-bearing for at least one
+    hostile value that every other layer waves through (measured, not
+    assumed — see tests/test_login_redirect.py):
+
+    1. urlsplit allowlist (primary): accept only a relative reference with
+       NO scheme and NO netloc, whose path starts with "/". urlsplit itself
+       strips TAB/CR/LF the same way the header layer does, so
+       ``/\\t/evil.com`` parses to netloc="evil.com" and is rejected here.
+       Also kills ``https://evil.com``, ``//evil.com`` and userinfo/host
+       smuggling.
+    2. Reject C0 controls, DEL and C1 controls outright. urlsplit strips
+       ONLY tab/CR/LF; VT, FF, NUL, DEL and NEL pass through it AND through
+       Werkzeug untouched, so they reach the browser raw and the browser
+       becomes the last actor deciding what the target means. Nothing
+       legitimate needs them — a real internal link percent-encodes
+       anything outside the URL charset. Relying on urlsplit's stripping
+       alone would also pin us to a CPython implementation detail.
+       SPACE is deliberately NOT rejected: it survives as "%20" rather than
+       being normalised away, so it is provably safe, and rejecting it
+       could break a legitimate link.
+    3. Reject a raw leading "//". urlsplit("///evil.com") yields an EMPTY
+       netloc and the path "/evil.com" — layer 1 would wave it through,
+       while browsers resolve it off-origin.
+    4. Keep the explicit "/\\" check. urlsplit does NOT treat a backslash
+       as a separator, so ``/\\evil.com`` parses as an innocent path while
+       browsers normalise it to ``//evil.com``. Complementary to layer 1,
+       not redundant with it.
+    """
+    if not value:
+        return fallback
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+        return fallback
+    if any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in value):
+        return fallback
+    if value.startswith("//") or value.startswith("/\\"):
+        return fallback
+    return value
+
+
 # ------------------------------------------------------------------
 # Auth routes
 # ------------------------------------------------------------------
@@ -36,7 +87,9 @@ def login():
     from shared.auth import verify_login  # noqa: PLC0415
 
     if request.method == "GET":
-        next_url = request.args.get("next", "/")
+        # Validate on GET too, so the hidden form field can never be
+        # populated with a value the POST would later reject.
+        next_url = safe_next(request.args.get("next"))
         return render_template(
             "login.html",
             mode="signin",
@@ -47,23 +100,15 @@ def login():
 
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
-    next_url = request.form.get("next", "/")
+    # Same-origin allowlist — see safe_next(). Applied before the field is
+    # re-rendered on the failure path as well as before the redirect.
+    next_url = safe_next(request.form.get("next"))
 
     success, error_msg, user_id = verify_login(email, password)
     if success:
         session["user_email"] = email
         if user_id:
             session["user_id"] = user_id
-        # Restrict redirect to same-origin paths to prevent open
-        # redirect. A leading "/" alone is not enough: browsers treat
-        # "//host" (protocol-relative) and "/\host" as absolute URLs
-        # to another origin, so reject those too.
-        if (
-            not next_url.startswith("/")
-            or next_url.startswith("//")
-            or next_url.startswith("/\\")
-        ):
-            next_url = "/"
         try:
             from shared.events import log_event  # noqa: PLC0415
             log_event(
