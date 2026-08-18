@@ -23,7 +23,16 @@
 # Base image + Python are upstream's: nvcr.io/nvidia/pytorch:24.08-py3 (CUDA
 # ~12.6, cu126 wheels) and Python 3.12 (MANDATORY — rc-foundry/RF3 installs only
 # on 3.12; the "downgrade below 3.12 for tmol" lore is wrong).
-FROM nvcr.io/nvidia/pytorch:24.08-py3
+#
+# PIN: by DIGEST, not by tag. Resolved 2026-08-17. Nothing in this repo records
+# which digest earlier deploys used, so treating this as the same content is an
+# inference, not a record — the image's own config blob predates every deploy
+# here, which is as far as the evidence goes. A bare tag can be overwritten
+# upstream, silently changing this image on the next rebuild with nothing in this
+# repo changing (Modal rebuilds on any tools/** push). To bump: re-verify, then
+#   docker buildx imagetools inspect nvcr.io/nvidia/pytorch:24.08-py3
+# and paste the new digest here in the same commit.
+FROM nvcr.io/nvidia/pytorch:24.08-py3@sha256:3afe094482e641337edfab878c87ca9c14ab3572b2ad048ac2554dd56d7cc024
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

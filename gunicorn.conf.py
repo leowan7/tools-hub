@@ -41,6 +41,29 @@ preload_app = True
 # refuse to boot — a crash-on-boot outage, the worst possible outcome.
 workers = max(1, _int_env("WEB_CONCURRENCY", 2))
 
+# NOTE: no `worker_class` is set anywhere (not here, not in the Procfile, not
+# in nixpacks.toml), so gunicorn uses its default **sync** worker, and no
+# `threads` is set either. Consequences worth knowing before reasoning about
+# any concurrency limit in this app:
+#
+#   * Each worker serves exactly ONE request at a time. Whole-process
+#     concurrency is `workers` (2 by default) — nothing more.
+#   * gevent is NOT installed (it is not in requirements.txt). Code that
+#     imports it, e.g. scout/routes.py's SSE streaming, takes its threaded
+#     fallback path in production.
+#   * Any in-process counter that caps "N concurrent X per worker" for N > 1
+#     is unreachable under this worker class. scout.ratelimit's 4-slot
+#     anonymous compute cap is exactly that, and is documented there as inert
+#     today rather than removed, since it becomes correct if the worker class
+#     ever changes.
+#   * Any in-process state (rate-limit counters included) is per-worker, so
+#     a per-process limit of L is really `workers x L` fleet-wide, and it
+#     resets on every deploy and worker recycle.
+#
+# Changing the worker class is a real deployment decision — it needs a new
+# dependency and a look at the blocking calls in request handlers. Do not
+# change it just to make a cap in application code start working.
+
 # Belt-and-suspenders worker recycle. Supabase calls are now bounded well
 # under this (see shared.supabase_client), so this should rarely fire.
 # Floored at 60s: it must stay safely above the 30s Supabase budget so a

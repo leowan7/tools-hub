@@ -43,6 +43,21 @@
       <div id="scout-quota-pill" class="scout-quota-pill" hidden>
         <span id="scout-quota-text"></span>
       </div>
+
+      {% if not session.get('user_email') %}
+      <!-- Anonymous notice. Epitope Scout runs without an account so a first
+           visit can settle which residues to aim a binder at before signing
+           up; say plainly what that costs the visitor (nothing) and how long
+           their structure is kept (the cleanup_old_jobs window, one hour). -->
+      <div class="scout-quota-pill">
+        <span>
+          Free, no account needed &mdash; load the example or upload your own
+          structure. Uploaded files are deleted automatically within an hour.
+          <a href="{{ url_for('auth.login', next='/scout/') }}">Sign in</a>
+          to carry the residues you pick straight into a design tool.
+        </span>
+      </div>
+      {% endif %}
       <script>
         (function () {
           fetch('/scout/quota', { credentials: 'same-origin' })
@@ -278,6 +293,11 @@
       </div><!-- /results-section -->
 
   <script>
+    // Whether this visitor is signed in. Epitope Scout itself is anonymous;
+    // only the deeper feasibility page and the design-tool handoff need an
+    // account, so the results table degrades those links rather than the page.
+    var SCOUT_AUTHENTICATED = {{ 'true' if session.get('user_email') else 'false' }};
+
     const PATCH_COLORS = [
       '#ef4444', '#3b82f6', '#22c55e', '#f97316',
       '#a855f7', '#14b8a6', '#eab308', '#ec4899',
@@ -640,6 +660,14 @@
           flagsHtml = '<span class="no-flags">\u2014</span>';
         }
 
+        // Feasibility runs on a separate, deeper page that still needs an
+        // account; anonymous visitors are told so here rather than being
+        // bounced to /login after the click.
+        var feasibilityHref = '/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + document.getElementById('chain-select').value;
+        var feasibilityCell = SCOUT_AUTHENTICATED
+          ? '<td><a href="' + feasibilityHref + '" class="feasibility-link">Assess feasibility</a></td>'
+          : '<td><a href="/login?next=' + encodeURIComponent(feasibilityHref) + '" class="feasibility-link">Sign in to assess</a></td>';
+
         var tr = document.createElement('tr');
         tr.innerHTML =
           '<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:0.4rem;vertical-align:middle;"></span>' + (i+1) + '</td>' +
@@ -648,7 +676,7 @@
           '<td>' + ep.residue_count + ' (' + ep.mean_rsa.toFixed(2) + ')</td>' +
           '<td class="mono-cell">' + truncated + '</td>' +
           '<td class="flags-cell">' + flagsHtml + '</td>' +
-          '<td><a href="/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + document.getElementById('chain-select').value + '" class="feasibility-link">Assess feasibility</a></td>';
+          feasibilityCell;
         tbody.appendChild(tr);
       });
 
