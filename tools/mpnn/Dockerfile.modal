@@ -44,10 +44,29 @@ RUN python3 -m pip install --no-cache-dir \
 RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 
 # ---------- ProteinMPNN + weights ----------
-RUN git clone --depth 1 https://github.com/dauparas/ProteinMPNN.git $PROTEINMPNN_DIR && \
+# PINNED to upstream 8907e667. Do NOT float this back to main/HEAD.
+#
+# The fixed-positions feature in run_pipeline.py rides an unversioned upstream
+# contract that exists only as source, never as a documented API:
+#   * fixed_positions.jsonl is keyed by PDB filename stem, 1-indexed, one entry
+#     per designed chain, listing the FIXED positions (not the free ones);
+#   * parse_PDB_biounits' residue counting is what those indices index into.
+# Both were verified against 8907e667 by reading upstream source and by a real
+# A10G canary (_canary_fixed_positions.py). One upstream commit can change
+# either silently: no test in this repo builds this image, so the break would
+# first surface as wrong sequences on a billed GPU.
+#
+# --depth 1 cannot target a SHA, so fetch that single commit by SHA — this
+# stays a one-commit fetch, same image size as the old shallow clone. Weights
+# come from the same pinned commit, not /raw/main/.
+RUN git init $PROTEINMPNN_DIR && \
+    cd $PROTEINMPNN_DIR && \
+    git remote add origin https://github.com/dauparas/ProteinMPNN.git && \
+    git fetch --depth 1 origin 8907e6671bfbfc92303b5f79c4b5e6ce47cdef57 && \
+    git checkout FETCH_HEAD && \
     mkdir -p $PROTEINMPNN_WEIGHTS && \
     curl -fsSL --retry 5 --retry-delay 10 \
-        https://github.com/dauparas/ProteinMPNN/raw/main/vanilla_model_weights/v_48_020.pt \
+        https://github.com/dauparas/ProteinMPNN/raw/8907e6671bfbfc92303b5f79c4b5e6ce47cdef57/vanilla_model_weights/v_48_020.pt \
         -o $PROTEINMPNN_WEIGHTS/v_48_020.pt
 RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 
