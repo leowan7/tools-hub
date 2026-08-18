@@ -208,6 +208,12 @@ PILOT: dict | None = {
         "single chain of 30 to 800 residues pasted in. No structure "
         "file required."
     ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # Cost scales on n_seeds (one H100 container per seed) and n_seeds=1
+    # is both the form default and the field minimum, so $9.87 is the
+    # floor. batch_size does not move the price at all — 1, 2 and 3 all
+    # cost $9.87 — so dropping it would return fewer designs for the
+    # same money. Nothing on this form buys a cheaper first run.
     "params": {
         "preset": "minibinder",
         "n_seeds": "1",

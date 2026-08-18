@@ -108,22 +108,30 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 4 nanobodies",
+    "label": "Starter pilot: 2 nanobodies",
     "goal": (
         "Check that a VHH scaffold can be placed on the face you "
-        "picked, before scaling up."
+        "picked at all, before scaling up."
     ),
     "you_need": (
         "A structure file for your target (.pdb or .cif), the chain ID, "
         "and at least one residue defining the face you want bound."
     ),
+    # 2, not the form's default of 4. RFantibody prices in whole
+    # containers of two designs (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container and half the default's price,
+    # while 1 costs the same as 2. A pilot equal to the default was a
+    # button that promised a change it did not make.
     "params": {
         "preset": "pilot",
-        "num_designs": "4",
+        "num_designs": "2",
     },
     "next_step": (
-        "If any of the four scores well, clone the run and raise the "
-        "design count."
+        "Two designs answer whether the epitope is reachable by a VHH "
+        "at all, not whether it is a good one. Roughly 1 in 5 clears "
+        "the confidence bar on a tractable target, so once these come "
+        "back scored, clone the run and raise the count to 10 or more "
+        "before reading anything into the numbers."
     ),
 }
 

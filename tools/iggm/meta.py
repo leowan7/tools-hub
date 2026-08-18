@@ -157,6 +157,11 @@ PILOT: dict | None = {
         "sequence. The light chain is optional &mdash; omit it for a "
         "nanobody."
     ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # complex_prediction is the first preset (so already checked) and
+    # the only single-pass one; num_samples=1 is the field minimum. The
+    # whole run is $0.08, which is the floor for this tool. Nothing on
+    # this form buys a cheaper or smaller first run.
     "params": {
         "preset": "complex_prediction",
         "num_samples": "1",

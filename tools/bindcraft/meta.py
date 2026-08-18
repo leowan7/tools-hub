@@ -151,24 +151,33 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 4 binders",
+    "label": "Starter pilot: 2 trajectories",
     "goal": (
-        "Check that your target and the face you picked produce usable "
-        "designs before committing to a larger run."
+        "Check that your target parses, your hotspots resolve against "
+        "it, and the pipeline returns scored designs &mdash; before "
+        "committing to a run that hunts for hits."
     ),
     "you_need": (
         "A structure file for your target (.pdb, .cif or .mmcif), the "
         "chain ID it sits on, and at least one residue on the face you "
         "want the binder to touch."
     ),
+    # 2, not the form's default of 4. BindCraft prices in whole
+    # containers of two trajectories (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container — the smallest complete unit of
+    # work — and exactly half the price of the default. A pilot that
+    # restated the default was a button promising a change it did not
+    # make.
     "params": {
         "preset": "pilot",
-        "num_designs": "4",
+        "num_designs": "2",
     },
     "next_step": (
-        "BindCraft costs more GPU per design than any other design tool "
-        "here, so 4 is the honest first step. If any of them scores "
-        "well, clone the run and raise the count."
+        "Two trajectories tell you the setup works, not whether the "
+        "target is bindable &mdash; BindCraft burns more GPU per design "
+        "than anything else here, which is why the first step is this "
+        "small. Once it comes back clean, clone the run and raise the "
+        "count."
     ),
 }
 

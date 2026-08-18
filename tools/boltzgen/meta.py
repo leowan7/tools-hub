@@ -169,6 +169,16 @@ PILOT: dict | None = {
         "A structure file for your target (.pdb or .cif), the chain ID, "
         "and at least one residue on the face you want bound."
     ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # BoltzGen has exactly one preset, and ``budget`` selects how many
+    # of the 200 generated candidates come back — build_payload pins
+    # that 200 regardless — so the estimate is flat at $8.74 for every
+    # budget from 1 to 50. There is no knob on this form that buys a
+    # smaller or cheaper first run; lowering the budget returns fewer
+    # designs for the same money, which is strictly worse. See
+    # tests/test_pilot_recipes.py::test_a_no_op_pilot_is_only_allowed_
+    # when_nothing_cheaper_exists, which proves that rather than
+    # trusting this comment.
     "params": {
         "preset": "pilot",
         "budget": "4",

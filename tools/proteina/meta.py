@@ -278,14 +278,30 @@ PILOT: dict | None = {
         "residues are optional, and are what aims the binder at one "
         "specific face."
     ),
+    # num_designs stays at 8 because 8 IS the floor: proteina is a
+    # fixed-container tool (compute_campaigns._FIXED_CONTAINER_TOOLS),
+    # one shard is one whole A100-80GB container, and the estimate is
+    # flat from 1 design to 8. Asking for fewer costs exactly the same
+    # and returns less, so there is no cheaper first run to offer.
+    #
+    # What the pilot does change is the length window. The form leaves
+    # both boxes blank, which silently means 60-120 rather than
+    # unconstrained; 60-100 is a narrower, more designable first search
+    # and makes the implicit default visible instead of leaving the
+    # user to discover it in the help text.
     "params": {
         "preset": "protein_binder",
         "num_designs": "8",
+        "binder_length_min": "60",
+        "binder_length_max": "100",
     },
     "next_step": (
-        "8 designs is one shard on one GPU. Raise the count and the run "
-        "fans out across GPUs as a campaign bounded by your wallet, "
-        "with a single ranked list pooled across every shard."
+        "8 designs is one shard on one GPU, and it costs the same as "
+        "one design would &mdash; a shard is a whole container. Raise "
+        "the count and the run fans out across GPUs as a campaign "
+        "bounded by your wallet, with a single ranked list pooled "
+        "across every shard. Widen the length window once you know the "
+        "target is workable."
     ),
 }
 
