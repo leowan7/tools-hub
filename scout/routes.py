@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 from flask import (
@@ -33,7 +34,12 @@ from flask import (
 
 from shared.auth import login_required
 
-from scout.jobs import cleanup_old_jobs, create_job_dir, resolve_owned_job_dir
+from scout.jobs import (
+    cleanup_old_jobs,
+    count_job_dirs,
+    create_job_dir,
+    resolve_owned_job_dir,
+)
 from scout.parser import parse_pdb
 from scout.quota import (
     FREE_TIER_RUN_CAP,
@@ -41,11 +47,77 @@ from scout.quota import (
     record_scout_run,
     requires_scout_quota,
 )
+from scout.ratelimit import anon_compute_slot, anon_rate_limit
 
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdb", ".cif"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Anonymous-access policy
+# ---------------------------------------------------------------------------
+#
+# Deciding which residues to aim a binder at is the single thing that blocks a
+# bench biologist, and Scout is the tool that answers it — so the landing page,
+# the 1HEW example, structure intake and the scoring run are reachable without
+# an account. The handoff into a design tool still needs one: it writes a
+# user-keyed ``scout_handoffs`` row and stages a PDB under the user's storage
+# prefix, neither of which exists for an anonymous visitor.
+#
+# That makes /scout the only unauthenticated upload + compute path in the app,
+# so it carries its own abuse controls. Every number below is a policy choice,
+# documented with why it is where it is:
+
+# Upload ceiling for anonymous callers. 1HEW is 40 KB; a typical antibody /
+# antigen complex is well under 1 MB; the largest single-assembly entries a
+# Scout user would realistically bring are a few MB. 8 MB leaves an order of
+# magnitude of headroom while cutting the worst-case anonymous disk write to
+# 40% of the signed-in cap. Signed-in users keep MAX_UPLOAD_BYTES (20 MB),
+# which is also the app-wide MAX_CONTENT_LENGTH Werkzeug enforces during
+# multipart parsing, before any of this code runs.
+ANON_MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+
+# Fleet-wide ceiling on anonymous job directories that exist at once. With the
+# 1-hour retention window in cleanup_old_jobs, 60 x 8 MB bounds anonymous disk
+# use at roughly 480 MB. This is the backstop the per-IP limit cannot provide:
+# a distributed source spraying from many addresses defeats an IP bucket but
+# still lands in this one counter.
+ANON_MAX_LIVE_JOBS = 60
+
+# ...and per session, so one visitor cannot occupy the whole fleet-wide budget
+# by itself. Five is enough to re-upload a few times while iterating on which
+# structure to score.
+ANON_MAX_LIVE_JOBS_PER_SESSION = 5
+
+# Per-IP fixed windows. Ten minutes is long enough that a burst of retries
+# after a bad file does not lock a real user out for the rest of the session.
+ANON_RATE_WINDOW_SECONDS = 600
+# Intake (upload / fetch-pdb / example) — 10 structures per 10 minutes. A real
+# first visit uses 1-3.
+ANON_INTAKE_LIMIT = 10
+# Analysis. The page runs one SSE /progress stream *and* one POST /analyze per
+# scoring run, and both share this bucket, so 10 is about 5 real runs per 10
+# minutes. /progress is the expensive half — it is what actually executes the
+# pipeline — so it cannot be left unmetered while /analyze is capped.
+ANON_ANALYZE_LIMIT = 10
+
+# How many anonymous scoring pipelines may run at once in one worker process.
+# The pipeline is CPU-bound (freesasa + numpy) and does not yield under gevent,
+# so simultaneous anonymous runs slow every request sharing the worker. Four
+# leaves the box usable while a burst is in flight; signed-in callers never
+# consume one of these slots, so a free visitor cannot starve a paying user.
+ANON_MAX_CONCURRENT_RUNS = 4
+
+_BUSY_MESSAGE = (
+    "Epitope Scout is busy with other free runs right now. Try again in a "
+    "moment, or sign in to run it on your account."
+)
+
+# Session key holding the anonymous owner id. Prefixed so it can never collide
+# with a Supabase uid or an email address.
+ANON_SESSION_KEY = "scout_anon_id"
+ANON_OWNER_PREFIX = "anon:"
 
 scout_bp = Blueprint(
     "scout",
@@ -55,16 +127,115 @@ scout_bp = Blueprint(
 )
 
 
-def _current_owner_key() -> str:
+def _signed_in_owner_key() -> str:
     """Stable per-user key used to stamp and gate scout job directories.
 
     Prefers the Supabase auth uid (set in the session at login when
-    available) and falls back to the email, which ``@login_required``
-    guarantees is present. The same key is written when a job dir is
-    created and checked on every read, so the fallback stays internally
-    consistent within a session.
+    available) and falls back to the email. The same key is written when a
+    job dir is created and checked on every read, so the fallback stays
+    internally consistent within a session.
     """
     return (session.get("user_id") or session.get("user_email") or "").strip()
+
+
+def _current_owner_key(*, mint: bool = False) -> str:
+    """Owner key to stamp on a NEW job dir, or "" when there is none.
+
+    Signed-in callers get their user key. Anonymous callers get a random
+    per-session id held in the signed session cookie, so an anonymous job is
+    readable only by the browser session that created it — the uploaded
+    structure is someone's unpublished target and must not become readable
+    by anyone who can name a job id.
+
+    ``mint=True`` only on the routes that create a job. Read routes must not
+    mint, or every crawler hit would allocate a session and a Set-Cookie.
+    """
+    key = _signed_in_owner_key()
+    if key:
+        return key
+    anon = session.get(ANON_SESSION_KEY)
+    if isinstance(anon, str) and anon.startswith(ANON_OWNER_PREFIX):
+        return anon
+    if not mint:
+        return ""
+    anon = ANON_OWNER_PREFIX + uuid.uuid4().hex
+    session[ANON_SESSION_KEY] = anon
+    return anon
+
+
+def _owner_keys() -> list[str]:
+    """Every owner key this session may read job dirs under.
+
+    Both the signed-in key and the session's anonymous id, when both exist:
+    a visitor who scored a structure anonymously and then signed in to use
+    the handoff keeps access to the job they just ran. Both keys are bound
+    to this one signed session, so this widens nothing across users.
+    """
+    keys = [k for k in (_signed_in_owner_key(), session.get(ANON_SESSION_KEY)) if k]
+    return [k for k in keys if isinstance(k, str)]
+
+
+def _resolve_job_dir(job_id) -> "Path | None":
+    """Validate + confine + ownership-check ``job_id`` against this session."""
+    for owner in _owner_keys():
+        job_dir = resolve_owned_job_dir(job_id, owner)
+        if job_dir is not None:
+            return job_dir
+    return None
+
+
+def _anon_capacity_error() -> "tuple[dict, int] | None":
+    """Refuse a new anonymous job when the live-job budgets are full.
+
+    Returns a ``(payload, status)`` pair to hand straight to ``jsonify``, or
+    None when there is room. Signed-in callers are never limited here.
+    Call AFTER ``cleanup_old_jobs`` so expired dirs do not count.
+    """
+    if _signed_in_owner_key():
+        return None
+    if count_job_dirs(ANON_OWNER_PREFIX) >= ANON_MAX_LIVE_JOBS:
+        logger.warning("Scout anonymous job capacity reached (%d).", ANON_MAX_LIVE_JOBS)
+        return {
+            "error": (
+                "Epitope Scout is at capacity for anonymous runs right now. "
+                "Try again in a few minutes, or sign in to run it on your account."
+            )
+        }, 503
+    anon = session.get(ANON_SESSION_KEY)
+    if anon and count_job_dirs(anon) >= ANON_MAX_LIVE_JOBS_PER_SESSION:
+        return {
+            "error": (
+                "You have several Epitope Scout structures still loaded. "
+                "Earlier ones are cleared automatically within the hour, or "
+                "sign in to keep more at once."
+            )
+        }, 429
+    return None
+
+
+def _reject_oversized(save_path: Path, job_dir: Path) -> "tuple[dict, int] | None":
+    """Delete the job and refuse it when the stored structure is over cap.
+
+    The app-wide ``MAX_CONTENT_LENGTH`` already bounds the request body at
+    20 MB during multipart parsing; this is the tighter anonymous ceiling,
+    measured on the bytes actually written rather than a client-supplied
+    Content-Length.
+    """
+    cap = MAX_UPLOAD_BYTES if _signed_in_owner_key() else ANON_MAX_UPLOAD_BYTES
+    try:
+        size = save_path.stat().st_size
+    except OSError:
+        size = 0
+    if size <= cap:
+        return None
+    shutil.rmtree(job_dir, ignore_errors=True)
+    return {
+        "error": (
+            f"That structure is {size // (1024 * 1024)} MB. The limit is "
+            f"{cap // (1024 * 1024)} MB — upload a single chain or complex "
+            "rather than a full asymmetric unit."
+        )
+    }, 413
 
 
 def _extract_structure_title(path: Path, suffix: str) -> str:
@@ -144,7 +315,6 @@ def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dic
 # ---------------------------------------------------------------------------
 
 @scout_bp.route("/", methods=["GET"])
-@login_required
 def index():
     return render_template("scout/index.html"), 200
 
@@ -168,7 +338,11 @@ def quota_json():
 # ---------------------------------------------------------------------------
 
 @scout_bp.route("/upload", methods=["POST"])
-@login_required
+@anon_rate_limit(
+    "scout_intake",
+    limit=ANON_INTAKE_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+)
 def upload():
     if "file" not in request.files:
         return jsonify({"error": "No file submitted."}), 400
@@ -187,13 +361,25 @@ def upload():
         }), 400
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir(_current_owner_key())
+    capacity_error = _anon_capacity_error()
+    if capacity_error is not None:
+        return jsonify(capacity_error[0]), capacity_error[1]
+
+    job_id, job_dir = create_job_dir(_current_owner_key(mint=True))
 
     save_path = job_dir / f"input{suffix}"
     uploaded_file.save(str(save_path))
 
+    oversized = _reject_oversized(save_path, job_dir)
+    if oversized is not None:
+        return jsonify(oversized[0]), oversized[1]
+
     result = parse_pdb(save_path)
     if result.error:
+        # Drop the job rather than leaving an unparseable blob on disk for
+        # the retention window: the only thing that makes an uploaded file
+        # worth keeping is that Scout can read it.
+        shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
 
     structure_title = _extract_structure_title(save_path, suffix)
@@ -210,7 +396,11 @@ def upload():
 
 
 @scout_bp.route("/fetch-pdb", methods=["POST"])
-@login_required
+@anon_rate_limit(
+    "scout_intake",
+    limit=ANON_INTAKE_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+)
 def fetch_pdb():
     import requests as http_requests  # noqa: PLC0415
 
@@ -225,13 +415,37 @@ def fetch_pdb():
         (f"https://files.rcsb.org/download/{pdb_id}.cif", ".cif"),
     ]
 
+    # Bound the RCSB body the same way an upload is bounded. This route now
+    # runs for anonymous callers, and some real PDB entries (whole ribosomes)
+    # are hundreds of megabytes — reading one straight into memory would let a
+    # 4-character request pull far more than the upload cap allows.
+    size_cap = MAX_UPLOAD_BYTES if _signed_in_owner_key() else ANON_MAX_UPLOAD_BYTES
     content = None
     suffix = ".pdb"
     for url, ext in download_urls:
         try:
-            resp = http_requests.get(url, timeout=30)
-            if resp.status_code == 200 and len(resp.content) > 100:
-                content = resp.content
+            with http_requests.get(url, timeout=30, stream=True) as resp:
+                if resp.status_code != 200:
+                    continue
+                chunks: list[bytes] = []
+                total = 0
+                over_cap = False
+                for chunk in resp.iter_content(65536):
+                    total += len(chunk)
+                    if total > size_cap:
+                        over_cap = True
+                        break
+                    chunks.append(chunk)
+            if over_cap:
+                return jsonify({
+                    "error": (
+                        f'PDB entry "{pdb_id}" is larger than the '
+                        f"{size_cap // (1024 * 1024)} MB limit. Download it, cut "
+                        "it down to the chains you care about, and upload that."
+                    )
+                }), 413
+            if total > 100:
+                content = b"".join(chunks)
                 suffix = ext
                 break
         except Exception:
@@ -243,12 +457,21 @@ def fetch_pdb():
         }), 404
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir(_current_owner_key())
+    capacity_error = _anon_capacity_error()
+    if capacity_error is not None:
+        return jsonify(capacity_error[0]), capacity_error[1]
+
+    job_id, job_dir = create_job_dir(_current_owner_key(mint=True))
     save_path = job_dir / f"input{suffix}"
     save_path.write_bytes(content)
 
+    oversized = _reject_oversized(save_path, job_dir)
+    if oversized is not None:
+        return jsonify(oversized[0]), oversized[1]
+
     result = parse_pdb(save_path)
     if result.error:
+        shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
 
     structure_title = _extract_structure_title(save_path, suffix)
@@ -265,19 +488,28 @@ def fetch_pdb():
 
 
 @scout_bp.route("/example", methods=["GET"])
-@login_required
+@anon_rate_limit(
+    "scout_intake",
+    limit=ANON_INTAKE_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+)
 def example():
     example_src = Path(current_app.root_path) / "static" / "example" / "1HEW.pdb"
     if not example_src.exists():
         return jsonify({"error": "Example protein file not found on server."}), 500
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir(_current_owner_key())
+    capacity_error = _anon_capacity_error()
+    if capacity_error is not None:
+        return jsonify(capacity_error[0]), capacity_error[1]
+
+    job_id, job_dir = create_job_dir(_current_owner_key(mint=True))
     dest = job_dir / "input.pdb"
     shutil.copy2(str(example_src), str(dest))
 
     result = parse_pdb(dest)
     if result.error:
+        shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
 
     structure_title = _extract_structure_title(dest, ".pdb")
@@ -298,7 +530,11 @@ def example():
 # ---------------------------------------------------------------------------
 
 @scout_bp.route("/analyze", methods=["POST"])
-@login_required
+@anon_rate_limit(
+    "scout_analyze",
+    limit=ANON_ANALYZE_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+)
 @requires_scout_quota
 def analyze():
     data = request.get_json(silent=True) or {}
@@ -308,7 +544,7 @@ def analyze():
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
 
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Job not found or expired. Please re-upload your file."}), 404
     pdb_path = _find_input_file(job_dir)
@@ -317,43 +553,46 @@ def analyze():
 
     known_binders = []
     ppi_interfaces = []
-    try:
-        csv_path_prelim = job_dir / "results.csv"
-        if not csv_path_prelim.exists():
-            from scout.pipeline import run_pipeline  # noqa: PLC0415
-            run_pipeline(pdb_path, chain_id)
+    with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
+        if not _slot:
+            return jsonify({"error": _BUSY_MESSAGE}), 503
+        try:
+            csv_path_prelim = job_dir / "results.csv"
+            if not csv_path_prelim.exists():
+                from scout.pipeline import run_pipeline  # noqa: PLC0415
+                run_pipeline(pdb_path, chain_id)
 
-        known_binders = []
-        uniprot_id = ""
-        uniprot_name = ""
-        uniprot_identity_pct = "unknown"
-        from scout.epitope_db import fetch_known_binders, resolve_uniprot_id  # noqa: PLC0415
-        uniprot_result = resolve_uniprot_id(pdb_path, chain_id)
-        uniprot_id = uniprot_result["uniprot_id"]
-        uniprot_name = uniprot_result["protein_name"]
-        uniprot_identity_pct = uniprot_result["identity_pct"]
-        logger.warning(
-            "UniProt resolution: id=%s name=%s identity=%s",
-            uniprot_id or "(empty)", uniprot_name or "(none)", uniprot_identity_pct,
-        )
-        if uniprot_id:
-            try:
-                known_binders = fetch_known_binders(uniprot_id)
-                logger.warning(
-                    "Known binder lookup for %s: %d binders found",
-                    uniprot_id, len(known_binders),
-                )
-            except Exception:
-                logger.exception("Known binder lookup failed for %s", uniprot_id)
-                known_binders = []
+            known_binders = []
+            uniprot_id = ""
+            uniprot_name = ""
+            uniprot_identity_pct = "unknown"
+            from scout.epitope_db import fetch_known_binders, resolve_uniprot_id  # noqa: PLC0415
+            uniprot_result = resolve_uniprot_id(pdb_path, chain_id)
+            uniprot_id = uniprot_result["uniprot_id"]
+            uniprot_name = uniprot_result["protein_name"]
+            uniprot_identity_pct = uniprot_result["identity_pct"]
+            logger.warning(
+                "UniProt resolution: id=%s name=%s identity=%s",
+                uniprot_id or "(empty)", uniprot_name or "(none)", uniprot_identity_pct,
+            )
+            if uniprot_id:
+                try:
+                    known_binders = fetch_known_binders(uniprot_id)
+                    logger.warning(
+                        "Known binder lookup for %s: %d binders found",
+                        uniprot_id, len(known_binders),
+                    )
+                except Exception:
+                    logger.exception("Known binder lookup failed for %s", uniprot_id)
+                    known_binders = []
 
-        from scout.interfaces import detect_interfaces  # noqa: PLC0415
-        ppi_interfaces = detect_interfaces(pdb_path, chain_id)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 422
-    except Exception:
-        logger.exception("Pipeline error for job %s", job_id)
-        return jsonify({"error": "Analysis failed. Check that the PDB is valid and try again."}), 500
+            from scout.interfaces import detect_interfaces  # noqa: PLC0415
+            ppi_interfaces = detect_interfaces(pdb_path, chain_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 422
+        except Exception:
+            logger.exception("Pipeline error for job %s", job_id)
+            return jsonify({"error": "Analysis failed. Check that the PDB is valid and try again."}), 500
 
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
@@ -542,9 +781,8 @@ def analyze():
 
 
 @scout_bp.route("/pdb/<job_id>", methods=["GET"])
-@login_required
 def serve_pdb(job_id):
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Structure file not found. Please re-upload your file."}), 404
     input_path = _find_input_file(job_dir)
@@ -554,9 +792,8 @@ def serve_pdb(job_id):
 
 
 @scout_bp.route("/download/<job_id>", methods=["GET"])
-@login_required
 def download(job_id):
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Results not found. Please run analysis first."}), 404
 
@@ -578,7 +815,12 @@ def download(job_id):
 
 
 @scout_bp.route("/progress", methods=["GET"])
-@login_required
+@anon_rate_limit(
+    "scout_analyze",
+    limit=ANON_ANALYZE_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+    sse=True,
+)
 @requires_scout_quota
 def progress():
     from flask import stream_with_context  # noqa: PLC0415
@@ -586,7 +828,7 @@ def progress():
     job_id = request.args.get("job_id", "").strip()
     chain_id = request.args.get("chain", "").strip()
 
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key()) if job_id else None
+    job_dir = _resolve_job_dir(job_id) if job_id else None
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not chain_id or pdb_path is None:
@@ -662,8 +904,25 @@ def progress():
                 if event.get("stage") in ("done", "error"):
                     break
 
+    def _slotted():
+        """Hold an anonymous compute slot for as long as the stream runs.
+
+        The slot is taken when the response starts being iterated and given
+        back when the generator closes — including when the browser hangs up
+        part-way, which raises GeneratorExit through the ``with``. Wrapping
+        the generator rather than decorating the view is what makes that true:
+        a decorator would release the slot the moment the view returned, well
+        before the pipeline it is protecting had started.
+        """
+        with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as slot:
+            if not slot:
+                busy = {"stage": "error", "msg": _BUSY_MESSAGE}
+                yield f"data: {json.dumps(busy)}\n\n"
+                return
+            yield from _generate()
+
     return current_app.response_class(
-        stream_with_context(_generate()),
+        stream_with_context(_slotted()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -694,7 +953,7 @@ def feasibility_analyze():
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
 
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
     pdb_path = _find_input_file(job_dir)
@@ -787,7 +1046,7 @@ def feasibility_progress():
     epitope_str = request.args.get("epitope_residues", "").strip()
     epitope_id = request.args.get("epitope_id", "").strip()
 
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key()) if job_id else None
+    job_dir = _resolve_job_dir(job_id) if job_id else None
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not chain_id or pdb_path is None:
@@ -894,7 +1153,7 @@ def feasibility_progress():
 @scout_bp.route("/feasibility/download/<job_id>", methods=["GET"])
 @login_required
 def feasibility_download(job_id):
-    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
     csv_path = job_dir / "feasibility_results.csv"
@@ -935,7 +1194,7 @@ def handoff_to_tool():
     # Validate + confine + ownership-check before touching the filesystem,
     # then hand the confined PDB path to create_handoff so it never builds
     # a path from the raw, user-supplied scout_job_id.
-    job_dir = resolve_owned_job_dir(scout_job_id, _current_owner_key())
+    job_dir = _resolve_job_dir(scout_job_id)
     if job_dir is None:
         return jsonify({"error": "Scout job not found or expired."}), 404
     input_pdb = job_dir / "input.pdb"
