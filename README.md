@@ -7,20 +7,46 @@ exposes a small stable API that `app.py` imports lazily.
 
 ## Tools
 
-| Tool | Status | Route |
-|------|--------|-------|
-| Epitope Scout | Live | external link to `https://scout.ranomics.com` |
-| AlphaFold2 (AF2) | Live | `/tools/af2` |
-| ColabFold | Live | `/tools/colabfold` |
-| ESMFold | Live | `/tools/esmfold` |
-| ProteinMPNN | Live | `/tools/mpnn` |
-| RFdiffusion | Live | `/tools/rfdiffusion` |
-| BindCraft | Live | `/tools/bindcraft` |
-| BoltzGen | Live | `/tools/boltzgen` |
-| RFantibody | Live | `/tools/rfantibody` |
-| PXDesign | Live | `/tools/pxdesign` |
-| Binder Developability Scout | Live | `/developability` |
-| Yeast Display Library Planner | Live | `/library-planner` |
+Fourteen GPU tools live in `tools/<slug>/` and register through
+`tools.base`; each one is gated on `FLAG_TOOL_<SLUG>` (see
+`shared/feature_flags.py`, fail-closed) and appears in the catalog only
+when its flag is on. Category is the workflow band from
+`shared/tools_catalog.py::_TOOL_CATEGORIES`, which drives the homepage
+grid and `/tools`.
+
+| Tool | Slug | Category | Route |
+|------|------|----------|-------|
+| RFdiffusion | `rfdiffusion` | Make new binders for my target | `/tools/rfdiffusion` |
+| BindCraft | `bindcraft` | Make new binders for my target | `/tools/bindcraft` |
+| PXDesign | `pxdesign` | Make new binders for my target | `/tools/pxdesign` |
+| RFantibody | `rfantibody` | Make new binders for my target | `/tools/rfantibody` |
+| BoltzGen | `boltzgen` | Make new binders for my target | `/tools/boltzgen` |
+| IgGM | `iggm` | Make new binders for my target | `/tools/iggm` |
+| Proteina-Complexa | `proteina` | Make new binders for my target | `/tools/proteina` |
+| ESMFold2 design | `esmfold2-design` | Make new binders for my target | `/tools/esmfold2-design` |
+| ProteinMPNN | `mpnn` | Choose sequences for a structure I already have | `/tools/mpnn` |
+| AlphaFold2 | `af2` | Predict or check a 3D structure | `/tools/af2` |
+| ColabFold | `colabfold` | Predict or check a 3D structure | `/tools/colabfold` |
+| ESMFold | `esmfold` | Predict or check a 3D structure | `/tools/esmfold` |
+| Boltz-2 | `boltz2` | Predict or check a 3D structure | `/tools/boltz2` |
+| OpenDDE co-folding | `opendde` | Predict or check a 3D structure | `/tools/opendde` |
+
+Two catalog entries are not GPU adapters and are hardcoded in
+`_HARDCODED_TOOLS`. They are not flag-gated, and `/help/tools/<slug>`
+does not resolve for them because `tools.base.get()` returns `None`:
+
+| Tool | Category | Route |
+|------|----------|-------|
+| Epitope Scout | Check if my target is a good one to bind | `scout.index` (`https://scout.ranomics.com` in production) |
+| Binder Developability Scout | See if a binder will hold up in the lab | `/developability` |
+
+The **Yeast Display Library Planner** (`/library-planner`) was
+deliberately delisted from the catalog on 2026-08-17 — its
+`_HARDCODED_TOOLS` entry was dropped, so no tile appears on the homepage
+or `/tools`. The route, its templates, and the `tools/library_planner`
+package are intentionally still live so existing job links and job
+history keep resolving instead of 404ing. Delisted, not removed; do not
+"clean up" the route.
 
 ## Architecture
 
@@ -99,7 +125,11 @@ venv\Scripts\python.exe -m pip install -r requirements.txt
 venv\Scripts\python.exe app.py
 ```
 
-Open <http://127.0.0.1:5000/> and you should be redirected to `/login`.
+Open <http://127.0.0.1:5000/>. The landing page, `/tools`, every
+`/tools/<slug>` form, `/scout/`, `/developability`, and `/help` all render
+for anonymous visitors — only submitting a job (and anything under
+`/jobs` or `/account`, which is where the wallet lives) redirects to
+`/login`.
 
 ### One-line dev command
 
@@ -149,8 +179,12 @@ not by this repo.
        return jsonify(score(request.json))
    ```
 
-3. Add the tool to the `tools` list in the `index()` route so it shows
-   up on the hub landing page.
+3. Give it a workflow band in `shared/tools_catalog.py::_TOOL_CATEGORIES`
+   and a glyph in `shared/category_glyphs.py`. A slug with no band falls
+   into the `"Other"` bucket, which is how Proteina and OpenDDE once
+   disappeared from the homepage. There is no hand-maintained list in
+   `index()` any more — the catalog, `/tools`, and the `/help` guide grid
+   are all derived from the registry.
 
 If the tool runs on Modal, define the Modal app in the sibling
 `llm-proteinDesigner` repo and call it through `shared/modal_client.py`

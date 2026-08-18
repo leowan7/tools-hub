@@ -13,6 +13,7 @@ anonymous visitors into ``/login?next=``.
 # visible here. Without it this test iterates an empty registry and
 # passes vacuously -- green while the bug ships. The explicit count
 # assertion below keeps that failure mode from coming back silently.
+import pathlib
 import re
 
 import app  # noqa: F401
@@ -250,3 +251,48 @@ def test_anonymous_catalog_links_actually_resolve(flask_app, page):
         f"catalog links on {page} that an anonymous visitor cannot open: "
         f"{walled}"
     )
+
+
+# ---------------------------------------------------------------------
+# README tool table. It listed ten tools while fourteen were live, and
+# then went stale a second time the moment the bands were renamed to the
+# task-first labels. Nothing else in the repo reads it, so nothing else
+# notices.
+# ---------------------------------------------------------------------
+
+_README = pathlib.Path(__file__).resolve().parents[1] / "README.md"
+_GPU_ROW = re.compile(
+    r"^\| ([^|]+?) \| `([a-z0-9-]+)` \| ([^|]+?) \| `([^`]+)` \|$", re.M
+)
+
+
+def test_readme_tool_table_matches_the_live_registry():
+    adapters = tool_base.all_adapters()
+    assert len(adapters) >= 14, "empty registry; this test asserts nothing"
+
+    rows = _GPU_ROW.findall(_README.read_text(encoding="utf-8"))
+    assert rows, "no GPU tool rows parsed out of README.md"
+
+    listed = {slug for _, slug, _, _ in rows}
+    assert listed == {a.slug for a in adapters}
+
+    for _, slug, category, route in rows:
+        assert category.strip() == _TOOL_CATEGORIES[slug], (
+            f"README lists {slug} under {category.strip()!r}, "
+            f"_TOOL_CATEGORIES says {_TOOL_CATEGORIES[slug]!r}"
+        )
+        assert route == f"/tools/{slug}"
+
+
+def test_readme_hardcoded_tool_table_matches_the_catalog():
+    text = _README.read_text(encoding="utf-8")
+    assert _HARDCODED_TOOLS, "no hardcoded tools; this test asserts nothing"
+    for entry in _HARDCODED_TOOLS:
+        row = re.search(
+            rf"^\| {re.escape(entry['name'])} \| ([^|]+?) \|", text, re.M
+        )
+        assert row, f"README.md has no row for {entry['name']}"
+        assert row.group(1).strip() == entry["category"], (
+            f"README lists {entry['name']} under {row.group(1).strip()!r}, "
+            f"the catalog says {entry['category']!r}"
+        )

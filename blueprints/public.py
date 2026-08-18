@@ -441,7 +441,31 @@ def showcase():
 
 @public_bp.route("/help", methods=["GET"])
 def help_index():
-    """Docs hub: getting started, per-tool guides, FAQ, troubleshooting."""
+    """Docs hub: getting started, per-tool guides, FAQ, troubleshooting.
+
+    The per-tool guide list is derived from ``_build_tools_catalog()``
+    rather than hardcoded in the template. The old hardcoded list named
+    nine tools and had gone stale by five (boltz2, iggm, opendde,
+    proteina, esmfold2-design shipped without it being touched).
+
+    Two catalog entries — Epitope Scout and the Developability Scout —
+    are not GPU adapters, so ``help_tool_guide`` 404s on their slugs.
+    They are split out here on exactly the condition that route uses
+    (``tool_base.get(slug) is None``) so the guide grid can never emit a
+    link that does not resolve.
+    """
+    catalog = _build_tools_catalog()
+    tool_guides = [e for e in catalog if tool_base.get(e["slug"]) is not None]
+    guideless_tools = [e for e in catalog if tool_base.get(e["slug"]) is None]
+
+    # Group the grid by the catalog's own ``category`` field. Ungrouped,
+    # it renders in ``all_adapters()`` insertion order, which is roughly
+    # alphabetical by slug — the eight design tools end up scattered
+    # between the predictors. ``group_catalog`` is the same helper the
+    # homepage and /tools use, so the guide grid can never drift out of
+    # band order with them, and a band rename carries through with no
+    # edit to this file.
+    guide_groups = group_catalog(tool_guides)
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},
         {"name": "Help", "url": url_for("public.help_index", _external=True)},
@@ -449,6 +473,8 @@ def help_index():
     return render_template(
         "help/index.html",
         adapters=tool_base.all_adapters(),
+        guide_groups=guide_groups,
+        guideless_tools=guideless_tools,
         breadcrumbs=breadcrumbs,
     )
 
