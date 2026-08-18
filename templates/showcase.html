@@ -101,12 +101,12 @@
         {% if session.get('user_email') %}
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
         {% else %}
-          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with $5</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with ${{ signup_credit() }}</a>
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
         {% endif %}
       </div>
       <p class="landing-hero-help" style="margin-top: 1.1rem; font-size: 0.9rem; color: var(--text-secondary);">
-        New accounts start with a $5 wallet. Pay by the second, no subscription.
+        New accounts start with a ${{ signup_credit() }} wallet. Pay by the second, no subscription.
         <a href="{{ url_for('public.pricing') }}" style="color: var(--accent-text);">How billing works</a>.
       </p>
     </div>
@@ -151,7 +151,7 @@
               </div>
               <div class="showcase-runit">
                 <span class="showcase-runit-chip">Pay by the second of GPU</span>
-                <span class="showcase-runit-chip">New accounts start with $5</span>
+                <span class="showcase-runit-chip">New accounts start with ${{ signup_credit() }}</span>
                 <span class="showcase-runit-chip">No install, runs in your browser</span>
               </div>
               <div class="showcase-actions">

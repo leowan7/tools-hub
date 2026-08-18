@@ -158,7 +158,10 @@ class TestWalletOverviewTemplate:
                 user_email="u@example.com",
             )
         assert "signup balance available" in html
-        assert "$5.00" in html
+        # Derived, not literal: the grant has changed once already and a
+        # hardcoded figure here just moves the drift into the test suite.
+        from shared.wallet import SIGNUP_CREDIT_USD
+        assert f"${SIGNUP_CREDIT_USD:.2f}" in html
 
 
 # ---------------------------------------------------------------------------
@@ -529,8 +532,9 @@ class TestPricingTemplate:
         assert "Fund your wallet" in html
 
     def test_pricing_renders_for_anonymous_user(self, app):
-        """No session.user_email => signup CTA references $5 wallet balance."""
+        """No session.user_email => signup CTA references the wallet grant."""
         with app.test_request_context("/pricing"):
             html = render_template("pricing.html")
         assert "Your wallet is your budget" in html
-        assert "Start with $5 in your wallet" in html
+        from shared.wallet import SIGNUP_CREDIT_USD
+        assert f"Start with ${SIGNUP_CREDIT_USD:.0f} in your wallet" in html

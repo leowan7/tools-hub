@@ -2,7 +2,7 @@
 
 {% block title %}Pricing | Wallet cap, unlimited design{% endblock %}
 
-{% block description %}Fund a USD wallet and it becomes your spend cap. Design as many candidates as you want, pay only for the compute delivered. No credits, no tiers, no subscriptions. New accounts start with a $5 wallet balance.{% endblock %}
+{% block description %}Fund a USD wallet and it becomes your spend cap. Design as many candidates as you want, pay only for the compute delivered. No credits, no tiers, no subscriptions. New accounts start with a ${{ signup_credit() }} wallet balance.{% endblock %}
 
 {% block content %}
 
@@ -15,14 +15,14 @@
       many candidates as you want. A large request fans out across GPUs and
       drains only for the compute it delivers, pausing the moment your
       balance runs low. No credits, no tiers, no subscriptions. New accounts
-      start with a $5 wallet balance.
+      start with a ${{ signup_credit() }} wallet balance.
     </p>
     <div class="pricing-hero-actions">
       {% if session.get('user_email') %}
         <a href="/account/wallet/topup" class="btn-primary-lg">Fund your wallet</a>
         <a href="{{ url_for('public.index') }}" class="btn-secondary">Browse tools</a>
       {% else %}
-        <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
+        <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with ${{ signup_credit() }} in your wallet</a>
         <a href="#how-billing-works" class="btn-secondary">How billing works</a>
       {% endif %}
     </div>
@@ -44,7 +44,7 @@
       <article class="why-card">
         <h3 class="why-card-title">1. Sign up free</h3>
         <p class="why-card-body">
-          Create an account at tools.ranomics.com. Get $5 in your wallet
+          Create an account at tools.ranomics.com. Get ${{ signup_credit() }} in your wallet
           immediately, enough to try any tool on your own inputs before you
           top up.
         </p>
@@ -203,7 +203,7 @@
         <p class="why-card-body">
           You fund a USD wallet in any amount from $20, and that balance is
           your spend cap. Each job debits the actual cost of the compute it
-          consumes. New accounts start with $5 in their wallet. There is no
+          consumes. New accounts start with ${{ signup_credit() }} in their wallet. There is no
           subscription, no seat license, and no fixed tier.
         </p>
       </article>
