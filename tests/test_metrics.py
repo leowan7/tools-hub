@@ -172,3 +172,130 @@ def _sample(metric_name: str, labels: dict[str, str]) -> float:
 
     value = REGISTRY.get_sample_value(metric_name, labels)
     return value if value is not None else 0.0
+
+
+# ---------------------------------------------------------------------------
+# _client_ip — X-Forwarded-For hop selection
+# ---------------------------------------------------------------------------
+#
+# _client_ip is the key for two security gates: the /metrics CIDR allowlist
+# just above, and scout.ratelimit's per-IP buckets. Until 2026-08-18 it read
+# the LEFTmost X-Forwarded-For entry, which the caller writes, so either gate
+# could be defeated by sending a chosen header. These tests pin the hop
+# arithmetic that fixes it.
+
+
+def _ip_under(headers, hops=None, monkeypatch=None, remote_addr="203.0.113.7"):
+    """Resolve _client_ip() inside a request context with these headers."""
+    from shared.metrics import _client_ip
+
+    if monkeypatch is not None:
+        if hops is None:
+            monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+        else:
+            monkeypatch.setenv("TRUSTED_PROXY_HOPS", str(hops))
+    flask_app = Flask(__name__)
+    with flask_app.test_request_context(
+        "/", headers=headers, environ_base={"REMOTE_ADDR": remote_addr}
+    ):
+        return _client_ip()
+
+
+def test_client_ip_falls_back_to_socket_peer_without_the_header(monkeypatch):
+    assert _ip_under({}, monkeypatch=monkeypatch) == "203.0.113.7"
+
+
+def test_client_ip_uses_the_only_value_of_a_single_entry_header(monkeypatch):
+    """THE load-bearing case: correct under BOTH edge semantics.
+
+    If Railway's edge *overwrites* X-Forwarded-For with the peer it saw, the
+    header has one entry and it is the client. If the edge *appends* and the
+    client sent no header, the header also has one entry and it is the
+    client. One trusted hop returns that entry either way, so the fix does
+    not depend on knowing which behaviour Railway has.
+    """
+    got = _ip_under({"X-Forwarded-For": "198.51.100.9"}, monkeypatch=monkeypatch)
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_takes_the_rightmost_of_two_entries(monkeypatch):
+    """Append semantics with a spoofed leading entry: trust only our hop."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4, 198.51.100.9"}, monkeypatch=monkeypatch
+    )
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_ignores_a_long_spoofed_chain(monkeypatch):
+    """A caller padding the header cannot push its chosen value into play."""
+    spoof = ", ".join(f"10.0.0.{i}" for i in range(20))
+    got = _ip_under(
+        {"X-Forwarded-For": f"{spoof}, 198.51.100.9"}, monkeypatch=monkeypatch
+    )
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_tolerates_whitespace_and_empty_entries(monkeypatch):
+    got = _ip_under(
+        {"X-Forwarded-For": "  1.2.3.4 ,, ,   198.51.100.9   "},
+        monkeypatch=monkeypatch,
+    )
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_falls_back_when_the_header_is_only_separators(monkeypatch):
+    got = _ip_under({"X-Forwarded-For": " , ,, "}, monkeypatch=monkeypatch)
+    assert got == "203.0.113.7"
+
+
+def test_client_ip_honours_a_deeper_trusted_hop_count(monkeypatch):
+    """Two trusted proxies (e.g. Cloudflare in front of Railway)."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4, 198.51.100.9, 192.0.2.1"},
+        hops=2,
+        monkeypatch=monkeypatch,
+    )
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_clamps_when_the_chain_is_shorter_than_the_hop_count(monkeypatch):
+    """Must not raise IndexError; yields the leftmost entry available."""
+    got = _ip_under(
+        {"X-Forwarded-For": "198.51.100.9"}, hops=3, monkeypatch=monkeypatch
+    )
+    assert got == "198.51.100.9"
+
+
+def test_client_ip_zero_hops_ignores_the_header_entirely(monkeypatch):
+    """TRUSTED_PROXY_HOPS=0 is the no-proxy deployment: trust only the peer."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4"}, hops=0, monkeypatch=monkeypatch
+    )
+    assert got == "203.0.113.7"
+
+
+def test_client_ip_ignores_a_malformed_hop_count(monkeypatch):
+    """A bad env value must not crash a request; falls back to one hop."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4, 198.51.100.9"},
+        hops="banana",
+        monkeypatch=monkeypatch,
+    )
+    assert got == "198.51.100.9"
+
+
+def test_metrics_allowlist_cannot_be_defeated_by_a_forged_header(monkeypatch):
+    """The /metrics CIDR gate is the second consumer of the same fix.
+
+    A caller outside the allowlist must not be able to talk its way in by
+    prepending an allowlisted address to X-Forwarded-For.
+    """
+    monkeypatch.setenv("METRICS_ALLOWED_CIDR", "10.0.0.0/8")
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    flask_app = Flask(__name__)
+    register_metrics(flask_app)
+
+    r = flask_app.test_client().get(
+        "/metrics", headers={"X-Forwarded-For": "10.1.2.3, 203.0.113.7"}
+    )
+    assert r.status_code == 403

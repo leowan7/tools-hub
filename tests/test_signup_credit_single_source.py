@@ -31,13 +31,6 @@ ALLOWED_LITERAL_DOLLAR = {
     "topup.html",          # top-up denomination buttons
     "launch.html",         # a worked example of hold rounding, in a comment
     "transactions.html",   # checked separately below
-    # _preview.html is the logged-out tool shell, DELETED outright by the
-    # "open the tool pages" PR (#144). Editing a file another open PR
-    # deletes produces a delete/modify conflict that a human then has to
-    # resolve, so it is excluded rather than fixed. Drop this entry once
-    # #144 lands and the file is gone -- if the file still exists then,
-    # this exclusion is hiding a real one.
-    "_preview.html",
 }
 
 SIGNUP_CONTEXT = re.compile(
