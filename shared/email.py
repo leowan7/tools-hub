@@ -1653,11 +1653,26 @@ def send_signup_credit_email(
             "send_signup_credit_email: no email for user %s; skipping", user_id
         )
         return False
-    # Default tracks shared.wallet.SIGNUP_CREDIT_USD; the env var still wins
-    # so a deployment can change the grant without a code push.
-    credit_usd = _money(
-        os.environ.get("WALLET_SIGNUP_CREDIT_USD", "15")
-    )
+    # State the credit the wallet actually grants, by reading the grant.
+    #
+    # This used to read a WALLET_SIGNUP_CREDIT_USD env var, with a comment
+    # claiming it let a deployment "change the grant without a code push".
+    # It never did: the grant is SIGNUP_CREDIT_USD in shared/wallet.py, and
+    # the env var only changed the number printed in this email. Its sole
+    # possible effect was to make the welcome email disagree with the balance
+    # the user was actually given -- which is exactly what happened. When the
+    # grant went 5.00 -> 15.00 (2026-08-18) the preview environment still had
+    # WALLET_SIGNUP_CREDIT_USD=5 set, so preview welcome emails advertised $5
+    # against a $15 balance. Removing the override is what makes the "one
+    # source" claim true; test_signup_credit_single_source.py now enforces it
+    # for Python as well as templates.
+    #
+    # Imported inside the function: shared.wallet imports shared.email, so a
+    # module-level import here would be a cycle.
+    from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+
+    # "nearest": a fixed advertised amount, neither a balance nor a cost.
+    credit_usd = _money(SIGNUP_CREDIT_USD, "nearest")
     base_url = _base_url()
     subject = (
         f"${credit_usd} in compute credit added to your Ranomics tools account"

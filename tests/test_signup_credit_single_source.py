@@ -13,15 +13,18 @@ and no template hardcodes a dollar figure for it.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from app import create_app
 from shared.wallet import SIGNUP_CREDIT_USD
 
-TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATES = REPO_ROOT / "templates"
 
 # "$5" in these is a DIFFERENT constant and must not be swept up:
 #   _header.html / send_low_balance.html -> LOW_BALANCE_EMAIL_THRESHOLD
@@ -104,3 +107,88 @@ def test_no_stale_five_dollar_promise(route):
     if SIGNUP_CREDIT_USD != 5:
         assert "$5 in your wallet" not in body
         assert "$5 in their wallet" not in body
+
+
+# ---------------------------------------------------------------------------
+# Python sources.
+#
+# Everything above this line checks templates. That was the hole: when the
+# grant went 5.00 -> 15.00, shared/email.py was still reading a separate
+# WALLET_SIGNUP_CREDIT_USD env var for the welcome email, defaulting to the
+# old figure. The template guard passed the whole time, and the preview
+# environment shipped a welcome email advertising $5 against a $15 balance.
+# A guard that only looks at one language is not a single-source guard.
+# ---------------------------------------------------------------------------
+
+_PY_ROOTS = ("shared", "blueprints", "scout", "cron")
+
+
+def _python_sources():
+    for root in _PY_ROOTS:
+        base = REPO_ROOT / root
+        if base.is_dir():
+            yield from base.rglob("*.py")
+    yield REPO_ROOT / "app.py"
+
+
+def test_no_python_module_reads_a_parallel_signup_credit_env_var():
+    """The grant has one home: shared.wallet.SIGNUP_CREDIT_USD.
+
+    Parsed with ast rather than grepped, so a match is a real call and not a
+    mention inside a comment or docstring -- this file's own prose names the
+    variable repeatedly.
+    """
+    offenders = []
+    for path in _python_sources():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # os.environ.get("WALLET_SIGNUP_CREDIT_USD", ...) / os.getenv(...)
+            fn = node.func
+            name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+            if name not in {"get", "getenv"}:
+                continue
+            for arg in node.args:
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and "SIGNUP_CREDIT" in arg.value
+                ):
+                    rel = path.relative_to(REPO_ROOT).as_posix()
+                    offenders.append(f"{rel}:{node.lineno} reads {arg.value!r}")
+    assert not offenders, (
+        "signup credit read from an env var instead of shared.wallet."
+        "SIGNUP_CREDIT_USD:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_signup_credit_email_states_the_real_grant():
+    """The welcome email quotes the amount the wallet actually grants.
+
+    The goal-level version of the test above: even if some future override
+    is reintroduced by a route this guard does not walk, the email itself
+    must still agree with the balance.
+    """
+    import shared.email as email_mod
+
+    captured = {}
+
+    def _fake_post(*, to_email, subject, html_body, log_tag):
+        captured.update(subject=subject, html=html_body)
+        return True
+
+    with (
+        mock.patch.object(email_mod, "_post_resend", _fake_post),
+        mock.patch.object(
+            email_mod, "_resolve_user_email", return_value="x@example.com"
+        ),
+    ):
+        assert email_mod.send_signup_credit_email(user_id="u1") is True
+
+    expected = f"${SIGNUP_CREDIT_USD:.0f}"
+    assert expected in captured["subject"], captured["subject"]
+    assert expected in captured["html"]
