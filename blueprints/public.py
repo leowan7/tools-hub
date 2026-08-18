@@ -27,7 +27,11 @@ from flask import (
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
 from shared.jobs import list_jobs_for_user
-from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.tools_catalog import (
+    _build_tools_catalog,
+    _short_name_for_label,
+    group_catalog,
+)
 from tools import base as tool_base
 
 logger = logging.getLogger(__name__)
@@ -91,19 +95,7 @@ def index():
     # same order, just rendered as wide tile sections instead of a
     # comparison matrix. Ordering walks the iteration loop:
     # scope → design → sequence → predict → QC.
-    category_order = (
-        "Scope the target",
-        "Design binders",
-        "Sequence on a backbone",
-        "Structure prediction",
-        "Check developability",
-        "Other",
-    )
-    grouped: list[tuple[str, list[dict]]] = []
-    for category in category_order:
-        members = [t for t in catalog if t.get("category") == category]
-        if members:
-            grouped.append((category, members))
+    grouped = group_catalog(catalog)
 
     recent_jobs: list = []
     if session.get("user_email"):

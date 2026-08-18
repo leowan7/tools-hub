@@ -4,11 +4,9 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
-{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# BindCraft form uses a two-panel layout: existing form on the left,
@@ -156,10 +154,7 @@
     }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -272,6 +267,7 @@
             Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
             Click residues in the 3D viewer below to toggle them in and out of this list.
           </div>
+          {% include "tools/_hotspot_scout_hint.html" %}
 
           {# 3D hotspot picker — mirrors BoltzGen form. Renders only after
              the user uploads a PDB; typed entry stays authoritative, the
@@ -339,19 +335,20 @@
                  data-ok="1"></div>
           {% endif %}
 
-          <button type="submit" class="btn-primary"
-                  id="tool-submit-btn"
-                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
-            Submit run
-          </button>
-          {# D1: campaign-mode CTA. type="button" so the single-job wallet gate
-             (which selects button[type=submit]) never disables it — an
-             over-ceiling request is bounded by the campaign's own preauth, not
-             the single-job estimate. Hidden until the count exceeds the
-             ceiling with a fresh upload attached. #}
-          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
-            Start campaign
-          </button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary"
+                    id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
+          {{ campaign_submit_btn() }}
         </form>
       </div>
     </div>

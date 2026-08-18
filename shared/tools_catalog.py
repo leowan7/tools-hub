@@ -35,7 +35,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
             "Pick Epitope Scout first to identify candidate epitopes "
             "and per-dimension feasibility for any target."
         ),
-        "category": "Scope the target",
+        "category": "Check if my target is a good one to bind",
         "smoke_runtime": "~30 s",
         "pilot_runtime": "—",
         "runtime_band": "~30 s",
@@ -58,7 +58,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
             "need a quick liability scan (CDR length, hydrophobic "
             "patches, charge balance, isoelectric point)."
         ),
-        "category": "Check developability",
+        "category": "See if a binder will hold up in the lab",
         "smoke_runtime": "<5 s",
         "pilot_runtime": "—",
         "runtime_band": "<5 s",
@@ -73,26 +73,61 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
 
 
 # Maps each GPU tool slug to a workflow-stage category. All binder and
-# antibody scaffold designers share one "Design binders" bucket so the
-# catalog reads as scope -> design -> sequence -> predict -> QC. (An
-# earlier revision split the designers into per-scaffold subsections;
-# that was reverted back to the single bucket.)
+# antibody scaffold designers share one design bucket so the catalog
+# reads as scope -> design -> sequence -> predict -> QC. (An earlier
+# revision split the designers into per-scaffold subsections; that was
+# reverted back to the single bucket.)
+#
+# The band labels are written as the task a bench biologist has, not as
+# the pipeline stage a computational scientist would name. They are the
+# literal section headings on the homepage and /tools, and they are also
+# the keys of ``shared.category_glyphs._CATEGORY_GLYPHS`` -- renaming one
+# without the other silently drops the glyph, so tests/test_tool_categories.py
+# asserts every band still resolves one.
 _TOOL_CATEGORIES: dict[str, str] = {
-    "rfdiffusion": "Design binders",
-    "bindcraft": "Design binders",
-    "pxdesign": "Design binders",
-    "rfantibody": "Design binders",
-    "esmfold2-design": "Design binders",
-    "boltzgen": "Design binders",
-    "iggm": "Design binders",
-    "proteina": "Design binders",
-    "mpnn": "Sequence on a backbone",
-    "af2": "Structure prediction",
-    "colabfold": "Structure prediction",
-    "esmfold": "Structure prediction",
-    "boltz2": "Structure prediction",
-    "opendde": "Structure prediction",
+    "rfdiffusion": "Make new binders for my target",
+    "bindcraft": "Make new binders for my target",
+    "pxdesign": "Make new binders for my target",
+    "rfantibody": "Make new binders for my target",
+    "esmfold2-design": "Make new binders for my target",
+    "boltzgen": "Make new binders for my target",
+    "iggm": "Make new binders for my target",
+    "proteina": "Make new binders for my target",
+    "mpnn": "Choose sequences for a structure I already have",
+    "af2": "Predict or check a 3D structure",
+    "colabfold": "Predict or check a 3D structure",
+    "esmfold": "Predict or check a 3D structure",
+    "boltz2": "Predict or check a 3D structure",
+    "opendde": "Predict or check a 3D structure",
 }
+
+
+# Display order for the catalog bands, shared by the homepage and
+# /tools so the two can never drift apart. "Other" is the
+# ``_build_tools_catalog`` fallback for a slug with no category; it stays
+# last so a miscategorised tool is still visible rather than dropped.
+CATEGORY_ORDER: tuple[str, ...] = (
+    "Check if my target is a good one to bind",
+    "Make new binders for my target",
+    "Choose sequences for a structure I already have",
+    "Predict or check a 3D structure",
+    "See if a binder will hold up in the lab",
+    "Other",
+)
+
+
+def group_catalog(catalog: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Group a catalog into ordered ``(band, tools)`` pairs.
+
+    Bands with no members are dropped, so an all-flags-off deployment
+    renders nothing rather than a run of empty headings.
+    """
+    grouped: list[tuple[str, list[dict]]] = []
+    for category in CATEGORY_ORDER:
+        members = [t for t in catalog if t.get("category") == category]
+        if members:
+            grouped.append((category, members))
+    return grouped
 
 
 def _build_tools_catalog() -> list[dict]:

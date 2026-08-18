@@ -4,9 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# ESMFold2-design form. Two-panel layout matching Boltz-2. Sequence-
@@ -88,10 +86,7 @@
     .esmd-conditional[hidden] { display: none; }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -257,7 +252,15 @@
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
-          <button type="submit" class="btn-primary">Submit design run</button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary">Submit design run</button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
         </form>
       </div>
     </div>

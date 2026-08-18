@@ -4,11 +4,9 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
-{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
 
-{% block title %}{{ adapter.label }} -- Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " -- Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# Proteina-Complexa form. Two-panel layout mirroring rfdiffusion: form left,
@@ -95,10 +93,7 @@
     }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -194,6 +189,7 @@
               rather than silently ignored. Click residues in the viewer to
               toggle them.
             </div>
+            {% include "tools/_hotspot_scout_hint.html" %}
 
             <div class="hotspot-picker" data-hotspot-picker>
               <div class="hotspot-picker-header">
@@ -262,13 +258,19 @@
                  data-ok="1"></div>
           {% endif %}
 
-          <button type="submit" class="btn-primary" id="tool-submit-btn"
-                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
-            Submit run
-          </button>
-          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
-            Start campaign
-          </button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary" id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
+          {{ campaign_submit_btn() }}
         </form>
       </div>
     </div>
