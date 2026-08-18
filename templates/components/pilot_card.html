@@ -1,9 +1,17 @@
 {# pilot_card.html — the named starter recipe for one tool.
 
-A "pilot" is a small, cheap FIRST run on the user's OWN target, with
-the cost and the runtime stated before they commit. It formalises the
-"start with 4-8 designs, then scale" advice that was written as prose
-in five different meta.py files and implemented nowhere.
+A "pilot" is a guided FIRST run on the user's OWN target, with the cost
+and the runtime stated before they commit. It formalises the "start
+with 4-8 designs, then scale" advice that was written as prose in five
+different meta.py files and implemented nowhere.
+
+It is NOT a promise of a discount. Three tools (boltzgen,
+esmfold2-design, iggm) bill a flat price with no cheaper configuration
+reachable from their form, so their pilot costs exactly what any run
+costs; their PILOT prose says so in as many words. The narration —
+goal, what you need, cost, next step — is the part that carries its
+weight for someone who does not yet know what to run first, and that is
+true whether or not the params dial anything down.
 
 The dict comes from ``tool_public_context(adapter).pilot``, built by
 ``blueprints/tools.py::_pilot_context``. meta.py declares only the

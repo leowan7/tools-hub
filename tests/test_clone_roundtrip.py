@@ -313,3 +313,100 @@ class TestCloneRoundTrip:
         assert _posted_value(html, "chains_to_design") == str(
             inputs["target_chain"]
         )
+
+
+class TestNoPythonReprReachesAField:
+    """The gap the test above declares out of scope, closed.
+
+    ``test_every_stored_input_named_by_a_field_reaches_it`` skips any
+    stored value that is a list, tuple or dict — it compares by identity
+    and a structured value has no single string to compare to. Nothing
+    then checked what such a value RENDERED as, and the answer was
+    ``repr``: cloning a Boltz-2 run put
+
+        [{'name': 'd0', 'sequence': 'QVRLQESGPGLVQPSQTLSLTC...'}]
+
+    into the textarea the user is asked to submit as FASTA. It is not a
+    wrong default, which is what the rest of this file hunts — it is a
+    form that cannot be submitted at all, and it looks deliberate enough
+    that a first-time visitor would assume it is the expected notation.
+
+    Asserted on every tool rather than on boltz2, because the cause is
+    the shape and six adapters store a list somewhere.
+    """
+
+    # Anything a form field renders that starts a Python container. No
+    # tool asks its user to type one, so this needs no per-tool
+    # exceptions.
+    _REPR = re.compile(r"^\s*[\[({]")
+
+    def test_no_field_renders_a_container_repr(self, tools_app):
+        flask_app, adapters = tools_app
+        offenders: list[str] = []
+        structured = 0
+        for adapter in adapters:
+            inputs = _stored_inputs(adapter)
+            html = _clone_html(flask_app, adapter, inputs)
+            fields = _field_names(html)
+            for key, want in inputs.items():
+                if key.startswith("_") or key not in fields:
+                    continue
+                if isinstance(want, (dict, list, tuple)):
+                    structured += 1
+                got = _posted_value(html, key)
+                if got and self._REPR.match(got):
+                    offenders.append(f"{adapter.slug}.{key} renders {got!r:.80}")
+        # Without a structured stored value naming a real field there is
+        # nothing here to get wrong, and the scan above proves nothing.
+        assert structured >= 5, (
+            f"only {structured} structured inputs named a field; the "
+            f"fixture no longer exercises the conversion"
+        )
+        assert not offenders, offenders
+
+    def test_boltz2_binder_sequences_round_trip_through_validate(
+        self, tools_app,
+    ):
+        """The strong form: re-submit the cloned form, get the same job.
+
+        A textarea that merely looks like FASTA is not enough — the
+        proof is that boltz2's own parser reads the cloned text back to
+        the identical record list it stored.
+        """
+        flask_app, adapters = tools_app
+        adapter = next(a for a in adapters if a.slug == "boltz2")
+        inputs = _stored_inputs(adapter)
+        assert isinstance(inputs["binder_sequences"], list), (
+            "boltz2 no longer stores records; retarget this test"
+        )
+        html = _clone_html(flask_app, adapter, inputs)
+        rendered = _posted_value(html, "binder_sequences")
+        assert rendered and rendered.startswith(">"), rendered
+
+        again, err = adapter.validate(
+            dict(_FORM, preset="standalone", binder_sequences=rendered), {},
+        )
+        assert err is None, err
+        assert again["binder_sequences"] == inputs["binder_sequences"]
+
+    def test_af2_fasta_records_round_trip_through_validate(self, tools_app):
+        """Same shape, other tool. af2_form.html used to rebuild the
+
+        FASTA itself in a Jinja loop; that moved into ``_as_form_text``
+        so every tool gets it, and this pins the behaviour rather than
+        the location.
+        """
+        flask_app, adapters = tools_app
+        adapter = next(a for a in adapters if a.slug == "af2")
+        inputs = _stored_inputs(adapter)
+        assert isinstance(inputs["fasta_records"], list)
+        assert "fasta" not in inputs, "af2 now stores the raw text too"
+        html = _clone_html(flask_app, adapter, inputs)
+        rendered = _posted_value(html, "fasta")
+        assert rendered and rendered.startswith(">"), rendered
+
+        form = dict(_FORM, preset="standalone", fasta=rendered)
+        form.pop("sequences", None)
+        again, err = adapter.validate(form, {})
+        assert err is None, err
+        assert again["fasta_records"] == inputs["fasta_records"]

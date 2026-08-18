@@ -64,6 +64,14 @@ def _pilots(slugs):
     return {s: getattr(meta_for(s), "PILOT", None) for s in slugs}
 
 
+def _estimate(slug: str, params: dict):
+    from shared.wallet_estimates import estimated_cost_for_tool
+
+    return estimated_cost_for_tool(
+        None, slug, {k: v for k, v in params.items() if v is not None},
+    )
+
+
 def _posted_value(html: str, name: str) -> str | None:
     """What the browser would POST for ``name``, read off the markup.
 
@@ -318,15 +326,59 @@ class TestNoPilotIsANoOp:
     The remaining three (boltzgen, esmfold2-design, iggm) are MEASURED
     to have no cheaper configuration reachable from their form — the
     default already is the tool's floor — so this asserts the honest
-    rule rather than an allow-list: a pilot may restate the defaults
-    only when nothing cheaper exists. Add a no-op pilot to a tool where
-    a cheaper run IS reachable and this fails.
+    rule rather than an allow-list.
+
+    THE RULE, stated as what is actually computed: if a pilot costs the
+    same as the form's own defaults, then driving the scaling parameter
+    to its minimum must not make it cheaper. A pilot that bills exactly
+    what the default bills, on a tool where a smaller run is reachable,
+    fails.
+
+    Keyed on PRICE and not on "do the params differ from the defaults".
+    That earlier shape was defeated with a decoy: it skipped any pilot
+    that differed from the defaults in ANY key, so adding one
+    price-irrelevant key — pxdesign's ``binder_length``, which the
+    estimator does not read — exempted the tool from the check entirely
+    while the pilot still billed the full default price.
+    ``test_a_cosmetic_param_cannot_buy_the_exemption`` is that decoy,
+    kept as a control.
     """
 
     @staticmethod
     def _form_defaults(client, slug, keys):
         html = client.get(f"/tools/{slug}").get_data(as_text=True)
         return {k: _posted_value(html, k) for k in keys}
+
+    @classmethod
+    def _no_op_violation(cls, client, slug, params) -> str | None:
+        """The rule itself, so the sweep and the control share one body."""
+        from shared.wallet_estimates import (
+            estimated_cost_for_tool,
+            get_tool_spec,
+        )
+
+        defaults = cls._form_defaults(client, slug, params)
+        here = estimated_cost_for_tool(None, slug, params)
+        as_shipped = estimated_cost_for_tool(
+            None, slug, {k: v for k, v in defaults.items() if v is not None},
+        )
+        if here != as_shipped:
+            return None  # the pilot moves the bill; it is not a no-op
+
+        spec = get_tool_spec(slug)
+        floor = estimated_cost_for_tool(
+            None, slug,
+            dict(params, **({spec.scaling_param: "1"}
+                            if spec and spec.scaling_param else {})),
+        )
+        if floor < here:
+            return (
+                f"{slug}: the pilot bills exactly what the form's own "
+                f"defaults bill (${here}), but a cheaper run is reachable "
+                f"(${floor}) — retune the pilot instead of restating the "
+                f"default"
+            )
+        return None
 
     def test_a_pilot_is_never_more_expensive_than_the_defaults(
         self, tools_app
@@ -357,39 +409,66 @@ class TestNoPilotIsANoOp:
     def test_a_no_op_pilot_is_only_allowed_when_nothing_cheaper_exists(
         self, tools_app
     ):
-        from shared.wallet_estimates import (
-            estimated_cost_for_tool,
-            get_tool_spec,
-        )
-
         flask_app, slugs = tools_app
         client = flask_app.test_client()
-        bad = []
-        for slug, pilot in _pilots(slugs).items():
-            if not pilot:
-                continue
-            params = pilot["params"]
-            defaults = self._form_defaults(client, slug, params)
-            if any(defaults.get(k) != v for k, v in params.items()):
-                continue  # the pilot changes something; nothing to prove
-
-            # It restates the defaults. Only defensible if the estimator
-            # cannot be moved down from here — i.e. driving the scaling
-            # parameter to its minimum buys nothing.
-            spec = get_tool_spec(slug)
-            here = estimated_cost_for_tool(None, slug, params)
-            floor = estimated_cost_for_tool(
-                None, slug,
-                dict(params, **({spec.scaling_param: "1"}
-                                if spec and spec.scaling_param else {})),
-            )
-            if floor < here:
-                bad.append(
-                    f"{slug}: pilot params equal the form defaults, but a "
-                    f"cheaper run exists (${floor} vs ${here}) — retune the "
-                    f"pilot instead of restating the default"
-                )
+        pilots = {s: p for s, p in _pilots(slugs).items() if p}
+        # Five of the ten currently bill exactly what their defaults
+        # bill. If that ever reaches zero the sweep still passes but has
+        # stopped exercising the floor branch, which is the whole rule.
+        priced_like_the_default = [
+            slug for slug, pilot in pilots.items()
+            if self._form_defaults(client, slug, pilot["params"])
+            and _estimate(slug, pilot["params"])
+            == _estimate(slug, self._form_defaults(
+                client, slug, pilot["params"]))
+        ]
+        assert priced_like_the_default, (
+            "no pilot bills what its form defaults bill, so the floor "
+            "check below never runs"
+        )
+        bad = [
+            msg for slug, pilot in pilots.items()
+            if (msg := self._no_op_violation(client, slug, pilot["params"]))
+        ]
         assert not bad, bad
+
+    def test_a_cosmetic_param_cannot_buy_the_exemption(self, tools_app):
+        """The control. A price-irrelevant key must not silence the rule.
+
+        pxdesign is the tool a no-op pilot would actually hurt: a
+        smaller run IS reachable (num_designs down to 1 halves the
+        bill), so a pilot restating its defaults is exactly what the
+        rule exists to catch. ``binder_length`` is a real, rendered,
+        submitted field that the estimator does not read — the decoy the
+        previous shape of this test was defeated with.
+        """
+        flask_app, _ = tools_app
+        client = flask_app.test_client()
+        keys = ("preset", "num_designs", "binder_length")
+        defaults = self._form_defaults(client, "pxdesign", keys)
+        assert all(v is not None for v in defaults.values()), defaults
+
+        # A hypothetical no-op pilot. The rule must flag it.
+        assert self._no_op_violation(client, "pxdesign", dict(defaults)), (
+            "a pilot restating pxdesign's defaults was NOT flagged, even "
+            "though num_designs=1 costs half — the rule is not enforcing "
+            "what its docstring claims"
+        )
+
+        # The same pilot plus one key that moves the markup and nothing
+        # else. It must still be flagged.
+        decoy = dict(defaults, binder_length=str(
+            int(defaults["binder_length"]) + 1))
+        assert _estimate("pxdesign", decoy) == _estimate("pxdesign", defaults), (
+            "binder_length now moves the estimate; pick another "
+            "price-irrelevant field for this control"
+        )
+        assert decoy != defaults
+        assert self._no_op_violation(client, "pxdesign", decoy), (
+            "one price-irrelevant key exempted pxdesign from the no-op "
+            "rule — the decoy that defeated the earlier shape of this "
+            "test still works"
+        )
 
     def test_the_retuned_pilots_really_are_cheaper(self, tools_app):
         """Pins the two retuned by hand, so a revert is loud.

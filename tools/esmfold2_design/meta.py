@@ -198,10 +198,13 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: one seed",
+    "label": "A guided first run",
     "goal": (
         "See what a single gradient-design run produces before "
-        "committing to a parallel sweep."
+        "committing to a parallel sweep. One seed is already the "
+        "smallest run this tool offers, so these are the form&rsquo;s "
+        "own defaults &mdash; a guided first run at the tool&rsquo;s "
+        "normal cost, not a cheaper trial."
     ),
     "you_need": (
         "A target sequence &mdash; one of the bundled presets, or a "

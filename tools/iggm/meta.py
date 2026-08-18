@@ -147,10 +147,13 @@ examples: list[dict] = []
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter check: predict the complex",
+    "label": "A guided first run",
     "goal": (
         "Before designing anything, check that IgGM can place your "
-        "existing antibody on your antigen."
+        "existing antibody on your antigen. A single sample in "
+        "prediction mode is already the smallest run IgGM offers, so "
+        "these are the form&rsquo;s own defaults &mdash; a guided first "
+        "run at the tool&rsquo;s normal cost, not a cheaper trial."
     ),
     "you_need": (
         "Your antigen structure file, and your antibody heavy chain "

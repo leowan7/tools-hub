@@ -609,10 +609,14 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     each form, because every clone for every tool passes through this
     one function.
 
-    Three shapes, all measured against what ``validate()`` returns:
+    Four shapes, all measured against what ``validate()`` returns:
 
-    * ``hotspot_residues`` is stored as a list of ints (rfantibody) or
-      chain-prefixed strings; the field is one comma-separated text box.
+    * ANY list-valued input, handled last and generically by
+      ``_as_form_text``: a stored list reaches Jinja unconverted and is
+      rendered with ``repr``, so cloning a Boltz-2 run put
+      ``[{'name': 'd0', 'sequence': ...}]`` into the FASTA textarea.
+      ``hotspot_residues`` (a list on six adapters) falls out of the same
+      rule rather than needing its own line, which is what it had.
     * ``binder_length`` is stored as ``{"min": .., "max": ..}`` by
       rfdiffusion and as ``[lo, hi]`` by proteina, while both forms ask
       for it as two number inputs. bindcraft and boltzgen store the two
@@ -626,10 +630,6 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     ``setdefault`` throughout: a key the form already reads under its
     own name always wins over a derived one.
     """
-    hs = pre_fill.get("hotspot_residues")
-    if isinstance(hs, list):
-        pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
-
     bl = pre_fill.get("binder_length")
     if isinstance(bl, dict):
         lo, hi = bl.get("min"), bl.get("max")
@@ -644,6 +644,54 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
 
     if slug == "mpnn" and pre_fill.get("target_chain") is not None:
         pre_fill.setdefault("chains_to_design", pre_fill["target_chain"])
+
+    # Every remaining list becomes text. LAST, so the shape-specific
+    # rules above still see the structure they were written against.
+    for key, value in pre_fill.items():
+        if isinstance(value, (list, tuple)):
+            pre_fill[key] = _as_form_text(value)
+
+
+def _as_form_text(value) -> str:
+    """Collapse a stored list into something a text control can render.
+
+    ``pre_fill`` reaches the templates as-is and every field reads it by
+    name, so anything that is not already a string is handed to Jinja and
+    stringified with ``repr``. ``boltz2`` stores ``binder_sequences`` as
+    ``[{"name": .., "sequence": ..}]`` and its textarea rendered exactly
+    that — ``[{'name': 'd0', 'sequence': 'QVRL...'}]`` — into a box the
+    user is asked to submit as FASTA. Cloning a Boltz-2 run therefore
+    produced a form that could not be submitted at all.
+
+    Fixed here rather than in boltz2_form.html because the defect is the
+    shape, not the tool: ``hotspot_residues`` is a list on six adapters
+    and was already being joined a few lines up, ``af2`` stores
+    ``fasta_records`` in the same record shape and af2_form.html carries
+    a hand-rolled Jinja loop to rebuild the FASTA. This is that logic,
+    once, on the one function every clone for every tool passes through.
+
+    Two shapes, both measured off the adapters' own ``validate()``:
+
+    * a list of records carrying ``sequence`` -> FASTA, which is what the
+      textareas ask for and what the parsers read back.
+    * a list of scalars -> comma-separated, which is what the single-line
+      fields (hotspots, epitopes, chains) ask for.
+
+    Anything else is joined on commas too. That can still be wrong for a
+    shape nobody has written yet, but it is never a ``repr`` in a form
+    field, which is the failure this exists to stop.
+    """
+    items = list(value)
+    if items and all(
+        isinstance(i, dict) and i.get("sequence") for i in items
+    ):
+        lines = []
+        for index, record in enumerate(items):
+            name = record.get("name") or record.get("header") or f"seq_{index}"
+            lines.append(f">{name}")
+            lines.append(str(record["sequence"]))
+        return "\n".join(lines)
+    return ",".join(str(i) for i in items)
 
 
 def _pilot_context(adapter, meta) -> dict | None:

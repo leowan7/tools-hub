@@ -159,11 +159,13 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 4 designs",
+    "label": "A guided first run",
     "goal": (
         "Check that your target and the face you picked produce designs "
         "at all, on the one model that also handles glycans, modified "
-        "residues and non-canonical chemistry."
+        "residues and non-canonical chemistry. BoltzGen charges one flat "
+        "price per run, so this is a guided first run at the tool&rsquo;s "
+        "normal cost &mdash; not a cheaper trial."
     ),
     "you_need": (
         "A structure file for your target (.pdb or .cif), the chain ID, "
@@ -184,8 +186,11 @@ PILOT: dict | None = {
         "budget": "4",
     },
     "next_step": (
-        "If the four come back with usable interface scores, clone the "
-        "run and raise the budget."
+        "Read the interface scores on what comes back. <code>budget</code> "
+        "only "
+        "chooses how many of the candidates are returned to you &mdash; "
+        "it does not change the bill &mdash; so raising it on a later "
+        "run costs you nothing extra."
     ),
 }
 
