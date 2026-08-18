@@ -13,6 +13,13 @@ ipTM / pLDDT / i_pAE statistics from the AF2 model.
 
 from __future__ import annotations
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
+# The signup credit is quoted in SEO copy that reaches JSON-LD structured
+# data, so it is read from the grant rather than retyped. It was hardcoded
+# as "$5" here and stayed that way when the grant went to $15.
+_SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
+
 
 # Underlying model — RFdiffusion is the public diffusion-based backbone
 # generator from the Baker lab. Composite Kendrew pipeline pairs it
@@ -45,8 +52,9 @@ seo_faq: list[dict] = [
         "a": (
             "Billing is by the second of dedicated GPU time. A pilot run "
             "(~15 to 30 minutes on an A100) typically clears for under a "
-            "few dollars from your wallet. New accounts start with a $5 "
-            "balance, which covers a first small-target run."
+            "few dollars from your wallet. New accounts start with a "
+            f"{_SIGNUP_CREDIT} balance, which covers a first "
+            "small-target run."
         ),
     },
     {

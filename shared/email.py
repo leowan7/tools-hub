@@ -38,6 +38,8 @@ from typing import Any, Optional
 
 import requests
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_FROM = "Ranomics Tools <noreply@tools.ranomics.com>"
@@ -1653,11 +1655,13 @@ def send_signup_credit_email(
             "send_signup_credit_email: no email for user %s; skipping", user_id
         )
         return False
-    # Default tracks shared.wallet.SIGNUP_CREDIT_USD; the env var still wins
-    # so a deployment can change the grant without a code push.
-    credit_usd = _money(
-        os.environ.get("WALLET_SIGNUP_CREDIT_USD", "15")
-    )
+    # State the credit the wallet actually grants, by reading the grant.
+    # This used to read a separate WALLET_SIGNUP_CREDIT_USD env var, which
+    # could only ever make the email disagree with the balance -- and did:
+    # preview kept =5 after the grant went to 15.
+    #
+    # "nearest": a fixed advertised amount, neither a balance nor a cost.
+    credit_usd = _money(SIGNUP_CREDIT_USD, "nearest")
     base_url = _base_url()
     subject = (
         f"${credit_usd} in compute credit added to your Ranomics tools account"
