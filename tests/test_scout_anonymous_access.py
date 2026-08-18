@@ -504,3 +504,148 @@ class TestStillGated:
         _login(client)
         body = client.get("/scout/").get_data(as_text=True)
         assert "var SCOUT_AUTHENTICATED = true;" in body
+
+
+class TestRateLimitKeyCannotBeChosenByTheCaller:
+    """The limiter is only worth anything if its key is not client-supplied.
+
+    Security QC (2026-08-18) broke the original limiter exactly this way:
+    with a fixed address 14 intakes gave {200: 10, 429: 4}, but rotating
+    ``X-Forwarded-For`` gave {200: 40, 429: 0} across 40 intakes, because
+    ``_client_ip`` read the LEFTmost hop — the one the caller writes.
+
+    Railway's edge sits in front of the app. Whether it *appends* to
+    X-Forwarded-For or *overwrites* it was never confirmed, so both are
+    modelled below and the limit must hold under each.
+    """
+
+    # The address the real (attacking) client connects from. Under append
+    # semantics the edge puts this at the END of whatever the client sent.
+    REAL = "198.51.100.9"
+
+    def _intake(self, client, xff):
+        return client.post(
+            "/scout/upload",
+            data={},
+            content_type="multipart/form-data",
+            headers={"X-Forwarded-For": xff},
+        )
+
+    def test_rotating_forwarded_for_still_trips_the_limit_append_semantics(
+        self, client
+    ):
+        """Edge APPENDS: the forged prefix rotates, our hop does not."""
+        statuses = [
+            self._intake(client, f"10.9.9.{i}, {self.REAL}").status_code
+            for i in range(scout_routes.ANON_INTAKE_LIMIT + 5)
+        ]
+        assert 429 in statuses, f"rotating XFF defeated the limiter: {statuses}"
+        assert statuses.index(429) >= scout_routes.ANON_INTAKE_LIMIT
+
+    def test_rotating_forwarded_for_still_trips_the_limit_overwrite_semantics(
+        self, client
+    ):
+        """Edge OVERWRITES: whatever the client forged never reaches us."""
+        statuses = [
+            self._intake(client, self.REAL).status_code
+            for _ in range(scout_routes.ANON_INTAKE_LIMIT + 5)
+        ]
+        assert 429 in statuses, f"limiter did not trip: {statuses}"
+        assert statuses.index(429) >= scout_routes.ANON_INTAKE_LIMIT
+
+    def test_a_long_forged_chain_does_not_dodge_the_limit(self, client):
+        """Padding the header with many rotating hops must not move our hop.
+
+        The pad rotates every request, so any implementation that picks a
+        hop counted from the LEFT — at whatever index — sees a fresh key
+        each time and never trips.
+        """
+        statuses = []
+        for n in range(scout_routes.ANON_INTAKE_LIMIT + 5):
+            pad = ", ".join(f"172.16.{n}.{i}" for i in range(15))
+            statuses.append(self._intake(client, f"{pad}, {self.REAL}").status_code)
+        assert 429 in statuses, f"padded XFF defeated the limiter: {statuses}"
+
+    def test_analyze_bucket_resists_the_same_attack(self, client):
+        """QC broke /analyze the same way, so pin it too."""
+        statuses = [
+            client.post(
+                "/scout/analyze",
+                json={"job_id": "x", "chain": "A"},
+                headers={"X-Forwarded-For": f"10.9.9.{i}, {self.REAL}"},
+            ).status_code
+            for i in range(scout_routes.ANON_ANALYZE_LIMIT + 5)
+        ]
+        assert 429 in statuses, f"rotating XFF defeated /analyze: {statuses}"
+
+    def test_genuinely_distinct_clients_keep_separate_allowances(self, client):
+        """Negative control.
+
+        Without this, an implementation that collapsed every caller onto one
+        bucket (or onto "") would pass every test above while rate-limiting
+        the whole internet as a single user.
+        """
+        statuses = [
+            self._intake(client, f"10.9.9.1, 203.0.113.{i}").status_code
+            for i in range(scout_routes.ANON_INTAKE_LIMIT + 5)
+        ]
+        assert 429 not in statuses, f"distinct clients shared a bucket: {statuses}"
+
+
+class TestCounterTableEviction:
+    """Memory pressure must not become a way to clear the limiter.
+
+    The table is bounded, but the bound has to degrade gracefully: the
+    original code cleared the WHOLE table once it filled, so spraying unique
+    keys re-allowed every previously-limited caller. That makes the pressure
+    itself the attack.
+    """
+
+    def test_a_limited_key_stays_limited_through_eviction(self, monkeypatch):
+        ratelimit.reset()
+        # Shrink the table so the eviction path runs in milliseconds.
+        monkeypatch.setattr(ratelimit, "_MAX_KEYS", 50)
+        monkeypatch.setattr(ratelimit, "_EVICT_BATCH", 10)
+
+        allowed = True
+        for _ in range(4):
+            allowed, _ = ratelimit.hit("b", "victim", limit=2, window_seconds=600)
+        assert allowed is False, "victim was never limited to begin with"
+
+        # Spray an order of magnitude more unique keys than the table holds.
+        for i in range(600):
+            ratelimit.hit("b", f"spray-{i}", limit=2, window_seconds=600)
+
+        allowed, _ = ratelimit.hit("b", "victim", limit=2, window_seconds=600)
+        ratelimit.reset()
+        assert allowed is False, "eviction re-allowed a previously limited caller"
+
+    def test_the_table_stays_bounded_under_a_spray(self, monkeypatch):
+        """Graceful degradation, not unbounded growth — the original goal."""
+        ratelimit.reset()
+        monkeypatch.setattr(ratelimit, "_MAX_KEYS", 50)
+        monkeypatch.setattr(ratelimit, "_EVICT_BATCH", 10)
+        for i in range(600):
+            ratelimit.hit("b", f"spray-{i}", limit=2, window_seconds=600)
+        size = len(ratelimit._WINDOWS)
+        ratelimit.reset()
+        assert size <= 50, f"counter table grew past its bound: {size}"
+
+    def test_expired_entries_are_reclaimed_before_anything_live_is_evicted(
+        self, monkeypatch
+    ):
+        """Expiry sweep runs first, so lapsed windows cost no live eviction.
+
+        A table full of ALREADY-EXPIRED windows must collapse to near-empty
+        via the sweep. If the sweep were dropped, the same load would instead
+        sit at the cap and be handled by eviction, leaving the table full.
+        """
+        ratelimit.reset()
+        monkeypatch.setattr(ratelimit, "_MAX_KEYS", 50)
+        monkeypatch.setattr(ratelimit, "_EVICT_BATCH", 10)
+        # A 0-second window is already expired by the time the next call runs.
+        for i in range(60):
+            ratelimit.hit("b", f"lapsed-{i}", limit=2, window_seconds=0)
+        size = len(ratelimit._WINDOWS)
+        ratelimit.reset()
+        assert size < 20, f"expired windows were not reclaimed: {size} entries held"

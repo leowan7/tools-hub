@@ -11,11 +11,27 @@ Only anonymous requests are limited. A signed-in user is already capped by
 the Supabase-backed quota, and keying a shared lab's NAT address into the
 same bucket would punish paying users for their neighbours.
 
-ponytail: in-process fixed-window counters. With N gunicorn workers the
-effective limit is N x the configured number, and it resets on deploy.
-That is the correct trade for a free tier whose worst case is wasted CPU
-on one box — move the counters into Redis or a Supabase table if Scout
-ever needs a limit that holds across the fleet.
+What the limits ACTUALLY are, fleet-wide
+---------------------------------------
+
+The counters live in process memory, so the numbers configured in
+``scout.routes`` are per-worker, not per-fleet. Gunicorn runs
+``WEB_CONCURRENCY`` workers (default 2, see ``gunicorn.conf.py``) and a
+caller's requests land on whichever worker is free, so the real ceiling is
+``workers x limit``. With the shipped defaults that is:
+
+- intake:  10/worker  -> **20 per 10 min per IP** across a 2-worker fleet
+- analyze: 10/worker  -> **20 per 10 min per IP** across a 2-worker fleet
+
+and it goes up proportionally if ``WEB_CONCURRENCY`` is raised. The counters
+also reset on every deploy and on any worker recycle, so a caller who is
+limited can be un-limited by a deploy landing mid-window. Quote the doubled
+numbers, not the configured ones, when reasoning about abuse cost.
+
+ponytail: in-process fixed-window counters, deliberately. The worst case
+this guards is wasted CPU on one box, which does not justify a Redis
+dependency — move the counters into Redis or a Supabase table if Scout ever
+needs a limit that holds exactly across the fleet and survives deploys.
 """
 
 from __future__ import annotations
@@ -28,8 +44,11 @@ from functools import wraps
 
 from flask import jsonify, session
 
-# Reuse the app's existing forwarded-header-aware client IP resolution
-# rather than re-deriving it (Railway's edge is the socket peer).
+# Reuse the app's existing forwarded-header-aware client IP resolution rather
+# than re-deriving it. That function counts X-Forwarded-For hops from the
+# RIGHT (TRUSTED_PROXY_HOPS, default 1) precisely so this key cannot be chosen
+# by the caller — a leftmost read would let one header nullify every bucket
+# below. Do not swap it for an inline header parse.
 from shared.metrics import _client_ip
 
 # (bucket, key) -> (window_expires_at_monotonic, hits_in_window)
@@ -38,9 +57,26 @@ _LOCK = threading.Lock()
 
 # Hard bound on the counter table so a spray of unique source addresses
 # cannot grow it without limit. Expired entries are dropped first; if the
-# table is still full the whole thing is reset (fail OPEN — a rate limiter
-# is not worth an out-of-memory kill).
+# table is still full we evict the entries CLOSEST TO EXPIRING, never the
+# whole table. Clearing it would hand an attacker the control itself: fill
+# the table and every currently-limited caller is re-allowed, which is a
+# cheaper attack than the one the limiter exists to stop.
+#
+# Eviction order is LOWEST HIT COUNT first, ties broken by soonest expiry.
+# That ordering is the whole point, so do not "simplify" it to oldest-first:
+# the spray keys an attacker uses to apply the pressure have exactly 1 hit
+# each and cost nothing to forget, while the entry that must survive is the
+# one already at or over its limit. Evicting by age instead would evict the
+# limited caller FIRST — it has been in the table longest — which is the
+# reset the attacker was fishing for.
 _MAX_KEYS = 20_000
+
+# Evict in batches so a sustained spray does not pay a full sort on every
+# request once the table is full — one sort per batch instead of per call.
+# ponytail: O(n log n) sort per batch. If this ever gets hot, a heap or an
+# expiry-bucketed ring would make it O(log n), but at 20k keys the sort is
+# sub-millisecond and runs once per 200 requests.
+_EVICT_BATCH = 200
 
 
 def hit(bucket: str, key: str, *, limit: int, window_seconds: int) -> tuple[bool, int]:
@@ -57,7 +93,13 @@ def hit(bucket: str, key: str, *, limit: int, window_seconds: int) -> tuple[bool
                 if expires <= now:
                     del _WINDOWS[stale]
             if len(_WINDOWS) >= _MAX_KEYS:
-                _WINDOWS.clear()
+                overflow = len(_WINDOWS) - _MAX_KEYS + _EVICT_BATCH
+                # (hits, expires) — cheapest-to-forget first. See _MAX_KEYS.
+                cheapest = sorted(
+                    _WINDOWS.items(), key=lambda kv: (kv[1][1], kv[1][0])
+                )[:overflow]
+                for stale, _ in cheapest:
+                    del _WINDOWS[stale]
 
         expires, hits = _WINDOWS.get(slot, (0.0, 0))
         if expires <= now:
@@ -81,10 +123,19 @@ def reset() -> None:
 # ---------------------------------------------------------------------------
 #
 # The rate limiter bounds how OFTEN an address may ask; this bounds how many
-# anonymous scoring pipelines run at once. They are different failure modes:
-# the pipeline is CPU-bound (freesasa + numpy), so under gevent it does not
-# yield while it runs, and a handful of simultaneous anonymous runs will slow
-# every signed-in request sharing the worker.
+# anonymous scoring pipelines run at once in ONE process.
+#
+# Be honest about what this buys today: nothing. Gunicorn sets no
+# ``worker_class`` (see ``gunicorn.conf.py``), so the workers are **sync** —
+# each serves exactly one request at a time. ``_INFLIGHT`` therefore never
+# exceeds 1 per worker and the configured 4-slot cap is never reached. The
+# real concurrency bound is the worker count itself, not this counter.
+#
+# It is kept because it is the correct guard the moment the deployment grows
+# threads or an async worker class (``--worker-class gthread``/``gevent``),
+# at which point several CPU-bound freesasa+numpy pipelines really can share
+# one process and starve the signed-in requests next to them. Changing the
+# worker class is a deployment decision, out of scope here.
 
 _INFLIGHT = 0
 _INFLIGHT_LOCK = threading.Lock()

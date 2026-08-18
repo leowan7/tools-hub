@@ -103,10 +103,19 @@ ANON_INTAKE_LIMIT = 10
 ANON_ANALYZE_LIMIT = 10
 
 # How many anonymous scoring pipelines may run at once in one worker process.
-# The pipeline is CPU-bound (freesasa + numpy) and does not yield under gevent,
-# so simultaneous anonymous runs slow every request sharing the worker. Four
-# leaves the box usable while a burst is in flight; signed-in callers never
-# consume one of these slots, so a free visitor cannot starve a paying user.
+#
+# INERT AS DEPLOYED — this cap is never reached today. Gunicorn sets no
+# worker_class, so workers are sync and serve one request at a time; in-flight
+# anonymous runs per process can therefore never exceed 1, let alone 4. Real
+# concurrency is bounded by the worker count (WEB_CONCURRENCY, default 2), not
+# by this number. See the note in gunicorn.conf.py.
+#
+# Kept, not deleted, because it is the right guard if the deployment ever
+# moves to gthread/gevent workers: the pipeline is CPU-bound (freesasa +
+# numpy) and would then let simultaneous anonymous runs slow every request
+# sharing the worker. Signed-in callers never consume a slot, so a free
+# visitor could not starve a paying user. Do not cite it as current
+# protection.
 ANON_MAX_CONCURRENT_RUNS = 4
 
 _BUSY_MESSAGE = (
@@ -148,7 +157,15 @@ def _current_owner_key(*, mint: bool = False) -> str:
     by anyone who can name a job id.
 
     ``mint=True`` only on the routes that create a job. Read routes must not
-    mint, or every crawler hit would allocate a session and a Set-Cookie.
+    mint, or every crawler hit would allocate a Scout owner id and with it a
+    job-directory budget.
+
+    To be precise about what that does and does not prevent: a GET of a Scout
+    page DOES still return a Set-Cookie, because base.html renders a CSRF
+    token meta tag and that touches the session. What ``mint=False`` buys is
+    that the cookie carries no ``scout_anon_id`` — so a crawler consumes no
+    ANON_MAX_LIVE_JOBS_PER_SESSION budget and causes no disk allocation. The
+    session cookie itself is unavoidable while the CSRF meta is rendered.
     """
     key = _signed_in_owner_key()
     if key:
