@@ -176,20 +176,56 @@ def _park_raw_archive(payload: Any) -> dict[str, str]:
 # itself. abnumber is the pythonic wrapper around anarci that
 # binder_design imports. Switched from a hand-rolled Dockerfile after
 # micromamba 2.x changed the shell-init CLI and broke the build.
+#
+# PIN: every DIRECT spec below is exact — but see the transitive caveat at the
+# bottom of this block, which is not closable from here. This app has no
+# Dockerfile, so it is invisible to the base-image digest guard that covers the
+# other eight — but it sits in the same deploy-modal.yml matrix and rebuilds on
+# the same `tools/**` push, so an unconstrained dep here drifts on a merge that
+# has nothing to do with this tool. That is the dm-haiku failure verbatim: a dep
+# moved under an unpinned build and every proteina design run broke on rebuild.
+#
+# The versions are the ones MEASURED in the running image on 2026-08-17 (built
+# 2026-06-03), not "latest" — this freezes current behaviour rather than adopting
+# new. The drift was already live when they were read: PyPI had moved biopython
+# to 1.88 and pandas to 3.0.5, so the next rebuild would have taken both.
+#
+# The conda specs use `==` and carry a BUILD string. A single `=` is a fuzzy
+# "startswith" match, so `anarci=2024.05.21` would still float across builds —
+# and bioconda demonstrably republishes: anarci 2020.04.23 exists under four
+# separate build numbers, hmmer 3.4 under twenty-one. `=` also would not have
+# stopped a future 3.4.1 matching `hmmer=3.4`.
+#
+# CAVEAT — the closure is NOT pinned, only these direct specs. `esm` is frozen by
+# SHA, but its own pyproject at that SHA declares
+#   transformers @ git+https://github.com/Biohub/transformers.git@main
+# — an unpinned BRANCH on a third-party fork, re-resolved on every rebuild. It
+# cannot be pinned from this repo (it would need --no-deps or a fork), so it is
+# named here rather than left to imply the closure is handled. `torch` is pinned
+# below because it is the one transitive whose drift changes NUMERICAL output:
+# run_pipeline.py drives a seeded 150-step gradient descent through
+# binder_design, so a torch bump moves the trajectory silently instead of
+# crashing. numpy/rdkit/biotite are deliberately left to the resolver — numpy is
+# effectively constrained by the selected torch wheel, and over-pinning invites a
+# resolver conflict on a build no offline test can validate.
+#
+# To bump: change deliberately and validate on a GPU run; these feed the ESM
+# binder-design cookbook path, which no offline test exercises.
 image = (
     modal.Image.micromamba(python_version="3.12")
     .apt_install("git", "build-essential", "curl", "wget", "ca-certificates")
     .micromamba_install(
-        "anarci>=2020.04.03",
-        "hmmer=3.4",
+        "anarci==2024.05.21=pyhdfd78af_0",
+        "hmmer==3.4=hb6cb901_4",
         channels=["conda-forge", "bioconda"],
     )
     .pip_install(
-        "abnumber",
-        "biopython",
-        "requests",
-        "pandas",
-        "py3Dmol",
+        "abnumber==0.4.4",
+        "biopython==1.87",
+        "requests==2.34.2",
+        "pandas==3.0.3",
+        "py3Dmol==2.5.5",
+        "torch==2.12.0",
         f"esm @ git+https://github.com/evolutionaryscale/esm.git@{_ESM_GIT_SHA}",
     )
     .run_commands(
