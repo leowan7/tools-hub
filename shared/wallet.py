@@ -85,7 +85,19 @@ DEFAULT_DAILY_CAP_USD = Decimal("200.00")
 DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 
 # Signup credit grant amount.
-SIGNUP_CREDIT_USD = Decimal("5.00")
+#
+# Raised 5.00 -> 15.00 (2026-08-18). The tool pages now recommend a named
+# "pilot" as a new user's first run, and six of the ten pilots cost
+# $8.74-$12.59 -- so a $5 grant meant the very first action the site
+# recommended cost more than the balance it had just advertised, and a new
+# user's real first step was a top-up. 15.00 clears the most expensive pilot
+# with headroom.
+#
+# This number is user-visible in ~18 places. Do NOT hardcode it in copy:
+# templates read it through the ``signup_credit`` jinja global, which is
+# sourced from here. shared/email.py reads WALLET_SIGNUP_CREDIT_USD from the
+# environment and its default is kept in step with this value.
+SIGNUP_CREDIT_USD = Decimal("15.00")
 
 # Send the low-balance email when balance drops below this.
 LOW_BALANCE_EMAIL_THRESHOLD = Decimal("5.00")
