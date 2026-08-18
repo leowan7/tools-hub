@@ -7,20 +7,46 @@ exposes a small stable API that `app.py` imports lazily.
 
 ## Tools
 
-| Tool | Status | Route |
-|------|--------|-------|
-| Epitope Scout | Live | external link to `https://scout.ranomics.com` |
-| AlphaFold2 (AF2) | Live | `/tools/af2` |
-| ColabFold | Live | `/tools/colabfold` |
-| ESMFold | Live | `/tools/esmfold` |
-| ProteinMPNN | Live | `/tools/mpnn` |
-| RFdiffusion | Live | `/tools/rfdiffusion` |
-| BindCraft | Live | `/tools/bindcraft` |
-| BoltzGen | Live | `/tools/boltzgen` |
-| RFantibody | Live | `/tools/rfantibody` |
-| PXDesign | Live | `/tools/pxdesign` |
-| Binder Developability Scout | Live | `/developability` |
-| Yeast Display Library Planner | Live | `/library-planner` |
+Fourteen GPU tools live in `tools/<slug>/` and register through
+`tools.base`; each one is gated on `FLAG_TOOL_<SLUG>` (see
+`shared/feature_flags.py`, fail-closed) and appears in the catalog only
+when its flag is on. Category is the workflow band from
+`shared/tools_catalog.py::_TOOL_CATEGORIES`, which drives the homepage
+grid and `/tools`.
+
+| Tool | Slug | Category | Route |
+|------|------|----------|-------|
+| RFdiffusion | `rfdiffusion` | Design binders | `/tools/rfdiffusion` |
+| BindCraft | `bindcraft` | Design binders | `/tools/bindcraft` |
+| PXDesign | `pxdesign` | Design binders | `/tools/pxdesign` |
+| RFantibody | `rfantibody` | Design binders | `/tools/rfantibody` |
+| BoltzGen | `boltzgen` | Design binders | `/tools/boltzgen` |
+| IgGM | `iggm` | Design binders | `/tools/iggm` |
+| Proteina-Complexa | `proteina` | Design binders | `/tools/proteina` |
+| ESMFold2 design | `esmfold2-design` | Design binders | `/tools/esmfold2-design` |
+| ProteinMPNN | `mpnn` | Sequence on a backbone | `/tools/mpnn` |
+| AlphaFold2 | `af2` | Structure prediction | `/tools/af2` |
+| ColabFold | `colabfold` | Structure prediction | `/tools/colabfold` |
+| ESMFold | `esmfold` | Structure prediction | `/tools/esmfold` |
+| Boltz-2 | `boltz2` | Structure prediction | `/tools/boltz2` |
+| OpenDDE co-folding | `opendde` | Structure prediction | `/tools/opendde` |
+
+Two catalog entries are not GPU adapters and are hardcoded in
+`_HARDCODED_TOOLS`. They are not flag-gated, and `/help/tools/<slug>`
+does not resolve for them because `tools.base.get()` returns `None`:
+
+| Tool | Category | Route |
+|------|----------|-------|
+| Epitope Scout | Scope the target | `scout.index` (`https://scout.ranomics.com` in production) |
+| Binder Developability Scout | Check developability | `/developability` |
+
+The **Yeast Display Library Planner** (`/library-planner`) was
+deliberately delisted from the catalog on 2026-08-17 — its
+`_HARDCODED_TOOLS` entry was dropped, so no tile appears on the homepage
+or `/tools`. The route, its templates, and the `tools/library_planner`
+package are intentionally still live so existing job links and job
+history keep resolving instead of 404ing. Delisted, not removed; do not
+"clean up" the route.
 
 ## Architecture
 

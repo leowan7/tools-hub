@@ -448,7 +448,22 @@ def showcase():
 
 @public_bp.route("/help", methods=["GET"])
 def help_index():
-    """Docs hub: getting started, per-tool guides, FAQ, troubleshooting."""
+    """Docs hub: getting started, per-tool guides, FAQ, troubleshooting.
+
+    The per-tool guide list is derived from ``_build_tools_catalog()``
+    rather than hardcoded in the template. The old hardcoded list named
+    nine tools and had gone stale by five (boltz2, iggm, opendde,
+    proteina, esmfold2-design shipped without it being touched).
+
+    Two catalog entries — Epitope Scout and the Developability Scout —
+    are not GPU adapters, so ``help_tool_guide`` 404s on their slugs.
+    They are split out here on exactly the condition that route uses
+    (``tool_base.get(slug) is None``) so the guide grid can never emit a
+    link that does not resolve.
+    """
+    catalog = _build_tools_catalog()
+    tool_guides = [e for e in catalog if tool_base.get(e["slug"]) is not None]
+    guideless_tools = [e for e in catalog if tool_base.get(e["slug"]) is None]
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},
         {"name": "Help", "url": url_for("public.help_index", _external=True)},
@@ -456,6 +471,8 @@ def help_index():
     return render_template(
         "help/index.html",
         adapters=tool_base.all_adapters(),
+        tool_guides=tool_guides,
+        guideless_tools=guideless_tools,
         breadcrumbs=breadcrumbs,
     )
 
