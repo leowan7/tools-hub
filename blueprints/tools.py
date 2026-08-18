@@ -10,8 +10,11 @@ factory-local modal_client -> current_app.modal_client, and self-refs ->
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from flask import (
@@ -595,6 +598,46 @@ def _pilot_context(adapter, meta) -> dict | None:
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
     )
 
+
+@lru_cache(maxsize=None)
+def _example_result(slug: str) -> dict | None:
+    """``tools/<slug>/example/result.json``, or None.
+
+    A real ``job.result`` captured once from a completed run. Cached
+    for the process lifetime because the file is static and this is
+    read on every render of a public, crawlable page.
+    """
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "tools" / slug.replace("-", "_") / "example" / "result.json"
+    )
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _example_context(adapter, meta) -> dict | None:
+    """The worked example for a tool: narration + the real payload.
+
+    Returns None unless BOTH halves are present. Narration with no
+    payload would render a description of results above an empty
+    results panel, and a payload with no narration is an unlabelled
+    table of numbers — either is worse than the tool simply not having
+    an example yet, which is the state of thirteen of the fourteen.
+    """
+    example = getattr(meta, "EXAMPLE", None)
+    if not example:
+        return None
+    result = _example_result(adapter.slug)
+    if result is None:
+        logger.warning(
+            "EXAMPLE declared for %s but example/result.json is missing "
+            "or unreadable; rendering no worked example", adapter.slug,
+        )
+        return None
+    return dict(example, result=result)
+
 def _showcase_note(slug: str) -> dict | None:
     """The showcase card for a tool, with its URL resolved, or None."""
     note = _SHOWCASE_NOTES.get(slug)
@@ -672,6 +715,7 @@ def _public_tool_context(adapter) -> dict:
         ),
         "related_tools": _related_tool_cards(adapter.slug),
         "pilot": _pilot_context(adapter, tool_meta),
+        "example": _example_context(adapter, tool_meta),
         "prerequisite": _prerequisite_tool(adapter.slug),
         "showcase_note": _showcase_note(adapter.slug),
         "breadcrumbs": [

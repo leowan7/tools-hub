@@ -218,3 +218,16 @@ PILOT: dict | None = {
         "costs proportionally more."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# The one archived payload (.deploy-logs/esmfold2-prewarm.log) is a
+# container prewarm whose single design was DROPPED by the filter, and
+# whose binder sequence is a poly-glycine / poly-leucine bundle that AF2
+# nonetheless scored at ipTM 0.956. Publishing 0.956 beside a junk
+# sequence would teach a reader to trust the number, which is the exact
+# opposite of the lesson.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

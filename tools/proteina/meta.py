@@ -288,3 +288,18 @@ PILOT: dict | None = {
         "with a single ranked list pooled across every shard."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# A real payload exists on disk (proteina_direct_out/smoke_result.json,
+# 2026-08-06) and is NOT shippable: it pre-dates the pLDDT polarity fix
+# in #129 (merged 9fbe547, 2026-08-09), so its af2_plddt column holds
+# 1 - pLDDT on every candidate. Publishing an inverted confidence column
+# as a worked example would teach the metric backwards. Its scores are
+# also degenerate (af2_iptm 0.09 to 0.10 across all 8, binder_scrmsd 34
+# to 41 A), so it is not a picture of a working run either. Capture a
+# post-fix delivered shard and this becomes a one-file change.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None
