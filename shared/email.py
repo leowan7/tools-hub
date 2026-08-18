@@ -1653,8 +1653,10 @@ def send_signup_credit_email(
             "send_signup_credit_email: no email for user %s; skipping", user_id
         )
         return False
+    # Default tracks shared.wallet.SIGNUP_CREDIT_USD; the env var still wins
+    # so a deployment can change the grant without a code push.
     credit_usd = _money(
-        os.environ.get("WALLET_SIGNUP_CREDIT_USD", "5")
+        os.environ.get("WALLET_SIGNUP_CREDIT_USD", "15")
     )
     base_url = _base_url()
     subject = (

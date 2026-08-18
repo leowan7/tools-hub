@@ -492,6 +492,21 @@ def create_app() -> Flask:
         return _public_tool_context(adapter)
     flask_app.jinja_env.globals["tool_public_context"] = _tool_public_context
 
+    # Signup credit, sourced from shared.wallet so the grant and every piece
+    # of copy quoting it move together. It was hardcoded as "$5" in ~18
+    # templates including legal/terms.html, which is how copy drifts away
+    # from the amount actually granted.
+    #   signup_credit()      -> "15" for prose ("start with $15 in your wallet")
+    #   signup_credit(True)  -> "15.00" where an exact figure reads better
+    def _signup_credit(exact: bool = False) -> str:
+        from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+
+        if exact:
+            return f"{SIGNUP_CREDIT_USD:.2f}"
+        return f"{SIGNUP_CREDIT_USD:.0f}"
+
+    flask_app.jinja_env.globals["signup_credit"] = _signup_credit
+
     # ``display_cost_usd(x)`` is the ONE 2dp rendering of a campaign cost, and
     # it rounds UP in Decimal. Exposed to templates because a page that formats
     # money itself rounds to NEAREST and prints a figure below the real amount.

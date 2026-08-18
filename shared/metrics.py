@@ -168,16 +168,47 @@ def _allowlist_cidrs() -> list[ipaddress._BaseNetwork]:
     return nets
 
 
-def _client_ip() -> str:
-    """Best-effort resolution of the caller's IP.
+def _trusted_proxy_hops() -> int:
+    """How many trailing X-Forwarded-For entries were written by OUR proxies.
 
-    Railway puts its edge in front of the app so the direct socket peer
-    is the edge, not the real client. Fall back to X-Forwarded-For first
-    hop when present.
+    Change ``TRUSTED_PROXY_HOPS`` if the edge topology changes — e.g. putting
+    Cloudflare in front of Railway makes it 2. Set it to 0 to ignore the
+    header entirely and trust only the socket peer (no proxy in front).
     """
-    forwarded = request.headers.get("X-Forwarded-For", "").strip()
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    try:
+        return max(0, int(os.environ.get("TRUSTED_PROXY_HOPS", "") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _client_ip() -> str:
+    """Best-effort resolution of the caller's IP, safe to use as a gate key.
+
+    Railway puts its edge in front of the app, so the direct socket peer is
+    the edge and X-Forwarded-For carries the real client. The header is
+    ordered ``client, proxy1, ..., proxyN``: everything a proxy did not
+    write itself is attacker-controlled, so we count hops from the RIGHT and
+    take the entry our own outermost trusted proxy contributed. Reading the
+    LEFTmost entry — as this did until 2026-08-18 — lets any caller choose
+    its own identity by sending ``X-Forwarded-For: <anything>``, which
+    nullifies every per-IP control keyed off this function.
+
+    With the default one trusted hop, a single-value header returns that
+    value whether the edge *appends* to the header or *overwrites* it, so
+    this is correct under both semantics without needing to know which
+    Railway does. Assumes no untrusted hop sits between the client and the
+    edge; ``TRUSTED_PROXY_HOPS`` is the knob if that stops being true.
+
+    Falls back to the socket peer when the header is absent or unusable.
+    """
+    hops = _trusted_proxy_hops()
+    if hops:
+        chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
+        chain = [p for p in chain if p]
+        if chain:
+            # Clamped so a chain SHORTER than the configured hop count yields
+            # the leftmost entry rather than raising.
+            return chain[max(0, len(chain) - hops)]
     return request.remote_addr or ""
 
 

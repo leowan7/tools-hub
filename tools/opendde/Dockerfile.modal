@@ -7,16 +7,24 @@
 # git+SHA VCS pin. We add only the two host-side deps the pipeline needs on top:
 # gemmi (best-effort mmCIF->PDB for the viewer) and requests (presigned uploads).
 #
-# PIN: the `:v1` tag is the preview release (2026-07-03). Bump deliberately after
-# re-verifying the `opendde pred` argparse; pin by DIGEST (sha256:...) once known
-# so an upstream retag cannot silently move the build. The HF CHECKPOINT revision
-# is pinned separately in tools/opendde/seed_volumes.py.
+# PIN: by DIGEST, not by tag. `:v1` is the preview release (2026-07-03) and is
+# the repo's ONLY tag, so an upstream retag would silently move every rebuild
+# with nothing in this repo changing — the same class of break that took out
+# every proteina design run when a transitive dep moved under an unpinned build.
+# The digest below is what `:v1` resolved to on 2026-08-17. Nothing in this repo
+# records which digest earlier deploys used, so treating this as the same content
+# is an inference, not a record — though the config blob's 2026-07-02 creation
+# date predates them all. To bump: re-verify the `opendde pred` argparse against
+# the new image, then
+#   docker buildx imagetools inspect aurekaresearch/opendde:v1
+# and paste the new digest here in the same commit. The HF CHECKPOINT revision is
+# pinned separately in tools/opendde/seed_volumes.py.
 #
 # ALT (if Modal cannot use this image's Python with add_python=None): base on
 #   nvidia/cuda:12.6.2-cudnn-runtime-ubuntu24.04, `apt-get install python3.12`,
 #   then `pip install uv && uv pip install --system --torch-backend cu126
 #   "opendde[gpu]==<ver>" gemmi requests huggingface_hub`.
-FROM aurekaresearch/opendde:v1
+FROM aurekaresearch/opendde:v1@sha256:a9404f76df1cd965a80447ee30c9c440af48b199581d9bd44ee157c18109a9d6
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
