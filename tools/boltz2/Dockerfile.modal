@@ -3,7 +3,16 @@
 # Strategy: start from an official pytorch base image (torch + CUDA pinned for us)
 # then pip install boltz. Boltz pulls its own model weights at first run; we mount
 # /root/.boltz as a Volume so weights cache and persist across runs.
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+#
+# PIN: by DIGEST, not by tag. Resolved 2026-08-17. Nothing in this repo records
+# which digest earlier deploys used, so treating this as the same content is an
+# inference, not a record — the image's own config blob predates every deploy
+# here, which is as far as the evidence goes. A bare tag can be overwritten
+# upstream, silently changing this image on the next rebuild with nothing in this
+# repo changing (Modal rebuilds on any tools/** push). To bump: re-verify, then
+#   docker buildx imagetools inspect pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+# and paste the new digest here in the same commit.
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
