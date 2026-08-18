@@ -408,6 +408,59 @@ _RELATED_TOOLS: dict[str, tuple[str, ...]] = {
     "boltz2":      ("af2", "colabfold", "boltzgen"),
 }
 
+# Tools whose form asks the user to name the residues a binder should
+# engage. Every field on these forms is answerable by a bench biologist
+# except this one: the helper text documents the SYNTAX (comma
+# separated, original PDB numbering, prefix the chain) and never the
+# METHOD — how to decide WHICH residues. Epitope Scout is the answer to
+# that question and was linked from nowhere on these pages.
+#
+# Deliberately NOT folded into _RELATED_TOOLS: that block is headed "if
+# you are picking between <tool> and a sibling algorithm", and Scout is
+# not an alternative to RFdiffusion — it is the step before it. Mixing
+# the two would file a prerequisite under a heading that denies it is
+# one. Rendered as its own "start here first" panel instead.
+#
+# boltz2 also has a hotspot field and is excluded on purpose: its
+# hotspots are scored after the fold, not steered toward, so choosing
+# them well is not a precondition for the run being worth paying for.
+_HOTSPOT_TOOLS: frozenset[str] = frozenset({
+    "rfdiffusion", "bindcraft", "pxdesign", "rfantibody",
+    "boltzgen", "proteina", "iggm",
+})
+
+def _prerequisite_tool(slug: str) -> dict | None:
+    """Epitope Scout as a "run this first" step, or None.
+
+    Copy is read from shared.tools_catalog rather than restated here —
+    that hardcoded entry (Scout is not a registered adapter; it has no
+    tools/<slug>/meta.py) is already the source of truth for the
+    homepage tile and /tools, and a second hand-written tagline would
+    drift from it.
+    """
+    if slug not in _HOTSPOT_TOOLS:
+        return None
+    from shared.tools_catalog import _HARDCODED_TOOLS  # noqa: PLC0415
+    entry = next(
+        (t for t in _HARDCODED_TOOLS if t["slug"] == "epitope-scout"), None
+    )
+    if entry is None:
+        return None
+    try:
+        url = url_for(entry["endpoint"])
+    except Exception:  # noqa: BLE001 — endpoint not registered in this app
+        return None
+    return {
+        "name": entry["name"],
+        "url": url,
+        "tagline": entry["tagline"],
+        "why": (
+            "It scores your target's surface and ranks candidate epitopes, "
+            "which is how you decide what to type into Hotspot residues. "
+            "It is free and runs in about 30 seconds."
+        ),
+    }
+
 # Tools with a real, published run on /showcase. Rescued from the two
 # per-tool preview overrides (templates/tools/{rfdiffusion,boltzgen}_preview.html)
 # that the shared preview shell's removal took with it — that showcase
@@ -582,6 +635,7 @@ def _public_tool_context(adapter) -> dict:
             if tech_slug else None
         ),
         "related_tools": _related_tool_cards(adapter.slug),
+        "prerequisite": _prerequisite_tool(adapter.slug),
         "showcase_note": _showcase_note(adapter.slug),
         "breadcrumbs": [
             {"name": "Home", "url": url_for("public.index", _external=True)},

@@ -17,17 +17,22 @@ Consumes an ``about`` dict with this shape:
 
 Any missing field is silently skipped.
 
-For an ANONYMOUS visitor this panel is also the explainer that used to
-live in the separate templates/tools/_preview.html shell — /tools/<slug>
-now renders the real form for everyone, so the preview's positioning
-line, score legend, related tools, FAQ and references have to land
-somewhere on this page. They render below the reference card, from
+This panel is also the explainer that used to live in the separate
+templates/tools/_preview.html shell — /tools/<slug> now renders the real
+form for everyone, so the preview's positioning line, score legend,
+prerequisite, related tools, FAQ and references have to land somewhere
+on this page. They render below the reference card, from
 ``tool_public_context(adapter)``.
 
-Both that and ``viewer_is_signed_in()`` are jinja GLOBALS (app.py), not
-context vars: all 14 tool forms import this macro WITHOUT
-``with context``, so a context variable would be invisible here. Pass
-``authenticated=`` explicitly to override.
+The explainer renders in BOTH auth states, deliberately. It was
+logged-out-only when the form first went public; that deleted the score
+legend ("aim above roughly 0.7") for the one person who most needs it —
+the user who just submitted a run and is reading the number. It is
+working reference, not anonymous-only marketing.
+
+``tool_public_context`` is a jinja GLOBAL (app.py), not a context var:
+all 14 tool forms import this macro WITHOUT ``with context``, so a
+context variable would be invisible here.
 
 Usage:
 
@@ -35,21 +40,18 @@ Usage:
     {{ about_panel(adapter, about) }}
 #}
 
-{% macro about_panel(adapter, about, authenticated=none) %}
-  {% set _auth = viewer_is_signed_in() if authenticated is none else authenticated %}
-  {% if _auth %}
+{% macro about_panel(adapter, about) %}
+  {# ONE grid child. tool_form_layout is a two-column grid, so a second
+     top-level element here would drop into the LEFT column under the
+     form instead of continuing the right rail. Inline layout only —
+     no new class in static/style.css. The wrapper is unconditional so
+     the signed-in rail is laid out by the same rule as the anonymous
+     one. #}
+  <div class="tool-form-about-rail"
+       style="display: grid; gap: 1.25rem; align-content: start; min-width: 0;">
     {{ about_reference_card(adapter, about) }}
-  {% else %}
-    {# ONE grid child. tool_form_layout is a two-column grid, so a second
-       top-level element here would drop into the LEFT column under the
-       form instead of continuing the right rail. Inline layout only —
-       no new class in static/style.css. #}
-    <div class="tool-form-about-rail"
-         style="display: grid; gap: 1.25rem; align-content: start; min-width: 0;">
-      {{ about_reference_card(adapter, about) }}
-      {{ about_public_explainer(adapter) }}
-    </div>
-  {% endif %}
+    {{ about_public_explainer(adapter) }}
+  </div>
 {% endmacro %}
 
 {% macro about_reference_card(adapter, about) %}
@@ -140,6 +142,23 @@ Usage:
     {% set _pub = tool_public_context(adapter) %}
     {% set _meta = _pub.meta %}
     {% set _short = _pub.short_name or adapter.label %}
+
+    {# First in the rail, above the sibling comparison: on a form that
+       asks for hotspot residues this is the step BEFORE the run, not an
+       alternative to it. #}
+    {% if _pub.prerequisite %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">Start here first</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ _pub.prerequisite.why }}</p>
+          <a href="{{ _pub.prerequisite.url }}" class="btn-secondary">
+            Open {{ _pub.prerequisite.name }} &rarr;
+          </a>
+        </div>
+      </aside>
+    {% endif %}
 
     {% if _meta and _meta.comparison_one_liner %}
       <aside class="panel about-panel">

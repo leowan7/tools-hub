@@ -4,7 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
-{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
 
 {% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
@@ -154,10 +154,7 @@
     }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -223,6 +220,7 @@
               name another (<code>A296,B264</code>).
               Click residues in the 3D viewer below to toggle them in and out of this list.
             </div>
+            {% include "tools/_hotspot_scout_hint.html" %}
 
             {# 3D hotspot picker — mirrors BoltzGen form. Renders only after
                the user uploads a PDB; typed entry stays authoritative, the
@@ -297,11 +295,7 @@
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}
-          {# D1: campaign-mode CTA (see tools/_campaign_reroute.html). type="button"
-             so the single-job wallet gate never disables it. #}
-          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
-            Start campaign
-          </button>
+          {{ campaign_submit_btn() }}
         </form>
       </div>
     </div>

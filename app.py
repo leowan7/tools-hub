@@ -469,6 +469,15 @@ def create_app() -> Flask:
         return url_for("auth.login", next=request.path)
     flask_app.jinja_env.globals["signin_url"] = _signin_url
 
+    # No ``next=`` here on purpose: auth.signup's GET hardcodes
+    # next="/" (blueprints/auth.py:135) and never reads request.args,
+    # so a next param would be a decorative query string that lies
+    # about where the user lands. Sign-up goes through email
+    # confirmation anyway.
+    def _signup_url() -> str:
+        return url_for("auth.signup")
+    flask_app.jinja_env.globals["signup_url"] = _signup_url
+
     # ``tool_public_context(adapter)`` — the explainer/SEO bundle that
     # used to be assembled only for the (now deleted) logged-out
     # preview shell. Exposed as a global for the same macro-context

@@ -157,10 +157,7 @@
     }
   </style>
 
-  <div class="hero">
-    <h1>{{ adapter.label }}</h1>
-    <p class="subtitle">{{ adapter.blurb }}</p>
-  </div>
+  {% include "tools/_form_hero.html" %}
 
   {% if error %}
     <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
@@ -249,6 +246,7 @@
               (<code>A296,B264</code>).
               Click residues in the 3D viewer below to toggle them in and out of this list.
             </div>
+            {% include "tools/_hotspot_scout_hint.html" %}
 
             {# 3D hotspot picker — Wave 4 per docs/PRODUCT-PLAN.md.
                Renders only after the user uploads a PDB; typed entry

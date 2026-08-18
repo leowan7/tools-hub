@@ -11,11 +11,19 @@
    new import line. components/submit_cta.html pulls in the same file
    so there is one copy of the words.
 
-   ``signin_url()`` is a jinja global (app.py) — ``request`` is a
-   context variable and is therefore invisible inside an imported
-   macro, which is what this file is reached from. #}
+   ``signin_url()`` / ``signup_url()`` are jinja globals (app.py) —
+   ``request`` is a context variable and is therefore invisible inside
+   an imported macro, which is what this file is reached from.
+
+   The two links are a pair. The deleted preview hero offered both
+   ("Sign in to run" + "Create a free account"); shipping only the
+   sign-in half asks a first-time visitor — the whole audience for a
+   public tool page — to guess that they may create an account. #}
 <div class="submit-cta-signin">
-  <a class="btn-primary" href="{{ signin_url() }}">Sign in to run this &rarr;</a>
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+    <a class="btn-primary" href="{{ signin_url() }}">Sign in to run this &rarr;</a>
+    <a class="btn-secondary" href="{{ signup_url() }}">Create a free account</a>
+  </div>
   <p style="margin: 0.6rem 0 0; font-size: 0.82rem; color: var(--text-secondary);">
     New accounts start with a $5 wallet balance. Pay by the second of
     compute. No subscriptions.
