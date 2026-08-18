@@ -27,7 +27,11 @@ from flask import (
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
 from shared.jobs import list_jobs_for_user
-from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.tools_catalog import (
+    _build_tools_catalog,
+    _short_name_for_label,
+    _TOOL_CATEGORIES,
+)
 from tools import base as tool_base
 
 logger = logging.getLogger(__name__)
@@ -464,6 +468,24 @@ def help_index():
     catalog = _build_tools_catalog()
     tool_guides = [e for e in catalog if tool_base.get(e["slug"]) is not None]
     guideless_tools = [e for e in catalog if tool_base.get(e["slug"]) is None]
+
+    # Group the grid by the catalog's own ``category`` field. Ungrouped,
+    # it renders in ``all_adapters()`` insertion order, which is roughly
+    # alphabetical by slug — the eight design tools end up scattered
+    # between the predictors. Band names are never spelled out here: the
+    # order is read off ``_TOOL_CATEGORIES`` itself (first mention wins,
+    # which is the workflow order that dict is written in), so a rename
+    # of the band strings carries through with no edit to this file.
+    band_order = {
+        band: i
+        for i, band in enumerate(dict.fromkeys(_TOOL_CATEGORIES.values()))
+    }
+    guide_groups: dict[str, list[dict]] = {}
+    for entry in sorted(
+        tool_guides,
+        key=lambda e: band_order.get(e.get("category"), len(band_order)),
+    ):
+        guide_groups.setdefault(entry.get("category") or "Other", []).append(entry)
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},
         {"name": "Help", "url": url_for("public.help_index", _external=True)},
@@ -471,7 +493,7 @@ def help_index():
     return render_template(
         "help/index.html",
         adapters=tool_base.all_adapters(),
-        tool_guides=tool_guides,
+        guide_groups=list(guide_groups.items()),
         guideless_tools=guideless_tools,
         breadcrumbs=breadcrumbs,
     )
