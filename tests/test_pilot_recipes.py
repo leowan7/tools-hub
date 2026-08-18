@@ -72,6 +72,60 @@ def _estimate(slug: str, params: dict):
     )
 
 
+def _tool_form_region(html: str, slug: str) -> str:
+    """Just the tool's own <form>, not the whole page.
+
+    Every tool form carries ``data-tool-slug="<slug>"``; the page also
+    holds a search box, the wallet top-up form and the campaign panel,
+    and harvesting those would put fields the submit route never sees
+    into the estimate.
+    """
+    m = re.search(
+        rf'<form\b[^>]*\bdata-tool-slug="{re.escape(slug)}"[^>]*>(.*?)</form>',
+        html, re.S,
+    )
+    assert m, f"{slug}: no <form data-tool-slug> on the page"
+    return m.group(1)
+
+
+def _submitted_params(html: str, slug: str) -> dict[str, str]:
+    """Every name/value pair the browser would POST from the tool form.
+
+    This is the input the price guard has to price: the form's own
+    default values with whatever ``?pilot=1`` pre-filled on top, which is
+    literally what "Start this pilot" sends. Pricing ``PILOT["params"]``
+    instead re-estimates the guard's own input and can never fail — see
+    ``TestPilotCardPriceIsDerived``.
+    """
+    region = _tool_form_region(html, slug)
+    out: dict[str, str] = {}
+    for tag in re.findall(r"<input\b[^>]*>", region):
+        name = re.search(r'\bname="([^"]+)"', tag)
+        if not name:
+            continue
+        kind = (re.search(r'\btype="([^"]*)"', tag) or [None, ""])[1] \
+            if re.search(r'\btype="([^"]*)"', tag) else ""
+        if kind in {"radio", "checkbox"} and "checked" not in tag:
+            continue
+        if kind in {"submit", "button", "image", "file", "reset"}:
+            continue
+        val = re.search(r'\bvalue="([^"]*)"', tag)
+        out[name.group(1)] = val.group(1) if val else ""
+    for sel in re.finditer(
+        r'<select\b[^>]*\bname="([^"]+)"[^>]*>(.*?)</select>', region, re.S,
+    ):
+        options = re.findall(r"<option\b[^>]*>", sel.group(2))
+        chosen = next((o for o in options if "selected" in o), None)
+        # No explicit selection: a browser posts the first option.
+        chosen = chosen or (options[0] if options else None)
+        if chosen is None:
+            continue
+        v = re.search(r'\bvalue="([^"]*)"', chosen)
+        if v:
+            out[sel.group(1)] = v.group(1)
+    return out
+
+
 def _posted_value(html: str, name: str) -> str | None:
     """What the browser would POST for ``name``, read off the markup.
 
@@ -182,27 +236,96 @@ class TestPilotPrefillActuallyLands:
 class TestPilotCardPriceIsDerived:
 
     def test_card_price_equals_the_estimator(self, tools_app):
-        """The card and /api/wallet/estimate must not disagree.
+        """The card's price must be the price of what the form SUBMITS.
 
-        Both go through ``estimated_cost_for_tool`` over the same
-        params — the card server-side, the form's JS over the values
-        those params rendered into the fields.
+        Priced against ``PILOT["params"]`` this test was tautological:
+        ``_pilot_context`` builds the card's number from exactly that
+        dict, so the assertion re-estimated its own input and could not
+        fail. QC broke it by deleting ``num_designs`` from pxdesign's
+        PILOT — the card then advertised $4.37 for a form that submits
+        a $17.48 run, a 4x understatement on a publicly indexable page,
+        with the whole suite green.
+
+        What a user actually sends when they click through the pilot
+        link is the form's own defaults with the PILOT values pre-filled
+        on top. That is what ``_submitted_params`` reads off the
+        rendered ``?pilot=1`` page, and that is what the card has to
+        agree with. A pilot key that never lands is now a PRICE bug
+        here, not only a pre-fill bug in
+        ``TestPilotPrefillActuallyLands``.
         """
         from shared.compute_campaigns import display_cost_usd
         from shared.wallet_estimates import estimated_cost_for_tool
 
         flask_app, slugs = tools_app
         client = flask_app.test_client()
+        checked = 0
+        wrong = []
         for slug, pilot in _pilots(slugs).items():
             if not pilot:
                 continue
+            checked += 1
             html = client.get(f"/tools/{slug}?pilot=1").get_data(as_text=True)
             shown = re.search(r"About <strong>\$([0-9.]+)</strong>", html)
             assert shown, f"{slug}: pilot card rendered no price"
-            expected = display_cost_usd(
-                estimated_cost_for_tool(None, slug, pilot["params"]),
+            submitted = _submitted_params(html, slug)
+            # The form must actually render the fields the estimator
+            # scales on, or "what the form submits" degenerates back to
+            # "what the PILOT dict says" and the hole reopens.
+            assert submitted, f"{slug}: harvested no form fields at all"
+            real = display_cost_usd(
+                estimated_cost_for_tool(None, slug, submitted),
             )
-            assert shown.group(1) == str(expected), slug
+            if shown.group(1) != str(real):
+                wrong.append(
+                    f"{slug}: the pilot card advertises ${shown.group(1)} but "
+                    f"the form it links to submits a run costing ${real} "
+                    f"(fields: { {k: v for k, v in submitted.items() if v} })"
+                )
+        assert checked >= 5, f"only {checked} pilot cards priced"
+        assert not wrong, wrong
+
+    def test_the_guard_above_is_reading_the_form_and_not_the_pilot_dict(
+        self, tools_app
+    ):
+        """The control. Break the link between the two and it must notice.
+
+        Without this, ``test_card_price_equals_the_estimator`` could
+        quietly go back to pricing ``PILOT["params"]`` — the exact input
+        the card is built from — and stay green forever. pxdesign is the
+        tool the hole was demonstrated on: it scales on ``num_designs``,
+        so a card priced without that key is a real 4x understatement.
+        """
+        from shared.wallet_estimates import estimated_cost_for_tool, get_tool_spec
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilot = _pilots(slugs)["pxdesign"]
+        html = client.get("/tools/pxdesign?pilot=1").get_data(as_text=True)
+        submitted = _submitted_params(html, "pxdesign")
+
+        spec = get_tool_spec("pxdesign")
+        assert spec and spec.scaling_param == "num_designs", spec
+        assert submitted.get("num_designs") == pilot["params"].get(
+            "num_designs"
+        ), (
+            "pxdesign's PILOT and the form it links to disagree on "
+            "num_designs, which is the key its price scales on"
+        )
+
+        # Drop the scaling key from the PILOT-shaped input, exactly as
+        # QC's mutation does. The form still renders and still submits
+        # its own default, so the two estimates MUST diverge — if they
+        # do not, the estimator no longer reads this key and the control
+        # needs re-pointing.
+        crippled = {k: v for k, v in pilot["params"].items()
+                    if k != "num_designs"}
+        assert estimated_cost_for_tool(None, "pxdesign", crippled) \
+            != estimated_cost_for_tool(None, "pxdesign", submitted), (
+            "dropping num_designs no longer moves pxdesign's estimate, so "
+            "the mutation the guard above exists to catch is no longer "
+            "detectable — re-point this control at a live scaling param"
+        )
 
     def test_no_card_where_there_is_no_pilot(self, tools_app):
         flask_app, slugs = tools_app
@@ -487,3 +610,162 @@ class TestNoPilotIsANoOp:
             defaults = self._form_defaults(client, slug, params)
             assert estimated_cost_for_tool(None, slug, params) \
                 < estimated_cost_for_tool(None, slug, defaults), slug
+
+
+class TestBudgetDoesNotChangeThePrice:
+    """One page must not say both things about ``budget``.
+
+    The BoltzGen page shipped with the about panel saying "Higher
+    budgets cost more and run longer" and the pilot card, a few hundred
+    pixels away, saying raising it does not change the bill. The card
+    was right: ``build_payload`` pins ``num_designs`` at 200 whatever
+    the budget is, the spec scales on ``num_designs``, and the form
+    never submits that key — so the estimate does not move at all.
+    """
+
+    BUDGETS = ("1", "4", "10", "50")
+
+    def test_the_estimate_really_is_flat(self):
+        from shared.wallet_estimates import estimated_cost_for_tool
+
+        seen = {
+            b: estimated_cost_for_tool(
+                None, "boltzgen", {"preset": "pilot", "budget": b},
+            )
+            for b in self.BUDGETS
+        }
+        assert len(set(seen.values())) == 1, (
+            f"boltzgen's estimate now moves with budget: {seen} — the copy "
+            f"on the form and in meta.py says it does not, so fix the copy"
+        )
+
+    def test_build_payload_pins_the_candidate_pool(self):
+        """The source of the flatness, not just its symptom."""
+        from tools.boltzgen import build_payload
+
+        pinned = {
+            b: build_payload(
+                {
+                    "target_chain": "A", "hotspot_residues": [1],
+                    "binder_length_min": 50, "binder_length_max": 100,
+                    "budget": int(b), "protocol": "protein-anything",
+                },
+                "https://example.invalid/target.pdb",
+            )["parameters"]["num_designs"]
+            for b in self.BUDGETS
+        }
+        assert set(pinned.values()) == {200}, pinned
+
+    def test_no_page_surface_claims_a_higher_budget_costs_more(
+        self, tools_app
+    ):
+        """Read the rendered page, not the source files.
+
+        Both offending strings reached the visitor through different
+        templates (the about panel from meta.py, the field helper from
+        boltzgen_form.html), so grepping one file would have missed the
+        other.
+        """
+        flask_app, _ = tools_app
+        body = flask_app.test_client().get("/tools/boltzgen").get_data(
+            as_text=True
+        )
+        assert "Budget (final candidates)" in body, (
+            "the boltzgen budget field is gone; re-point this test"
+        )
+        bad = [
+            phrase for phrase in (
+                "budgets cost more",
+                "budget costs more",
+                "Higher budgets cost more and run longer",
+            )
+            if phrase in body
+        ]
+        assert not bad, (
+            f"the boltzgen page tells the visitor a higher budget costs "
+            f"more, which the estimator contradicts: {bad}"
+        )
+        # And the page still has to say the true thing somewhere, or a
+        # future edit can satisfy the assertion above by deleting the
+        # explanation entirely.
+        assert "at the same price" in body or \
+            "does not change what the run costs" in body, (
+            "nothing on the boltzgen page tells the visitor that budget "
+            "does not move the bill"
+        )
+
+
+class TestHotspotDeflection:
+    """The first hard stop for someone who knows their target, not the model.
+
+    Four tools refuse a run with an empty hotspot field, and the only
+    pointer to Epitope Scout (the free tool that finds those residues)
+    was in the form field's help text — below the pilot card someone
+    starting a first run is reading. The card now carries it.
+
+    ``HOTSPOT_REQUIRED_TOOLS`` is a constant so the render path does not
+    speculatively parse fourteen forms per request; this locks it to the
+    adapters by DRIVING every validate() rather than trusting the list.
+    """
+
+    @staticmethod
+    def _rejects_empty_hotspots(adapter, pilot) -> bool:
+        form = {"target_chain": "A", "hotspot_residues": ""}
+        form.update(pilot["params"])
+        try:
+            _out, err = adapter.validate(form, None)
+        except TypeError:
+            _out, err = adapter.validate(form)
+        return bool(err) and "hotspot" in err.lower()
+
+    def test_the_constant_matches_what_the_adapters_actually_refuse(
+        self, tools_app
+    ):
+        from blueprints.tools import HOTSPOT_REQUIRED_TOOLS
+        from tools import base as tool_base
+
+        _, slugs = tools_app
+        pilots = _pilots(slugs)
+        measured = {
+            a.slug for a in tool_base.all_adapters()
+            if pilots.get(a.slug)
+            and self._rejects_empty_hotspots(a, pilots[a.slug])
+        }
+        assert measured, "no adapter refuses an empty hotspot field at all"
+        assert measured == set(HOTSPOT_REQUIRED_TOOLS), (
+            f"blueprints.tools.HOTSPOT_REQUIRED_TOOLS has drifted off the "
+            f"adapters: they refuse {sorted(measured)}, the constant says "
+            f"{sorted(HOTSPOT_REQUIRED_TOOLS)}"
+        )
+
+    def test_every_such_card_points_at_epitope_scout(self, tools_app):
+        from blueprints.tools import HOTSPOT_REQUIRED_TOOLS
+
+        flask_app, _ = tools_app
+        client = flask_app.test_client()
+        assert HOTSPOT_REQUIRED_TOOLS
+        for slug in sorted(HOTSPOT_REQUIRED_TOOLS):
+            card = _pilot_card_html(client, slug)
+            assert "Epitope Scout" in card, (
+                f"{slug}: the pilot card names no way to get hotspots"
+            )
+            assert "Hotspot residues" in card, slug
+            assert 'href="/scout' in card, (
+                f"{slug}: the pilot card mentions Scout but does not link it"
+            )
+
+    def test_tools_that_do_not_need_hotspots_are_not_nagged(self, tools_app):
+        """boltzgen and proteina run fine without one; no deflection there."""
+        from blueprints.tools import HOTSPOT_REQUIRED_TOOLS
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        clean = [
+            s for s, p in _pilots(slugs).items()
+            if p and s not in HOTSPOT_REQUIRED_TOOLS
+        ]
+        assert clean, "every pilot tool requires hotspots; nothing to check"
+        for slug in clean:
+            card = _pilot_card_html(client, slug)
+            assert "score your target&rsquo;s surface" not in card, slug
+            assert "will not start without at least one" not in card, slug

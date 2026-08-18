@@ -122,8 +122,17 @@ about: dict = {
         {
             "name": "Budget (designs)",
             "explanation": (
-                "Number of designs Boltz-2 generates and ranks. Higher "
-                "budgets cost more and run longer."
+                # NOT "higher budgets cost more" — that shipped, and the
+                # pilot card on the same page said the opposite. The
+                # estimator returns $8.7380 at budget 1, 4, 10, 50 and
+                # 200 because it scales on ``num_designs``, which this
+                # form never submits and ``build_payload`` pins at 200.
+                # tests/test_pilot_recipes.py::TestBudgetDoesNotChangeThePrice
+                # measures that rather than trusting this comment.
+                "How many of the ranked candidates come back to you "
+                "(1 to 50). BoltzGen generates and scores the same 200 "
+                "either way, so this does not change what the run costs "
+                "&mdash; it only chooses how many you receive."
             ),
         },
     ],

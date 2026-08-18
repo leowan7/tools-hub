@@ -694,6 +694,24 @@ def _as_form_text(value) -> str:
     return ",".join(str(i) for i in items)
 
 
+# Tools whose ``validate()`` REFUSES a run with an empty
+# ``hotspot_residues`` field. Hotspot residues are the first hard stop a
+# bench biologist hits: they know their target, they do not know which
+# residues on it to name, and nothing on the pilot card said where to get
+# them — the Epitope Scout deflection lived only in the form field's help
+# text, further down the page than someone starting a pilot is looking.
+#
+# A constant rather than a probe, because ``_pilot_context`` runs on every
+# render of a publicly indexable page and calling ``validate()`` there to
+# find this out would be fourteen speculative parses per request.
+# tests/test_pilot_recipes.py::TestHotspotDeflection drives every adapter's
+# validate() with an empty hotspot field and asserts this set EXACTLY, so
+# it cannot drift off the adapters.
+HOTSPOT_REQUIRED_TOOLS = frozenset(
+    {"bindcraft", "pxdesign", "rfantibody", "rfdiffusion"}
+)
+
+
 def _pilot_context(adapter, meta) -> dict | None:
     """The guided starter recipe for a tool, with its numbers derived.
 
@@ -722,6 +740,13 @@ def _pilot_context(adapter, meta) -> dict | None:
         cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
         runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
+        # Rendered by components/pilot_card.html as the "you cannot start
+        # without these, and here is where to get them" line. Derived, not
+        # written into meta.py, so one macro edit reaches all four tools.
+        hotspot_help_url=(
+            url_for("scout.index")
+            if adapter.slug in HOTSPOT_REQUIRED_TOOLS else None
+        ),
     )
 
 

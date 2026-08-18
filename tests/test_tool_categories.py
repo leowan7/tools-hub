@@ -77,7 +77,7 @@ def test_every_adapter_has_a_category():
     )
 
 
-def test_every_adapter_resolves_its_meta_in_the_catalog():
+def test_every_adapter_resolves_its_meta_in_the_catalog(monkeypatch):
     """The catalog must not silently render a tool with no metadata.
 
     ``_build_tools_catalog`` built the meta module path by interpolating
@@ -92,17 +92,19 @@ def test_every_adapter_resolves_its_meta_in_the_catalog():
     Asserting on the OUTPUT rather than on the import mechanism, so it
     keeps holding if the loading changes again.
     """
-    import os
-
     from app import create_app
     from shared.feature_flags import flag_name
     from shared.tools_catalog import _build_tools_catalog
 
     slugs = {a.slug for a in tool_base.all_adapters()}
     assert len(slugs) >= 14, f"adapter registry holds {len(slugs)} tools"
+    # monkeypatch, not bare os.environ: the sibling ``flask_app`` fixture
+    # above already sets these through monkeypatch, and this test used to
+    # set fourteen FLAG_TOOL_* vars and SESSION_SECRET_KEY with no restore,
+    # leaking them into whatever ran next.
     for slug in slugs:
-        os.environ[flag_name(slug)] = "on"
-    os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
+        monkeypatch.setenv(flag_name(slug), "on")
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
 
     flask_app = create_app()
     with flask_app.test_request_context("/"):

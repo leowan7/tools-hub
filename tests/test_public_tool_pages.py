@@ -546,20 +546,13 @@ class TestPublicContextIsBuiltOncePerRequest:
     round trips per crawler hit, on fourteen pages.
     """
 
-    def _client(self):
-        import os
-
-        import app as app_module
-        from shared.feature_flags import flag_name
-        from tools import base as tool_base
-
-        slugs = [a.slug for a in tool_base.all_adapters()]
-        assert len(slugs) >= 14, f"adapter registry holds {len(slugs)}"
-        for slug in slugs:
-            os.environ[flag_name(slug)] = "on"
-        os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
-        flask_app = app_module.create_app()
-        flask_app.config["TESTING"] = True
+    # Uses the module's ``all_tools_app`` fixture rather than setting
+    # FLAG_TOOL_* by hand: the hand-rolled version set fourteen env vars
+    # plus SESSION_SECRET_KEY and never restored them, leaking flag state
+    # into whatever test ran next.
+    @staticmethod
+    def _client(all_tools_app):
+        flask_app, _slugs = all_tools_app
         return flask_app.test_client()
 
     def _counted(self, client, paths):
@@ -579,19 +572,19 @@ class TestPublicContextIsBuiltOncePerRequest:
                 assert client.get(path).status_code == 200, path
         return calls
 
-    def test_one_render_builds_it_once(self):
-        calls = self._counted(self._client(), ["/tools/mpnn"])
+    def test_one_render_builds_it_once(self, all_tools_app):
+        calls = self._counted(self._client(all_tools_app), ["/tools/mpnn"])
         assert calls == ["mpnn"], (
             f"built {len(calls)} times in one render: {calls}"
         )
 
-    def test_the_cache_does_not_outlive_the_request(self):
+    def test_the_cache_does_not_outlive_the_request(self, all_tools_app):
         """It memoises on ``flask.g``, so it must rebuild next request.
 
         A process-lifetime cache here would pin the first request's host
         into the ``_external=True`` breadcrumb URLs of every later
         response and freeze the derived price against p90 drift.
         """
-        client = self._client()
+        client = self._client(all_tools_app)
         calls = self._counted(client, ["/tools/mpnn", "/tools/mpnn"])
         assert calls == ["mpnn", "mpnn"], calls
