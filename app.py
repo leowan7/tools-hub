@@ -462,7 +462,31 @@ def create_app() -> Flask:
     # rendered. Same reason — ``request`` is a context var, not a
     # global, so a macro cannot reach it.
     def _signin_url() -> str:
-        return url_for("auth.login", next=request.path)
+        # full_path, NOT path. ``request.path`` dropped the query string,
+        # so /tools/rfdiffusion?pilot=1 emitted next=/tools/rfdiffusion:
+        # the visitor signed in and landed on a bare form with the pilot
+        # they had just chosen silently discarded — the feature
+        # evaporating at the exact moment they committed. Werkzeug
+        # always appends "?" to full_path, even with no query, hence the
+        # rstrip; on a query-less page this is byte-identical to before.
+        #
+        # SAFETY. ``next`` is an open-redirect sink, so this widens what
+        # feeds it. auth.login's POST branch (blueprints/auth.py) is the
+        # validator and it rejects anything not starting with "/" plus
+        # the two shapes browsers resolve to another origin, "//host"
+        # and "/\host". full_path is PATH_INFO + QUERY_STRING and cannot
+        # begin with a scheme, so it stays same-origin; the "//" case a
+        # request to //evil.com would produce is already refused there.
+        # Two things are worth saying plainly rather than leaning on.
+        # First, the GET branch does NOT validate — it renders whatever
+        # arrives straight into a hidden field — which is only safe
+        # because Jinja escapes it and the POST re-checks. Second, the
+        # blocklist is shape-based: it would not catch a value the
+        # browser normalises differently (a "/\t/host" style control
+        # character), and an allowlist built with urlsplit would be the
+        # durable form. Neither is reachable from here, since this
+        # function builds the value itself.
+        return url_for("auth.login", next=request.full_path.rstrip("?"))
     flask_app.jinja_env.globals["signin_url"] = _signin_url
 
     # No ``next=`` here on purpose: auth.signup's GET hardcodes

@@ -239,3 +239,172 @@ class TestPilotDoesNotOutrankARealJob:
             ).get_data(as_text=True)
         assert _posted_value(html, "num_designs") == "250"
         assert _posted_value(html, "target_chain") == "B"
+
+
+def _pilot_card_html(client, slug: str) -> str:
+    """Just the pilot card's <aside>, isolated from the rest of the page."""
+    html = client.get(f"/tools/{slug}").get_data(as_text=True)
+    start = html.find("<h3>What you need</h3>")
+    assert start != -1, f"{slug}: no pilot card rendered"
+    open_tag = html.rfind("<aside", 0, start)
+    close = html.find("</aside>", start)
+    assert open_tag != -1 and close != -1, slug
+    return html[open_tag:close]
+
+
+class TestPilotCardRendersMarkupNotEntities:
+    """The card's prose is author-written and contains markup on purpose.
+
+    ``goal``, ``you_need`` and ``next_step`` hold ``&mdash;`` on four
+    tools and a ``<code>`` span on proteina. Rendered without ``|safe``
+    — as they shipped — a visitor reads a literal ``&amp;mdash;`` and a
+    literal ``<code>A1-150</code>`` on a page that is now publicly
+    indexable. Every sibling explainer macro already marks the same
+    class of prose safe; this asserts the card matches.
+
+    Only the three prose fields get the filter. ``url`` is an href, and
+    ``cost_usd`` and ``label`` have no reason to carry markup, so a
+    future field reading user input must not join that list — see the
+    header comment in components/pilot_card.html.
+    """
+
+    def test_no_double_escaped_entity_reaches_the_page(self, tools_app):
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        bad = []
+        checked = 0
+        for slug, pilot in _pilots(slugs).items():
+            if not pilot:
+                continue
+            checked += 1
+            card = _pilot_card_html(client, slug)
+            # An escaped ampersand-entity anywhere in the card body is
+            # text the visitor reads as source code.
+            for m in re.findall(r"&amp;[a-zA-Z]+;", card):
+                bad.append(f"{slug}: card shows a literal {m}")
+        assert checked >= 5, f"only {checked} pilot cards rendered"
+        assert not bad, bad
+
+    def test_markup_in_the_prose_renders_as_markup(self, tools_app):
+        """proteina's ``<code>A1-150</code>`` must be a tag, not text."""
+        flask_app, _ = tools_app
+        card = _pilot_card_html(flask_app.test_client(), "proteina")
+        assert "&lt;code&gt;" not in card, \
+            "proteina's pilot card shows a literal <code> tag"
+        assert "<code>A1-150</code>" in card
+
+    def test_at_least_one_pilot_actually_carries_markup(self, tools_app):
+        """Otherwise both assertions above pass over plain text forever."""
+        _, slugs = tools_app
+        carriers = [
+            slug for slug, pilot in _pilots(slugs).items() if pilot
+            and any(
+                "&" in pilot[k] or "<" in pilot[k]
+                for k in ("goal", "you_need", "next_step")
+            )
+        ]
+        assert carriers, "no PILOT prose contains markup at all"
+
+
+class TestNoPilotIsANoOp:
+    """"Load these settings" must not promise a change it does not make.
+
+    Six of the ten pilots shipped with params identical to the form's
+    own defaults, so the button loaded settings that were already
+    loaded. Two of those (bindcraft, rfantibody) had a genuinely cheaper
+    first run available and were retuned to it; proteina gained an
+    explicit binder-length window.
+
+    The remaining three (boltzgen, esmfold2-design, iggm) are MEASURED
+    to have no cheaper configuration reachable from their form — the
+    default already is the tool's floor — so this asserts the honest
+    rule rather than an allow-list: a pilot may restate the defaults
+    only when nothing cheaper exists. Add a no-op pilot to a tool where
+    a cheaper run IS reachable and this fails.
+    """
+
+    @staticmethod
+    def _form_defaults(client, slug, keys):
+        html = client.get(f"/tools/{slug}").get_data(as_text=True)
+        return {k: _posted_value(html, k) for k in keys}
+
+    def test_a_pilot_is_never_more_expensive_than_the_defaults(
+        self, tools_app
+    ):
+        from shared.wallet_estimates import estimated_cost_for_tool
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        bad = []
+        for slug, pilot in _pilots(slugs).items():
+            if not pilot:
+                continue
+            params = pilot["params"]
+            defaults = self._form_defaults(client, slug, params)
+            pilot_cost = estimated_cost_for_tool(None, slug, params)
+            default_cost = estimated_cost_for_tool(
+                None, slug,
+                {k: v for k, v in defaults.items() if v is not None},
+            )
+            if pilot_cost > default_cost:
+                bad.append(
+                    f"{slug}: the pilot costs ${pilot_cost} but the form's "
+                    f"own defaults cost ${default_cost} — a 'starter' run "
+                    f"must not be the expensive one"
+                )
+        assert not bad, bad
+
+    def test_a_no_op_pilot_is_only_allowed_when_nothing_cheaper_exists(
+        self, tools_app
+    ):
+        from shared.wallet_estimates import (
+            estimated_cost_for_tool,
+            get_tool_spec,
+        )
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        bad = []
+        for slug, pilot in _pilots(slugs).items():
+            if not pilot:
+                continue
+            params = pilot["params"]
+            defaults = self._form_defaults(client, slug, params)
+            if any(defaults.get(k) != v for k, v in params.items()):
+                continue  # the pilot changes something; nothing to prove
+
+            # It restates the defaults. Only defensible if the estimator
+            # cannot be moved down from here — i.e. driving the scaling
+            # parameter to its minimum buys nothing.
+            spec = get_tool_spec(slug)
+            here = estimated_cost_for_tool(None, slug, params)
+            floor = estimated_cost_for_tool(
+                None, slug,
+                dict(params, **({spec.scaling_param: "1"}
+                                if spec and spec.scaling_param else {})),
+            )
+            if floor < here:
+                bad.append(
+                    f"{slug}: pilot params equal the form defaults, but a "
+                    f"cheaper run exists (${floor} vs ${here}) — retune the "
+                    f"pilot instead of restating the default"
+                )
+        assert not bad, bad
+
+    def test_the_retuned_pilots_really_are_cheaper(self, tools_app):
+        """Pins the two retuned by hand, so a revert is loud.
+
+        These are the only two tools whose form exposes a knob that both
+        shrinks the run and lowers the bill, and both shipped restating
+        the default.
+        """
+        from shared.wallet_estimates import estimated_cost_for_tool
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        for slug in ("bindcraft", "rfantibody"):
+            pilot = _pilots(slugs)[slug]
+            params = pilot["params"]
+            defaults = self._form_defaults(client, slug, params)
+            assert estimated_cost_for_tool(None, slug, params) \
+                < estimated_cost_for_tool(None, slug, defaults), slug
