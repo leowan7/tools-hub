@@ -61,7 +61,11 @@ def tools_app():
     for slug in slugs:
         prior[flag_name(slug)] = os.environ.get(flag_name(slug))
         os.environ[flag_name(slug)] = "on"
-    os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
+    # Into the SAME prior dict the flags use, so the teardown loop
+    # below restores it. setdefault() reads as safe and is not: it
+    # leaks the key into every test that runs after this module.
+    prior["SESSION_SECRET_KEY"] = os.environ.get("SESSION_SECRET_KEY")
+    os.environ["SESSION_SECRET_KEY"] = "test-secret"
     flask_app = app_module.create_app()
     flask_app.config["TESTING"] = True
     yield flask_app, slugs

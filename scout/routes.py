@@ -1189,7 +1189,9 @@ def feasibility_download(job_id):
 # Scout -> Tools-hub handoff
 # ---------------------------------------------------------------------------
 
-VALID_HANDOFF_TOOLS = {"rfantibody", "bindcraft", "pxdesign", "boltzgen"}
+# Re-exported from the leaf module so the tools blueprint can read the
+# same set without importing this one. See scout/handoff.py for why.
+from scout.handoff import VALID_HANDOFF_TOOLS  # noqa: E402,PLC0415
 
 
 @scout_bp.route("/handoff/tool", methods=["POST"])
