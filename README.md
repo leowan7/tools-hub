@@ -16,20 +16,20 @@ grid and `/tools`.
 
 | Tool | Slug | Category | Route |
 |------|------|----------|-------|
-| RFdiffusion | `rfdiffusion` | Design binders | `/tools/rfdiffusion` |
-| BindCraft | `bindcraft` | Design binders | `/tools/bindcraft` |
-| PXDesign | `pxdesign` | Design binders | `/tools/pxdesign` |
-| RFantibody | `rfantibody` | Design binders | `/tools/rfantibody` |
-| BoltzGen | `boltzgen` | Design binders | `/tools/boltzgen` |
-| IgGM | `iggm` | Design binders | `/tools/iggm` |
-| Proteina-Complexa | `proteina` | Design binders | `/tools/proteina` |
-| ESMFold2 design | `esmfold2-design` | Design binders | `/tools/esmfold2-design` |
-| ProteinMPNN | `mpnn` | Sequence on a backbone | `/tools/mpnn` |
-| AlphaFold2 | `af2` | Structure prediction | `/tools/af2` |
-| ColabFold | `colabfold` | Structure prediction | `/tools/colabfold` |
-| ESMFold | `esmfold` | Structure prediction | `/tools/esmfold` |
-| Boltz-2 | `boltz2` | Structure prediction | `/tools/boltz2` |
-| OpenDDE co-folding | `opendde` | Structure prediction | `/tools/opendde` |
+| RFdiffusion | `rfdiffusion` | Make new binders for my target | `/tools/rfdiffusion` |
+| BindCraft | `bindcraft` | Make new binders for my target | `/tools/bindcraft` |
+| PXDesign | `pxdesign` | Make new binders for my target | `/tools/pxdesign` |
+| RFantibody | `rfantibody` | Make new binders for my target | `/tools/rfantibody` |
+| BoltzGen | `boltzgen` | Make new binders for my target | `/tools/boltzgen` |
+| IgGM | `iggm` | Make new binders for my target | `/tools/iggm` |
+| Proteina-Complexa | `proteina` | Make new binders for my target | `/tools/proteina` |
+| ESMFold2 design | `esmfold2-design` | Make new binders for my target | `/tools/esmfold2-design` |
+| ProteinMPNN | `mpnn` | Choose sequences for a structure I already have | `/tools/mpnn` |
+| AlphaFold2 | `af2` | Predict or check a 3D structure | `/tools/af2` |
+| ColabFold | `colabfold` | Predict or check a 3D structure | `/tools/colabfold` |
+| ESMFold | `esmfold` | Predict or check a 3D structure | `/tools/esmfold` |
+| Boltz-2 | `boltz2` | Predict or check a 3D structure | `/tools/boltz2` |
+| OpenDDE co-folding | `opendde` | Predict or check a 3D structure | `/tools/opendde` |
 
 Two catalog entries are not GPU adapters and are hardcoded in
 `_HARDCODED_TOOLS`. They are not flag-gated, and `/help/tools/<slug>`
@@ -37,8 +37,8 @@ does not resolve for them because `tools.base.get()` returns `None`:
 
 | Tool | Category | Route |
 |------|----------|-------|
-| Epitope Scout | Scope the target | `scout.index` (`https://scout.ranomics.com` in production) |
-| Binder Developability Scout | Check developability | `/developability` |
+| Epitope Scout | Check if my target is a good one to bind | `scout.index` (`https://scout.ranomics.com` in production) |
+| Binder Developability Scout | See if a binder will hold up in the lab | `/developability` |
 
 The **Yeast Display Library Planner** (`/library-planner`) was
 deliberately delisted from the catalog on 2026-08-17 — its
@@ -125,7 +125,11 @@ venv\Scripts\python.exe -m pip install -r requirements.txt
 venv\Scripts\python.exe app.py
 ```
 
-Open <http://127.0.0.1:5000/> and you should be redirected to `/login`.
+Open <http://127.0.0.1:5000/>. The landing page, `/tools`, every
+`/tools/<slug>` form, `/scout/`, `/developability`, and `/help` all render
+for anonymous visitors — only submitting a job (and anything under
+`/jobs` or `/account`, which is where the wallet lives) redirects to
+`/login`.
 
 ### One-line dev command
 
@@ -175,8 +179,12 @@ not by this repo.
        return jsonify(score(request.json))
    ```
 
-3. Add the tool to the `tools` list in the `index()` route so it shows
-   up on the hub landing page.
+3. Give it a workflow band in `shared/tools_catalog.py::_TOOL_CATEGORIES`
+   and a glyph in `shared/category_glyphs.py`. A slug with no band falls
+   into the `"Other"` bucket, which is how Proteina and OpenDDE once
+   disappeared from the homepage. There is no hand-maintained list in
+   `index()` any more — the catalog, `/tools`, and the `/help` guide grid
+   are all derived from the registry.
 
 If the tool runs on Modal, define the Modal app in the sibling
 `llm-proteinDesigner` repo and call it through `shared/modal_client.py`

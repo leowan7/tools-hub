@@ -129,14 +129,18 @@ def test_guideless_tools_are_still_reachable_from_help(app):
         assert entry["name"] in body
 
 
-def test_guideless_copy_does_not_promise_anonymous_access(app):
-    """``/scout/`` and ``/developability`` can redirect to login.
+def test_guideless_copy_matches_the_real_gate_on_those_routes(app):
+    """The paragraph's access claim has to track the routes it links.
 
-    The first draft of this paragraph told the reader to "open one and the
-    page explains itself", which is false while either route is
-    ``@login_required``. Epitope Scout is being opened to anonymous
-    visitors on a separate branch, so the copy has to be true either way —
-    it may not claim these open without an account.
+    This assertion has been inverted once already. When it was written,
+    ``/scout/`` and ``/developability`` were both ``@login_required`` and
+    the copy was required to say "sign in". #148 and #149 then opened
+    both to anonymous visitors, which made the warning the false claim.
+
+    So it is no longer pinned to either wording: it reads the actual
+    anonymous status of every guideless route and requires the paragraph
+    to match. If one of them is ever gated again, the copy must say so
+    and this fails until it does.
     """
     client = app.test_client()
     body = client.get("/help").get_data(as_text=True)
@@ -145,7 +149,9 @@ def test_guideless_copy_does_not_promise_anonymous_access(app):
         guideless = [
             e for e in _build_tools_catalog() if tool_base.get(e["slug"]) is None
         ]
+    assert guideless, "catalog carries no non-adapter tools; test asserts nothing"
     routes = [e["route"] for e in guideless]
+    gated = [r for r in routes if client.get(r).status_code in (301, 302)]
 
     # The one paragraph that carries every guideless link.
     para = next(
@@ -153,11 +159,51 @@ def test_guideless_copy_does_not_promise_anonymous_access(app):
         for frag in body.split("<p ")
         if all(f'href="{r}"' in frag for r in routes)
     )
-    assert "sign in" in para.lower(), (
-        "the guideless paragraph must flag that some of these need an "
-        f"account; routes currently gated: "
-        f"{[r for r in routes if client.get(r).status_code in (301, 302)]}"
-    )
+    if gated:
+        assert "sign in" in para.lower(), (
+            "the guideless paragraph must flag that some of these need an "
+            f"account; routes currently gated: {gated}"
+        )
+    else:
+        assert "without an account" in para.lower(), (
+            "every guideless route opens anonymously, so the paragraph "
+            "should say so rather than warn about signing in"
+        )
+        assert "sign in" not in para.lower(), (
+            "the paragraph warns about signing in, but none of these "
+            f"routes is gated: {routes}"
+        )
+
+
+def test_no_guide_falls_into_the_other_bucket(app):
+    """``_TOOL_CATEGORIES`` has no entry for a slug -> band is "Other".
+
+    That fallback is silent and has shipped twice: Proteina and OpenDDE
+    both landed with no band and rendered under a meaningless heading on
+    the homepage. The guide grid inherits the same field, so it inherits
+    the same failure mode.
+    """
+    client = app.test_client()
+    with app.test_request_context():
+        catalog = _build_tools_catalog()
+    assert len(catalog) >= 16, "catalog too small; this test asserts nothing"
+
+    stray = [e["slug"] for e in catalog if e.get("category") == "Other"]
+    assert not stray, f"no workflow band for {stray}; add them to _TOOL_CATEGORIES"
+
+    body = client.get("/help").get_data(as_text=True)
+    assert ">Other<" not in body, "/help rendered an 'Other' band heading"
+
+
+def test_every_rendered_band_resolves_a_glyph(app):
+    """Band strings are also ``_CATEGORY_GLYPHS`` keys; a rename drops one."""
+    from shared.category_glyphs import _CATEGORY_GLYPHS  # noqa: PLC0415
+
+    with app.test_request_context():
+        bands = {e["category"] for e in _build_tools_catalog()}
+    assert len(bands) >= 5, "too few bands; this test asserts nothing"
+    missing = sorted(b for b in bands if b not in _CATEGORY_GLYPHS)
+    assert not missing, f"catalog bands with no glyph: {missing}"
 
 
 def test_guide_grid_is_grouped_by_catalog_category(app):
@@ -204,3 +250,110 @@ def test_empty_guide_grid_renders_an_empty_state(monkeypatch):
     body = client.get("/help").get_data(as_text=True)
     assert not _GUIDE_HREF.findall(body), "expected an empty guide grid"
     assert "No tool guides are available right now" in body
+
+
+# ---------------------------------------------------------------------
+# Getting-started copy. Every claim below was FALSE when this page was
+# first written and became true only once #144 (anonymous tool pages),
+# #145 (task-first catalog bands) and #147 (guided pilot recipes) landed.
+# Nothing else in the suite would notice them going false again.
+# ---------------------------------------------------------------------
+
+def test_getting_started_claim_you_can_look_without_an_account(app):
+    """Step 2 says "You do not need an account to look"."""
+    client = app.test_client()
+    body = client.get("/help/getting-started").get_data(as_text=True)
+    assert "do not need an account to look" in body
+
+    slugs = [a.slug for a in tool_base.all_adapters()]
+    assert len(slugs) >= 14, "registry empty; this test asserts nothing"
+    gated = [s for s in slugs if client.get(f"/tools/{s}").status_code != 200]
+    assert not gated, f"tool pages that do not open anonymously: {gated}"
+
+
+def test_getting_started_claim_the_home_page_groups_by_task(app):
+    """Step 1 says the home page groups the tools by the user's question."""
+    client = app.test_client()
+    home = client.get("/")
+    assert home.status_code == 200, "home page does not open anonymously"
+    home_body = home.get_data(as_text=True)
+
+    with app.test_request_context():
+        bands = {e["category"] for e in _build_tools_catalog()}
+    assert len(bands) >= 5, "too few bands; this test asserts nothing"
+    for band in bands:
+        assert band in home_body, f"home page does not render the {band!r} band"
+
+
+def test_getting_started_names_the_pilot_card_cta_that_exists(app):
+    """Step 3 tells the reader to press "Load these settings".
+
+    That string is the ``pilot_card.html`` CTA. If the card is reworded
+    the instruction becomes a wild goose chase, and nothing else fails.
+    """
+    client = app.test_client()
+    body = client.get("/help/getting-started").get_data(as_text=True)
+    assert "Load these settings" in body
+
+    with_card = [
+        a.slug
+        for a in tool_base.all_adapters()
+        if "Load these settings"
+        in client.get(f"/tools/{a.slug}").get_data(as_text=True)
+    ]
+    # Ten of fourteen carry a pilot; the page says "most", not "every".
+    assert len(with_card) >= 10, f"only {len(with_card)} tools render a pilot card"
+    assert len(with_card) < len(tool_base.all_adapters()), (
+        "every tool now has a pilot card — step 3's carve-out for the fast "
+        "predictors is stale and should be dropped"
+    )
+
+
+def test_help_index_step_count_matches_the_guide(app):
+    """/help summarises the guide as N steps; the guide has N <li>."""
+    client = app.test_client()
+    guide = client.get("/help/getting-started").get_data(as_text=True)
+    steps = guide.count('<h2 class="help-step-title">')
+    assert steps > 1, "no steps parsed; this test asserts nothing"
+
+    words = {
+        5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
+    }
+    index_body = client.get("/help").get_data(as_text=True)
+    assert f"{words[steps]} steps from the protein" in index_body, (
+        f"the guide has {steps} steps; /help says otherwise"
+    )
+
+
+def test_signup_credit_actually_covers_every_pilot(app):
+    """Step 4 claims the signup credit "covers every pilot on the site".
+
+    The credit is $15 and the dearest pilot (proteina) is $12.59 — true,
+    but only by $2.41, and both numbers move independently: #151/#153
+    changed the credit, and every pilot price is derived from live GPU
+    rates over the recipe's params. Neither side knows about this
+    sentence.
+    """
+    import re as _re  # noqa: PLC0415
+    from decimal import Decimal  # noqa: PLC0415
+
+    from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+
+    client = app.test_client()
+    assert "signup_credit()" not in client.get(
+        "/help/getting-started"
+    ).get_data(as_text=True), "signup_credit() did not render"
+
+    prices = {}
+    for adapter in tool_base.all_adapters():
+        body = client.get(f"/tools/{adapter.slug}").get_data(as_text=True)
+        hit = _re.search(r"About <strong>\$([\d,.]+)</strong>", body)
+        if hit:
+            prices[adapter.slug] = Decimal(hit.group(1).replace(",", ""))
+    assert len(prices) >= 10, f"only {len(prices)} pilot prices found"
+
+    over = {s: p for s, p in prices.items() if p > SIGNUP_CREDIT_USD}
+    assert not over, (
+        f"the ${SIGNUP_CREDIT_USD} signup credit no longer covers {over}; "
+        "step 4 of /help/getting-started says it covers every pilot"
+    )

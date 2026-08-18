@@ -84,17 +84,30 @@
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Run a small pilot on your own target</h2>
+        <h2 class="help-step-title">Start the tool's named pilot</h2>
         <p class="help-step-body">
-          A pilot is a deliberately small first run on your target, sized to
-          tell you whether the setup works before you spend on a large one.
-          Leave the design count low and submit. This is the first point
-          that needs an account: you fund a USD wallet, and that balance is
-          your spend cap — no subscription, no monthly minimum. Before you
-          confirm you see the estimated cost and what your balance will be
-          afterwards; a hold is placed against the estimate while the job
-          runs and the final charge settles against the compute actually
-          used. See
+          Most tool pages carry a pilot card: a named first run on your own
+          target, sized to tell you whether the setup works before you spend
+          on a large one. It states what the run is for, what you need in
+          hand, and roughly what it costs before you commit anything.
+          <strong>Load these settings</strong> fills the form with exactly
+          those values — you supply your own structure and hotspots on top.
+          A few tools have no pilot card, because their smallest possible
+          run is already the only run they do; on those, just submit the
+          form.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Sign in and submit</h2>
+        <p class="help-step-body">
+          Submitting is the first point that needs an account. Billing is a
+          USD wallet and that balance is your spend cap — no subscription,
+          no monthly minimum, and a new account starts with
+          ${{ signup_credit() }} already in it, which covers every pilot on
+          the site. Before you confirm you see the estimated cost and what
+          your balance will be afterwards; a hold is placed against the
+          estimate while the job runs and the final charge settles against
+          the compute actually used. See
           <a href="{{ url_for('public.pricing') }}">pricing</a> for how holds
           and top-ups work.
         </p>
