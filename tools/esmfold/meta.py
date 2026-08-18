@@ -75,3 +75,26 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A single-sequence monomer fold finishes in well under a minute
+# and has no scale parameter to start small on. There is nothing a
+# pilot tier would reduce.
+PILOT: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

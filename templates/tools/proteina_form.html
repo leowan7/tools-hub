@@ -227,7 +227,9 @@
           </div>
 
           <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-          <input type="number" name="num_designs" id="num_designs" min="1" max="1000" value="8"
+          {# See rfdiffusion_form.html: pre_value, not a hard-coded value, so
+             ?clone_from= and ?pilot=1 can set the design count. #}
+          <input type="number" name="num_designs" id="num_designs" min="1" max="1000" {{ pre_value(pre_fill, "num_designs", "8") }}
                  {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                  class="proteina-field" style="max-width: 120px;">
           <div class="proteina-help">

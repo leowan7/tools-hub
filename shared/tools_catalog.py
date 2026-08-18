@@ -8,6 +8,7 @@ different blueprints, so the catalog lives in a shared leaf both can import.
 from flask import url_for
 
 from shared.feature_flags import tool_enabled
+from shared.tool_meta import meta_for
 from tools import base as tool_base
 
 # Static taglines for the hardcoded (non-adapter) tools. These two tools
@@ -141,8 +142,6 @@ def _build_tools_catalog() -> list[dict]:
     regardless of feature flags; GPU adapters are filtered through
     ``tool_enabled`` so a flag-off tool stays invisible to the catalog.
     """
-    import importlib  # noqa: PLC0415
-
     catalog: list[dict] = []
 
     # Hardcoded tools (not part of tool_base registry). External Scout
@@ -162,11 +161,11 @@ def _build_tools_catalog() -> list[dict]:
         if not tool_enabled(adapter.slug):
             continue
 
-        meta = None
-        try:
-            meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-        except ImportError:
-            pass
+        # meta_for(), not a raw-slug import path: package dirs use
+        # underscores and ``esmfold2-design`` does not, so interpolating
+        # the slug here raised ImportError and silently gave that tool no
+        # runtime band on the homepage catalog. Fifth and last call site.
+        meta = meta_for(adapter.slug)
 
         # Build the runtime band from whatever presets the adapter exposes
         # (smoke + mini_pilot tiers were removed 2026-05-29; atomic tools

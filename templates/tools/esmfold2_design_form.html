@@ -235,7 +235,11 @@
 
           {# ----- Use scaling critics ----- #}
           <label style="display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 1.25rem; cursor: pointer;">
-            <input type="checkbox" name="use_scaling_critics" value="on" {{ 'checked' if pre_fill and pre_fill.get('use_scaling_critics') in ('on', 'true', '1') else '' }} style="margin-top: 0.2rem; accent-color: var(--accent);">
+            {# ``True`` first, matching af2_form.html. validate() coerces this
+               to a Python bool before storing it, so a membership test over
+               strings alone missed every cloned job and silently turned the
+               critics back off. Found by the D3 clone sweep. #}
+            <input type="checkbox" name="use_scaling_critics" value="on" {{ 'checked' if pre_fill and pre_fill.get('use_scaling_critics') in (True, 'on', 'true', '1') else '' }} style="margin-top: 0.2rem; accent-color: var(--accent);">
             <span>
               <span style="color: var(--text-primary); font-weight: 500; font-size: 0.92rem;">Use scaling critics (stricter ranking)</span>
               <span style="display: block; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.45;">

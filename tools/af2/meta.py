@@ -125,3 +125,24 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A 5 to 10 minute fold. Its only scale parameter is how many
+# sequences you paste, which the user is already choosing
+# directly on the form.
+PILOT: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# The one archived payload (.deploy-logs/af2-smoke-bug8-attempt3-run1
+# .log) is a deliberately degraded smoke fixture: 58-residue BPTI, MSA
+# off, one recycle, mean pLDDT 54. Real, but it measures the fixture
+# rather than the tool, and AF2's whole case is MSA-backed accuracy.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

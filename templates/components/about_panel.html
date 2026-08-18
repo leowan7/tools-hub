@@ -138,6 +138,9 @@ Usage:
 {# The public explainer. This content used to be the separate
    templates/tools/_preview.html page that logged-out visitors got
    INSTEAD of the form; the form is public now, so it moves here. #}
+{% from "components/pilot_card.html" import pilot_card %}
+{% from "components/worked_example.html" import worked_example %}
+
 {% macro about_public_explainer(adapter) %}
     {% set _pub = tool_public_context(adapter) %}
     {% set _meta = _pub.meta %}
@@ -159,6 +162,18 @@ Usage:
         </div>
       </aside>
     {% endif %}
+
+    {# After "Start here first" (you need hotspots before you can run
+       anything) and before every reference block: this is the one
+       panel in the rail that tells a first-time visitor what to
+       actually DO. Renders nothing for tools with PILOT = None. #}
+    {{ pilot_card(_pub.pilot) }}
+
+    {# Straight after the pilot card, because the two are one argument:
+       here is the run to start with, and here is what a run of this
+       tool actually returned. Renders nothing for the thirteen tools
+       with no captured payload. #}
+    {{ worked_example(adapter, _pub.example) }}
 
     {% if _meta and _meta.comparison_one_liner %}
       <aside class="panel about-panel">

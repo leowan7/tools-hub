@@ -139,3 +139,70 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "A guided first run",
+    "goal": (
+        "Check that your target and the face you picked produce designs "
+        "at all, on the one model that also handles glycans, modified "
+        "residues and non-canonical chemistry. BoltzGen charges one flat "
+        "price per run, so this is a guided first run at the tool&rsquo;s "
+        "normal cost &mdash; not a cheaper trial."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb or .cif), the chain ID, "
+        "and at least one residue on the face you want bound."
+    ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # BoltzGen has exactly one preset, and ``budget`` selects how many
+    # of the 200 generated candidates come back — build_payload pins
+    # that 200 regardless — so the estimate is flat at $8.74 for every
+    # budget from 1 to 50. There is no knob on this form that buys a
+    # smaller or cheaper first run; lowering the budget returns fewer
+    # designs for the same money, which is strictly worse. See
+    # tests/test_pilot_recipes.py::test_a_no_op_pilot_is_only_allowed_
+    # when_nothing_cheaper_exists, which proves that rather than
+    # trusting this comment.
+    "params": {
+        "preset": "pilot",
+        "budget": "4",
+    },
+    "next_step": (
+        "Read the interface scores on what comes back. <code>budget</code> "
+        "only "
+        "chooses how many of the candidates are returned to you &mdash; "
+        "it does not change the bill &mdash; so raising it on a later "
+        "run costs you nothing extra."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

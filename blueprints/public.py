@@ -27,6 +27,7 @@ from flask import (
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
 from shared.jobs import list_jobs_for_user
+from shared.tool_meta import meta_for
 from shared.tools_catalog import (
     _build_tools_catalog,
     _short_name_for_label,
@@ -460,11 +461,7 @@ def help_tool_guide(tool: str):
     adapter = tool_base.get(tool)
     if adapter is None:
         return render_template("404.html"), 404
-    import importlib  # noqa: PLC0415
-    try:
-        meta = importlib.import_module(f"tools.{tool}.meta")
-    except ImportError:
-        meta = None
+    meta = meta_for(tool)
     short_name = _short_name_for_label(adapter.label)
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},

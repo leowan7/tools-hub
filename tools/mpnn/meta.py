@@ -148,3 +148,121 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter check: 8 sequences",
+    "goal": (
+        "Confirm your backbone file parses and you named the right "
+        "chains, before sampling a full batch."
+    ),
+    "you_need": (
+        "A backbone structure file (.pdb or .cif) and the chain ID(s) "
+        "you want new sequences for. Every other chain stays fixed as "
+        "context."
+    ),
+    "params": {
+        "preset": "standalone",
+        "num_seq_per_target": "8",
+        "sampling_temp": "0.1",
+    },
+    "next_step": (
+        "Raise the sequence count to 50 or more. Raise the sampling "
+        "temperature too if the first eight came back near-identical to "
+        "each other."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/mpnn/example/result.json replayed through this tool's OWN results
+# partial, so the demo cannot drift from the real results page.
+#
+# EVERY NUMBER BELOW IS A RECORDED FACT FROM THAT RUN, not an estimate and
+# not an illustration. Provenance: job `smoke-1777396479`, 2026-04-28, the
+# baked 1HEW smoke fixture; the same scores are logged against job
+# `smoke-1777047396` in docs/VALIDATION-LOG.md. Nothing may be added here
+# that the archived payload does not support — an invented recovery figure
+# on a public page is worse than no example at all.
+#
+# No cost_usd: that run was smoke tier at zero credits, so there is no
+# dollar figure to quote and none is invented. The field is optional.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = {
+    "target": (
+        "Hen egg-white lysozyme &mdash; PDB <code>1HEW</code>, chain A, "
+        "129 residues."
+    ),
+    "why_this_target": (
+        "Its real sequence is known, so every sequence the model writes "
+        "can be scored against the one nature uses. A de-novo backbone "
+        "has nothing to compare against, which makes a solved structure "
+        "the only way to see whether the model is behaving."
+    ),
+    "inputs_used": [
+        (
+            "Backbone",
+            "1HEW.pdb",
+            "The crystal structure, downloadable below. Only the backbone "
+            "atoms are read &mdash; the sequence in the file is discarded "
+            "before design.",
+        ),
+        (
+            "Chain(s) to design",
+            "A",
+            "The single protein chain. 1HEW's other chain is a sugar "
+            "ligand, not protein.",
+        ),
+        (
+            "Sequences to sample",
+            "2",
+            "Deliberately tiny. This run existed to prove the pipeline "
+            "worked end to end, not to produce a design set.",
+        ),
+    ],
+    "runtime": "24 seconds end to end, cold container included",
+    "what_came_back": (
+        "Two sequences, 129 residues each, recovering 53% and 50% of the "
+        "native lysozyme sequence at scores of 0.76. The archived payload "
+        "pre-dates the fields that record the designed chain and the "
+        "sampling temperature back into the result, so those two read as "
+        "em-dashes in the table below; everything else is as it was "
+        "returned."
+    ),
+    "how_to_read_it": (
+        "Recovery is the fraction of positions where the model picked the "
+        "residue nature actually uses. The score legend on this page puts "
+        "the usable line at 0.4 and excellent at 0.6, so about 0.5 on a "
+        "real backbone is healthy &mdash; you would be suspicious of 0.95, "
+        "which usually means the native sequence leaked into the run. "
+        "Score runs the other way: it is the model's negative "
+        "log-likelihood per residue, so lower is more confident, and below "
+        "1.0 is excellent."
+    ),
+    "what_we_did_next": (
+        "Nothing &mdash; this run existed to prove the pipeline. On a real "
+        "backbone the next step is to raise the sequence count to 50 or "
+        "more, then fold the best few with ESMFold or ColabFold to see "
+        "which of them actually adopt the shape you designed them for."
+    ),
+    "structure_file": "1HEW.pdb",
+}
