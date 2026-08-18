@@ -30,7 +30,7 @@
   <h2>2. Payments and wallet balance</h2>
   <p>
     The Service uses a USD prepaid wallet. New accounts receive a one-time
-    starting balance of $5 USD as a courtesy; this credit has no cash value
+    starting balance of ${{ signup_credit(True) }} USD as a courtesy; this credit has no cash value
     and may be revoked at our discretion in cases of abuse. You may add
     funds to your wallet via Stripe Checkout. Wallet balance is denominated
     in USD and is consumed when you run GPU jobs.

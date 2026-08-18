@@ -71,7 +71,11 @@ from shared.storage import (
     presigned_input_url,
     upload_input,
 )
-from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.tools_catalog import (
+    _build_tools_catalog,
+    _short_name_for_label,
+    group_catalog,
+)
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
 from shared.tool_meta import meta_for
 from shared.wallet_estimates import estimated_cost_for_tool
@@ -93,9 +97,16 @@ _PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
 
 
 @tools_bp.route("/developability", methods=["GET"])
-@login_required
 def developability():
-    """Render the Binder Developability Scout input form."""
+    """Render the Binder Developability Scout input form.
+
+    Open to anonymous visitors. Developability Scout is the only member of
+    the "See if a binder will hold up in the lab" catalog band, so gating it
+    made that whole band a login wall -- while its catalog card promises
+    "see how it works". There is nothing to gate: scoring is a pure function
+    over a pasted sequence with no GPU, no wallet charge, no storage write,
+    and no user identity. The trust boundary lives in developability_score.
+    """
     return render_template(
         "developability_form.html",
         error=None,
@@ -104,10 +115,27 @@ def developability():
     )
 
 @tools_bp.route("/developability/score", methods=["POST"])
-@login_required
 @idempotent()
 def developability_score():
-    """Validate input and render the developability results page."""
+    """Validate input and render the developability results page.
+
+    Anonymous like its GET: opening the form but redirecting the submit to
+    login would be exactly the "promise you do not keep" this redesign
+    exists to remove. Safe to open because the handler spends nothing and
+    persists nothing -- it calls score_developability(), a pure function
+    over the cleaned string, and renders a template.
+
+    The trust boundary is enforced below and is unchanged by opening the
+    route: FASTA headers stripped, length bounded to 10-2000 residues,
+    canonical amino acids only, chain_type checked against an allowlist.
+    That bounds the work any one anonymous request can ask for.
+
+    Deliberately NOT adding a per-IP rate limiter here: the repo has no HTTP
+    rate-limiting utility to reuse, and bolting a bespoke one onto this route
+    while /api/wallet/estimate (already anonymous, and it does an uncached DB
+    query) has none would be inconsistent. Request-rate control belongs at
+    the edge/proxy, not in one view.
+    """
     from tools.developability import score_developability  # noqa: PLC0415
 
     raw_sequence = request.form.get("sequence", "")
@@ -2147,19 +2175,7 @@ def tools_comparison():
     # Group catalog into workflow-stage sections in a stable order.
     # The order mirrors the iteration loop a scientist walks through:
     # scope → design → sequence → predict → QC.
-    category_order = (
-        "Scope the target",
-        "Design binders",
-        "Sequence on a backbone",
-        "Structure prediction",
-        "Check developability",
-        "Other",
-    )
-    grouped: list[tuple[str, list[dict]]] = []
-    for category in category_order:
-        members = [t for t in catalog if t.get("category") == category]
-        if members:
-            grouped.append((category, members))
+    grouped = group_catalog(catalog)
 
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},

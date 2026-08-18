@@ -19,6 +19,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
+# The signup credit is quoted in SEO copy that reaches JSON-LD structured
+# data, so it is read from the grant rather than retyped. It was hardcoded
+# as "$5" here and stayed that way when the grant went to $15.
+_SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
+
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
@@ -57,8 +64,9 @@ seo_faq: list[dict] = [
         "a": (
             "Billing is by the second of dedicated GPU time. A typical "
             "single-complex fold costs a few cents to a dollar from your "
-            "wallet. New accounts start with $5 of credit, which covers "
-            "many monomer folds or a handful of multimers."
+            "wallet. New accounts start with "
+            f"{_SIGNUP_CREDIT} of credit, which covers many monomer "
+            "folds or a handful of multimers."
         ),
     },
 ]

@@ -172,7 +172,7 @@
       font-size: 0.75rem;
     }
     {# Under 600px the step badge's extra width wraps the longer titles
-       ("Structure prediction", "Sequence on a backbone") onto a second
+       ("Choose sequences for a structure I already have") onto a second
        line. Drop the glyph rather than the number: the number is the
        ordering signal, and it also disambiguates the two categories that
        deliberately share one glyph. #}
@@ -237,6 +237,80 @@
       font-weight: 500;
     }
     .home-catalog-card-cta svg { width: 14px; height: 14px; }
+
+    {# "Start here" chooser: a plain table, no JS. Three columns on a
+       desktop; below 640px each row restacks into a labelled block so
+       the page never grows a horizontal scrollbar. #}
+    .home-chooser {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    .home-chooser th,
+    .home-chooser td {
+      text-align: left;
+      vertical-align: top;
+      padding: 0.7rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .home-chooser thead th {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent-text);
+    }
+    .home-chooser tbody th {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .home-chooser tbody tr:last-child th,
+    .home-chooser tbody tr:last-child td { border-bottom: none; }
+    .home-chooser-want { color: var(--text-secondary); }
+    .home-chooser-start a {
+      color: var(--accent-text);
+      text-decoration: none;
+    }
+    .home-chooser-start a:hover { text-decoration: underline; }
+
+    @media (max-width: 640px) {
+      .home-chooser,
+      .home-chooser tbody,
+      .home-chooser tr,
+      .home-chooser th,
+      .home-chooser td { display: block; width: 100%; }
+      {# Visually hidden, still announced: the per-cell data-label
+         duplicates it for sighted users once the header row is gone. #}
+      .home-chooser thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      .home-chooser tbody tr {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--bg-elevated);
+        padding: 0.6rem 0;
+        margin-bottom: 0.7rem;
+      }
+      .home-chooser tbody th,
+      .home-chooser tbody td {
+        border-bottom: none;
+        padding: 0.25rem 0.9rem;
+      }
+      .home-chooser tbody th::before,
+      .home-chooser tbody td::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 0.65rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+      }
+    }
   </style>
 {% endblock %}
 
@@ -251,14 +325,14 @@
         Fund a USD wallet and run RFdiffusion, BindCraft, RFantibody,
         BoltzGen, MPNN, and AF2 on the same target. Your balance is your
         cap and design count is unlimited. <strong>New accounts start with
-        $5 in their wallet. No credits, no tiers, no subscriptions.</strong>
+        ${{ signup_credit() }} in their wallet. No credits, no tiers, no subscriptions.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
           <a href="/account/wallet/topup" class="btn-primary-lg">Top up your wallet</a>
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% else %}
-          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with ${{ signup_credit() }} in your wallet</a>
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% endif %}
       </div>
@@ -307,6 +381,76 @@
     </section>
   {% endif %}
 
+  {# ─── "Start here" chooser ────────────────────────────────────────
+     Resolves each link out of the catalog rather than hardcoding a
+     url_for, so a flag-disabled tool degrades to plain text instead of
+     a dead link. `tools` is passed in explicitly because a Jinja macro
+     does not see the template context. #}
+  {% macro chooser_link(catalog, slug, label) -%}
+    {%- set entry = catalog | selectattr('slug', 'equalto', slug) | list | first -%}
+    {%- if entry %}<a href="{{ entry.route }}">{{ label }}</a>{% else %}{{ label }}{% endif -%}
+  {%- endmacro %}
+  {% if tools %}
+    <section class="section" id="start-here">
+      <div class="section-head">
+        <span class="section-eyebrow">Start here</span>
+        <h2 class="section-title">What do you have, and what do you want?</h2>
+        <p class="section-lede">
+          Find the row that matches what is already on your bench. Every
+          tool below is free to open and read before you spend anything.
+        </p>
+      </div>
+      <table class="home-chooser">
+        <thead>
+          <tr>
+            <th scope="col">I have</th>
+            <th scope="col">I want</th>
+            <th scope="col">Start with</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" data-label="I have">A target protein structure</th>
+            <td class="home-chooser-want" data-label="I want">Something that binds it</td>
+            <td class="home-chooser-start" data-label="Start with">
+              {{ chooser_link(tools, 'epitope-scout', 'Epitope Scout') }}, then a binder pilot
+            </td>
+          </tr>
+          <tr>
+            <th scope="row" data-label="I have">A target and a rough epitope</th>
+            <td class="home-chooser-want" data-label="I want">Binder candidates now</td>
+            <td class="home-chooser-start" data-label="Start with">
+              {{ chooser_link(tools, 'rfdiffusion', 'RFdiffusion') }}
+              or {{ chooser_link(tools, 'boltzgen', 'BoltzGen') }}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row" data-label="I have">A backbone from somewhere else</th>
+            <td class="home-chooser-want" data-label="I want">Sequences for it</td>
+            <td class="home-chooser-start" data-label="Start with">
+              {{ chooser_link(tools, 'mpnn', 'ProteinMPNN') }}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row" data-label="I have">A designed binder sequence</th>
+            <td class="home-chooser-want" data-label="I want">To know if it will fold / bind</td>
+            <td class="home-chooser-start" data-label="Start with">
+              {{ chooser_link(tools, 'boltz2', 'Boltz-2') }}
+              or {{ chooser_link(tools, 'colabfold', 'ColabFold') }}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row" data-label="I have">An antibody or nanobody sequence</th>
+            <td class="home-chooser-want" data-label="I want">To know if it is manufacturable</td>
+            <td class="home-chooser-start" data-label="Start with">
+              {{ chooser_link(tools, 'developability', 'Developability Scout') }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
   {# ─── Tool catalog grouped by workflow stage ─────────────────────── #}
   {% if grouped %}
     <section class="section" id="tools">
@@ -324,12 +468,14 @@
           </div>
           <div class="home-catalog-grid">
             {% for tool in items %}
+              {# Tool pages are anonymous-reachable; only Submit is gated.
+                 An anonymous card therefore links to the tool itself, not
+                 to /login?next= — the login wall was the single biggest
+                 barrier for a first-time visitor. #}
               {% if tool.external %}
                 <a class="home-catalog-card" href="{{ tool.route }}" target="_blank" rel="noopener noreferrer">
-              {% elif authenticated %}
-                <a class="home-catalog-card" href="{{ tool.route }}">
               {% else %}
-                <a class="home-catalog-card" href="{{ url_for('auth.login', next=tool.route) }}">
+                <a class="home-catalog-card" href="{{ tool.route }}">
               {% endif %}
                 <div class="home-catalog-card-head">
                   <span class="home-catalog-card-name">{{ tool.name }}</span>
@@ -339,7 +485,7 @@
                   <span class="home-catalog-card-meta">Runtime <strong>{{ tool.runtime_band }}</strong></span>
                 {% endif %}
                 <span class="home-catalog-card-cta">
-                  {% if authenticated %}Open tool{% else %}Sign in to run{% endif %}
+                  {% if authenticated %}Open tool{% else %}See how it works{% endif %}
                   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </span>
               </a>
@@ -451,7 +597,7 @@
         <span class="pricing-teaser-title">Your wallet is your budget.</span>
         <span class="pricing-teaser-body">
           Fund a USD wallet, design without limits, pay only for the compute
-          delivered. New accounts start with $5 in their wallet on signup.
+          delivered. New accounts start with ${{ signup_credit() }} in their wallet on signup.
           No credits, no tiers, no subscriptions.
         </span>
       </div>

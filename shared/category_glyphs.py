@@ -21,12 +21,16 @@ from pathlib import Path
 from markupsafe import Markup
 
 # Category display label -> glyph slug (no extension, no path).
+# The keys must stay in lockstep with the band labels in
+# ``shared.tools_catalog._TOOL_CATEGORIES`` / ``CATEGORY_ORDER``; the
+# filenames below are the older pipeline-stage names and are deliberately
+# left alone (they are asset paths, not user-facing copy).
 _CATEGORY_GLYPHS: dict[str, str] = {
-    "Scope the target": "target-scoping",
-    "Check developability": "target-scoping",
-    "Design binders": "de-novo-minibinders",
-    "Sequence on a backbone": "sequence-on-backbone",
-    "Structure prediction": "structure-prediction",
+    "Check if my target is a good one to bind": "target-scoping",
+    "See if a binder will hold up in the lab": "target-scoping",
+    "Make new binders for my target": "de-novo-minibinders",
+    "Choose sequences for a structure I already have": "sequence-on-backbone",
+    "Predict or check a 3D structure": "structure-prediction",
 }
 
 

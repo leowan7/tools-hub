@@ -99,6 +99,37 @@ def resolve_owned_job_dir(
     return job_dir
 
 
+def count_job_dirs(owner_prefix: str, base_dir: Path = Path("tmp")) -> int:
+    """Count live job dirs whose recorded ``.owner`` starts with ``owner_prefix``.
+
+    Used to bound how many anonymous jobs exist at once: pass the shared
+    ``anon:`` prefix for the fleet-wide total, or one session's full anon id
+    (which no other owner string can prefix-match) for that session's share.
+
+    Only UUID-named directories are considered, matching ``cleanup_old_jobs``
+    — a sibling tenant's directory under the shared ``tmp/`` is never counted.
+    An empty prefix returns 0 rather than counting everything, so a caller
+    that lost its owner key cannot accidentally match every job.
+
+    ponytail: O(dirs) stat + read per call, run on the intake routes only.
+    Fine while the anonymous cap keeps the tree small; if tmp/ ever holds
+    thousands of jobs, keep the count in a file instead of rescanning.
+    """
+    if not owner_prefix:
+        return 0
+    base_dir = Path(base_dir)
+    if not base_dir.exists():
+        return 0
+    count = 0
+    for entry in base_dir.iterdir():
+        if not is_valid_job_id(entry.name) or not entry.is_dir():
+            continue
+        recorded = read_owner(entry)
+        if recorded and recorded.startswith(owner_prefix):
+            count += 1
+    return count
+
+
 def create_job_dir(
     owner: "str | None" = None, base_dir: Path = Path("tmp")
 ) -> tuple[str, Path]:

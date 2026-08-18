@@ -288,12 +288,14 @@
         </div>
         <div class="catalog-grid">
           {% for tool in items %}
+            {# Tool pages are anonymous-reachable; only Submit is gated.
+               An anonymous card therefore links to the tool itself, not
+               to /login?next= — same rule as the homepage cards in
+               templates/index.html. #}
             {% if tool.external %}
               <a class="catalog-card" href="{{ tool.route }}" target="_blank" rel="noopener noreferrer">
-            {% elif authenticated %}
-              <a class="catalog-card" href="{{ tool.route }}">
             {% else %}
-              <a class="catalog-card" href="{{ url_for('auth.login', next=tool.route) }}">
+              <a class="catalog-card" href="{{ tool.route }}">
             {% endif %}
               <div class="catalog-card-head">
                 <span class="catalog-card-name">{{ tool.name }}</span>
@@ -308,7 +310,7 @@
                 {% endif %}
               </div>
               <span class="catalog-card-cta">
-                {% if authenticated %}Open tool{% else %}Sign in to run{% endif %}
+                {% if authenticated %}Open tool{% else %}See how it works{% endif %}
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </span>
             </a>

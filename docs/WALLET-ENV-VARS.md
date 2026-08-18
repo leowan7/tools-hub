@@ -47,7 +47,6 @@ you want to deviate.
 |---|---|---|
 | `WALLET_MIN_TOPUP_USD` | `20` | Floor on a single top up |
 | `WALLET_MAX_TOPUP_USD` | `5000` | Ceiling on a single top up |
-| `WALLET_SIGNUP_CREDIT_USD` | `5` | Display value in welcome emails |
 | `WALLET_DEFAULT_DAILY_CAP_USD` | `200` | Display value in setup emails |
 
 ---
@@ -65,7 +64,6 @@ you want to deviate.
 | `SUPPORT_EMAIL` | none | `shared/email.py` | `support@ranomics.com` | Falls back to the default support address |
 | `WALLET_MIN_TOPUP_USD` | none | `billing/checkout.py` | `20.00` (from `shared.wallet.MIN_TOPUP_USD`) | Falls back to the constant |
 | `WALLET_MAX_TOPUP_USD` | none | `billing/checkout.py` | `5000.00` (constant inside `billing/checkout.py`) | Falls back to the constant |
-| `WALLET_SIGNUP_CREDIT_USD` | none | `shared/email.py` (signup credit email body only) | `5` | Falls back; this is display only, the actual credit applied at signup is the constant in `shared/wallet.py:SIGNUP_CREDIT_USD` |
 | `WALLET_DEFAULT_DAILY_CAP_USD` | none | `shared/email.py` (welcome email body only) | `200` | Falls back; this is display only, the actual default cap is set in `shared/wallet.py` |
 | `SLACK_SALES_WEBHOOK_URL` | `WALLET_FUNNEL_ALERT_SLACK_WEBHOOK_URL` (per plan Railway table) | `shared/email.py:alert_sales_slack`, `alert_sales_slack_high` | none | Slack post is skipped silently; only a `logger.info` is emitted |
 | `SLACK_OPS_WEBHOOK_URL` | none | `shared/email.py:alert_ops_slack` | none | Slack post is skipped silently; only a `logger.info` is emitted |
@@ -106,7 +104,7 @@ them requires a code change and a deploy, not a Railway edit.
 |---|---|---|---|
 | `WALLET_MARKUP` | `shared/wallet.py:73` and `shared/wallet_estimates.py:44` | `Decimal("1.70")` | Pricing margin. Lives in code so the wallet model and the estimate preview cannot diverge under runtime config. Also duplicated in two modules; both must change together. |
 | `MIN_TOPUP_USD` | `shared/wallet.py:76` | `Decimal("20.00")` | Default for the optional `WALLET_MIN_TOPUP_USD` override |
-| `SIGNUP_CREDIT_USD` | `shared/wallet.py:85` | `Decimal("5.00")` | The wallet credit applied at signup. The optional `WALLET_SIGNUP_CREDIT_USD` env var only changes the number shown in the welcome email, not the actual credit |
+| `SIGNUP_CREDIT_USD` | `shared/wallet.py` | `Decimal("15.00")` | The wallet credit applied at signup, and the only home for that number. There is no env override: `WALLET_SIGNUP_CREDIT_USD` was removed 2026-08-18 because it changed only the welcome email, never the grant, so its sole effect was to let the email disagree with the balance. It did — preview kept `=5` after the grant went to $15. Delete it from any environment that still sets it. |
 | `SELF_SERVE_CEILING_USD` | `shared/wallet.py:92` | `Decimal("1000.00")` | Ceiling above which a job estimate routes to the Binder Pilot pitch instead of letting the self serve flow proceed |
 | `DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD` | `shared/wallet.py:82` | `Decimal("1000.00")` | Per user policy, set per row in the wallet table |
 
@@ -155,7 +153,6 @@ SLACK_OPS_WEBHOOK_URL=
 # Optional policy overrides; leave blank to use defaults
 WALLET_MIN_TOPUP_USD=
 WALLET_MAX_TOPUP_USD=
-WALLET_SIGNUP_CREDIT_USD=
 WALLET_DEFAULT_DAILY_CAP_USD=
 ```
 

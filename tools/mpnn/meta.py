@@ -19,6 +19,13 @@ from __future__ import annotations
 
 from typing import Optional
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
+# The signup credit is quoted in SEO copy that reaches JSON-LD structured
+# data, so it is read from the grant rather than retyped. It was hardcoded
+# as "$5" here and stayed that way when the grant went to $15.
+_SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
+
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "standalone": {"typical_minutes": "1"},
@@ -43,8 +50,9 @@ seo_faq: list[dict] = [
         "a": (
             "Billing is by the second. A typical ProteinMPNN job costs a "
             "fraction of a cent because the model finishes in under a "
-            "minute on most backbones. New accounts start with a $5 "
-            "wallet balance, which is enough for thousands of runs."
+            "minute on most backbones. New accounts start with a "
+            f"{_SIGNUP_CREDIT} wallet balance, which is enough for "
+            "thousands of runs."
         ),
     },
     {
