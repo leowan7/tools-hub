@@ -78,7 +78,7 @@
         <a href="{{ url_for('auth.signup', next=login_next) }}" class="btn-secondary">Create a free account</a>
       </div>
       <p style="margin: 0.6rem 0 0; font-size: 0.82rem; color: var(--text-secondary);">
-        New accounts start with a $5 wallet balance. Pay by the second of
+        New accounts start with a ${{ signup_credit() }} wallet balance. Pay by the second of
         compute. No subscriptions.
       </p>
     </div>
@@ -312,7 +312,7 @@
           <div style="max-width: 52ch;">
             <p style="margin: 0 0 0.35rem 0; color: var(--text-primary); font-weight: 600;">Ready to run it?</p>
             <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">
-              Sign in to open the {{ _short_name }} run form. Your $5 starting balance is enough for a first job on a small target.
+              Sign in to open the {{ _short_name }} run form. Your ${{ signup_credit() }} starting balance is enough for a first job on a small target.
             </p>
           </div>
           <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">

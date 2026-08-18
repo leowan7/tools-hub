@@ -20,6 +20,7 @@ from flask import (
 )
 
 from shared.auth import login_required
+from shared.wallet import SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +234,8 @@ def signup():
             next="/",
         )
 
-    # Wallet signup credit ($5 by default) is granted lazily when the
-    # user_wallets row is first created on sign-in
+    # The wallet signup credit is granted lazily when the user_wallets
+    # row is first created on sign-in
     # (shared.wallet._create_wallet_with_signup_credit). No legacy
     # credits-ledger grant on this path.
 
@@ -270,9 +271,11 @@ def signup():
         error=None,
         email=email,
         next="/",
+        # Quote the grant, not a retyped figure: this line told every new
+        # user "$5" for the whole time the wallet was depositing $15.
         success_msg=(
-            "Account created with $5 of compute credit. "
-            "Sign in to get started."
+            f"Account created with ${SIGNUP_CREDIT_USD:.0f} of compute "
+            "credit. Sign in to get started."
         ),
     )
 
