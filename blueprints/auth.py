@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from urllib.parse import urlsplit
 
 from flask import (
     Blueprint,
@@ -26,6 +27,84 @@ logger = logging.getLogger(__name__)
 auth_bp = Blueprint("auth", __name__)
 
 
+def safe_next(value: str | None, fallback: str = "/") -> str:
+    """Return ``value`` if it is a same-origin path, else ``fallback``.
+
+    This is an ALLOWLIST, not a blocklist. The previous shape-based
+    blocklist (startswith "/" and not "//" and not "/\\") was bypassable:
+    ``/\\t/evil.com`` passed all three checks, and the header layer then
+    STRIPPED the tab, shipping ``Location: //evil.com`` — a
+    protocol-relative URL, i.e. an off-site redirect. The stripping is
+    server-side, so no browser quirk is required.
+
+    Four layers. Which of them are UNIQUELY load-bearing was measured, not
+    assumed, by deleting each and re-running tests/test_login_redirect.py;
+    the honest result is recorded per layer below.
+
+    0. urlsplit RAISES ValueError on some inputs — ``//[`` and ``//%5B``
+       ("Invalid IPv6 URL"), ``//[]`` (bad bracketed host), ``//\\uff03e``
+       (NFKC netloc check). Letting that escape turned an unauthenticated
+       GET into a 500, so a parse failure is treated as unsafe and falls
+       back. Caught broadly on purpose: urlsplit's raise set differs
+       between CPython versions, so enumerating it would pin us to 3.13.
+    1. urlsplit allowlist (primary): accept only a relative reference with
+       NO scheme and NO netloc, whose path starts with "/".
+       - ``parts.path.startswith("/")`` is uniquely load-bearing:
+         ``evil.com/a`` is rejected by nothing else.
+       - ``parts.scheme`` is uniquely load-bearing: ``javascript:/a`` and
+         ``data:/a`` split to an empty netloc and the path "/a", so every
+         other layer waves them through.
+       - ``parts.netloc`` is NOT uniquely load-bearing, and this docstring
+         previously claimed otherwise. urlsplit only produces a netloc when
+         the value (after its own TAB/CR/LF stripping) has "//" following
+         the optional scheme; that means either a scheme is present
+         (caught above), or the raw value starts with "//" (layer 3), or it
+         leads with a stripped control character (layer 2). Kept as
+         defence in depth — it is the check that states the actual intent,
+         and it stops depending on the other three staying exactly as they
+         are — but no test can single it out, because nothing reaches it
+         first.
+    2. Reject C0 controls, DEL and C1 controls outright. NOTE: an earlier
+       version of this comment claimed VT, FF, NUL, DEL and NEL "pass
+       through Werkzeug raw". That is FALSE — measured on the merge base,
+       Werkzeug percent-encodes all of them exactly like SPACE
+       (``/%0B/``, ``/%0C/``, ``/%00/``, ``/%7F/``, ``/%C2%85/``), and CR
+       and LF are rejected outright with a 500. TAB is the only one that is
+       silently STRIPPED, and TAB is already caught by layer 1. So layer 2
+       is not the barrier it was described as. It is still the only layer
+       that rejects ``/\\x0b/evil.com`` and friends (deleting it turns the
+       suite red), so the CHECK is load-bearing; it is the stated REASON
+       that was wrong. The real reason to keep it: it stops the guard's
+       correctness resting on urlsplit's and Werkzeug's normalisation
+       tables, which are implementation details of two dependencies.
+       Nothing legitimate needs those bytes anyway.
+       SPACE is deliberately NOT rejected: it survives as "%20" rather than
+       being normalised away, so it is provably safe, and rejecting it
+       could break a legitimate link.
+    3. Reject a raw leading "//". Uniquely load-bearing:
+       urlsplit("///evil.com") yields an EMPTY netloc and the path
+       "/evil.com", so layer 1 waves it through while browsers resolve it
+       off-origin.
+    4. Keep the explicit "/\\" check. Uniquely load-bearing: urlsplit does
+       NOT treat a backslash as a separator, so ``/\\evil.com`` parses as an
+       innocent path while browsers normalise it to ``//evil.com``.
+    """
+    if not value:
+        return fallback
+    try:
+        parts = urlsplit(value)
+    except Exception:
+        # Unparseable is unsafe. See layer 0 above.
+        return fallback
+    if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+        return fallback
+    if any(c < "\x20" or "\x7f" <= c <= "\x9f" for c in value):
+        return fallback
+    if value.startswith("//") or value.startswith("/\\"):
+        return fallback
+    return value
+
+
 # ------------------------------------------------------------------
 # Auth routes
 # ------------------------------------------------------------------
@@ -36,7 +115,9 @@ def login():
     from shared.auth import verify_login  # noqa: PLC0415
 
     if request.method == "GET":
-        next_url = request.args.get("next", "/")
+        # Validate on GET too, so the hidden form field can never be
+        # populated with a value the POST would later reject.
+        next_url = safe_next(request.args.get("next"))
         return render_template(
             "login.html",
             mode="signin",
@@ -47,23 +128,15 @@ def login():
 
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
-    next_url = request.form.get("next", "/")
+    # Same-origin allowlist — see safe_next(). Applied before the field is
+    # re-rendered on the failure path as well as before the redirect.
+    next_url = safe_next(request.form.get("next"))
 
     success, error_msg, user_id = verify_login(email, password)
     if success:
         session["user_email"] = email
         if user_id:
             session["user_id"] = user_id
-        # Restrict redirect to same-origin paths to prevent open
-        # redirect. A leading "/" alone is not enough: browsers treat
-        # "//host" (protocol-relative) and "/\host" as absolute URLs
-        # to another origin, so reject those too.
-        if (
-            not next_url.startswith("/")
-            or next_url.startswith("//")
-            or next_url.startswith("/\\")
-        ):
-            next_url = "/"
         try:
             from shared.events import log_event  # noqa: PLC0415
             log_event(
