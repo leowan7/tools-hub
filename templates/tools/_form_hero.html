@@ -1,0 +1,29 @@
+{# The page header shared by all 14 templates/tools/*_form.html.
+
+   Was four identical hand-copied lines in each. It is one file now
+   because the anonymous lede below needed a home: the sentence
+   "<Tool> is a <seo_phrase> you can run through tools.ranomics.com on
+   a dedicated GPU. <seo_long>." was the hero of the deleted
+   templates/tools/_preview.html and is the only place ``seo_phrase``
+   is rendered. /tools/<slug> is the indexable URL for both auth states
+   now, so losing it lost the page's keyword-bearing first paragraph.
+
+   Anonymous-only on purpose — a signed-in user is past the pitch and
+   wants the form. The explainer in components/about_panel.html is the
+   part that renders for everyone.
+
+   An INCLUDE, not a macro, so ``seo_phrase`` / ``seo_long`` /
+   ``short_name`` (context vars from _public_tool_context) are visible.
+   They are absent on the error re-renders from tool_submit, which are
+   signed-in only — jinja Undefined is falsy, so the guard holds
+   either way. #}
+<div class="hero">
+  <h1>{{ adapter.label }}</h1>
+  <p class="subtitle">{{ adapter.blurb }}</p>
+  {% if not viewer_is_signed_in() and seo_phrase %}
+    <p style="margin: 0.85rem 0 0; color: var(--text-secondary); line-height: 1.6; max-width: 60ch;">
+      {{ short_name or adapter.label }} is a {{ seo_phrase }} you can run
+      through tools.ranomics.com on a dedicated GPU.{% if seo_long %} {{ seo_long }}.{% endif %}
+    </p>
+  {% endif %}
+</div>

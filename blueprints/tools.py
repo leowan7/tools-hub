@@ -432,6 +432,93 @@ _RELATED_TOOLS: dict[str, tuple[str, ...]] = {
     "boltz2":      ("af2", "colabfold", "boltzgen"),
 }
 
+# Tools whose form asks the user to name the residues a binder should
+# engage. Every field on these forms is answerable by a bench biologist
+# except this one: the helper text documents the SYNTAX (comma
+# separated, original PDB numbering, prefix the chain) and never the
+# METHOD — how to decide WHICH residues. Epitope Scout is the answer to
+# that question and was linked from nowhere on these pages.
+#
+# Deliberately NOT folded into _RELATED_TOOLS: that block is headed "if
+# you are picking between <tool> and a sibling algorithm", and Scout is
+# not an alternative to RFdiffusion — it is the step before it. Mixing
+# the two would file a prerequisite under a heading that denies it is
+# one. Rendered as its own "start here first" panel instead.
+#
+# boltz2 also has a hotspot field and is excluded on purpose: its
+# hotspots are scored after the fold, not steered toward, so choosing
+# them well is not a precondition for the run being worth paying for.
+_HOTSPOT_TOOLS: frozenset[str] = frozenset({
+    "rfdiffusion", "bindcraft", "pxdesign", "rfantibody",
+    "boltzgen", "proteina", "iggm",
+})
+
+def _prerequisite_tool(slug: str) -> dict | None:
+    """Epitope Scout as a "run this first" step, or None.
+
+    Copy is read from shared.tools_catalog rather than restated here —
+    that hardcoded entry (Scout is not a registered adapter; it has no
+    tools/<slug>/meta.py) is already the source of truth for the
+    homepage tile and /tools, and a second hand-written tagline would
+    drift from it.
+    """
+    if slug not in _HOTSPOT_TOOLS:
+        return None
+    from shared.tools_catalog import _HARDCODED_TOOLS  # noqa: PLC0415
+    entry = next(
+        (t for t in _HARDCODED_TOOLS if t["slug"] == "epitope-scout"), None
+    )
+    if entry is None:
+        return None
+    try:
+        url = url_for(entry["endpoint"])
+    except Exception:  # noqa: BLE001 — endpoint not registered in this app
+        return None
+    return {
+        "name": entry["name"],
+        "url": url,
+        "tagline": entry["tagline"],
+        "why": (
+            "It scores your target's surface and ranks candidate epitopes, "
+            "which is how you decide what to type into Hotspot residues. "
+            "It is free and runs in about 30 seconds."
+        ),
+    }
+
+# Tools with a real, published run on /showcase. Rescued from the two
+# per-tool preview overrides (templates/tools/{rfdiffusion,boltzgen}_preview.html)
+# that the shared preview shell's removal took with it — that showcase
+# link was the only content in either file. Phase 3 of the redesign
+# replaces this with a per-tool worked example rendered through the
+# tool's own results partial; until then, the link is what we have.
+_SHOWCASE_NOTES: dict[str, dict[str, str]] = {
+    "rfdiffusion": {
+        "title": "A real RFdiffusion run",
+        "body": (
+            "The showcase has a real RFdiffusion run: 60 de novo binder "
+            "backbones generated against a target across five parallel "
+            "jobs, each fold shaped by diffusion rather than grafted onto "
+            "a known scaffold. RFdiffusion returns backbone geometry, the "
+            "starting fold you take into sequence design."
+        ),
+        "anchor": "03-rfdiffusion-platform-pilot",
+        "cta": "See the RFdiffusion run in the showcase",
+    },
+    "boltzgen": {
+        "title": "Real BoltzGen runs",
+        "body": (
+            "The showcase has two real BoltzGen runs with anonymized "
+            "targets: a nanobody discovery campaign that narrowed 2000 "
+            "designs to a validated panel of 12, scored by two independent "
+            "structure predictors, and a de novo minibinder campaign that "
+            "turned one interaction interface into 20,000 ranked designs "
+            "with a top tier scoring ipTM 0.98."
+        ),
+        "anchor": "01-boltzgen-vhh-immune-coreceptor",
+        "cta": "See real BoltzGen runs in the showcase",
+    },
+}
+
 def _related_tool_cards(slug: str) -> list[dict]:
     """Build the related-tools card list for the preview page.
 
@@ -491,23 +578,112 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
         return runtimes[0]
     return "—"
 
-def _template_exists(template_name: str) -> bool:
-    """True if Jinja can resolve ``template_name`` via the loader."""
+def _showcase_note(slug: str) -> dict | None:
+    """The showcase card for a tool, with its URL resolved, or None."""
+    note = _SHOWCASE_NOTES.get(slug)
+    if not note:
+        return None
+    return dict(
+        note,
+        url=f"{url_for('public.showcase')}#{note['anchor']}",
+    )
+
+def _public_tool_context(adapter) -> dict:
+    """SEO + explainer context the tool page needs in BOTH auth states.
+
+    Was computed only on the logged-out preview branch. The preview
+    shell is gone — /tools/<slug> now renders the real form for
+    everyone — so this travels with every render and the explainer
+    macros read it directly.
+    """
+    import importlib  # noqa: PLC0415
+    tool_meta = None
     try:
-        current_app.jinja_env.get_template(template_name)
-        return True
-    except Exception:
-        return False
+        tool_meta = importlib.import_module(f"tools.{adapter.slug}.meta")
+    except ImportError:
+        pass
+
+    short_name = _short_name_for_label(adapter.label)
+    seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
+    tech_slug = _RANOMICS_TECHNOLOGY_SLUGS.get(adapter.slug)
+
+    # SoftwareApplication + FAQPage JSON-LD, built here rather than in
+    # Jinja so base.html only has to dump it. Moved off the deleted
+    # tools/_preview.html; /tools/<slug> is the indexable URL now.
+    desc_src = (
+        getattr(tool_meta, "comparison_one_liner", None)
+        or adapter.blurb
+        or ""
+    )
+    software: dict = {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": short_name,
+        "applicationCategory": "ScientificApplication",
+        "operatingSystem": "Any (web-based)",
+    }
+    if desc_src:
+        software["description"] = str(desc_src)[:250]
+    if getattr(tool_meta, "paper_url", None):
+        software["citation"] = tool_meta.paper_url
+    if getattr(tool_meta, "github_url", None):
+        software["codeRepository"] = tool_meta.github_url
+
+    faq_items = getattr(tool_meta, "seo_faq", None) or ()
+    faq_ld = None
+    if faq_items:
+        faq_ld = {
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": item["q"],
+                    "acceptedAnswer": {
+                        "@type": "Answer", "text": item["a"],
+                    },
+                }
+                for item in faq_items
+            ],
+        }
+
+    return {
+        "meta": tool_meta,
+        "runtime_band": _runtime_band_for_adapter(adapter, tool_meta),
+        "seo_phrase": seo_phrase,
+        "seo_long": seo_long,
+        "title_phrase": _preview_title_phrase(adapter.slug),
+        "short_name": short_name,
+        "learn_more_url": (
+            f"https://www.ranomics.com/technology/{tech_slug}"
+            if tech_slug else None
+        ),
+        "related_tools": _related_tool_cards(adapter.slug),
+        "prerequisite": _prerequisite_tool(adapter.slug),
+        "showcase_note": _showcase_note(adapter.slug),
+        "breadcrumbs": [
+            {"name": "Home", "url": url_for("public.index", _external=True)},
+            {"name": "Tools", "url": url_for(
+                "tools.tools_comparison", _external=True
+            )},
+            {"name": short_name, "url": url_for(
+                "tools.tool_form", tool=adapter.slug, _external=True
+            )},
+        ],
+        "tool_seo": {"software": software, "faq": faq_ld},
+    }
 
 @tools_bp.route("/tools/<tool>", methods=["GET"])
 def tool_form(tool: str):
-    """Render a GPU tool's submission form, or a public preview if logged out.
+    """Render a GPU tool's submission form. Public GET; Submit is gated.
 
-    Logged-out branch (B2): render ``tools/<slug>_preview.html`` if
-    present, falling back to the shared ``tools/_preview.html`` shell.
-    The preview is indexable; the underlying run form is not. The
-    POST handler at /tools/<slug>/submit stays @login_required so
-    logged-out visitors cannot spawn jobs.
+    Anonymous visitors get the SAME form template and the same URL as
+    signed-in ones — they can read every field, see the live cost
+    estimate, and read the explainer, but the Submit button is
+    replaced by a sign-in CTA. The spend gate is unchanged and lives
+    where it always did: POST /tools/<slug>/submit and
+    /tools/<slug>/preflight are both @login_required, so a logged-out
+    visitor still cannot spawn a job.
 
     Logged-in pre-fill sources (query params, owner-scoped):
       * ``clone_from=<job_id>`` — reuse all inputs of an earlier job.
@@ -529,56 +705,40 @@ def tool_form(tool: str):
     if err:
         return err
 
-    # Logged-out: render the public preview shell. Per-tool override
-    # at templates/tools/<slug>_preview.html wins if present;
-    # otherwise fall through to the shared shell. The shared shell
-    # extends base.html and renders About + score legend + paper +
-    # "Sign in to run" CTA.
+    public_ctx = _public_tool_context(adapter)
+    login_next = url_for("tools.tool_form", tool=adapter.slug)
+
+    # Logged-out: same template, same URL, no user context loaded.
+    # ``authenticated=False`` is what flips the shared macros —
+    # submit_cta renders a sign-in link instead of a submit button,
+    # about_panel renders the full public explainer, and the wallet
+    # panel drops the balance rows (balance_usd is None).
     if not session.get("user_email"):
-        import importlib  # noqa: PLC0415
-        preview_meta = None
-        try:
-            preview_meta = importlib.import_module(
-                f"tools.{adapter.slug}.meta"
-            )
-        except ImportError:
-            pass
-        runtime_band = _runtime_band_for_adapter(adapter, preview_meta)
-        seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
-        title_phrase = _preview_title_phrase(adapter.slug)
-        login_next = url_for("tools.tool_form", tool=adapter.slug)
-        per_tool_template = f"tools/{adapter.slug}_preview.html"
-        template_name = per_tool_template if _template_exists(
-            per_tool_template
-        ) else "tools/_preview.html"
-        short_name = _short_name_for_label(adapter.label)
-        tech_slug = _RANOMICS_TECHNOLOGY_SLUGS.get(adapter.slug)
-        learn_more_url = (
-            f"https://www.ranomics.com/technology/{tech_slug}"
-            if tech_slug else None
-        )
-        breadcrumbs = [
-            {"name": "Home", "url": url_for("public.index", _external=True)},
-            {"name": "Tools", "url": url_for(
-                "tools.tools_comparison", _external=True
-            )},
-            {"name": short_name, "url": url_for(
-                "tools.tool_form", tool=adapter.slug, _external=True
-            )},
-        ]
         return render_template(
-            template_name,
+            adapter.form_template,
             adapter=adapter,
-            meta=preview_meta,
-            runtime_band=runtime_band,
+            error=None,
+            pre_fill={},
+            pdb_source=None,
+            workspace_ctx=None,
+            wallet=None,
+            single_container_ceiling=None,
+            authenticated=False,
             login_next=login_next,
-            seo_phrase=seo_phrase,
-            seo_long=seo_long,
-            title_phrase=title_phrase,
-            short_name=short_name,
-            learn_more_url=learn_more_url,
-            related_tools=_related_tool_cards(adapter.slug),
-            breadcrumbs=breadcrumbs,
+            # SEO title/description only on the anonymous render —
+            # crawlers are always anonymous, and the signed-in page
+            # keeps the plain "<Tool> — Ranomics Tools" title it has
+            # always had.
+            page_title=(
+                f"{public_ctx['short_name']} Online | "
+                f"{public_ctx['title_phrase']} | Ranomics"
+            ),
+            page_description=(
+                f"Run {public_ctx['short_name']} online on a dedicated "
+                f"GPU through your browser. No install, no local CUDA. "
+                f"{public_ctx['seo_long']}."
+            ),
+            **public_ctx,
         )
 
     ctx = load_user_context()
@@ -745,6 +905,9 @@ def tool_form(tool: str):
         workspace_ctx=workspace_ctx,
         wallet=wallet_for_form,
         single_container_ceiling=campaign_ceiling,
+        authenticated=True,
+        login_next=login_next,
+        **public_ctx,
     )
 
 @tools_bp.route("/tools/<tool>/preflight", methods=["POST"])

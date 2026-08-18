@@ -1,0 +1,17 @@
+{# One sentence, rendered directly under the Hotspot residues helper on
+   every binder-design form that steers on hotspots.
+
+   The helper above it explains the SYNTAX. This is the only thing on
+   the page that answers "which residues?", which is the one field a
+   bench biologist cannot fill in from what they already know. The
+   right-rail "Start here first" panel says the same thing at length;
+   this is the version that is visible at the moment the question
+   actually occurs — with the cursor in the field.
+
+   iggm is intentionally not a caller: its Epitope residues field
+   already carries its own Scout link. #}
+<div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: -0.35rem 0 0.75rem;">
+  Not sure which residues?
+  <a href="{{ url_for('scout.index') }}">Score your target's surface with Epitope Scout</a>
+  first.
+</div>
