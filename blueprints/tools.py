@@ -568,6 +568,56 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     return "—"
 
 
+def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
+    """Map stored ``job.inputs`` keys onto the form's field names, in place.
+
+    ``clone_from`` copies ``job.inputs`` straight into ``pre_fill`` and
+    the form then looks each field up BY NAME. Where ``validate()``
+    stored something under a different name, or nested, the lookup
+    misses and the field silently falls back to its hard-coded default —
+    so a user cloning a 400-design run to re-run it gets a different
+    parameter set with no warning anywhere. That is a live bug
+    independent of the redesign; it is fixed here, once, rather than in
+    each form, because every clone for every tool passes through this
+    one function.
+
+    Three shapes, all measured against what ``validate()`` returns:
+
+    * ``hotspot_residues`` is stored as a list of ints (rfantibody) or
+      chain-prefixed strings; the field is one comma-separated text box.
+    * ``binder_length`` is stored as ``{"min": .., "max": ..}`` by
+      rfdiffusion and as ``[lo, hi]`` by proteina, while both forms ask
+      for it as two number inputs. bindcraft and boltzgen store the two
+      halves flat and are already fine; pxdesign stores a scalar under
+      the same name its single field uses, so ``isinstance`` is what
+      keeps this from corrupting it.
+    * MPNN calls the field ``chains_to_design`` and stores it as
+      ``target_chain``, so cloning an MPNN job silently reset the chain
+      selection to "A".
+
+    ``setdefault`` throughout: a key the form already reads under its
+    own name always wins over a derived one.
+    """
+    hs = pre_fill.get("hotspot_residues")
+    if isinstance(hs, list):
+        pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
+
+    bl = pre_fill.get("binder_length")
+    if isinstance(bl, dict):
+        lo, hi = bl.get("min"), bl.get("max")
+    elif isinstance(bl, (list, tuple)) and len(bl) == 2:
+        lo, hi = bl[0], bl[1]
+    else:
+        lo = hi = None
+    if lo is not None:
+        pre_fill.setdefault("binder_length_min", lo)
+    if hi is not None:
+        pre_fill.setdefault("binder_length_max", hi)
+
+    if slug == "mpnn" and pre_fill.get("target_chain") is not None:
+        pre_fill.setdefault("chains_to_design", pre_fill["target_chain"])
+
+
 def _pilot_context(adapter, meta) -> dict | None:
     """The guided starter recipe for a tool, with its numbers derived.
 
@@ -651,11 +701,30 @@ def _showcase_note(slug: str) -> dict | None:
 def _public_tool_context(adapter) -> dict:
     """SEO + explainer context the tool page needs in BOTH auth states.
 
-    Was computed only on the logged-out preview branch. The preview
-    shell is gone — /tools/<slug> now renders the real form for
-    everyone — so this travels with every render and the explainer
-    macros read it directly.
+    Memoised on ``flask.g`` — i.e. for the life of ONE request, and no
+    longer. Two callers build this per render: ``tool_form`` passes it
+    into the template, and the ``tool_public_context`` jinja global
+    (app.py) rebuilds it inside ``about_panel.html`` because macros are
+    imported without context. Each build runs ``_pilot_context`` ->
+    ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
+    an uncached Supabase SELECT on ``tool_jobs_p90``. /tools/<slug> is
+    publicly indexable now, so that was two network round trips per
+    crawler hit for one page.
+
+    ``flask.g`` rather than ``lru_cache`` deliberately: the dict holds
+    ``url_for(..., _external=True)`` breadcrumbs and a live price, so a
+    process-lifetime cache would pin the first request's host into every
+    later response and freeze the estimate against p90 drift.
     """
+    cache = g.setdefault("_public_tool_ctx", {})
+    hit = cache.get(adapter.slug)
+    if hit is None:
+        hit = cache[adapter.slug] = _build_public_tool_context(adapter)
+    return hit
+
+
+def _build_public_tool_context(adapter) -> dict:
+    """Assemble the context. Call ``_public_tool_context`` instead."""
     tool_meta = meta_for(adapter.slug)
 
     short_name = _short_name_for_label(adapter.label)
@@ -763,7 +832,17 @@ def tool_form(tool: str):
         return err
 
     public_ctx = _public_tool_context(adapter)
-    login_next = url_for("tools.tool_form", tool=adapter.slug)
+
+    # NOTE: there is no ``login_next`` here any more. It was computed on
+    # both render branches and passed into the template, but no template
+    # ever read it — the sign-in link lives in
+    # components/_signin_cta.html and gets its href from the
+    # ``signin_url()`` jinja global (app.py), because that file is
+    # reached through macros imported WITHOUT context and cannot see a
+    # context variable. A dead duplicate of a live helper is worse than
+    # nothing: the QC pass that found the dropped query string fixed it
+    # here, where it changes no behaviour at all. The real fix is in
+    # ``_signin_url``.
 
     # Fifth pre-fill source, and the only one that works logged OUT:
     # ``?pilot=1`` loads the tool's declared starter recipe. It is a
@@ -790,7 +869,6 @@ def tool_form(tool: str):
             wallet=None,
             single_container_ceiling=None,
             authenticated=False,
-            login_next=login_next,
             # SEO title/description only on the anonymous render —
             # crawlers are always anonymous, and the signed-in page
             # keeps the plain "<Tool> — Ranomics Tools" title it has
@@ -844,10 +922,7 @@ def tool_form(tool: str):
                 k: v for k, v in (prior.inputs or {}).items()
                 if not k.startswith("_")
             }
-            # Normalize list-typed inputs back to form-friendly strings.
-            hs = pre_fill.get("hotspot_residues")
-            if isinstance(hs, list):
-                pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
+            _normalize_clone_pre_fill(adapter.slug, pre_fill)
             stored_path = (prior.inputs or {}).get("_pdb_storage_path")
             stored_name = (prior.inputs or {}).get("_pdb_filename")
             if stored_path and stored_name:
@@ -979,7 +1054,6 @@ def tool_form(tool: str):
         wallet=wallet_for_form,
         single_container_ceiling=campaign_ceiling,
         authenticated=True,
-        login_next=login_next,
         **public_ctx,
     )
 

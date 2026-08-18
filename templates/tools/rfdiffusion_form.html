@@ -253,12 +253,18 @@
             </div>
 
             <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+            {# pre_value, not a bare value=: rfdiffusion stores this
+               NESTED as binder_length={min,max}, so a name lookup found
+               nothing and the hard-coded attributes silently reset a
+               cloned run's length window to 55-65. blueprints/tools.py
+               ::_normalize_clone_pre_fill explodes the nested key into
+               the two names read here. #}
             <div class="rfdiffusion-binder-length">
               <input type="number" name="binder_length_min" id="binder_length_min"
-                     min="30" max="150" value="55" placeholder="min">
+                     min="30" max="150" {{ pre_value(pre_fill, "binder_length_min", "55") }} placeholder="min">
               <span class="sep">to</span>
               <input type="number" name="binder_length_max" id="binder_length_max"
-                     min="30" max="150" value="65" placeholder="max">
+                     min="30" max="150" {{ pre_value(pre_fill, "binder_length_max", "65") }} placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               Range RFdiffusion samples within. Default 55 to 65 residues
