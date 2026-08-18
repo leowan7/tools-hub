@@ -68,7 +68,11 @@ from shared.storage import (
     presigned_input_url,
     upload_input,
 )
-from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.tools_catalog import (
+    _build_tools_catalog,
+    _short_name_for_label,
+    group_catalog,
+)
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
@@ -1813,19 +1817,7 @@ def tools_comparison():
     # Group catalog into workflow-stage sections in a stable order.
     # The order mirrors the iteration loop a scientist walks through:
     # scope → design → sequence → predict → QC.
-    category_order = (
-        "Scope the target",
-        "Design binders",
-        "Sequence on a backbone",
-        "Structure prediction",
-        "Check developability",
-        "Other",
-    )
-    grouped: list[tuple[str, list[dict]]] = []
-    for category in category_order:
-        members = [t for t in catalog if t.get("category") == category]
-        if members:
-            grouped.append((category, members))
+    grouped = group_catalog(catalog)
 
     breadcrumbs = [
         {"name": "Home", "url": url_for("public.index", _external=True)},
