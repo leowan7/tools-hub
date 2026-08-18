@@ -53,6 +53,26 @@ HOSTILE = [
     "http://evil.com",
     "//user@evil.com",
     "evil.com",
+    # These pin the two urlsplit terms that ARE uniquely load-bearing.
+    # A scheme with an empty netloc and an absolute path: every other
+    # layer waves these through, only `parts.scheme` rejects them.
+    "javascript:/a",
+    "data:/a",
+    "mailto:/x",
+    "https://evil.com/a",
+    # Path contains "/" but does not START with one: only
+    # `parts.path.startswith("/")` rejects it (relaxing it to `"/" in`
+    # lets this through).
+    "evil.com/a",
+    # -- values that make urlsplit RAISE ValueError --
+    # Pre-fix these escaped as an unauthenticated 500 on GET /login;
+    # 200 on the merge base, 500 on 383760a. See the raise-set tests below.
+    "//[",
+    "//]",
+    "//[]",
+    "//[::1",
+    "//\uff03evil.com",  # NFKC raise at parse.py:436
+    "/\t/[",
     # -- control characters --
     # TAB is the reproduced exploit: stripped during header serialisation,
     # turning "/\t/evil.com" into "//evil.com".
@@ -146,3 +166,80 @@ def test_login_get_preserves_safe_next(client, safe):
     assert resp.status_code == 200
     # Jinja escapes "&" in the query string; compare on the unescaped value.
     assert safe.encode().replace(b"&", b"&amp;") in resp.data
+
+
+# ----------------------------------------------------------------------
+# urlsplit's raise set: an unauthenticated 500 is a bug too
+# ----------------------------------------------------------------------
+
+# Fully URL-safe request lines — no raw control bytes needed, no CSRF token
+# needed, no session needed. On 383760a each of these was a 500 on
+# GET /login; on the merge base 2c057fc each was a 200.
+RAISING_QUERIES = [
+    "//[",       # ValueError("Invalid IPv6 URL")
+    "//]",       # ValueError("Invalid IPv6 URL")
+    "//[]",      # "'' does not appear to be an IPv4 or IPv6 address"
+    "//[::1",    # ValueError("Invalid IPv6 URL")
+    "//%5B",     # same as "//[" but percent-encoded on the wire
+    "/%09/%5B",  # tab-stripped by urlsplit into "//["
+    "//%EF%BC%83evil.com",  # NFKC netloc check, parse.py:436
+]
+
+
+@pytest.fixture
+def prod_client(monkeypatch):
+    """A client on an app with TESTING OFF, so exceptions become 500s.
+
+    With TESTING=True Flask re-raises instead of serving the error page,
+    which hides the fact that a real deployment would answer 500.
+    """
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    from app import create_app
+    flask_app = create_app()
+    assert not flask_app.config.get("TESTING")
+    return flask_app.test_client()
+
+
+@pytest.mark.parametrize("query", RAISING_QUERIES)
+def test_login_get_survives_urlsplit_raises(prod_client, query):
+    resp = prod_client.get("/login?next=" + query)
+    assert resp.status_code == 200, f"{query!r} -> {resp.status_code}"
+
+
+@pytest.mark.parametrize("query", RAISING_QUERIES)
+def test_login_post_survives_urlsplit_raises(prod_client, query):
+    """Same values through the POST branch, asserting a safe redirect."""
+    from urllib.parse import unquote
+    with patch("shared.auth.verify_login", return_value=(True, None, "u1")):
+        resp = prod_client.post(
+            "/login",
+            data={"email": "a@b.com", "password": "x", "next": unquote(query)},
+        )
+    assert resp.status_code == 302, f"{query!r} -> {resp.status_code}"
+    assert resp.headers["Location"] in ("/", "http://localhost/")
+
+
+@pytest.mark.parametrize("value", [*RAISING_QUERIES, "//[", "//]"])
+def test_safe_next_never_raises(value):
+    """Unit level: no input may propagate an exception out of safe_next."""
+    from urllib.parse import unquote
+    assert safe_next(unquote(value)) == "/"
+
+
+# ----------------------------------------------------------------------
+# The POST failure path re-renders the form; it must re-render the
+# SANITISED value, not the raw one. Jinja escaping is not the guard here.
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_login_post_failure_rerenders_sanitised_next(client, hostile):
+    with patch("shared.auth.verify_login", return_value=(False, "bad creds", None)):
+        resp = client.post(
+            "/login",
+            data={"email": "a@b.com", "password": "wrong", "next": hostile},
+        )
+    assert resp.status_code == 200
+    fields = re.findall(rb'name="next"\s+value="([^"]*)"', resp.data)
+    assert fields, "hidden next field missing"
+    for value in fields:
+        assert value == b"/", value
