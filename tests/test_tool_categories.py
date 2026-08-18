@@ -13,6 +13,8 @@ anonymous visitors into ``/login?next=``.
 # visible here. Without it this test iterates an empty registry and
 # passes vacuously -- green while the bug ships. The explicit count
 # assertion below keeps that failure mode from coming back silently.
+import re
+
 import app  # noqa: F401
 import pytest
 from tools import base as tool_base
@@ -25,6 +27,25 @@ from shared.tools_catalog import (
     _build_tools_catalog,
     group_catalog,
 )
+
+# ``CATEGORY_ORDER`` ends with the "Other" catchall, which is a fallback
+# bucket rather than a band anyone should land in. Name it instead of
+# slicing it off with ``[:-1]`` -- a slice silently changes meaning if
+# the tuple is ever reordered, and every assertion below is about "the
+# real bands", not "all but the last entry".
+OTHER_BAND = "Other"
+REAL_BANDS = tuple(band for band in CATEGORY_ORDER if band != OTHER_BAND)
+
+# Catalog card links that an anonymous visitor is currently still
+# bounced off. Both are being opened up separately; when that lands
+# these move out of the exception list and are asserted 200 like the
+# rest. Listed explicitly so the hole is visible rather than silent.
+KNOWN_LOGIN_WALLED_ROUTES = {"/scout/", "/developability"}
+
+# Matches the href of a tool-catalog card on either page. The homepage
+# uses ``home-catalog-card``, /tools uses ``catalog-card``; both put the
+# class before the href on the anchor.
+_CARD_HREF = re.compile(r'class="(?:home-)?catalog-card"[^>]*?href="([^"]+)"')
 
 
 @pytest.fixture
@@ -67,7 +88,7 @@ def test_no_tool_lands_in_other(flask_app):
         "below would not cover the whole catalog"
     )
     orphans = sorted(
-        t["slug"] for t in catalog if t.get("category") not in CATEGORY_ORDER[:-1]
+        t["slug"] for t in catalog if t.get("category") not in REAL_BANDS
     )
     assert not orphans, f'tools falling through to "Other": {orphans}'
 
@@ -76,8 +97,8 @@ def test_every_rendered_band_has_a_glyph(flask_app):
     with flask_app.test_request_context("/"):
         grouped = group_catalog(_build_tools_catalog())
 
-    assert len(grouped) == len(CATEGORY_ORDER) - 1, (
-        f"expected all five bands to render, got "
+    assert len(grouped) == len(REAL_BANDS), (
+        f"expected all {len(REAL_BANDS)} real bands to render, got "
         f"{[band for band, _ in grouped]}"
     )
     for band, _members in grouped:
@@ -104,7 +125,7 @@ def test_anonymous_homepage_has_no_login_wall_and_lists_every_tool(flask_app):
     assert "See how it works" in body
     assert "Sign in to run" not in body
 
-    for band in CATEGORY_ORDER[:-1]:
+    for band in REAL_BANDS:
         assert band in body, f'band "{band}" missing from the homepage'
     for tool in catalog:
         assert f'href="{tool["route"]}"' in body, (
@@ -123,3 +144,61 @@ def test_anonymous_homepage_has_no_login_wall_and_lists_every_tool(flask_app):
         "An antibody or nanobody sequence",
     ):
         assert row_label in body
+
+
+def test_anonymous_tools_page_has_no_login_wall(flask_app):
+    """/tools is the destination of the hero CTA and the nav link.
+
+    Its card block was a verbatim copy of the homepage's login-wall
+    branch, so fixing the homepage alone left a first-time visitor's
+    most likely click landing on a fully walled page.
+    """
+    client = flask_app.test_client()
+    with flask_app.test_request_context("/tools"):
+        catalog = _build_tools_catalog()
+
+    body = client.get("/tools").get_data(as_text=True)
+
+    assert "/login?next=" not in body and "/login%3Fnext" not in body
+    assert "See how it works" in body
+    assert "Sign in to run" not in body
+    for tool in catalog:
+        assert f'href="{tool["route"]}"' in body, (
+            f'{tool["slug"]} has no card link on the anonymous /tools page'
+        )
+
+
+@pytest.mark.parametrize("page", ["/", "/tools"])
+def test_anonymous_catalog_links_actually_resolve(flask_app, page):
+    """Follow every catalog link, do not just read its href.
+
+    Asserting the emitted href is what let a login-walled route survive
+    review: the href pointed at the tool, and the tool then bounced the
+    visitor to /login anyway. This requests each link as an anonymous
+    visitor and asserts the status it really returns.
+    """
+    client = flask_app.test_client()
+    body = client.get(page).get_data(as_text=True)
+    hrefs = sorted(set(_CARD_HREF.findall(body)))
+
+    assert len(hrefs) >= 14, (
+        f"{page} emitted only {len(hrefs)} catalog card links -- the card "
+        f"markup changed and this test is no longer following anything"
+    )
+
+    walled = []
+    for href in hrefs:
+        status = client.get(href).status_code
+        if href in KNOWN_LOGIN_WALLED_ROUTES:
+            # Expected to become 200 once these two are opened up; until
+            # then assert they behave as the known exception, so this
+            # list cannot quietly grow.
+            assert status in (200, 302), f"{href} returned {status}"
+            continue
+        if status != 200:
+            walled.append(f"{href} -> {status}")
+
+    assert not walled, (
+        f"catalog links on {page} that an anonymous visitor cannot open: "
+        f"{walled}"
+    )
