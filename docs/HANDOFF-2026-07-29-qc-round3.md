@@ -235,9 +235,11 @@ needs Leo's word because it changes deployed behaviour.
 
 ## Still open, filed not fixed
 
-**A41-A45** (idempotency TOCTOU, `blueprints/tools.py` 200-on-error,
+**A41, A43-A45** (`blueprints/tools.py` 200-on-error,
 `_store_response`'s own failure path, the single-tool route discarding
 `fund_campaign`'s bool, a deliberate re-launch inside 60 s reading as a no-op).
+A42, the idempotency TOCTOU, was RESOLVED 2026-08-18: `_claim_key` now claims
+with a plain `insert` and the PRIMARY KEY arbitrates.
 
 **A46** campaign tick has no in-repo schedule. **A47** launch JS has no
 behavioural coverage. **A49** both fakes assume PostgREST returns the updated

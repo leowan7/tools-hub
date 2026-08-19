@@ -59,8 +59,17 @@ codes, which changes what the browser and every existing test see.
 
 Failure modes
 -------------
-- Supabase unreachable: the middleware fails OPEN — the handler runs
-  without dedup. Logs a warning so the outage is visible.
+- No Supabase client AT ALL (``get_service_client()`` returns None): fails
+  OPEN — the handler runs without dedup. Safe because every write that moves
+  money takes the same client and short-circuits without it, so an unguarded
+  handler still cannot spend anything.
+- A client that IS present and whose query fails: fails CLOSED — HTTP 503,
+  nothing runs. Note this INCLUDES the no-service-role-key case, because
+  ``get_service_client`` falls back to a live anon client rather than None and
+  RLS then refuses the write. A replay of these routes costs real money or
+  real work, and a guard that cannot tell a retry from a first attempt must
+  not wave one through. See :func:`_claim_key` for the full reasoning, and do
+  not summarise "no service-role key" as failing open — it does not.
 - Row exists with ``response_status IS NULL``: a prior request for the
   same key is still in flight. Returns HTTP 409 "request in progress".
 - Row exists with a non-NULL status: replay the cached status + body.
@@ -232,11 +241,79 @@ def _claim_key(
       - ``"claimed"``  — we hold the lock; run the handler
       - ``"replay"``   — ``row`` has a cached response to return
       - ``"in_flight"`` — another request is still processing
-      - ``"open"``     — Supabase unavailable; proceed without dedup
+      - ``"open"``     — no Supabase client at all; proceed without dedup
+      - ``"unavailable"`` — the ledger errored; refuse the request
 
-    The "open" case intentionally mirrors quota.py's fail-open stance.
-    Pre-revenue we would rather occasionally double-run than lock users
-    out due to an infra blip.
+    Failing open and failing closed are not one decision, and these are split.
+
+    ``"open"`` is for one CONFIGURATION state rather than an outage: no client
+    at all. (Not "no service-role key" -- that yields a live anon client and
+    refuses; see below.) Running unguarded is safe there because every write
+    that moves money takes the same client and short-circuits without it --
+    ``reserve_hold`` (shared/wallet.py:575) and ``top_up_wallet``
+    (shared/wallet.py:410) return None on a null client, and
+    ``_cas_transition`` (shared/compute_campaigns.py:1843) returns False -- so
+    an unguarded handler cannot place a hold, credit a wallet, or drive a
+    campaign. ``reserve_hold``'s own null-client check is at :577, but on this
+    path it never runs: ``wallet_preflight`` has already denied, so :575
+    returns first. Failing closed here would instead take every guarded route
+    down permanently in an environment that never had Supabase configured.
+
+    Do NOT restate that as "the wallet decorator refuses". It does not, twice
+    over: only one of the ten guarded routes carries ``requires_wallet`` at all
+    (``blueprints/tools.py:1331``), and the decorator it carries is
+    ``shared/wallet_guard.py``'s, which on a null wallet row deliberately falls
+    THROUGH to the handler (:219-224) rather than blocking. The
+    ``requires_wallet`` that does gate on a preflight is ``shared/wallet.py:901``
+    and it is wired to no route at all. An earlier version of this paragraph
+    claimed that chain and was wrong.
+
+    One configuration is deliberately NOT given the open answer, because it is
+    the one where open is most dangerous. With ``SUPABASE_URL`` and an anon key
+    set but no service-role key, ``get_service_client`` returns a live ANON
+    client (shared/credits.py:59-64) rather than None, and migration 0004
+    enables RLS on this table with no policies -- so the SELECT reads empty and
+    the INSERT is refused, and this refuses with it. The cost is that
+    ``/library-planner/plan`` and, for signed-in callers only,
+    ``/developability/score`` -- which spend nothing -- also 503 in a
+    half-configured dev environment. Signed-in only because that route is
+    deliberately anonymous (blueprints/tools.py:117-119 carries no
+    ``@login_required``) and the decorator hands an anonymous request straight
+    to the handler, so it never reaches this function without a user. The
+    alternative is
+    worse: a PRODUCTION deploy that lost its service-role key would fail open
+    on the money routes and silently double-charge every double-click, which is
+    exactly the hole this function was rewritten to close. A loud 503 naming
+    the ledger is the better half of that trade, and `credits.py` already logs
+    the missing key on the way past.
+
+    ``"unavailable"`` is a live client whose query FAILED. Two very different
+    faults land there and the refusal is sized for the narrower one. A fault
+    scoped to THIS TABLE -- an RLS denial, a dropped grant -- leaves the rest
+    of the request path healthy, so the handler really would
+    spend money while we no longer know whether this exact request already ran.
+    A broad fault (timeout, reset connection) breaks the same client
+    everywhere, and the handler would bail downstream anyway:
+    ``get_or_create_wallet`` swallows it and returns None (shared/wallet.py:277),
+    after which ``create_job`` returns None and ``tool_submit`` stops before the
+    Modal spawn. We cannot tell the two apart from in here, so we answer for the
+    one that can cost money. Do NOT write "the wallet gate is working in that
+    case" -- for the broad fault it is not, and an earlier version of this
+    paragraph said exactly that and was wrong. Five of the ten guarded
+    routes spend --
+    ``compute_campaign_create``, ``compute_campaign_refold``, ``job_refold``,
+    ``target_launch_submit``, ``tool_submit`` -- and for those, refusing costs
+    the user a retry while running costs a second charge and a second GPU job
+    that nothing downstream catches. It used to fail open, which made any
+    PostgREST blip turn every double-click into two paid launches.
+
+    The other five (``job_cancel``, ``campaigns_submit``, ``target_create``,
+    ``developability_score``, ``library_planner_plan``) pay the refusal without
+    the benefit, and ``job_cancel`` is the one that stings: a user cannot STOP
+    a running job while the ledger is down. They are guarded anyway because a
+    replay of any of them costs real work (blueprints/lab_projects.py:1286-1298
+    is the enumeration), and splitting the stance per route would mean a guard
+    whose safety depends on correctly classifying every future route.
     """
     client = get_service_client()
     if client is None:
@@ -254,9 +331,10 @@ def _claim_key(
     # columns asked for, so an explicit list silently drops any column added
     # later -- which is what made the `location` replay fix a no-op until this
     # changed. Naming `location` explicitly is worse than the wildcard: before
-    # migration 0038 is applied PostgREST 400s on the unknown column, and the
-    # bare except below fails OPEN, so every double-submit would re-run its
-    # handler and place a SECOND wallet hold plus a SECOND Modal job.
+    # migration 0038 is applied PostgREST 400s on the unknown column, which the
+    # bare except below now answers by REFUSING -- so naming it would take every
+    # guarded route offline for the length of that deploy window rather than,
+    # as it did when this failed open, double-charging every double-submit.
     try:
         response = (
             client.table(_TABLE)
@@ -266,8 +344,8 @@ def _claim_key(
         )
         rows = list(getattr(response, "data", None) or [])
     except Exception:
-        logger.warning("Idempotency lookup failed — failing open.", exc_info=True)
-        return ("open", None)
+        logger.error("Idempotency lookup failed — refusing.", exc_info=True)
+        return ("unavailable", None)
 
     live = [r for r in rows if _row_still_live(r, now)]
     if live:
@@ -276,8 +354,7 @@ def _claim_key(
             return ("in_flight", row)
         return ("replay", row)
 
-    # Not claimed (or existing rows are all stale) — claim it. The PK
-    # guarantees only one of concurrent callers wins.
+    # Not claimed, or every existing row is stale — claim it.
     claim_row = {
         "key": key,
         "user_id": user_id,
@@ -287,16 +364,138 @@ def _claim_key(
         "content_type": None,
         "expires_at": expires.isoformat(),
     }
+    # Two writes, each atomic on its own, and the INSERT is the sole arbiter
+    # of the race:
+    #
+    #   1. Any row that survived the check above is expired, so clear it with a
+    #      DELETE whose predicate IS staleness. It cannot remove a live claim,
+    #      including the fresh one a concurrent caller may have inserted a
+    #      moment ago, whose expires_at is a minute in the future. `lte`, not
+    #      `lt`, so it is the exact complement of `_row_still_live`'s
+    #      `expires > now`: under `lt` a row expiring on the captured
+    #      microsecond would be neither live nor clearable, and would 503.
+    #   2. INSERT. ``key`` is the PRIMARY KEY, so exactly one of any number of
+    #      concurrent callers commits and every other raises a unique
+    #      violation.
+    #
+    # This replaced ``upsert(claim_row, on_conflict="key")``, which was never a
+    # lock: ON CONFLICT DO UPDATE *succeeds* for both racing writers, so the
+    # preceding SELECT was a TOCTOU and BOTH sides of a double-submit were told
+    # "claimed" and ran the handler -- two wallet holds and two Modal jobs for
+    # one click (audit A42). Do not "simplify" this pair back into an upsert;
+    # an upsert cannot fail, and a claim that cannot fail is not a claim.
+    if rows:
+        try:
+            (
+                client.table(_TABLE)
+                .delete()
+                .eq("key", key)
+                .lte("expires_at", now.isoformat())
+                .execute()
+            )
+        except Exception:
+            logger.error(
+                "Idempotency stale-row clear failed — refusing.", exc_info=True
+            )
+            return ("unavailable", None)
+
     try:
-        # Upsert so a stale row with the same key (expired) gets replaced.
-        client.table(_TABLE).upsert(claim_row, on_conflict="key").execute()
-    except Exception:
-        logger.warning(
-            "Idempotency claim insert failed — failing open.", exc_info=True
-        )
-        return ("open", None)
+        client.table(_TABLE).insert(claim_row).execute()
+    except Exception as exc:
+        # Two very different things land here: we lost a race (unique
+        # violation), or the ledger is broken. Only a re-read can tell them
+        # apart, and it matters -- the loser of a race must be given the
+        # winner's answer, an infra fault must be refused.
+        #
+        # Nothing is logged HERE, deliberately. Losing is the guard working,
+        # and at one claim per worker process a single double-click loses N-1
+        # times: logging a traceback at the raise site turns normal operation
+        # into a stack-trace storm, burying the real faults in the log that is
+        # the only place they surface (ALERTING.md:17 has Sentry "Deferred by
+        # decision", so no error-rate monitor exists to be moved).
+        # `_classify_failed_claim` knows which case it was, so it logs.
+        return _classify_failed_claim(client, key, exc)
 
     return ("claimed", None)
+
+
+def _classify_failed_claim(
+    client: Any, key: str, exc: BaseException
+) -> tuple[str, Optional[dict]]:
+    """Decide what an INSERT that did not commit actually meant.
+
+    A live row for the key means the claim is held -- replay it if that request
+    has already finished, 409 if it is still running. No live row means we
+    cannot establish that anything is holding it, and on a route that spends
+    money the honest answer to "I cannot tell whether this already ran" is to
+    refuse.
+
+    Note what this deliberately does NOT claim. "Live row" is not the same as
+    "somebody else won", because our own insert may have committed with only
+    its response lost; and "no live row" is not the same as "the ledger is
+    broken", because the winner of a race can fail and release before we look.
+    Both readings were written here once and both were wrong. The branch does
+    not need either: it needs only "is the key held", which is what it asks.
+
+    The first of those has a cost worth stating. If the committed row was ours,
+    nobody is running the handler, and answering 409 leaves the key claimed
+    until the TTL expires -- 60 s in which the user cannot retry. The old
+    fail-open path would have run the handler instead. That is the fail-closed
+    trade taken deliberately: a minute of 409 beats a second charge, and the
+    row cannot be distinguished from a genuine in-flight claim without an owner
+    token on it.
+
+    Reading our own key back is also what makes the loser's answer correct
+    rather than merely safe. Answering every failed insert with 409 would be
+    safe too, but it would hand a 409 to the second of two clicks even after the
+    first had finished and cached a perfectly good response to replay.
+
+    :func:`shared.campaigns._is_unique_violation` exists and is NOT used here on
+    purpose. ``create_api_campaign`` has to classify because it must tell a
+    clean replay from a 500; this re-read answers the same question from the
+    ledger itself, which needs no exception sniffing and stays right whatever
+    shape supabase-py raises next. Same pattern otherwise -- insert, lose,
+    re-fetch -- and deliberately so.
+    """
+    try:
+        response = (
+            client.table(_TABLE)
+            .select("*")
+            .eq("key", key)
+            .execute()
+        )
+        rows = list(getattr(response, "data", None) or [])
+    except Exception:
+        logger.error(
+            "Idempotency re-read after a failed claim failed — refusing.",
+            exc_info=True,
+        )
+        return ("unavailable", None)
+
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if not _row_still_live(row, now):
+            continue
+        # A live claim exists. Usually someone else's; possibly OUR OWN, if the
+        # insert committed and only its response was lost. We cannot tell which
+        # from here and do not need to -- both answers are "do not run" -- so
+        # the message does not guess. INFO and no traceback either way: this is
+        # the guard working, not a fault.
+        logger.info("Idempotency key %s is already claimed.", key)
+        if row.get("response_status") is None:
+            return ("in_flight", row)
+        return ("replay", row)
+    # No live claim. Most often the ledger is broken, and that is why this
+    # refuses. It is NOT proof of that, though: losing the race to a winner
+    # who then failed and released its claim lands here too, with nothing
+    # wrong. WARNING rather than ERROR for exactly that reason -- a healthy
+    # race must not page anyone. The refusal stands regardless, because from
+    # here the two are indistinguishable and only one of them is safe to run.
+    logger.warning(
+        "Idempotency claim for key %s did not commit and no claim is held "
+        "— refusing.", key, exc_info=exc,
+    )
+    return ("unavailable", None)
 
 
 def _row_still_live(row: dict, now: datetime) -> bool:
@@ -316,14 +515,30 @@ def _store_response(key: str, response: Response) -> None:
 
     Scoped to ``response_status IS NULL``, for the same reason
     :func:`_release_key` is: it may only ever write a claim that has not already
-    completed. Because :func:`_claim_key` upserts, two concurrent submissions of
-    the same form can both be told ``"claimed"`` (audit A42), and the failure
-    path in the wrapper falls through to this function whenever a release
-    matches nothing -- which is exactly what happens to the loser when the
-    winner has already cached a success. Unscoped, the loser's 400 overwrote the
-    winner's cached 302: the browser was shown "Nothing was started and nothing
-    was charged" for a launch that was funded and billing, and every further
-    click inside the TTL replayed that 400.
+    completed.
+
+    It was put there for a concurrent SIBLING. :func:`_claim_key` upserted, and
+    ON CONFLICT DO UPDATE succeeds for both racing writers, so two submissions
+    of the same form were both told ``"claimed"`` (audit A42) and the loser's
+    400 overwrote the winner's cached 302 -- the browser was shown "Nothing was
+    started and nothing was charged" for a launch that was funded and billing.
+    The claim is a real INSERT now, so two callers racing for a free key can no
+    longer both be told "claimed", and that collision is closed at its source.
+    Not "only one caller ever reaches this function" -- the takeover below puts
+    two here at once by a different route.
+
+    The predicate stays, because a second route to the same clobber is open and
+    nothing else stands in it: a claim whose TTL expires while its handler is
+    still running. The row goes stale, a later request takes it over and
+    completes, and only then does the original handler return and write here.
+    The predicate is what stops that write burying the response the user was
+    actually shown.
+
+    The reverse ordering it does NOT catch: the slow handler writing into a
+    takeover claim that has not completed yet, which still looks like its own.
+    Telling those apart needs the row to carry an owner token, so it is
+    recorded rather than fixed -- it costs a column, and a handler outliving a
+    60 s TTL is not the common case. Do not read the predicate as covering it.
 
     The predicate does not weaken the orphaned-claim fallback it serves. A
     release that failed for an infra reason leaves the row present with a NULL
@@ -386,13 +601,18 @@ def _release_key(key: str) -> bool:
     would answer every retry with a 409 for the rest of the TTL.
 
     Scoped to ``response_status IS NULL`` so it can only ever remove a claim
-    that never completed. Without that predicate the delete is by key alone,
-    and because :func:`_claim_key` upserts (``ON CONFLICT DO UPDATE`` succeeds
-    for BOTH racing writers, so the preceding SELECT is a TOCTOU, not a lock),
-    two concurrent submissions of the same form can both run: if the winner
-    stores a 302 for a launch that really started and the loser then fails
-    validation, an unscoped delete would wipe the winner's cached success and
-    let a third click launch everything a second time.
+    that never completed. Without that predicate the delete is by key alone, and
+    would wipe a cached success belonging to a DIFFERENT request: a launch that
+    really started, whose 302 is gone, so the next click launches everything a
+    second time.
+
+    Its original case was a concurrent sibling, back when :func:`_claim_key`
+    upserted and both racing writers were told ``"claimed"``. The claim is a
+    real INSERT now and that pairing cannot happen. What is left is the same
+    surviving case :func:`_store_response` documents at length -- a handler that
+    outlives its own TTL and returns after a later request has taken the claim
+    over and completed it. Read that docstring for what the predicate does and
+    does not cover.
     """
     client = get_service_client()
     if client is None:
@@ -461,6 +681,28 @@ def idempotent(
             _observe(state)
             if state == "replay" and row is not None:
                 return _replay_response(row)
+            if state == "unavailable":
+                # Same shape as the 409 below, and the same caveat: on a
+                # browser form POST this renders as a raw JSON blob. Left that
+                # way deliberately -- matching the in-flight answer keeps one
+                # rendering problem instead of two. Nothing covers giving them
+                # real pages -- A41 is about `tool_submit`'s failures returning
+                # 200, which is a different defect, and no open item or
+                # front-end handler exists for either payload.
+                return (
+                    jsonify(
+                        {
+                            "status": "unavailable",
+                            "detail": (
+                                "The request ledger is unavailable, so this "
+                                "request cannot be checked against an earlier "
+                                "one. Nothing was started and nothing was "
+                                "charged. Retry in a moment."
+                            ),
+                        }
+                    ),
+                    503,
+                )
             if state == "in_flight":
                 return (
                     jsonify(
