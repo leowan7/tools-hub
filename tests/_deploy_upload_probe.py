@@ -37,10 +37,18 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import get_args
 
 import modal
 from modal.cli.import_refs import ImportRef, import_file_or_module
+from modal.image import ImageBuilderVersion
 from modal.mount import NonLocalMountError
+
+# Which builder version a layer's DockerfileSpec is generated for normally comes
+# from the SERVER (`_get_image_builder_version`), which a credential-free probe
+# cannot ask. Read every version the installed client declares and union the
+# answers, so this neither hardcodes one nor misses a version-specific shipper.
+_BUILDER_VERSIONS = get_args(ImageBuilderVersion)
 
 # Marks the payload line so incidental stdout from Modal cannot be mistaken for it.
 RESULT_PREFIX = "DEPLOY_UPLOAD_PROBE_JSON:"
@@ -86,11 +94,41 @@ def _image_chain(image, seen: set):
     yield from _image_chain(cells.get("base_image"), seen)
 
 
+def context_file_paths(layer, repo: Path) -> list[str]:
+    """Local repo paths a layer ships as ``DockerfileSpec.context_files``.
+
+    These are NOT mounts, so the mount walk below is structurally blind to them
+    — and ``context_files`` is how most of Modal's image API moves local bytes
+    (``pip_install_from_requirements``, ``poetry_install_from_file``,
+    ``uv_sync``, ``uv_pip_install``, ``micromamba_install(spec_file=)``,
+    ``dockerfile_commands(context_files=)``). Until this existed, a single AST
+    scan in ``test_deploy_paths_exclusions.py`` was the only thing covering the
+    channel, and three review rounds found five different spellings that walked
+    past that parser (``**`` expansion, a ``getattr`` callee, a bound-but-not-
+    called method, ...). A parser can be out-spelled; asking the layer what it
+    will open cannot.
+
+    Exceptions propagate, same policy as ``_mount_files``: a probe that swallows
+    them reports a smaller upload set than the real one, which is the direction
+    that certifies false.
+    """
+    dockerfile_function = _closure(layer).get("dockerfile_function")
+    if dockerfile_function is None:
+        return []
+    return [
+        rel
+        for version in _BUILDER_VERSIONS
+        for local in (dockerfile_function(version).context_files or {}).values()
+        if not (rel := _rel(local, repo)).startswith("<outside-repo>:")
+    ]
+
+
 def _image_files(image, repo: Path) -> tuple[list[str], int]:
     files, layers = [], 0
     for layer in _image_chain(image, set()):
         layers += 1
         cells = _closure(layer)
+        files += context_file_paths(layer, repo)
         for mount in getattr(layer, "_mount_layers", ()) or ():
             files += _mount_files(mount, repo)
         # from_dockerfile / dockerfile_commands / add_local_*(copy=True)

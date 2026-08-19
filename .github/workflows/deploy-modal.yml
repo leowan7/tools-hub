@@ -41,10 +41,9 @@ on:
       # tests/test_deploy_paths_exclusions.py is what keeps that true, three
       # ways. (1) It runs Modal's own loader over each of the nine apps in a
       # subprocess and fails if the resulting upload set — entrypoint mount,
-      # spec mounts, and every image mount layer and build-context mount —
-      # contains any __init__.py. That sees MOUNTS; it cannot see local bytes
-      # shipped as DockerfileSpec.context_files, which is not a mount. (2) So it
-      # also fails statically on a package import, on a COPY of any tools-side
+      # spec mounts, every image mount layer and build-context mount, and every
+      # layer's DockerfileSpec.context_files — contains any __init__.py.
+      # (2) It also fails statically on a package import, on a COPY of any tools-side
       # __init__.py from a Dockerfile.modal or from .dockerfile_commands([...]),
       # and on any modal.Image method outside a reviewed allowlist read off
       # dir(modal.Image) — that is what covers the context_files family
@@ -57,7 +56,8 @@ on:
       # (kwarg names unknowable), a callee that is not a plain name
       # (`getattr(image, "uv_sync")(...)`), and an Image method BOUND to a
       # variable instead of called. Each was measured to ship an adapter as
-      # DockerfileSpec.context_files, which check 1 cannot see. (3) It pins the
+      # DockerfileSpec.context_files; check 1 now catches all three by reading
+      # the layer rather than the source. (3) It pins the
       # Deploy step below to a FILE path: every line in this job whose shell
       # TOKENS include `deploy`, comment lines stripped, must be the
       # `modal deploy "$app_file"` form, because `modal deploy -m

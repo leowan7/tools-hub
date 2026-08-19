@@ -36,16 +36,28 @@ Checked two ways on purpose:
    ``.dockerfile_commands([...])`` list. Fast, and it names the offending line.
    Image methods are checked against an ALLOWLIST read off ``dir(modal.Image)``,
    not a denylist: most of Modal's image API moves local bytes through
-   ``DockerfileSpec.context_files``, which is not a mount and which check 2
-   below is therefore structurally blind to.
+   ``DockerfileSpec.context_files``, which is not a mount.
+
+   A parser can always be out-spelled, and this one was, five times across three
+   review rounds: ``**`` expansion (``kw.arg`` is ``None``), a ``getattr``
+   callee, a dict-dispatch callee, a conditional callee, and an Image method
+   bound to a variable instead of called. All five are now refused, and the
+   shape of the fix is deliberately not "another name in a list": anything this
+   scan cannot READ is refused, the same rule ``_resolve`` applies to arguments.
 2. **Behaviourally** — ``tests/_deploy_upload_probe.py`` drives Modal's real
    loader per app in a subprocess and reads back the actual upload set
-   (entrypoint mount, spec mounts, image ``_mount_layers`` and every
-   ``context_mount_function()``). Costs ~1s per app. This is the only check that
-   can see a change in *Modal* rather than in this repo: the whole exclusion
-   rests on ``import_file_or_module`` resolving these files in script mode, and
-   ``modal>=1.4,<2`` does not bound that — CI reinstalls the client fresh on
-   every deploy. A syntactic scan structurally cannot notice.
+   (entrypoint mount, spec mounts, image ``_mount_layers``, every
+   ``context_mount_function()``, and every layer's
+   ``DockerfileSpec.context_files``). Costs ~1s per app. This is the only check
+   that can see a change in *Modal* rather than in this repo: the whole
+   exclusion rests on ``import_file_or_module`` resolving these files in script
+   mode, and ``modal>=1.4,<2`` does not bound that — CI reinstalls the client
+   fresh on every deploy. A syntactic scan structurally cannot notice.
+
+   The ``context_files`` half of that walk exists because check 1 was the sole
+   cover for that channel and kept being out-spelled. It asks each layer's own
+   ``dockerfile_function`` what it will open, so it is indifferent to how the
+   call was written — it catches all five spellings above independently.
 
 Neither check can see script-vs-package mode, which is a property of the
 *invocation* — the probe hardcodes ``use_module_mode=False``, so it reports FILE
@@ -456,9 +468,11 @@ _IMAGE_API = {n for n in dir(modal.Image) if not n.startswith("_")}
 #   micromamba_install(spec_file=p)    -> {"/spec.yaml": p}      <- kwarg-banned
 #   dockerfile_commands(context_files=)-> whatever you pass       <- kwarg-banned
 #
-# The probe is STRUCTURALLY blind to every one of them — it walks mounts, and
-# these are not mounts — and the COPY scan sees only the in-context filename
-# (`/.requirements.txt`), never the local path it was read from.
+# The COPY scan sees only the in-context filename (`/.requirements.txt`), never
+# the local path it was read from. The probe now reads the same
+# `DockerfileSpec.context_files` back off each layer, so this list is no longer
+# the only thing standing between an adapter and an image — but it is still the
+# check that names the line, so keep it accurate.
 #
 # Two more are refused for a different reason, so do not "fix" them by
 # allowlisting:
@@ -909,6 +923,43 @@ def _run_probe(app: str) -> dict:
     payload = [ln for ln in proc.stdout.splitlines() if ln.startswith(RESULT_PREFIX)]
     assert payload, f"{_PROBE.name} printed no result line for {app}:\n{proc.stdout}"
     return json.loads(payload[-1][len(RESULT_PREFIX):])
+
+
+def test_probe_sees_the_context_files_channel():
+    """Non-vacuity floor for the probe's ``DockerfileSpec.context_files`` walk.
+
+    That walk is the SECOND cover for the one channel this file's AST scan is
+    solely responsible for, and three review rounds found five different
+    spellings that got past the scan. It is worth exactly nothing unless it
+    reports something: no app populates ``context_files`` today, so it returns
+    ``[]`` for all nine and would go on returning ``[]`` if the closure name it
+    reads were renamed — silently restoring single coverage.
+
+    So build an image that really does ship a local file and make the probe
+    name it.
+    """
+    from tests._deploy_upload_probe import context_file_paths
+
+    shipper = modal.Image.debian_slim().pip_install_from_requirements(
+        str(_REPO / "requirements.txt")
+    )
+    # The probe is handed Modal's internal `_Image` off `fn.spec.image`; an
+    # image built here arrives wrapped by synchronicity, so unwrap it the same
+    # way Modal does. If this stops finding an impl the assertion below fails,
+    # which is the right direction: it means the probe's idea of what it walks
+    # needs re-deriving.
+    impl = next(
+        (getattr(shipper, a) for a in vars(shipper) if a.startswith("_sync_original_")),
+        shipper,
+    )
+    assert set(context_file_paths(impl, _REPO)) == {"requirements.txt"}, (
+        "the probe no longer reads DockerfileSpec.context_files off an image "
+        "layer, so tests/_deploy_upload_probe.py is blind to the channel that "
+        "pip_install_from_requirements, uv_sync, micromamba_install(spec_file=) "
+        "and dockerfile_commands(context_files=) all use. Fix it before "
+        "trusting test_modal_really_uploads_no_adapter_package: the AST scan "
+        "in this file is the only other thing covering it."
+    )
 
 
 @pytest.mark.parametrize("app", _APPS)
