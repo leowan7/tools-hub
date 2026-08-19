@@ -402,9 +402,12 @@ def assign_dssp(model, pdb_path: str) -> dict:
     DSSP code mapping:
         H, G, I -> "helix"
         E, B    -> "strand"
-        all else -> "loop" (T, S, P, '-')
+        all else -> "loop" (T, S, '-', and any code not listed above)
     DSSP emits no "C"; Biopython normalises a blank code to "-"
-    (Bio/PDB/DSSP.py:260), and DSSP 4.x added "P" for polyproline II.
+    (Bio/PDB/DSSP.py:260). Biopython 1.87 documents H/B/E/G/I/T/S/-
+    only (Bio/PDB/DSSP.py:24-37); DSSP 4.x is reported to add "P" for
+    polyproline II, which is unverified here and maps to "loop" either
+    way -- as does any future code, which is the point of the else.
 
     Args:
         model: Biopython Model object (structure[0]).
