@@ -126,6 +126,28 @@ def test_every_app_has_the_excluded_init_and_a_modal_app():
     assert not missing, f"deployed apps missing __init__.py or modal_app.py: {missing}"
 
 
+def test_deploy_step_still_passes_a_FILE_path_to_modal_deploy():
+    """Script mode is a property of HOW the workflow invokes modal, not just of
+    the source. ``modal deploy tools/<app>/modal_app.py`` loads by path
+    (``FunctionInfoType.FILE``); ``modal deploy -m tools.<app>.modal_app`` would
+    load the same source as a package, mount all of ``tools``, and make the
+    ``!tools/**/__init__.py`` exclusion unsafe — with every other test here,
+    probe included, still green, because they all assume the path form.
+    """
+    doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    steps = doc["jobs"]["deploy"]["steps"]
+    runs = "\n".join(s["run"] for s in steps if "run" in s)
+    assert 'app_file="tools/${{ matrix.app }}/modal_app.py"' in runs, (
+        "the deploy step no longer builds a tools/<app>/modal_app.py path; "
+        f"re-derive the script-mode premise. Steps run:\n{runs}"
+    )
+    assert 'modal deploy "$app_file"' in runs, (
+        "the deploy step no longer runs `modal deploy \"$app_file\"`. Anything "
+        "module-shaped (`modal deploy -m ...`) loads in PACKAGE mode and mounts "
+        f"the whole tools package. Steps run:\n{runs}"
+    )
+
+
 def test_workflow_still_carries_every_negation_in_order():
     doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1).
@@ -232,7 +254,13 @@ _FORBIDDEN_CALLS = {
     "copy_local_dir",
     "copy_local_file",
 }
-_FORBIDDEN_KWARGS = {"mounts"}
+_FORBIDDEN_KWARGS = {
+    "mounts",
+    # Repoints Modal's build context away from cwd (the repo root), which is what
+    # `_init_paths_pulled` matches COPY patterns against. Allowing it would let
+    # the COPY scan above answer confidently and wrongly.
+    "context_dir",
+}
 
 
 def _scan(source: str) -> dict:

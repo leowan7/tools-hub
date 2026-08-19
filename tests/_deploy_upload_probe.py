@@ -83,7 +83,7 @@ def _image_chain(image, seen: set):
     yield from _image_chain(cells.get("base_image"), seen)
 
 
-def _image_files(image, repo: Path) -> list[str]:
+def _image_files(image, repo: Path) -> tuple[list[str], int]:
     files, layers = [], 0
     for layer in _image_chain(image, set()):
         layers += 1
