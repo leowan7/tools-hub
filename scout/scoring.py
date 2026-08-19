@@ -386,6 +386,16 @@ def assign_dssp(model, pdb_path: str) -> dict:
     or the PDB file cannot be read, falls back to phi/psi Ramachandran
     classification (pure Python, no external binary required).
 
+    NOTE ON DEPLOYMENT: which branch runs depends entirely on whether
+    mkdssp is on PATH in the deployed image. As of 2026-08-19 it is not
+    (nixpacks.toml installs only gcc), so every production run since the
+    feature shipped has taken the phi/psi fallback: ~70% per-residue agreement
+    with real DSSP, two thirds of true loops called helix or strand, and
+    ss_score biased ~+0.23 high. The DSSP branch below has therefore never
+    executed in production — treat it as untested there, and check
+    nixpacks.toml before assuming it runs.
+    See docs/qc/scout-dssp-fallback-measurement.md.
+
     DSSP code mapping:
         H, G, I -> "helix"
         E, B    -> "strand"
@@ -404,7 +414,14 @@ def assign_dssp(model, pdb_path: str) -> dict:
         ss_map = {}
         for dssp_key in dssp_obj.property_keys:
             residue_data = dssp_obj[dssp_key]
-            ss_code = residue_data[1]
+            # Index 2 is the secondary-structure column. Index 1 is the
+            # one-letter AMINO ACID -- reading it (as this code did until
+            # 2026-08-19) silently classified every His/Gly/Ile as "helix"
+            # and every Glu as "strand", because H/G/I/E are valid letters
+            # in both alphabets. Measured against mkdssp 4.2.2 on 30 chains,
+            # that mistake scored 38% per-residue agreement versus 70% for
+            # the phi/psi fallback it was meant to improve on.
+            ss_code = residue_data[2]
             if ss_code in DSSP_HELIX_CODES:
                 label = "helix"
             elif ss_code in DSSP_STRAND_CODES:

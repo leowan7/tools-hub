@@ -8,7 +8,12 @@ the full analysis from PDB file to results.csv:
     3. Compute per-residue RSA (freesasa via sasa.py)
     4. Filter surface residues (RSA >= SURFACE_RSA_THRESHOLD, standard AA only)
     5. Cluster surface residues into patches (patches.py)
-    6. Score each patch: geometry, B-factor, DSSP secondary structure (scoring.py)
+    6. Score each patch: geometry, B-factor, secondary structure (scoring.py).
+       NB: the SS labels come from DSSP only if mkdssp is on PATH in the
+       deployed image; otherwise from a phi/psi Ramachandran fallback that
+       agrees with real DSSP on ~70% of residues. As of 2026-08-19 every
+       production run has used the fallback -- nixpacks.toml installs no dssp.
+       See docs/qc/scout-dssp-fallback-measurement.md.
     7. Write results.csv and return its Path
 
 This is the single function called by the Flask /analyze route.
@@ -251,7 +256,8 @@ def run_pipeline(
         6. Cluster surface residues (cluster_surface_residues).
         7. Raise if no patches produced.
         8. Compute chain-level B-factor scores (compute_bfactor_scores).
-        9. Assign DSSP secondary structure (assign_dssp; empty dict = all loop).
+        9. Assign secondary structure (assign_dssp: DSSP if mkdssp is on
+           PATH, else the phi/psi fallback; empty dict = all loop).
         10. Build all-atom coordinate array for burial scoring.
         11. Score geometry for each patch (score_geometry).
         12. Normalize burial across all patches (normalize_burial_scores).
@@ -368,7 +374,10 @@ def run_pipeline(
     bfactor_scores = compute_bfactor_scores(all_chain_residues, plddt_mode=plddt_detected)
 
     # ------------------------------------------------------------------
-    # Step 9: DSSP secondary structure (falls back to empty dict = all loop)
+    # Step 9: Secondary structure. Real DSSP only if mkdssp is on PATH in
+    # the deployed image; otherwise the phi/psi fallback (~70% agreement
+    # with real DSSP, ss_score biased ~+0.23 high), and beyond that an
+    # empty dict = all loop.
     # ------------------------------------------------------------------
     ss_map = assign_dssp(model, str(pdb_path))
 
@@ -551,9 +560,10 @@ def run_feasibility_pipeline(
 ) -> Path:
     """Run feasibility assessment on a specific epitope region.
 
-    This pipeline reuses parsing, RSA, B-factor, and DSSP from the main
-    pipeline, then adds feasibility-specific scoring: surface topology,
-    geometric accessibility, glycan proximity, and PPI interface
+    This pipeline reuses parsing, RSA and B-factor scoring from the main
+    pipeline -- but NOT secondary structure: assign_dssp is called only by
+    run_pipeline. It then adds feasibility-specific scoring: surface
+    topology, geometric accessibility, glycan proximity, and PPI interface
     competition.
 
     Args:
