@@ -1,4 +1,4 @@
-"""Per-IP fixed-window rate limiting for the anonymous Epitope Scout flow.
+"""Two-tier fixed-window rate limiting for the anonymous Epitope Scout flow.
 
 Scout's landing, intake (upload / fetch-pdb / example) and analysis routes
 are reachable without an account so a first-time visitor can decide their
@@ -10,6 +10,50 @@ free tier), anonymous callers are metered here.
 Only anonymous requests are limited. A signed-in user is already capped by
 the Supabase-backed quota, and keying a shared lab's NAT address into the
 same bucket would punish paying users for their neighbours.
+
+The two tiers
+-------------
+
+- **Per session** (``session_limit``), keyed on the anonymous id in the
+  signed session cookie. TIGHT. This is the only limit an ordinary visitor
+  should ever meet, and it catches a runaway tab or a hand-rolled script
+  before it spends its whole institution's share.
+- **Per IP** (``limit``), keyed on ``shared.metrics._client_ip``. The TRUE
+  bound, because a cookie is free to rotate and a session key therefore
+  bounds nothing an attacker cares about.
+
+The session tier is charged FIRST and refuses without touching the per-IP
+bucket, so one over-eager session cannot burn its neighbours' allowance on
+requests it was refused anyway. An attacker rotating cookies simply lands on
+the per-IP bucket, which is the point of having it.
+
+One analysis, one charge
+------------------------
+
+A single Scout analysis is TWO HTTP requests: ``GET /scout/progress`` (the
+SSE stream that actually runs the pipeline) and then ``POST /scout/analyze``
+(the finalise step, which finds the pipeline's ``results.csv`` already on
+disk and only resolves UniProt, looks up known binders and detects
+interfaces). Both share the ``scout_analyze`` bucket, so until 2026-08-18 a
+limit of 10 bought FIVE analyses, and QC measured the sixth researcher behind
+one university NAT being refused with no concurrency involved at all.
+
+The fix is NOT to stop metering ``/progress`` — it does the expensive half,
+and leaving it unmetered would make full-pipeline compute free. Instead the
+pair shares ONE charge, via a single-use follow-up credit:
+
+- ``/scout/progress`` is declared ``pair=PAIR_OPENS``. It is charged on
+  EVERY call, exactly as before, and a charge that is allowed leaves one
+  credit behind.
+- ``/scout/analyze`` is declared ``pair=PAIR_CLOSES``. It spends an
+  outstanding credit if there is one, and is charged normally if there is
+  not.
+
+A credit is bound to the session, the address AND the job, so it can only
+ever pay for the second half of the analysis that bought it. See
+``_FOLLOWUP`` for why it cannot be replayed, banked, raced, stolen or
+diverted — a legitimate analysis costs 1 instead of 2, and every route that
+can execute a pipeline on its own is still charged for it.
 
 What the limits ACTUALLY are, fleet-wide
 ---------------------------------------
@@ -28,6 +72,15 @@ also reset on every deploy and on any worker recycle, so a caller who is
 limited can be un-limited by a deploy landing mid-window. Quote the doubled
 numbers, not the configured ones, when reasoning about abuse cost.
 
+PHASE 3 WILL CHANGE THIS. When the window counters move to shared, durable
+state, ``_FOLLOWUP`` MUST MOVE WITH THEM. It is per-worker for exactly the
+same reason the counters are, and it degrades exactly the same way: a credit
+granted on worker 1 is invisible to worker 2, so a ``/analyze`` that lands on
+the other worker is charged. That degradation is FAIL-CLOSED — the caller
+pays twice, as they do today — which is why this is safe to ship before
+Phase 3. Leaving ``_FOLLOWUP`` in process memory *after* Phase 3 would not
+be: the counters would be exact and the credit that offsets them would not.
+
 ponytail: in-process fixed-window counters, deliberately. The worst case
 this guards is wasted CPU on one box, which does not justify a Redis
 dependency — move the counters into Redis or a Supabase table if Scout ever
@@ -42,7 +95,7 @@ import time
 from contextlib import contextmanager
 from functools import wraps
 
-from flask import jsonify, session
+from flask import jsonify, request, session
 
 # Reuse the app's existing forwarded-header-aware client IP resolution rather
 # than re-deriving it. That function counts X-Forwarded-For hops from the
@@ -109,11 +162,159 @@ def hit(bucket: str, key: str, *, limit: int, window_seconds: int) -> tuple[bool
         return hits <= limit, max(1, int(expires - now))
 
 
+# ---------------------------------------------------------------------------
+# The per-session tier
+# ---------------------------------------------------------------------------
+
+# Session key holding the anonymous owner id. Lives here rather than in
+# ``scout.routes`` because the limiter is the module that has to key on it and
+# routes already imports from here; the other direction would be a cycle.
+# ``scout.routes`` re-exports it, so ``scout_routes.ANON_SESSION_KEY`` still
+# resolves.
+ANON_SESSION_KEY = "scout_anon_id"
+
+# One shared bucket for every caller that presents no anonymous session id.
+_NO_SESSION_KEY = "anon:no-session"
+
+
+def _session_key() -> str:
+    """Bucket key for the per-session tier.
+
+    Every anonymous caller who has completed an intake carries a random
+    ``anon:<uuid4>`` in the SIGNED session cookie, so this key cannot be
+    chosen or forged the way a header can — a caller can throw one away and
+    get a fresh one, but only by starting a new session.
+
+    Callers presenting no id at all — a direct POST with no cookie, a browser
+    with cookies blocked, a sprayer that simply never sends one — ALL SHARE
+    ONE BUCKET. That is deliberate and fails closed. Minting a key per
+    request instead would hand every cookie-less caller an unlimited supply of
+    fresh session buckets, which is the one thing this tier must not allow.
+    Nothing legitimate is lost: without the id such a caller cannot own a job
+    directory either, so every analysis it attempts 404s regardless.
+    """
+    key = session.get(ANON_SESSION_KEY)
+    return key if isinstance(key, str) and key else _NO_SESSION_KEY
+
+
+# ---------------------------------------------------------------------------
+# One analysis, one charge — the follow-up credit
+# ---------------------------------------------------------------------------
+
+# (session key, per-IP key, job id) -> monotonic expiry of ONE outstanding
+# credit.
+#
+# Granted by a request that was CHARGED and can execute a pipeline on its own
+# (``/scout/progress``); spent by the finalise request that rides on the work
+# that charge already paid for (``/scout/analyze``).
+#
+# Why an attacker gains nothing from it:
+#
+# * **It cannot be minted for free.** A credit is written only after the
+#   charge was taken AND allowed. A refused request grants nothing.
+# * **It cannot be replayed.** ``_spend_followup`` POPS under ``_LOCK``, so it
+#   is single-use. Two ``/analyze`` calls after one ``/progress`` cost one
+#   free and one charged, and N of them cost N-1.
+# * **It cannot be banked.** At most ONE credit is outstanding per key —
+#   granting overwrites. Ten ``/progress`` calls in a row leave one credit,
+#   not ten, so a burst of cheap grants cannot be cashed in later.
+# * **It cannot be raced.** The pop is atomic under the same lock the
+#   counters use, so two concurrent ``/analyze`` calls against one credit
+#   produce exactly one free ride.
+# * **It cannot be stolen.** The key pairs the signed session id with the
+#   per-IP key, so a NAT neighbour cannot spend a credit somebody else paid
+#   for, and neither can the same session from another address.
+# * **It cannot be DIVERTED, which is the subtle one.** The job id is in the
+#   key, so a credit bought by ``/progress?job_id=A`` can only ever be spent
+#   by ``/analyze`` on job A — and job A's ``results.csv`` was written by the
+#   very call that bought the credit, so that ``/analyze`` takes the cheap
+#   finalise path. Without the job id a charge on a bogus or abandoned job
+#   would fund a free ``/analyze`` on a DIFFERENT job, and that ``/analyze``
+#   runs the whole pipeline itself when ``results.csv`` is missing. One charge
+#   would then buy ~24 CPU-s instead of ~15.
+# * **Replaying a job id buys nothing.** Re-requesting
+#   ``/scout/progress?job_id=...`` runs the whole pipeline again and is
+#   charged again, every time, because that route only ever GRANTS.
+#
+# Eviction here is SOONEST-TO-EXPIRE FIRST, which is the OPPOSITE of the
+# ordering ``_MAX_KEYS`` mandates for ``_WINDOWS``, and the inversion is
+# correct: dropping a counter re-allows a limited caller, which is the reset
+# an attacker sprays for, while dropping a credit merely CHARGES a caller who
+# would otherwise have ridden free. Losing an entry here fails closed. Do not
+# unify the two policies.
+_FOLLOWUP: dict[tuple[str, str, str], float] = {}
+
+# How long a credit stays redeemable.
+#
+# It only has to survive from the start of the SSE stream to the POST the
+# browser fires when the stream reports "done". Phase 1 sized the served
+# worst case of that stream at ~43 s (15 s queued + ~28 s of adversarial
+# compute), so 120 s carries it with ~3x margin while keeping the table small.
+# A credit that expires first costs the caller one extra charge — the
+# behaviour they had before this existed — and costs the box nothing.
+FOLLOWUP_TTL_SECONDS = 120.0
+
+PAIR_OPENS = "opens"    # charged always; grants one credit when allowed
+PAIR_CLOSES = "closes"  # spends a credit if one is outstanding, else charged
+
+
+def _analysis_id() -> str:
+    """The job this request is about, so a credit binds to ONE analysis.
+
+    ``/scout/progress`` carries it in the query string, ``/scout/analyze`` in
+    the JSON body. Flask caches the parsed body on the request, so reading it
+    here costs no second parse in the view. Anything unparseable reads as ""
+    — such a request is a 400 before it does any work, so it has nothing to
+    divert a credit to.
+    """
+    job_id = request.args.get("job_id", "")
+    if not job_id:
+        body = request.get_json(silent=True)
+        job_id = body.get("job_id", "") if isinstance(body, dict) else ""
+    return job_id.strip() if isinstance(job_id, str) else ""
+
+
+def _followup_key() -> tuple[str, str, str]:
+    return (_session_key(), _client_ip() or "unknown", _analysis_id())
+
+
+def _grant_followup(key: tuple[str, str, str]) -> None:
+    """Leave one credit for the paired follow-up request. Overwrites."""
+    now = time.monotonic()
+    with _LOCK:
+        if len(_FOLLOWUP) >= _MAX_KEYS:
+            for stale, expires in list(_FOLLOWUP.items()):
+                if expires <= now:
+                    del _FOLLOWUP[stale]
+            if len(_FOLLOWUP) >= _MAX_KEYS:
+                overflow = len(_FOLLOWUP) - _MAX_KEYS + _EVICT_BATCH
+                soonest = sorted(_FOLLOWUP.items(), key=lambda kv: kv[1])[:overflow]
+                for stale, _ in soonest:
+                    del _FOLLOWUP[stale]
+        _FOLLOWUP[key] = now + FOLLOWUP_TTL_SECONDS
+
+
+def _spend_followup(key: tuple[str, str, str]) -> bool:
+    """Consume the outstanding credit for ``key``. True if there was one.
+
+    Pops unconditionally, so an EXPIRED credit is both refused and reclaimed
+    in the same call.
+    """
+    now = time.monotonic()
+    with _LOCK:
+        expires = _FOLLOWUP.pop(key, 0.0)
+    return expires > now
+
+
 def reset() -> None:
     """Drop every counter. Test helper; not used by request handling."""
     global _INFLIGHT, _WAITING
     with _LOCK:
         _WINDOWS.clear()
+        # Credits too, or one test's unspent credit gives the next test a
+        # free request and the charge assertions there quietly stop meaning
+        # anything.
+        _FOLLOWUP.clear()
     with _INFLIGHT_LOCK:
         _INFLIGHT = 0
         # _WAITING too, or a test that leaves a waiter parked shrinks the
@@ -296,6 +497,15 @@ _OVER_LIMIT_MESSAGE = (
     "try again, or sign in for a free account with a higher allowance."
 )
 
+# The per-session refusal says something different on purpose. "This network"
+# is wrong and actively confusing when the caller alone is over the limit —
+# and it is the wrong call to action, because signing in genuinely does fix
+# the session case immediately. Phase 5 turns this string into the funnel.
+_SESSION_LIMIT_MESSAGE = (
+    "You have used the free Epitope Scout allowance for this session. Sign "
+    "in for a free account to keep going, or wait a few minutes."
+)
+
 # Machine-readable refusal reason, carried in every refusal body.
 #
 # There are now three ways Scout can say no to an anonymous caller, and on the
@@ -310,8 +520,16 @@ _OVER_LIMIT_MESSAGE = (
 # The values are an API surface for Phase 6's counters and for the front end.
 # Do not rename them; add new ones.
 REASON_RATE_LIMITED = "rate_limited"   # per-IP window, this module
+REASON_SESSION_LIMITED = "session_rate_limited"  # per-session window, here
 REASON_BUSY = "busy"                   # compute slot/queue full, scout.routes
 REASON_AT_CAPACITY = "at_capacity"     # live-job cap, scout.routes
+
+# REASON_SESSION_LIMITED exists because the two tiers mean two very different
+# things and Phase 6 has to alert on them differently. A per-session refusal
+# is ONE caller over their own allowance: expected, cheap, and the conversion
+# moment Phase 5 is built around. A per-IP refusal means a whole institution
+# has hit the shared ceiling, which is the failure the plan calls "an outage
+# that does not look like one". A counter that merges them cannot see that.
 
 # Not refusals — the two ways /scout/progress fails without us saying no.
 # They share the SSE ``{"stage": "error"}`` frame with the three above, so a
@@ -324,56 +542,121 @@ REASON_BAD_REQUEST = "bad_request"     # caller omitted job_id / chain
 REASON_JOB_EXPIRED = "job_expired"     # job dir reaped or never existed
 
 
-def anon_rate_limit(bucket: str, *, limit: int, window_seconds: int, sse: bool = False):
-    """Decorator: cap anonymous calls to this route at ``limit`` per window.
+def _refuse(*, sse: bool, retry_after: int, reason: str, message: str):
+    """Build the refusal both tiers share, in the shape the route can carry."""
+    if sse:
+        from flask import current_app  # noqa: PLC0415
 
-    Signed-in requests pass straight through (``scout.quota`` meters those).
-    Over-limit anonymous requests get a JSON 429 with ``Retry-After`` — the
-    Scout page's fetch handlers already render a non-2xx ``{"error": ...}``
-    body, so no front-end change is needed.
+        def _limited_stream():
+            yield "data: " + json.dumps({
+                "stage": "error",
+                "msg": message,
+                "reason": reason,
+            }) + "\n\n"
+
+        return current_app.response_class(
+            _limited_stream(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Retry-After": str(retry_after),
+            },
+        )
+    response = jsonify({
+        "error": message,
+        "retry_after": retry_after,
+        "reason": reason,
+    })
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+def anon_rate_limit(
+    bucket: str,
+    *,
+    limit: int,
+    window_seconds: int,
+    session_limit: int | None = None,
+    sse: bool = False,
+    pair: str | None = None,
+):
+    """Decorator: meter anonymous calls to this route against both tiers.
+
+    ``limit`` is the per-IP ceiling and ``session_limit``, when given, the
+    tighter per-session one. Signed-in requests pass straight through
+    (``scout.quota`` meters those). Over-limit anonymous requests get a JSON
+    429 with ``Retry-After`` — the Scout page's fetch handlers already render
+    a non-2xx ``{"error": ...}`` body, so no front-end change is needed.
 
     ``sse=True`` is for the EventSource endpoints: ``EventSource`` cannot
     read a 429 body, so those get a 200 ``text/event-stream`` carrying the
     same ``{"stage": "error"}`` event the route already emits for a missing
     job, which the page renders inline.
+
+    ``pair`` makes the two requests of one analysis share a single charge.
+    ``PAIR_OPENS`` is charged always and grants a credit; ``PAIR_CLOSES``
+    spends one if it can. Read ``_FOLLOWUP`` before changing either — the
+    asymmetry is what stops ``/scout/progress`` becoming free compute.
     """
+    # At import, not per request. A typo here would fail SILENTLY — no grant,
+    # no spend, and the pair quietly billed twice again — which is the kind of
+    # regression that only shows up as a support ticket from a lab.
+    if pair not in (None, PAIR_OPENS, PAIR_CLOSES):
+        raise ValueError(f"anon_rate_limit: unknown pair role {pair!r}")
+
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
             if session.get("user_email"):
                 return f(*args, **kwargs)
+
+            # One analysis, one charge. Checked BEFORE either tier so a
+            # spent credit covers both of them — otherwise the session tier
+            # would still be charged twice per analysis and would bite at
+            # half the number it advertises.
+            if pair == PAIR_CLOSES and _spend_followup(_followup_key()):
+                return f(*args, **kwargs)
+
+            # Session tier first, and it returns WITHOUT touching the per-IP
+            # bucket. A session over its own allowance must not go on
+            # spending its institution's shared budget on requests it is
+            # being refused anyway. Nothing is lost against an attacker:
+            # rotating the cookie skips this tier entirely and lands on the
+            # per-IP one, which is the tier that is supposed to stop them.
+            if session_limit is not None:
+                allowed, retry_after = hit(
+                    bucket + ":session",
+                    _session_key(),
+                    limit=session_limit,
+                    window_seconds=window_seconds,
+                )
+                if not allowed:
+                    return _refuse(
+                        sse=sse,
+                        retry_after=retry_after,
+                        reason=REASON_SESSION_LIMITED,
+                        message=_SESSION_LIMIT_MESSAGE,
+                    )
+
             allowed, retry_after = hit(
                 bucket, _client_ip(), limit=limit, window_seconds=window_seconds
             )
-            if allowed:
-                return f(*args, **kwargs)
-            if sse:
-                from flask import current_app  # noqa: PLC0415
-
-                def _limited_stream():
-                    yield "data: " + json.dumps({
-                        "stage": "error",
-                        "msg": _OVER_LIMIT_MESSAGE,
-                        "reason": REASON_RATE_LIMITED,
-                    }) + "\n\n"
-
-                return current_app.response_class(
-                    _limited_stream(),
-                    mimetype="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "X-Accel-Buffering": "no",
-                        "Retry-After": str(retry_after),
-                    },
+            if not allowed:
+                return _refuse(
+                    sse=sse,
+                    retry_after=retry_after,
+                    reason=REASON_RATE_LIMITED,
+                    message=_OVER_LIMIT_MESSAGE,
                 )
-            response = jsonify({
-                "error": _OVER_LIMIT_MESSAGE,
-                "retry_after": retry_after,
-                "reason": REASON_RATE_LIMITED,
-            })
-            response.status_code = 429
-            response.headers["Retry-After"] = str(retry_after)
-            return response
+
+            # Only a charge that was actually taken AND allowed buys a
+            # credit. Granting before the refusal checks would let a refused
+            # caller pay nothing and still hand itself a free follow-up.
+            if pair == PAIR_OPENS:
+                _grant_followup(_followup_key())
+            return f(*args, **kwargs)
 
         return wrapped
 

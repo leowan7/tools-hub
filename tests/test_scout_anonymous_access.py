@@ -140,6 +140,23 @@ def _login(client, *, user_id="u-anon-test", email="someone@example.com"):
         sess["user_id"] = user_id
 
 
+def _rotate_anon_session(client, label: str) -> None:
+    """Hand this client a fresh anonymous id, discarding the old one.
+
+    The per-session tier keys on that id, so a client that keeps one meets
+    the tight limit and never reaches the per-IP limit behind it. Rotating is
+    what an attacker does for free; several tests below need the per-IP tier
+    specifically and so have to do the same.
+    """
+    with client.session_transaction() as sess:
+        sess[scout_routes.ANON_SESSION_KEY] = f"anon:{label}"
+
+
+def _hits(bucket: str, key: str) -> int:
+    entry = ratelimit._WINDOWS.get((bucket, key))
+    return entry[1] if entry else 0
+
+
 # ---------------------------------------------------------------------------
 # The promise: the whole flow works with no account
 # ---------------------------------------------------------------------------
@@ -373,14 +390,34 @@ class TestRateLimit:
         assert 429 in statuses, statuses
 
     def test_progress_limit_returns_an_sse_error_not_a_429_body(self, client):
-        """EventSource cannot read a 429, so the SSE route degrades in-band."""
+        """EventSource cannot read a 429, so the SSE route degrades in-band.
+
+        Rotated anonymous ids on purpose: the per-session tier is tighter, so
+        reaching the per-IP one from a single client means presenting a fresh
+        id each time. That is free for an attacker, which is exactly why the
+        per-IP tier is the true bound.
+        """
         resp = None
-        for _ in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+            _rotate_anon_session(client, f"sse{i}")
             resp = client.get("/scout/progress?job_id=x&chain=A")
         assert resp.mimetype == "text/event-stream"
         payload = json.loads(resp.get_data(as_text=True).split("data: ", 1)[1])
         assert payload["stage"] == "error"
+        assert payload["reason"] == ratelimit.REASON_RATE_LIMITED
         assert "Too many" in payload["msg"]
+
+    def test_the_session_tier_bites_before_the_per_ip_one(self, client):
+        """One session that keeps its cookie meets the tight tier first, and
+        is told something true about it: sign in, not "your network"."""
+        resp = None
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT + 2):
+            resp = client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        assert resp.status_code == 429
+        assert resp.get_json()["reason"] == ratelimit.REASON_SESSION_LIMITED
+        assert _hits("scout_analyze", "127.0.0.1") == (
+            scout_routes.ANON_ANALYZE_SESSION_LIMIT
+        ), "a session-tier refusal must not spend the shared per-IP allowance"
 
     def test_signed_in_users_are_not_ip_limited(self, client, reap_jobs):
         _login(client)
@@ -760,9 +797,10 @@ class TestRefusalsAreDistinguishable:
         monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 4)
 
         limited = None
-        for _ in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
             if limited is not None:
                 limited.close()
+            _rotate_anon_session(client, f"tier{i}")
             limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
 
         # Indistinguishable at every layer a metric could read...
@@ -796,10 +834,17 @@ class TestRefusalsAreDistinguishable:
     def test_every_progress_error_frame_names_a_distinct_reason(
         self, client, monkeypatch, reap_jobs
     ):
-        """All four ways ``/scout/progress`` can emit ``stage: error``, in one
+        """All FIVE ways ``/scout/progress`` can emit ``stage: error``, in one
         test. Every frame must carry a reason and no two may share one —
         otherwise Phase 6's counters cannot separate the causes, which is the
-        only thing the field is for."""
+        only thing the field is for.
+
+        The two rate-limit tiers are both here on purpose. They mean very
+        different things — one caller over their own allowance versus a whole
+        institution over the shared one — and merging them would hide the
+        second inside the first, which is the case the plan calls an outage
+        that does not look like one.
+        """
         job_id = client.get("/scout/example").get_json()["job_id"]
 
         monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
@@ -816,10 +861,20 @@ class TestRefusalsAreDistinguishable:
             client.get("/scout/progress?job_id=3f8e0c92-0000-4000-8000-abcdefabcdef&chain=A")
         )
 
+        # Keeping one cookie reaches the tight tier...
+        session_limited = None
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT + 2):
+            if session_limited is not None:
+                session_limited.close()
+            session_limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+        frames["session_limited"] = self._sse_payload(session_limited)
+
+        # ...and rotating them reaches the true bound behind it.
         limited = None
-        for _ in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
             if limited is not None:
                 limited.close()
+            _rotate_anon_session(client, f"distinct{i}")
             limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
         frames["rate_limited"] = self._sse_payload(limited)
 
@@ -828,6 +883,8 @@ class TestRefusalsAreDistinguishable:
             assert body.get("reason"), f"{name} frame carries no reason: {body}"
 
         reasons = {name: body["reason"] for name, body in frames.items()}
+        assert reasons["session_limited"] == ratelimit.REASON_SESSION_LIMITED, reasons
+        assert reasons["rate_limited"] == ratelimit.REASON_RATE_LIMITED, reasons
         assert len(set(reasons.values())) == len(frames), (
             f"two error frames share a reason, so they cannot be told "
             f"apart: {reasons}"

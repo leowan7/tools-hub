@@ -49,6 +49,9 @@ from scout.quota import (
     requires_scout_quota,
 )
 from scout.ratelimit import (
+    ANON_SESSION_KEY,
+    PAIR_CLOSES,
+    PAIR_OPENS,
     REASON_AT_CAPACITY,
     REASON_BAD_REQUEST,
     REASON_BUSY,
@@ -98,17 +101,84 @@ ANON_MAX_LIVE_JOBS = 60
 # structure to score.
 ANON_MAX_LIVE_JOBS_PER_SESSION = 5
 
-# Per-IP fixed windows. Ten minutes is long enough that a burst of retries
-# after a bad file does not lock a real user out for the rest of the session.
+# Fixed windows. Ten minutes is long enough that a burst of retries after a
+# bad file does not lock a real user out for the rest of the session.
 ANON_RATE_WINDOW_SECONDS = 600
+
 # Intake (upload / fetch-pdb / example) — 10 structures per 10 minutes. A real
 # first visit uses 1-3.
+#
+# No per-session tier here, deliberately: intake already has one, and a better
+# one. ANON_MAX_LIVE_JOBS_PER_SESSION caps a single session at 5 live jobs,
+# which bounds the resource intake actually spends (disk) rather than the
+# request count. QC measured the intake bucket as comfortable — the analyze
+# bucket is where the wall is.
 ANON_INTAKE_LIMIT = 10
-# Analysis. The page runs one SSE /progress stream *and* one POST /analyze per
-# scoring run, and both share this bucket, so 10 is about 5 real runs per 10
-# minutes. /progress is the expensive half — it is what actually executes the
-# pipeline — so it cannot be left unmetered while /analyze is capped.
+
+# ---------------------------------------------------------------------------
+# The analysis ceiling — PER IP. This is the true bound; read before changing.
+# ---------------------------------------------------------------------------
+#
+# One analysis is now ONE hit, not two. The page runs a GET /scout/progress
+# (the SSE stream that executes the pipeline) and then a POST /scout/analyze
+# (finalise), and they share a single charge through the follow-up credit in
+# scout/ratelimit.py. Until 2026-08-18 they were billed separately, so this
+# number bought HALF as many analyses as it reads.
+#
+# THE CPU ARITHMETIC, from Phase 0's measurements. A 10-minute window on this
+# box is 2 sync workers x 600 s ~= 1,200 CPU-s.
+#
+#   adversarial /progress  ~9 CPU-s   (run_pipeline at the 8 MB upload cap)
+#   adversarial /analyze   ~6 CPU-s   (binder lookup ~4.2 + interfaces ~1)
+#   adversarial analysis  ~15 CPU-s   (the pair)
+#
+#   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
+#           so ~7 addresses saturate the fleet, and 5 analyses per worker.
+#   now:    20 hits/IP fleet-wide, each buying a whole analysis = ~300
+#           CPU-s/IP, so ~4 addresses saturate it, and 10 per worker.
+#
+# THAT INCREASE IS REAL AND IS THE PRICE OF THE FIX. Charging once per
+# analysis necessarily lets one charge buy a whole analysis instead of half of
+# one; there is no version of "bill it once" that does not. It is stated here
+# rather than buried because the lever is one line: dropping this to 6 puts
+# per-IP worst-case CPU back at ~180 exactly, at the cost of 6 analyses per
+# worker instead of 10.
+#
+# WHY IT IS NOT BEING RAISED, which the plan's Phase 4 asks for. Two
+# preconditions, both unmet:
+#
+#  1. PHASE 2. Nobody has verified whether Railway's edge appends, overwrites
+#     or forwards X-Forwarded-For verbatim. Under the third case the per-IP
+#     key is caller-chosen and this ceiling is decorative, so raising it would
+#     buy an attacker capacity and buy a real lab nothing. Phase 2 is the
+#     precondition; once the peer is trusted rather than the header, Phase 0's
+#     defensible O(100) becomes reachable and this is the one line to change.
+#  2. PHASE 1'S FAIRNESS IS UNDELIVERED. Phase 1 shipped without flipping the
+#     worker class, so its semaphore is inert (see gunicorn.conf.py). The
+#     plan says "Phase 1 is what makes generous safe"; it did not, so the only
+#     thing standing between a saturated box and /healthz is still nothing.
+#     A saturated sync fleet does not shed, it queues invisibly.
 ANON_ANALYZE_LIMIT = 10
+
+# ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
+# TIGHT, and the only limit an ordinary visitor should ever meet.
+#
+# QC measured a thorough first-time visitor at 6 analyses in a session (two
+# uploads, several chains — trying chains is the whole point of the tool).
+# Eight leaves that user 33% of headroom while stopping a runaway tab or a
+# hand-rolled loop at 8 rather than letting it spend all 10 of the shared
+# per-IP allowance its whole institution draws from.
+#
+# It bounds nothing an attacker cares about — a cookie is free to discard —
+# and it is not supposed to. Its jobs are to make ordinary over-use cheap to
+# refuse and to give Phase 5 a refusal it can honestly answer with "sign in",
+# which is true here and is NOT true of the per-IP refusal.
+#
+# HONEST LIMITATION: with the per-IP ceiling stuck at 10/worker there is very
+# little room between the tiers, so this one is thin. It becomes the real
+# workhorse when Phase 2 lets the per-IP number rise; the structure is what
+# makes that a number change rather than a redesign.
+ANON_ANALYZE_SESSION_LIMIT = 8
 
 # How many anonymous scoring pipelines may run at once in one worker process.
 #
@@ -134,9 +204,10 @@ _BUSY_MESSAGE = (
     "moment, or sign in to run it on your account."
 )
 
-# Session key holding the anonymous owner id. Prefixed so it can never collide
-# with a Supabase uid or an email address.
-ANON_SESSION_KEY = "scout_anon_id"
+# Session key holding the anonymous owner id — imported from scout.ratelimit,
+# which needs it to key the per-session tier and cannot import this module
+# back. Re-exported here so scout_routes.ANON_SESSION_KEY still resolves.
+# Prefixed so it can never collide with a Supabase uid or an email address.
 ANON_OWNER_PREFIX = "anon:"
 
 scout_bp = Blueprint(
@@ -683,7 +754,15 @@ def example():
 @anon_rate_limit(
     "scout_analyze",
     limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
     window_seconds=ANON_RATE_WINDOW_SECONDS,
+    # Finalise. In the normal flow /progress has already run the pipeline and
+    # paid for the whole analysis, so this spends that credit. When there is
+    # no credit — called on its own, or called a second time on the same job —
+    # it is charged like anything else, which matters because THIS route can
+    # run the pipeline itself when results.csv is missing (a dropped SSE
+    # stream), and does the binder lookup and interface detection every time.
+    pair=PAIR_CLOSES,
 )
 @requires_scout_quota
 def analyze():
@@ -981,8 +1060,17 @@ def download(job_id):
 @anon_rate_limit(
     "scout_analyze",
     limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
     window_seconds=ANON_RATE_WINDOW_SECONDS,
     sse=True,
+    # NOT a status poll. _run_worker below calls run_pipeline UNCONDITIONALLY
+    # — there is no results.csv check, unlike /analyze — so every hit on this
+    # route is a full scoring run on a caller-chosen structure, ~9 CPU-s at
+    # the 8 MB cap. It is charged on EVERY call and PAIR_OPENS does not change
+    # that; all it adds is one credit for the POST /scout/analyze that follows.
+    # Removing this decorator, or letting this route spend a credit instead of
+    # granting one, would make full-pipeline compute free. Do neither.
+    pair=PAIR_OPENS,
 )
 @requires_scout_quota
 def progress():
