@@ -52,19 +52,28 @@ on:
       # and any method a future Modal adds. add_local_file and from_dockerfile
       # are allowed but must name the app's own run_pipeline.py /
       # Dockerfile.modal; mounts=, context_dir=, context_files= and spec_file=
-      # are refused outright. (3) It pins the Deploy step below to a FILE path:
-      # every `modal deploy` line in this job, shell comments stripped, must be
-      # the `modal deploy "$app_file"` form, because `modal deploy -m
+      # are refused outright. So are the spellings that hide a keyword or a
+      # method name from an AST read: a `**` expansion into an Image method
+      # (kwarg names unknowable), a callee that is not a plain name
+      # (`getattr(image, "uv_sync")(...)`), and an Image method BOUND to a
+      # variable instead of called. Each was measured to ship an adapter as
+      # DockerfileSpec.context_files, which check 1 cannot see. (3) It pins the
+      # Deploy step below to a FILE path: every line in this job whose shell
+      # TOKENS include `deploy`, comment lines stripped, must be the
+      # `modal deploy "$app_file"` form, because `modal deploy -m
       # tools.<app>.modal_app` would load the same source in PACKAGE mode and
-      # mount the whole tools package. Do not change that line either.
+      # mount the whole tools package. Tokens, not a substring: `modal  deploy`
+      # with one extra space is a typo, and a substring selector would never
+      # examine it. Do not change that line either.
       #
-      # Three known gaps. Two are LOUD rather than silent, so neither can leave
+      # Four known gaps. Two are LOUD rather than silent, so neither can leave
       # a stale image behind: `ADD` (Modal's COPY parser ignores it, so the
       # docker build fails) and importlib/__import__ of the package
-      # (ImportError inside the container). The third is silent and accepted: a
+      # (ImportError inside the container). Two are silent and accepted: a
       # local-path KWARG that a future Modal adds to an already-allowlisted
-      # method and routes through context_files. Detail in that file's
-      # docstring.
+      # method and routes through context_files, and a deploy command assembled
+      # into a variable and run via `eval` (the token scan reads written lines).
+      # Detail in that file's docstring.
       #
       # Order matters: a later negation wins over the earlier 'tools/**'.
       - 'tools/**'
