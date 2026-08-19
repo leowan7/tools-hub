@@ -34,6 +34,7 @@ from flask import (
 
 from shared.auth import login_required
 
+from scout.errors import ScoutInputError
 from scout.jobs import (
     cleanup_old_jobs,
     count_job_dirs,
@@ -303,39 +304,46 @@ _GENERIC_ERROR = "Analysis failed. Check that the PDB is valid and try again."
 def _client_error(exc: BaseException) -> str:
     """Client-safe text for a caught exception. Log the exception first.
 
-    The pipeline signals "your input is wrong" by raising ``ValueError``
-    with a message written for the user — "Chain 'Z' not found in
-    structure. Available chains: A, B" (``scout/pipeline.py:310``). Those
-    are the product's only diagnostics and are forwarded verbatim.
+    Scout signals "your input is wrong" by raising
+    :class:`~scout.errors.ScoutInputError` with a message written for the
+    person who uploaded the structure -- "Chain 'Z' not found in structure.
+    Available chains: A, B" (``scout/pipeline.py``, 6 sites). Those are the
+    product's only diagnostics and are forwarded verbatim. Everything else
+    is replaced.
 
-    Every other type is replaced. The one that forced this is ``OSError``,
-    whose ``__str__`` interpolates ``filename``, so a ``FileNotFoundError``
-    raised anywhere under the pipeline hands the browser an absolute server
-    path. The rule is an allowlist rather than an ``OSError`` denylist
-    because the set of types reaching these handlers is open — the SSE
-    workers catch bare ``Exception`` — and ``ValueError`` is the only one
-    audited as safe to forward.
+    THE ALLOWLIST IS A TYPE SCOUT OWNS, and that is the whole point.
+    Allowlisting ``ValueError`` -- as this did until 2026-08-19 -- made the
+    safety of this function a claim about every frame in the transitive
+    stack: Biopython, numpy, scipy, freesasa, the stdlib, at every version
+    anyone will ever install. Any of them may raise a plain ``ValueError``
+    whose message quotes a path or echoes the caller's own input, and
+    ``int()`` already does the latter. Auditing that set once said nothing
+    about the next release. The guarantee is now a property of this repo.
 
-    KNOWN LIMIT OF THAT AUDIT: it covers every ``raise ValueError`` under
-    ``scout/`` (8 sites, all curated sentences, none interpolating a path)
-    and the reachable ones in Biopython, but the RULE's scope is every
-    dependency, every version, forever. A plain ``ValueError`` raised deep in
-    a library with a path in its message would be forwarded. None exists
-    today; nothing stops one appearing. The bounded alternative is a
-    ``ScoutInputError(ValueError)`` raised at those 8 sites and allowlisted
-    by that type instead — then the guarantee is a property of this
-    codebase rather than of other people's release notes.
+    The rule the old type was really for still stands. ``OSError.__str__``
+    interpolates ``filename``, so a ``FileNotFoundError`` raised anywhere
+    under the pipeline would hand the browser an absolute server path. It is
+    an allowlist rather than an ``OSError`` denylist because the set of types
+    reaching these handlers is open -- the SSE workers catch bare
+    ``Exception``.
 
-    Exact type, not ``isinstance``: ``UnicodeDecodeError`` and
-    ``json.JSONDecodeError`` subclass ``ValueError`` and carry decoder
-    internals rather than advice. ``scout`` defines no ``ValueError``
-    subclass of its own, so the strict check loses nothing.
+    ``isinstance``, not exact type: subclassing ``ScoutInputError`` is itself
+    the declaration that the message was written for a user, and an exact
+    check would silently downgrade such a subclass to the generic string.
+    The exact check this replaced existed because ``UnicodeDecodeError`` and
+    ``json.JSONDecodeError`` subclass ``ValueError`` without inheriting any
+    promise about their text; nothing outside ``scout`` subclasses this.
 
-    An empty message falls back too — the SSE clients render ``data.msg``
+    Server-side faults deliberately do NOT get this type -- see
+    ``scout/errors.py``. ``scout/epitope_db.py`` still raises plain
+    ``ValueError`` for a malformed SAbDab summary, which is an operator's
+    problem and reaches the user as the generic message.
+
+    An empty message falls back too -- the SSE clients render ``data.msg``
     straight into the banner (``templates/scout/index.html:346``), and a
     blank banner is worse than a generic one.
     """
-    if type(exc) is ValueError and str(exc).strip():
+    if isinstance(exc, ScoutInputError) and str(exc).strip():
         return str(exc)
     return _GENERIC_ERROR
 
@@ -653,6 +661,11 @@ def analyze():
             from scout.interfaces import detect_interfaces  # noqa: PLC0415
             ppi_interfaces = detect_interfaces(pdb_path, chain_id)
         except ValueError as exc:
+            # A ScoutInputError is forwarded verbatim, so the response itself
+            # is the record. Any other ValueError is replaced by generic text,
+            # and without this would leave no trace anywhere of what failed.
+            if not isinstance(exc, ScoutInputError):
+                logger.exception("Pipeline error for job %s", job_id)
             return jsonify({"error": _client_error(exc)}), 422
         except Exception:
             logger.exception("Pipeline error for job %s", job_id)
@@ -1083,10 +1096,15 @@ def feasibility_analyze():
         )
         return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
     except ValueError as exc:
-        # Forwarded verbatim, so nothing is hidden that a traceback would help
-        # reconstruct -- and a wrong-chain typo is the most common user error
-        # on this route, so exc_info here was pure log noise.
-        logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
+        # A ScoutInputError is forwarded verbatim, so nothing is hidden that a
+        # traceback would help reconstruct -- and a wrong-chain typo is the most
+        # common user error on this route, so exc_info there is pure log noise.
+        # Any other ValueError is withheld from the client, which makes the
+        # traceback the only surviving account of it.
+        logger.warning(
+            "Feasibility rejected input for job %s: %s", job_id, exc,
+            exc_info=not isinstance(exc, ScoutInputError),
+        )
         return jsonify({"error": _client_error(exc)}), 422
     except Exception:
         # Anything else used to escape as an unhandled 500 with a stack-trace

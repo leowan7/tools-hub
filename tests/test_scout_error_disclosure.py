@@ -20,11 +20,19 @@ only ``(ValueError, FileNotFoundError)``; every other exception escaped
 as an unhandled 500 with a stack-trace page instead of the JSON body the
 route contracts to return.
 
-The rule under test is a type allowlist, not a blanket redaction: an
-app-authored ``ValueError`` ("Chain 'Z' not found in structure. Available
-chains: A, B") is written for the user and must survive verbatim, while
-every other type is replaced. Both directions are asserted below, because
-a blanket "Internal error" would fix the leak by breaking the product.
+The rule under test is a type allowlist, not a blanket redaction: a
+``ScoutInputError`` ("Chain 'Z' not found in structure. Available chains:
+A, B") is written for the user and must survive verbatim, while every
+other type is replaced. Both directions are asserted below, because a
+blanket "Internal error" would fix the leak by breaking the product.
+
+The allowlisted type is ``scout.errors.ScoutInputError`` and not
+``ValueError`` because the second version of this rule allowlisted
+``ValueError`` and thereby promised something about every frame in the
+transitive stack -- Biopython, numpy, scipy, the stdlib -- at every
+version anyone would ever install. ``test_analyze_redacts_a_plain_
+valueerror_from_a_dependency`` injects what that promise was betting
+against.
 
 Exposure differs per route and is recorded here so it is not re-litigated:
 ``/scout/progress`` and ``/scout/analyze`` are anonymous (``@anon_rate_limit``
@@ -43,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from scout import ratelimit
+from scout.errors import ScoutInputError
 
 TMP = Path("tmp")
 
@@ -213,6 +222,44 @@ class TestExceptionTextDoesNotReachTheClient:
         assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
 
 
+    def test_analyze_redacts_a_plain_valueerror_from_a_dependency(
+        self, client, monkeypatch, reap_jobs
+    ):
+        """Why the allowlist is ``ScoutInputError`` and not ``ValueError``.
+
+        Nothing reachable under the pipeline raises a path-carrying plain
+        ``ValueError`` today. The audit that established that covered one
+        snapshot of Biopython, numpy, scipy and the stdlib, and said nothing
+        about the next release -- so this injects the exception it was
+        betting against. The message is shaped after the stdlib's own
+        ``float()``, which quotes its argument back verbatim.
+        """
+        job_id = _new_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_pipeline",
+            _raise(ValueError(f"could not convert string to float: '{_LEAKY_PATH}'")),
+        )
+
+        resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+
+        assert resp.status_code in (422, 500), resp.data
+        assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
+
+    def test_analyze_sse_redacts_a_plain_valueerror_from_a_dependency(
+        self, client, monkeypatch, reap_jobs
+    ):
+        """Same injection on the anonymous SSE route, which is the exposed one."""
+        job_id = _new_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_pipeline",
+            _raise(ValueError(f"could not convert string to float: '{_LEAKY_PATH}'")),
+        )
+
+        resp = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+
+        assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
+
+
 # ---------------------------------------------------------------------------
 # The other direction: a blanket redaction would be a usability regression
 # ---------------------------------------------------------------------------
@@ -224,7 +271,7 @@ class TestUsefulMessagesSurvive:
     ):
         job_id = _new_job(client)
         monkeypatch.setattr(
-            "scout.pipeline.run_pipeline", _raise(ValueError(_USEFUL_MESSAGE))
+            "scout.pipeline.run_pipeline", _raise(ScoutInputError(_USEFUL_MESSAGE))
         )
 
         resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
@@ -239,7 +286,7 @@ class TestUsefulMessagesSurvive:
         job_id = _new_job(client)
         monkeypatch.setattr(
             "scout.pipeline.run_feasibility_pipeline",
-            _raise(ValueError("No valid residues found for epitope selection")),
+            _raise(ScoutInputError("No valid residues found for epitope selection")),
         )
 
         resp = client.post(
@@ -256,7 +303,7 @@ class TestUsefulMessagesSurvive:
         _login(client)
         job_id = _new_job(client)
         monkeypatch.setattr(
-            "scout.pipeline.run_feasibility_pipeline", _raise(ValueError(_USEFUL_MESSAGE))
+            "scout.pipeline.run_feasibility_pipeline", _raise(ScoutInputError(_USEFUL_MESSAGE))
         )
 
         resp = client.get(
@@ -353,6 +400,8 @@ class TestSseContractIsIntact:
     @pytest.mark.parametrize("exc", [
         FileNotFoundError(2, "No such file or directory", _LEAKY_PATH),
         RuntimeError("boom"),
+        ScoutInputError(_USEFUL_MESSAGE),
+        ScoutInputError(""),
         ValueError(_USEFUL_MESSAGE),
         ValueError(""),
     ])
