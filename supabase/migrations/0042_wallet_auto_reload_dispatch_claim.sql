@@ -24,12 +24,16 @@
 --   one of several concurrent callers wins — the same compare-and-set shape
 --   as `shared/compute_campaigns.py` `_cas_transition`.
 --
--- NOT NULL defaulting to the epoch, not nullable. The claim filters on
--- `auto_reload_last_dispatch_at < now() - 24h`, and `NULL < anything` is NULL,
--- so a nullable column would never match and auto-reload would never fire
--- again for any wallet that had not already reloaded. Existing rows take the
--- default and are immediately claimable, which is correct: none of them is
--- holding a dispatch.
+-- DEFAULT epoch, NOT NULL -- and the DEFAULT is the load-bearing half. Since
+-- PG 11 `ADD COLUMN ... DEFAULT <non-volatile>` backfills existing rows, so
+-- every wallet is immediately claimable, which is correct: none of them is
+-- holding a dispatch. Without a default they would read NULL, and since
+-- `NULL < anything` is NULL the claim filter
+-- `auto_reload_last_dispatch_at < now() - 24h` would never match them --
+-- auto-reload would never fire again for any wallet that had not already
+-- reloaded. NOT NULL backfills nothing on its own; what it adds is
+-- foreclosing a later explicit NULL write from putting a wallet in that
+-- state.
 --
 -- Apply via the Supabase SQL editor or `supabase db push` BEFORE deploying the
 -- matching `shared/wallet.py` change. Without the column the claim UPDATE gets

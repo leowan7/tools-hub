@@ -756,23 +756,31 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     would be safe and would remove the dead wait, EXCEPT that
     ``_classify_off_session_error`` (billing/checkout.py:145-147) also routes
     UNKNOWN failures to the same non-retryable branch, and an unknown failure
-    may well have charged the card. Telling those apart needs the classifier
-    to report "definitely not charged" as its own signal; until it does, the
-    dead wait is the safe side and is left in place knowingly.
+    may well have charged the card. Two of its reasons are already
+    unambiguous — ``expired_card`` and ``insufficient_funds`` reach the caller
+    only from a ``CardError`` carrying that code, so neither one charged — but
+    plain ``card_declined`` is also what the unknown fallback returns, and
+    that is the reason a real decline usually carries. Releasing the claim on
+    the two safe reasons alone would be sound; it is not in this change, and
+    until it is, the dead wait is the safe side and is left in place
+    knowingly.
 
     The monthly cap rides on the same claim rather than getting one of its
     own, and is only partly bounded by it. The cap reads SETTLED
     ``auto_reload`` credits, so it under-reads by every charge whose webhook
     has not landed. The claim bounds dispatches to one per 24h WINDOW, which
-    is not the same as one outstanding: if the webhook endpoint is down for N
-    days, N charges are in flight at once and the cap over-runs by N ×
-    ``reload_amount`` — up to roughly 30× in a month, not once.
+    is not the same as one outstanding: if auto-reload credits stop settling
+    while job settles keep arriving, N windows dispatch N charges, the month
+    totals N × ``reload_amount``, and the cap is over-run by whatever that
+    total exceeds it by. At the shipped $1000 default with a $50 reload, 30
+    windows charge $1500 — $500 past the cap, not one reload past it.
 
-    An earlier version of this docstring claimed "at most ONE charge can be in
-    flight, so the overshoot is at most a single ``reload_amount``". That was
-    wrong, it conflated one-per-window with one-outstanding, and QC reproduced
-    the counterexample: cap $100, reload $50, webhook never lands, four
-    dispatches across four windows, $200 charged. Do not restore it.
+    An earlier version of this docstring claimed at most one charge could be
+    in flight, so the cap could be overshot by at most a single
+    ``reload_amount``. That was wrong, it conflated one-per-window with
+    one-outstanding, and QC reproduced the counterexample: cap $100, reload
+    $50, webhook never lands, four dispatches across four windows, $200
+    charged — $100 past the cap, two reloads' worth. Do not restore it.
 
     What the claim does buy the cap is the wave: before it, one stale read let
     a whole settle wave through at once, so the overshoot had no bound in time
@@ -853,9 +861,11 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     # no side effects, and its failure path returns without charging -- so
     # taken after the claim it would burn a user's whole 24h window on a
     # dispatch that never happened, and report "triggered" for it. Nothing
-    # between the claim and the charge may be able to return early;
-    # `test_a_missing_billing_module_does_not_burn_the_dispatch_window` is
-    # what notices if that stops being true.
+    # between the claim and the charge may be able to return early.
+    # `test_a_missing_billing_module_does_not_burn_the_dispatch_window` pins
+    # THIS import's position and nothing further -- a newly added step here
+    # with its own early return would not red it. The invariant is wider than
+    # its guard.
     #
     # Stripe off-session PaymentIntent. Wave 2 Agent E provides
     # :func:`billing.checkout.create_off_session_payment_intent`. Import
@@ -1140,7 +1150,8 @@ def _claim_auto_reload_dispatch(user_id: str) -> bool:
     Postgres, so two web hosts whose clocks differ by more than 24h could each
     win. NTP makes that remote and the cited ``_cas_transition`` has no time
     term to get wrong; a Postgres-side ``now()`` via RPC, the way
-    ``try_hold_for_job`` does it, would remove the dependency entirely.
+    ``claim_due_webhook_deliveries`` does it, would remove the dependency
+    entirely.
 
     Fails CLOSED. A claim we could not write is treated as lost, so a Supabase
     blip stops auto-reload instead of reopening an unbounded number of
