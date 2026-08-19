@@ -48,7 +48,19 @@ from scout.quota import (
     record_scout_run,
     requires_scout_quota,
 )
-from scout.ratelimit import anon_compute_slot, anon_rate_limit
+from scout.ratelimit import (
+    ANON_SESSION_KEY,
+    PAIR_CLOSES,
+    PAIR_OPENS,
+    REASON_AT_CAPACITY,
+    REASON_BAD_REQUEST,
+    REASON_BUSY,
+    REASON_JOB_EXPIRED,
+    anon_compute_slot,
+    anon_rate_limit,
+    job_id_in_body,
+    job_id_in_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,42 +103,138 @@ ANON_MAX_LIVE_JOBS = 60
 # structure to score.
 ANON_MAX_LIVE_JOBS_PER_SESSION = 5
 
-# Per-IP fixed windows. Ten minutes is long enough that a burst of retries
-# after a bad file does not lock a real user out for the rest of the session.
+# Fixed windows. Ten minutes is long enough that a burst of retries after a
+# bad file does not lock a real user out for the rest of the session.
 ANON_RATE_WINDOW_SECONDS = 600
+
 # Intake (upload / fetch-pdb / example) — 10 structures per 10 minutes. A real
 # first visit uses 1-3.
+#
+# No per-session tier here, deliberately: intake already has one, and a better
+# one. ANON_MAX_LIVE_JOBS_PER_SESSION caps a single session at 5 live jobs,
+# which bounds the resource intake actually spends (disk) rather than the
+# request count.
+#
+# THIS IS NOW THE FIRST WALL A REAL LAB MEETS, which is the opposite of what
+# this comment said until 2026-08-19. Once one analysis cost one charge instead
+# of two, the analyze ceiling below stopped being the binding one: QC measured
+# ten researchers behind one NAT getting through, and the ELEVENTH refused
+# here, on GET /scout/example, before it ever reached an analysis. Phase 5
+# instruments the refusal a visitor actually sees, so it has to instrument this
+# one too, not only the analyze bucket.
+#
+# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL and nothing asserts it.
+# Neither number moved; what moved was the cost of an analysis, which lifted
+# the effective analyze ceiling from 5 to 10 and landed on this 10 by
+# coincidence. Change either one and the wall moves to the other, silently.
 ANON_INTAKE_LIMIT = 10
-# Analysis. The page runs one SSE /progress stream *and* one POST /analyze per
-# scoring run, and both share this bucket, so 10 is about 5 real runs per 10
-# minutes. /progress is the expensive half — it is what actually executes the
-# pipeline — so it cannot be left unmetered while /analyze is capped.
+
+# ---------------------------------------------------------------------------
+# The analysis ceiling — PER IP. This is the true bound; read before changing.
+# ---------------------------------------------------------------------------
+#
+# One analysis is now ONE hit, not two. The page runs a GET /scout/progress
+# (the SSE stream that executes the pipeline) and then a POST /scout/analyze
+# (finalise), and they share a single charge through the follow-up credit in
+# scout/ratelimit.py. Until 2026-08-18 they were billed separately, so this
+# number bought HALF as many analyses as it reads.
+#
+# THE CPU ARITHMETIC, from Phase 0's measurements. A 10-minute window on this
+# box is 2 sync workers x 600 s ~= 1,200 CPU-s.
+#
+#   adversarial /progress  ~9 CPU-s   (run_pipeline at the 8 MB upload cap)
+#   adversarial /analyze   ~6 CPU-s   (binder lookup ~4.2 + interfaces ~1)
+#   adversarial analysis  ~15 CPU-s   (the pair)
+#
+#   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
+#           so ~7 addresses saturate the fleet, and 5 analyses per worker.
+#   now:    20 hits/IP fleet-wide, each buying a whole analysis = ~300
+#           CPU-s/IP, so ~4 addresses saturate it, and 10 per worker.
+#
+# THAT INCREASE IS REAL AND IS THE PRICE OF THE FIX. Charging once per
+# analysis necessarily lets one charge buy a whole analysis instead of half of
+# one; there is no version of "bill it once" that does not. It is stated here
+# rather than buried because the lever is one line: dropping this to 6 puts
+# per-IP worst-case CPU back at ~180 exactly, at the cost of 6 analyses per
+# worker instead of 10.
+#
+# WHY IT IS NOT BEING RAISED, which the plan's Phase 4 asks for. Two
+# preconditions, both unmet:
+#
+#  1. PHASE 2. Nobody has verified whether Railway's edge appends, overwrites
+#     or forwards X-Forwarded-For verbatim. Under the third case the per-IP
+#     key is caller-chosen and this ceiling is decorative, so raising it would
+#     buy an attacker capacity and buy a real lab nothing. Phase 2 is the
+#     precondition; once the peer is trusted rather than the header, Phase 0's
+#     defensible O(100) becomes reachable and this is the one line to change.
+#  2. PHASE 1'S FAIRNESS IS UNDELIVERED. Phase 1 shipped without flipping the
+#     worker class, so its semaphore is inert (see gunicorn.conf.py). The
+#     plan says "Phase 1 is what makes generous safe"; it did not, so the only
+#     thing standing between a saturated box and /healthz is still nothing.
+#     A saturated sync fleet does not shed, it queues invisibly.
 ANON_ANALYZE_LIMIT = 10
+
+# ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
+# TIGHT, and the only limit an ordinary visitor should ever meet.
+#
+# Phase 0's baseline PROJECTS a thorough first-time visitor at 6 analyses in
+# a session — two uploads, several chains, since trying chains is the whole
+# point of the tool (docs/qc/anon-load-baseline.md §2.3, "Thorough: 2 uploads,
+# 6 analyses", whose stated design input is to "size for ~6 runs per user
+# session, not 1-3"). Eight leaves that user 33% of headroom while stopping a
+# runaway tab or a hand-rolled loop at 8 rather than letting it spend all 10 of
+# the shared per-IP allowance its whole institution draws from.
+#
+# THAT 6 IS MODELLED, NOT MEASURED, and this comment said "QC measured" until
+# 2026-08-18. Two things were wrong with that. anon-load-baseline.md is the
+# BUILDER's own Phase 0 measurement document, not a QC one — the Phase 0 QC
+# report adopts its §2.3 as a concern without re-deriving it. And §2.3 itself
+# is a behavioural projection: §2.1 and §2.2 measured the COST PER ACTION
+# against a real server (one analyse click = 2 metered hits), never how many
+# actions a visitor takes. Nobody has observed a real session. The cap of 8 is
+# a faithful application of Phase 0's own stated design input and does not need
+# re-deriving; what needed fixing is a provenance claim that would let a later
+# phase treat a model as data.
+#
+# It bounds nothing an attacker cares about — a cookie is free to discard —
+# and it is not supposed to. Its jobs are to make ordinary over-use cheap to
+# refuse and to give Phase 5 a refusal it can honestly answer with "sign in",
+# which is true here and is NOT true of the per-IP refusal.
+#
+# HONEST LIMITATION: with the per-IP ceiling stuck at 10/worker there is very
+# little room between the tiers, so this one is thin. It becomes the real
+# workhorse when Phase 2 lets the per-IP number rise; the structure is what
+# makes that a number change rather than a redesign.
+ANON_ANALYZE_SESSION_LIMIT = 8
 
 # How many anonymous scoring pipelines may run at once in one worker process.
 #
-# INERT AS DEPLOYED — this cap is never reached today. Gunicorn sets no
-# worker_class, so workers are sync and serve one request at a time; in-flight
-# anonymous runs per process can therefore never exceed 1, let alone 4. Real
-# concurrency is bounded by the worker count (WEB_CONCURRENCY, default 2), not
-# by this number. See the note in gunicorn.conf.py.
+# INERT AS DEPLOYED — gunicorn runs sync workers, so a process serves one
+# request at a time and in-flight anonymous runs can never exceed 1, let alone
+# 2. Real concurrency is bounded by the worker count (WEB_CONCURRENCY,
+# default 2). Do not cite this as current protection; see gunicorn.conf.py for
+# the evaluation of the worker-class change and what has to land first.
 #
-# Kept, not deleted, because it is the right guard if the deployment ever
-# moves to gthread/gevent workers: the pipeline is CPU-bound (freesasa +
-# numpy) and would then let simultaneous anonymous runs slow every request
-# sharing the worker. Signed-in callers never consume a slot, so a free
-# visitor could not starve a paying user. Do not cite it as current
-# protection.
-ANON_MAX_CONCURRENT_RUNS = 4
+# Two is derived rather than inherited, so that the flip is a one-line change
+# and not a redesign: see the arithmetic above ANON_MAX_QUEUED_RUNS in
+# scout/ratelimit.py. Short version — a threaded worker is GIL-bound at ~1.07
+# effective cores, and concurrent CPU-bound pipelines under a GIL all finish
+# LATE together rather than one at a time, so more slots push the first free
+# slot further away and buy no throughput at all.
+#
+# Signed-in callers never consume a slot, so a free visitor cannot starve a
+# paying user.
+ANON_MAX_CONCURRENT_RUNS = 2
 
 _BUSY_MESSAGE = (
     "Epitope Scout is busy with other free runs right now. Try again in a "
     "moment, or sign in to run it on your account."
 )
 
-# Session key holding the anonymous owner id. Prefixed so it can never collide
-# with a Supabase uid or an email address.
-ANON_SESSION_KEY = "scout_anon_id"
+# Session key holding the anonymous owner id — imported from scout.ratelimit,
+# which needs it to key the per-session tier and cannot import this module
+# back. Re-exported here so scout_routes.ANON_SESSION_KEY still resolves.
+# Prefixed so it can never collide with a Supabase uid or an email address.
 ANON_OWNER_PREFIX = "anon:"
 
 scout_bp = Blueprint(
@@ -217,7 +325,8 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
             "error": (
                 "Epitope Scout is at capacity for anonymous runs right now. "
                 "Try again in a few minutes, or sign in to run it on your account."
-            )
+            ),
+            "reason": REASON_AT_CAPACITY,
         }, 503
     anon = session.get(ANON_SESSION_KEY)
     if anon and count_job_dirs(anon) >= ANON_MAX_LIVE_JOBS_PER_SESSION:
@@ -226,7 +335,8 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
                 "You have several Epitope Scout structures still loaded. "
                 "Earlier ones are cleared automatically within the hour, or "
                 "sign in to keep more at once."
-            )
+            ),
+            "reason": REASON_AT_CAPACITY,
         }, 429
     return None
 
@@ -360,6 +470,60 @@ def _client_error(exc: BaseException) -> str:
         return str(exc)
     return _GENERIC_ERROR
 
+# Per-chain residue counts, written at intake, read by /analyze.
+_CHAIN_INDEX_NAME = "chains.json"
+
+
+def _save_chain_index(job_dir: Path, result) -> None:
+    """Persist the per-chain residue counts this parse already produced.
+
+    /analyze needs the target chain's residue count to cap patch size, and
+    every intake route has already parsed the whole structure to list its
+    chains for the picker. Recomputing it in /analyze meant a second full
+    BioPython parse of a file up to the 8 MB anonymous cap — ~0.8 CPU-s — for
+    a number that was in hand a moment earlier. A few hundred bytes on disk
+    deletes that parse.
+
+    Best effort: if this fails, /analyze parses instead.
+    """
+    try:
+        (job_dir / _CHAIN_INDEX_NAME).write_text(
+            json.dumps({chain.id: chain.residue_count for chain in result.chains}),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.debug("Could not write chain index for %s", job_dir, exc_info=True)
+
+
+def _chain_residue_count(job_dir: Path, pdb_path: Path, chain_id: str) -> "int | None":
+    """Residue count for ``chain_id``, from the intake index or by parsing.
+
+    The parse is a fallback for job directories created before the index
+    existed — a deploy landing mid-session. It MUST be called from inside the
+    caller's compute slot: it is a full parse of a caller-chosen structure,
+    and running it outside the bound left ~0.8 CPU-s of every anonymous
+    analysis unmetered.
+    """
+    try:
+        index = json.loads(
+            (job_dir / _CHAIN_INDEX_NAME).read_text(encoding="utf-8")
+        )
+        count = index.get(chain_id)
+        if isinstance(count, int):
+            return count
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    try:
+        for chain in parse_pdb(pdb_path).chains:
+            if chain.id == chain_id:
+                return chain.residue_count
+    except Exception:
+        logger.debug(
+            "Chain residue count unavailable for %s", pdb_path, exc_info=True
+        )
+    return None
+
 
 def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dict]:
     cache_path = job_dir / "analyze_cache.json"
@@ -462,6 +626,7 @@ def upload():
         # worth keeping is that Scout can read it.
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(save_path, suffix)
 
@@ -554,6 +719,7 @@ def fetch_pdb():
     if result.error:
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(save_path, suffix)
 
@@ -592,6 +758,7 @@ def example():
     if result.error:
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(dest, ".pdb")
 
@@ -614,16 +781,37 @@ def example():
 @anon_rate_limit(
     "scout_analyze",
     limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
     window_seconds=ANON_RATE_WINDOW_SECONDS,
+    # Finalise. In the normal flow /progress has already run the pipeline and
+    # paid for the whole analysis, so this spends that credit. When there is
+    # no credit — called on its own, or called a second time on the same job —
+    # it is charged like anything else, which matters because THIS route can
+    # run the pipeline itself when results.csv is missing (a dropped SSE
+    # stream), and does the binder lookup and interface detection every time.
+    pair=PAIR_CLOSES,
+    # The meter must key its credit on the job THIS VIEW runs, so it calls the
+    # very function the first line of the body calls. Reading the job id from
+    # anywhere else here — or letting the meter fall back to another source —
+    # is the diversion described in scout/ratelimit.py: a query string on this
+    # POST once keyed the credit on one job while the pipeline ran on another.
+    job_id=job_id_in_body,
 )
 @requires_scout_quota
 def analyze():
+    job_id = job_id_in_body()
     data = request.get_json(silent=True) or {}
     # str() before strip(): these come straight from user JSON, so a non-string
-    # scalar ({"job_id": 123}) raised AttributeError here -- before any handler
+    # scalar ({"chain": 123}) raised AttributeError here -- before any handler
     # -- and the route answered an HTML 500 to a JSON caller. Reachable
     # anonymously: this route has no @login_required.
-    job_id = str(data.get("job_id", "")).strip()
+    #
+    # ``job_id`` is NOT read here any more and does not need the same cast:
+    # ``job_id_in_body`` above returns "" for a non-string instead of coercing
+    # it, so the crash is closed there. Casting it here as well would be worse
+    # than redundant -- the METER calls that same function, so a coerced
+    # ``str(123)`` in the view and a "" in the meter would key the credit on
+    # one job while the view ran another, which is the diversion above.
     chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
@@ -638,9 +826,10 @@ def analyze():
 
     known_binders = []
     ppi_interfaces = []
+    _chain_total = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
-            return jsonify({"error": _BUSY_MESSAGE}), 503
+            return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
         try:
             csv_path_prelim = job_dir / "results.csv"
             if not csv_path_prelim.exists():
@@ -686,19 +875,16 @@ def analyze():
             logger.exception("Pipeline error for job %s", job_id)
             return jsonify({"error": _GENERIC_ERROR}), 500
 
+        # Inside the slot on purpose. This used to be a bare parse_pdb() after
+        # the `with` block, so the most expensive fallback path in the route —
+        # a full parse of a caller-chosen structure up to the 8 MB cap — ran
+        # outside the concurrency bound and was invisible to it. Normally it
+        # is now a small JSON read, because intake already knew the answer.
+        _chain_total = _chain_residue_count(job_dir, pdb_path, chain_id)
+
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
     _MAX_PATCH_FRACTION = 0.30
-
-    _chain_total = None
-    try:
-        _pr = parse_pdb(pdb_path)
-        for _ch in _pr.chains:
-            if _ch.id == chain_id:
-                _chain_total = _ch.residue_count
-                break
-    except Exception:
-        pass
 
     all_rows = []
     all_epitopes = []
@@ -914,14 +1100,27 @@ def download(job_id):
 @anon_rate_limit(
     "scout_analyze",
     limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
     window_seconds=ANON_RATE_WINDOW_SECONDS,
     sse=True,
+    # NOT a status poll. _run_worker below calls run_pipeline UNCONDITIONALLY
+    # — there is no results.csv check, unlike /analyze — so every hit on this
+    # route is a full scoring run on a caller-chosen structure, ~9 CPU-s at
+    # the 8 MB cap. It is charged on EVERY call and PAIR_OPENS does not change
+    # that; all it adds is one credit for the POST /scout/analyze that follows.
+    # Removing this decorator, or letting this route spend a credit instead of
+    # granting one, would make full-pipeline compute free. Do neither.
+    pair=PAIR_OPENS,
+    # Same rule as /scout/analyze, other source: this route reads the query
+    # string, so its meter reads the query string, via the same function the
+    # view below calls. No fallback to the body — a GET may carry one.
+    job_id=job_id_in_query,
 )
 @requires_scout_quota
 def progress():
     from flask import stream_with_context  # noqa: PLC0415
 
-    job_id = request.args.get("job_id", "").strip()
+    job_id = job_id_in_query()
     chain_id = request.args.get("chain", "").strip()
 
     job_dir = _resolve_job_dir(job_id) if job_id else None
@@ -929,12 +1128,15 @@ def progress():
 
     if not job_id or not chain_id or pdb_path is None:
         def _error_stream():
-            msg = (
-                "job_id and chain are required."
-                if not job_id or not chain_id
-                else "Job not found or expired. Please re-upload your file."
-            )
-            yield f"data: {json.dumps({'stage': 'error', 'msg': msg})}\n\n"
+            if not job_id or not chain_id:
+                msg = "job_id and chain are required."
+                reason = REASON_BAD_REQUEST
+            else:
+                msg = "Job not found or expired. Please re-upload your file."
+                reason = REASON_JOB_EXPIRED
+            yield "data: " + json.dumps({
+                "stage": "error", "msg": msg, "reason": reason,
+            }) + "\n\n"
 
         return current_app.response_class(
             _error_stream(),
@@ -1012,7 +1214,15 @@ def progress():
         """
         with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as slot:
             if not slot:
-                busy = {"stage": "error", "msg": _BUSY_MESSAGE}
+                # `reason` is what makes this separable from the per-IP 429:
+                # EventSource cannot read a non-2xx body, so both refusals
+                # leave here as HTTP 200 text/event-stream and are otherwise
+                # identical apart from prose. See scout/ratelimit.py.
+                busy = {
+                    "stage": "error",
+                    "msg": _BUSY_MESSAGE,
+                    "reason": REASON_BUSY,
+                }
                 yield f"data: {json.dumps(busy)}\n\n"
                 return
             yield from _generate()

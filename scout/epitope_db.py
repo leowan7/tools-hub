@@ -23,6 +23,7 @@ Each returned dict has:
 import csv
 import difflib
 import logging
+import re
 import threading
 import time
 from io import StringIO
@@ -78,9 +79,63 @@ _MAX_CONTACT_STRUCTURES = 5
 # van der Waals contacts at protein–protein interfaces.
 _CONTACT_CUTOFF_ANGSTROM = 4.5
 
+# The official UniProtKB accession grammar, from the UniProt help pages. Both
+# the 6-character and 10-character forms.
+#
+# This is a trust boundary, not a tidiness check. The accession arrives from
+# columns 33-41 of a DBREF line in a file the caller uploaded, so without it
+# any eight bytes at all become a cache key and a lookup target: `ZZ9QC001`
+# was accepted, resolved, and cached. Every entry point that can mint a cache
+# key runs a string through here first.
+_UNIPROT_ACCESSION_RE = re.compile(
+    r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$"
+)
+
+
+def _valid_accession(accession: str) -> str:
+    """Return ``accession`` uppercased if it is a real UniProt accession, else "".
+
+    Rejecting is the right answer rather than passing it through: an
+    unparseable accession cannot match anything upstream, so the only thing a
+    lookup on it can produce is a wasted request and a permanent cache entry
+    with a caller-chosen key.
+    """
+    candidate = (accession or "").strip().upper()
+    if _UNIPROT_ACCESSION_RE.match(candidate):
+        return candidate
+    if candidate:
+        logger.debug("Ignoring malformed UniProt accession %r.", accession)
+    return ""
+
+
 # In-process cache: uniprot_id (uppercase) → list[dict]
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
+
+# Hard ceiling on the result cache.
+#
+# Keys are format-checked (see _valid_accession), so an attacker cannot mint
+# arbitrary ones any more — but the space of REAL accessions with SAbDab
+# entries is still thousands, each cheaply reachable by uploading a structure
+# with the matching DBREF line, and this cache has no expiry. A few thousand
+# populated entries is a bounded amount of memory; unbounded growth over the
+# life of a worker is not.
+#
+# ponytail: oldest-inserted eviction, which dicts give for free by preserving
+# insertion order. Deliberately NOT the hit-count ordering used by the rate
+# limiter's table — evicting the wrong key there hands an attacker a quota
+# reset, whereas the worst case here is recomputing a lookup. Reach for an LRU
+# only if a hit-rate measurement ever says it matters.
+_CACHE_MAX_ENTRIES = 2048
+
+
+def _cache_put(key: str, value: list) -> None:
+    """Store ``value`` under ``key``, evicting the oldest entry past the cap."""
+    with _CACHE_LOCK:
+        _CACHE[key] = value
+        while len(_CACHE) > _CACHE_MAX_ENTRIES:
+            del _CACHE[next(iter(_CACHE))]
+
 
 # In-process index of the whole SAbDab summary: PDB id (uppercase, classic
 # 4-character form) → list of legacy-shaped row dicts. Built once per TTL per
@@ -146,7 +201,7 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     pdb_str = str(pdb_path)
 
     if pdb_str.endswith(".cif"):
-        return _extract_uniprot_from_cif(pdb_str, chain_id)
+        return _valid_accession(_extract_uniprot_from_cif(pdb_str, chain_id))
 
     # PDB format: parse DBREF lines
     try:
@@ -162,7 +217,10 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
             db_name = line[26:32].strip()
             accession = line[33:41].strip()
             if dbref_chain == chain_id and db_name in ("UNP", "SWS", "TRE"):
-                return accession
+                # Validated here rather than at the call site: this is the one
+                # place both the PDB and the mmCIF branch pass through, so it
+                # is the only place that has to be right.
+                return _valid_accession(accession)
 
     return ""
 
@@ -852,10 +910,11 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
         List of binder dicts. Empty list if UniProt ID is blank or SAbDab
         returns no hits.
     """
-    if not uniprot_id or not uniprot_id.strip():
+    # Re-checked here, not just at extraction, because this is the function
+    # that mints a cache key and it is reachable from more than one resolver.
+    cache_key = _valid_accession(uniprot_id)
+    if not cache_key:
         return []
-
-    cache_key = uniprot_id.strip().upper()
 
     with _CACHE_LOCK:
         if cache_key in _CACHE:
@@ -869,8 +928,7 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
         # the 5-minute retry that already healed it, and reproducing in
         # miniature the silent-permanent-zero failure this repoint fixes.
         if _sabdab_summary_index():
-            with _CACHE_LOCK:
-                _CACHE[cache_key] = []
+            _cache_put(cache_key, [])
         return []
 
     # Compute contacts for the top N structures in parallel.
@@ -897,8 +955,7 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
     # Append remaining hits (no contact residue computation).
     result = processed + [dict(entry) for entry in remainder]
 
-    with _CACHE_LOCK:
-        _CACHE[cache_key] = result
+    _cache_put(cache_key, result)
 
     return result
 
