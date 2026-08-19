@@ -140,8 +140,8 @@ GLOSSARY: dict[str, dict] = {
             "score distribution, not for advancing to validation. 'stub' "
             "marks smoke-test stubs whose scores are placeholders. "
             "'strict_pass' / 'soft_pass' are Boltz-2 cofold tiers: "
-            "strict_pass = complex_pLDDT > 0.85 AND ipTM > 0.7 AND at "
-            "least 5 hotspot contacts."
+            "strict_pass = complex_pLDDT >= 0.85 AND ipTM >= 0.7 AND at "
+            "least 4 hotspot contacts."
         ),
         "good_range": "pass / strict_pass",
         "citation": "",

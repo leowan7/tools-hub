@@ -1,0 +1,36 @@
+{
+  "antigen_length": 76,
+  "designs": [
+    {
+      "antigen_chain": "B",
+      "complex_iplddt": 0.9259,
+      "complex_plddt": 0.926,
+      "contacted_residues": [
+        8,
+        44,
+        68,
+        70
+      ],
+      "filter_status": "strict_pass",
+      "iptm": 0.8944,
+      "n_hotspot_contacts": 4,
+      "n_hotspots": 4,
+      "name": "HHR23A_UBA1",
+      "pdb_key": "HHR23A_UBA1_complex.pdb",
+      "ptm": 0.9157,
+      "rank": 0,
+      "runtime_seconds": 117
+    }
+  ],
+  "designs_completed": 1,
+  "designs_total": 1,
+  "hotspots_requested": [
+    8,
+    44,
+    68,
+    70
+  ],
+  "n_failures": 0,
+  "runtime_seconds": 120,
+  "tier": "msa_server"
+}

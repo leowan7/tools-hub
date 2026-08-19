@@ -108,16 +108,29 @@ def summarise(slug, result):
     rows = result.get("candidates") or result.get("designs") or []
     if rows:
         print("  candidates: {}".format(len(rows)))
-        scores = (rows[0] or {}).get("scores") or {}
-        for name in sorted(scores):
-            nums = [
-                (r.get("scores") or {}).get(name) for r in rows
-                if isinstance(r, dict)
-            ]
-            nums = [v for v in nums if isinstance(v, (int, float))]
+        # Scores sit nested under "scores" on the composite tools and FLAT
+        # on the candidate for boltz2 and proteina. Reading only the nested
+        # shape printed nothing at all for boltz2 -- which is the failure
+        # that matters here, because this summary is the only thing
+        # standing between a failed run and a public page.
+        def _scores(row):
+            inner = row.get("scores")
+            return inner if isinstance(inner, dict) else row
+
+        names = sorted(
+            k for k, v in _scores(rows[0] or {}).items()
+            if isinstance(v, (int, float, str))
+        )
+        for name in names:
+            vals = [_scores(r).get(name) for r in rows if isinstance(r, dict)]
+            nums = [v for v in vals if isinstance(v, (int, float))]
             if nums:
                 print("    {}: min {:.3g}  max {:.3g}".format(
                     name, min(nums), max(nums)))
+            else:
+                seen = sorted({str(v) for v in vals if v is not None})
+                if seen:
+                    print("    {}: {}".format(name, ", ".join(seen[:4])))
     seqs = result.get("sequences") or []
     if seqs:
         print("  sequences: {}, length {}".format(

@@ -370,6 +370,42 @@ class TestEveryPartialIsExampleSafe:
                     broken[f"{slug}/{shape}"] = dead
         assert not broken, f"guard depends on a flag the macros never see: {broken}"
 
+    # Copy that names a control the example suppresses. Not cosmetic: the
+    # wet-lab panel told the reader the designs "above" were theirs to
+    # download and pointed at a shortlist button, on a page carrying
+    # neither. A dead link is caught by the scan above; a sentence
+    # describing a button that is not there is not, so it is pinned here.
+    PROMISES_A_SUPPRESSED_CONTROL = (
+        "shortlist button above",
+        "designs above are yours to download",
+    )
+
+    def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
+        flask_app, slugs = tools_app
+        offenders = {}
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            html = flask_app.test_client().get(f"/tools/{slug}").get_data(
+                as_text=True,
+            )
+            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+            if found:
+                offenders[slug] = found
+        assert not offenders, f"example page promises absent controls: {offenders}"
+
+    def test_a_real_results_page_still_makes_those_promises(self, tools_app):
+        """The control. If the phrases vanished from the real page too,
+        the test above would pass by scanning for text nobody writes."""
+        flask_app, _ = tools_app
+        html = _render_partial(
+            flask_app, "boltz2", job_id="real-job-1", example=False,
+        )
+        assert "shortlist button above" in html, (
+            "the phrase is gone from the real results page as well, so the "
+            "example-side assertion no longer proves anything"
+        )
+
 
 class TestExampleNumbersComeFromThePayload:
     """The narration must not drift off the data it sits beside.
@@ -397,6 +433,37 @@ class TestExampleNumbersComeFromThePayload:
         assert "53% and 50%" in example["what_came_back"]
         assert "0.76" in example["what_came_back"]
         assert "2" == example["inputs_used"][2][1]
+
+    def test_boltz2_narration_matches_its_result_json(self, tools_app):
+        """Same pin for boltz2. Its scores sit FLAT on the design rather
+        than nested under ``scores``, which is the shape difference that
+        made the capture script print nothing at all until it handled
+        both — so the figures here are worth holding down."""
+        _, slugs = tools_app
+        example = _examples(slugs)["boltz2"]
+        result = json.loads(
+            (REPO / "tools" / "boltz2" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        design, = result["designs"]
+        assert result["antigen_length"] == 76
+        assert result["hotspots_requested"] == [8, 44, 68, 70]
+        assert result["runtime_seconds"] == 120
+        assert design["filter_status"] == "strict_pass"
+        # "ipTM 0.894, pTM 0.916 and complex pLDDT 92.6"
+        assert round(design["iptm"], 3) == 0.894
+        assert round(design["ptm"], 3) == 0.916
+        assert round(design["complex_plddt"] * 100, 1) == 92.6
+        # "All four of the hotspots we named were contacted — 4 of 4"
+        assert design["n_hotspot_contacts"] == design["n_hotspots"] == 4
+        blurb = example["what_came_back"]
+        for figure in ("0.894", "0.916", "92.6", "strict_pass", "4 of 4"):
+            assert figure in blurb, f"{figure} missing from what_came_back"
+        assert "76 residues" in example["target"]
+        assert example["inputs_used"][2][1] == "8, 44, 68, 70"
+        assert "120 seconds" in example["runtime"]
+        # No invented price: the run recorded credits_cost 0.
+        assert not example.get("cost_usd")
 
 
 class TestCaptureScrubsBeforeItPublishes:

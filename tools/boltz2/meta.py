@@ -179,17 +179,94 @@ PILOT: dict | None = {
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE — one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/boltz2/example/result.json replayed through this tool's OWN results
+# partial, so the demo cannot drift from the real results page.
+#
+# EVERY NUMBER BELOW IS A RECORDED FACT FROM THAT RUN, not an estimate and
+# not an illustration. Provenance: job 5e7c7574 (2026-06-02), captured with
+# scripts/capture_example_result.py, which stripped provider_job_id; the
+# payload carried nothing else identifying. Nothing may be added here that
+# the archived payload does not support.
+#
+# No cost_usd: that run recorded credits_cost 0, so there is no dollar
+# figure to quote and none is invented. The field is optional.
+#
+# No structure_file: the antigen was 1UBQ and static/example/ does not
+# carry it. ubiquitin.fasta is there but is the SEQUENCE, not the structure
+# this run was given, and offering it would misdescribe the input.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "Ubiquitin &mdash; PDB <code>1UBQ</code>, chain A, 76 residues."
+    ),
+    "why_this_target": (
+        "This one has a known right answer. The binder submitted against "
+        "it is the UBA1 domain of hHR23A, a domain whose actual job in the "
+        "cell is to bind ubiquitin, and the residues we pointed it at are "
+        "the surface it really uses. So the run is not asking &ldquo;is "
+        "this a good binder&rdquo; &mdash; we already know it is. It is "
+        "asking whether the model can recognise a real binder when it sees "
+        "one, which is the only way to learn what a trustworthy score "
+        "looks like before you spend one on a design of your own."
+    ),
+    "inputs_used": [
+        (
+            "Antigen structure",
+            "1UBQ, chain A",
+            "Ubiquitin, 76 residues. The whole chain; ubiquitin is small "
+            "enough that there is nothing to trim.",
+        ),
+        (
+            "Binder sequence",
+            "hHR23A UBA1 domain",
+            "Pasted as plain sequence. Boltz-2 folds it against the "
+            "antigen &mdash; it does not design anything, so what you get "
+            "back is a verdict on the sequence you brought.",
+        ),
+        (
+            "Hotspot residues",
+            "8, 44, 68, 70",
+            "The hydrophobic patch centred on Ile44 &mdash; the face "
+            "ubiquitin-binding domains dock onto. Naming it lets the run "
+            "report whether the predicted complex actually lands there, "
+            "rather than merely scoring well somewhere else.",
+        ),
+        (
+            "Preset",
+            "msa_server",
+            "Builds a multiple-sequence alignment for the antigen before "
+            "folding. Slower than the single-sequence path and worth it "
+            "on a target with plenty of known relatives, which ubiquitin "
+            "emphatically has.",
+        ),
+    ],
+    "runtime": "2 minutes, 120 seconds of GPU time",
+    "what_came_back": (
+        "One complex, scored ipTM 0.894, pTM 0.916 and complex pLDDT 92.6, "
+        "and flagged <code>strict_pass</code>. All four of the hotspots we "
+        "named were contacted &mdash; 4 of 4, shown in the contact grid "
+        "below the table."
+    ),
+    "how_to_read_it": (
+        "ipTM is the model's confidence in the INTERFACE, as opposed to "
+        "pTM, which covers the fold as a whole; a design can fold "
+        "beautifully and still not touch the target, and comparing the two "
+        "is how you catch that. The strict-pass bar on this page is "
+        "complex pLDDT above 85, ipTM above 0.7 and at least four hotspot "
+        "hits together, so 0.894 with 4 of 4 clears it on every count. "
+        "Read this run as the calibration point: it is roughly what a "
+        "genuine binder at a genuine epitope looks like. A number well "
+        "below it on your own sequence is the useful result, not the "
+        "disappointing one &mdash; it is the answer arriving in two "
+        "minutes instead of after a month at the bench."
+    ),
+    "what_we_did_next": (
+        "Nothing &mdash; this run existed to establish what a good score "
+        "looks like on this page. On your own candidates the next step is "
+        "to paste the rest of them and fold them in one submission, then "
+        "take the few that clear the bar into the lab. A binder that "
+        "scores well here has cleared a prediction, not an experiment."
+    ),
+}
