@@ -275,10 +275,16 @@
               Top-N final candidates returned (1 to 50). Each refolded with RMSD + ipTM. Need more than one job's worth? Run it as a <a href="{{ url_for('campaigns.compute_campaign_new') }}" style="color: var(--accent-text, #2B9E7E);">campaign</a> to fan out across GPUs, wallet-bounded, at any scale.
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              First time on this target? Start with 4 designs (~15 to 30 min)
-              to confirm your binder length and protocol, then scale up
-              once the small batch looks reasonable. Billed by actual GPU
-              consumed; cancellation does not refund time already used.
+              {# No "start small, then scale up" here. BoltzGen refolds the
+                 same 200 candidates whatever this is set to, so a low budget
+                 buys nothing back — the estimator is flat at every value from
+                 1 to 50. See tools/boltzgen/meta.py and
+                 tests/test_pilot_recipes.py::TestBudgetDoesNotChangeThePrice. #}
+              First time on this target? 4 is enough to read through while you
+              confirm your binder length and protocol, and raising it on a
+              later run returns more candidates against the same estimate.
+              Billed by actual GPU consumed; cancellation does not refund
+              time already used.
             </div>
           </div>
 

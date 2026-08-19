@@ -122,8 +122,31 @@ about: dict = {
         {
             "name": "Budget (designs)",
             "explanation": (
-                "Number of designs Boltz-2 generates and ranks. Higher "
-                "budgets cost more and run longer."
+                # NOT "higher budgets cost more" — that shipped, and the
+                # pilot card on the same page said the opposite. The
+                # estimator returns $8.7380 at budget 1, 4, 10, 50 and
+                # 200 because it scales on ``num_designs``, which this
+                # form never submits and ``build_payload`` pins at 200.
+                # tests/test_pilot_recipes.py::TestBudgetDoesNotChangeThePrice
+                # measures that rather than trusting this comment.
+                #
+                # SCOPE OF THE CLAIM. Two things are measured from this
+                # repo and both are asserted by that test class: the
+                # payload pins the pool at 200 whatever the budget, and
+                # the estimate is flat across the whole range. What is
+                # NOT measured here is the GPU time the container
+                # actually burns — that code lives in
+                # llm-proteinDesigner, and users settle at metered
+                # actual, not at the estimate. So the copy says "the
+                # same estimate", which is checkable here, rather than
+                # "does not change what the run costs", which is a very
+                # likely inference about another repo dressed as a
+                # measurement. Closing it properly is a gpu_seconds
+                # comparison across two budgets on the next real run.
+                "How many of the ranked candidates come back to you "
+                "(1 to 50). This only chooses how many you receive: "
+                "BoltzGen is asked for the same 200 candidates at every "
+                "setting, so every budget quotes the same estimate."
             ),
         },
     ],
@@ -189,8 +212,8 @@ PILOT: dict | None = {
         "Read the interface scores on what comes back. <code>budget</code> "
         "only "
         "chooses how many of the candidates are returned to you &mdash; "
-        "it does not change the bill &mdash; so raising it on a later "
-        "run costs you nothing extra."
+        "the run is asked for the same 200 either way &mdash; so raising "
+        "it on a later run quotes the same estimate."
     ),
 }
 

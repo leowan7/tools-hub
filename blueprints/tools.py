@@ -28,6 +28,7 @@ from flask import (
     url_for,
 )
 
+from scout.handoff import VALID_HANDOFF_TOOLS
 from shared import resample as _resample
 from shared.auth import login_required
 from shared.credits import load_user_context
@@ -694,6 +695,45 @@ def _as_form_text(value) -> str:
     return ",".join(str(i) for i in items)
 
 
+# Hotspot residues are the first hard stop a bench biologist hits: they
+# know their target, they do not know which residues on it to name, and
+# nothing on the pilot card said where to get them — the Epitope Scout
+# deflection lived only in the form field's help text, further down the
+# page than someone starting a pilot is looking.
+#
+# THE CARD HAS TWO SEPARABLE JOBS and they need two different predicates.
+# Conflating them shipped both a false promise and a missing one:
+#
+#   (a) "this tool asks for hotspots"  -> _needs_hotspots, below.
+#   (b) "and Scout can hand them back" -> scout.handoff.VALID_HANDOFF_TOOLS.
+#
+# The first cut of this derived (a) from which adapters' ``validate()``
+# refuses an empty hotspot field. That is the wrong property for copy a
+# user reads: it put rfdiffusion in — which refuses, but is NOT a Scout
+# handoff target, so the card promised a round trip that dead-ends — and
+# left boltzgen out, which IS a handoff target and whose own about panel
+# asks for a hotspot residue, purely because its validate() happens to
+# tolerate an empty field and run unsteered.
+#
+# So (a) now reads the tool's OWN STATED PREREQUISITES — the same
+# ``about["prerequisites"]`` bullets rendered on the page right below the
+# card. Derived, not a hand-maintained list, and it agrees by
+# construction with what the user is being told two panels down.
+def _needs_hotspots(meta) -> bool:
+    """Does this tool's about panel ask the user for a hotspot residue?
+
+    ``"Optional: a list of antigen hotspot residues"`` (boltz2) and
+    ``"Optionally, hotspot residues to aim the binder"`` (proteina) are
+    not a requirement and must not raise a card — hence the ``option``
+    exclusion, which covers both spellings.
+    """
+    about = getattr(meta, "about", None) or {}
+    return any(
+        "hotspot" in str(item).lower() and "option" not in str(item).lower()
+        for item in (about.get("prerequisites") or ())
+    )
+
+
 def _pilot_context(adapter, meta) -> dict | None:
     """The guided starter recipe for a tool, with its numbers derived.
 
@@ -722,6 +762,17 @@ def _pilot_context(adapter, meta) -> dict | None:
         cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
         runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
+        # Rendered by components/pilot_card.html as the "this tool asks
+        # for these, and here is where to get them" line. Both flags are
+        # derived, so one macro edit reaches every tool and neither can be
+        # hand-edited into disagreeing with the surface it describes.
+        hotspot_help_url=(
+            url_for("scout.index") if _needs_hotspots(meta) else None
+        ),
+        # Only these tools can actually receive the residues back. Scout's
+        # picker offers exactly this set; on anything else the user has to
+        # copy the numbers across by hand, and the copy says so.
+        hotspot_handoff=adapter.slug in VALID_HANDOFF_TOOLS,
     )
 
 

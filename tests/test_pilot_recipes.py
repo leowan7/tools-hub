@@ -49,7 +49,11 @@ def tools_app():
     for slug in slugs:
         prior[flag_name(slug)] = os.environ.get(flag_name(slug))
         os.environ[flag_name(slug)] = "on"
-    os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
+    # Into the SAME prior dict the flags use, so the teardown loop
+    # below restores it. setdefault() reads as safe and is not: it
+    # leaks the key into every test that runs after this module.
+    prior["SESSION_SECRET_KEY"] = os.environ.get("SESSION_SECRET_KEY")
+    os.environ["SESSION_SECRET_KEY"] = "test-secret"
     flask_app = app_module.create_app()
     flask_app.config["TESTING"] = True
     yield flask_app, slugs
@@ -70,6 +74,112 @@ def _estimate(slug: str, params: dict):
     return estimated_cost_for_tool(
         None, slug, {k: v for k, v in params.items() if v is not None},
     )
+
+
+def _tool_form_region(html: str, slug: str) -> str:
+    """Just the tool's own <form>, not the whole page.
+
+    Every tool form carries ``data-tool-slug="<slug>"``; the page also
+    holds a search box, the wallet top-up form and the campaign panel,
+    and harvesting those would put fields the submit route never sees
+    into the estimate.
+    """
+    m = re.search(
+        rf'<form\b[^>]*\bdata-tool-slug="{re.escape(slug)}"[^>]*>(.*?)</form>',
+        html, re.S,
+    )
+    assert m, f"{slug}: no <form data-tool-slug> on the page"
+    return m.group(1)
+
+
+def _submitted_params(html: str, slug: str) -> dict[str, str]:
+    """Every name/value pair the browser would POST from the tool form.
+
+    This is the input the price guard has to price: the form's own
+    default values with whatever ``?pilot=1`` pre-filled on top, which is
+    literally what "Start this pilot" sends. Pricing ``PILOT["params"]``
+    instead re-estimates the guard's own input and can never fail — see
+    ``TestPilotCardPriceIsDerived``.
+
+    Three rules here exist because a browser follows them and a naive
+    regex does not; each one, missing, is a card-price lie the whole
+    suite would pass:
+
+    * ``disabled`` posts NOTHING, whatever its ``value=`` says. QC
+      disabled pxdesign's ``num_designs`` and the card kept advertising
+      $8.74 for a $17.48 run, with the guard agreeing.
+    * ``<textarea>`` is a submitted control too. No tool's scaling param
+      is one today, so this is the same blind spot before it goes live.
+    * unchecked radios/checkboxes and the non-value button types post
+      nothing either.
+    """
+    region = _tool_form_region(html, slug)
+    out: dict[str, str] = {}
+    for tag in re.findall(r"<input\b[^>]*>", region):
+        name = re.search(r'\bname="([^"]+)"', tag)
+        if not name:
+            continue
+        if re.search(r"\bdisabled\b", tag):
+            continue
+        kind = (re.search(r'\btype="([^"]*)"', tag) or [None, ""])[1] \
+            if re.search(r'\btype="([^"]*)"', tag) else ""
+        if kind in {"radio", "checkbox"} and "checked" not in tag:
+            continue
+        if kind in {"submit", "button", "image", "file", "reset"}:
+            continue
+        val = re.search(r'\bvalue="([^"]*)"', tag)
+        out[name.group(1)] = val.group(1) if val else ""
+    for sel in re.finditer(
+        r'<select\b([^>]*)\bname="([^"]+)"([^>]*)>(.*?)</select>', region, re.S,
+    ):
+        if re.search(r"\bdisabled\b", sel.group(1) + sel.group(3)):
+            continue
+        options = re.findall(r"<option\b[^>]*>", sel.group(4))
+        chosen = next((o for o in options if "selected" in o), None)
+        # No explicit selection: a browser posts the first option.
+        chosen = chosen or (options[0] if options else None)
+        if chosen is None:
+            continue
+        v = re.search(r'\bvalue="([^"]*)"', chosen)
+        if v:
+            out[sel.group(2)] = v.group(1)
+    for ta in re.finditer(
+        r'<textarea\b([^>]*)\bname="([^"]+)"([^>]*)>(.*?)</textarea>',
+        region, re.S,
+    ):
+        if re.search(r"\bdisabled\b", ta.group(1) + ta.group(3)):
+            continue
+        # A textarea's value is its body, not a value= attribute.
+        out[ta.group(2)] = ta.group(4).strip()
+    return out
+
+
+def _pilot_button_href(html: str, slug: str) -> str:
+    """Where "Load these settings" ACTUALLY sends the user.
+
+    The guard used to harvest from an ``f"/tools/{slug}?pilot=1"`` it
+    built itself, which prices a page nobody necessarily visits. Drop
+    ``pilot=1`` from ``_pilot_context``'s ``url_for`` and the card keeps
+    advertising the pilot price while the button lands on the form's own
+    defaults — for pxdesign, $8.74 on the card against a $17.48 run —
+    and a self-built URL cannot see it. Read the href off the card.
+    """
+    m = re.search(
+        r'<a\s+href="([^"]+)"[^>]*>\s*Load these settings', html,
+    )
+    assert m, f"{slug}: pilot card has no 'Load these settings' link"
+    return m.group(1).replace("&amp;", "&")
+
+
+def _pilot_page(client, slug: str) -> tuple[str, str]:
+    """(html of the page the pilot button links to, that page's URL).
+
+    Two GETs on purpose: the first only to read the button's href, the
+    second to render whatever that href points at.
+    """
+    card_page = client.get(f"/tools/{slug}").get_data(as_text=True)
+    href = _pilot_button_href(card_page, slug)
+    return client.get(href).get_data(as_text=True), href
 
 
 def _posted_value(html: str, name: str) -> str | None:
@@ -182,27 +292,137 @@ class TestPilotPrefillActuallyLands:
 class TestPilotCardPriceIsDerived:
 
     def test_card_price_equals_the_estimator(self, tools_app):
-        """The card and /api/wallet/estimate must not disagree.
+        """The card's price must be the price of what the form SUBMITS.
 
-        Both go through ``estimated_cost_for_tool`` over the same
-        params — the card server-side, the form's JS over the values
-        those params rendered into the fields.
+        Priced against ``PILOT["params"]`` this test was tautological:
+        ``_pilot_context`` builds the card's number from exactly that
+        dict, so the assertion re-estimated its own input and could not
+        fail. QC broke it by deleting ``num_designs`` from pxdesign's
+        PILOT — the card then advertised $4.37 for a form that submits
+        a $17.48 run, a 4x understatement on a publicly indexable page,
+        with the whole suite green.
+
+        What a user actually sends when they click through the pilot
+        link is the form's own defaults with the PILOT values pre-filled
+        on top. That is what ``_submitted_params`` reads off the
+        rendered ``?pilot=1`` page, and that is what the card has to
+        agree with. A pilot key that never lands is now a PRICE bug
+        here, not only a pre-fill bug in
+        ``TestPilotPrefillActuallyLands``.
         """
         from shared.compute_campaigns import display_cost_usd
         from shared.wallet_estimates import estimated_cost_for_tool
 
         flask_app, slugs = tools_app
         client = flask_app.test_client()
+        checked = 0
+        wrong = []
         for slug, pilot in _pilots(slugs).items():
             if not pilot:
                 continue
-            html = client.get(f"/tools/{slug}?pilot=1").get_data(as_text=True)
+            checked += 1
+            # Whatever the card's own button links to — not a URL this
+            # test builds. See _pilot_button_href.
+            html, href = _pilot_page(client, slug)
             shown = re.search(r"About <strong>\$([0-9.]+)</strong>", html)
             assert shown, f"{slug}: pilot card rendered no price"
-            expected = display_cost_usd(
-                estimated_cost_for_tool(None, slug, pilot["params"]),
+            submitted = _submitted_params(html, slug)
+            # The form must actually render the fields the estimator
+            # scales on, or "what the form submits" degenerates back to
+            # "what the PILOT dict says" and the hole reopens.
+            assert submitted, f"{slug}: harvested no form fields at all"
+            real = display_cost_usd(
+                estimated_cost_for_tool(None, slug, submitted),
             )
-            assert shown.group(1) == str(expected), slug
+            if shown.group(1) != str(real):
+                wrong.append(
+                    f"{slug}: the pilot card advertises ${shown.group(1)} but "
+                    f"the form it links to ({href}) submits a run costing "
+                    f"${real} "
+                    f"(fields: { {k: v for k, v in submitted.items() if v} })"
+                )
+        assert checked >= 5, f"only {checked} pilot cards priced"
+        assert not wrong, wrong
+
+    def test_the_guard_above_is_reading_the_form_and_not_the_pilot_dict(
+        self, tools_app
+    ):
+        """The control. Break the link between the two and it must notice.
+
+        Without this, ``test_card_price_equals_the_estimator`` could
+        quietly go back to pricing ``PILOT["params"]`` — the exact input
+        the card is built from — and stay green forever. pxdesign is the
+        tool the hole was demonstrated on: it scales on ``num_designs``,
+        so a card priced without that key is a real 4x understatement.
+        """
+        from shared.wallet_estimates import estimated_cost_for_tool, get_tool_spec
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilot = _pilots(slugs)["pxdesign"]
+        html, _href = _pilot_page(client, "pxdesign")
+        submitted = _submitted_params(html, "pxdesign")
+
+        spec = get_tool_spec("pxdesign")
+        assert spec and spec.scaling_param == "num_designs", spec
+        assert submitted.get("num_designs") == pilot["params"].get(
+            "num_designs"
+        ), (
+            "pxdesign's PILOT and the form it links to disagree on "
+            "num_designs, which is the key its price scales on"
+        )
+
+        # Drop the scaling key from the PILOT-shaped input, exactly as
+        # QC's mutation does. The form still renders and still submits
+        # its own default, so the two estimates MUST diverge — if they
+        # do not, the estimator no longer reads this key and the control
+        # needs re-pointing.
+        crippled = {k: v for k, v in pilot["params"].items()
+                    if k != "num_designs"}
+        assert estimated_cost_for_tool(None, "pxdesign", crippled) \
+            != estimated_cost_for_tool(None, "pxdesign", submitted), (
+            "dropping num_designs no longer moves pxdesign's estimate, so "
+            "the mutation the guard above exists to catch is no longer "
+            "detectable — re-point this control at a live scaling param"
+        )
+
+    def test_the_harvest_posts_what_a_browser_would_post(self):
+        """The harvest is the guard's only view of the form. Pin its rules.
+
+        Two of the three are dormant against today's fourteen forms — no
+        tool renders a disabled scaling field or a textarea one — so
+        nothing else in the suite would notice them regressing. A
+        harvest that reads a field the browser never sends is a card
+        price that agrees with itself and lies to the user, which is the
+        whole bug class this file exists for.
+        """
+        html = (
+            '<form data-tool-slug="fake">'
+            '<input type="number" name="live" value="4">'
+            '<input type="number" name="off" value="9" disabled>'
+            '<input type="text" name="blank">'
+            '<input type="checkbox" name="unticked" value="y">'
+            '<input type="checkbox" name="ticked" value="y" checked>'
+            '<input type="submit" name="go" value="Run">'
+            '<select name="picked"><option value="a">a</option>'
+            '<option value="b" selected>b</option></select>'
+            '<select name="first"><option value="c">c</option>'
+            '<option value="d">d</option></select>'
+            '<select name="deadsel" disabled><option value="e">e</option>'
+            "</select>"
+            '<textarea name="notes">  hello  </textarea>'
+            '<textarea name="deadnotes" disabled>bye</textarea>'
+            "</form>"
+        )
+        assert _submitted_params(html, "fake") == {
+            "live": "4",
+            "blank": "",
+            "ticked": "y",
+            "picked": "b",
+            # No explicit selection: a browser posts the first option.
+            "first": "c",
+            "notes": "hello",
+        }
 
     def test_no_card_where_there_is_no_pilot(self, tools_app):
         flask_app, slugs = tools_app
@@ -487,3 +707,390 @@ class TestNoPilotIsANoOp:
             defaults = self._form_defaults(client, slug, params)
             assert estimated_cost_for_tool(None, slug, params) \
                 < estimated_cost_for_tool(None, slug, defaults), slug
+
+
+class TestBudgetDoesNotChangeThePrice:
+    """One page must not say both things about ``budget``.
+
+    The BoltzGen page shipped with the about panel saying "Higher
+    budgets cost more and run longer" and the pilot card, a few hundred
+    pixels away, saying raising it does not change the bill. The card
+    was right: ``build_payload`` pins ``num_designs`` at 200 whatever
+    the budget is, the spec scales on ``num_designs``, and the form
+    never submits that key — so the estimate does not move at all.
+    """
+
+    BUDGETS = ("1", "4", "10", "50")
+
+    def test_the_estimate_really_is_flat(self):
+        from shared.wallet_estimates import estimated_cost_for_tool
+
+        seen = {
+            b: estimated_cost_for_tool(
+                None, "boltzgen", {"preset": "pilot", "budget": b},
+            )
+            for b in self.BUDGETS
+        }
+        assert len(set(seen.values())) == 1, (
+            f"boltzgen's estimate now moves with budget: {seen} — the copy "
+            f"on the form and in meta.py says it does not, so fix the copy"
+        )
+
+    def test_build_payload_pins_the_candidate_pool(self):
+        """The source of the flatness, not just its symptom."""
+        from tools.boltzgen import build_payload
+
+        pinned = {
+            b: build_payload(
+                {
+                    "target_chain": "A", "hotspot_residues": [1],
+                    "binder_length_min": 50, "binder_length_max": 100,
+                    "budget": int(b), "protocol": "protein-anything",
+                },
+                "https://example.invalid/target.pdb",
+            )["parameters"]["num_designs"]
+            for b in self.BUDGETS
+        }
+        assert set(pinned.values()) == {200}, pinned
+
+    def test_no_page_surface_claims_a_higher_budget_costs_more(
+        self, tools_app
+    ):
+        """Read the rendered page, not the source files.
+
+        Both offending strings reached the visitor through different
+        templates (the about panel from meta.py, the field helper from
+        boltzgen_form.html), so grepping one file would have missed the
+        other.
+        """
+        flask_app, _ = tools_app
+        body = flask_app.test_client().get("/tools/boltzgen").get_data(
+            as_text=True
+        )
+        assert "Budget (final candidates)" in body, (
+            "the boltzgen budget field is gone; re-point this test"
+        )
+        bad = [
+            phrase for phrase in (
+                "budgets cost more",
+                "budget costs more",
+                "Higher budgets cost more and run longer",
+            )
+            if phrase in body
+        ]
+        assert not bad, (
+            f"the boltzgen page tells the visitor a higher budget costs "
+            f"more, which the estimator contradicts: {bad}"
+        )
+        # And the page still has to say the true thing somewhere, or a
+        # future edit can satisfy the assertion above by deleting the
+        # explanation entirely.
+        #
+        # "the same estimate", not "the same price". What this repo can
+        # prove is that the quote is flat and that build_payload pins the
+        # pool at 200; the GPU seconds the container actually burns are in
+        # llm-proteinDesigner and users settle at metered actual. The
+        # earlier wording asserted the unmeasurable half as fact.
+        assert "same estimate" in body, (
+            "nothing on the boltzgen page tells the visitor that budget "
+            "does not move the estimate"
+        )
+
+
+class TestHotspotDeflection:
+    """The first hard stop for someone who knows their target, not the model.
+
+    The card makes TWO claims and they need two different predicates.
+    The first cut used one — "this adapter's ``validate()`` refuses an
+    empty hotspot field" — for both, and that produced a mirror-image
+    pair of bugs:
+
+    * **rfdiffusion** refuses, so it got a card, and the card told the
+      user Scout's results "hand the target and the residues back into
+      this form". rfdiffusion is not in ``VALID_HANDOFF_TOOLS`` and
+      Scout's picker does not offer it, so the round trip dead-ends in
+      re-typing — worse than the wall it replaced, because it costs the
+      user the trip first.
+    * **boltzgen** IS a handoff target and its own about panel asks for
+      a hotspot residue, but got no card at all, because its
+      ``validate()`` happens to tolerate an empty field and run
+      unsteered.
+
+    So: **what the tool asks for** now comes from the tool's own stated
+    prerequisites (``blueprints.tools._needs_hotspots``), and **whether
+    Scout can hand the residues back** from
+    ``scout.handoff.VALID_HANDOFF_TOOLS``. These tests lock both, lock
+    the three surfaces that have to agree about the handoff set, and lock
+    the probe itself against going blind.
+    """
+
+    # This form has to reach the END of all fourteen validate() chains,
+    # or a hotspot check placed late in one of them is invisible here. It
+    # is over-populated on purpose: every field any adapter demands, so
+    # nothing short-circuits on some OTHER missing input before the
+    # hotspot question is ever asked. test_the_probe_reaches_every_...
+    # below fails if that ever stops being true.
+    _SEQ = (
+        "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKAL"
+        "PDAQFEVVHSLAKWKRQTLGQHDFSAGEGLYTHMKALRPDEDRLSPLHSVYVDQWDWERVMG"
+        "DGERQFSTLKSTVEAIWAGIKATEAAVSEEFGLAPFLPDQIHFVHSQELLSRYPDLDAKGRE"
+    )
+    PROBE_FORM = {
+        "target_chain": "A",
+        "hotspot_residues": "",
+        "protocol": "protein-anything",
+        "binder_sequences": ">b\n" + _SEQ[:80],
+        "sequence": _SEQ[:80],
+        "fasta_text": ">s\n" + _SEQ[:80],
+        "sequences": ">s\n" + _SEQ[:80],
+        "proteins": ">p\n" + _SEQ[:80],
+        "epitope": "45,46",
+        "fasta": ">H\n" + _SEQ[:120] + "\n>L\n" + _SEQ[:110],
+        "target_name": "pd-l1",
+        "chains_to_design": "A",
+        "contig": "A1-150",
+        "binder_length": "80",
+        "num_designs": "4",
+        "budget": "4",
+    }
+
+    @classmethod
+    def _validate_without_hotspots(cls, adapter, pilot) -> str:
+        """The adapter's own error for a fully-populated, hotspot-free form."""
+        form = dict(cls.PROBE_FORM)
+        if pilot:
+            form.update(pilot["params"])
+        form["hotspot_residues"] = ""
+        try:
+            _out, err = adapter.validate(form, None)
+        except TypeError:
+            _out, err = adapter.validate(form)
+        return err or ""
+
+    @staticmethod
+    def _card(client, slug: str) -> str:
+        """The pilot card as one whitespace-normalised line.
+
+        Jinja indents the paragraph across five source lines, so every
+        phrase assertion below would otherwise be matching on template
+        formatting rather than on what the reader sees.
+        """
+        return " ".join(_pilot_card_html(client, slug).split())
+
+    @classmethod
+    def _carded(cls, client, slug: str) -> bool:
+        return "<strong>Hotspot residues</strong>" in cls._card(client, slug)
+
+    @staticmethod
+    def _states_hotspot_prerequisite(slug: str) -> bool:
+        """Read the tool's own about bullets, independently of the app."""
+        about = getattr(meta_for(slug), "about", None) or {}
+        return any(
+            "hotspot" in str(b).lower() and "option" not in str(b).lower()
+            for b in (about.get("prerequisites") or ())
+        )
+
+    def test_the_probe_reaches_every_adapters_hotspot_check(self, tools_app):
+        """The M8b lock: a blind probe is a guard that certifies false.
+
+        The original probe fed ``{target_chain, hotspot_residues}`` plus
+        the PILOT params. boltz2, iggm and esmfold2-design all
+        short-circuited on a DIFFERENT missing field, so a hotspot
+        requirement added late in any of their ``validate()`` chains
+        would never be seen — QC demonstrated exactly that: the same new
+        requirement was caught when placed early in ``validate()`` and
+        missed when placed late.
+
+        A guard cannot be trusted where it cannot see, so this asserts
+        the probe is blind NOWHERE: every adapter must either validate
+        clean or refuse for a hotspot reason. Any other error means the
+        form stopped short and ``PROBE_FORM`` must grow the field that
+        adapter wanted.
+        """
+        from tools import base as tool_base
+
+        _, slugs = tools_app
+        pilots = _pilots(slugs)
+        blind = {
+            a.slug: err
+            for a in tool_base.all_adapters()
+            if (err := self._validate_without_hotspots(a, pilots.get(a.slug)))
+            and "hotspot" not in err.lower()
+        }
+        assert not blind, (
+            "the empty-hotspot probe never reaches these adapters' hotspot "
+            "check — it stops on an unrelated missing field first, so a "
+            "hotspot requirement in them would be invisible to the guard "
+            f"below. Add the field each one wants to PROBE_FORM: {blind}"
+        )
+
+    def test_every_tool_that_refuses_without_hotspots_carries_the_card(
+        self, tools_app
+    ):
+        """The safety direction: a hard stop must never be unannounced.
+
+        Deliberately a SUBSET, not an equality. boltzgen states the
+        requirement in its about panel and still runs unsteered when the
+        field is empty, so "states it" is legitimately wider than
+        "refuses it". What must never happen is the reverse — a tool that
+        refuses outright and says nothing on the card someone starting a
+        first run is reading.
+        """
+        from tools import base as tool_base
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        refuses = {
+            a.slug for a in tool_base.all_adapters()
+            if "hotspot" in self._validate_without_hotspots(
+                a, pilots.get(a.slug),
+            ).lower()
+        }
+        assert refuses, "no adapter refuses an empty hotspot field at all"
+        silent = sorted(
+            s for s in refuses
+            if pilots.get(s) and not self._carded(client, s)
+        )
+        assert not silent, (
+            f"{silent} refuse to run without a hotspot residue and their "
+            f"pilot card does not say so. Add the requirement to the tool's "
+            f"about['prerequisites'] — that is what "
+            f"blueprints.tools._needs_hotspots reads."
+        )
+
+    def test_the_card_set_is_the_tools_own_stated_prerequisites(
+        self, tools_app
+    ):
+        """The card set, pinned, and pinned to the reason it has members.
+
+        The literal is the drift alarm: editing a ``prerequisites``
+        bullet silently adds or drops a user-facing card, and that is a
+        copy change someone should have to confirm. The loop asserts the
+        set really is derived from those bullets and not from anything
+        else — the bug this replaced came from deriving it from
+        ``validate()`` strictness, which disagrees with them on boltzgen.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        carded = {s for s in slugs if pilots[s] and self._carded(client, s)}
+        assert carded == {
+            "bindcraft", "boltzgen", "pxdesign", "rfantibody", "rfdiffusion",
+        }, sorted(carded)
+        for slug in slugs:
+            expected = self._states_hotspot_prerequisite(slug) \
+                and bool(pilots[slug])
+            assert (slug in carded) is expected, (
+                f"{slug}: card={slug in carded}, but prerequisites require a "
+                f"hotspot={self._states_hotspot_prerequisite(slug)} and "
+                f"PILOT={bool(pilots[slug])}"
+            )
+
+    def test_every_such_card_points_at_epitope_scout(self, tools_app):
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        carded = sorted(s for s in slugs
+                        if pilots[s] and self._carded(client, s))
+        assert carded
+        for slug in carded:
+            card = self._card(client, slug)
+            assert "Epitope Scout" in card, (
+                f"{slug}: the pilot card names no way to get hotspots"
+            )
+            assert 'href="/scout' in card, (
+                f"{slug}: the pilot card mentions Scout but does not link it"
+            )
+            # WHOSE numbering. A bench biologist reads residue numbers off
+            # their own file, and author numbering vs a 1-indexed
+            # renumbering is where they get silently wrong answers. The
+            # form field 300px further down says "original PDB numbering";
+            # the card has to say it too, because the card is the thing
+            # someone starting a first run reads.
+            assert "your PDB&rsquo;s own numbering" in card, slug
+
+    def test_only_real_handoff_targets_promise_the_round_trip(self, tools_app):
+        """F1. The card may only promise a handoff that exists.
+
+        ``rfdiffusion`` asks for hotspots and cannot receive them back,
+        so its card gets the Scout pointer and the copy-them-across
+        wording, never the "hands them back into this form" wording.
+        """
+        from scout.handoff import VALID_HANDOFF_TOOLS
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        carded = sorted(s for s in slugs
+                        if pilots[s] and self._carded(client, s))
+        assert carded
+        promised, missing = [], []
+        for slug in carded:
+            card = self._card(client, slug)
+            says = "residues back into this form" in card
+            if says and slug not in VALID_HANDOFF_TOOLS:
+                promised.append(slug)
+            elif not says:
+                if slug in VALID_HANDOFF_TOOLS:
+                    missing.append(slug)
+                assert "copy the residues it picks into the field" in card, (
+                    f"{slug}: Scout cannot hand off to it and the card does "
+                    f"not tell the user to copy the residues across"
+                )
+        assert not promised, (
+            f"{promised}: the pilot card says Scout hands the residues back "
+            f"into this form, but Scout cannot hand off to them "
+            f"(scout.handoff.VALID_HANDOFF_TOOLS = "
+            f"{sorted(VALID_HANDOFF_TOOLS)}) — the user makes the round trip "
+            f"and re-types the numbers anyway"
+        )
+        assert not missing, (
+            f"{missing}: Scout CAN hand off to these and the card does not "
+            f"say so — the deflection doing half its job"
+        )
+
+    def test_scouts_own_picker_offers_exactly_the_handoff_set(self):
+        """The third surface. All three must agree or the promise breaks.
+
+        The POST gate (``scout/routes.py::handoff_to_tool``) and the
+        pilot card both read ``VALID_HANDOFF_TOOLS``; the ``<select>``
+        the user actually chooses from is hand-written markup. A tool in
+        the constant but not the picker is unreachable, and one in the
+        picker but not the constant 400s on submit.
+        """
+        from pathlib import Path
+
+        from scout.handoff import VALID_HANDOFF_TOOLS
+
+        html = (
+            Path(__file__).resolve().parent.parent
+            / "templates" / "scout" / "feasibility.html"
+        ).read_text(encoding="utf-8")
+        form = re.search(
+            r'<form[^>]*action="/scout/handoff/tool".*?</form>', html, re.S,
+        )
+        assert form, "scout/feasibility.html no longer posts to the handoff"
+        select = re.search(
+            r'<select[^>]*\bname="tool"[^>]*>(.*?)</select>',
+            form.group(0), re.S,
+        )
+        assert select, "the handoff form no longer has a tool picker"
+        offered = set(re.findall(r'<option value="([^"]+)"', select.group(1)))
+        assert offered == set(VALID_HANDOFF_TOOLS), (
+            f"Scout's picker offers {sorted(offered)} but the handoff gate "
+            f"accepts {sorted(VALID_HANDOFF_TOOLS)}"
+        )
+
+    def test_tools_that_do_not_need_hotspots_are_not_nagged(self, tools_app):
+        """proteina and boltz2 say "optional"; no deflection there."""
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        clean = [s for s in slugs
+                 if pilots[s] and not self._carded(client, s)]
+        assert clean, "every pilot tool requires hotspots; nothing to check"
+        for slug in clean:
+            card = self._card(client, slug)
+            assert "score your target&rsquo;s surface" not in card, slug
+            assert "asks for at least one" not in card, slug

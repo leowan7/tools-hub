@@ -33,6 +33,23 @@ logger = logging.getLogger(__name__)
 BUCKET = "tool-inputs"
 TOOLS_ORIGIN = os.environ.get("TOOLS_ORIGIN", "https://tools.ranomics.com")
 
+# The tools a Scout result can be handed off TO. Three surfaces have to
+# agree on this set or a user is sent on a round trip that dead-ends:
+# the POST gate (``scout/routes.py::handoff_to_tool``), the picker the
+# user actually chooses from (``templates/scout/feasibility.html``), and
+# the pilot card's "its results hand the target and the residues back
+# into this form" clause (``blueprints/tools.py::_pilot_context``).
+#
+# It lives HERE, in the leaf module, rather than in ``scout/routes.py``,
+# so ``blueprints/tools.py`` can read it without importing the whole
+# routes module — a hand-copied second list in the tools blueprint is
+# exactly how the card came to promise a handoff for rfdiffusion, which
+# is not in this set and never was.
+# tests/test_pilot_recipes.py::TestHotspotDeflection locks all three.
+VALID_HANDOFF_TOOLS = frozenset(
+    {"rfantibody", "bindcraft", "pxdesign", "boltzgen"}
+)
+
 
 def _get_service_client():
     """Return a Supabase client authed with the service-role key, or None."""

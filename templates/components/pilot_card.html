@@ -34,15 +34,16 @@ macro (about_panel, worked_example) already marks the same class of
 author-written prose safe, so this is the convention, not an exception.
 
 The provenance is what makes it safe, and it is worth stating: the
-whole dict is a module-level constant. ``_pilot_context`` builds it as
-``dict(meta.PILOT, params=..., cost_usd=..., runtime=..., url=...)`` —
-nothing from ``request`` is merged in at any point, and the slug that
-picks the module is already validated by ``_require_tool``. The three
-derived fields are deliberately NOT marked safe: ``url`` is an href
-(``url_for`` output belongs escaped in an attribute), ``cost_usd``
-goes through ``display_cost_usd``, and ``label`` has no reason to
-carry markup. If a future field ever reads from the form or the query
-string, it does not get this filter.
+whole dict is a module-level constant. ``_pilot_context`` builds it as ``dict(meta.PILOT, params=...,
+cost_usd=..., runtime=..., url=..., hotspot_help_url=...,
+hotspot_handoff=...)`` — nothing
+from ``request`` is merged in at any point, and the slug that picks the
+module is already validated by ``_require_tool``. The derived
+fields are deliberately NOT marked safe: ``url`` and
+``hotspot_help_url`` are hrefs (``url_for`` output belongs escaped in
+an attribute), ``cost_usd`` goes through ``display_cost_usd``, and
+``label`` has no reason to carry markup. If a future field ever reads
+from the form or the query string, it does not get this filter.
 
 Usage:
 
@@ -61,6 +62,41 @@ Usage:
 
         <h3>What you need</h3>
         <p>{{ pilot.you_need|safe }}</p>
+
+        {# The first hard stop for someone who knows their target but not
+           the model. The Scout deflection already existed in the form
+           field's help text, which is below the fold from the card
+           someone starting a pilot is reading.
+
+           TWO derived flags, not one, because the paragraph makes two
+           independent claims (blueprints/tools.py::_pilot_context, locked
+           by tests/test_pilot_recipes.py::TestHotspotDeflection):
+
+             hotspot_help_url — this tool's own about panel asks for a
+               hotspot residue, so raise the point and link Scout.
+             hotspot_handoff  — Scout can hand the residues BACK to this
+               tool. Only four tools can; rfdiffusion asks for hotspots
+               and cannot receive them, and a single flag made its card
+               promise a round trip that dead-ends in re-typing.
+
+           "asks for at least one" rather than "will not start without
+           one": boltzgen states the requirement and will in fact run
+           unsteered, so the absolute form would be false there.
+
+           Both are hrefs/booleans, deliberately NOT marked |safe. #}
+        {% if pilot.hotspot_help_url %}
+          <p>
+            <strong>Hotspot residues</strong> are the numbered residues on
+            the patch of your target you want the binder to sit on, written
+            in your PDB&rsquo;s own numbering &mdash; this tool asks for at
+            least one. If you do not know yours yet,
+            <a href="{{ pilot.hotspot_help_url }}">score your target&rsquo;s
+            surface with Epitope Scout</a> first &mdash; it is free
+            {%- if pilot.hotspot_handoff %}, and its results hand the target
+            and the residues back into this form{% else %}, and you copy the
+            residues it picks into the field below{% endif %}.
+          </p>
+        {% endif %}
 
         <h3>What it costs</h3>
         <p>
