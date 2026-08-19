@@ -560,8 +560,9 @@ def _scan(source: str) -> dict:
             # call node's callee is then a bare Name, so the allowlist check
             # below never sees the method name. MEASURED to be real, not
             # theoretical: that pair ships `context_files={'/.requirements.txt':
-            # 'tools/mpnn/__init__.py'}` on the resulting image, which the
-            # behavioural probe is structurally blind to.
+            # 'tools/mpnn/__init__.py'}` on the resulting image, which no MOUNT
+            # walk can see (the probe now reads that channel directly, so this
+            # is double-covered — but this is the check that names the line).
             if (
                 node.attr in _IMAGE_API
                 and node.attr not in _ALLOWED_IMAGE_CALLS
@@ -594,9 +595,14 @@ def _scan(source: str) -> dict:
                 out["violations"].append((node.lineno, f"calls .{name}()"))
             elif name in _IMAGE_API and name not in _ALLOWED_IMAGE_CALLS:
                 # Matched on the attribute name alone, so an unrelated call that
-                # happens to share a name with an Image method lands here too.
-                # That is the safe direction: it is loud, and the fix is to
-                # review the method and add it to _ALLOWED_IMAGE_CALLS.
+                # happens to share a name with an Image method (`cfg.build()`,
+                # `cfg.clone()`) lands here too. That is the safe direction: it
+                # is loud. Narrowing it would need to know the receiver's TYPE,
+                # which an AST scan cannot. The right fix for such a false red
+                # is to RENAME the local call — not to allowlist the name, which
+                # would permit the real Image method for everyone. The assertion
+                # message spells that out, because "add it to
+                # _ALLOWED_IMAGE_CALLS" is how an allowlist erodes.
                 out["violations"].append(
                     (node.lineno, f"calls .{name}(), which is not in _ALLOWED_IMAGE_CALLS")
                 )
