@@ -1,16 +1,15 @@
 """Binder feasibility scoring engine.
 
-Computes a composite feasibility score across six dimensions to predict
+Computes a composite feasibility score across five dimensions to predict
 how difficult it will be to design a de novo binder against a given
 epitope region. Produces a difficulty tier and specific recommendations
 for design approach, scaffold type, and campaign scale.
 
-Dimensions (weighted):
-    surface_topology     (0.20) — concavity/convexity of the epitope
-    epitope_rigidity     (0.20) — B-factor or pLDDT stability
-    geometric_access     (0.20) — approach cone openness
+Dimensions (weighted) — must match DIMENSION_WEIGHTS below:
+    surface_topology     (0.25) — concavity/convexity of the epitope
+    epitope_rigidity     (0.25) — B-factor or pLDDT stability
+    geometric_access     (0.25) — approach cone openness
     glycan_risk          (0.15) — N-linked glycosylation proximity
-    prior_precedent      (0.15) — known binders in SAbDab/RCSB
     interface_competition(0.10) — natural PPI overlap
 
 Exports:
