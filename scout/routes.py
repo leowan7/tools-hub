@@ -113,8 +113,20 @@ ANON_RATE_WINDOW_SECONDS = 600
 # No per-session tier here, deliberately: intake already has one, and a better
 # one. ANON_MAX_LIVE_JOBS_PER_SESSION caps a single session at 5 live jobs,
 # which bounds the resource intake actually spends (disk) rather than the
-# request count. QC measured the intake bucket as comfortable — the analyze
-# bucket is where the wall is.
+# request count.
+#
+# THIS IS NOW THE FIRST WALL A REAL LAB MEETS, which is the opposite of what
+# this comment said until 2026-08-19. Once one analysis cost one charge instead
+# of two, the analyze ceiling below stopped being the binding one: QC measured
+# ten researchers behind one NAT getting through, and the ELEVENTH refused
+# here, on GET /scout/example, before it ever reached an analysis. Phase 5
+# instruments the refusal a visitor actually sees, so it has to instrument this
+# one too, not only the analyze bucket.
+#
+# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL and nothing asserts it.
+# Neither number moved; what moved was the cost of an analysis, which lifted
+# the effective analyze ceiling from 5 to 10 and landed on this 10 by
+# coincidence. Change either one and the wall moves to the other, silently.
 ANON_INTAKE_LIMIT = 10
 
 # ---------------------------------------------------------------------------

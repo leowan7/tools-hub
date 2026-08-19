@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import csv
 import json
+import logging
 import shutil
 import threading
 from pathlib import Path
@@ -42,6 +43,27 @@ TMP = Path("tmp")
 
 IP_BUCKET = "scout_analyze"
 SESSION_BUCKET = "scout_analyze:session"
+
+# A body the meter must refuse to read, sized as an ABSOLUTE literal and
+# deliberately NOT as a multiple of ``ratelimit._MAX_FOLLOWUP_BODY_BYTES``.
+#
+# A payload derived from the constant scales with it, so the bound could be
+# raised from 4 KiB to 20 MB and every test below would stay green while the
+# regression the bound exists to prevent came straight back — QC applied
+# exactly that mutation and watched it survive. A literal turns "raise the
+# bound past 1 MB" into red tests instead of a silent policy change. The real
+# follow-up body is ~80 bytes, so nothing legitimate is anywhere near this.
+BODY_OVER_THE_METER_BOUND = 1024 * 1024
+
+# The one production framing under which the meter cannot see a body's size at
+# all. Werkzeug leaves ``request.content_length`` as None when the request is
+# chunked; ``wsgi.input_terminated`` is what makes the body still READABLE, so
+# these requests are the shape Railway's edge would hand us if it ever
+# re-framed /scout/analyze — not a body that merely fails to parse.
+CHUNKED = {
+    "headers": {"Transfer-Encoding": "chunked"},
+    "environ_overrides": {"wsgi.input_terminated": True},
+}
 
 
 @pytest.fixture
@@ -180,6 +202,42 @@ def _fresh_cookie(app, label: str):
     with client.session_transaction() as sess:
         sess[ratelimit.ANON_SESSION_KEY] = f"anon:{label}"
     return client
+
+
+BOGUS_JOB = "3f8e0c92-0000-4000-8000-abc"
+
+
+def _burn_the_per_ip_analyze_limit(app):
+    """Put 127.0.0.1 over the per-IP analyze ceiling with cheap calls.
+
+    A fresh cookie each time so the tighter session tier never fires — what
+    the caller after this needs is a refusal from the PER-IP tier, which sits
+    downstream of the credit check.
+    """
+    for i in range(scout_routes.ANON_ANALYZE_LIMIT):
+        _analyze(_fresh_cookie(app, f"burn{i}"), BOGUS_JOB)
+    assert _ip_charges() == scout_routes.ANON_ANALYZE_LIMIT
+
+
+def _count_json_parses(monkeypatch) -> list:
+    """Record every ``Request.get_json`` from here on into the returned list.
+
+    Counting parses rather than timing them: the property under test is that
+    the meter never reads an unbounded body ahead of the tier that refuses it,
+    and a parse count states that directly instead of inferring it from a
+    wall-clock number that flakes on a loaded box.
+    """
+    import flask  # noqa: PLC0415
+
+    parses: list[int] = []
+    real_get_json = flask.Request.get_json
+
+    def _counting_get_json(self, *a, **kw):
+        parses.append(1)
+        return real_get_json(self, *a, **kw)
+
+    monkeypatch.setattr(flask.Request, "get_json", _counting_get_json)
+    return parses
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +576,51 @@ class TestTheMeterAndTheViewReadTheSameJobId:
             "the view are reading different sources again"
         )
 
+    def test_an_oversize_body_cannot_divert_the_credit_either(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """THE SAME EXPLOIT, wearing the one costume no other test shows it in.
+
+        Every diversion test in this class sends a SMALL body, so all of them
+        exercise the ordinary path through ``_metered_job_id`` and none of them
+        exercises the body-size bound *for diversion*. Make that bound fail
+        OPEN — oversize body, so fall back to ``request.args`` — and the whole
+        of the exploit above comes back: one charge, two full pipeline runs,
+        ~24 CPU-s instead of ~15. QC applied exactly that mutation and measured
+        all 5,160 tests staying green while it ran.
+
+        So the bound is not only a cost control; it is the last thing standing
+        between an oversize POST and the query string. Same single variable as
+        the test above — a query string on a POST that reads its body — with
+        the body pushed past the bound.
+        """
+        paid_job = client.get("/scout/example").get_json()["job_id"]
+        other_job = client.get("/scout/example").get_json()["job_id"]
+
+        _progress(client, paid_job)
+        assert _ip_charges() == 1
+        assert stub_pipeline == [paid_job]
+
+        client.post(
+            f"/scout/analyze?job_id={paid_job}",
+            json={
+                "job_id": other_job,
+                "chain": "A",
+                "pad": "x" * BODY_OVER_THE_METER_BOUND,
+            },
+        )
+
+        assert _ip_charges() == 2, (
+            "an oversize body let a query string redeem a credit bought for a "
+            "different job: the meter gave up on the body and fell back to "
+            "the query instead of failing closed, so one charge bought two "
+            "full pipeline runs again"
+        )
+        assert stub_pipeline == [paid_job, other_job], (
+            "the view did not run the job its body named, so the meter and "
+            "the view are reading different sources again"
+        )
+
     def test_a_body_cannot_divert_the_credit_on_progress(
         self, client, stub_pipeline, reap_jobs
     ):
@@ -557,13 +660,17 @@ class TestTheMeterAndTheViewReadTheSameJobId:
     def test_a_whitespace_padded_job_id_still_redeems_its_own_credit(
         self, client, stub_pipeline, reap_jobs
     ):
-        """Both sides ``.strip()``, and dropping it must go red.
+        """The BODY side of ``.strip()``, and dropping it must go red.
 
         ``analyze()`` strips, so a padded id resolves to the same job and
         takes the cheap finalise path. A meter that did not strip would key
         the credit on `` A `` , miss it, and charge a second time for work
         already paid for. It fails closed, which is why nothing noticed — but
         it is an untested line in a security-relevant key derivation.
+
+        This test pads only the body, and for one commit that was the whole of
+        the coverage: QC re-ran the dropped-``.strip()`` mutation on the QUERY
+        side and it survived green. The sibling below is the other half.
         """
         job_id = client.get("/scout/example").get_json()["job_id"]
         _progress(client, job_id)
@@ -575,6 +682,36 @@ class TestTheMeterAndTheViewReadTheSameJobId:
             "bought; the meter is not normalising the id the way the view does"
         )
         assert stub_pipeline == [job_id], "the finalise path re-ran the pipeline"
+
+    def test_a_whitespace_padded_job_id_in_the_query_grants_its_own_credit(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """The QUERY side of the same line, which nothing covered until now.
+
+        ``job_id_in_query`` strips too, and ``progress()`` calls it, so a
+        padded id in the query string must run the real job and leave the
+        credit under the id the finalise POST will name. Drop that ``.strip()``
+        and the stream looks for a job directory called `` <id> `` , finds
+        nothing, and the credit is keyed on a string no ``/analyze`` can ever
+        present.
+        """
+        job_id = client.get("/scout/example").get_json()["job_id"]
+
+        # ONE variable moves: %20 padding around the id in the query string.
+        _progress(client, f"%20%20{job_id}%20%20")
+        assert _ip_charges() == 1
+        assert stub_pipeline == [job_id], (
+            "a whitespace-padded query job id did not resolve to the real "
+            "job, so the stream ran nothing; the meter and the view are no "
+            "longer normalising the id the same way"
+        )
+
+        _analyze(client, job_id)
+        assert _ip_charges() == 1, (
+            "the credit bought by a whitespace-padded /scout/progress could "
+            "not be redeemed by its own /scout/analyze; the meter keyed it on "
+            "the unstripped id"
+        )
 
     def test_every_paired_route_reads_the_source_its_meter_declares(self):
         """The structural half, so a THIRD paired route cannot get this wrong.
@@ -714,27 +851,19 @@ class TestTheMeterAndTheViewReadTheSameJobId:
         is backwards for a rate limiter.
 
         Asserted by counting parses rather than by timing, so it cannot flake.
+
+        The payload is an ABSOLUTE size, not a multiple of the bound. Sized as
+        ``_MAX_FOLLOWUP_BODY_BYTES * 4`` it scaled with the constant, so the
+        bound could be raised to 20 MB with this test still green and the
+        regression fully restored — which is the mutation QC ran.
         """
-        import flask  # noqa: PLC0415
-
         ratelimit.reset()
-        parses = []
-        real_get_json = flask.Request.get_json
-
-        def _counting_get_json(self, *a, **kw):
-            parses.append(1)
-            return real_get_json(self, *a, **kw)
-
-        monkeypatch.setattr(flask.Request, "get_json", _counting_get_json)
-
-        # Put this caller over the per-IP ceiling with cheap calls.
-        for i in range(scout_routes.ANON_ANALYZE_LIMIT):
-            _analyze(_fresh_cookie(app, f"burn{i}"), "3f8e0c92-0000-4000-8000-abc")
-        assert _ip_charges() == scout_routes.ANON_ANALYZE_LIMIT
+        parses = _count_json_parses(monkeypatch)
+        _burn_the_per_ip_analyze_limit(app)
 
         parses.clear()
-        fat = {"job_id": "3f8e0c92-0000-4000-8000-abc", "chain": "A",
-               "pad": "x" * (ratelimit._MAX_FOLLOWUP_BODY_BYTES * 4)}
+        fat = {"job_id": BOGUS_JOB, "chain": "A",
+               "pad": "x" * BODY_OVER_THE_METER_BOUND}
         refused = _fresh_cookie(app, "fat").post("/scout/analyze", json=fat)
 
         assert refused.status_code == 429, refused.get_data(as_text=True)
@@ -742,6 +871,79 @@ class TestTheMeterAndTheViewReadTheSameJobId:
             f"a request that was going to be refused parsed its body first "
             f"({len(parses)} parses); the credit check must not read an "
             f"unbounded body ahead of the tiers that refuse it"
+        )
+
+    def test_a_refused_analyze_does_not_parse_a_body_of_unknown_length(
+        self, app, monkeypatch, stub_pipeline, reap_jobs
+    ):
+        """The size bound is only as good as knowing the size.
+
+        ``length is None`` is not belt-and-braces. Without it an attacker skips
+        the bound entirely by sending ``Transfer-Encoding: chunked`` — no
+        Content-Length, so nothing to compare — and the refusal cost comes
+        straight back: QC measured 0.0053 s -> 0.1936 s on an 18 MB chunked
+        body with that clause relaxed. The body here is small, because the
+        property is "the meter did not read it", not "the body was big".
+        """
+        ratelimit.reset()
+        parses = _count_json_parses(monkeypatch)
+        _burn_the_per_ip_analyze_limit(app)
+
+        parses.clear()
+        refused = _fresh_cookie(app, "chunked").post(
+            "/scout/analyze", json={"job_id": BOGUS_JOB, "chain": "A"}, **CHUNKED
+        )
+
+        assert refused.status_code == 429, refused.get_data(as_text=True)
+        assert parses == [], (
+            f"a refused request with no Content-Length was parsed anyway "
+            f"({len(parses)} parses); an unknown length is an UNBOUNDED one, "
+            f"so it is the framing an attacker picks to get the parse back"
+        )
+
+    def test_a_body_of_unknown_length_cannot_redeem_a_credit_and_says_so(
+        self, client, stub_pipeline, reap_jobs, caplog
+    ):
+        """Fails closed — and refuses to fail closed QUIETLY.
+
+        Declining an unreadable-size body costs the caller its credit, so the
+        pair is billed twice. That is the right trade against an attacker, but
+        it is also what happens to EVERY analysis if Railway's edge ever
+        re-frames /scout/analyze as chunked: capacity silently halves back to
+        five researchers per window while the refusal rate — the thing Phase 6
+        would alarm on — does not move at all, because nothing is refused.
+
+        So the condition is counted and announced. Both halves are asserted
+        here: without the counter nobody in production can see it, and without
+        the log nobody outside this process can.
+        """
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        _progress(client, job_id)
+        assert _ip_charges() == 1
+        assert ratelimit.unmetered_bodies == 0
+
+        with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
+            client.post(
+                "/scout/analyze",
+                json={"job_id": job_id, "chain": "A"},
+                **CHUNKED,
+            )
+
+        assert _ip_charges() == 2, (
+            "a body with no Content-Length redeemed a follow-up credit; the "
+            "meter read a body whose size it could not check first"
+        )
+        assert ratelimit.unmetered_bodies == 1, (
+            "the one framing that silently halves anonymous capacity in "
+            "production went uncounted"
+        )
+        assert any(
+            "no Content-Length" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ), (
+            "nothing was logged, so an edge re-framing every /scout/analyze "
+            "as chunked would halve capacity with no signal anywhere"
         )
 
 

@@ -90,6 +90,7 @@ needs a limit that holds exactly across the fleet and survives deploys.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -103,6 +104,8 @@ from flask import jsonify, request, session
 # by the caller — a leftmost read would let one header nullify every bucket
 # below. Do not swap it for an inline header parse.
 from shared.metrics import _client_ip
+
+logger = logging.getLogger(__name__)
 
 # (bucket, key) -> (window_expires_at_monotonic, hits_in_window)
 _WINDOWS: dict[tuple[str, str], tuple[float, int]] = {}
@@ -338,12 +341,54 @@ JOB_ID_SOURCES = (job_id_in_query, job_id_in_body)
 # it is given, once the request has been allowed.
 _MAX_FOLLOWUP_BODY_BYTES = 4096
 
+# How many follow-up bodies arrived with NO Content-Length and therefore lost
+# their credit.
+#
+# This is the ONE way the bound above fails in production with every test still
+# green, so it does not get to be silent. The meter needs Content-Length to
+# decide whether a body is small enough to be worth reading; if Railway's edge
+# ever re-frames POST /scout/analyze as chunked, every analysis loses its
+# credit, the pair is billed twice again, effective anonymous capacity halves
+# back to five researchers per window — and NO refusal-rate metric moves,
+# because nothing is being refused. That is precisely the plan's "outage that
+# does not look like one".
+#
+# The WARNING fires ONCE per process, not per request. Transfer-Encoding is
+# caller-chosen, so this path is attacker-reachable, and a log write per
+# refused request would hand straight back the per-request cost the bound above
+# exists to remove. The counter keeps rising after the log, which is what
+# separates "one odd client" from "the edge re-framed everything"; a real
+# metric for it belongs to Phase 6, and this is the number it should export.
+unmetered_bodies = 0
+
+
+def _note_unmetered_body() -> None:
+    global unmetered_bodies
+    with _LOCK:
+        unmetered_bodies += 1
+        first = unmetered_bodies == 1
+    if first:
+        logger.warning(
+            "POST /scout/analyze arrived with no Content-Length, so the meter "
+            "could not read its follow-up credit and the analysis was charged "
+            "twice. One client can provoke this deliberately; if it is EVERY "
+            "request, the edge is re-framing the body as chunked and anonymous "
+            "analyze capacity has silently halved. Count so far in this "
+            "worker: scout.ratelimit.unmetered_bodies."
+        )
+
 
 def _metered_job_id(source) -> str:
     """The job id for the credit key, or "" if it is not worth looking."""
     if source is job_id_in_body:
         length = request.content_length
-        if length is None or length > _MAX_FOLLOWUP_BODY_BYTES:
+        if length is None:
+            # An unknown length is unbounded, so this is the framing an
+            # attacker picks to get the pre-refusal parse back. Fail closed
+            # here, but say so out loud — see the counter above.
+            _note_unmetered_body()
+            return ""
+        if length > _MAX_FOLLOWUP_BODY_BYTES:
             return ""
     return source()
 
@@ -382,13 +427,16 @@ def _spend_followup(key: tuple[str, str, str]) -> bool:
 
 def reset() -> None:
     """Drop every counter. Test helper; not used by request handling."""
-    global _INFLIGHT, _WAITING
+    global _INFLIGHT, _WAITING, unmetered_bodies
     with _LOCK:
         _WINDOWS.clear()
         # Credits too, or one test's unspent credit gives the next test a
         # free request and the charge assertions there quietly stop meaning
         # anything.
         _FOLLOWUP.clear()
+        # Re-arms the once-per-process warning as well as zeroing the count,
+        # so a test can assert the alarm fires rather than only the counter.
+        unmetered_bodies = 0
     with _INFLIGHT_LOCK:
         _INFLIGHT = 0
         # _WAITING too, or a test that leaves a waiter parked shrinks the
