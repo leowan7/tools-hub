@@ -40,10 +40,32 @@ logger = logging.getLogger(__name__)
 public_bp = Blueprint("public", __name__)
 
 
+def _build_sha() -> str:
+    """The commit this process is running, or "unknown".
+
+    Exists because no probe exposed a build SHA, so no deploy has ever been
+    verifiable from outside: /health and /readyz both answered "healthy"
+    without saying WHICH commit was healthy, and three separate ships in
+    2026-08 had to be recorded as "on trunk, deploy unconfirmed".
+
+    RAILWAY_GIT_COMMIT_SHA is injected by Railway, the same mechanism as the
+    already-relied-upon RAILWAY_ENVIRONMENT (app.py). BUILD_SHA is a manual
+    override for any other host. UNVERIFIED until a deploy is observed: if
+    Railway names the variable something else, this reports "unknown" rather
+    than a wrong answer, and the fix is to correct the name here. Read the
+    field on the first deploy after merge -- that observation is the check.
+    """
+    return (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("BUILD_SHA")
+        or ""
+    ).strip() or "unknown"
+
+
 @public_bp.route("/health", methods=["GET"])
 def health():
     """Unauthenticated health check for Railway port scanner."""
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok", "build": _build_sha()}), 200
 
 @public_bp.route("/readyz", methods=["GET"])
 def readyz():
@@ -68,14 +90,25 @@ def readyz():
         client = get_service_client()
         if client is None:
             return (
-                jsonify({"status": "degraded", "reason": "no_client"}),
+                jsonify({
+                    "status": "degraded",
+                    "reason": "no_client",
+                    "build": _build_sha(),
+                }),
                 503,
             )
         client.table("user_events").select("id").limit(1).execute()
-        return jsonify({"status": "ready"}), 200
+        return jsonify({"status": "ready", "build": _build_sha()}), 200
     except Exception as exc:  # noqa: BLE001 - any failure means not ready
         logger.warning("readyz degraded: %s", exc)
-        return jsonify({"status": "degraded", "reason": "db_error"}), 503
+        return (
+            jsonify({
+                "status": "degraded",
+                "reason": "db_error",
+                "build": _build_sha(),
+            }),
+            503,
+        )
 
 
 @public_bp.route("/", methods=["GET"])
