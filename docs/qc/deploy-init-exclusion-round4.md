@@ -501,3 +501,234 @@ currently pins the class-binding case and not the instance-binding one.
 
 Not blocking, but worth folding in while the branch is open: the sixth spelling (Claim 2), the two PR-body
 corrections (§7), and a named follow-up for the version pin (§6).
+
+---
+
+# Round 4b — verification of the blocker fix
+
+**SHA reviewed: `cae4df43003c4eeafe1b1ca6fbb3599c4416d4e7`** (`3dfe49a` → `72ddb07` guard fix →
+`cae4df4` docstring correction). Same reviewer, same method; I did not write this fix.
+
+## Verdict on the fix: **PASS — the blocker is closed. Merge.**
+
+The round-4 blocker no longer reproduces, on either Modal version. Both of my §3.4 options were
+taken, and the combination is sound: `_FORBIDDEN_CALLS` is checked *before* the exemption, so the two
+probe-blind methods are unreachable by any receiver spelling, and everything the exemption can still
+reach is covered by the behavioural probe. I proved that end to end rather than by reading.
+
+Three things below need recording — one is a correction to what the coordinator measured, one is a
+residual class I could not exploit, one is a message-accuracy nit. **None of them blocks.**
+
+---
+
+## 1. Required checks
+
+| # | asked | result |
+|---|---|---|
+| 1 | whole guard file under **modal 1.5.4** | **41 passed** in 9.69s (and 41 passed under 1.4.2) |
+| 2 | attack the new exemption | 6 new poison shapes found, **none exploitable** — §3 |
+| 3 | poison `_modal_bound_names` | yes, six ways — §3 |
+| 4 | zero false reds, nine apps, both versions | **confirmed**, §5 |
+| 5 | sanity-check the new floor test | sound, but 2 of its 5 sources test the denylist not the receiver rule — §4 |
+
+Full suite at `cae4df4`, modal 1.4.2, from the worktree root with no path argument:
+**5303 passed, 20 skipped** in 230.58s, exit 0 — byte-identical to the round-4 clean
+head, so the fix costs no tests and changes no other behaviour.
+
+---
+
+## 2. Correction: my repro fails **ONE** test, not two — and the probe is still blind
+
+> "I did not chase why the probe test also went red; that is worth your eye, because if the probe
+> genuinely catches it then my model of `build_function` being unwalked is wrong somewhere."
+
+**Your model is right. The observation was wrong.** I landed my exact round-4 reproduction on the real
+`tools/mpnn/modal_app.py` at `cae4df4` (`git diff --unified=0` confirms it landed):
+
+```
++import importlib
++_adapter = importlib.import_module("tools.mpnn")
++Secret = modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
+-    modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
++    Secret.run_function(_adapter.build_payload)
+```
+
+```
+E  AssertionError: mpnn/modal_app.py line 135: calls .run_function().
+FAILED tests/test_deploy_paths_exclusions.py::test_modal_app_stays_self_contained[mpnn]
+1 failed, 40 passed in 8.11s
+```
+
+**One** failure, and it is the new `_FORBIDDEN_CALLS` entry — not the probe. To isolate it I then
+neutered the AST scan (`out["violations"] = []` before `_scan`'s `return out`) with the same mutation
+still landed:
+
+```
+FAILED test_non_image_receiver_exemption_is_narrow      <- floor, red because the scan is neutered
+FAILED test_scan_flags_every_forbidden_call_and_kwarg   <- floor, same
+2 failed, 39 passed
+```
+
+`test_modal_really_uploads_no_adapter_package[mpnn]` is **GREEN**. The probe genuinely does not walk
+`build_function`, exactly as documented.
+
+**Why this matters for the merge:** the blocker is closed by **exactly one mechanism**, the
+`run_function` entry in `_FORBIDDEN_CALLS`. There is no second cover for that path — it is the one
+place in this file where a single check stands alone. That is acceptable because it is a *denylist
+entry checked before any exemption*, which is the most robust position in the scan, and because
+`test_non_image_receiver_exemption_is_narrow` pins it explicitly
+(`assert {"run_function", "pip_install_from_pyproject"} <= _FORBIDDEN_CALLS`). But the PR body should
+not claim double coverage for this path, because there is none.
+
+---
+
+## 3. Attacking the new exemption — 6 poison shapes, none exploitable
+
+`_modal_bound_names` walks the whole tree for `ImportFrom` nodes with `module == "modal"`. It has no
+notion of scope, reachability, or ordering, so any of these registers a name as modal-bound:
+
+| # | poison | `_scan` | why it is wrong |
+|---|---|---|---|
+| Q1 | `def _unused():\n    from modal import Secret` then `Secret = <Image>` | **MISSED** | function-local import never binds at module scope |
+| Q2 | `try: from modal import Volume / except ImportError: ...` then rebind | **MISSED** | binds on the failure path too |
+| Q3 | `if TYPE_CHECKING: from modal import Dict` then rebind | **MISSED** | never executes at runtime |
+| Q4 | `if False: from modal import Queue` then rebind | **MISSED** | dead branch |
+| **Q5** | **`from modal import Volume as image`** then `image = <Image>` | **MISSED** | **defeats the file's own `assert "image" not in _MODAL_NON_IMAGE_CLASSES`** by a second route |
+| Q6 | `from modal import Secret as img` then rebind | **MISSED** | same |
+| Q11 | call site first, `from modal import Secret` at the bottom | **MISSED** | the separate pass exists *because* walk has no ordering; a trailing import binds too |
+
+Plus the rebind shape you already knew about (P1/P2/P5/P6): a genuinely-imported name reassigned to an
+Image instance.
+
+Q5 is the one I would flag: the docstring and the floor test both go out of their way to guarantee a
+receiver spelled `image` stays checked, and `_modal_bound_names` can put `image` into the exempt set
+anyway. It is also the most innocent-looking line in the table.
+
+**Correctly closed** (all CAUGHT, both versions): `from modal import *` (`alias.name` is `"*"`),
+`from modal.volume import Volume` (module is not exactly `modal`), `from .modal import Volume`
+(`node.level`), `from modal import Image as Volume` (Image is excluded from the set),
+`_h.Volume.pip_install_from_requirements(...)`, `a.b.Volume.uv_sync(...)`, and
+`import modal as m; m.Volume.uv_sync(...)`. The last is technically a false red — an aliased `modal`
+module is legitimate — but it is the safe direction and no app does it.
+
+### Why none of it is exploitable — checked, not reasoned
+
+Everything a poisoned receiver can reach is `_IMAGE_API - _ALLOWED_IMAGE_CALLS - _FORBIDDEN_CALLS`:
+
+| modal | reachable | of which ship local bytes |
+|---|---|---|
+| 1.4.2 | 23 | `pip_install_from_requirements`, `poetry_install_from_file`, `uv_pip_install`, `uv_sync` |
+| 1.5.4 | 26 | the same four |
+
+The other 19–22 (`build`, `clone`, `cmd`, `entrypoint`, `shell`, `imports`, `deps`, `from_registry`,
+`from_id`, `hydrate`, `object_id`, `logs`, `pipe`, `publish`, …) take no local path.
+`pip_install_private_repos` returns `context_files={}` per the existing audit.
+
+All four byte-shippers are covered by the probe. Measured on both versions:
+
+```
+pip_install_from_requirements   probe sees ['tools/mpnn/__init__.py', ...]   <- caught by name
+uv_pip_install                  probe sees ['tools/mpnn/__init__.py', ...]   <- caught by name
+poetry_install_from_file        RAISES NotFoundError                          <- loud (probe propagates)
+uv_sync                         RAISES InvalidError                           <- loud (probe propagates)
+```
+
+The two that raise are still safe: `context_file_paths` deliberately lets exceptions propagate, the
+probe subprocess exits non-zero, and `_run_probe` asserts `returncode == 0`.
+
+**End-to-end proof on the real app.** I landed the worst shape (Q5) on `tools/mpnn/modal_app.py`:
+
+```
++from modal import Volume as image
++image = modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
++image = image.pip_install_from_requirements(
++    "tools/mpnn/__init__.py"
++).add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
+```
+
+| | modal 1.4.2 | modal 1.5.4 |
+|---|---|---|
+| result | `FAILED test_modal_really_uploads_no_adapter_package[mpnn]` — 1 failed, 40 passed | identical |
+
+The AST scan is fully defeated and **the probe catches it anyway**, on both versions. Your reasoning
+that `_FORBIDDEN_CALLS` covering the two probe-blind methods makes the rebind class acceptable
+**holds**, and now extends to all six poison shapes.
+
+**Suggested follow-up, not a blocker:** restricting `_modal_bound_names` to module-level `ImportFrom`
+nodes (`for node in tree.body`) would kill Q1/Q3/Q4 in one line and is strictly closer to what the
+docstring claims. Q5/Q6/Q11 and the rebind would remain, and remain non-exploitable. Worth a
+docstring sentence saying the exemption is backstopped by the probe rather than airtight on its own.
+
+---
+
+## 4. The new floor test — sound, but two of its five sources test the other mechanism
+
+You were right to be suspicious. I reverted **only** the receiver rule to the old name-only match,
+keeping `_FORBIDDEN_CALLS` intact (landed, `git diff --unified=0`, 7 lines), then re-ran the five
+pinned sources:
+
+| pinned source | still red with the receiver rule reverted? | what it actually tests |
+|---|---|---|
+| `Secret.run_function(build)` | **STILL RED** (`calls .run_function()`) | the denylist |
+| `Secret.pip_install_from_pyproject("p")` | **STILL RED** | the denylist |
+| `Volume.uv_sync("tools/mpnn")` | GREEN | **the receiver rule** |
+| `Dict.uv_pip_install(requirements=[...])` | GREEN | **the receiver rule** |
+| `_h.Volume.pip_install_from_requirements(...)` | GREEN | **the receiver rule** |
+
+**Your specific question:** `Dict.uv_pip_install(requirements=[...])` goes red for the **stated
+reason** — the receiver rule — not an unrelated kwarg check. `requirements` is not in
+`_FORBIDDEN_KWARGS` (which is `{mounts, context_dir, context_files, spec_file}`), and the source goes
+green the moment the receiver rule is reverted. Confirmed.
+
+**The test does not certify false.** It detects a revert of either mechanism: sources 3–5 catch a
+receiver-rule revert, sources 1–2 plus the explicit
+`assert {"run_function", "pip_install_from_pyproject"} <= _FORBIDDEN_CALLS` catch a denylist revert.
+
+The only inaccuracy is the shared assertion message — *"a receiver named after a modal class is
+exempted … The exemption must key on the BINDING, not on the spelling"* — which is untrue for the
+first two sources; they would fail identically under the old name-only rule. If those two ever move
+out of `_FORBIDDEN_CALLS`, that message will point a reader at the wrong mechanism. A one-line split
+of the loop (two denylist sources, three receiver sources) would fix it. Cosmetic.
+
+---
+
+## 5. False reds — zero, both versions
+
+Guard file **41 passed on modal 1.4.2 and 41 passed on modal 1.5.4** at `cae4df4`, so all nine apps
+are green on both. Beyond the suite, I drove `_scan` over the spellings a future app would plausibly
+write:
+
+| control | 1.4.2 | 1.5.4 |
+|---|---|---|
+| `modal.Volume.from_name("x", create_if_missing=True)` | green | green |
+| `modal.Secret.from_name("x")` | green | green |
+| `modal.Function.from_name("a","b")` | green | green |
+| `from modal import Volume` … `Volume.from_name("x")` | green | green |
+| `from modal import Volume as V` … `V.from_name("x")` | green | green |
+| ordinary chain (`debian_slim().apt_install().add_local_file()`) | green | green |
+| **`modal.Image.from_name("x")`** (must stay refused) | n/a¹ | **RED** |
+| **`image.from_name("x")`** (unidentifiable receiver) | n/a¹ | **RED** |
+
+¹ `from_name` is not on `modal.Image` in 1.4.2, so these are vacuous there — which is precisely why
+the floor test picks the refused method off the installed client rather than naming it.
+
+The narrowing costs nothing today. The one spelling it newly refuses that a reasonable app might
+write is `import modal as m; m.Volume.from_name(...)` — an aliased `modal` module. No app does it, and
+the failure is loud, so it is the safe direction; worth one line in the remedy text if you want.
+
+---
+
+## 6. Summary of what changed since round 4
+
+| round-4 finding | status at `cae4df4` |
+|---|---|
+| **BLOCKER**: `Secret = <Image>` + `importlib` + `run_function` ships every adapter, suite green | **CLOSED** — now `1 failed` via `_FORBIDDEN_CALLS`, both versions |
+| residual risk 6 mis-files `importlib` as "loud" | **FIXED** in the module docstring (`cae4df4`) |
+| PR-body row N6 tested the wrong shape | reported fixed by coordinator (PR body, not re-verified here) |
+| sixth spelling (`operator.methodcaller` split), `exec`, attribute-chain receiver | still MISSED by the AST scan, still probe-covered — unchanged, non-blocking |
+
+Nothing I cleared in round 4 was re-opened by this diff: the change is confined to
+`tests/test_deploy_paths_exclusions.py` (+102/−9), touches no `tools/` file, and the workflow is
+untouched.
+
+**Merge it.**
