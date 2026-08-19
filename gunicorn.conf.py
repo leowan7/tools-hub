@@ -84,21 +84,36 @@ errorlog = "-"
 # Prometheus multiprocess bookkeeping
 # ---------------------------------------------------------------------------
 
-_PROMETHEUS_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/prom")
-
-
-def on_starting(_server):  # noqa: ANN001 — gunicorn hook signature
-    """Reset the multiprocess dir before workers boot.
-
-    The prometheus_client multiprocess backend appends per-worker db
-    files to this directory. Left unswept across deploys, the counter
-    history would outlive the process and inflate values. Wipe on boot.
-    """
-    path = Path(_PROMETHEUS_DIR)
-    if path.exists():
-        shutil.rmtree(path, ignore_errors=True)
-    path.mkdir(parents=True, exist_ok=True)
-    os.environ["PROMETHEUS_MULTIPROC_DIR"] = str(path)
+# This runs at config-module scope on purpose — NOT from an on_starting
+# hook. gunicorn execs this file while it builds the Application, and only
+# afterwards does Arbiter.setup() honour preload_app and import app:app;
+# Arbiter.start() calls on_starting later still. prometheus_client freezes
+# its ValueClass the moment it is imported, reading this env var exactly
+# once, so a value published from on_starting arrives after every Counter
+# has already been built process-local. Nothing then writes the per-worker
+# db files, while /metrics still sees the var and aggregates the (empty)
+# directory — a 200 with a zero-byte body. Setting it here puts it in the
+# environment before the preload import.
+#
+# The mkdir is not optional. An UNLABELLED counter opens
+# <dir>/counter_<pid>.db the moment it is constructed (a labelled one waits
+# for its first .labels() call), and shared.metrics builds exactly one
+# unlabelled counter, SCOUT_RUNS. So a var pointing at a directory that
+# does not exist yet raises FileNotFoundError during the preload import and
+# the service never boots -- which is also why simply adding the variable
+# to the Railway service without creating the directory would be an outage.
+#
+# The wipe is for a master restarting on a filesystem that already holds db
+# files: a stale file is aggregated as if it were live and inflates the
+# counters. It does nothing on a Railway deploy, which is a fresh container
+# with an empty /tmp -- local dev and in-place restarts are what it is for.
+# Note gunicorn re-execs this file on SIGHUP reload and SIGUSR2 reexec, so
+# those wipe too, and the outgoing workers' samples vanish from the scrape
+# for the overlap. Nothing in this deployment sends either signal.
+_PROMETHEUS_DIR = Path(os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/prom"))
+shutil.rmtree(_PROMETHEUS_DIR, ignore_errors=True)
+_PROMETHEUS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["PROMETHEUS_MULTIPROC_DIR"] = str(_PROMETHEUS_DIR)
 
 
 def child_exit(_server, worker):  # noqa: ANN001 — gunicorn hook signature
