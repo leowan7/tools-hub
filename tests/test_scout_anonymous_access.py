@@ -207,6 +207,51 @@ class TestAnonymousCanRunScout:
         assert resp.mimetype == "text/event-stream"
         assert b'"stage"' in resp.get_data()
 
+    def test_known_binders_reach_the_response(
+        self, client, stub_scoring, monkeypatch, reap_jobs
+    ):
+        """A found binder must survive the trip to the JSON body.
+
+        ``stub_scoring`` above patches ``fetch_known_binders`` to return [],
+        which is right for the tests whose subject is the route's auth and
+        ownership — but it was the ONLY thing in the suite touching this path,
+        and [] is exactly what the broken production lookup returned. So no
+        test ever exercised a NON-empty result, and the route swallows any
+        exception from the lookup into `known_binders = []`
+        (scout/routes.py). A lookup that works while the route silently drops
+        its output is the same invisible failure in a different place.
+
+        The lookup itself is covered by tests/test_scout_epitope_db_sabdab.py;
+        this covers the hand-off.
+        """
+        binder = {
+            "pdb_id": "1A2Y", "binder_type": "IgG/Fab", "species": "gallus gallus",
+            "resolution": 1.5, "affinity": "", "antigen_chain": "C",
+            "ab_chains": ["B", "A"], "contact_residues": [18, 19, 20],
+        }
+        monkeypatch.setattr(
+            "scout.epitope_db.resolve_uniprot_id",
+            lambda *a, **k: {
+                "uniprot_id": "P00698", "protein_name": "Lysozyme C",
+                "identity_pct": "100",
+            },
+        )
+        monkeypatch.setattr(
+            "scout.epitope_db.fetch_known_binders", lambda *a, **k: [binder]
+        )
+
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        _write_results_csv(job_id)
+        resp = client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        )
+        assert resp.status_code == 200, resp.data
+
+        got = resp.get_json()["known_binders"]
+        assert got, "a found binder was dropped between the lookup and the body"
+        assert got[0]["pdb_id"] == "1A2Y"
+        assert got[0]["contact_residues"] == [18, 19, 20]
+
 
 # ---------------------------------------------------------------------------
 # Confidentiality: an anonymous job belongs to one session

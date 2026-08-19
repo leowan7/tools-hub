@@ -24,6 +24,7 @@ import csv
 import difflib
 import logging
 import threading
+import time
 from io import StringIO
 from typing import Optional
 
@@ -34,23 +35,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
-# SAbDab per-structure summary endpoint. Returns TSV for PDB entries in the
-# antibody database, or HTML 404 for entries not in SAbDab.
-SABDAB_STRUCTURE_URL = (
-    "https://opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/{pdb_id}/"
-)
+# SAbDab's WHOLE-DATABASE summary, as one CSV. This replaces the retired
+# per-structure endpoint
+# (opig.stats.ox.ac.uk/webapps/sabdab-sabpred/sabdab/summary/<pdb_id>/), which
+# now 301s to a React SPA and answers an identical ~1457-byte HTML shell for
+# every PDB id — so every lookup silently returned "not in SAbDab" and the
+# feature had been dead for some time (measured 2026-08-18, Phase 0).
+#
+# Fetching the whole database once and indexing it in memory is not a
+# compromise, it is strictly cheaper than what it replaces: the old code made
+# ONE HTTPS request PER candidate PDB id, up to _RCSB_PROBE_LIMIT (40) of them,
+# each on its own raw unbounded thread, on EVERY anonymous /analyze. One
+# request that is then reused by every subsequent lookup beats 40 that are not.
+# The payload is ~11.7 MB of CSV but only ~1.2 MB on the wire (the server
+# gzips; requests negotiates and decodes it transparently), and the parsed
+# index keeps only the six fields used below.
+SABDAB_SUMMARY_URL = "https://sabdab.opig.stats.ox.ac.uk/api/download/all-summary"
 # RCSB search API — used to find PDB entries containing a given UniProt entity.
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 RCSB_PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
 UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
 
-# How many RCSB PDB IDs to probe against SAbDab before giving up. Higher
-# values increase recall but add latency. 40 concurrent probes at ~0.5 s
-# each complete in ~3–5 s wall-clock time on a typical network.
+# How many RCSB PDB IDs to check against SAbDab before giving up. Higher
+# values increase recall. Since the SAbDab side became an in-memory dict
+# lookup this costs nothing per id — the only cost is the single RCSB search
+# request, whose page size this is.
 _RCSB_PROBE_LIMIT = 40
 
 # Timeout for all external HTTP requests.
 _REQUEST_TIMEOUT_SEC = 12
+
+# The whole-database summary fetch is bigger than a per-id probe, so it gets
+# its own, longer timeout: ~1.2 MB gzipped, measured 1.4-6.4 s depending on
+# whether the server serves it precompressed.
+_SUMMARY_TIMEOUT_SEC = 60
 
 # Maximum number of structures for which contact residues are computed.
 # Each requires a PDB file download (~0.5–5 MB) and BioPython parsing.
@@ -63,6 +81,33 @@ _CONTACT_CUTOFF_ANGSTROM = 4.5
 # In-process cache: uniprot_id (uppercase) → list[dict]
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
+
+# In-process index of the whole SAbDab summary: PDB id (uppercase, classic
+# 4-character form) → list of legacy-shaped row dicts. Built once per TTL per
+# worker; ~6.7 MB resident for 11,458 entries / 21,914 rows.
+_SUMMARY_INDEX: Optional[dict] = None
+_SUMMARY_EXPIRES_AT = 0.0
+_SUMMARY_LOCK = threading.Lock()
+
+# SAbDab publishes weekly, so a day-old index is never meaningfully stale.
+_SUMMARY_TTL_SEC = 24 * 60 * 60
+
+# A FAILED fetch gets its own, much shorter TTL, and it is the reason the two
+# are separate constants. Caching a failure for the full 24 h would turn a
+# two-minute upstream blip into a day of "no known binders" — which is exactly
+# the shape of the bug this repoint fixes, where a dead lookup was
+# indistinguishable from a target that genuinely has no antibodies. Retrying
+# every 5 minutes bounds a dead upstream at ~1 request per 5 min per worker
+# instead of the 41-per-analysis it used to cost.
+_SUMMARY_ERROR_TTL_SEC = 5 * 60
+
+# Columns this module reads out of the summary CSV. Checked on every parse:
+# if SAbDab renames or drops one, the parse RAISES instead of quietly
+# producing an index full of blanks. The previous endpoint's failure was
+# silent for exactly this reason, so silence is the thing being designed out.
+_SUMMARY_REQUIRED_COLUMNS = frozenset({
+    "PDB", "Hchain", "Lchain", "antigen_chain", "resolution", "antigen_species",
+})
 
 # ---------------------------------------------------------------------------
 # 3-letter to 1-letter amino acid code map (includes selenomethionine/cysteine)
@@ -582,42 +627,140 @@ def _rcsb_pdb_ids_for_uniprot(uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT) -
         return []
 
 
-def _sabdab_entry_for_pdb(pdb_id: str) -> list:
-    """Fetch SAbDab TSV for a single PDB entry.
+def _classic_pdb_id(extended_id: str) -> str:
+    """Reduce SAbDab's extended PDB identifier to the classic 4-character one.
 
-    SAbDab's per-structure endpoint returns a TSV with one row per
-    antibody-antigen chain pairing in that structure. Returns [] if the
-    PDB ID is not in SAbDab (HTML response) or on network failure.
+    SAbDab 2 reports PDB entries in the extended ``pdb_0000XXXX`` form, where
+    ``XXXX`` is the classic accession. RCSB's search API — and the coordinate
+    download URL — still speak the classic form, so the index is keyed on it.
+    Verified against the live summary: all 21,914 rows match ``pdb_0000`` plus
+    four characters.
 
-    Args:
-        pdb_id: Uppercase RCSB PDB accession.
-
-    Returns:
-        List of parsed row dicts from the TSV (may have >1 row for multi-Fab
-        crystals). Empty list if not in SAbDab.
+    Returns "" for anything that is not in that shape, so a future format
+    change cannot silently produce garbage keys.
     """
-    url = SABDAB_STRUCTURE_URL.format(pdb_id=pdb_id.lower())
-    try:
-        resp = requests.get(url, timeout=_REQUEST_TIMEOUT_SEC)
-        if not resp.ok:
-            return []
-        text = resp.text.strip()
-        # SAbDab returns HTML for entries not in the database.
-        if not text or text.startswith("<"):
-            return []
-        reader = csv.DictReader(StringIO(text), delimiter="\t")
-        return list(reader)
-    except Exception:
-        logger.debug("SAbDab per-structure fetch failed for %s.", pdb_id, exc_info=True)
-        return []
+    value = (extended_id or "").strip()
+    if len(value) == 12 and value.lower().startswith("pdb_0000"):
+        return value[-4:].upper()
+    return ""
+
+
+def _parse_summary_csv(text: str) -> dict:
+    """Index SAbDab's whole-database summary CSV by classic PDB id.
+
+    Rows come out shaped like the legacy per-structure TSV rows so that
+    ``query_sabdab`` can read them unchanged.
+
+    Raises:
+        ValueError: if the payload is not the summary CSV — a required column
+            is missing, or no row carries a usable PDB id. This is deliberate.
+            The retired endpoint failed by returning an HTML page that parsed
+            into zero rows, which the old code could not tell apart from "this
+            protein has no known antibodies", so the feature was dead for
+            months without a single error. Anything that is not recognisably
+            the summary must be loud.
+    """
+    reader = csv.DictReader(StringIO(text))
+    missing = _SUMMARY_REQUIRED_COLUMNS.difference(reader.fieldnames or ())
+    if missing:
+        raise ValueError(
+            f"SAbDab summary is missing expected column(s): {sorted(missing)}"
+        )
+
+    index: dict = {}
+    for row in reader:
+        pdb_id = _classic_pdb_id(row.get("PDB", ""))
+        if not pdb_id:
+            continue
+        # SAbDab writes the literal "NA" for absent values, and pipe-separates
+        # multi-chain antigens ("I|J"). _compute_contacts scores ONE antigen
+        # chain, so take the first; the rest of that interface is not lost,
+        # it simply is not the chain whose contacts get reported.
+        antigen_chain = (row.get("antigen_chain") or "").split("|")[0].strip()
+        species = (row.get("antigen_species") or "").strip()
+        index.setdefault(pdb_id, []).append({
+            "pdb": pdb_id,
+            "Hchain": (row.get("Hchain") or "").strip(),
+            "Lchain": (row.get("Lchain") or "").strip(),
+            "antigen_chain": "" if antigen_chain.upper() == "NA" else antigen_chain,
+            "resolution": (row.get("resolution") or "").strip(),
+            "antigen_species": "" if species.upper() == "NA" else species,
+        })
+
+    if not index:
+        raise ValueError("SAbDab summary parsed to zero usable rows")
+    return index
+
+
+def _sabdab_summary_index() -> dict:
+    """Return the SAbDab summary index, fetching it at most once per TTL.
+
+    The fetch happens while holding ``_SUMMARY_LOCK`` so that N concurrent
+    requests on a cold worker produce ONE download rather than N. That blocks
+    the other callers for the duration, which is the intended trade: they
+    would otherwise each pull the same megabyte. The GIL is released across
+    the socket read, so waiting threads cost no CPU.
+
+    Never raises — a lookup failure degrades to "no known binders", the same
+    as a target with none. Returns a previously built index in preference to
+    an empty one when a refresh fails.
+    """
+    global _SUMMARY_INDEX, _SUMMARY_EXPIRES_AT
+    with _SUMMARY_LOCK:
+        # Deliberately keyed on the expiry alone, NOT on "do we have an
+        # index". Gating this on ``_SUMMARY_INDEX is not None`` looks
+        # equivalent and is not: a worker that has never succeeded would fall
+        # through to the fetch on EVERY call, so a dead upstream would cost
+        # one timeout per analysis instead of one per error TTL — the failure
+        # this backoff exists to prevent, on the exact path where it matters
+        # most. ``_SUMMARY_EXPIRES_AT`` starts at 0.0, which is below any
+        # monotonic reading, so the first call still fetches.
+        if time.monotonic() < _SUMMARY_EXPIRES_AT:
+            return _SUMMARY_INDEX if _SUMMARY_INDEX is not None else {}
+        try:
+            resp = requests.get(SABDAB_SUMMARY_URL, timeout=_SUMMARY_TIMEOUT_SEC)
+            resp.raise_for_status()
+            index = _parse_summary_csv(resp.text)
+        except Exception:
+            logger.warning(
+                "SAbDab summary fetch/parse failed; known-binder lookup is "
+                "degraded. Retrying in %ss.", _SUMMARY_ERROR_TTL_SEC,
+                exc_info=True,
+            )
+            _SUMMARY_EXPIRES_AT = time.monotonic() + _SUMMARY_ERROR_TTL_SEC
+            # Serve the last good index if there is one. Stale beats empty:
+            # SAbDab grows by a few structures a week.
+            return _SUMMARY_INDEX if _SUMMARY_INDEX is not None else {}
+
+        logger.info(
+            "SAbDab summary indexed: %d PDB entries.", len(index)
+        )
+        _SUMMARY_INDEX = index
+        _SUMMARY_EXPIRES_AT = time.monotonic() + _SUMMARY_TTL_SEC
+        return _SUMMARY_INDEX
+
+
+def _reset_summary_cache() -> None:
+    """Drop the cached index. Test helper; not used by request handling."""
+    global _SUMMARY_INDEX, _SUMMARY_EXPIRES_AT
+    with _SUMMARY_LOCK:
+        _SUMMARY_INDEX = None
+        _SUMMARY_EXPIRES_AT = 0.0
 
 
 def query_sabdab(uniprot_id: str) -> list:
     """Find antibody/nanobody structures for a target protein via RCSB + SAbDab.
 
     Step 1: Query RCSB search API to get PDB IDs containing the UniProt
-    accession. Step 2: Probe each PDB ID against SAbDab's per-structure
-    endpoint in parallel threads to filter for antibody-antigen complexes.
+    accession. Step 2: look each one up in the cached SAbDab summary index to
+    filter for antibody-antigen complexes.
+
+    Step 2 used to be one HTTPS request per PDB id, each on its own raw
+    ``threading.Thread`` — 40 threads and 41 requests per anonymous analysis,
+    measured at ~1.9 CPU-seconds and a peak of 42 live threads. It is now a
+    dict lookup against an index fetched at most once a day per worker. That
+    matters beyond its own cost: it is what makes a threaded worker class
+    safe, since the old fan-out multiplied by every concurrent request.
 
     Args:
         uniprot_id: UniProt accession (e.g. "P00533" for EGFR).
@@ -630,21 +773,10 @@ def query_sabdab(uniprot_id: str) -> list:
     if not pdb_ids:
         return []
 
-    # Probe each PDB ID against SAbDab in parallel. Collect all TSV rows.
+    index = _sabdab_summary_index()
     all_rows: list = []
-    row_lock = threading.Lock()
-
-    def _probe(pdb_id: str) -> None:
-        rows = _sabdab_entry_for_pdb(pdb_id)
-        if rows:
-            with row_lock:
-                all_rows.extend(rows)
-
-    threads = [threading.Thread(target=_probe, args=(pid,), daemon=True) for pid in pdb_ids]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=_REQUEST_TIMEOUT_SEC + 2)
+    for pdb_id in pdb_ids:
+        all_rows.extend(index.get(pdb_id.upper(), ()))
 
     if not all_rows:
         return []
@@ -731,8 +863,14 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
 
     sabdab_hits = query_sabdab(cache_key)
     if not sabdab_hits:
-        with _CACHE_LOCK:
-            _CACHE[cache_key] = []
+        # Only remember "no binders" when the database was actually readable.
+        # This cache has no expiry, so caching a miss caused by an unreachable
+        # SAbDab would pin that miss for the life of the worker — surviving
+        # the 5-minute retry that already healed it, and reproducing in
+        # miniature the silent-permanent-zero failure this repoint fixes.
+        if _sabdab_summary_index():
+            with _CACHE_LOCK:
+                _CACHE[cache_key] = []
         return []
 
     # Compute contacts for the top N structures in parallel.
