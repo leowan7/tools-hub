@@ -1,7 +1,7 @@
 """Exception types Scout raises on purpose.
 
-Kept in its own module so :mod:`scout.pipeline` and :mod:`scout.routes` can
-both import it without an import cycle. It imports nothing itself.
+Imports nothing, so catching the type never drags the pipeline's numpy and
+Bio imports into a module that only needs to name it.
 """
 
 
@@ -13,14 +13,24 @@ class ScoutInputError(ValueError):
     chains: A, B". ``scout.routes._client_error`` forwards these verbatim to
     the browser and replaces every other exception with generic text, so the
     type is a promise about the message: no server paths, no filenames, no
-    library internals, no caller input echoed back.
+    library internals.
 
-    It subclasses ``ValueError`` so the ``except ValueError`` handlers that
-    answer 422 keep catching it unchanged.
+    It DOES echo back the one field the message is about -- the chain id, or
+    the requested residue list. That is the diagnostic, and the example above
+    is itself an echo. Both renderers assign it with ``textContent``
+    (``showAnalyzeError`` in ``templates/scout/index.html``, and the two error
+    paths in ``templates/scout/feasibility.html``), so it lands as text and is
+    never parsed as markup. A site echoing something WIDER than the field the
+    user just typed needs that re-checked.
 
-    **Do not raise it for server-side faults.** A missing reference dataset
-    or a malformed cache is an operator's problem, not the uploader's; those
-    keep raising plain ``ValueError`` and reach the user as the generic
-    message, which is the honest answer -- there is nothing they can do
-    about it. ``scout/epitope_db.py`` is the current example.
+    It subclasses ``ValueError`` so the existing ``except ValueError``
+    handlers keep catching it unchanged. They answer 422 for this type and
+    500 for any other, because anything else is a server fault rather than a
+    bad upload.
+
+    **Do not raise it for server-side faults.** A missing reference dataset or
+    a malformed cache is an operator's problem, not the uploader's; those keep
+    raising plain ``ValueError`` and reach the user as the generic message,
+    which is the honest answer -- there is nothing they can do about it.
+    ``_parse_summary_csv`` in ``scout/epitope_db.py`` is the current example.
     """

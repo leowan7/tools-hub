@@ -291,8 +291,12 @@ def run_pipeline(
         Path to the written results.csv file.
 
     Raises:
-        ValueError: If chain_id is not present in the PDB, or if too few
+        ScoutInputError: If chain_id is not present in the PDB, or if too few
             surface residues exist to form patches, or if no patches are formed.
+            The type matters: scout/routes.py forwards this one's message to
+            the browser verbatim and replaces every other exception, so a
+            plain ValueError here silently becomes "Analysis failed."
+            See scout/errors.py.
         FileNotFoundError: If pdb_path does not exist on disk.
     """
     pdb_path = Path(pdb_path)
@@ -590,7 +594,8 @@ def run_feasibility_pipeline(
         Path to feasibility_results.csv in the same directory as pdb_path.
 
     Raises:
-        ValueError: If chain or residues are invalid.
+        ScoutInputError: If chain or residues are invalid. The type is
+            load-bearing -- see run_pipeline above and scout/errors.py.
         FileNotFoundError: If pdb_path does not exist.
     """
     from scout.accessibility import score_approach_cone

@@ -61,7 +61,7 @@ TMP = Path("tmp")
 _LEAKY_PATH = "C:/srv/tools-hub/instance/private-8f3a2b/input.pdb"
 _LEAK_TOKEN = "private-8f3a2b"
 
-# An app-authored message, copied in shape from scout/pipeline.py:310.
+# An app-authored message, copied in shape from run_pipeline's chain check.
 _USEFUL_MESSAGE = "Chain 'Z' not found in structure. Available chains: A, B"
 
 
@@ -153,7 +153,7 @@ def _sse_error(resp) -> dict:
 class TestExceptionTextDoesNotReachTheClient:
 
     def test_analyze_sse_redacts_an_oserror(self, client, monkeypatch, reap_jobs):
-        """scout/routes.py:898 — the anonymous progress stream."""
+        """progress() — the anonymous SSE stream."""
         job_id = _new_job(client)
         monkeypatch.setattr("scout.pipeline.run_pipeline", _raise(_leaky_oserror()))
 
@@ -166,7 +166,7 @@ class TestExceptionTextDoesNotReachTheClient:
         assert _LEAKY_PATH not in resp.get_data(as_text=True)
 
     def test_feasibility_sse_redacts_an_oserror(self, client, monkeypatch, reap_jobs):
-        """scout/routes.py:1137 — the feasibility progress stream."""
+        """feasibility_progress() — the SSE stream."""
         _login(client)
         job_id = _new_job(client)
         monkeypatch.setattr(
@@ -186,7 +186,7 @@ class TestExceptionTextDoesNotReachTheClient:
     def test_feasibility_analyze_json_redacts_an_oserror(
         self, client, monkeypatch, reap_jobs
     ):
-        """scout/routes.py:1012 — reached from except (ValueError, FileNotFoundError)."""
+        """feasibility_analyze() — reached from its except FileNotFoundError."""
         _login(client)
         job_id = _new_job(client)
         monkeypatch.setattr(
@@ -207,11 +207,11 @@ class TestExceptionTextDoesNotReachTheClient:
     def test_analyze_json_redacts_a_non_valueerror(
         self, client, monkeypatch, reap_jobs
     ):
-        """scout/routes.py:609/610 — analyze()'s own JSON error return.
+        """analyze()'s own JSON error return.
 
-        The ``except ValueError`` at :608 forwards its message (asserted
-        below in TestUsefulMessagesSurvive); this pins that the *broad*
-        handler underneath it stays generic.
+        Its ``except ValueError`` forwards a ScoutInputError's message
+        (asserted below in TestUsefulMessagesSurvive); this pins that the
+        *broad* handler underneath it stays generic.
         """
         job_id = _new_job(client)
         monkeypatch.setattr("scout.pipeline.run_pipeline", _raise(_leaky_oserror()))
@@ -242,7 +242,10 @@ class TestExceptionTextDoesNotReachTheClient:
 
         resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
 
-        assert resp.status_code in (422, 500), resp.data
+        # 500, not 422: the message is withheld precisely because this is not
+        # the uploader's fault, so answering "check that the PDB is valid"
+        # would blame them for it.
+        assert resp.status_code == 500, resp.data
         assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
 
     def test_analyze_sse_redacts_a_plain_valueerror_from_a_dependency(
@@ -255,9 +258,9 @@ class TestExceptionTextDoesNotReachTheClient:
             _raise(ValueError(f"could not convert string to float: '{_LEAKY_PATH}'")),
         )
 
-        resp = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+        event = _sse_error(client.get(f"/scout/progress?job_id={job_id}&chain=A"))
 
-        assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
+        assert _LEAK_TOKEN not in event["msg"], event
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +393,66 @@ class TestOperatorStillGetsTheDetail:
         assert _LEAK_TOKEN not in body
         assert _LEAK_TOKEN in caplog.text, caplog.text
 
+    def test_analyze_logs_a_plain_valueerror_it_withheld(
+        self, client, monkeypatch, reap_jobs, caplog
+    ):
+        """analyze()'s ValueError branch, which used to log nothing at all.
+
+        The two tests above inject an ``OSError``, which reaches a different
+        clause in both routes -- neither touches this one.
+        """
+        job_id = _new_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_pipeline",
+            _raise(ValueError(f"could not convert string to float: '{_LEAKY_PATH}'")),
+        )
+
+        with caplog.at_level("ERROR", logger="scout.routes"):
+            resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+
+        assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
+        assert _LEAK_TOKEN in caplog.text, caplog.text
+
+    def test_feasibility_analyze_logs_a_plain_valueerror_it_withheld(
+        self, client, monkeypatch, reap_jobs, caplog
+    ):
+        _login(client)
+        job_id = _new_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_feasibility_pipeline",
+            _raise(ValueError(f"could not convert string to float: '{_LEAKY_PATH}'")),
+        )
+
+        with caplog.at_level("ERROR", logger="scout.routes"):
+            resp = client.post(
+                "/scout/feasibility/analyze",
+                json={"job_id": job_id, "chain": "A", "epitope_residues": [10, 11, 12]},
+            )
+
+        assert resp.status_code == 500, resp.data
+        assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
+        assert _LEAK_TOKEN in caplog.text, caplog.text
+
+    def test_a_forwarded_scoutinputerror_is_not_logged_as_a_fault(
+        self, client, monkeypatch, reap_jobs, caplog
+    ):
+        """The other half of the branch: a user typo is not an ERROR.
+
+        Without this, `if isinstance(...)` could be inverted and every test
+        above would still pass -- they only assert the withheld case.
+        """
+        job_id = _new_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_pipeline", _raise(ScoutInputError(_USEFUL_MESSAGE))
+        )
+
+        with caplog.at_level("ERROR", logger="scout.routes"):
+            resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+
+        assert resp.status_code == 422, resp.data
+        assert resp.get_json()["error"] == _USEFUL_MESSAGE
+        assert not caplog.records, caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Contract guard: the browser terminates on stage in ("done", "error")
@@ -507,3 +570,53 @@ class TestJsonRoutesAnswerJsonForMalformedInput:
 
         assert resp.status_code == 400, resp.data
         assert "QCPROBE" not in resp.get_data(as_text=True), resp.data
+
+
+# ---------------------------------------------------------------------------
+# The invariant all of the above rests on
+# ---------------------------------------------------------------------------
+
+class TestThePipelineActuallyRaisesTheType:
+    """Every other test here monkeypatches the pipeline out.
+
+    So none of them would notice if it stopped raising ``ScoutInputError``,
+    and that is the whole invariant: ``_client_error`` forwards this type and
+    replaces everything else. A plain ``ValueError`` added to
+    ``scout/pipeline.py`` tomorrow silently downgrades a real user message to
+    "Analysis failed. Check that the PDB is valid and try again." with the
+    entire suite green.
+
+    The chain check runs before ``compute_rsa`` in both entry points, so
+    these need neither freesasa nor mkdssp on PATH, and both raise before
+    anything is written to disk.
+    """
+
+    _EXAMPLE = "static/example/1HEW.pdb"
+
+    def test_run_pipeline_raises_the_type_for_a_missing_chain(self):
+        from scout.pipeline import run_pipeline
+
+        with pytest.raises(ScoutInputError):
+            run_pipeline(self._EXAMPLE, "Z")
+
+    def test_run_feasibility_pipeline_raises_the_type_for_a_missing_chain(self):
+        from scout.pipeline import run_feasibility_pipeline
+
+        with pytest.raises(ScoutInputError):
+            run_feasibility_pipeline(self._EXAMPLE, "Z", [1, 2, 3])
+
+    def test_no_raise_site_in_the_pipeline_was_left_as_a_plain_valueerror(self):
+        """Covers the four sites the two tests above cannot reach.
+
+        Those need freesasa, so pin them statically instead. This is a
+        deliberately blunt guard: any plain ``ValueError`` raised in this
+        module is a message that will not reach the person who caused it.
+        """
+        source = Path("scout/pipeline.py").read_text(encoding="utf-8")
+
+        assert "raise ValueError" not in source, (
+            "scout/pipeline.py raises a plain ValueError. _client_error "
+            "replaces its message with the generic string, so the user will "
+            "never see it -- raise ScoutInputError instead (scout/errors.py), "
+            "or move the raise out of the pipeline if it is a server fault."
+        )

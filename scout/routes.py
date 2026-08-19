@@ -302,7 +302,10 @@ _GENERIC_ERROR = "Analysis failed. Check that the PDB is valid and try again."
 
 
 def _client_error(exc: BaseException) -> str:
-    """Client-safe text for a caught exception. Log the exception first.
+    """Client-safe text for a caught exception.
+
+    Callers log first, except where the text IS the log -- a forwarded
+    ``ScoutInputError`` is already recorded in the response.
 
     Scout signals "your input is wrong" by raising
     :class:`~scout.errors.ScoutInputError` with a message written for the
@@ -338,6 +341,16 @@ def _client_error(exc: BaseException) -> str:
     ``scout/errors.py``. ``scout/epitope_db.py`` still raises plain
     ``ValueError`` for a malformed SAbDab summary, which is an operator's
     problem and reaches the user as the generic message.
+
+    ONE THING THIS DOES NOT COST US, because of a gate two routes away.
+    Biopython answers an empty or non-``data_`` structure file with a plain
+    ``ValueError`` carrying real advice ("Empty file.", "The input mmCIF file
+    must begin with a 'data_' directive."), and those are exactly the
+    messages a stricter allowlist would swallow. They never reach here:
+    every intake path runs ``scout.parser.parse_pdb`` first, which catches
+    everything and answers with its own curated 422. If that gate is ever
+    removed, this function starts eating those messages -- reinstate them as
+    ``ScoutInputError`` at the same time.
 
     An empty message falls back too -- the SSE clients render ``data.msg``
     straight into the banner (``templates/scout/index.html:346``), and a
@@ -661,12 +674,14 @@ def analyze():
             from scout.interfaces import detect_interfaces  # noqa: PLC0415
             ppi_interfaces = detect_interfaces(pdb_path, chain_id)
         except ValueError as exc:
-            # A ScoutInputError is forwarded verbatim, so the response itself
-            # is the record. Any other ValueError is replaced by generic text,
-            # and without this would leave no trace anywhere of what failed.
-            if not isinstance(exc, ScoutInputError):
-                logger.exception("Pipeline error for job %s", job_id)
-            return jsonify({"error": _client_error(exc)}), 422
+            if isinstance(exc, ScoutInputError):
+                return jsonify({"error": _client_error(exc)}), 422
+            # Not the uploader's fault, so do not answer 422 "check that the
+            # PDB is valid" -- the same reasoning the FileNotFoundError clause
+            # in feasibility_analyze already applies. And it is the only
+            # surviving record, since the text is withheld.
+            logger.exception("Pipeline error for job %s", job_id)
+            return jsonify({"error": _GENERIC_ERROR}), 500
         except Exception:
             logger.exception("Pipeline error for job %s", job_id)
             return jsonify({"error": _GENERIC_ERROR}), 500
@@ -1070,11 +1085,11 @@ def feasibility_analyze():
             # set out to close. The message is gated for the same reason as
             # every other client-facing string here.
             logger.warning("Epitope parse failed for job %s", job_id, exc_info=True)
-            # A flat string, NOT _client_error: int() raises a *plain*
-            # ValueError whose message quotes the caller's own input
-            # ("invalid literal for int() with base 10: 'QCPROBE'"), and the
-            # allowlist forwards plain ValueErrors verbatim. Gating this site
-            # through the helper would have looked correct and echoed anyway.
+            # A flat string rather than _GENERIC_ERROR: it names the actual
+            # failure. int() raises a plain ValueError quoting the caller's own
+            # input ("invalid literal for int() with base 10: 'QCPROBE'"), which
+            # _client_error would now replace anyway -- but with text about the
+            # PDB being invalid, which this is not.
             return jsonify({
                 "error": "Could not read that epitope from the stored results.",
             }), 400
@@ -1096,16 +1111,18 @@ def feasibility_analyze():
         )
         return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
     except ValueError as exc:
-        # A ScoutInputError is forwarded verbatim, so nothing is hidden that a
-        # traceback would help reconstruct -- and a wrong-chain typo is the most
-        # common user error on this route, so exc_info there is pure log noise.
-        # Any other ValueError is withheld from the client, which makes the
-        # traceback the only surviving account of it.
-        logger.warning(
-            "Feasibility rejected input for job %s: %s", job_id, exc,
-            exc_info=not isinstance(exc, ScoutInputError),
-        )
-        return jsonify({"error": _client_error(exc)}), 422
+        if isinstance(exc, ScoutInputError):
+            # Forwarded verbatim, so nothing is hidden that a traceback would
+            # help reconstruct -- and a wrong-chain typo is the most common
+            # user error on this route, so exc_info would be pure log noise.
+            logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
+            return jsonify({"error": _client_error(exc)}), 422
+        # Withheld, so the traceback is the only surviving account of it -- and
+        # 500, not 422, because a plain ValueError is a server fault. Blaming
+        # the upload here is the mistake the FileNotFoundError clause above
+        # was written to avoid.
+        logger.exception("Feasibility pipeline fault for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
     except Exception:
         # Anything else used to escape as an unhandled 500 with a stack-trace
         # page. The route contracts to return JSON; the UI only reaches it
