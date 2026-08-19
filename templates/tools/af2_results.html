@@ -24,6 +24,14 @@
 {% set total_aa   = output.get('total_aa') %}
 {% set model_preset = output.get('model_preset') %}
 {% set clone_url  = url_for('tools.tool_form', tool='af2', clone_from=job.id) %}
+{# "example" is the sentinel job id components/worked_example.html uses when
+   it replays a canned payload on the public tool page. Nothing is stored
+   behind it, so the job-scoped controls below are suppressed under it. The
+   shared macros in components/{results_shell,candidate_table}.html guard on
+   the same signal; these links sit OUTSIDE those macros, in this partial's
+   own success and error branches, which is why they need their own. #}
+{% set is_example = (job.id == 'example') %}
+
 
 {# Summary stats computed in Jinja — avoids a second round-trip on the
    pLDDT array just to show a mean. #}
@@ -226,6 +234,7 @@
        render for AF2 jobs, so we omit it entirely to avoid dead UI
        (Codex P2). #}
 
+    {% if not is_example %}
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
       {% if pdb_b64 %}
@@ -237,6 +246,7 @@
         </a>
       {% endif %}
     </div>
+    {% endif %}
 
     {% if output.get('runtime_seconds') %}
       <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">

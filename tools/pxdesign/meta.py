@@ -178,6 +178,10 @@ PILOT: dict | None = {
 # runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
 # under runs/ are pipeline-stage outputs, not job results. Capture one from
 # a real run and this becomes a two-file change: example/result.json plus
-# the narration below.
+# the narration below. scripts/capture_example_result.py pulls a succeeded
+# run out of the jobs table, scrubs the customer-identifying fields, and
+# prints the figures the narration has to match. The results partial is
+# already example-safe — the guard lives in the two shared macros, not
+# here — so nothing else needs touching.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = None

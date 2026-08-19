@@ -8,6 +8,26 @@
 {% macro results_panel(candidates, columns, tool_slug, job_id,
                        clone_url="", tier="", gpu_seconds=None,
                        send_target_tools=None, campaign_id="") %}
+{# ``job_id`` is the literal string "example" only when
+   components/worked_example.html is replaying a canned payload on a
+   public /tools/<slug> page. Every control keyed on it — the refold
+   POSTs and the clone link here, the exports and lab-submit modal in
+   candidate_table — would 404 there, because no job, no storage and no
+   campaign sit behind the sentinel.
+
+   The sentinel cannot collide with a real run: tool_jobs.id is a uuid
+   column defaulting to gen_random_uuid() (supabase/migrations/
+   0005_tool_jobs.sql), so the literal string "example" is not merely
+   unused as an id, it is unstorable as one.
+
+   Why the sentinel and not the ``example`` flag that worked_example.html
+   sets: an imported macro does not receive the including template's
+   context (Jinja needs ``with context``), so ``example`` is undefined in
+   here while ``job_id`` is already a parameter. Guarding on the value we
+   are actually given beats threading a second one through thirteen
+   callers. tests/test_worked_examples.py re-derives this rather than
+   trusting it. #}
+{% set is_example = (job_id == 'example') %}
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">
     <span class="panel-title">Candidates ({{ candidates | length }})</span>
@@ -52,7 +72,7 @@
          only when the source tool actually produces binder sequences
          (kept in lockstep with shared.refold.SOURCE_TOOLS). #}
       {% set REFOLD_SOURCES = ['rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
-      {% if tool_slug in REFOLD_SOURCES %}
+      {% if tool_slug in REFOLD_SOURCES and not is_example %}
         {# Campaign context refolds the whole campaign's global top-N; a single
            job refolds its own top-N. #}
         {% set refold_action = url_for('campaigns.compute_campaign_refold', campaign_id=campaign_id) if campaign_id else url_for('jobs.job_refold', job_id=job_id) %}
@@ -123,7 +143,7 @@
       {% else %}
         <p class="subtitle">No candidates returned. Try a longer preset or adjust parameters.</p>
       {% endif %}
-      {% if clone_url %}
+      {% if clone_url and not is_example %}
         <div style="margin-top:1rem;">
           <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
         </div>
