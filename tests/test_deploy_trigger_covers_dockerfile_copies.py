@@ -30,6 +30,34 @@ Three deliberate scope limits, all safe in the conservative direction:
 * Only git-TRACKED files are candidates. A push event can only ever report
   changes to tracked files, so an untracked file is not something the trigger
   could match anyway.
+
+What "conformance" here does and does not mean
+----------------------------------------------
+``test_matches_githubs_documented_filter_pattern_examples`` replays every row of
+GitHub's published pattern table. Read the name carefully: those rows publish
+only MATCHES, never non-matches, so on their own they prove conformance in ONE
+direction. They catch a translator that matches too LITTLE. They cannot catch
+one that matches too much — QC round 3 demonstrated this by replacing
+``_to_regex`` with ``re.compile(".*")``, which makes every pattern match every
+path and still passes all twelve rows. Three rows (``*``, ``*.js``, ``docs/*``)
+catch nothing short of total inertness.
+
+Over-matching is the direction that matters most, because it is the SILENT one:
+a filter believed wider than it is makes this module report deploy coverage that
+does not exist, and the image goes stale with nothing red. Protection against it
+lives in three places, none of them the rows above:
+
+* ``test_rejects_what_githubs_documented_rules_exclude`` — documented
+  non-matches derived from GitHub's whole-path and ``*``-stops-at-``/`` rules.
+  This is what pins the regex anchors;
+* ``test_pattern_translation_distinguishes_star_from_globstar`` — hand-written
+  cases over the LIVE trigger, including the ``*``-must-not-cross-``/`` case;
+* ``test_matches_githubs_documented_negation_examples`` — later-wins ordering,
+  including GitHub's own documented does-NOT-match entries.
+
+Do not read a green conformance run as bidirectional proof. Round 3's mutation
+table (``docs/qc/deploy-trigger-guard-fixes-round3.md``) is the evidence for
+every claim in this section.
 """
 
 from __future__ import annotations
@@ -123,10 +151,14 @@ def _to_regex(pattern: str) -> re.Pattern:
     ``**`` "Matches zero or more of any character", which taken literally makes
     ``**/README.md`` require a leading ``/`` and so NOT match ``README.md`` —
     contradicting the table's own worked example. The examples are what the
-    engine does; the prose is a simplification. Rendered docs.github.com drops
-    this table, which is how an earlier QC round came to call the zero-segment
-    reading unverified and this docstring came to describe it as a mere
-    convention. It is neither: it is documented, and
+    engine does; the prose is a simplification. An earlier QC round did not
+    find this table and called the zero-segment reading unverified, and this
+    docstring was then rewritten to describe it as a mere convention. Why the
+    table was missed is not recorded here, because it is not known — checked
+    directly, docs.github.com's rendered page DOES carry the full table,
+    root-``README.md`` row included, so "the rendered page omits it" is not the
+    explanation. The reading is neither unverified nor conventional: it is
+    documented, and
     ``test_matches_githubs_documented_filter_pattern_examples`` below now pins
     every row of the table so this cannot be re-litigated from memory again.
 
@@ -260,11 +292,20 @@ def test_to_regex_refuses_rather_than_guesses():
     ``page.jsx``, because ``?`` quantifies the preceding ``x``. Modelling ``?``
     as a single-character wildcard, the glob reading, gets both wrong.
 
-    ``foo\\*bar`` is GitHub's escape: the literal string ``foo*bar``. It is the
-    one that must be REFUSED rather than approximated, because the naive
-    rendering is wrong twice over — ``^foo\\\\[^/]*bar$`` matches neither
-    ``foo*bar`` nor ``fooXbar``, only a path containing an actual backslash,
-    which on a POSIX repo path is nothing at all.
+    ``foo\\*bar`` is refused because GitHub documents NO meaning for ``\\``. Its
+    cheat sheet lists exactly six specials — ``*``, ``**``, ``?``, ``+``,
+    ``[]``, ``!`` — and ``grep -i 'escape\\|backslash'`` over the whole of
+    workflow-syntax.md returns nothing. So no escaping convention may be
+    assumed, and the literal reading is no better: ``re.escape`` would give
+    ``^foo\\\\[^/]*bar$``, which matches only a path containing a real
+    backslash — nothing on a POSIX repo path — so the pattern would read as
+    "matches nothing" and quietly subtract itself from the filter. Undocumented
+    AND silently empty is the case to refuse.
+
+    (An earlier revision of this docstring called ``\\`` "GitHub's escape". That
+    was invented, and it outlived the comment fix that corrected the same claim
+    beside ``_UNMODELLED_METACHARS``. Docstrings survive a squash merge; keep
+    the two in step.)
     """
     for pattern in ["*.jsx?", "tools/**/*+.py", "tools/**/[abc]*.py", "foo\\*bar"]:
         with pytest.raises(NotImplementedError):
@@ -279,11 +320,12 @@ def test_to_regex_refuses_rather_than_guesses():
 # workflow-syntax.md. Pattern -> the example matches that row lists.
 #
 # This is the anchor the rest of the module's pattern reasoning hangs off. It
-# exists because the previous revision argued about `**/` semantics from memory
-# and from the RENDERED docs page, which drops this table entirely — and talked
-# itself out of a correct implementation. Facts about an external system belong
-# in an executable check against that system's own published examples, not in a
-# docstring where the next reader has to take them on trust.
+# exists because a previous revision argued about `**/` semantics from memory
+# rather than from this table, and talked itself out of a correct
+# implementation. Facts about an external system belong in an executable check
+# against that system's own published examples, not in a docstring where the
+# next reader has to take them on trust — which is the whole point of the rows
+# below, and of not writing a prose theory about why the table went unread.
 _DOC_ROWS = [
     ("*", ["README.md", "server.rb"]),
     ("**", ["all/the/files.md"]),
@@ -305,9 +347,75 @@ _DOC_ROWS = [
 ]
 
 
+# The other direction. `_DOC_ROWS` publishes only MATCHES, so on its own it can
+# detect a translator that matches too little and not one that matches too much
+# — a mutation replacing `_to_regex` with `re.compile(".*")` passes every row
+# above. These non-matches are DERIVED, each from one of two sentences GitHub
+# states outright, cited per entry. Nothing here is invented; where the docs are
+# silent (see the `/**` note below) there is deliberately no entry.
+#
+#   RULE W ("whole path"): "Path patterns must match the whole path, and start
+#   from the repository's root." — workflow-syntax.md, immediately above the
+#   "Patterns to match file paths" table.
+#   RULE S ("* stops at /"): "The `*` wildcard matches any character, but does
+#   not match slash (`/`)." — the `'*'` row of that table.
+#
+# Rule W is what pins BOTH anchors, and a dropped `$` is the mutation with a
+# silent-staleness direction: without it `static/example/1HEW.pdb.bak` would
+# read as covered when GitHub does not cover it, and this module would report
+# coverage that does not exist. That is the exact failure it exists to prevent,
+# which is why the whole-path entries come first.
+_DOC_NON_MATCHES = [
+    # RULE W — a suffix match is not a whole-path match. Kills a dropped `$`.
+    ("*.js", "app.js.map", "W: pattern must match the WHOLE path, not a prefix of it"),
+    # RULE W again, through the `**/` branch rather than the `[^/]*` one.
+    ("**/README.md", "README.md.bak", "W: whole path; `**/` does not license a suffix match"),
+    # RULE W — "start from the repository's root". Kills a dropped `^`.
+    ("docs/*", "src/docs/file.txt", "W: patterns start at the repo root, so `docs/` cannot float"),
+    # RULE S — and the table says so by contrast: `'**.js'` lists `js/index.js`
+    # as a match while `'*.js'` lists only `app.js` and `index.js`.
+    ("*.js", "js/index.js", "S: `*` does not cross `/` (contrast the `'**.js'` row, which does)"),
+    ("*", "docs/README.md", "S: `*` does not cross `/`"),
+    # RULE S — contrast again: `docs/**` lists `docs/mona/octocat.txt`, `docs/*` does not.
+    ("docs/*", "docs/mona/octocat.txt", "S: `*` does not cross `/` (contrast the `docs/**` row)"),
+]
+
+
+@pytest.mark.parametrize(
+    "pattern,path,why", _DOC_NON_MATCHES, ids=[f"{p}!~{q}" for p, q, _ in _DOC_NON_MATCHES]
+)
+def test_rejects_what_githubs_documented_rules_exclude(pattern, path, why):
+    """The over-matching direction, derived from GitHub's stated rules."""
+    rx = _to_regex(pattern)
+    assert not rx.match(path), (
+        f"_to_regex({pattern!r}) -> {rx.pattern!r} matches {path!r}, which GitHub's "
+        f"documented rules exclude — {why}. A translator that matches too much makes "
+        "this module report deploy coverage that does not exist, which is silent "
+        "staleness: the file changes, the image changes, and no deploy runs."
+    )
+
+
+# NOT asserted, on purpose: whether a trailing `/**` matches the directory ITSELF
+# as well as its contents (`docs/**` vs the bare path `docs`). GitHub's table
+# lists only `docs/README.md` and `docs/mona/octocat.txt` for `docs/**` — both
+# have a child — and no documented sentence settles the bare-directory case.
+# `_to_regex` renders it `(?:/.*)?`, i.e. the permissive reading, and that is a
+# CHOICE, not a documented fact. Writing an assertion either way would be
+# inventing a rule, which is how two earlier revisions of this file went wrong.
+#
+# It is also inert here, which is why leaving it unpinned costs nothing: every
+# path this module ever evaluates comes from `git ls-files` or from resolving a
+# Dockerfile COPY against that same list, and both yield FILES. A bare directory
+# path is never tested, so the two readings cannot diverge on any input reachable
+# from here. If that ever changes, this is the first thing to re-derive.
+
+
 @pytest.mark.parametrize("pattern,examples", _DOC_ROWS, ids=[r[0] for r in _DOC_ROWS])
 def test_matches_githubs_documented_filter_pattern_examples(pattern, examples):
-    """Conformance, row by row, against GitHub's published worked examples."""
+    """Conformance, row by row, against GitHub's published worked examples.
+
+    One direction only — see ``_DOC_NON_MATCHES`` for the other.
+    """
     rx = _to_regex(pattern)
     missed = [e for e in examples if not rx.match(e)]
     assert not missed, (
