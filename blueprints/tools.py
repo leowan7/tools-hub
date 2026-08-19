@@ -337,93 +337,121 @@ def _require_tool(tool_slug: str):
 #
 # "free" was dropped from these phrases deliberately. Reading the page
 # is free; running the tool is billed against the wallet, and an
-# indexable page is the wrong place to blur that.
+# indexable page is the wrong place to blur that. The same reasoning
+# applies harder to ``_PREVIEW_TITLE_PHRASES`` below, which is what a
+# search result shows.
+#
+# ``seo_long`` SELLS THE TASK; the adapter's ``blurb`` says what the
+# form does. They render two paragraphs apart inside the same
+# ``<div class="hero">`` (_form_hero.html), and the first draft of this
+# map wrote both to the same brief without either knowing the other was
+# adjacent, so ten of fourteen pages opened with the same sentence
+# twice ("Upload your target, mark the residues you want gripped, and
+# get back..." / "Upload your target, mark the residues you want the
+# binder to touch, and get back..."). Each entry below therefore
+# answers "why reach for THIS one" — the differentiator the blurb does
+# not carry — rather than restating the mechanics one paragraph down.
 _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
     "mpnn": (
         "no-install online sequence design tool",
-        "Upload a backbone — a structure with no sequence decided yet "
-        "— and get ranked candidate sequences back in about 30 "
-        "seconds, with no local GPU"
+        "The step between a designed shape and something you can "
+        "actually order: give it any backbone, from any other tool, "
+        "and it proposes the sequences most likely to fold into it"
     ),
     "af2": (
         "no-install online structure prediction tool",
-        "Paste a sequence, one chain or several, and get a predicted "
-        "3D structure with calibrated per-residue confidence, homolog "
-        "search and templates included; results land at /jobs"
+        "The reference-standard fold, with the homolog search and "
+        "templates that make it accurate on natural proteins, and a "
+        "multimer mode that predicts several chains together rather "
+        "than one at a time"
     ),
     "colabfold": (
         "fast no-install online structure prediction tool",
-        "Paste a sequence and get a fold back in one to two minutes, "
-        "with no MMseqs2 round trip on your own laptop and no Colab "
-        "notebook to babysit"
+        "The quick pass while you are still iterating: no Colab "
+        "notebook to babysit, no MMseqs2 round trip on your own "
+        "laptop, and no queue to sit in between attempts"
     ),
     "esmfold": (
         "no-install online single-sequence structure prediction tool",
-        "Paste one protein chain and get a fold in about 30 seconds "
-        "with no search for related natural sequences, so it works on "
-        "designed sequences that have no relatives to find"
+        "The one to reach for on a sequence you designed yourself: it "
+        "reads the chain directly instead of hunting for natural "
+        "relatives, which is exactly what a de novo binder does not "
+        "have"
     ),
     "bindcraft": (
         "no-install online de novo binder design tool",
-        "Upload your target, mark the residues you want the binder to "
-        "touch, and get back 60 to 150 residue mini-proteins that "
-        "have already been refolded and filtered"
+        "Design and in-silico filtering run in one pass, so what comes "
+        "back is already a shortlist rather than raw output you have "
+        "to triage yourself"
     ),
     "rfantibody": (
         "no-install online nanobody design tool",
-        "Upload your target, mark the patch you want gripped, and get "
-        "back single-domain antibody (VHH) candidates without setting "
-        "up RoseTTAFold or Rosetta locally"
+        "Nanobodies are small enough to reach into a cleft a full "
+        "antibody cannot and simple enough to express, and this designs "
+        "them straight onto the patch you name with no RoseTTAFold or "
+        "Rosetta to install"
     ),
     "rfdiffusion": (
         "no-install online de novo binder design tool",
-        "Upload your target, mark the residues you want the binder to "
-        "touch, and get back brand-new binders that each carry a real "
-        "AlphaFold2 confidence score against your own target"
+        "The most widely used de novo binder generator, run end to "
+        "end: every design it invents is re-folded with AlphaFold2 "
+        "against your own target, so the confidence score you read is "
+        "measured rather than the generator marking its own work"
     ),
     "boltzgen": (
         "no-install online multi-format binder design tool",
-        "Aim mini-proteins, nanobodies, antibodies or peptides at the "
-        "same site on your target, including targets carrying sugars, "
-        "modified residues or other non-standard chemistry"
+        "One model covers four binder formats against the same site, "
+        "so you can weigh a mini-protein against a nanobody, an "
+        "antibody or a peptide without changing tools — and it reads "
+        "the sugars and modified residues on your target instead of "
+        "ignoring them"
     ),
     "boltz2": (
         "no-install online cofold validation tool",
-        "Fold a designed binder against your antigen from sequence "
-        "alone and get a 0-to-1 interface confidence score back in "
-        "about 15 seconds per design"
+        "The cheap second opinion on a shortlist: it works from "
+        "sequence alone, so a whole batch of designs from another tool "
+        "can be re-checked for seconds each before any of them reach "
+        "the bench"
     ),
     "pxdesign": (
         "no-install online AlphaFold2-scored binder design tool",
-        "Every candidate arrives with real ipTM, pLDDT and pAE "
-        "measured against your own target, from the same "
-        "initial-guess pipeline Ranomics runs for its wet-lab "
-        "campaigns"
+        "The same pipeline Ranomics runs for its own wet-lab "
+        "campaigns: every candidate comes back already re-folded "
+        "against your target, carrying its own confidence score for "
+        "the contact rather than a number borrowed from the generator"
     ),
     "iggm": (
         "no-install online antibody and nanobody engineering tool",
-        "Redesign the binding loops, humanise a framework, raise "
-        "affinity, or predict how an antibody docks onto the antigen "
-        "you upload, all aimed at the epitope you name"
+        "One model for the antibody work that usually takes four "
+        "separate ones — loop redesign, humanisation, affinity "
+        "maturation and predicting the docked complex all run from the "
+        "same upload"
     ),
     "esmfold2-design": (
         "no-install online antibody-fragment and minibinder design "
         "tool",
-        "Design all six binding loops of a paired heavy and light "
-        "scFv — a single-chain antibody fragment — at once, or small "
-        "de novo binders by gradient descent instead of diffusion"
+        "All six binding loops of the scFv are designed together in one "
+        "pass against your target rather than one at a time, and the "
+        "same run can make small de novo binders instead"
     ),
     "opendde": (
         "no-install online all-atom complex prediction tool",
-        "Describe protein, DNA, RNA and small molecules together in "
-        "one specification and get an AlphaFold3-class joint "
-        "structure prediction back"
+        "DNA, RNA, cofactors and small molecules are first-class parts "
+        "of the input rather than something to strip out before "
+        "folding, so the complex is modelled as it actually exists"
     ),
     "proteina": (
         "no-install online hard-target binder design tool",
-        "Aim at a recessed pocket, a site spanning two chains, or a "
-        "small molecule rather than a protein, with every candidate "
-        "filtered through three independent scoring checks"
+        # NOT "three independent scoring checks" — no variant runs all
+        # three. tools/proteina/Dockerfile.modal:229-231: "Only
+        # ligand_binder (RF3 is its sole reward) and motif_ame need it;
+        # protein_binder scores on AF2 alone." See the note on
+        # ``comparison_one_liner`` in tools/proteina/meta.py.
+        "Upload a target the usual design tools struggle with — a "
+        "recessed "
+        "pocket, a site spanning two chains, or a small molecule rather "
+        "than a protein — and every candidate the search generates is "
+        "re-folded against it before the search builds on it"
     ),
 }
 
@@ -448,8 +476,15 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
 # Title-only phrases. Kept separate from ``_PREVIEW_SEO_PHRASES`` so the
 # body lede stays grammatical ("X is a <seo_phrase> you can run") while
 # the <title> stays under the 65-char SERP cap.
+#
+# "Free" was dropped here for the same reason it was dropped from the
+# ledes: running is billed against the wallet. A <title> is the most
+# indexable string on the page and the one that shows in the search
+# result, so the half-applied version had the word surviving in exactly
+# the place it misleads most. mpnn was the only one of the fourteen
+# carrying it.
 _PREVIEW_TITLE_PHRASES: dict[str, str] = {
-    "mpnn": "Free Sequence Design",
+    "mpnn": "Sequence Design on a Backbone",
     "af2": "AF2 Multimer No-Install",
     "colabfold": "No Colab Required",
     "esmfold": "Single-Sequence Folding",
@@ -464,7 +499,11 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     # Added with the copy pass: these registered after the map was
     # written and were falling through to "GPU-Backed Protein Design",
     # which describes every tool on the hub and therefore none of them.
-    "opendde": "Protein DNA RNA Ligand Co-Folding",
+    # opendde's first draft read "Protein DNA RNA Ligand Co-Folding",
+    # which rendered a 72-character <title> — over the 65-char SERP cap
+    # this map exists to respect, and repeating "co-folding" from the
+    # short name that precedes it.
+    "opendde": "Protein, DNA, RNA and Ligand",
     "proteina": "Hard-Target Binder Design",
 }
 

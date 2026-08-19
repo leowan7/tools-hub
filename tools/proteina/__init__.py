@@ -784,11 +784,20 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 adapter = ToolAdapter(
     slug="proteina",
     label="Proteina-Complexa",
+    # The BLURB says what this form does; the lede above it
+    # (blueprints/tools.py::_PREVIEW_SEO_PHRASES) sells the task. They
+    # render two paragraphs apart in the same hero, so near-identical
+    # sentences read as a stutter.
+    #
+    # It said "filters every candidate through three independent scoring
+    # checks", which is false — see the note on ``comparison_one_liner``
+    # in meta.py and Dockerfile.modal:229-231. The scoring model follows
+    # the target; no variant runs all three.
     blurb=(
-        "Upload a protein or small-molecule target and get de novo "
-        "binders found by a wide search that filters every candidate "
-        "through three independent scoring checks. The run fans out "
-        "across GPUs and stops when your wallet does."
+        "Upload a protein or small-molecule target, name the chain and "
+        "the residues you want gripped, and set how many designs to "
+        "fund. The run fans out across GPUs and stops when your wallet "
+        "does."
     ),
     presets=(
         Preset(

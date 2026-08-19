@@ -139,8 +139,8 @@
                    class="proteina-field" style="max-width: 320px;">
             <div class="proteina-help">
               A curated benchmark task. It carries its own target, chain range,
-              hotspots and binder length, so those fields do not apply. Blank
-              uses the variant's default task.
+              hotspot residues and binder length, so those fields do not apply.
+              Blank uses the variant's default task.
             </div>
           </div>
 
@@ -179,8 +179,14 @@
             <input type="text" name="hotspot_residues" id="hotspot_residues"
                    placeholder="A45,A67,A89" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                    class="proteina-field" style="max-width: 320px;">
+            {# Gloss matched to templates/components/pilot_card.html (PR #154),
+               not reworded: "the numbered residues on the patch of your target
+               you want the binder to sit on, written in your PDB's own
+               numbering". This form is a priority block and had the term
+               unglossed on first use. #}
             <div class="proteina-help">
-              Optional. Residues the binder should contact, in original PDB
+              Optional. The numbered residues on the patch of your target you
+              want the binder to sit on, written in your PDB&rsquo;s own
               numbering. A plain number is read as the target chain; when the
               run targets more than one chain it is refused, because
               <code>241</code> cannot say which protomer it means — prefix the

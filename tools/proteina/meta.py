@@ -129,12 +129,24 @@ seo_faq: list[dict] = [
     },
 ]
 
+# THE REWARD STACK IS A MENU, NOT A PIPELINE. This one-liner is the
+# highest-blast-radius string in the package — it feeds the homepage
+# card, /tools, and /help/tools/proteina — and it shipped for review
+# reading "every candidate is filtered through three independent
+# scoring checks". No variant runs all three.
+# Dockerfile.modal:229-231: "Only ligand_binder (RF3 is its sole
+# reward) and motif_ame need it; protein_binder scores on AF2 alone,
+# so it runs regardless of this switch." The comment ~70 lines above
+# says the same, and ``about["output_summary"]`` below — which renders
+# one scroll away on the same page — already said the true version.
+# Say which model scores which target, or say nothing.
 comparison_one_liner: str = (
     "You have a hard target — a recessed pocket, a site spanning "
     "two chains, or a small molecule rather than a protein — and "
     "you want to throw as much search at it as your balance allows. "
-    "Every candidate is filtered through three independent scoring "
-    "checks, and the run fans out across as many GPUs as you fund."
+    "Every candidate is re-folded and scored against your target as "
+    "it is generated, and the run fans out across as many GPUs as "
+    "you fund."
 )
 example_output_id: Optional[str] = None
 
@@ -147,10 +159,13 @@ about: dict = {
         "a recessed pocket, a site spanning two chains, a small "
         "molecule instead of a protein, an enzyme active site. Rather "
         "than generating candidates and hoping, it searches — it "
-        "generates, scores every candidate through three independent "
-        "checks (an AlphaFold2 refold, a RoseTTAFold3 fold, and a "
-        "physics force field), keeps what scores well and generates "
-        "again from there. The run splits into independent shards "
+        "generates, re-folds every candidate and scores how well it "
+        "grips your target, keeps what scores well and generates "
+        "again from there. Which model does that scoring follows the "
+        "target: a protein target is scored by an AlphaFold2 refold, "
+        "a small-molecule or motif target by RoseTTAFold3, with a "
+        "physics force field added where it applies. "
+        "The run splits into independent shards "
         "across as many GPUs as your balance funds, then ranks globally "
         "across all of them and clusters the winners, so you get a "
         "spread of different designs rather than many copies of one. "

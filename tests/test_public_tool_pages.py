@@ -603,3 +603,366 @@ class TestPublicContextIsBuiltOncePerRequest:
         client = self._client(all_tools_app)
         calls = self._counted(client, ["/tools/mpnn", "/tools/mpnn"])
         assert calls == ["mpnn", "mpnn"], calls
+
+
+# ===========================================================================
+# Wave C copy pass: the rules the copy PR established, held by tests.
+# ===========================================================================
+#
+# THE COPY PR STATED THREE RULES AND GUARDED NONE OF THEM. QC restored the
+# original defect ("RFdiffusion is a RFdiffusion de novo binder design
+# online...") and the full suite stayed green at 5262/20. It restored the
+# raw-slug fallback and stayed green too. Everything below asserts on the
+# RENDERED PAGE, never on the map literal in blueprints/tools.py: the
+# failure mode is what the page says, and the map looked fine each time it
+# shipped a broken sentence.
+#
+# The frame is templates/tools/_form_hero.html:
+#
+#     "{short_name} is a {seo_phrase} you can run through
+#      tools.ranomics.com on a dedicated GPU. {seo_long}."
+#
+# It renders for ANONYMOUS visitors only (a signed-in user is past the
+# pitch), so every test here drives the client with no session.
+
+_LEDE_FRAME = " you can run through tools.ranomics.com on a dedicated GPU."
+
+
+def _hero_text(body: str) -> str:
+    """Visible text of the page hero, tags stripped and entities resolved."""
+    import html as _html
+
+    block = re.search(r'<div class="hero">(.*?)</div>', body, re.S)
+    assert block, "no hero block rendered"
+    return re.sub(
+        r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", block.group(1)))
+    ).strip()
+
+
+def _lede_phrase(hero: str) -> str:
+    """The ``seo_phrase`` as it actually reached the page.
+
+    Sliced out of the rendered sentence rather than read from the map, so
+    a template change that stops rendering it fails here too.
+
+    The LAST "is a" before the frame, not the first: the same hero also
+    carries the adapter blurb two paragraphs up, and several blurbs
+    contain "is a" of their own.
+    """
+    head = hero.split(_LEDE_FRAME, 1)[0]
+    starts = list(re.finditer(r"\bis an? ", head))
+    assert starts, f"lede did not render the expected frame: {hero[:200]!r}"
+    return head[starts[-1].end():].strip()
+
+
+class TestRenderedLedeRules:
+    """One test per stated rule, each named after the rule it holds."""
+
+    @staticmethod
+    def _ledes(all_tools_app):
+        flask_app, slugs = all_tools_app
+        # Not "at least 14": the two assertions the brief names, spelled
+        # out, so a registry that half-populated or a flag left off cannot
+        # make the loop below pass over three tools.
+        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        client = flask_app.test_client()
+        out = {}
+        served = 0
+        for slug in slugs:
+            resp = client.get(f"/tools/{slug}")
+            assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
+            served += 1
+            hero = _hero_text(resp.get_data(as_text=True))
+            assert _LEDE_FRAME in hero, (
+                f"{slug}: the anonymous lede did not render, so every "
+                "assertion about its wording would be vacuous"
+            )
+            out[slug] = hero
+        assert served == 14, f"only {served} tool pages returned 200"
+        return out
+
+    def test_lede_phrase_never_repeats_the_tools_own_name(
+        self, all_tools_app,
+    ):
+        """Defect A. It shipped as "RFdiffusion is a RFdiffusion ...".
+
+        Only the page's OWN name: pxdesign's phrase legitimately names
+        AlphaFold2, which is a different tool.
+        """
+        offenders = {}
+        for slug, hero in self._ledes(all_tools_app).items():
+            phrase = _lede_phrase(hero).lower()
+            head = hero.split(_LEDE_FRAME, 1)[0]
+            short_name = head[:list(re.finditer(r"\bis an? ", head))[-1].start()]
+            short_name = short_name.rsplit(". ", 1)[-1].strip().lower()
+            assert short_name, slug
+            if short_name in phrase:
+                offenders[slug] = (short_name, phrase)
+        assert not offenders, f"lede repeats the tool's own name: {offenders}"
+
+    def test_lede_phrase_does_not_end_in_a_subordinate_clause(
+        self, all_tools_app,
+    ):
+        """The builder's own first draft rendered "a target you upload you
+        can run through" -- a second-person clause colliding with the
+        frame's own "you can run through".
+
+        Counted on the phrase AS RENDERED: the frame supplies the only
+        "you" the sentence is allowed to contain, so any in the phrase is
+        the collision.
+        """
+        offenders = {}
+        for slug, hero in self._ledes(all_tools_app).items():
+            phrase = _lede_phrase(hero)
+            hits = re.findall(r"\byou\b|\byour\b", phrase, re.I)
+            if hits:
+                offenders[slug] = (hits, phrase)
+        assert not offenders, (
+            "seo_phrase carries a second-person clause into a frame that "
+            "already ends '... you can run through': "
+            f"{offenders}"
+        )
+
+    def test_lede_phrase_carries_no_relative_clause_marker(
+        self, all_tools_app,
+    ):
+        """The same rule's non-pronoun half: a compact noun phrase
+        completing "is a ..." has no relative clause hanging off it."""
+        markers = (" that ", " which ", " where ", " when ", " so that ")
+        offenders = {}
+        for slug, hero in self._ledes(all_tools_app).items():
+            phrase = f" {_lede_phrase(hero).lower()} "
+            hit = [m.strip() for m in markers if m in phrase]
+            if hit:
+                offenders[slug] = (hit, phrase.strip())
+        assert not offenders, f"seo_phrase opens a clause: {offenders}"
+
+    def test_no_lede_phrase_leaks_a_raw_slug(self, all_tools_app):
+        """The old fallback was ``f"free {slug} tool online"``, so every
+        tool registered after the map was written rendered "a free
+        esmfold2-design tool online" on an indexable page.
+
+        Scoped to the PHRASE, not the whole hero: eleven of the fourteen
+        slugs are the tool's display name lowercased, so "boltzgen" in
+        the hero is the ``<h1>``, not a leak.
+        """
+        offenders = {
+            slug: _lede_phrase(hero)
+            for slug, hero in self._ledes(all_tools_app).items()
+            if slug.lower() in _lede_phrase(hero).lower()
+        }
+        assert not offenders, (
+            f"rendered lede phrase contains the raw slug: {offenders}"
+        )
+
+    def test_the_fallback_itself_leaks_no_slug(self, all_tools_app):
+        """Forces the unmapped path on all 14 and reads what renders.
+
+        Without this the rule holds only while the map is complete, which
+        is exactly the state that was true when the fallback was written
+        and false four tools later. QC's M4 mutation, turned into a guard.
+        """
+        import blueprints.tools as bt
+
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        with patch.dict(bt._PREVIEW_SEO_PHRASES, {}, clear=True):
+            for slug in slugs:
+                hero = _hero_text(
+                    client.get(f"/tools/{slug}").get_data(as_text=True)
+                )
+                assert _LEDE_FRAME in hero, slug
+                phrase = _lede_phrase(hero)
+                assert slug.lower() not in phrase.lower(), (
+                    f"fallback lede interpolates the slug: {phrase!r}"
+                )
+
+    def test_no_lede_or_title_advertises_the_run_as_free(
+        self, all_tools_app,
+    ):
+        """Decision 1, applied to the lede AND the <title>.
+
+        Reading the page is free; running is billed against the wallet.
+        "Free Sequence Design" survived in ``_PREVIEW_TITLE_PHRASES`` --
+        the most indexable string on the page, and the one a search
+        result shows -- after the ledes had already dropped the word.
+        """
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        offenders = {}
+        for slug in slugs:
+            body = client.get(f"/tools/{slug}").get_data(as_text=True)
+            title = re.search(r"<title>(.*?)</title>", body, re.S)
+            assert title, slug
+            phrase = _lede_phrase(_hero_text(body))
+            for where, text in (("title", title.group(1)), ("lede", phrase)):
+                if re.search(r"\bfree\b", text, re.I):
+                    offenders[f"{slug}/{where}"] = text.strip()
+        assert not offenders, (
+            f"'free' on a page whose Submit button is billed: {offenders}"
+        )
+
+
+class TestCatalogLoopStepTwoCountIsDerived:
+    """B1: /tools step 2 named a count the same page falsifies.
+
+    It read "Five tools here do this" while the band one screen below it
+    rendered eight. Asserted against the band AS RENDERED, so the two
+    cannot disagree even when the catalog or the feature flags change.
+    """
+
+    DESIGN_BAND = "Make new binders for my target"
+
+    @staticmethod
+    def _band_slugs(body: str, band: str) -> list[str]:
+        parts = body.split('<span class="catalog-section-title">')
+        for chunk in parts[1:]:
+            if chunk.split("</span>", 1)[0].strip() == band:
+                return sorted(
+                    set(re.findall(r'href="/tools/([a-z0-9-]+)"', chunk))
+                )
+        return []
+
+    def test_step_two_count_equals_the_rendered_band(self, all_tools_app):
+        flask_app, _ = all_tools_app
+        body = flask_app.test_client().get("/tools").get_data(as_text=True)
+        members = self._band_slugs(body, self.DESIGN_BAND)
+        assert len(members) >= 2, (
+            f"the design band rendered {members}; with fewer than two "
+            "members the count assertion below would prove nothing"
+        )
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))
+        assert f"{len(members)} tools below do this" in text, (
+            f"step 2 does not name {len(members)}, the number of tools the "
+            f"'{self.DESIGN_BAND}' band actually renders ({members}). "
+            "Derive it from ``grouped``; do not type a literal."
+        )
+
+    def test_homepage_hero_count_equals_the_same_band(self, all_tools_app):
+        """The homepage promises binders and then counts. Its first draft
+        counted the whole registry ("Fourteen models sit behind that"),
+        six of which predict structures or design sequences instead."""
+        flask_app, _ = all_tools_app
+        client = flask_app.test_client()
+        home = client.get("/").get_data(as_text=True)
+        members = self._band_slugs(
+            client.get("/tools").get_data(as_text=True), self.DESIGN_BAND
+        )
+        assert len(members) >= 2, members
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", home))
+        assert f"{len(members)} different design tools sit behind" in text, (
+            f"the homepage hero does not name {len(members)}, the size of "
+            f"the '{self.DESIGN_BAND}' band ({members})"
+        )
+
+    @pytest.mark.parametrize("path", ["/", "/tools"])
+    def test_no_spelled_out_count_survives(self, all_tools_app, path):
+        """The literals that shipped were words, not digits, so the two
+        tests above would not have caught them on their own."""
+        flask_app, _ = all_tools_app
+        body = flask_app.test_client().get(path).get_data(as_text=True)
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))
+        words = (
+            "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+            "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+        )
+        for word in words:
+            for noun in ("tools", "models"):
+                assert f"{word} {noun}" not in text, (
+                    f"'{word} {noun}' is a literal count on {path}; it "
+                    "goes stale the next time a tool is registered"
+                )
+
+
+class TestIptmThresholdHasOneSource:
+    """B3: 0.7 was deleted from one template and left in two others.
+
+    ``shared/metric_glossary.py`` is the source for the GENERAL band.
+    Per-tool pass bars are not sourced from it and must not be --
+    ``shared/score_legends.py`` puts rfdiffusion's ipTM "good" at 0.65,
+    bindcraft's at 0.75 and boltz2's at 0.7, and each tool page states
+    its own. What may not survive anywhere is the general "aim above
+    roughly 0.7", which had no source at all and was still being emitted
+    as FAQPage structured data after the PR claimed it was gone.
+    """
+
+    STALE = "aim above roughly"
+
+    def _pages(self, all_tools_app):
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        out = {}
+        for path in ["/help/faq"] + [f"/help/tools/{s}" for s in slugs]:
+            resp = client.get(path)
+            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+            out[path] = resp.get_data(as_text=True)
+        for slug in slugs:
+            resp = client.get(f"/tools/{slug}")
+            assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
+            out[f"/tools/{slug}"] = resp.get_data(as_text=True)
+        assert len(out) == 2 * len(slugs) + 1
+        return out
+
+    def test_the_sourceless_threshold_is_gone_everywhere(
+        self, all_tools_app,
+    ):
+        offenders = {
+            path: body[
+                body.index(self.STALE) - 80:body.index(self.STALE) + 80
+            ]
+            for path, body in self._pages(all_tools_app).items()
+            if self.STALE in body
+        }
+        assert not offenders, (
+            f"'{self.STALE} ...' is a threshold with no source: {offenders}"
+        )
+
+    def test_every_general_legend_reads_the_glossary(self, all_tools_app):
+        """The three surfaces that state the general band must render the
+        glossary's own string, not a number typed next to it."""
+        band = str(_escape(_mg.GLOSSARY["ipTM"]["good_range"]))
+        pages = self._pages(all_tools_app)
+        for path in ("/help/faq", "/help/tools/rfdiffusion", "/tools/mpnn"):
+            assert band in pages[path], (
+                f"{path} does not render the glossary ipTM band {band!r}"
+            )
+
+    def test_the_faq_emits_the_glossary_band_as_structured_data(
+        self, all_tools_app,
+    ):
+        """/help/faq publishes its answers as JSON-LD FAQPage, so the
+        threshold is eligible for a Google rich result. ``tojson`` escapes
+        ">", which is why this matches on the parsed object rather than
+        on the raw page text."""
+        import json
+
+        flask_app, _ = all_tools_app
+        body = flask_app.test_client().get("/help/faq").get_data(as_text=True)
+        blocks = re.findall(
+            r'<script type="application/ld\+json">(.*?)</script>', body, re.S
+        )
+        answers = [
+            q["acceptedAnswer"]["text"]
+            for raw in blocks
+            for q in json.loads(raw).get("mainEntity", [])
+        ]
+        scored = [a for a in answers if "ipTM" in a]
+        assert scored, "no ipTM answer in the FAQPage structured data"
+        for answer in scored:
+            assert _mg.GLOSSARY["ipTM"]["good_range"] in answer, answer
+            assert self.STALE not in answer, answer
+
+    def test_the_faq_structured_data_carries_no_template_syntax(
+        self, all_tools_app,
+    ):
+        """``{% set %}`` is one Jinja statement, so ``{{ ... }}`` inside
+        its string literals is never interpolated. The signup-credit
+        answer shipped the raw braces straight into Google's structured
+        data; the fix is ``~`` concatenation."""
+        flask_app, _ = all_tools_app
+        body = flask_app.test_client().get("/help/faq").get_data(as_text=True)
+        blocks = re.findall(
+            r'<script type="application/ld\+json">(.*?)</script>', body, re.S
+        )
+        for raw in blocks:
+            assert "{{" not in raw and "{%" not in raw, raw[:400]

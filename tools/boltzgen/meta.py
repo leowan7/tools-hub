@@ -135,10 +135,16 @@ about: dict = {
         },
         {
             "name": "Binder length (min/max)",
+            # The peptide floor read 5 here and in boltzgen_form.html.
+            # ``_parse_inputs`` in __init__.py:92-95 refuses anything under
+            # 10 and the form inputs carry min="10", so 5 was a number the
+            # tool rejects — and this block renders on the SAME page as the
+            # form, so the two said different things one scroll apart.
             "explanation": (
                 "Residue-count window for the generated binder. Typical "
                 "starting ranges: mini-protein 50 to 100, nanobody "
-                "110 to 130, antibody 110 to 200, peptide 5 to 30."
+                "110 to 130, antibody 110 to 200, peptide 10 to 30. "
+                "10 is the shortest binder this tool accepts."
             ),
         },
         {

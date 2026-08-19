@@ -217,16 +217,30 @@
             real antibody frameworks, so pick one of those when your
             downstream work is display, hybridoma or an IgG format.
             <strong>Peptide</strong> is for short linear or cyclic binders.
+            {# "peptide 5 to 30" until 2026-08-18. Both binder-length inputs
+               above carry min="10", and tools/boltzgen/__init__.py:92-95 —
+               the server-side check, which is the authority — refuses
+               anything under 10 outright. The floating list under "Typical
+               binder lengths" could get away with 5; this sentence directs
+               the reader to type it into that field, so it became an
+               instruction the tool rejects. The field is right and the copy
+               was wrong: 10 is the real floor. #}
             The choice sets what a sensible binder length is above:
             mini-protein 50 to 100, nanobody 110 to 130,
-            antibody 110 to 200, peptide 5 to 30 residues.
+            antibody 110 to 200, peptide 10 to 30 residues (10 is the
+            shortest this tool accepts).
           </div>
 
           <div id="pilot-fields">
             <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
+              {# First use of "hotspot" on this page, and it was bare. Gloss
+                 matched to templates/components/pilot_card.html (PR #154)
+                 rather than reworded. #}
               <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 62ch; margin: 0 0 1rem 0;">
-                Runs against your own target. Upload PDB, optionally
-                pick hotspots, set binder length. Results emailed
+                Runs against your own target. Upload PDB, optionally pick
+                hotspot residues &mdash; the numbered residues on the patch
+                of your target you want the binder to sit on &mdash; and set
+                binder length. Results emailed
                 (~15 to 60 min on A100-40GB).
               </p>
             </div>

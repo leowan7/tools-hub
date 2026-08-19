@@ -324,12 +324,28 @@
       {# Sentence two used to be six algorithm names. A bench biologist who
          knows their antigen and not one of those names had nothing to read.
          Lead with what you bring and what comes back; the model names are
-         one click away, on the tool pages and the comparison table. #}
+         one click away, on the tool pages and the comparison table.
+
+         The count is DERIVED from ``grouped``, the same band this page
+         renders below, for the same reason /tools step 2 derives its own:
+         a typed number goes stale the next time a designer is registered,
+         and the reader falsifies it by scrolling. It also has to be the
+         DESIGN band, not the whole catalog — its first draft read
+         "Fourteen models sit behind that" in a sentence about getting
+         binders back, and six of the fourteen predict structures or
+         design sequences rather than binders. #}
+      {% set design_band = "Make new binders for my target" %}
+      {% set design_count = (
+           grouped | selectattr("0", "equalto", design_band)
+                   | map(attribute="1") | first | default([], true)
+         ) | length %}
       <p class="landing-hero-lede">
         Upload a structure of the protein you want to hit, mark the patch of
         its surface you care about, and get back designed binders ranked by
-        how confident the model is that they bind it. Fourteen models sit
-        behind that, and you do not have to name one to start. You fund a USD
+        how confident the model is that they bind it.
+        {%- if design_count %} {{ design_count }} different design tools sit
+        behind that, and you do not have to name one to start.{% endif %}
+        You fund a USD
         wallet, your balance is the only cap, and the number of designs is
         unlimited. <strong>New accounts start with
         ${{ signup_credit() }} in their wallet. No credits, no tiers, no subscriptions.</strong>
@@ -574,11 +590,19 @@
       <article class="step-card">
         <span class="step-num">STEP 02</span>
         <h3 class="step-title">Design binders</h3>
+        {# This sat one screen below a hero rewritten so a bench biologist
+           would not hit a vocabulary wall, and then said "mark hotspots"
+           with ipTM and pLDDT beside it, all bare. Hotspot gloss matched to
+           templates/components/pilot_card.html (PR #154); the two scores are
+           named as what they measure and left to the tool pages, which carry
+           the glossary-sourced legend. #}
         <p class="step-body">
-          Pick a generative tool, upload the target PDB, mark hotspots,
-          submit. Ranked candidates with ipTM, pLDDT, shape
-          complementarity, and downloadable PDBs land on your job page.
-          Clone, tweak, re-run until you have a shortlist worth pursuing.
+          Pick a design tool, upload the target PDB, and mark your hotspot
+          residues &mdash; the numbered residues on the patch of your target
+          you want the binder to sit on. Ranked candidates land on your job
+          page with downloadable PDBs and a confidence score for the contact
+          they make with your target. Clone, tweak, re-run until you have a
+          shortlist worth pursuing.
         </p>
       </article>
       <article class="step-card">
