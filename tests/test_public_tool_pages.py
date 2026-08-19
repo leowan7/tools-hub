@@ -886,7 +886,15 @@ class TestIptmThresholdHasOneSource:
     as FAQPage structured data after the PR claimed it was gone.
     """
 
-    STALE = "aim above roughly"
+    # WHITESPACE-INSENSITIVE ON PURPOSE. The first version of this guard
+    # matched the literal "aim above roughly" against the raw body and
+    # CERTIFIED FALSE: restoring the exact deleted sentence to
+    # help/tool_guide.html left it green, because the template wraps the
+    # phrase across two source lines ("aim above\n roughly 0.7") and the
+    # substring never appears contiguously. Both of the instances this
+    # PR removed were line-wrapped that way, so the guard would have
+    # missed the very defect it was written for.
+    STALE = re.compile(r"aim\s+above\s+roughly", re.I)
 
     def _pages(self, all_tools_app):
         flask_app, slugs = all_tools_app
@@ -906,15 +914,16 @@ class TestIptmThresholdHasOneSource:
     def test_the_sourceless_threshold_is_gone_everywhere(
         self, all_tools_app,
     ):
-        offenders = {
-            path: body[
-                body.index(self.STALE) - 80:body.index(self.STALE) + 80
-            ]
-            for path, body in self._pages(all_tools_app).items()
-            if self.STALE in body
-        }
+        offenders = {}
+        for path, body in self._pages(all_tools_app).items():
+            m = self.STALE.search(body)
+            if m:
+                offenders[path] = body[
+                    max(0, m.start() - 80):m.end() + 80
+                ]
         assert not offenders, (
-            f"'{self.STALE} ...' is a threshold with no source: {offenders}"
+            f"'{self.STALE.pattern}' is a threshold with no source: "
+            f"{offenders}"
         )
 
     def test_every_general_legend_reads_the_glossary(self, all_tools_app):
@@ -950,7 +959,7 @@ class TestIptmThresholdHasOneSource:
         assert scored, "no ipTM answer in the FAQPage structured data"
         for answer in scored:
             assert _mg.GLOSSARY["ipTM"]["good_range"] in answer, answer
-            assert self.STALE not in answer, answer
+            assert not self.STALE.search(answer), answer
 
     def test_the_faq_structured_data_carries_no_template_syntax(
         self, all_tools_app,
