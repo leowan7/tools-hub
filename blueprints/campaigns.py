@@ -256,10 +256,11 @@ def compute_campaign_create():
     #
     # Scope, stated because the copy above is easy to over-read. This dedups
     # SEQUENTIAL resubmissions -- refresh, back button, network retry, the
-    # second click of a slow double-click. It does NOT serialise genuinely
-    # concurrent ones: `_claim_key` upserts, so `ON CONFLICT DO UPDATE` succeeds
-    # for both racing writers and the preceding SELECT is a TOCTOU, not a lock.
-    # That residue is filed as A41 and is unchanged here.
+    # second click of a slow double-click. It now serialises genuinely
+    # concurrent ones too: `_claim_key` claims with a plain `insert`, so the
+    # PRIMARY KEY makes exactly one racing caller win and the rest are answered
+    # from its result (audit A42, resolved). This comment previously said the
+    # opposite, and misfiled the residue as A41 besides.
     #
     # And the discriminator for THIS route is weaker than it looks: the key
     # folds the upload's filename and BYTE LENGTH, never its content. Two posts

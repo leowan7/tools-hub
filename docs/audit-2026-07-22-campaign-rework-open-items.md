@@ -604,10 +604,10 @@ fix whose blast radius exceeds this diff.
 - **detail:** The release-on-failure logic in `shared/idempotency.py` keys on the status code: a response `>= 400` releases the claim so a corrected retry can run. `tool_submit`'s validation-failure paths re-render the form with a bare `render_template`, which Flask serves as **200**, so those failures are cached for the full TTL and a corrected resubmission inside 60 s replays the stale error page. The module docstring claimed "Failures are not cached" without qualification; corrected in this diff to state the status-code dependency.
 - *Next:* give those paths real 4xx codes. That changes what the browser and every existing `tool_submit` test see, so it is its own change.
 
-### A42. `_claim_key`'s upsert is a TOCTOU, not mutual exclusion
+### A42. `_claim_key`'s upsert is a TOCTOU, not mutual exclusion (RESOLVED)
 - **severity:** medium | **owner:** code
 - **detail:** `_claim_key` SELECTs for a live row, then upserts with `on_conflict="key"`. `ON CONFLICT DO UPDATE` succeeds for **both** racing writers, so two concurrent identical submissions can each see "not claimed" and each run the handler. Pre-existing. The `_release_key` scoping added in this diff (`.is_("response_status", None)`) removes the new leg this created for `target_launch_submit` — a losing sibling can no longer delete the winner's cached success — but the underlying race is untouched.
-- *Next:* a conditional insert that can actually fail (plain `insert` and treat the unique-violation as "lost the race"), or a DB-level advisory lock.
+- **resolved:** `_claim_key` now clears any stale row with a DELETE scoped to `lte("expires_at", now)` and then does a plain `insert`, so the PRIMARY KEY arbitrates and exactly one concurrent caller wins; the losers re-read and are given the winner's answer — replay if it finished, 409 if not, and 503 in the third case, where the winner failed and released its claim before the loser looked. Verified by two threaded tests plus a stalled-caller test that is the only one able to reach the DELETE-meets-a-live-claim ordering. A DB error on the claim now refuses with 503 instead of failing open: five of the ten guarded routes spend money and the other five cost real work, and a guard that cannot tell a retry from a first attempt must not wave one through.
 
 ### A43. `_store_response`'s own failure path leaves `response_status` NULL
 - **severity:** low | **owner:** code
