@@ -12,6 +12,25 @@
    wants the form. The explainer in components/about_panel.html is the
    part that renders for everyone.
 
+   The blurb and the lede are ALTERNATIVES, not a stack. Rendering both
+   put the tool's name in front of an anonymous reader three times in
+   three lines — once in the h1, again inside the blurb, and a third
+   time opening the lede — against a house rule that asks for no model
+   name in a first sentence at all. The lede wins the slot because it
+   is the keyword-bearing paragraph and the only one a search result
+   can use; the blurb keeps the slot for everyone else, so no auth
+   state loses its subtitle.
+
+   Nothing is lost by dropping it here: the blurb's runtime figure
+   ("About 30 s per run") is also rendered, for BOTH auth states, by
+   the runtime table and the "Typical runtime" panel in
+   components/about_panel.html, which mpnn_form.html includes with no
+   auth guard.
+
+   The `else` branch is deliberately the wider one — an anonymous
+   viewer whose slug is missing from _PREVIEW_SEO_PHRASES falls back to
+   the blurb rather than to an h1 alone.
+
    An INCLUDE, not a macro, so ``seo_phrase`` / ``seo_long`` /
    ``short_name`` (context vars from _public_tool_context) are visible.
    They are absent on the error re-renders from tool_submit, which are
@@ -19,11 +38,12 @@
    either way. #}
 <div class="hero">
   <h1>{{ adapter.label }}</h1>
-  <p class="subtitle">{{ adapter.blurb }}</p>
   {% if not viewer_is_signed_in() and seo_phrase %}
     <p style="margin: 0.85rem 0 0; color: var(--text-secondary); line-height: 1.6; max-width: 60ch;">
       {{ short_name or adapter.label }} is a {{ seo_phrase }} you can run
       through tools.ranomics.com on a dedicated GPU.{% if seo_long %} {{ seo_long }}.{% endif %}
     </p>
+  {% else %}
+    <p class="subtitle">{{ adapter.blurb }}</p>
   {% endif %}
 </div>
