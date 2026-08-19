@@ -58,6 +58,8 @@ from scout.ratelimit import (
     REASON_JOB_EXPIRED,
     anon_compute_slot,
     anon_rate_limit,
+    job_id_in_body,
+    job_id_in_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,11 +165,24 @@ ANON_ANALYZE_LIMIT = 10
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
 # TIGHT, and the only limit an ordinary visitor should ever meet.
 #
-# QC measured a thorough first-time visitor at 6 analyses in a session (two
-# uploads, several chains — trying chains is the whole point of the tool).
-# Eight leaves that user 33% of headroom while stopping a runaway tab or a
-# hand-rolled loop at 8 rather than letting it spend all 10 of the shared
-# per-IP allowance its whole institution draws from.
+# Phase 0's baseline PROJECTS a thorough first-time visitor at 6 analyses in
+# a session — two uploads, several chains, since trying chains is the whole
+# point of the tool (docs/qc/anon-load-baseline.md §2.3, "Thorough: 2 uploads,
+# 6 analyses", whose stated design input is to "size for ~6 runs per user
+# session, not 1-3"). Eight leaves that user 33% of headroom while stopping a
+# runaway tab or a hand-rolled loop at 8 rather than letting it spend all 10 of
+# the shared per-IP allowance its whole institution draws from.
+#
+# THAT 6 IS MODELLED, NOT MEASURED, and this comment said "QC measured" until
+# 2026-08-18. Two things were wrong with that. anon-load-baseline.md is the
+# BUILDER's own Phase 0 measurement document, not a QC one — the Phase 0 QC
+# report adopts its §2.3 as a concern without re-deriving it. And §2.3 itself
+# is a behavioural projection: §2.1 and §2.2 measured the COST PER ACTION
+# against a real server (one analyse click = 2 metered hits), never how many
+# actions a visitor takes. Nobody has observed a real session. The cap of 8 is
+# a faithful application of Phase 0's own stated design input and does not need
+# re-deriving; what needed fixing is a provenance claim that would let a later
+# phase treat a model as data.
 #
 # It bounds nothing an attacker cares about — a cookie is free to discard —
 # and it is not supposed to. Its jobs are to make ordinary over-use cheap to
@@ -763,15 +778,28 @@ def example():
     # run the pipeline itself when results.csv is missing (a dropped SSE
     # stream), and does the binder lookup and interface detection every time.
     pair=PAIR_CLOSES,
+    # The meter must key its credit on the job THIS VIEW runs, so it calls the
+    # very function the first line of the body calls. Reading the job id from
+    # anywhere else here — or letting the meter fall back to another source —
+    # is the diversion described in scout/ratelimit.py: a query string on this
+    # POST once keyed the credit on one job while the pipeline ran on another.
+    job_id=job_id_in_body,
 )
 @requires_scout_quota
 def analyze():
+    job_id = job_id_in_body()
     data = request.get_json(silent=True) or {}
     # str() before strip(): these come straight from user JSON, so a non-string
-    # scalar ({"job_id": 123}) raised AttributeError here -- before any handler
+    # scalar ({"chain": 123}) raised AttributeError here -- before any handler
     # -- and the route answered an HTML 500 to a JSON caller. Reachable
     # anonymously: this route has no @login_required.
-    job_id = str(data.get("job_id", "")).strip()
+    #
+    # ``job_id`` is NOT read here any more and does not need the same cast:
+    # ``job_id_in_body`` above returns "" for a non-string instead of coercing
+    # it, so the crash is closed there. Casting it here as well would be worse
+    # than redundant -- the METER calls that same function, so a coerced
+    # ``str(123)`` in the view and a "" in the meter would key the credit on
+    # one job while the view ran another, which is the diversion above.
     chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
@@ -1071,12 +1099,16 @@ def download(job_id):
     # Removing this decorator, or letting this route spend a credit instead of
     # granting one, would make full-pipeline compute free. Do neither.
     pair=PAIR_OPENS,
+    # Same rule as /scout/analyze, other source: this route reads the query
+    # string, so its meter reads the query string, via the same function the
+    # view below calls. No fallback to the body — a GET may carry one.
+    job_id=job_id_in_query,
 )
 @requires_scout_quota
 def progress():
     from flask import stream_with_context  # noqa: PLC0415
 
-    job_id = request.args.get("job_id", "").strip()
+    job_id = job_id_in_query()
     chain_id = request.args.get("chain", "").strip()
 
     job_dir = _resolve_job_dir(job_id) if job_id else None

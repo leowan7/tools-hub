@@ -224,14 +224,23 @@ def _session_key() -> str:
 # * **It cannot be stolen.** The key pairs the signed session id with the
 #   per-IP key, so a NAT neighbour cannot spend a credit somebody else paid
 #   for, and neither can the same session from another address.
-# * **It cannot be DIVERTED, which is the subtle one.** The job id is in the
-#   key, so a credit bought by ``/progress?job_id=A`` can only ever be spent
-#   by ``/analyze`` on job A — and job A's ``results.csv`` was written by the
-#   very call that bought the credit, so that ``/analyze`` takes the cheap
-#   finalise path. Without the job id a charge on a bogus or abandoned job
-#   would fund a free ``/analyze`` on a DIFFERENT job, and that ``/analyze``
-#   runs the whole pipeline itself when ``results.csv`` is missing. One charge
-#   would then buy ~24 CPU-s instead of ~15.
+# * **It cannot be DIVERTED, which is the subtle one, and putting the job id
+#   in the key is only HALF of what that takes.** The other half is that the
+#   id in the key must be the id the VIEW works on. A credit bought by
+#   ``/progress?job_id=A`` can only ever be spent by ``/analyze`` on job A —
+#   and job A's ``results.csv`` was written by the very call that bought the
+#   credit, so that ``/analyze`` takes the cheap finalise path. Without the
+#   job id a charge on a bogus or abandoned job would fund a free
+#   ``/analyze`` on a DIFFERENT job, and that ``/analyze`` runs the whole
+#   pipeline itself when ``results.csv`` is missing: one charge would buy ~24
+#   CPU-s instead of ~15.
+#
+#   That is exactly what shipped for one commit, WITH the job id in the key,
+#   because this module guessed the id from the query string while
+#   ``/scout/analyze`` read the body. QC measured one charge buying two full
+#   pipeline runs. The key was never the problem; the derivation was. See
+#   ``job_id_in_query`` / ``job_id_in_body`` for the rule that replaced the
+#   guess, and do not reintroduce a fallback between the two sources.
 # * **Replaying a job id buys nothing.** Re-requesting
 #   ``/scout/progress?job_id=...`` runs the whole pipeline again and is
 #   charged again, every time, because that route only ever GRANTS.
@@ -258,24 +267,89 @@ PAIR_OPENS = "opens"    # charged always; grants one credit when allowed
 PAIR_CLOSES = "closes"  # spends a credit if one is outstanding, else charged
 
 
-def _analysis_id() -> str:
-    """The job this request is about, so a credit binds to ONE analysis.
+# ---------------------------------------------------------------------------
+# Where a route's job id lives — ONE derivation, shared with the view
+# ---------------------------------------------------------------------------
+#
+# The credit key has to name the job the VIEW will actually work on. Until
+# 2026-08-18 this module GUESSED: query string first, JSON body as a fallback.
+# ``/scout/analyze`` reads the body only, so
+# ``POST /scout/analyze?job_id=A`` carrying ``{"job_id": "B"}`` keyed the
+# credit on A and ran the pipeline on B — one charge, two full pipeline runs.
+# The job id was in the key exactly as intended; the meter and the view simply
+# disagreed about its value.
+#
+# There is now no guessing and NO PREFERENCE ORDER, because a preference order
+# is the wrong shape: each route has exactly one correct source, not a ranked
+# pair of them. Swapping "query first" for "body first" is not the fix — a GET
+# may legally carry a body, so that swap merely mirrors the same hole onto
+# ``/scout/progress``.
+#
+# Instead each paired route DECLARES which of these two functions holds its
+# job id, and THE VIEW CALLS THE SAME FUNCTION. One derivation, two callers,
+# nothing to disagree about. ``tests/test_scout_anon_charge_pairing.py``
+# enforces both halves: behaviourally, by moving only the query string while
+# holding the body constant (and the reverse on ``/progress``), and
+# structurally, by parsing ``scout/routes.py`` and failing if any paired view
+# stops calling the function its own decorator declares.
 
-    ``/scout/progress`` carries it in the query string, ``/scout/analyze`` in
-    the JSON body. Flask caches the parsed body on the request, so reading it
-    here costs no second parse in the view. Anything unparseable reads as ""
-    — such a request is a 400 before it does any work, so it has nothing to
-    divert a credit to.
+
+def job_id_in_query() -> str:
+    """``GET /scout/progress`` — the job id is a query parameter.
+
+    Deliberately does NOT fall back to the body. ``/scout/progress`` reads
+    ``request.args`` and nothing else, so neither does its meter.
     """
     job_id = request.args.get("job_id", "")
-    if not job_id:
-        body = request.get_json(silent=True)
-        job_id = body.get("job_id", "") if isinstance(body, dict) else ""
     return job_id.strip() if isinstance(job_id, str) else ""
 
 
-def _followup_key() -> tuple[str, str, str]:
-    return (_session_key(), _client_ip() or "unknown", _analysis_id())
+def job_id_in_body() -> str:
+    """``POST /scout/analyze`` — the job id is a JSON body field.
+
+    Deliberately does NOT fall back to the query string; that fallback is the
+    diversion described above. Flask caches the parsed body on the request, so
+    the view's own ``get_json`` costs no second parse. Anything unparseable
+    reads as "", and an empty id never grants or spends a credit.
+    """
+    body = request.get_json(silent=True)
+    job_id = body.get("job_id", "") if isinstance(body, dict) else ""
+    return job_id.strip() if isinstance(job_id, str) else ""
+
+
+JOB_ID_SOURCES = (job_id_in_query, job_id_in_body)
+
+# Largest body the METER will parse looking for a credit.
+#
+# ``job_id_in_body`` runs before either tier, so without this a ``/analyze``
+# that is about to be REFUSED parses its body first. Refusals are unbounded by
+# definition — the limiter keeps counting but never stops answering — so that
+# made refused requests dramatically cheaper to convert into worker wall time,
+# which is backwards for a rate limiter. QC measured 0.056 s -> 0.45 s for an
+# 18 MB refused body across the commit that introduced the pairing; measured
+# again here over real sockets, a refused 18 MB body went 0.336 s -> 0.074 s
+# with this bound in place, the remainder being the socket read itself.
+#
+# The real body is ``{"job_id": ..., "chain": ...}``, about 80 bytes
+# (``templates/scout/index.html``), so 4 KiB is ~50x headroom. Anything larger
+# is not a follow-up, and a request with an unknown length is not one either.
+# Giving up here FAILS CLOSED: no id means no credit, so the caller is charged
+# — never the other way round. The view is untouched and still parses whatever
+# it is given, once the request has been allowed.
+_MAX_FOLLOWUP_BODY_BYTES = 4096
+
+
+def _metered_job_id(source) -> str:
+    """The job id for the credit key, or "" if it is not worth looking."""
+    if source is job_id_in_body:
+        length = request.content_length
+        if length is None or length > _MAX_FOLLOWUP_BODY_BYTES:
+            return ""
+    return source()
+
+
+def _followup_key(job_id: str) -> tuple[str, str, str]:
+    return (_session_key(), _client_ip() or "unknown", job_id)
 
 
 def _grant_followup(key: tuple[str, str, str]) -> None:
@@ -506,6 +580,21 @@ _SESSION_LIMIT_MESSAGE = (
     "in for a free account to keep going, or wait a few minutes."
 )
 
+# ...and callers with NO session id get a third string, because for them the
+# one above is a LIE. Every cookie-less caller shares ``_NO_SESSION_KEY``
+# (see ``_session_key``), so one sprayer can exhaust that bucket and lock out
+# a visitor whose browser is blocking cookies. That lockout costs them
+# nothing they had — without the id they cannot own a job directory, so every
+# analysis 404s regardless — but "sign in to keep going" cannot help them
+# either: the login session is a cookie too. Name the actual problem instead.
+# Phase 5 turns _SESSION_LIMIT_MESSAGE into a signup funnel and must not point
+# this population at a door that does not open for them.
+_NO_SESSION_MESSAGE = (
+    "Epitope Scout could not start a session, so it cannot keep track of "
+    "your upload. Allow cookies for this site and reload the page. Signing "
+    "in will not help until cookies are enabled."
+)
+
 # Machine-readable refusal reason, carried in every refusal body.
 #
 # There are now three ways Scout can say no to an anonymous caller, and on the
@@ -581,6 +670,7 @@ def anon_rate_limit(
     session_limit: int | None = None,
     sse: bool = False,
     pair: str | None = None,
+    job_id=None,
 ):
     """Decorator: meter anonymous calls to this route against both tiers.
 
@@ -599,12 +689,28 @@ def anon_rate_limit(
     ``PAIR_OPENS`` is charged always and grants a credit; ``PAIR_CLOSES``
     spends one if it can. Read ``_FOLLOWUP`` before changing either — the
     asymmetry is what stops ``/scout/progress`` becoming free compute.
+
+    ``job_id`` is required with ``pair`` and names WHERE this route carries
+    its job id — ``job_id_in_query`` or ``job_id_in_body``. Pass the same
+    function the view itself calls to read the job id; that is what stops the
+    meter and the view working on different jobs.
     """
     # At import, not per request. A typo here would fail SILENTLY — no grant,
     # no spend, and the pair quietly billed twice again — which is the kind of
     # regression that only shows up as a support ticket from a lab.
     if pair not in (None, PAIR_OPENS, PAIR_CLOSES):
         raise ValueError(f"anon_rate_limit: unknown pair role {pair!r}")
+    # Also at import, and for the same reason: a paired route that did not say
+    # where its job id lives would have to be guessed at, and guessing is the
+    # diversion. There is no default.
+    if (pair is None) != (job_id is None):
+        raise ValueError(
+            "anon_rate_limit: pair and job_id go together — a paired route "
+            "must declare job_id=job_id_in_query or job_id=job_id_in_body, "
+            "the SAME function its view calls"
+        )
+    if job_id is not None and job_id not in JOB_ID_SOURCES:
+        raise ValueError(f"anon_rate_limit: unknown job id source {job_id!r}")
 
     def decorator(f):
         @wraps(f)
@@ -612,11 +718,21 @@ def anon_rate_limit(
             if session.get("user_email"):
                 return f(*args, **kwargs)
 
+            # Derived ONCE, from the single source this route declared, and
+            # an empty id never grants or spends. A "" credit would otherwise
+            # be redeemable by any request whose id this module declined to
+            # read, which is a diversion by another name.
+            metered_job = _metered_job_id(job_id) if pair else ""
+
             # One analysis, one charge. Checked BEFORE either tier so a
             # spent credit covers both of them — otherwise the session tier
             # would still be charged twice per analysis and would bite at
             # half the number it advertises.
-            if pair == PAIR_CLOSES and _spend_followup(_followup_key()):
+            if (
+                pair == PAIR_CLOSES
+                and metered_job
+                and _spend_followup(_followup_key(metered_job))
+            ):
                 return f(*args, **kwargs)
 
             # Session tier first, and it returns WITHOUT touching the per-IP
@@ -626,9 +742,10 @@ def anon_rate_limit(
             # rotating the cookie skips this tier entirely and lands on the
             # per-IP one, which is the tier that is supposed to stop them.
             if session_limit is not None:
+                session_key = _session_key()
                 allowed, retry_after = hit(
                     bucket + ":session",
-                    _session_key(),
+                    session_key,
                     limit=session_limit,
                     window_seconds=window_seconds,
                 )
@@ -637,7 +754,11 @@ def anon_rate_limit(
                         sse=sse,
                         retry_after=retry_after,
                         reason=REASON_SESSION_LIMITED,
-                        message=_SESSION_LIMIT_MESSAGE,
+                        message=(
+                            _NO_SESSION_MESSAGE
+                            if session_key == _NO_SESSION_KEY
+                            else _SESSION_LIMIT_MESSAGE
+                        ),
                     )
 
             allowed, retry_after = hit(
@@ -654,8 +775,8 @@ def anon_rate_limit(
             # Only a charge that was actually taken AND allowed buys a
             # credit. Granting before the refusal checks would let a refused
             # caller pay nothing and still hand itself a free follow-up.
-            if pair == PAIR_OPENS:
-                _grant_followup(_followup_key())
+            if pair == PAIR_OPENS and metered_job:
+                _grant_followup(_followup_key(metered_job))
             return f(*args, **kwargs)
 
         return wrapped
