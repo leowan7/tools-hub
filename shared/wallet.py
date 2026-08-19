@@ -834,13 +834,12 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     # last 24h that the ledger cannot see yet, and telling someone whose card
     # was charged seconds ago that we declined to top them up would be false —
     # the top-up is already on its way.
-    if not _claim_auto_reload_dispatch(user_id):
-        logger.info(
-            "auto_reload_if_needed: dispatch claim already held for %s "
-            "(charge in flight or settled within 24h); not charging again.",
-            user_id,
-        )
-        return "rate_limited"
+    # Resolved BEFORE the claim, though it reads like setup. This import has
+    # no side effects, and its failure path returns without charging -- so
+    # taken after the claim it would burn a user's whole 24h window on a
+    # dispatch that never happened, and report "triggered" for it. Nothing
+    # between the claim and the charge may be able to return early.
+    #
     # Stripe off-session PaymentIntent. Wave 2 Agent E provides
     # :func:`billing.checkout.create_off_session_payment_intent`. Import
     # lazily so this module is testable without the Stripe SDK on path.
@@ -854,6 +853,13 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             user_id,
         )
         return "triggered"
+    if not _claim_auto_reload_dispatch(user_id):
+        logger.info(
+            "auto_reload_if_needed: dispatch claim already held for %s "
+            "(charge in flight or settled within 24h); not charging again.",
+            user_id,
+        )
+        return "rate_limited"
     try:
         create_off_session_payment_intent(
             stripe_customer_id=wallet.get("stripe_customer_id"),
