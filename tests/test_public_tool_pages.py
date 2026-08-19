@@ -820,6 +820,22 @@ def _hero_text(body: str) -> str:
     return _visible_text(block.group(1))
 
 
+def _blurb_for(slug: str) -> str:
+    """The adapter's own blurb, read from the registry.
+
+    Not a copy kept in this file: a fixture copy would drift out of the
+    template it is asserted against, and then the guard passes because
+    both sides changed rather than because the page is right.
+    """
+    import app as app_module  # noqa: F401,PLC0415  (populates the registry)
+    from tools import base as tool_base  # noqa: PLC0415
+
+    for adapter in tool_base.all_adapters():
+        if adapter.slug == slug:
+            return adapter.blurb or ""
+    raise AssertionError(f"no adapter registered for slug {slug!r}")
+
+
 def _lede_phrase(hero: str) -> str:
     """The ``seo_phrase`` as it actually reached the page.
 
@@ -1928,4 +1944,75 @@ class TestEveryJsonLdBlockIsClean:
         assert not offenders, (
             "raw Jinja, or unparseable JSON, in structured data Google "
             f"indexes: {offenders}"
+        )
+
+
+# ===========================================================================
+# The hero carries ONE intro, not two.
+# ===========================================================================
+
+
+class TestHeroCarriesOneIntroNotTwo:
+    """``blurb`` and the SEO lede are alternatives, never a stack.
+
+    Rendering both put the tool's own name in front of an anonymous
+    reader three times inside three lines -- once in the ``<h1>``, again
+    inside the blurb, and a third time opening the lede -- against a
+    house rule that asks for no model name in a first sentence at all.
+
+    Both directions are asserted because the obvious wrong fix passes
+    half of it: deleting the blurb from the template outright would
+    satisfy the anonymous case and quietly strip every signed-in page of
+    its subtitle. The signed-in test is that positive control, and it is
+    the reason this is two tests rather than one.
+    """
+
+    def test_anonymous_hero_shows_the_lede_and_not_the_blurb(
+        self, all_tools_app,
+    ):
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        offenders = {}
+        for slug in slugs:
+            resp = client.get(f"/tools/{slug}")
+            assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
+            hero = _hero_text(resp.get_data(as_text=True))
+            blurb = _visible_text(_blurb_for(slug))
+            if _LEDE_FRAME not in hero:
+                offenders[slug] = "lede missing from anonymous hero"
+            elif blurb and blurb in hero:
+                offenders[slug] = "blurb still stacked above the lede"
+        assert not offenders, (
+            f"anonymous hero is not carrying exactly one intro: {offenders}"
+        )
+
+    def test_signed_in_hero_still_shows_the_blurb(self, all_tools_app):
+        """Positive control -- the subtitle survives for everyone else.
+
+        Without this, dropping ``adapter.blurb`` from the template
+        altogether passes the test above.
+        """
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        offenders = {}
+        with patch(
+            "app.load_user_context", return_value=_ctx(),
+        ), patch(
+            "blueprints.tools.load_user_context", return_value=_ctx(),
+        ), patch(
+            "blueprints.tools.get_or_create_wallet",
+            return_value={"balance_usd": 12.5, "wallet_frozen": False},
+        ):
+            _login(client)
+            for slug in slugs:
+                resp = client.get(f"/tools/{slug}")
+                assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
+                hero = _hero_text(resp.get_data(as_text=True))
+                blurb = _visible_text(_blurb_for(slug))
+                if blurb and blurb not in hero:
+                    offenders[slug] = "signed-in hero lost its subtitle"
+                elif _LEDE_FRAME in hero:
+                    offenders[slug] = "anonymous SEO lede leaked to a session"
+        assert not offenders, (
+            f"signed-in hero is wrong: {offenders}"
         )
