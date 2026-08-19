@@ -246,14 +246,14 @@ def _claim_key(
 
     Failing open and failing closed are not one decision, and these are split.
 
-    ``"open"`` is for a CONFIGURATION state rather than an outage: no client,
-    or no service-role key. Running unguarded is safe there because every write
+    ``"open"`` is for one CONFIGURATION state rather than an outage: no client
+    at all. (Not "no service-role key" -- that yields a live anon client and
+    refuses; see below.) Running unguarded is safe there because every write
     that moves money takes the same client and short-circuits without it --
-    ``reserve_hold`` (shared/wallet.py:577), ``top_up_wallet``
-    (shared/wallet.py:410) and ``_cas_transition``
-    (shared/compute_campaigns.py:1842) each return None on a null client, so an
-    unguarded handler cannot place a hold, credit a wallet, or drive a
-    campaign. Failing closed here would instead take every guarded route down
+    ``reserve_hold`` (shared/wallet.py:577) and ``top_up_wallet``
+    (shared/wallet.py:410) return None on a null client, and ``_cas_transition``
+    (shared/compute_campaigns.py:1843) returns False -- so an unguarded handler
+    cannot place a hold, credit a wallet, or drive a campaign. Failing closed here would instead take every guarded route down
     permanently in an environment that never had Supabase configured.
 
     Do NOT restate that as "the wallet decorator refuses". It does not, twice
@@ -271,18 +271,31 @@ def _claim_key(
     client (shared/credits.py:59-64) rather than None, and migration 0004
     enables RLS on this table with no policies -- so the SELECT reads empty and
     the INSERT is refused, and this refuses with it. The cost is that
-    ``/library-planner/plan`` and ``/developability/score``, which spend
-    nothing, also 503 in a half-configured dev environment. The alternative is
+    ``/library-planner/plan`` and, for signed-in callers only,
+    ``/developability/score`` -- which spend nothing -- also 503 in a
+    half-configured dev environment. Signed-in only because that route is
+    deliberately anonymous (blueprints/tools.py:117-119 carries no
+    ``@login_required``) and the decorator hands an anonymous request straight
+    to the handler, so it never reaches this function without a user. The alternative is
     worse: a PRODUCTION deploy that lost its service-role key would fail open
     on the money routes and silently double-charge every double-click, which is
     exactly the hole this function was rewritten to close. A loud 503 naming
     the ledger is the better half of that trade, and `credits.py` already logs
     the missing key on the way past.
 
-    ``"unavailable"`` is a live client whose query FAILED -- a timeout, a reset
-    connection, a schema fault. The wallet gate is working in that case, so the
-    handler really would spend money, and we no longer know whether this exact
-    request already ran. Five of the ten guarded routes spend --
+    ``"unavailable"`` is a live client whose query FAILED. Two very different
+    faults land there and the refusal is sized for the narrower one. A fault
+    scoped to THIS TABLE -- the pre-0038 unknown-column 400, an RLS denial --
+    leaves the rest of the request path healthy, so the handler really would
+    spend money while we no longer know whether this exact request already ran.
+    A broad fault (timeout, reset connection) breaks the same client
+    everywhere, and the handler would bail downstream anyway:
+    ``get_or_create_wallet`` swallows it and returns None (shared/wallet.py:277),
+    after which ``create_job`` returns None and ``tool_submit`` stops before the
+    Modal spawn. We cannot tell the two apart from in here, so we answer for the
+    one that can cost money. Do NOT write "the wallet gate is working in that
+    case" -- for the broad fault it is not, and an earlier version of this
+    paragraph said exactly that and was wrong. Five of the ten guarded routes spend --
     ``compute_campaign_create``, ``compute_campaign_refold``, ``job_refold``,
     ``target_launch_submit``, ``tool_submit`` -- and for those, refusing costs
     the user a retry while running costs a second charge and a second GPU job
@@ -390,7 +403,7 @@ def _claim_key(
         # winner's answer, an infra fault must be refused.
         #
         # Nothing is logged HERE, deliberately. Losing is the guard working,
-        # and at one claim per worker thread a single double-click loses N-1
+        # and at one claim per worker process a single double-click loses N-1
         # times: logging a traceback at the raise site turns normal operation
         # into a stack-trace storm, burying the real faults in the log that is
         # the only place they surface (ALERTING.md:17 has Sentry "Deferred by

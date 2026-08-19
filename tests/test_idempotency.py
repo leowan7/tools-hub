@@ -126,12 +126,12 @@ class _FakeTable:
         in exactly the direction that matters.
 
         postgrest-py renders both ``.is_(col, None)`` and ``.is_(col, "null")``
-        as ``is.null``, and this repo issues both. Of its 20 production call
-        sites, only the 2 in ``shared/idempotency.py`` pass None; the other 18
-        pass the string, across ``shared/targets.py`` (x5),
+        as ``is.null``, and this repo issues both. Of its 19 production call
+        sites (counted with ``ast``, not grep: a docstring in ``shared/target_results.py`` quotes an ``.is_()`` call, and grepping text has now produced a wrong number here twice), only the 2 in ``shared/idempotency.py`` pass
+        None; the other 17 pass the string, across ``shared/targets.py`` (x5),
         ``shared/api_keys.py`` (x4), ``shared/jobs.py`` (x3),
-        ``shared/target_results.py`` (x2), ``shared/handoffs.py``,
-        ``shared/compute_campaigns.py``, ``cron/purge_old_storage.py`` and
+        ``shared/compute_campaigns.py``, ``shared/handoffs.py``,
+        ``shared/target_results.py``, ``cron/purge_old_storage.py`` and
         ``webhooks/modal.py``. Both are
         accepted, because a fake that refused the string would break the moment
         this module was refactored to the majority convention -- and break
@@ -550,10 +550,18 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
     """No client at all: the handler still runs.
 
     Deliberately NOT the same decision as a client that is present and
-    failing (see the fail-closed test below). With no client, the wallet gate
-    one layer down cannot resolve a wallet either and refuses, so an unguarded
-    handler cannot spend anything -- and failing closed here would take every
-    guarded route offline in any environment that never had Supabase set up.
+    failing (see the fail-closed test below). With no client, every write that
+    moves money short-circuits on the same missing client -- `reserve_hold` and
+    `top_up_wallet` return None, `_cas_transition` returns False -- so an
+    unguarded handler cannot spend anything, and failing closed here would take
+    every guarded route offline in any environment that never had Supabase set
+    up.
+
+    NOT because "the wallet gate refuses". It does not: nine of the ten guarded
+    routes carry no wallet decorator, and the one that does falls THROUGH on a
+    null wallet row (`shared/wallet_guard.py:219-224`). `_claim_key`'s own
+    docstring forbids that phrasing by name; this docstring used it anyway and
+    was wrong.
     """
     with patch("shared.idempotency.get_service_client", return_value=None):
         r = app.test_client().post("/echo", data=b"hello")

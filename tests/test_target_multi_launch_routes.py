@@ -2512,13 +2512,14 @@ class _IdemTable:
         # overwrite the winner's cached 302 -- and would report the scoping as
         # working while it did nothing.
         #
-        # Accepts BOTH spellings of the null predicate. Of the 20 `.is_()` call
-        # sites in this repo's production code, only the 2 in
-        # `shared/idempotency.py` pass None; the other 18 pass the PostgREST
-        # string "null" (shared/targets.py x5, shared/api_keys.py x4,
-        # shared/jobs.py x3, shared/target_results.py x2, shared/handoffs.py,
-        # shared/compute_campaigns.py, cron/purge_old_storage.py,
-        # webhooks/modal.py). Both spellings are
+        # Accepts BOTH spellings of the null predicate. Of the 19 `.is_()` call
+        # sites in this repo's production code -- counted with `ast`, not grep,
+        # which miscounts a docstring in shared/target_results.py that quotes
+        # one -- only the 2 in `shared/idempotency.py` pass None; the other 17
+        # pass the PostgREST string "null" (shared/targets.py x5,
+        # shared/api_keys.py x4, shared/jobs.py x3, shared/compute_campaigns.py,
+        # shared/handoffs.py, shared/target_results.py,
+        # cron/purge_old_storage.py, webhooks/modal.py). Both spellings are
         # valid. Refusing the string would not have caught anything either: an
         # earlier version of this fake asserted `val is None` on the stated
         # grounds that a refusal here escapes, and that was WRONG -- the builder

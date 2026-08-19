@@ -258,8 +258,9 @@ def compute_campaign_create():
     # SEQUENTIAL resubmissions -- refresh, back button, network retry, the
     # second click of a slow double-click. It now serialises genuinely
     # concurrent ones too: `_claim_key` claims with a plain `insert`, so the
-    # PRIMARY KEY makes exactly one racing caller win and the rest are answered
-    # from its result (audit A42, resolved). This comment previously said the
+    # PRIMARY KEY makes exactly one racing caller win, and the rest are
+    # answered from its result -- or, if that winner failed and released before
+    # they looked, refused with a 503 (audit A42, resolved). This comment previously said the
     # opposite, and misfiled the residue as A41 besides.
     #
     # And the discriminator for THIS route is weaker than it looks: the key
