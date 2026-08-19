@@ -46,6 +46,9 @@ on:
       # statically on a package import, on an add_local_*/mounts= of anything
       # but the app's own run_pipeline.py, and on a COPY of any tools-side
       # __init__.py from a Dockerfile.modal or from .dockerfile_commands([...]).
+      # It also pins the Deploy step below to a FILE path: `modal deploy -m
+      # tools.<app>.modal_app` would load the same source in PACKAGE mode and
+      # mount the whole tools package, so do not change that line either.
       #
       # Two known gaps, both LOUD rather than silent, so neither can leave a
       # stale image behind: `ADD` (Modal's COPY parser ignores it, so the docker
