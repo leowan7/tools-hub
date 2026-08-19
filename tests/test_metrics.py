@@ -11,6 +11,10 @@ Usage
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -299,3 +303,101 @@ def test_metrics_allowlist_cannot_be_defeated_by_a_forged_header(monkeypatch):
         "/metrics", headers={"X-Forwarded-For": "10.1.2.3, 203.0.113.7"}
     )
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# /metrics must render something under the DEPLOYED gunicorn configuration
+# ---------------------------------------------------------------------------
+#
+# The counters are built when app.py is imported, and under ``preload_app``
+# that import happens inside ``Arbiter.__init__`` — before ``Arbiter.start()``
+# runs any hook. prometheus_client reads PROMETHEUS_MULTIPROC_DIR exactly
+# once, at its own import, so provisioning the directory from a hook lands
+# too late: every Counter stays process-local, no worker ever writes a db
+# file, and /metrics answers 200 with an EMPTY body while looking perfectly
+# healthy. Module scope is the only place early enough to prevent that,
+# and it is the right place whether or not the deployment also supplies
+# PROMETHEUS_MULTIPROC_DIR itself: if it ever does, the conf still has to
+# create the directory before the import, or the preload crashes outright.
+#
+# tests/_metrics_boot_probe.py boots a real gunicorn arbiter in a subprocess
+# and reports what a scrape would return. Its docstring explains why nothing
+# cheaper can answer this without assuming the answer.
+
+_BOOT_PROBE = Path(__file__).parent / "_metrics_boot_probe.py"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run_boot_probe(*args: str) -> dict:
+    proc = subprocess.run(
+        [sys.executable, str(_BOOT_PROBE), *args],
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, (
+        f"boot probe crashed (rc={proc.returncode})\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    verdicts = [ln for ln in proc.stdout.splitlines() if ln.startswith("PROBE ")]
+    assert verdicts, f"boot probe printed no verdict\n{proc.stdout}\n{proc.stderr}"
+    return json.loads(verdicts[-1][len("PROBE "):])
+
+
+def test_metrics_renders_a_non_empty_body_under_the_gunicorn_boot_order():
+    """A scrape after a real preloaded gunicorn boot must carry samples."""
+    pytest.importorskip("prometheus_client")
+
+    verdict = _run_boot_probe()
+
+    assert verdict["preload_app"] is True, (
+        "This guard only means anything while the app is preloaded. If "
+        "preload_app was turned off deliberately, retire the guard with it."
+    )
+    assert verdict["imported_during_preload"] is True, (
+        "The app was NOT imported by preload inside Arbiter.__init__, so "
+        "this run proves nothing about when the env var has to be set."
+    )
+    assert verdict["prometheus"] is True, (
+        "prometheus_client imports fine in this interpreter but not under "
+        "the gunicorn boot, so shared.metrics fell back to its stub path."
+    )
+    # THE property. A non-empty body is corroboration, not proof: one stale
+    # db file left in the shared multiprocess directory renders samples
+    # while the backend is still process-local, which is exactly how this
+    # guard would come back green over a live defect.
+    assert verdict["value_class"] == "MmapedValue", (
+        "prometheus_client froze ValueClass to "
+        f"{verdict.get('value_class')}, so every counter is process-local "
+        "and no worker writes a db file. PROMETHEUS_MULTIPROC_DIR "
+        f"({verdict.get('multiproc_dir')!r}) reached it only after the app "
+        "import. Provision the directory at gunicorn.conf.py module scope, "
+        "not from a gunicorn hook."
+    )
+    assert verdict["body_bytes"] > 0, (
+        "/metrics rendered a ZERO-BYTE body even though the multiprocess "
+        "backend is active, so the collector and the counters disagree "
+        f"about {verdict.get('multiproc_dir')!r}."
+    )
+    assert verdict["has_counter"], (
+        "The scrape rendered bytes but not tools_hub_scout_runs_total, so "
+        "the counters and the collector are not reading the same place."
+    )
+
+
+def test_the_boot_guard_stays_quiet_when_prometheus_client_is_absent():
+    """The stub path in shared.metrics is legitimate, not a failure.
+
+    shared.metrics deliberately stubs the Counter factory when
+    prometheus_client is missing so an offline checkout still imports and
+    /metrics answers an informative 503. The guard above must not turn that
+    into a red suite.
+    """
+    verdict = _run_boot_probe("--no-prometheus")
+
+    assert verdict["prometheus"] is False
+    assert "body_bytes" not in verdict, (
+        "With prometheus_client blocked there is no exposition to measure; "
+        "the probe must report the stub path rather than a body size."
+    )
