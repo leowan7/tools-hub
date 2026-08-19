@@ -127,7 +127,10 @@ class _FakeTable:
 
         postgrest-py renders both ``.is_(col, None)`` and ``.is_(col, "null")``
         as ``is.null``, and this repo issues both. Of its 19 production call
-        sites (counted with ``ast``, not grep: a docstring in ``shared/target_results.py`` quotes an ``.is_()`` call, and grepping text has now produced a wrong number here twice), only the 2 in ``shared/idempotency.py`` pass
+        sites (counted with ``ast``, not grep -- a docstring in
+        ``shared/target_results.py`` quotes an ``.is_()`` call, so grep reads
+        20 and produced exactly that wrong number here once already), only the
+        2 in ``shared/idempotency.py`` pass
         None; the other 17 pass the string, across ``shared/targets.py`` (x5),
         ``shared/api_keys.py`` (x4), ``shared/jobs.py`` (x3),
         ``shared/compute_campaigns.py``, ``shared/handoffs.py``,
@@ -560,8 +563,9 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
     NOT because "the wallet gate refuses". It does not: nine of the ten guarded
     routes carry no wallet decorator, and the one that does falls THROUGH on a
     null wallet row (`shared/wallet_guard.py:219-224`). `_claim_key`'s own
-    docstring forbids that phrasing by name; this docstring used it anyway and
-    was wrong.
+    docstring forbids the near-identical "the wallet decorator refuses"; this
+    docstring reached for the same false idea in different words and was
+    wrong.
     """
     with patch("shared.idempotency.get_service_client", return_value=None):
         r = app.test_client().post("/echo", data=b"hello")
@@ -572,8 +576,17 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
 class _ExplodingClient:
     """A client that is PRESENT and whose every query fails.
 
-    Not the same as no client: here the rest of the request path, wallet gate
-    included, works normally, so the handler really would spend money.
+    Not the same as no client, but NOT because the wallet gate still works --
+    it does not. `get_or_create_wallet` needs this same client, so
+    `wallet_preflight` returns allow=False, `requires_wallet` falls THROUGH,
+    and the handler runs (status 200). `reserve_hold` then returns None at
+    `shared/wallet.py:575`, so this particular fault does not reach a charge.
+    `_claim_key`'s docstring forbids writing "the wallet gate is working in
+    that case" -- this docstring said it anyway and was wrong.
+
+    What makes it different from no client is scope: a fault confined to the
+    idempotency table alone leaves the money path healthy, and we cannot tell
+    the two apart from in here. That is what the refusal is sized for.
     """
 
     def table(self, _name: str) -> Any:

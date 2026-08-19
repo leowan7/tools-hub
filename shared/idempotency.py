@@ -250,11 +250,14 @@ def _claim_key(
     at all. (Not "no service-role key" -- that yields a live anon client and
     refuses; see below.) Running unguarded is safe there because every write
     that moves money takes the same client and short-circuits without it --
-    ``reserve_hold`` (shared/wallet.py:577) and ``top_up_wallet``
-    (shared/wallet.py:410) return None on a null client, and ``_cas_transition``
-    (shared/compute_campaigns.py:1843) returns False -- so an unguarded handler
-    cannot place a hold, credit a wallet, or drive a campaign. Failing closed here would instead take every guarded route down
-    permanently in an environment that never had Supabase configured.
+    ``reserve_hold`` (shared/wallet.py:575) and ``top_up_wallet``
+    (shared/wallet.py:410) return None on a null client, and
+    ``_cas_transition`` (shared/compute_campaigns.py:1843) returns False -- so
+    an unguarded handler cannot place a hold, credit a wallet, or drive a
+    campaign. ``reserve_hold``'s own null-client check is at :577, but on this
+    path it never runs: ``wallet_preflight`` has already denied, so :575
+    returns first. Failing closed here would instead take every guarded route
+    down permanently in an environment that never had Supabase configured.
 
     Do NOT restate that as "the wallet decorator refuses". It does not, twice
     over: only one of the ten guarded routes carries ``requires_wallet`` at all
@@ -276,7 +279,8 @@ def _claim_key(
     half-configured dev environment. Signed-in only because that route is
     deliberately anonymous (blueprints/tools.py:117-119 carries no
     ``@login_required``) and the decorator hands an anonymous request straight
-    to the handler, so it never reaches this function without a user. The alternative is
+    to the handler, so it never reaches this function without a user. The
+    alternative is
     worse: a PRODUCTION deploy that lost its service-role key would fail open
     on the money routes and silently double-charge every double-click, which is
     exactly the hole this function was rewritten to close. A loud 503 naming
@@ -285,8 +289,8 @@ def _claim_key(
 
     ``"unavailable"`` is a live client whose query FAILED. Two very different
     faults land there and the refusal is sized for the narrower one. A fault
-    scoped to THIS TABLE -- the pre-0038 unknown-column 400, an RLS denial --
-    leaves the rest of the request path healthy, so the handler really would
+    scoped to THIS TABLE -- an RLS denial, a dropped grant -- leaves the rest
+    of the request path healthy, so the handler really would
     spend money while we no longer know whether this exact request already ran.
     A broad fault (timeout, reset connection) breaks the same client
     everywhere, and the handler would bail downstream anyway:
@@ -295,7 +299,8 @@ def _claim_key(
     Modal spawn. We cannot tell the two apart from in here, so we answer for the
     one that can cost money. Do NOT write "the wallet gate is working in that
     case" -- for the broad fault it is not, and an earlier version of this
-    paragraph said exactly that and was wrong. Five of the ten guarded routes spend --
+    paragraph said exactly that and was wrong. Five of the ten guarded
+    routes spend --
     ``compute_campaign_create``, ``compute_campaign_refold``, ``job_refold``,
     ``target_launch_submit``, ``tool_submit`` -- and for those, refusing costs
     the user a retry while running costs a second charge and a second GPU job
