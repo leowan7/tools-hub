@@ -20,6 +20,7 @@ SQL function.
 
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -472,6 +473,10 @@ def _seed_wallet(
         "stripe_payment_method_id": payment_method,
         "stripe_customer_id": customer,
         "daily_spend_cap_usd": float(daily_cap),
+        # Mirrors the NOT NULL DEFAULT in migration 0042: a wallet that has
+        # never dispatched an auto-reload sits at the epoch, so the
+        # dispatch claim's "older than 24h" filter matches it.
+        "auto_reload_last_dispatch_at": "1970-01-01T00:00:00+00:00",
     })
     # Seed the credit transaction so balance can be recomputed.
     if balance > 0:
@@ -1046,6 +1051,139 @@ def test_auto_reload_triggers_when_eligible(store):
     ):
         result = auto_reload_if_needed(USER_A)
     assert result == "triggered"
+
+
+def test_auto_reload_dispatches_once_inside_the_webhook_window(store):
+    """A burst of settles before the webhook lands charges the card ONCE.
+
+    The 24h rate limit counts ``kind='auto_reload'`` ledger rows, and that
+    row is written by ``top_up_wallet`` from the ``payment_intent.succeeded``
+    handler in ``webhooks/stripe.py`` — only after the charge has settled.
+    This test deliberately writes no such row, which is exactly the state of
+    the ledger between dispatch and webhook: the count still reads 0. Every
+    settle inside that window therefore passes the count gate, so without a
+    dispatch-time claim each one fires its own PaymentIntent and the customer
+    is charged three times for one top-up.
+
+    Not a concurrency test — the calls are sequential, which is the point.
+    """
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+        auto_reload_monthly_cap=Decimal("1000.00"),
+    )
+    charges: list[dict] = []
+
+    def _charge(**kwargs):
+        charges.append(kwargs)
+        return {"id": f"pi_fake_{len(charges)}"}
+
+    with patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=_charge,
+    ):
+        results = [auto_reload_if_needed(USER_A) for _ in range(3)]
+
+    assert len(charges) == 1, (
+        f"card charged {len(charges)}x for one top-up; results={results}"
+    )
+    assert results == ["triggered", "rate_limited", "rate_limited"]
+
+
+def test_auto_reload_dispatch_claim_expires_after_24h(store):
+    """The dispatch claim is a rolling 24h window, not a permanent lock.
+
+    Seeds a claim older than 24h with no ``auto_reload`` ledger row behind it
+    — the lost-webhook case, where the count gate reads 0 as well — and
+    asserts the next settle is still allowed to charge. Without this, a fix
+    that simply stopped dispatching would look correct to the test above.
+    """
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+        auto_reload_monthly_cap=Decimal("1000.00"),
+    )
+    wallet_row = next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+    wallet_row["auto_reload_last_dispatch_at"] = (
+        datetime.now(timezone.utc) - timedelta(hours=25)
+    ).isoformat()
+
+    with patch(
+        "billing.checkout.create_off_session_payment_intent",
+        return_value={"id": "pi_fake"},
+    ):
+        assert auto_reload_if_needed(USER_A) == "triggered"
+
+
+def test_auto_reload_dispatch_claim_fails_closed_on_write_error(store):
+    """A claim write we could not complete counts as LOST, not won.
+
+    Failing open here would restore the original bug for the duration of a
+    Supabase blip: every settle would sail past the gate and dispatch its own
+    PaymentIntent.
+
+    Asserted on the helper rather than through ``auto_reload_if_needed``, and
+    that is not laziness: a client this broken fails ``_wallet()`` first, so
+    the route-level call returns ``missing_service_client`` without ever
+    reaching the claim. The helper's return value IS the property under test.
+    """
+
+    class _Boom:
+        def table(self, _name):
+            return self
+
+        def update(self, _payload):
+            raise RuntimeError("supabase unreachable")
+
+    with patch("shared.wallet.get_service_client", return_value=_Boom()):
+        assert wallet._claim_auto_reload_dispatch(USER_A) is False
+
+
+def test_a_missing_billing_module_does_not_burn_the_dispatch_window(store):
+    """The claim must be the LAST thing before the charge, and this is the
+    only test that notices when it is not.
+
+    ``auto_reload_if_needed`` resolves ``billing.checkout`` lazily, and that
+    import's failure path returns "triggered" WITHOUT charging. Taken before
+    the import, the claim stamps a user's whole 24h window for a dispatch that
+    never happened and reports success for it, so nothing downstream ever
+    notices -- the user simply gets no auto-reload for a day.
+
+    The fix was to hoist the import above the claim. QC found the fix correct
+    but unguarded: reverting it left all 57 wallet tests green. Move the claim
+    back above the import and only this goes red.
+    """
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+        auto_reload_monthly_cap=Decimal("1000.00"),
+    )
+    wallet_row = next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+    before = wallet_row["auto_reload_last_dispatch_at"]
+
+    # None in sys.modules makes `from billing.checkout import ...` raise,
+    # which is the branch under test.
+    with patch.dict(sys.modules, {"billing.checkout": None}):
+        result = auto_reload_if_needed(USER_A)
+
+    assert result == "triggered"  # pre-existing wart: reports success, no charge
+    assert wallet_row["auto_reload_last_dispatch_at"] == before, (
+        "the 24h dispatch window was stamped for a charge that never went out; "
+        "this user gets no auto-reload for a day and nothing reports it"
+    )
 
 
 def test_auto_reload_amount_zero_disables(store, email_log):

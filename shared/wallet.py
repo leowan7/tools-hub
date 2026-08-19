@@ -730,13 +730,63 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     * ``"no_payment_method"`` (no saved card or Stripe customer;
       auto-reload disabled)
     * ``"no_amount_configured"`` (reload amount unset; auto-reload disabled)
-    * ``"rate_limited"`` (already reloaded once in the last 24h)
+    * ``"rate_limited"`` (a reload already landed, or a charge was already
+      dispatched, within the last 24h)
     * ``"monthly_cap"`` (current-month total plus reload would exceed cap)
     * ``"triggered"`` (off-session PaymentIntent dispatched)
     * ``"stripe_error"`` (the off-session charge failed; on a permanent
       failure such as a declined or unusable card, auto-reload is
       disabled and the user is emailed)
     * ``"missing_service_client"`` (no service-role client available)
+
+    Bounded to one off-session charge per rolling 24h by
+    :func:`_claim_auto_reload_dispatch`, which is taken BEFORE the Stripe call
+    and never released. The price of failing closed: when the charge then
+    fails (for ANY reason) auto-reload will not retry until the window rolls,
+    and the user tops up by hand in the meantime. Preferred over releasing the
+    claim, which would risk a second charge every time a dispatch reached
+    Stripe but the response did not reach us.
+
+    That covers a case worth naming, because it is the one a user notices. A
+    DECLINED card takes the permanent branch below: auto-reload is disabled
+    and the user is emailed to fix the card. If they fix it and re-enable
+    inside the window, the next settle is silently answered "rate_limited" —
+    no charge, and no mail — for up to 24h after we asked them to act. Stripe
+    definitively did not charge in that case, so releasing the claim there
+    would be safe and would remove the dead wait, EXCEPT that
+    ``_classify_off_session_error`` (billing/checkout.py:145-147) also routes
+    UNKNOWN failures to the same non-retryable branch, and an unknown failure
+    may well have charged the card. Two of its reasons are already
+    unambiguous — ``expired_card`` and ``insufficient_funds`` reach the caller
+    only from a ``CardError`` carrying that code, so neither one charged — but
+    plain ``card_declined`` is also what the unknown fallback returns, and
+    that is the reason a real decline usually carries. Releasing the claim on
+    the two safe reasons alone would be sound; it is not in this change, and
+    until it is, the dead wait is the safe side and is left in place
+    knowingly.
+
+    The monthly cap rides on the same claim rather than getting one of its
+    own, and is only partly bounded by it. The cap reads SETTLED
+    ``auto_reload`` credits, so it under-reads by every charge whose webhook
+    has not landed. The claim bounds dispatches to one per 24h WINDOW, which
+    is not the same as one outstanding: if auto-reload credits stop settling
+    while job settles keep arriving, N windows dispatch N charges, the month
+    totals N × ``reload_amount``, and the cap is over-run by whatever that
+    total exceeds it by. At the shipped $1000 default with a $50 reload, 30
+    windows charge $1500 — $500 past the cap, not one reload past it.
+
+    An earlier version of this docstring claimed at most one charge could be
+    in flight, so the cap could be overshot by at most a single
+    ``reload_amount``. That was wrong, it conflated one-per-window with
+    one-outstanding, and QC reproduced the counterexample: cap $100, reload
+    $50, webhook never lands, four dispatches across four windows, $200
+    charged — $100 past the cap, two reloads' worth. Do not restore it.
+
+    What the claim does buy the cap is the wave: before it, one stale read let
+    a whole settle wave through at once, so the overshoot had no bound in time
+    at all. Closing the rest needs the cap to count DISPATCHED rather than
+    settled credits, which is a second migration and is deliberately not in
+    this change.
     """
     client = get_service_client()
     if client is None:
@@ -807,6 +857,16 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             user_id=user_id, total_usd=month_total, cap_usd=monthly_cap,
         )
         return "monthly_cap"
+    # Resolved BEFORE the claim, though it reads like setup. This import has
+    # no side effects, and its failure path returns without charging -- so
+    # taken after the claim it would burn a user's whole 24h window on a
+    # dispatch that never happened, and report "triggered" for it. Nothing
+    # between the claim and the charge may be able to return early.
+    # `test_a_missing_billing_module_does_not_burn_the_dispatch_window` pins
+    # THIS import's position and nothing further -- a newly added step here
+    # with its own early return would not red it. The invariant is wider than
+    # its guard.
+    #
     # Stripe off-session PaymentIntent. Wave 2 Agent E provides
     # :func:`billing.checkout.create_off_session_payment_intent`. Import
     # lazily so this module is testable without the Stripe SDK on path.
@@ -820,6 +880,23 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             user_id,
         )
         return "triggered"
+    # Last gate before money moves, and the authoritative one. Placed after
+    # every cheap reject above so a wallet that was never going to reload
+    # (above threshold, capped, misconfigured) does not burn its 24h window.
+    #
+    # No email here. The count-based branch above owns the user-facing
+    # rate-limit notice; losing the claim means a dispatch went out within the
+    # last 24h that the ledger cannot see yet, and telling someone whose card
+    # was charged seconds ago that we declined to top them up would be false —
+    # the top-up is already on its way. The exception is the declined-card
+    # case documented above, where the silence is a real cost.
+    if not _claim_auto_reload_dispatch(user_id):
+        logger.info(
+            "auto_reload_if_needed: dispatch claim already held for %s "
+            "(charge in flight or settled within 24h); not charging again.",
+            user_id,
+        )
+        return "rate_limited"
     try:
         create_off_session_payment_intent(
             stripe_customer_id=wallet.get("stripe_customer_id"),
@@ -1043,6 +1120,67 @@ def _auto_reload_count_24h(user_id: str) -> int:
             "auto_reload_count_24h failed for %s", user_id, exc_info=True
         )
         return 0
+
+
+def _claim_auto_reload_dispatch(user_id: str) -> bool:
+    """Reserve this user's one auto-reload dispatch for the next 24h.
+
+    Returns True iff this call won the claim and may charge the card.
+
+    :func:`_auto_reload_count_24h` cannot bound dispatches on its own. The
+    ``kind='auto_reload'`` row it counts is written by :func:`top_up_wallet`
+    from the ``payment_intent.succeeded`` handler in ``webhooks/stripe.py``,
+    so it appears only after Stripe settles the charge. Between dispatch and
+    that webhook the count still reads 0, and since :func:`_post_settle_hooks`
+    calls :func:`auto_reload_if_needed` on every job settle — and Modal
+    completions arrive in waves — two settles a second apart both read 0 and
+    both used to fire their own PaymentIntent. Nothing downstream caught it:
+    ``billing.checkout.create_off_session_payment_intent`` sends no Stripe
+    idempotency key, and :func:`top_up_wallet` dedups on ``stripe_event_id``,
+    which catches webhook redelivery rather than two distinct charges.
+
+    Claiming at dispatch time closes that window. The filter is on the
+    PRE-update value, so Postgres re-evaluates it after taking the row lock
+    and exactly one of several concurrent callers wins — the same
+    compare-and-set shape as ``shared.compute_campaigns._cas_transition``.
+    Sequential callers, which is what a settle wave actually produces, are
+    excluded by the committed value alone.
+
+    Both ``now`` and the cutoff are computed on the app server, not by
+    Postgres, so two web hosts whose clocks differ by more than 24h could each
+    win. NTP makes that remote and the cited ``_cas_transition`` has no time
+    term to get wrong; a Postgres-side ``now()`` via RPC, the way
+    ``claim_due_webhook_deliveries`` does it, would remove the dependency
+    entirely.
+
+    Fails CLOSED. A claim we could not write is treated as lost, so a Supabase
+    blip stops auto-reload instead of reopening an unbounded number of
+    charges; the manual top-up path is unaffected. That is also why the claim
+    is never rolled back when the Stripe call then fails — a dispatch that
+    timed out may still have reached Stripe, and releasing the claim to be
+    tidy would let the next settle charge the card a second time. The cost of
+    that choice is stated on :func:`auto_reload_if_needed`.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+    try:
+        response = (
+            client.table("user_wallets")
+            .update({"auto_reload_last_dispatch_at": now.isoformat()})
+            .eq("user_id", user_id)
+            .lt("auto_reload_last_dispatch_at", cutoff.isoformat())
+            .execute()
+        )
+        return bool(getattr(response, "data", None))
+    except Exception:
+        logger.warning(
+            "auto-reload dispatch claim failed for %s; treating it as held "
+            "elsewhere so no charge goes out.", user_id, exc_info=True,
+        )
+        return False
 
 
 def _auto_reload_total_month(user_id: str) -> Decimal:
