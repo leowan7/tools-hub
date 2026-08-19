@@ -755,6 +755,30 @@ class TestRenderedLedeRules:
             f"rendered lede phrase contains the raw slug: {offenders}"
         )
 
+    def test_every_registered_tool_has_its_own_phrase(self, all_tools_app):
+        """QC's M4, closed: it deleted the ``proteina`` key so the
+        fallback fired, and the whole suite stayed green.
+
+        The fallback is a safety net, not copy. It describes every tool
+        on the hub and therefore none of them, and the map has already
+        been four tools out of date once — which is how "a free
+        esmfold2-design tool online" reached an indexable page. Read off
+        the RENDERED phrase, so a tool that quietly falls through is
+        caught on the page rather than in the dict.
+        """
+        import blueprints.tools as bt
+
+        fallback = bt._preview_seo_phrases("__definitely-not-a-tool__")[0]
+        fell_through = {
+            slug: hero
+            for slug, hero in self._ledes(all_tools_app).items()
+            if _lede_phrase(hero) == fallback
+        }
+        assert not fell_through, (
+            f"these tools render the generic fallback {fallback!r} "
+            f"instead of their own phrase: {sorted(fell_through)}"
+        )
+
     def test_the_fallback_itself_leaks_no_slug(self, all_tools_app):
         """Forces the unmapped path on all 14 and reads what renders.
 
