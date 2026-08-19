@@ -114,7 +114,10 @@ def _extract_chain_names(pdb_path: str) -> dict:
     # Fallback: extract names from DBREF records (UniProt entry names).
     if not chain_names:
         for line in text.splitlines():
-            if line.startswith("DBREF "):
+            # Length guard: chain names are cosmetic, so a truncated DBREF
+            # record must never raise out of interface detection — the caller
+            # scores a feasibility dimension on the result.
+            if line.startswith("DBREF ") and len(line) > 12:
                 chain_id = line[12].strip()
                 # DBREF columns 42-67 contain the database entry name.
                 entry_name = line[42:67].strip()
