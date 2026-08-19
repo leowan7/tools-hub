@@ -208,6 +208,25 @@ class TestExampleDeclaration:
             assert path.is_file(), f"{slug}: EXAMPLE declared, {path} missing"
             assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
 
+    def test_no_html_entity_in_an_escaped_narration_field(self, tools_app):
+        """``inputs_used`` renders as ``{{ field }}`` / ``{{ value }}``,
+        without ``|safe`` — unlike every prose field beside it. So an
+        ``&ndash;`` written there reaches the page as the six literal
+        characters, which is exactly what happened. Prose fields may
+        keep their entities; these two may not."""
+        _, slugs = tools_app
+        bad = {}
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            for field, value, _why in example["inputs_used"]:
+                for cell in (field, value):
+                    if re.search(r"&[a-zA-Z]+;|&#\d+;", cell):
+                        bad.setdefault(slug, []).append(cell)
+        assert not bad, (
+            f"HTML entities in a field rendered without |safe: {bad}"
+        )
+
     def test_structure_file_exists(self, tools_app):
         """The offered download must be a file that is actually served."""
         _, slugs = tools_app
@@ -445,25 +464,46 @@ class TestExampleNumbersComeFromThePayload:
             (REPO / "tools" / "boltz2" / "example" / "result.json")
             .read_text(encoding="utf-8"),
         )
-        design, = result["designs"]
-        assert result["antigen_length"] == 76
-        assert result["hotspots_requested"] == [8, 44, 68, 70]
-        assert result["runtime_seconds"] == 120
-        assert design["filter_status"] == "strict_pass"
-        # "ipTM 0.894, pTM 0.916 and complex pLDDT 92.6"
-        assert round(design["iptm"], 3) == 0.894
-        assert round(design["ptm"], 3) == 0.916
-        assert round(design["complex_plddt"] * 100, 1) == 92.6
-        # "All four of the hotspots we named were contacted — 4 of 4"
-        assert design["n_hotspot_contacts"] == design["n_hotspots"] == 4
+        designs = result["designs"]
+        assert len(designs) == 12
+        assert result["antigen_length"] == 85
+        assert result["hotspots_requested"] == [
+            54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100,
+        ]
+        iptm = [d["iptm"] for d in designs]
+        plddt = [d["complex_plddt"] * 100 for d in designs]
+        hits = {d["n_hotspot_contacts"] for d in designs}
+        # "every one strict_pass ... 0.874 to 0.952 ... 91.3 to 97.1 ...
+        #  13 or 14 of the 14 cleft residues"
+        assert all(d["filter_status"] == "strict_pass" for d in designs)
+        assert (round(min(iptm), 3), round(max(iptm), 3)) == (0.874, 0.952)
+        assert (round(min(plddt), 1), round(max(plddt), 1)) == (91.3, 97.1)
+        assert hits == {13, 14}
+        assert {d["n_hotspots"] for d in designs} == {14}
         blurb = example["what_came_back"]
-        for figure in ("0.894", "0.916", "92.6", "strict_pass", "4 of 4"):
+        for figure in ("0.874", "0.952", "91.3", "97.1", "strict_pass",
+                       "13 or 14"):
             assert figure in blurb, f"{figure} missing from what_came_back"
-        assert "76 residues" in example["target"]
-        assert example["inputs_used"][2][1] == "8, 44, 68, 70"
-        assert "120 seconds" in example["runtime"]
-        # No invented price: the run recorded credits_cost 0.
+        assert "1YCR" in example["target"] and "85 residues" in example["target"]
+        assert example["inputs_used"][2][1] == (
+            "54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100"
+        )
+
+        # The reference band is quoted in prose because those folds are
+        # NOT rows in the payload — see the comment in meta.py. Nothing
+        # in this file can re-derive them, so this pins the shape of the
+        # claim instead: three named binders, each with a range, and the
+        # affinity caveat that is the whole point of quoting them.
+        reading = example["how_to_read_it"]
+        for ref in ("p53", "PDI", "PMI"):
+            assert ref in reading, f"{ref} missing from how_to_read_it"
+        assert "0.905" in reading and "0.941" in reading
+        assert "does not rank affinity" in reading
+
+        # No invented price: campaign compute, not a wallet-billed job.
         assert not example.get("cost_usd")
+        # No structure_file: static/example/ carries no 1YCR.
+        assert not example.get("structure_file")
 
 
 class TestCaptureScrubsBeforeItPublishes:
