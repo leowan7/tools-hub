@@ -193,8 +193,10 @@ class TestTheShippedDeadline:
     def test_it_is_above_modals_own_channel_connect_budget(self):
         """Below Modal's budget, this deadline preempts the SDK's own retry.
 
-        ``modal/_utils/grpc_utils.py:231`` decorates ``connect_channel`` with
-        ``@retry(n_attempts=18, ..., total_timeout=63.0)`` — establishing the
+        ``modal/_utils/grpc_utils.py`` decorates its channel-connect helper
+        with ``@retry(n_attempts=18, ..., total_timeout=63.0)`` — verified
+        identical in 1.4.2 (``connect_channel``) and 1.5.4
+        (``create_channel_with_fallbacks``); establishing the
         channel is allowed 63 s, by design, for exactly the transient blips
         this deadline exists to survive. Any of our calls can be the one that
         triggers a connect. Cap below that and a blip Modal would have ridden
@@ -250,21 +252,48 @@ class TestTheShippedDeadline:
 
 
 def _modal_connect_budget_sec() -> float:
-    """Read ``connect_channel``'s ``total_timeout`` out of the installed SDK.
+    """Read the channel-connect ``total_timeout`` out of the installed SDK.
 
     ``@retry`` closes over its arguments rather than storing them, so this
     reads the closure. Documented CPython introspection, and the alternative
     is a hardcoded 63 that goes stale in silence.
+
+    The helper is looked up under SEVERAL names because it has been renamed
+    upstream already and requirements.txt pins only ``modal>=1.4,<2.0``, so
+    the whole range has to work: 1.4.2 has ``connect_channel`` and no
+    ``create_channel_with_fallbacks``, 1.5.4 has exactly the reverse. Both
+    carry ``total_timeout=63.0``, so the shipped deadline is unaffected by
+    the rename -- which is the point of reading it rather than trusting it.
+
+    ``create_channel`` is deliberately NOT a candidate even though it exists
+    in both and is what an AttributeError on the old name suggests. It closes
+    over ``total_timeout=None``, so accepting it would turn a rename into a
+    silent "no budget" instead of a failure.
+
+    A name this does not know about FAILS rather than skipping: skipping
+    would let an upstream budget change through as a green suite, which is
+    the exact rot this function exists to prevent.
     """
-    modal = pytest.importorskip("modal._utils.grpc_utils")
-    fn = modal.connect_channel
+    grpc_utils = pytest.importorskip("modal._utils.grpc_utils")
+    candidates = ("create_channel_with_fallbacks", "connect_channel")
+    for name in candidates:
+        fn = getattr(grpc_utils, name, None)
+        if fn is not None:
+            break
+    else:
+        pytest.fail(
+            f"modal._utils.grpc_utils has none of {candidates} -- the "
+            "channel-connect helper was renamed again. Re-read the SDK and "
+            "re-check that gpu/modal_client.py's deadline still clears its "
+            "total_timeout."
+        )
     closure = dict(zip(
         fn.__code__.co_freevars,
         (cell.cell_contents for cell in fn.__closure__ or ()),
     ))
     assert "total_timeout" in closure, (
         "modal's @retry decorator no longer closes over total_timeout — "
-        "re-read grpc_utils.connect_channel"
+        f"re-read grpc_utils.{name}"
     )
     return closure["total_timeout"]
 
