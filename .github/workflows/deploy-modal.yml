@@ -36,10 +36,21 @@ on:
       # __init__.py holds the Flask-side adapter class. `modal deploy
       # tools/<slug>/modal_app.py` loads that file in SCRIPT mode, so its
       # __package__ is "" and Modal mounts the single file, not the `tools`
-      # package (FunctionInfoType.FILE) — verified on all nine apps against
-      # modal 1.4.2. tests/test_deploy_paths_exclusions.py fails if any app
-      # starts importing its package or mounting local source, which is what
-      # would make this exclusion unsafe.
+      # package (FunctionInfoType.FILE).
+      #
+      # tests/test_deploy_paths_exclusions.py is what keeps that true. It runs
+      # Modal's own loader over each of the nine apps in a subprocess and fails
+      # if the resulting upload set — entrypoint mount, spec mounts, and every
+      # image mount layer and build-context mount — contains any __init__.py, so
+      # it catches a local-source mount however it is spelled. It also fails
+      # statically on a package import, on an add_local_*/mounts= of anything
+      # but the app's own run_pipeline.py, and on a COPY of any tools-side
+      # __init__.py from a Dockerfile.modal or from .dockerfile_commands([...]).
+      #
+      # Two known gaps, both LOUD rather than silent, so neither can leave a
+      # stale image behind: `ADD` (Modal's COPY parser ignores it, so the docker
+      # build fails) and importlib/__import__ of the package (ImportError inside
+      # the container). Detail in that file's docstring.
       #
       # Order matters: a later negation wins over the earlier 'tools/**'.
       - 'tools/**'
