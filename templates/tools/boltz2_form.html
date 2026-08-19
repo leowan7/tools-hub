@@ -102,9 +102,11 @@
               <span>
                 <span class="preset-title">Single-sequence (default, fast)</span>
                 <span class="preset-desc">
-                  YAML <code>msa: empty</code> per chain. ~&lt;1 min/design.
-                  The right choice for designed sequences (MPNN, RFantibody,
-                  BindCraft, BoltzGen, RFdiffusion, PXDesign outputs).
+                  Folds from the sequences alone, with no search for
+                  related natural sequences. Under a minute per design, and
+                  the right choice for anything you designed on this site
+                  &mdash; a designed binder has no natural relatives to find,
+                  so the search would come back empty anyway.
                 </span>
               </span>
             </label>
@@ -114,10 +116,11 @@
               <span>
                 <span class="preset-title">With MSA (slower, natural sequences)</span>
                 <span class="preset-desc">
-                  Boltz fetches MSAs from the public ColabFold MMseqs2 server
-                  at runtime. ~3 min/design. Better for natural / near-native
-                  sequences; for designed binders the result usually matches
-                  single-sequence.
+                  Searches public databases for sequences related to yours
+                  and folds with that extra evidence. About 3 min per design.
+                  Worth it for natural or near-natural sequences, which do
+                  have relatives; on a designed binder the answer usually
+                  comes out the same as the fast option above.
                 </span>
               </span>
             </label>
@@ -140,11 +143,13 @@
           <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="55,56,57,71,72,73,74" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Comma-separated 1-indexed positions on the antigen chain.
-            Used for output scoring only. The pipeline reports how many
-            of these the binder ends up contacting in the predicted
-            complex (heavy atom within 5&nbsp;&Aring;). Does <em>not</em>
-            constrain the fold. Leave blank to skip the contact analysis.
+            The residues on your antigen you were <em>hoping</em> the binder
+            would touch &mdash; comma separated, counted from 1 at the start
+            of the antigen chain. These are scored, not steered: nothing here
+            changes the fold, and the run reports how many of them the binder
+            actually ends up contacting (any heavy atom within
+            5&nbsp;&Aring;) so you can tell whether it landed where you
+            wanted. Leave blank to skip that count.
           </div>
 
           <label for="binder_sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Binder sequences</label>

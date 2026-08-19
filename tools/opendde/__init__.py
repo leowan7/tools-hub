@@ -503,9 +503,10 @@ adapter = ToolAdapter(
     slug="opendde",
     label="OpenDDE co-folding",
     blurb=(
-        "All-atom co-folding for any mix of protein, DNA, RNA, and ligand in one "
-        "spec. AlphaFold3-class multi-modal structure prediction, the "
-        "multi-molecule complement to the protein-only Boltz-2 tool."
+        "Describe any mix of protein, DNA, RNA and small molecules in "
+        "one spec and get the whole complex folded together, every atom "
+        "modelled. The multi-molecule counterpart to the protein-only "
+        "Boltz-2 tool."
     ),
     presets=(
         Preset(

@@ -243,31 +243,34 @@
     <div class="catalog-loop">
       <div class="catalog-loop-step">
         <span class="catalog-loop-num">Step 1</span>
-        <span class="catalog-loop-title">Score the target</span>
+        <span class="catalog-loop-title">Find the patch worth aiming at</span>
         <span class="catalog-loop-body">
-          Use Epitope Scout to identify candidate epitopes and rate
-          binder-design feasibility before burning GPU-hours.
+          Score your target&rsquo;s surface with Epitope Scout and see which
+          patches are realistic to bind, before you spend any GPU time.
+          It is free.
         </span>
       </div>
       <div class="catalog-loop-step">
         <span class="catalog-loop-num">Step 2</span>
-        <span class="catalog-loop-title">Generate binders</span>
+        <span class="catalog-loop-title">Design binders against it</span>
         <span class="catalog-loop-body">
-          Run BindCraft, RFdiffusion, BoltzGen, RFantibody, or PXDesign
-          on a target PDB. Score, clone, tweak, re-run.
+          Upload your target, mark the patch, and get back candidates
+          ranked by confidence. Five tools here do this &mdash; start with
+          one, clone the run, adjust, re-run.
         </span>
       </div>
       <div class="catalog-loop-step">
         <span class="catalog-loop-num">Step 3</span>
-        <span class="catalog-loop-title">Validate in silico</span>
+        <span class="catalog-loop-title">Check them on the computer first</span>
         <span class="catalog-loop-body">
-          Refold candidates with AlphaFold2, ColabFold, or ESMFold.
-          Use ProteinMPNN to redesign sequences on a fixed backbone.
+          Fold the shortlist again with a second, independent model to see
+          whether the answer holds up, and put fresh sequences on any
+          backbone that looks promising.
         </span>
       </div>
       <div class="catalog-loop-step">
         <span class="catalog-loop-num">Step 4</span>
-        <span class="catalog-loop-title">Validate in the lab</span>
+        <span class="catalog-loop-title">Then test them at the bench</span>
         <span class="catalog-loop-body">
           Hand the shortlist into a Ranomics wet-lab campaign.
           Same team, same data loop — design and wet-lab share one

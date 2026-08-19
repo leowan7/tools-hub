@@ -14,7 +14,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — bioRxiv permalink for the RFantibody paper.
     github_url        — upstream RosettaCommons repo.
-    comparison_one_liner — "pick RFantibody when..." positioning string
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
                          rendered on the About panel.
     example_output_id — optional job_id of a public demo run to link to
                          from the About panel. Phase 3 will populate this;
@@ -34,9 +35,12 @@ paper_citation: str = "Bennett et al., bioRxiv 2024"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2"
 github_url: str = "https://github.com/RosettaCommons/RFantibody"
 comparison_one_liner: str = (
-    "Pick RFantibody when you need a VHH (nanobody) scaffold against a "
-    "target PDB. For de novo non-antibody binders, use BindCraft. For "
-    "designs involving modified residues or glycans, use BoltzGen."
+    "You have a target structure and want nanobodies — "
+    "single-domain antibodies you can carry straight into yeast "
+    "display, mammalian display or a hybridoma workflow. Each "
+    "candidate is refolded and scored against the target before you "
+    "see it. For non-antibody mini-proteins use RFdiffusion or "
+    "BindCraft; for sugar-coated targets use BoltzGen."
 )
 example_output_id: Optional[str] = None
 
@@ -45,15 +49,27 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "RFantibody (Bennett et al., bioRxiv 2024). RoseTTAFold-derived "
-        "diffusion model that generates VHH (single-domain heavy-chain "
-        "antibody) scaffolds against a target. Outputs are scored with "
-        "AF2 re-prediction (pAE, pLDDT, ipAE)."
+        "Designs nanobodies — single-domain antibodies, the VHH format "
+        "— against a patch of your target, then refolds each one with "
+        "AlphaFold2 and reports how confident it is about the contact. "
+        "Nanobodies are the format that carries most easily into yeast "
+        "display, mammalian display and hybridoma workflows, which is "
+        "the usual reason to pick this over a de novo mini-protein. "
+        "RFantibody, Bennett et al., bioRxiv 2024."
     ),
     "when_to_use": [
-        "You want a VHH (nanobody) scaffold rather than a de novo mini-protein.",
-        "Your downstream validation uses yeast display, mammalian display, or hybridoma workflows.",
-        "Your target is a standard protein epitope without heavy glycosylation.",
+        (
+            "You want a nanobody scaffold rather than a de novo "
+            "mini-protein."
+        ),
+        (
+            "Your downstream work is yeast display, mammalian display or a "
+            "hybridoma workflow."
+        ),
+        (
+            "Your target is an ordinary protein epitope without heavy sugar "
+            "coverage."
+        ),
     ],
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",

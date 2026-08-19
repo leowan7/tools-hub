@@ -785,10 +785,10 @@ adapter = ToolAdapter(
     slug="proteina",
     label="Proteina-Complexa",
     blurb=(
-        "De novo binder design against protein or small-molecule targets, "
-        "run as an inference-time search filtered by an AF2 / RF3 / "
-        "force-field reward stack. Fans out as a fund-and-drain campaign of "
-        "independent search shards; the wallet balance is the only ceiling."
+        "Upload a protein or small-molecule target and get de novo "
+        "binders found by a wide search that filters every candidate "
+        "through three independent scoring checks. The run fans out "
+        "across GPUs and stops when your wallet does."
     ),
     presets=(
         Preset(

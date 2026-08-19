@@ -172,9 +172,10 @@ adapter = ToolAdapter(
     slug="boltzgen",
     label="BoltzGen",
     blurb=(
-        "Boltz-2 binder design. Generates mini-protein, nanobody, "
-        "antibody, or peptide backbones against a target, refolds each "
-        "candidate, and scores affinity via ipTM and pLDDT."
+        "Upload your target, choose the format you want — mini-protein, "
+        "nanobody, antibody or peptide — and get back candidates each "
+        "refolded and scored against that target. Handles sugars and "
+        "modified residues on the target natively."
     ),
     presets=(
         Preset(

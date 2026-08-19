@@ -127,10 +127,10 @@ adapter = ToolAdapter(
     slug="pxdesign",
     label="PXDesign",
     blurb=(
-        "Binder design with JAX AF2 Initial Guess validation. Real "
-        "ipTM, pLDDT, and pAE from the AF2 monomer model run in "
-        "initial-guess mode against the target. Pilot runs in roughly "
-        "30 to 60 min."
+        "Upload your target structure, mark the residues you want "
+        "gripped, and get back binders that each carry a real "
+        "AlphaFold2 confidence score against that target. A pilot run "
+        "takes roughly 30 to 60 min."
     ),
     presets=(
         Preset(

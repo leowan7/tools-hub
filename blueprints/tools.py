@@ -309,66 +309,121 @@ def _require_tool(tool_slug: str):
 # of /tools/<slug> and only there.
 # ------------------------------------------------------------------
 
-# SEO phrase pairs per tool slug. ``seo_phrase`` is a short natural
-# phrase reused in the page title and lede; ``seo_long`` is a longer
-# phrase used once in body copy. Pulled into one map so the shared
-# preview shell stays free of per-tool branching.
+# SEO phrase pairs per tool slug. Both land in ONE rendered sentence
+# (templates/tools/_form_hero.html):
+#
+#     "{short_name} is a {seo_phrase} you can run through
+#      tools.ranomics.com on a dedicated GPU. {seo_long}."
+#
+# Two rules follow from that frame and both were broken before:
+#
+#   1. ``seo_phrase`` must NOT contain the tool's own name. Every entry
+#      used to start with it, so the lede rendered "RFdiffusion is a
+#      RFdiffusion de novo binder design online you can run through...".
+#      Byte-identical to the deleted _preview.html, faithfully restored,
+#      and wrong on all 14 pages.
+#   2. Every registered tool needs an entry. The old fallback
+#      interpolated the raw slug — "ESMFold2 design is a free
+#      esmfold2-design tool online" — so the tools added after the map
+#      was written leaked a slug on an indexable page. The fallback
+#      below no longer mentions the slug at all, and the map now covers
+#      all 14 so it should never fire.
+#
+# ``seo_phrase`` is a compact noun phrase completing "is a ..." and
+# must NOT end in a subordinate clause: "...against a target you
+# upload" renders as "a target you upload you can run through",
+# which parses as nonsense. Task detail belongs in ``seo_long``,
+# a sentence WITHOUT a terminal period; the template adds it.
+#
+# "free" was dropped from these phrases deliberately. Reading the page
+# is free; running the tool is billed against the wallet, and an
+# indexable page is the wrong place to blur that.
 _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
     "mpnn": (
-        "free online ProteinMPNN tool",
-        "Run ProteinMPNN sequence design on a backbone PDB with no "
-        "install and no local GPU"
+        "no-install online sequence design tool",
+        "Upload a backbone — a structure with no sequence decided yet "
+        "— and get ranked candidate sequences back in about 30 "
+        "seconds, with no local GPU"
     ),
     "af2": (
-        "AlphaFold2 multimer without a local GPU",
-        "Fold complexes through your browser with full MSA and "
-        "templates, results land at /jobs"
+        "no-install online structure prediction tool",
+        "Paste a sequence, one chain or several, and get a predicted "
+        "3D structure with calibrated per-residue confidence, homolog "
+        "search and templates included; results land at /jobs"
     ),
     "colabfold": (
-        "ColabFold online without Colab",
-        "Fast no-MSA folds in 1 to 2 minutes per run, no MMseqs2 "
-        "round-trip on your laptop"
+        "fast no-install online structure prediction tool",
+        "Paste a sequence and get a fold back in one to two minutes, "
+        "with no MMseqs2 round trip on your own laptop and no Colab "
+        "notebook to babysit"
     ),
     "esmfold": (
-        "ESMFold online single-sequence fold",
-        "Fastest monomer fold from the ESM-2 language model with no "
-        "MSA, no multimer, no install"
+        "no-install online single-sequence structure prediction tool",
+        "Paste one protein chain and get a fold in about 30 seconds "
+        "with no search for related natural sequences, so it works on "
+        "designed sequences that have no relatives to find"
     ),
     "bindcraft": (
-        "BindCraft de novo binder design no install",
-        "Hallucinate 60 to 150 residue protein binders against a "
-        "target PDB on a dedicated GPU"
+        "no-install online de novo binder design tool",
+        "Upload your target, mark the residues you want the binder to "
+        "touch, and get back 60 to 150 residue mini-proteins that "
+        "have already been refolded and filtered"
     ),
     "rfantibody": (
-        "RFantibody nanobody design online",
-        "Generate VHH scaffolds against a target PDB without setting "
+        "no-install online nanobody design tool",
+        "Upload your target, mark the patch you want gripped, and get "
+        "back single-domain antibody (VHH) candidates without setting "
         "up RoseTTAFold or Rosetta locally"
     ),
     "rfdiffusion": (
-        "RFdiffusion de novo binder design online",
-        "Run RFdiffusion plus AF2 multimer scoring through your "
-        "browser without an A100"
+        "no-install online de novo binder design tool",
+        "Upload your target, mark the residues you want the binder to "
+        "touch, and get back brand-new binders that each carry a real "
+        "AlphaFold2 confidence score against your own target"
     ),
     "boltzgen": (
-        "BoltzGen multi-modality binder design online",
-        "Design mini-proteins, nanobodies, antibodies, or peptides "
-        "against the same target with glycan and PTM support"
+        "no-install online multi-format binder design tool",
+        "Aim mini-proteins, nanobodies, antibodies or peptides at the "
+        "same site on your target, including targets carrying sugars, "
+        "modified residues or other non-standard chemistry"
     ),
     "boltz2": (
-        "Boltz-2 cofold validation online",
-        "Validate a designed binder against your antigen with "
-        "single-sequence cofold and interface confidence"
+        "no-install online cofold validation tool",
+        "Fold a designed binder against your antigen from sequence "
+        "alone and get a 0-to-1 interface confidence score back in "
+        "about 15 seconds per design"
     ),
     "pxdesign": (
-        "PXDesign AF2-IG binder design online",
-        "AF2-initial-guess binder generation with real ipTM, pLDDT, "
-        "and pAE on every candidate"
+        "no-install online AlphaFold2-scored binder design tool",
+        "Every candidate arrives with real ipTM, pLDDT and pAE "
+        "measured against your own target, from the same "
+        "initial-guess pipeline Ranomics runs for its wet-lab "
+        "campaigns"
     ),
     "iggm": (
-        "IgGM antibody and nanobody design online",
-        "Design or humanize an antibody or nanobody against your "
-        "antigen, or predict the antibody-antigen complex, in one "
-        "diffusion model"
+        "no-install online antibody and nanobody engineering tool",
+        "Redesign the binding loops, humanise a framework, raise "
+        "affinity, or predict how an antibody docks onto the antigen "
+        "you upload, all aimed at the epitope you name"
+    ),
+    "esmfold2-design": (
+        "no-install online antibody-fragment and minibinder design "
+        "tool",
+        "Design all six binding loops of a paired heavy and light "
+        "scFv — a single-chain antibody fragment — at once, or small "
+        "de novo binders by gradient descent instead of diffusion"
+    ),
+    "opendde": (
+        "no-install online all-atom complex prediction tool",
+        "Describe protein, DNA, RNA and small molecules together in "
+        "one specification and get an AlphaFold3-class joint "
+        "structure prediction back"
+    ),
+    "proteina": (
+        "no-install online hard-target binder design tool",
+        "Aim at a recessed pocket, a site spanning two chains, or a "
+        "small molecule rather than a protein, with every candidate "
+        "filtered through three independent scoring checks"
     ),
 }
 
@@ -381,7 +436,10 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
     return _PREVIEW_SEO_PHRASES.get(
         slug,
         (
-            f"free {slug} tool online",
+            # No slug interpolation. This is rendered prose on an
+            # indexable page; "a free esmfold2-design tool online" is
+            # what the old f-string produced.
+            "no-install online protein design tool",
             "Run it through your browser on a dedicated GPU with no "
             "install"
         ),
@@ -403,6 +461,11 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     "pxdesign": "AF2-IG Binder Design",
     "esmfold2-design": "scFv CDR Design",
     "iggm": "Antibody Design + Structure",
+    # Added with the copy pass: these registered after the map was
+    # written and were falling through to "GPU-Backed Protein Design",
+    # which describes every tool on the hub and therefore none of them.
+    "opendde": "Protein DNA RNA Ligand Co-Folding",
+    "proteina": "Hard-Target Binder Design",
 }
 
 def _preview_title_phrase(slug: str) -> str:

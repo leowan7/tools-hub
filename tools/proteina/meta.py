@@ -130,10 +130,11 @@ seo_faq: list[dict] = [
 ]
 
 comparison_one_liner: str = (
-    "Pick Proteina-Complexa when you want de novo binders against a protein "
-    "OR a small-molecule (ligand) target, scored by a full AF2 / RF3 / "
-    "force-field reward stack, and you want to scale the search across many "
-    "GPUs with the wallet as the only ceiling."
+    "You have a hard target — a recessed pocket, a site spanning "
+    "two chains, or a small molecule rather than a protein — and "
+    "you want to throw as much search at it as your balance allows. "
+    "Every candidate is filtered through three independent scoring "
+    "checks, and the run fans out across as many GPUs as you fund."
 )
 example_output_id: Optional[str] = None
 
@@ -142,23 +143,43 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "Proteina-Complexa (Geffner et al., NVIDIA 2025). A flow-matching "
-        "generator wrapped in an inference-time search that filters designs "
-        "through an AlphaFold2 / RoseTTAFold3 / force-field reward stack. It "
-        "designs de novo binders against protein targets, small-molecule "
-        "(ligand) targets, and enzyme / motif active sites. Runs here as a "
-        "fund-and-drain campaign of independent seeded search shards, with "
-        "global cross-shard top-K and post-hoc diversity clustering."
+        "Designs binders for the targets the standard tools find hard: "
+        "a recessed pocket, a site spanning two chains, a small "
+        "molecule instead of a protein, an enzyme active site. Rather "
+        "than generating candidates and hoping, it searches — it "
+        "generates, scores every candidate through three independent "
+        "checks (an AlphaFold2 refold, a RoseTTAFold3 fold, and a "
+        "physics force field), keeps what scores well and generates "
+        "again from there. The run splits into independent shards "
+        "across as many GPUs as your balance funds, then ranks globally "
+        "across all of them and clusters the winners, so you get a "
+        "spread of different designs rather than many copies of one. "
+        "Proteina-Complexa, Geffner et al., NVIDIA 2025."
     ),
     "when_to_use": [
-        "You want to aim a de novo binder at a specific epitope, including a "
-        "recessed or occluded one, using hotspot residues.",
-        "Your target is multi-chain and the site you care about spans more than "
-        "one chain.",
-        "You want de novo binders against a small-molecule target, not just a protein.",
-        "You want an inference-time search filtered by an AF2 / RF3 / force-field reward, not raw generation.",
-        "You want to scale the search across many GPUs with the prepaid wallet as the only ceiling.",
-        "You want diverse high-reward designs (global top-K + diversity clustering) rather than near-duplicates.",
+        (
+            "You want to aim a binder at one specific patch, including a "
+            "recessed or partly shielded one, by naming residues on it."
+        ),
+        (
+            "The site you care about spans more than one chain of your "
+            "target."
+        ),
+        (
+            "Your target is a small molecule rather than a protein."
+        ),
+        (
+            "You would rather pay for a search that filters as it goes than "
+            "for raw generation you have to filter afterwards."
+        ),
+        (
+            "You want to scale the search across many GPUs, with your "
+            "prepaid balance as the only ceiling."
+        ),
+        (
+            "You want a spread of different good designs rather than many "
+            "variations on one."
+        ),
     ],
     "prerequisites": [
         "A target: your own structure (<code>.pdb</code>/<code>.cif</code>) for "

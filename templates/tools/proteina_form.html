@@ -221,8 +221,15 @@
                      class="proteina-field">
             </div>
             <div class="proteina-help">
-              Each design's length is drawn uniformly from this range. Blank
-              uses 60 to 120, the model's own default.
+              How long the new binder should be, in residues. Every design
+              draws its own length from this window, so a wide window buys
+              variety and a narrow one buys consistency. Match it to the face
+              you are aiming at: 50 to 80 for a small, fairly flat patch, 100
+              to 200 for a broad one or a site spanning two chains, where a
+              short binder cannot reach across. Longer binders also cost more
+              GPU time per design and are harder to express at the bench.
+              Leaving both blank is <em>not</em> unconstrained &mdash; it means
+              60 to 120, the model's own default. 20 to 300 allowed.
             </div>
           </div>
 

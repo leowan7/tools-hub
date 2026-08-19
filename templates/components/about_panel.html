@@ -26,7 +26,7 @@ on this page. They render below the reference card, from
 
 The explainer renders in BOTH auth states, deliberately. It was
 logged-out-only when the form first went public; that deleted the score
-legend ("aim above roughly 0.7") for the one person who most needs it —
+legend ("what counts as a good ipTM") for the one person who most needs it —
 the user who just submitted a run and is reading the number. It is
 working reference, not anonymous-only marketing.
 
@@ -216,11 +216,26 @@ Usage:
              pxdesign and bindcraft report a number computed over the whole
              complex, and so did boltzgen before the August 2026 container
              update. See shared/metric_glossary.py. #}
+          {# The cut-off is READ from shared/metric_glossary.py, not typed
+             here. It used to say "aim above roughly 0.7" while the runtime
+             card ~40 lines further down the SAME page carried a tool's own
+             output_summary saying ipTM >= 0.65 — a page contradicting
+             itself within one scroll. 0.65 is the value with a source
+             behind it: shared/score_legends.py sets rfdiffusion's ipTM
+             "good" at 0.65 and the glossary's acceptable band agrees. 0.7
+             was in this template and nowhere else.
+
+             ``metric_glossary`` is a jinja global (app.py) holding
+             shared.metric_glossary.GLOSSARY, so it is visible here even
+             though every form imports this macro WITHOUT context. #}
           <dd>
-            Predicted confidence at an interface. Higher is better; aim above
-            roughly 0.7 on a tractable target. On a multi-chain target it may
-            cover the target's own chain&ndash;chain interface as well as the
-            binder's.
+            Predicted confidence in the contact between two chains, on a 0
+            to 1 scale. Higher is better:
+            {{ metric_glossary.get('ipTM', {}).get('good_range', '') }}.
+            Individual tools set their own pass bar a little either side of
+            that &mdash; the guide for the tool you ran states its one. On a
+            multi-chain target the number may cover the target's own
+            chain&ndash;chain interface as well as the binder's.
           </dd>
           <dt><strong>pLDDT</strong></dt>
           <dd>

@@ -188,6 +188,18 @@
                      style="width: 100%; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem;">
             </div>
           </div>
+          {# These two inputs shipped with no help at all; the only length
+             guidance on the page was buried in the Protocol helper below,
+             which a reader has not reached yet. #}
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: -0.75rem 0 1.25rem;">
+            How long the new binder should be, in residues. Every design draws
+            its own length from this window, so a wide window buys variety and
+            a narrow one buys consistency. What counts as sensible depends on
+            the format you pick below &mdash; the Protocol help lists a typical
+            window for each. Within a format, aim short for a small flat patch
+            and longer for a broad face or one sitting in a groove a short
+            binder cannot reach across.
+          </div>
 
           <label for="protocol" class="label" style="display:block; margin-bottom: 0.4rem;">Protocol</label>
           <select name="protocol" id="protocol"
@@ -198,12 +210,16 @@
             <option value="peptide-anything" {% if pre_fill and pre_fill.get('protocol') == 'peptide-anything' %}selected{% endif %}>Peptide (peptide-anything)</option>
           </select>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Picks the Boltz-2 design protocol. Mini-protein is the
-            general-purpose binder path; pick nanobody / antibody for
-            immunoglobulin scaffolds, or peptide for short cyclic /
-            linear binders. Typical binder lengths:
+            What shape of binder to design. <strong>Mini-protein</strong> is
+            the general-purpose choice and the one to start with &mdash; a
+            small de novo protein with no scaffold to inherit.
+            <strong>Nanobody</strong> and <strong>antibody</strong> build on
+            real antibody frameworks, so pick one of those when your
+            downstream work is display, hybridoma or an IgG format.
+            <strong>Peptide</strong> is for short linear or cyclic binders.
+            The choice sets what a sensible binder length is above:
             mini-protein 50 to 100, nanobody 110 to 130,
-            antibody 110 to 200, peptide 5 to 30.
+            antibody 110 to 200, peptide 5 to 30 residues.
           </div>
 
           <div id="pilot-fields">

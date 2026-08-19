@@ -11,7 +11,8 @@ Shapes
     paper_citation       — short inline citation.
     paper_url            — paper PDF / preprint URL.
     github_url           — upstream repo.
-    comparison_one_liner — positioning string vs the rest of the toolkit.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
 
 Open thread
 -----------
@@ -40,12 +41,12 @@ github_url: str = (
     "tutorials/binder_design.ipynb"
 )
 comparison_one_liner: str = (
-    "Pick ESMFold2 design for scFv CDR design (the only catalog tool "
-    "that does paired heavy + light scFvs) or as a gradient-based "
-    "alternative to RFdiffusion's diffusion sampler for minibinders. "
-    "Run alongside RFdiffusion, BindCraft, BoltzGen, or PXDesign for "
-    "orthogonal candidate pools. For nanobody or VHH formats use "
-    "RFantibody instead."
+    "You want a paired heavy + light scFv — a single-chain antibody "
+    "fragment — with all six binding loops designed against your "
+    "target at once, which no other tool here does. It also builds "
+    "small de novo binders by a different route to RFdiffusion, "
+    "worth a run when a target has gone quiet. For single-domain "
+    "nanobodies use RFantibody."
 )
 example_output_id: Optional[str] = None
 
@@ -54,26 +55,39 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "ESMFold2 design (Chan Zuckerberg Biohub, 2026, built on the "
-        "ESMC protein language model). Inversion of the ESMFold2 "
-        "structure prediction model: gradient descent on a "
-        "soft sequence representation, backpropagated through the fold "
-        "network, jointly optimizes sequence and predicted binding pose. "
-        "The same architecture handles both de novo minibinders and "
-        "framework-locked scFv CDR design. Wet-lab validated against "
-        "PDGFRB, EGFR, PD-L1, CD45, and CTLA4 with nanomolar affinity "
-        "and functional activity."
+        "Designs a binder by running a structure predictor backwards: "
+        "it starts from a soft, blurred sequence and nudges it one "
+        "gradient step at a time until the fold network believes the "
+        "result binds your target. The same machinery does two jobs — "
+        "small de novo binders, and a paired heavy + light scFv (a "
+        "single-chain antibody fragment) with all six binding loops "
+        "designed together, which no other tool here does. Designs from "
+        "this method have been taken to the bench against PDGFRB, EGFR, "
+        "PD-L1, CD45 and CTLA4, reaching nanomolar affinity and "
+        "functional activity. ESMFold2 design, Chan Zuckerberg Biohub "
+        "2026, built on the ESMC protein language model."
     ),
     "when_to_use": [
-        "You need a paired heavy + light scFv with all six CDRs designed "
-        "jointly against your target. No other catalog tool does this.",
-        "You want a gradient-based minibinder alternative to RFdiffusion "
-        "diffusion sampling. A different fold prior often surfaces "
-        "different binders for a stuck target.",
-        "You want to compare CDR designs across three validated humanized "
-        "frameworks (trastuzumab, atezolizumab, ocankitug).",
-        "You want to baseline your wet-lab setup against one of the five "
-        "paper-validated targets (PDGFRB, EGFR, PD-L1, CD45, CTLA4).",
+        (
+            "You want a paired heavy + light scFv with all six binding "
+            "loops designed jointly against your target. No other tool here "
+            "does this."
+        ),
+        (
+            "Your target has gone quiet under RFdiffusion and you want a "
+            "method that searches differently — a different prior often "
+            "surfaces different binders."
+        ),
+        (
+            "You want to compare designed loops across three humanised "
+            "frameworks that have been to the bench (trastuzumab, "
+            "atezolizumab, ocankitug)."
+        ),
+        (
+            "You want to calibrate your own wet-lab setup against one of "
+            "the five targets from the paper before spending on a novel "
+            "one."
+        ),
     ],
     "prerequisites": [
         "Target sequence: pick one of five paper-validated presets or "

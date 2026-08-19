@@ -11,7 +11,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — bioRxiv / Science permalink.
     github_url        — upstream ProteinMPNN repository.
-    comparison_one_liner — "pick MPNN when..." positioning string.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id — optional job_id of a public demo run (None today).
 """
 
@@ -67,9 +68,11 @@ seo_faq: list[dict] = [
 ]
 
 comparison_one_liner: str = (
-    "Pick ProteinMPNN when you already have a backbone and need candidate "
-    "sequences. For de novo backbone generation, use RFantibody, BindCraft, "
-    "or BoltzGen first and feed the output PDB here."
+    "You have a backbone — a 3D shape with no sequence decided yet "
+    "— and need amino-acid sequences that will fold into it. Ranked "
+    "candidates come back in about 30 seconds. To generate the "
+    "backbone in the first place, run a binder design tool and feed "
+    "its PDB in here."
 )
 example_output_id: Optional[str] = None
 
@@ -79,17 +82,27 @@ example_output_id: Optional[str] = None
 # rendering rules are documented at the top of about_panel.html.
 about: dict = {
     "what_it_is": (
-        "ProteinMPNN (Dauparas et al., <em>Science</em> 2022). A "
-        "message-passing graph neural network that scores the 20 "
-        "canonical residues at every backbone position, conditioned on "
-        "C&alpha; / backbone coordinates. Sampling at "
-        "<code>sampling_temp</code> produces candidate sequences that "
-        "fold into the input geometry."
+        "You give it a backbone — a 3D protein shape with no sequence "
+        "decided yet — and it proposes an amino acid for every "
+        "position, chosen so the sequence should fold back into that "
+        "exact shape. It reads only the backbone atoms, so side chains "
+        "in your file are ignored. Each candidate comes back with a "
+        "score and, on a natural backbone, the fraction of the real "
+        "sequence it recovered. ProteinMPNN, Dauparas et al., "
+        "<em>Science</em> 2022."
     ),
     "when_to_use": [
-        "You already have a backbone and need candidate sequences for it.",
-        "You want to redesign a binder produced by RFdiffusion, RFantibody, BindCraft, or BoltzGen.",
-        "You want to thread alternative sequences through a curated PDB before ordering.",
+        (
+            "You have a backbone and need sequences for it."
+        ),
+        (
+            "You want to re-sequence a binder another tool here designed, "
+            "before folding or ordering it."
+        ),
+        (
+            "You want several alternative sequences threaded through a "
+            "curated structure so you can choose between them."
+        ),
     ],
     "prerequisites": [
         "Backbone PDB or mmCIF (only C&alpha; and backbone atoms are used).",

@@ -25,6 +25,10 @@ from unittest.mock import patch
 
 import pytest
 
+from markupsafe import escape as _escape
+
+from shared import metric_glossary as _mg
+
 # Three tools with structurally different forms: a fixed-preset
 # sequence tool, a design tool with a campaign path, and a cofold
 # validator. If the anonymous branch renders these three it renders.
@@ -228,10 +232,11 @@ class TestSignedInRenderUnchanged:
 class TestExplainerRendersInBothAuthStates:
     """The score legend is reference material, not a marketing banner.
 
-    It shipped logged-out-only, which deleted "aim above roughly 0.7"
-    for the one person who most needs it — the user who just submitted
-    a run and is looking at the number. Both states, deliberately; this
-    test is the thing that stops it regressing to anonymous-only again.
+    It shipped logged-out-only, which deleted the "what counts as a
+    good ipTM" legend for the one person who most needs it — the user
+    who just submitted a run and is looking at the number. Both states,
+    deliberately; this test is the thing that stops it regressing to
+    anonymous-only again.
     """
 
     @pytest.mark.parametrize("slug", PUBLIC_TOOLS)
@@ -251,8 +256,18 @@ class TestExplainerRendersInBothAuthStates:
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
         assert "What good looks like" in body
-        assert "aim above" in body
         assert "ipTM" in body
+        # The legend's ipTM cut-off must be the one in
+        # shared/metric_glossary.py, not a number typed into the
+        # template. The panel used to say "aim above roughly 0.7" while
+        # a runtime card ~40 lines below on the SAME page carried a
+        # tool's own "ipTM >= 0.65" — a page contradicting itself
+        # inside one scroll. Asserting on the glossary string rather
+        # than a literal is what makes that unrepeatable: hardcode a
+        # threshold back into the template and this goes red.
+        # ``escape`` because the band contains ">" and jinja
+        # autoescapes it to "&gt;" on the way into the page.
+        assert str(_escape(_mg.GLOSSARY["ipTM"]["good_range"])) in body
         # ...and the form is still the primary thing: the explainer sits
         # in the right rail, after the form's own action attribute.
         assert body.index(f'action="/tools/{slug}/submit"') < body.index(
