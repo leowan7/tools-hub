@@ -1320,10 +1320,28 @@ class TestProteinaScoringClaimIsConsistent:
     ):
         """Positive control for the test above.
 
-        Deleting the answer would satisfy "states no false claim" just
-        as well as fixing it, and the FAQ entry is the one Google
-        indexes. So assert the true mapping is actually there, in the
-        visible copy and in the FAQPage structured data.
+        Deleting the answer satisfies "states no false claim" exactly as
+        well as fixing it does, and this is the answer Google indexes —
+        so the true mapping has to be asserted present, not just the
+        false one absent.
+
+        SCOPED TO ONE QUESTION, and it took a mutation to learn why. The
+        first version of this test asked "does ANY answer containing
+        'scored' name both models" and checked two phrases against the
+        whole page. Mutation M-L deleted the mapping from this very
+        answer and the test stayed GREEN, because:
+
+        * ``seo_faq[1]`` ("Can Proteina-Complexa design binders against a
+          small molecule?") already names AlphaFold2 AND RoseTTAFold3, so
+          it satisfied an any-answer check on its own; and
+        * ``about["what_it_is"]`` carries the same two phrases verbatim —
+          deliberately, so the page speaks in one voice — so a
+          whole-page substring check passes off a different block.
+
+        Two other strings were silently answering for the one under
+        test. It now resolves the answer BY ITS QUESTION and requires
+        the visible copy to carry that same answer, which is also the
+        real invariant: structured data and page must not diverge.
         """
         import json
 
@@ -1331,33 +1349,32 @@ class TestProteinaScoringClaimIsConsistent:
         body = flask_app.test_client().get(
             "/tools/proteina"
         ).get_data(as_text=True)
-        answers = [
-            q["acceptedAnswer"]["text"]
+        qa = {
+            q["name"]: q["acceptedAnswer"]["text"]
             for raw in re.findall(
                 r'<script type="application/ld\+json">(.*?)</script>',
                 body, re.S,
             )
             for q in json.loads(raw).get("mainEntity", [])
-        ]
-        scoring = [a for a in answers if "scored" in a.lower()]
-        assert scoring, "no scoring answer in proteina's FAQPage data"
-        matched = [
-            a for a in scoring
-            if re.search(r"AlphaFold2", a) and re.search(r"RoseTTAFold3", a)
-        ]
-        assert matched, (
-            "proteina's scoring answer no longer names which model scores "
-            f"which target: {scoring}"
+        }
+        assert qa, "proteina renders no FAQPage structured data at all"
+        keys = [q for q in qa if re.search(r"scored and ranked", q, re.I)]
+        assert len(keys) == 1, (
+            f"expected exactly one 'scored and ranked' question, got {keys}; "
+            f"all questions: {sorted(qa)}"
         )
-        text = _visible_text(body)
-        for phrase in (
-            "a protein target is scored by an AlphaFold2 refold",
-            "small-molecule or motif target by RoseTTAFold3",
-        ):
-            assert phrase in text, (
-                f"visible copy dropped {phrase!r}; the structured data and "
-                "the page would then disagree"
-            )
+        answer = qa[keys[0]]
+        missing = [
+            m for m in ("AlphaFold2", "RoseTTAFold3") if m not in answer
+        ]
+        assert not missing, (
+            f"proteina's scoring answer no longer says which model scores "
+            f"which target (missing {missing}): {answer!r}"
+        )
+        assert _visible_text(body).count(answer) >= 1, (
+            "the FAQPage answer is not in the visible copy, so the page and "
+            f"the structured data Google reads disagree: {answer!r}"
+        )
 
 
 class TestEveryJsonLdBlockIsClean:
