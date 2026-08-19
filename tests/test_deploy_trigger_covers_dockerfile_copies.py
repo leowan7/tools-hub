@@ -136,16 +136,19 @@ def _to_regex(pattern: str) -> re.Pattern:
     Source for the first bullet, because it is the one worth being able to
     re-check: repo ``github/docs``, path
     ``content/actions/reference/workflows-and-actions/workflow-syntax.md``,
-    section "Patterns to match file paths". Five rows of that table show a
-    ``**`` consuming zero segments, two of them decisive on their own:
+    section "Patterns to match file paths". SIX rows of that table list an
+    example that is only reachable if ``**`` consumes zero segments, two of
+    them decisive on their own:
 
     * ``'**/README.md'`` lists ``README.md`` — repo root, no leading directory
       — alongside ``js/README.md``;
     * ``'**/docs/**'`` lists ``docs/hello.md``, again with nothing before
       ``docs``;
     * and likewise ``'**/*-post.md'`` -> ``my-post.md``,
-      ``'**/migrate-*.sql'`` -> ``migrate-10909.sql``, and ``docs/**/*.md`` ->
-      ``docs/README.md`` (zero segments consumed mid-pattern).
+      ``'**/migrate-*.sql'`` -> ``migrate-10909.sql``, ``docs/**/*.md`` ->
+      ``docs/README.md`` (zero segments consumed mid-pattern), and
+      ``'**/*src/**'`` -> ``my-src/code/js/app.js``, where the leading ``**/``
+      must consume nothing for ``*src`` to reach ``my-src``.
 
     Read the TABLE, not the cheat sheet's one-line prose. That prose says only
     ``**`` "Matches zero or more of any character", which taken literally makes
@@ -259,10 +262,17 @@ def test_the_trigger_is_a_paths_allowlist_with_no_paths_ignore():
     gone and ``_triggers_deploy`` is answering about a filter that no longer
     exists — it would report everything as covered.
 
-    Reachable only because ``_TRIGGER_PATHS`` defaults a missing ``paths`` to
-    ``[]``. With the plain ``["paths"]`` subscript this whole assertion was dead
-    code: the sole state it fires on is the sole state that raises ``KeyError``
-    at import, so pytest reported a collection error and never got here.
+    Fully reachable only because ``_TRIGGER_PATHS`` defaults a missing ``paths``
+    to ``[]``. Be precise about which state that rescued, because there are two
+    and the plain ``["paths"]`` subscript handled them differently:
+
+    * BOTH keys present — ``paths-ignore`` ADDED alongside ``paths``. The
+      subscript finds ``paths`` and this assertion fires normally. Never broken.
+    * ``paths-ignore`` REPLACING ``paths`` — the shape GitHub actually forces,
+      since it permits only one. Here the subscript raised
+      ``KeyError: 'paths'`` at import, pytest reported a collection error, and
+      this assertion's explanation never reached anyone. That state, and only
+      that state, was unreachable.
     """
     push = _push_filter()
     assert "paths-ignore" not in push, (
@@ -315,9 +325,17 @@ def test_to_regex_refuses_rather_than_guesses():
         assert _to_regex(pattern)
 
 
-# Every row of GitHub's "Patterns to match file paths" table, transcribed from
-# `github/docs`, content/actions/reference/workflows-and-actions/
+# Twelve of the fifteen rows of GitHub's "Patterns to match file paths" table,
+# transcribed from `github/docs`, content/actions/reference/workflows-and-actions/
 # workflow-syntax.md. Pattern -> the example matches that row lists.
+#
+# The other three are covered, but not from here, because they are not
+# single-pattern match rows: the two later-wins rows go to
+# test_matches_githubs_documented_negation_examples (they need a pattern LIST,
+# and they carry does-NOT-match entries), and `'*.jsx?'` goes to
+# test_documented_rows_using_refused_constructs_are_refused (its `?` is refused,
+# so there is no regex to compare). Between the three tests the table is covered
+# in full; this list alone is not the whole table.
 #
 # This is the anchor the rest of the module's pattern reasoning hangs off. It
 # exists because a previous revision argued about `**/` semantics from memory
@@ -360,17 +378,29 @@ _DOC_ROWS = [
 #   RULE S ("* stops at /"): "The `*` wildcard matches any character, but does
 #   not match slash (`/`)." — the `'*'` row of that table.
 #
-# Rule W is what pins BOTH anchors, and a dropped `$` is the mutation with a
-# silent-staleness direction: without it `static/example/1HEW.pdb.bak` would
-# read as covered when GitHub does not cover it, and this module would report
-# coverage that does not exist. That is the exact failure it exists to prevent,
-# which is why the whole-path entries come first.
+# Rule W is what pins the TRAILING anchor, and a dropped `$` is the mutation
+# with a silent-staleness direction: without it `static/example/1HEW.pdb.bak`
+# would read as covered when GitHub does not cover it, and this module would
+# report coverage that does not exist. That is the exact failure it exists to
+# prevent, which is why the whole-path entries come first.
+#
+# NOT the leading `^`, though the whole-path rule is what justifies writing it.
+# Nothing in this module can detect its removal: every call site uses
+# `re.Pattern.match()`, which anchors at position 0 on its own, so `^` is
+# redundant to `.match` and a mutation deleting it passes all 36 tests. Do not
+# read the `src/docs/file.txt` entry below as covering that — it fails for a
+# path this module never takes. What the `^` does earn is making a
+# `.match` -> `.search` swap inert, which IS caught (QC round 4 mutations
+# MK/MK2). Keep it for that reason, not for a guard that does not exist.
 _DOC_NON_MATCHES = [
     # RULE W — a suffix match is not a whole-path match. Kills a dropped `$`.
     ("*.js", "app.js.map", "W: pattern must match the WHOLE path, not a prefix of it"),
     # RULE W again, through the `**/` branch rather than the `[^/]*` one.
     ("**/README.md", "README.md.bak", "W: whole path; `**/` does not license a suffix match"),
-    # RULE W — "start from the repository's root". Kills a dropped `^`.
+    # RULE W — "start from the repository's root". Correct and correctly cited,
+    # but it does NOT catch a dropped `^`: see the note above, `.match()` is
+    # already anchored at 0. It is here because the rule is documented, not
+    # because it guards a mutation.
     ("docs/*", "src/docs/file.txt", "W: patterns start at the repo root, so `docs/` cannot float"),
     # RULE S — and the table says so by contrast: `'**.js'` lists `js/index.js`
     # as a match while `'*.js'` lists only `app.js` and `index.js`.
@@ -403,11 +433,20 @@ def test_rejects_what_githubs_documented_rules_exclude(pattern, path, why):
 # CHOICE, not a documented fact. Writing an assertion either way would be
 # inventing a rule, which is how two earlier revisions of this file went wrong.
 #
-# It is also inert here, which is why leaving it unpinned costs nothing: every
-# path this module ever evaluates comes from `git ls-files` or from resolving a
-# Dockerfile COPY against that same list, and both yield FILES. A bare directory
-# path is never tested, so the two readings cannot diverge on any input reachable
-# from here. If that ever changes, this is the first thing to re-derive.
+# It is also inert here, which is why leaving it unpinned costs nothing. Paths
+# reach this module from two places, and neither supplies a bare directory:
+#
+#   * `git ls-files`, directly or via a Dockerfile COPY resolved against it.
+#     Git tracks blobs, so this yields FILES only — measured, not assumed: the
+#     tracked list contains zero bare-directory entries.
+#   * roughly 39 example paths hardcoded in this file — the `_DOC_ROWS`
+#     examples, `_DOC_NON_MATCHES`, and the negation test's cases. Transcribed
+#     from GitHub's table or derived from its rules, and every one is a file
+#     path. (An earlier wording claimed EVERY path came from `git ls-files`;
+#     that stopped being true in the commit that added these rows.)
+#
+# So the two readings cannot diverge on any input reachable from here. Add a
+# bare-directory case to either source and this is the first thing to re-derive.
 
 
 @pytest.mark.parametrize("pattern,examples", _DOC_ROWS, ids=[r[0] for r in _DOC_ROWS])
