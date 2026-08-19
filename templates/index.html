@@ -448,7 +448,18 @@
             </td>
           </tr>
           <tr>
-            <th scope="row" data-label="I have">A backbone from somewhere else</th>
+            {# FIRST USE OF "backbone" ON THE HOMEPAGE, and it is in the one
+               table whose whole job is to let a reader who does not know the
+               vocabulary find their own row. The gloss below is the same
+               sentence tools/comparison.html step 3 uses, word for word, so
+               the two pages read as one voice rather than two attempts. The
+               ProteinMPNN card further down the page glosses it a third way
+               ("a 3D shape with no sequence decided yet") but it renders
+               BELOW this table, so it does not cover this use. #}
+            <th scope="row" data-label="I have">
+              A backbone from somewhere else &mdash; the folded shape on its
+              own, before a sequence is chosen for it
+            </th>
             <td class="home-chooser-want" data-label="I want">Sequences for it</td>
             <td class="home-chooser-start" data-label="Start with">
               {{ chooser_link(tools, 'mpnn', 'ProteinMPNN') }}

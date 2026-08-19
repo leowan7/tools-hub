@@ -119,12 +119,27 @@ seo_faq: list[dict] = [
     },
     {
         "q": "How are Proteina-Complexa designs scored and ranked?",
+        # THE FIFTH SURFACE. This answer renders twice on /tools/proteina —
+        # as visible FAQ copy and inside the FAQPage JSON-LD, so it is
+        # rich-result eligible — and it used to read "Each search shard
+        # filters candidates through an AF2 / RF3 / force-field reward
+        # stack". No shard does. Dockerfile.modal:229-231: "Only
+        # ligand_binder (RF3 is its sole reward) and motif_ame need it;
+        # protein_binder scores on AF2 alone." That made this answer the
+        # direct negation of ``about["output_summary"]`` below ("The ligand
+        # and motif variants score on RF3 only"), two paragraphs away on
+        # the same page. The which-model-follows-the-target clause is
+        # copied verbatim from ``about["what_it_is"]`` so the page states
+        # the mapping in one voice rather than three.
         "a": (
-            "Each search shard filters candidates through an AF2 / RF3 / "
-            "force-field reward stack, and the hub then selects a global "
-            "top-K across all shards with post-hoc structural diversity "
-            "clustering, so you get diverse high-reward designs rather than "
-            "near-duplicates."
+            "Every candidate is re-folded and scored against your target as "
+            "it is generated, and which model does that scoring follows the "
+            "target: a protein target is scored by an AlphaFold2 refold, a "
+            "small-molecule or motif target by RoseTTAFold3, with a physics "
+            "force field added where it applies. Each shard keeps what "
+            "scores well, and the hub then ranks across every shard at once "
+            "and clusters the winners, so you get a spread of different "
+            "high-scoring designs rather than near-duplicates."
         ),
     },
 ]
@@ -304,9 +319,12 @@ about: dict = {
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
     "label": "Starter pilot: one shard, 8 designs",
+    # "see what the reward stack returns" was both jargon on a page aimed
+    # at a bench biologist and the loosest of the reward-stack strings —
+    # the pilot runs protein_binder, which scores on AF2, not a stack.
     "goal": (
         "Run the smallest complete unit of a Proteina search against "
-        "your own target and see what the reward stack returns."
+        "your own target and see how the designs score against it."
     ),
     "you_need": (
         "A structure file for your target and its chain ID &mdash; or a "

@@ -628,15 +628,47 @@ class TestPublicContextIsBuiltOncePerRequest:
 _LEDE_FRAME = " you can run through tools.ranomics.com on a dedicated GPU."
 
 
-def _hero_text(body: str) -> str:
-    """Visible text of the page hero, tags stripped and entities resolved."""
+def _visible_text(markup: str) -> str:
+    """What a reader sees: tags stripped, entities resolved, spaces collapsed.
+
+    THE ONE PLACE THIS NORMALISATION IS DEFINED, because every guard in
+    this file that matched raw markup instead has certified false at
+    least once:
+
+    * the first ipTM guard matched the literal ``"aim above roughly"``
+      against ``resp.get_data()`` and stayed green on the exact sentence
+      it was written to delete, because the template wrapped it across
+      two source lines;
+    * ``\\s+`` fixed the wrap and QC then defeated it again with
+      ``aim above&nbsp;roughly`` — one entity, visibly identical on the
+      page, invisible to the regex;
+    * the first jargon sweep matched CSS class names and JSON-LD keys
+      because it never stripped ``<script>``/``<style>``.
+
+    Order is load-bearing: strip tags FIRST, then unescape. Unescaping
+    first would turn a literal ``&lt;div&gt;`` in the copy into a tag
+    the stripper then eats. ``<script>`` and ``<style>`` bodies are
+    dropped whole rather than de-tagged, so JS string literals and CSS
+    selectors cannot be read as page copy.
+
+    ``\\s`` is Unicode-aware on ``str`` patterns, so the ``\\xa0`` that
+    ``&nbsp;`` unescapes to collapses like any other space. That is what
+    closes the entity hole for every caller at once.
+    """
     import html as _html
 
+    stripped = re.sub(
+        r"<(script|style)\b[^>]*>.*?</\1\s*>", " ", markup, flags=re.S | re.I
+    )
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    return re.sub(r"\s+", " ", _html.unescape(stripped)).strip()
+
+
+def _hero_text(body: str) -> str:
+    """Visible text of the page hero, tags stripped and entities resolved."""
     block = re.search(r'<div class="hero">(.*?)</div>', body, re.S)
     assert block, "no hero block rendered"
-    return re.sub(
-        r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", block.group(1)))
-    ).strip()
+    return _visible_text(block.group(1))
 
 
 def _lede_phrase(hero: str) -> str:
@@ -655,8 +687,49 @@ def _lede_phrase(hero: str) -> str:
     return head[starts[-1].end():].strip()
 
 
+def _lede_long(hero: str) -> str:
+    """``seo_long``: everything AFTER the frame. QC's M-E.
+
+    Every rule in this class used to stop at ``_lede_phrase``, which is
+    ``hero.split(_LEDE_FRAME, 1)[0]`` — the half BEFORE "you can run
+    through …". QC violated all five rules in ``seo_long`` instead and
+    the full suite stayed green while the page rendered
+
+        "… Free rfdiffusion runs that you can start now — RFdiffusion is
+         the rfdiffusion tool you want, which is free."
+
+    That half is where round 1's real findings lived (pxdesign's three
+    unglossed acronyms, af2's trailing "/jobs", proteina's false
+    three-checks claim), so the guards covered the half that was never
+    the problem.
+    """
+    parts = hero.split(_LEDE_FRAME, 1)
+    assert len(parts) == 2, f"lede frame did not render: {hero[:200]!r}"
+    return parts[1].strip()
+
+
 class TestRenderedLedeRules:
-    """One test per stated rule, each named after the rule it holds."""
+    """One test per stated rule, each named after the rule it holds.
+
+    WHICH RULES APPLY TO WHICH HALF, and why it is not "all five to
+    both". The sentence renders as
+
+        "{short_name} is a {seo_phrase} you can run through
+         tools.ranomics.com on a dedicated GPU. {seo_long}."
+
+    ``seo_phrase`` completes "is a …", so it is a NOUN PHRASE and the
+    shape rules apply to it: no second person (the frame supplies the
+    only "you"), no relative clause, no length that could only be a
+    clause. ``seo_long`` is a free-standing sentence of prose, where
+    "so you can weigh a mini-protein against a nanobody" (boltzgen) and
+    "templates that make it accurate" (af2) are correct English. Running
+    the shape rules over it would fail six of the fourteen tools on
+    copy that is right — measured, not assumed.
+
+    The three CONTENT rules — own name, raw slug, "free" — are true of
+    both halves and all fourteen tools today, so those are the three
+    extended. That is what catches M-E: its mutation violates all three.
+    """
 
     @staticmethod
     def _ledes(all_tools_app):
@@ -691,50 +764,126 @@ class TestRenderedLedeRules:
         """
         offenders = {}
         for slug, hero in self._ledes(all_tools_app).items():
-            phrase = _lede_phrase(hero).lower()
             head = hero.split(_LEDE_FRAME, 1)[0]
             short_name = head[:list(re.finditer(r"\bis an? ", head))[-1].start()]
             short_name = short_name.rsplit(". ", 1)[-1].strip().lower()
             assert short_name, slug
-            if short_name in phrase:
-                offenders[slug] = (short_name, phrase)
+            # BOTH HALVES (M-E). The mutation that stayed green put
+            # "RFdiffusion is the rfdiffusion tool you want" in seo_long.
+            for half, text in (
+                ("seo_phrase", _lede_phrase(hero)),
+                ("seo_long", _lede_long(hero)),
+            ):
+                if short_name in text.lower():
+                    offenders[f"{slug}/{half}"] = (short_name, text)
         assert not offenders, f"lede repeats the tool's own name: {offenders}"
+
+    # ── the subordinate-clause proxy, after QC walked through it ────────
+    #
+    # WHAT THE RULE ACTUALLY IS: ``seo_phrase`` completes "{name} is a
+    # ___" and must stay a NOUN PHRASE. Any finite verb in it starts a
+    # second clause, and the frame already ends "... you can run
+    # through", so the result reads "a target you upload you can run
+    # through" — the defect that shipped.
+    #
+    # WHY IT IS STILL A PROXY: deciding "is there a finite verb here"
+    # properly needs a parser, and a parser is not worth a dependency to
+    # police fourteen strings. So it is three cheap checks over closed
+    # word classes, plus one structural check that does not depend on
+    # vocabulary at all.
+    #
+    # THE FIRST VERSION WAS ONE CHECK — ``\byou\b|\byour\b`` — and QC
+    # defeated it by swapping one word:
+    #
+    #   "…binder design tool ANYONE CAN RUN against a target uploaded
+    #    from the bench"
+    #
+    # which renders round 1's defect verbatim in shape and stayed green.
+    # A writer told "no second person in the phrase" reaches for exactly
+    # that substitution, so this was the realistic next draft, not an
+    # adversarial one.
+    #
+    # WHAT IT STILL CANNOT CATCH, stated plainly rather than left to be
+    # rediscovered: a finite verb in the bare present tense with a
+    # non-pronoun subject and no modal — "a binder design tool LABS RUN
+    # daily". No word in it belongs to a closed class, so only the
+    # length cap can see it, and a short enough one slips under. That is
+    # the known ceiling; it is narrower than the hole QC found, and
+    # closing it properly means a parser.
+
+    #: Closed-class clause introducers. The first version stopped at
+    #: five (that/which/where/when/so that), so whose, who, while,
+    #: after, because and the rest all walked through.
+    CLAUSE_MARKERS = (
+        "that", "which", "where", "when", "who", "whom", "whose",
+        "while", "after", "before", "once", "since", "because",
+        "unless", "until", "although", "though", "if", "whether",
+    )
+
+    #: Modals and auxiliaries — the other closed class. "anyone CAN
+    #: run", "a tool labs WILL use", "a target you HAVE uploaded". A
+    #: noun phrase completing "is a ___" contains none of these.
+    VERB_MARKERS = (
+        "can", "could", "will", "would", "may", "might", "must",
+        "shall", "should", "do", "does", "did", "is", "are", "was",
+        "were", "has", "have", "had", "lets", "let",
+    )
+
+    #: The structural backstop, vocabulary-free. The fourteen real
+    #: phrases run 5-7 words ("no-install online de novo binder design
+    #: tool" is the longest at 7); M-D's is 18. Twelve is roughly double
+    #: the longest real one and well under the shortest defect, so it
+    #: fails on shape rather than on any word list.
+    MAX_PHRASE_WORDS = 12
 
     def test_lede_phrase_does_not_end_in_a_subordinate_clause(
         self, all_tools_app,
     ):
-        """The builder's own first draft rendered "a target you upload you
-        can run through" -- a second-person clause colliding with the
-        frame's own "you can run through".
+        """Defect A's shape, and QC's M-D which evaded the first version.
 
-        Counted on the phrase AS RENDERED: the frame supplies the only
-        "you" the sentence is allowed to contain, so any in the phrase is
-        the collision.
+        Second person, then two closed word classes, then a length cap
+        that needs no vocabulary at all. Reported together because they
+        are one rule: "this must still be a noun phrase".
         """
         offenders = {}
         for slug, hero in self._ledes(all_tools_app).items():
             phrase = _lede_phrase(hero)
-            hits = re.findall(r"\byou\b|\byour\b", phrase, re.I)
+            padded = f" {phrase.lower()} "
+            reasons = []
+            hits = re.findall(r"\byou\b|\byour\b|\byours\b", phrase, re.I)
             if hits:
-                offenders[slug] = (hits, phrase)
+                reasons.append(f"second person {hits}")
+            verbs = [w for w in self.VERB_MARKERS if f" {w} " in padded]
+            if verbs:
+                reasons.append(f"finite-verb marker {verbs}")
+            words = len(phrase.split())
+            if words > self.MAX_PHRASE_WORDS:
+                reasons.append(
+                    f"{words} words > {self.MAX_PHRASE_WORDS}: too long to "
+                    "be the noun phrase completing 'is a ...'"
+                )
+            if reasons:
+                offenders[slug] = (reasons, phrase)
         assert not offenders, (
-            "seo_phrase carries a second-person clause into a frame that "
-            "already ends '... you can run through': "
-            f"{offenders}"
+            "seo_phrase must stay a noun phrase completing '<name> is a "
+            "...'; the frame already ends '... you can run through', so a "
+            f"clause here collides with it: {offenders}"
         )
 
     def test_lede_phrase_carries_no_relative_clause_marker(
         self, all_tools_app,
     ):
-        """The same rule's non-pronoun half: a compact noun phrase
-        completing "is a ..." has no relative clause hanging off it."""
-        markers = (" that ", " which ", " where ", " when ", " so that ")
+        """The same rule's non-pronoun half, on the widened marker list.
+
+        Kept as its own test so a failure names WHICH half broke.
+        """
         offenders = {}
         for slug, hero in self._ledes(all_tools_app).items():
-            phrase = f" {_lede_phrase(hero).lower()} "
-            hit = [m.strip() for m in markers if m in phrase]
+            phrase = _lede_phrase(hero)
+            padded = f" {phrase.lower()} "
+            hit = [m for m in self.CLAUSE_MARKERS if f" {m} " in padded]
             if hit:
-                offenders[slug] = (hit, phrase.strip())
+                offenders[slug] = (hit, phrase)
         assert not offenders, f"seo_phrase opens a clause: {offenders}"
 
     def test_no_lede_phrase_leaks_a_raw_slug(self, all_tools_app):
@@ -746,13 +895,20 @@ class TestRenderedLedeRules:
         slugs are the tool's display name lowercased, so "boltzgen" in
         the hero is the ``<h1>``, not a leak.
         """
-        offenders = {
-            slug: _lede_phrase(hero)
-            for slug, hero in self._ledes(all_tools_app).items()
-            if slug.lower() in _lede_phrase(hero).lower()
-        }
+        offenders = {}
+        for slug, hero in self._ledes(all_tools_app).items():
+            # BOTH HALVES (M-E). Scoped to phrase + long rather than to
+            # the whole hero: eleven of the fourteen slugs are the tool's
+            # display name lowercased, so "boltzgen" in the hero is the
+            # <h1>, not a leak.
+            for half, text in (
+                ("seo_phrase", _lede_phrase(hero)),
+                ("seo_long", _lede_long(hero)),
+            ):
+                if slug.lower() in text.lower():
+                    offenders[f"{slug}/{half}"] = text
         assert not offenders, (
-            f"rendered lede phrase contains the raw slug: {offenders}"
+            f"rendered lede contains the raw slug: {offenders}"
         )
 
     def test_every_registered_tool_has_its_own_phrase(self, all_tools_app):
@@ -818,8 +974,14 @@ class TestRenderedLedeRules:
             body = client.get(f"/tools/{slug}").get_data(as_text=True)
             title = re.search(r"<title>(.*?)</title>", body, re.S)
             assert title, slug
-            phrase = _lede_phrase(_hero_text(body))
-            for where, text in (("title", title.group(1)), ("lede", phrase)):
+            hero = _hero_text(body)
+            # seo_long included (M-E): the mutation that stayed green put
+            # "Free rfdiffusion runs …, which is free" in the second half.
+            for where, text in (
+                ("title", title.group(1)),
+                ("seo_phrase", _lede_phrase(hero)),
+                ("seo_long", _lede_long(hero)),
+            ):
                 if re.search(r"\bfree\b", text, re.I):
                     offenders[f"{slug}/{where}"] = text.strip()
         assert not offenders, (
@@ -910,15 +1072,36 @@ class TestIptmThresholdHasOneSource:
     as FAQPage structured data after the PR claimed it was gone.
     """
 
-    # WHITESPACE-INSENSITIVE ON PURPOSE. The first version of this guard
-    # matched the literal "aim above roughly" against the raw body and
-    # CERTIFIED FALSE: restoring the exact deleted sentence to
-    # help/tool_guide.html left it green, because the template wraps the
-    # phrase across two source lines ("aim above\n roughly 0.7") and the
-    # substring never appears contiguously. Both of the instances this
-    # PR removed were line-wrapped that way, so the guard would have
-    # missed the very defect it was written for.
-    STALE = re.compile(r"aim\s+above\s+roughly", re.I)
+    # MATCHED ON VISIBLE TEXT, NEVER ON MARKUP. This guard has now
+    # certified false twice, both times on whitespace-shaped input that
+    # a reader cannot see:
+    #
+    #   1. v1 matched the literal "aim above roughly" against the raw
+    #      body. Restoring the exact deleted sentence to
+    #      help/tool_guide.html left it GREEN, because the template
+    #      wraps it across two source lines and the substring never
+    #      appears contiguously.
+    #   2. v2 relaxed the spaces to ``\s+``, which fixes a line wrap and
+    #      nothing else. QC restored "aim above&nbsp;roughly 0.7", the
+    #      page rendered it visibly on /help/tools/rfdiffusion, and the
+    #      suite stayed green: ``&nbsp;`` is not ``\s`` in markup.
+    #
+    # Relaxing the pattern a third time would have been the third
+    # version of the same mistake. The fix is on the INPUT side —
+    # ``_visible_text`` unescapes entities and collapses everything
+    # ``\s`` matches in Unicode (``\xa0`` included), so an entity, a
+    # line wrap, a tag in the middle of the phrase and a thin space are
+    # all the same string by the time the regex sees it.
+    #
+    # The pattern is also no longer pinned to the one word "aim": F1
+    # found the identical defect four entries below the fixed one,
+    # reading "well calibrated above roughly 0.4", and the "aim"-only
+    # pattern missed it. It now matches the hedge itself. The guard that
+    # does not depend on guessing the wording at all is
+    # ``test_the_general_metric_legend_states_no_unsourced_number``
+    # below; this one stays as the cheap named check for the exact
+    # phrasing that shipped twice.
+    STALE = re.compile(r"\babove\s+roughly\s+\d*\.?\d+", re.I)
 
     def _pages(self, all_tools_app):
         flask_app, slugs = all_tools_app
@@ -940,14 +1123,77 @@ class TestIptmThresholdHasOneSource:
     ):
         offenders = {}
         for path, body in self._pages(all_tools_app).items():
-            m = self.STALE.search(body)
+            text = _visible_text(body)
+            m = self.STALE.search(text)
             if m:
-                offenders[path] = body[
+                offenders[path] = text[
                     max(0, m.start() - 80):m.end() + 80
                 ]
         assert not offenders, (
             f"'{self.STALE.pattern}' is a threshold with no source: "
             f"{offenders}"
+        )
+
+    # The <aside> that renders the general "what good looks like" legend
+    # on all 14 tool pages, identically. Anchored on its own panel title
+    # rather than on a position, because there are four <dl>s on a tool
+    # page and the other three are tool-specific.
+    LEGEND_TITLE = "What good looks like"
+
+    def _general_legend(self, body: str) -> str:
+        block = re.search(
+            r'<aside class="panel about-panel">\s*<div class="panel-header">'
+            r'\s*<span class="panel-title">\s*' + self.LEGEND_TITLE +
+            r'\s*</span>(.*?)</aside>',
+            body, re.S,
+        )
+        assert block, (
+            f"the '{self.LEGEND_TITLE}' panel did not render; every "
+            "assertion about its contents would be vacuous"
+        )
+        return _visible_text(block.group(1))
+
+    def test_the_general_metric_legend_states_no_unsourced_number(
+        self, all_tools_app,
+    ):
+        """The rule the phrase-matching guard above is only a proxy for.
+
+        STRUCTURAL, so it does not care how the next threshold is
+        worded. The "what good looks like" panel is GENERAL guidance —
+        byte-identical on all 14 tool pages, so it cannot state a
+        tool-specific bar — and every number in it must therefore come
+        out of ``shared/metric_glossary.py``. Any other decimal is a
+        number typed into a template, which is what both defects were:
+        "aim above roughly 0.7" (fixed by this PR) and "well calibrated
+        above roughly 0.4" (F1, which the phrase guard missed by one
+        word, and which was live on 14 indexable pages).
+
+        This is the check that would have caught F1 without anybody
+        guessing that "calibrated" needed adding to a regex.
+        """
+        sourced = {
+            n
+            for entry in _mg.GLOSSARY.values()
+            for n in re.findall(r"\d*\.?\d+", str(entry.get("good_range", "")))
+        }
+        assert sourced, "the glossary states no numbers at all; vacuous"
+        flask_app, slugs = all_tools_app
+        client = flask_app.test_client()
+        offenders = {}
+        for slug in slugs:
+            legend = self._general_legend(
+                client.get(f"/tools/{slug}").get_data(as_text=True)
+            )
+            # "0 to 1 scale" is a range description, not a threshold, and
+            # a bare 0/1 cannot be a bar. Decimals are what get typed.
+            found = set(re.findall(r"\d+\.\d+", legend))
+            unsourced = sorted(found - sourced)
+            if unsourced:
+                offenders[slug] = (unsourced, legend[:400])
+        assert not offenders, (
+            "the general metric legend renders numbers that are in no "
+            "glossary good_range, so they are thresholds typed into a "
+            f"template with no source: {offenders}"
         )
 
     def test_every_general_legend_reads_the_glossary(self, all_tools_app):
@@ -991,7 +1237,15 @@ class TestIptmThresholdHasOneSource:
         """``{% set %}`` is one Jinja statement, so ``{{ ... }}`` inside
         its string literals is never interpolated. The signup-credit
         answer shipped the raw braces straight into Google's structured
-        data; the fix is ``~`` concatenation."""
+        data; the fix is ``~`` concatenation.
+
+        Kept as the named regression test for the block that actually
+        shipped broken. ``TestEveryJsonLdBlockIsClean`` below is the one
+        that generalises it — this test fetched only ``/help/faq``, so
+        QC moved the identical defect into ``help/tool_guide.html`` and
+        it shipped into ``SoftwareApplication`` structured data on all
+        14 guide pages with the suite green (M-I).
+        """
         flask_app, _ = all_tools_app
         body = flask_app.test_client().get("/help/faq").get_data(as_text=True)
         blocks = re.findall(
@@ -999,3 +1253,279 @@ class TestIptmThresholdHasOneSource:
         )
         for raw in blocks:
             assert "{{" not in raw and "{%" not in raw, raw[:400]
+
+
+class TestProteinaScoringClaimIsConsistent:
+    """The claim that has now been "removed everywhere" three times.
+
+    "Every candidate is filtered through an AF2 / RF3 / force-field
+    reward stack" is false: ``tools/proteina/Dockerfile.modal:229-231``
+    says "Only ligand_binder (RF3 is its sole reward) and motif_ame need
+    it; protein_binder scores on AF2 alone", and no variant runs all
+    three. The sweep for it was declared complete at three surfaces,
+    then at four, then a fifth was found in ``seo_faq[2]`` — rendering
+    visibly AND inside FAQPage JSON-LD, which is why it is worth a test
+    rather than another grep.
+
+    Asserted on the RENDERED page across all 33 public pages, because
+    each round of the sweep was done by grepping source and each time
+    the source grep missed a copy that reached a reader.
+    """
+
+    #: The composite claim, in the shapes it has actually shipped in.
+    CLAIMS = (
+        r"AF2\s*/\s*RF3",
+        r"three independent scoring checks",
+        r"filters candidates through",
+        r"force[-\s]field reward stack",
+    )
+
+    def test_no_rendered_page_claims_the_three_model_stack(
+        self, all_tools_app,
+    ):
+        flask_app, slugs = all_tools_app
+        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        client = flask_app.test_client()
+        paths = (
+            [f"/tools/{s}" for s in slugs]
+            + [f"/help/tools/{s}" for s in slugs]
+            + ["/", "/tools", "/help/faq", "/help/getting-started"]
+        )
+        offenders = {}
+        seen_proteina = False
+        for path in paths:
+            resp = client.get(path)
+            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+            text = _visible_text(resp.get_data(as_text=True))
+            if "Proteina" in text:
+                seen_proteina = True
+            for pat in self.CLAIMS:
+                m = re.search(pat, text, re.I)
+                if m:
+                    offenders[f"{path} ~ {pat}"] = text[
+                        max(0, m.start() - 100):m.end() + 140
+                    ]
+        # Vacuity guard: if proteina stopped rendering anywhere, the
+        # sweep above would pass by describing nothing.
+        assert seen_proteina, "no page mentioned Proteina at all"
+        assert not offenders, (
+            "a rendered page states the AF2 / RF3 / force-field reward "
+            "stack. No variant runs all three, and it contradicts "
+            "proteina's own output_summary ('The ligand and motif "
+            f"variants score on RF3 only') on the same page: {offenders}"
+        )
+
+    def test_the_scoring_answer_says_which_model_scores_which_target(
+        self, all_tools_app,
+    ):
+        """Positive control for the test above.
+
+        Deleting the answer would satisfy "states no false claim" just
+        as well as fixing it, and the FAQ entry is the one Google
+        indexes. So assert the true mapping is actually there, in the
+        visible copy and in the FAQPage structured data.
+        """
+        import json
+
+        flask_app, _ = all_tools_app
+        body = flask_app.test_client().get(
+            "/tools/proteina"
+        ).get_data(as_text=True)
+        answers = [
+            q["acceptedAnswer"]["text"]
+            for raw in re.findall(
+                r'<script type="application/ld\+json">(.*?)</script>',
+                body, re.S,
+            )
+            for q in json.loads(raw).get("mainEntity", [])
+        ]
+        scoring = [a for a in answers if "scored" in a.lower()]
+        assert scoring, "no scoring answer in proteina's FAQPage data"
+        matched = [
+            a for a in scoring
+            if re.search(r"AlphaFold2", a) and re.search(r"RoseTTAFold3", a)
+        ]
+        assert matched, (
+            "proteina's scoring answer no longer names which model scores "
+            f"which target: {scoring}"
+        )
+        text = _visible_text(body)
+        for phrase in (
+            "a protein target is scored by an AlphaFold2 refold",
+            "small-molecule or motif target by RoseTTAFold3",
+        ):
+            assert phrase in text, (
+                f"visible copy dropped {phrase!r}; the structured data and "
+                "the page would then disagree"
+            )
+
+
+class TestEveryJsonLdBlockIsClean:
+    """M-I: the same defect, anywhere it can happen, discovered not listed.
+
+    The guard it replaces named one URL. Naming four instead would fail
+    the same way the day a fifth template emits JSON-LD, so nothing here
+    is enumerated:
+
+    * the TEMPLATES that emit JSON-LD are discovered by reading
+      ``templates/`` off disk;
+    * the PAGES are discovered from the app's own url_map;
+    * ``flask.template_rendered`` records which templates the crawl
+      actually exercised, and the test FAILS if a discovered JSON-LD
+      template was never rendered — that is the completeness argument,
+      and without it "all clean" could just mean "never looked".
+    """
+
+    @staticmethod
+    def _jsonld_templates() -> set[str]:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "templates"
+        assert root.is_dir(), root
+        found = {
+            p.relative_to(root).as_posix()
+            for p in root.rglob("*.html")
+            if "application/ld+json" in p.read_text(encoding="utf-8")
+        }
+        assert found, "no template emits JSON-LD; the crawl below is vacuous"
+        return found
+
+    @staticmethod
+    def _crawl_paths(flask_app, slugs) -> list[str]:
+        """Every anonymously reachable GET, from the url_map.
+
+        Single-argument rules are expanded by SUBSTITUTING EACH REAL
+        SLUG AND KEEPING WHAT ANSWERS 200 — not by matching the
+        argument's name. The first version keyed on ``{"slug"}`` and
+        silently skipped ``/help/tools/<tool>``, which is exactly the
+        family M-I planted its defect in: the same guard, missing the
+        same page, for a third reason. A route wanting a job id or a
+        uuid simply does not answer 200 for "rfdiffusion" and drops out
+        on its own.
+        """
+        client = flask_app.test_client()
+        paths = set()
+        for rule in flask_app.url_map.iter_rules():
+            if "GET" not in (rule.methods or set()):
+                continue
+            if not rule.arguments:
+                paths.add(rule.rule)
+                continue
+            if len(rule.arguments) != 1:
+                continue
+            arg = next(iter(rule.arguments))
+            for slug in slugs:
+                candidate = rule.rule.replace(f"<{arg}>", slug)
+                if "<" in candidate:  # a converter like <int:id>
+                    continue
+                try:
+                    if client.get(candidate).status_code == 200:
+                        paths.add(candidate)
+                except Exception:  # noqa: BLE001, PERF203
+                    continue
+        return sorted(paths)
+
+    @staticmethod
+    def _with_ancestors(flask_app, rendered: set[str]) -> set[str]:
+        """``rendered`` plus every template it extends/includes/imports.
+
+        ``flask.template_rendered`` fires once per ``render_template``
+        call and names only the top-level template, so ``base.html`` —
+        which carries the Organization JSON-LD on EVERY page — never
+        appeared and would have been reported as unreachable. Resolved
+        with jinja's own parser rather than a regex over the source,
+        because a regex over template source is how several guards in
+        this repo have certified false.
+        """
+        from jinja2 import nodes as _nodes
+
+        env = flask_app.jinja_env
+        seen: set[str] = set()
+        queue = list(rendered)
+        while queue:
+            name = queue.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                source = env.loader.get_source(env, name)[0]
+                tree = env.parse(source, name=name)
+            except Exception:  # noqa: BLE001  (a template we cannot load)
+                continue
+            for node in tree.find_all(
+                (_nodes.Extends, _nodes.Include, _nodes.Import,
+                 _nodes.FromImport)
+            ):
+                target = getattr(node, "template", None)
+                if isinstance(target, _nodes.Const) and isinstance(
+                    target.value, str
+                ):
+                    queue.append(target.value)
+        return seen
+
+    def test_no_page_ships_raw_template_syntax_in_json_ld(
+        self, all_tools_app,
+    ):
+        import json
+
+        from flask import template_rendered
+
+        flask_app, slugs = all_tools_app
+        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        expected = self._jsonld_templates()
+
+        rendered: set[str] = set()
+
+        def _record(sender, template, **extra):  # noqa: ARG001
+            if template.name:
+                rendered.add(template.name)
+
+        client = flask_app.test_client()
+        template_rendered.connect(_record, flask_app)
+        try:
+            blocks: dict[str, list[str]] = {}
+            for path in self._crawl_paths(flask_app, slugs):
+                try:
+                    resp = client.get(path)
+                except Exception:  # noqa: BLE001  (a route needing real data)
+                    continue
+                if resp.status_code != 200:
+                    continue
+                body = resp.get_data(as_text=True)
+                found = re.findall(
+                    r'<script type="application/ld\+json">(.*?)</script>',
+                    body, re.S,
+                )
+                if found:
+                    blocks[path] = found
+        finally:
+            template_rendered.disconnect(_record, flask_app)
+
+        # COMPLETENESS FIRST. If the crawl never rendered a JSON-LD
+        # template, a clean result below says nothing about it.
+        covered = self._with_ancestors(flask_app, rendered)
+        missed = sorted(expected - covered)
+        assert not missed, (
+            f"these templates emit JSON-LD but the crawl never rendered "
+            f"them, so they are unchecked: {missed}. Covered: "
+            f"{sorted(covered & expected)}"
+        )
+        assert len(blocks) >= 14, (
+            f"only {len(blocks)} pages carried a JSON-LD block; the "
+            "assertions below would barely be exercised"
+        )
+
+        offenders = {}
+        for path, found in blocks.items():
+            for raw in found:
+                if "{{" in raw or "{%" in raw:
+                    offenders[f"{path} (template syntax)"] = raw[:300]
+                    continue
+                try:
+                    json.loads(raw)
+                except ValueError as exc:
+                    offenders[f"{path} (invalid JSON)"] = f"{exc}: {raw[:300]}"
+        assert not offenders, (
+            "raw Jinja, or unparseable JSON, in structured data Google "
+            f"indexes: {offenders}"
+        )

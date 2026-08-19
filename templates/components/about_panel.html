@@ -248,10 +248,21 @@ Usage:
             whole structure (pAE). Lower is better.
           </dd>
           <dt><strong>ProteinMPNN recovery</strong></dt>
+          {# Same correction as the ipTM entry above, four entries later, and
+             it survived that pass: this read "well calibrated above roughly
+             0.4 on diverse folds" — a general-guidance threshold on 14
+             indexable pages with no source, phrased almost identically to the
+             "aim above roughly 0.7" that had just been removed 18 lines up.
+             0.4 is the right number and was already sourced, just not from
+             here: shared/score_legends.py ("mpnn", "recovery") sets good=0.4
+             and excellent=0.6. It now has a glossary key of its own and is
+             READ, so the number cannot drift away from the legend that
+             classifies the actual results table. #}
           <dd>
             Fraction of native residues recovered when ProteinMPNN redesigns a
-            known sequence on its native backbone. Higher is better; well
-            calibrated above roughly 0.4 on diverse folds.
+            known sequence on its native backbone &mdash; the folded shape on
+            its own, before a sequence is chosen for it. Higher is better:
+            {{ metric_glossary.get('recovery', {}).get('good_range', '') }}.
           </dd>
         </dl>
       </div>

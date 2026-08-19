@@ -447,11 +447,21 @@ _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
         # ligand_binder (RF3 is its sole reward) and motif_ame need it;
         # protein_binder scores on AF2 alone." See the note on
         # ``comparison_one_liner`` in tools/proteina/meta.py.
-        "Upload a target the usual design tools struggle with — a "
-        "recessed "
-        "pocket, a site spanning two chains, or a small molecule rather "
-        "than a protein — and every candidate the search generates is "
-        "re-folded against it before the search builds on it"
+        #
+        # ALSO THE ONLY IMPERATIVE OF THE FOURTEEN. It opened "Upload a
+        # target the usual design tools struggle with", while the other
+        # thirteen ledes are declaratives or noun phrases ("The
+        # reference-standard fold…", "One model covers four binder
+        # formats…"). Worse, proteina's own blurb two paragraphs up in the
+        # same hero already opens "Upload a protein or small-molecule
+        # target", so this was the last page where blurb and lede still
+        # opened on the same verb — the stutter the rest of the rewrite
+        # removed. Same content, declarative frame — and NOT "The one to
+        # reach for", which is already how esmfold's lede opens.
+        "Built for the targets the standard design tools stall on — a "
+        "recessed pocket, a site spanning two chains, or a small molecule "
+        "rather than a protein: every candidate the search generates is "
+        "re-folded against your target before the search builds on it"
     ),
 }
 

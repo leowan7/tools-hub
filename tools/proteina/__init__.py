@@ -3,10 +3,13 @@
 Modal app: ``ranomics-proteina-prod``. GPU: A100-80GB. Campaign tool.
 
 Proteina-Complexa (NVIDIA-BioNeMo, NVIDIA Open Model License) is a
-flow-matching generator wrapped in an inference-time search that filters
-candidates through an AF2 / RF3 / force-field reward stack. It designs de
-novo binders against a **protein** target (PDB), a **small-molecule**
-target (SDF), or an enzyme/motif scaffold (AME).
+flow-matching generator wrapped in an inference-time search that re-folds
+and scores every candidate as it goes. The reward is a MENU, not a
+pipeline: ``protein_binder`` scores on AF2, RF3 is the sole reward for
+``ligand_binder`` and is what ``motif_ame`` needs, and a force field is
+added where it applies (Dockerfile.modal:229-231). It designs de novo
+binders against a **protein** target (PDB), a **small-molecule** target
+(SDF), or an enzyme/motif scaffold (AME).
 
 Runs as a fund-and-drain compute campaign of independent search shards
 (see ``shared/compute_campaigns.py``), NOT a single giant job. One shard is
