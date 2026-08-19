@@ -75,10 +75,16 @@ Not covered on purpose:
   ``ADD``, check 2 above notices, because it runs Modal's parser rather than
   this file's idea of it.
 * ``importlib.import_module("tools.x")`` / ``__import__("tools.x")``. The static
-  ``import tools.x`` spelling fails here; the dynamic ones do not. Neither pulls
-  the package into the image (verified: the upload set is unchanged), so the
-  failure mode is a loud in-container ``ImportError`` on every run, not a stale
-  image.
+  ``import tools.x`` spelling fails here; the dynamic ones do not. On its own
+  the dynamic import pulls nothing into the image (verified: the upload set is
+  unchanged), so the failure mode is a loud in-container ``ImportError`` on
+  every run, not a stale image. **In isolation only** — that verification was
+  once filed here as "loud, never silently stale", and it was wrong: composed
+  with ``run_function(<something the imported module owns>)`` the import makes
+  the build function PACKAGE-mode and mounts the whole ``tools`` package,
+  silently. What keeps this line true is not the import being harmless but
+  ``run_function`` being in ``_FORBIDDEN_CALLS``; the composition, not the
+  spelling, is where a gap this file "accepts" turns into the failure.
 * a local-path keyword that a FUTURE modal adds to one of the eleven methods in
   ``_ALLOWED_IMAGE_CALLS`` and routes through ``context_files``. The allowlist
   covers a new *method*; it does not cover a new *kwarg* on an allowed one, and
