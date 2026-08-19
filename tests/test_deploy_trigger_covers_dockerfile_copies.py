@@ -18,7 +18,7 @@ what each Dockerfile's COPY patterns actually pull out of the repo, and require
 every resolved file to survive the trigger filter. A new COPY of some other
 un-triggered path fails here on the commit that introduces it.
 
-Two deliberate scope limits, both safe in the conservative direction:
+Three deliberate scope limits, all safe in the conservative direction:
 
 * Only the Dockerfile context channel. The other way a local file reaches an
   image is ``Image.add_local_file`` in a ``modal_app.py``; today every one of
@@ -59,29 +59,65 @@ def _push_filter() -> dict:
     return on["push"]
 
 
-_TRIGGER_PATHS = list(_push_filter()["paths"])
+# `.get`, not `[...]`: this runs at COLLECTION time, and the one scenario the
+# paths-ignore floor below exists to catch — `paths-ignore` having REPLACED
+# `paths`, which GitHub allows only one of — is exactly the scenario where
+# `["paths"]` raises a bare `KeyError: 'paths'` here and kills the whole module
+# before any test can report why. Defaulting to [] keeps the module importable
+# so that floor gets to run and name the problem.
+_TRIGGER_PATHS = list(_push_filter().get("paths", []))
 
 
 # GitHub filter patterns are NOT globs. Per its documented syntax, `?` means
 # "zero or one of the PRECEDING character" and `+` means "one or more of the
-# preceding character" — regex quantifiers, not wildcards — and `[]` is an
-# alphanumeric class. `_to_regex` models none of the three, so it refuses them
-# rather than guessing. Refusing matters most in a NEGATION: rendering `+`/`[]`
-# as literals under-models the exclusion, the guard then believes a path is
-# covered when the real filter excludes it, and that is silent staleness — the
-# exact failure this module exists to catch. In a positive pattern the same
-# mistake is merely noisy, and `?` is wrong in both directions.
-_UNMODELLED_METACHARS = frozenset("?+[]")
+# preceding character" — regex quantifiers, not wildcards — `[]` is an
+# alphanumeric class, and `\` escapes the following character so it is matched
+# literally (`foo\*bar` is the literal four-token string `foo*bar`, not a
+# wildcard). `_to_regex` models none of the four, so it refuses them rather than
+# guessing. Refusing matters most in a NEGATION: rendering `+`/`[]` as literals
+# under-models the exclusion, the guard then believes a path is covered when the
+# real filter excludes it, and that is silent staleness — the exact failure this
+# module exists to catch. In a positive pattern the same mistake is merely
+# noisy, and `?` is wrong in both directions.
+#
+# `\` is worse than any of them, because the naive reading is wrong in BOTH
+# halves at once: `re.escape` turns it into a literal backslash AND the
+# character it was escaping keeps its wildcard meaning, so `foo\*bar` compiles
+# to `^foo\\[^/]*bar$` — which matches neither GitHub's literal `foo*bar` nor
+# the `fooXbar` a glob reader would expect, only a path with a real backslash in
+# it. No path this module tests could ever match, so a `\` pattern would read as
+# "matches nothing" and quietly subtract itself from the filter.
+_UNMODELLED_METACHARS = frozenset("?+[]\\")
 
 
 def _to_regex(pattern: str) -> re.Pattern:
     """GitHub filter-pattern -> anchored regex, for the subset modelled here.
 
-    * ``**/`` matches any number of leading segments INCLUDING zero, so
-      ``**/README.md`` hits the repo-root file too;
+    * ``**/`` is modelled as any number of leading segments INCLUDING zero, so
+      ``**/README.md`` is taken to hit the repo-root file too. This one is a
+      CONVENTION, not a verified GitHub fact — see below;
     * a trailing ``/**`` matches the directory and everything under it;
     * a bare ``**`` matches across ``/``;
     * ``*`` matches within one segment, never across ``/``.
+
+    On that first bullet, honestly: the zero-segment reading is what git,
+    gitignore and most glob engines do, and GitHub's cheat-sheet table is
+    usually read that way, but GitHub's own prose defines ``**`` only as "zero
+    or more of any character", which read literally says something different.
+    Its engine is not runnable here, so nobody on this branch has confirmed
+    which it is. ``tests/test_deploy_paths_exclusions.py`` hedges the same point
+    where it notes that "``**`` handling differs" for the top-level
+    ``tools/__init__.py``.
+
+    The ambiguity is bounded rather than resolved, and the bound is structural:
+    every live ``**/`` in the trigger is inside a NEGATION (asserted below, so
+    it cannot quietly stop being true). Modelling ``**/`` permissively can
+    therefore only over-exclude — this module would call a path uncovered that
+    GitHub in fact covers, and the guard goes RED on a healthy Dockerfile. That
+    is a false alarm someone has to look at. The dangerous direction is the
+    opposite one, under-modelling a negation so a genuinely-excluded path reads
+    as covered, and the permissive reading cannot land there. Loud beats
+    silent, so the model is deliberately the permissive one.
 
     Everything else is a literal, except the three metacharacters above, which
     raise. Written out rather than handed to ``fnmatch`` because ``fnmatch``
@@ -174,6 +210,11 @@ def test_the_trigger_is_a_paths_allowlist_with_no_paths_ignore():
     GitHub forbids using both in one filter, so its presence means ``paths`` is
     gone and ``_triggers_deploy`` is answering about a filter that no longer
     exists — it would report everything as covered.
+
+    Reachable only because ``_TRIGGER_PATHS`` defaults a missing ``paths`` to
+    ``[]``. With the plain ``["paths"]`` subscript this whole assertion was dead
+    code: the sole state it fires on is the sole state that raises ``KeyError``
+    at import, so pytest reported a collection error and never got here.
     """
     push = _push_filter()
     assert "paths-ignore" not in push, (
@@ -187,9 +228,10 @@ def test_the_trigger_is_a_paths_allowlist_with_no_paths_ignore():
 def test_no_live_trigger_pattern_uses_an_unmodelled_metacharacter():
     """The live half of the ``_to_regex`` refusal.
 
-    Without this, a pattern using ``?``/``+``/``[]`` would only surface wherever
-    ``_triggers_deploy`` happens to be called, as a raw NotImplementedError in
-    some unrelated parametrized case. Here it names the offending pattern.
+    Without this, a pattern using ``?``/``+``/``[]``/``\\`` would only surface
+    wherever ``_triggers_deploy`` happens to be called, as a raw
+    NotImplementedError in some unrelated parametrized case. Here it names the
+    offending pattern.
     """
     for pattern in _TRIGGER_PATHS:
         _to_regex(pattern[1:] if pattern.startswith("!") else pattern)
@@ -201,8 +243,14 @@ def test_to_regex_refuses_rather_than_guesses():
     ``*.jsx?`` is GitHub's own documented example: it matches ``page.js`` AND
     ``page.jsx``, because ``?`` quantifies the preceding ``x``. Modelling ``?``
     as a single-character wildcard, the glob reading, gets both wrong.
+
+    ``foo\\*bar`` is GitHub's escape: the literal string ``foo*bar``. It is the
+    one that must be REFUSED rather than approximated, because the naive
+    rendering is wrong twice over — ``^foo\\\\[^/]*bar$`` matches neither
+    ``foo*bar`` nor ``fooXbar``, only a path containing an actual backslash,
+    which on a POSIX repo path is nothing at all.
     """
-    for pattern in ["*.jsx?", "tools/**/*+.py", "tools/**/[abc]*.py"]:
+    for pattern in ["*.jsx?", "tools/**/*+.py", "tools/**/[abc]*.py", "foo\\*bar"]:
         with pytest.raises(NotImplementedError):
             _to_regex(pattern)
     # the modelled subset still compiles
@@ -227,9 +275,34 @@ def test_pattern_translation_distinguishes_star_from_globstar():
     # single `*` must not cross a separator
     assert not _to_regex("tools/*/meta.py").match("tools/a/b/meta.py")
     assert _to_regex("tools/*/meta.py").match("tools/a/meta.py")
-    # `**/` matches zero leading segments
-    assert _to_regex("**/README.md").match("README.md")
+    # `**/` is MODELLED as matching zero leading segments. Unverified against
+    # GitHub's real engine — see `_to_regex`. Pinned anyway, with the reason the
+    # unverified choice is the safe one attached to the assertion rather than
+    # left in prose.
+    assert _to_regex("**/README.md").match("README.md"), (
+        "`**/` no longer matches zero leading segments. That is the PERMISSIVE "
+        "reading and it is deliberate: every live `**/` in the trigger is a "
+        "negation (see the assertion below), so over-matching can only "
+        "over-exclude and turn this guard RED on a file GitHub actually covers "
+        "— a false alarm. Under-matching a negation is the silent-staleness "
+        "direction. Do not tighten this to resolve the ambiguity in GitHub's "
+        "docs; verify against GitHub's engine first, and re-check the negation "
+        "assertion below if you do."
+    )
     assert _to_regex("**/README.md").match("docs/a/README.md")
+    # The structural bound the permissive reading rests on. Load-bearing for the
+    # paragraph in `_to_regex`, so it is asserted rather than asserted-in-prose:
+    # add a POSITIVE `**/` entry to the trigger and the safety argument above
+    # stops holding, because over-matching a positive over-INCLUDES instead.
+    positive_globstars = [p for p in _TRIGGER_PATHS if "**/" in p and not p.startswith("!")]
+    assert not positive_globstars, (
+        f"deploy trigger grew positive `**/` pattern(s) {positive_globstars}. Every "
+        "`**/` here was a negation, which is what makes _to_regex's unverified "
+        "zero-segment reading safe: over-matching a negation over-excludes and "
+        "fails loud. In a POSITIVE it over-includes instead, so this module "
+        "would report coverage GitHub does not give — silent staleness. Verify "
+        "`**/` against GitHub's real engine before adding one."
+    )
     # plainly-untriggered paths stay untriggered
     assert not _triggers_deploy("README.md")
     assert not _triggers_deploy("app.py")

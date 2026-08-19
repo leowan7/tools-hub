@@ -312,16 +312,36 @@ def test_deploy_step_still_passes_a_FILE_path_to_modal_deploy():
     )
 
 
-def test_workflow_still_carries_every_negation_in_order():
+def test_workflow_still_carries_every_trigger_entry_in_order():
+    """This pin covers BOTH kinds of entry, and they fail opposite ways.
+
+    It was named for the negations alone, from when they were all it held. The
+    three `static/example/` fixture entries are positives with an entirely
+    different failure mode, so the name and the message both have to say so —
+    a message that reports a dropped fixture as "redeploying nine GPU images"
+    names the exact opposite of what goes wrong.
+    """
     doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1).
     trigger = doc[True] if True in doc else doc["on"]
     assert trigger["push"]["paths"] == _EXPECTED_PATHS, (
         f"deploy-modal.yml push.paths is {trigger['push']['paths']!r}, expected "
-        f"{_EXPECTED_PATHS!r}. GitHub applies `paths` later-wins: a negation moved "
-        "above `tools/**` is re-included and stops excluding anything, and a "
-        "negation dropped altogether resumes redeploying nine GPU images on "
-        "web-tier-only edits."
+        f"{_EXPECTED_PATHS!r}.\n"
+        "Which entry moved decides which way this breaks.\n"
+        "  NEGATIONS (`!tools/**/...`) — GitHub applies `paths` later-wins, so "
+        "a negation moved above `tools/**` is re-included and stops excluding "
+        "anything, and a negation dropped altogether resumes redeploying nine "
+        "GPU images on web-tier-only edits. Wasteful, but loud and harmless.\n"
+        "  POSITIVES (`static/example/...`) — the OPPOSITE failure. Four "
+        "Dockerfiles COPY those fixtures as in-image smoke targets, and "
+        "`static/` is under no other entry here. Drop one and editing that "
+        "fixture changes the images that bake it in while triggering NO deploy "
+        "at all: prod keeps serving the old layer and nothing is red. Silent "
+        "staleness, which is the worse direction.\n"
+        "Reordering the positives is safe on its own (no `tools/**` negation "
+        "can match a `static/` path, and each is a literal file path so it "
+        "re-includes nothing); they are pinned last only to keep the negation "
+        "block contiguous under the `tools/**` it qualifies."
     )
 
 
