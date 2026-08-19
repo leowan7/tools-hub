@@ -265,7 +265,7 @@ def _alarm_records(caplog) -> list:
     ]
 
 
-def _meter_one_body(app, chunked: bool) -> str:
+def _meter_one_body(app, chunked: bool, transfer_encoding: str | None = None) -> str:
     """Run the meter's body path once, with no HTTP round trip.
 
     The alarm's own properties — does the count go on counting, does the
@@ -273,23 +273,33 @@ def _meter_one_body(app, chunked: bool) -> str:
     SECOND sample land costs ``_LOG_EVERY + 1`` calls. Through the app that is
     a hundred full requests of noise around a two-line question.
 
-    Asserts its own premises, because both shapes here are ordinary POSTs as
+    ``transfer_encoding`` overrides the header this sends, so a caller can put
+    a coding gunicorn accepts but which is NOT ``chunked`` on the wire; without
+    it the header is ``chunked`` or absent, per ``chunked``.
+
+    Asserts its own premises, because every shape here is an ordinary POST as
     far as werkzeug is concerned: a fixture that quietly grew a Content-Length,
-    or lost its ``Transfer-Encoding``, would never reach the branch under test
-    and every assertion downstream would pass on nothing.
+    or sent a different ``Transfer-Encoding`` than the one asked for, would
+    never reach the branch under test and every assertion downstream would pass
+    on nothing.
     """
     from flask import request as flask_request  # noqa: PLC0415
     from werkzeug.test import EnvironBuilder  # noqa: PLC0415
 
+    if transfer_encoding is None:
+        transfer_encoding = "chunked" if chunked else None
+
     builder = EnvironBuilder(
         "/scout/analyze",
         method="POST",
-        headers={"Transfer-Encoding": "chunked"} if chunked else None,
+        headers=(
+            {"Transfer-Encoding": transfer_encoding} if transfer_encoding else None
+        ),
     )
     environ = builder.get_environ()
     # ABSENT, not empty: werkzeug reads a blank Content-Length as 0, which is a
     # perfectly measurable length and never reaches the branch under test. With
-    # the key gone, the two shapes differ by the Transfer-Encoding header and
+    # the key gone, the shapes differ by the Transfer-Encoding header and
     # nothing else — which is exactly the variable the split turns on.
     environ.pop("CONTENT_LENGTH", None)
     if chunked:
@@ -300,7 +310,7 @@ def _meter_one_body(app, chunked: bool) -> str:
             "this framing has a readable length, so it never reaches the "
             "branch that counts and warns"
         )
-        assert ("Transfer-Encoding" in flask_request.headers) is chunked, (
+        assert flask_request.headers.get("Transfer-Encoding") == transfer_encoding, (
             "the framing under test is not the framing being sent"
         )
         return ratelimit._metered_job_id(ratelimit.job_id_in_body)
@@ -1099,6 +1109,16 @@ class TestTheAlarmItself:
         — therefore bought silence until the next deploy, and the alarm was
         loudest exactly when the traffic was least interesting.
         """
+        # The re-arm below adapts to the constant, which is the right shape for
+        # it — and leaves the MAGNITUDE unpinned. QC measured 100 -> 20000
+        # (+2 B) as fully green; at 10,000,000 the second sample never arrives
+        # in a worker's lifetime and the latch this commit removes is back,
+        # with a green suite. So bound it: sampling is only sampling while the
+        # period is small against the traffic a re-framing edge would produce.
+        assert ratelimit._LOG_EVERY <= 1000, (
+            f"_LOG_EVERY is {ratelimit._LOG_EVERY}; a period this long is a "
+            f"latch by another name — the second sample never lands"
+        )
         ratelimit.reset()
 
         with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
@@ -1123,7 +1143,7 @@ class TestTheAlarmItself:
         Both still fail closed. Only the reporting differs.
         """
         ratelimit.reset()
-        exported = _unmetered_metric("no_body")
+        exported = _unmetered_metric("other")
 
         with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
             for _ in range(3):
@@ -1144,7 +1164,7 @@ class TestTheAlarmItself:
                 "the bodiless framing is not counted at all; it must be "
                 "visible, just not as the thing that halves capacity"
             )
-            assert _unmetered_metric("no_body") - exported == 3, (
+            assert _unmetered_metric("other") - exported == 3, (
                 "nothing was exported for the bodiless framing"
             )
 
@@ -1154,6 +1174,76 @@ class TestTheAlarmItself:
         assert len(_alarm_records(caplog)) == 1, (
             "the first genuine chunked body did not warn; the noise ahead of "
             "it had consumed the alarm"
+        )
+
+    def test_a_transfer_coding_that_is_not_chunked_is_not_the_chunked_signal(
+        self, app, caplog
+    ):
+        """The label reads the header's VALUE, not its presence.
+
+        gunicorn 24.1.1 accepts ``identity``, ``compress``, ``deflate`` and
+        ``gzip`` as transfer codings without ``chunked``, and a ZERO-byte body
+        under any of them arrives with no Content-Length — so they land on
+        this branch too. On a presence test they were labelled
+        ``chunked`` and fired the WARNING, which makes a ~90-byte bodiless
+        request enough to raise the one alert an operator is told to act on.
+
+        Enforcement does not move: every framing here still returns "".
+        """
+        ratelimit.reset()
+        exported = _unmetered_metric("other")
+
+        with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
+            for coding in ("identity", "gzip"):
+                assert (
+                    _meter_one_body(app, chunked=False, transfer_encoding=coding) == ""
+                ), (
+                    f"Transfer-Encoding: {coding} handed the meter a credit "
+                    f"key; splitting the labels must not relax enforcement"
+                )
+
+            assert ratelimit.unmetered_chunked_bodies == 0, (
+                "a transfer coding that is not chunked was counted as chunked "
+                "framing, so it advances the sample the real signal rides on"
+            )
+            assert _alarm_records(caplog) == [], (
+                "a zero-byte request with a non-chunked transfer coding fired "
+                "the chunked WARNING; the label is caller-chosen again"
+            )
+            assert _unmetered_metric("other") - exported == 2, (
+                "the non-chunked codings were not exported under `other`, "
+                "whose comment is the only prose that covers them"
+            )
+
+            # Real chunked framing still is the signal — stacked codings and
+            # mixed case included. The test is a SUBSTRING test on purpose:
+            # RFC 9112 permits a list of codings, gunicorn 24.1.1 accepts
+            # ``gzip, chunked`` and passes it through whole, and an edge that
+            # gzips AND chunks is exactly the re-framing this alarm exists
+            # for. An equality test reads like a tidy-up, costs zero bytes,
+            # and would go silent for that framing with every other assertion
+            # in this file still green.
+            assert (
+                _meter_one_body(app, chunked=True, transfer_encoding="gzip, chunked")
+                == ""
+            ), "stacked chunked framing stopped failing closed"
+            assert len(_alarm_records(caplog)) == 1, (
+                "`gzip, chunked` did not fire the alarm; the discriminator "
+                "reads only the bare coding, so the framing a gzipping edge "
+                "would actually send is the one it cannot see"
+            )
+
+            assert (
+                _meter_one_body(app, chunked=True, transfer_encoding="Chunked") == ""
+            ), "real chunked framing stopped failing closed"
+
+        assert ratelimit.unmetered_chunked_bodies == 2, (
+            "real chunked framing is no longer labelled chunked; the "
+            "discriminator got strict enough to miss the thing it looks for"
+        )
+        assert len(_alarm_records(caplog)) == 1, (
+            "the two chunked bodies warned a number of times that is not one; "
+            "the sample fires on the first and then every _LOG_EVERY-th"
         )
 
 

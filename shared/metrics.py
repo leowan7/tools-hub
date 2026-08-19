@@ -143,14 +143,27 @@ SCOUT_RUNS = Counter(
 # body is small enough to read for its follow-up credit (see
 # ``scout.ratelimit._MAX_FOLLOWUP_BODY_BYTES``). When the length is unreadable
 # it fails closed, and nothing is refused — so no refusal-rate metric moves.
-# This is the one that does. Alert on the ``chunked`` label: sustained, it means
-# the edge is re-framing every POST and anonymous capacity has halved.
-# ``no_body`` is a POST with no body at all, i.e. scanner noise, kept apart so
-# it cannot drown the label that matters.
+# This is the one that does.
+#
+# It counts REQUESTS THE METER COULD NOT SIZE, and claims nothing beyond that.
+# The meter runs ahead of both limiter tiers and every refusal, so refused
+# requests count here too: 25 chunked POSTs for a nonexistent job measured as
+# 8x404 then 17x429, all 25 on ``chunked``, no analysis run and nobody charged
+# twice. A sustained rise in ``chunked`` is therefore a reason to INVESTIGATE
+# whether the edge is re-framing bodies — correlate it against successful
+# analyses, which is where the lost credits would show — not proof on its own
+# that anonymous capacity has halved. ``chunked`` is exactly what the code
+# tests and nothing more — a Transfer-Encoding value CONTAINING ``chunked``,
+# in any case, stacked with other codings or not — so any caller can pick
+# this label by sending that framing.
+# ``other`` is that rule negated: every request the meter could not size whose
+# framing is not that. A POST with no body at all (a scanner's opening move)
+# and a transfer coding that is not ``chunked`` are the common cases, NOT a
+# closed list — the label is the negation, not the enumeration.
 SCOUT_UNMETERED_BODIES = Counter(
     "tools_hub_scout_unmetered_bodies_total",
     "POST /scout/analyze bodies the anonymous meter could not size, by framing.",
-    ["framing"],  # chunked|no_body
+    ["framing"],  # chunked|other
 )
 
 IDEMPOTENCY_OUTCOMES = Counter(

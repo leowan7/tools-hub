@@ -356,13 +356,18 @@ _MAX_FOLLOWUP_BODY_BYTES = 4096
 # TWO COUNTS, because ``length is None`` does not mean "chunked". It means "no
 # measurable length", and a POST with NO BODY AT ALL — a scanner's opening
 # move — reads exactly the same way. Measured over real sockets: a bodiless
-# POST leaves both Content-Length and Transfer-Encoding unset, a chunked one
-# leaves Content-Length unset and Transfer-Encoding set, so the two ARE
-# distinguishable (gunicorn 24.1.1 maps that header through to
-# HTTP_TRANSFER_ENCODING untouched, and rejects CL+TE together). Before the
-# split, one bodiless probe — which then 400s, having no body to parse, and
-# charges nobody twice — fired the alarm and disarmed it for the life of the
-# worker; QC sent 25 genuine chunked requests afterwards and got zero records.
+# POST carries no Transfer-Encoding at all, a chunked one carries
+# ``Transfer-Encoding: chunked``, and neither carries a Content-Length
+# (gunicorn 24.1.1 maps that header through to HTTP_TRANSFER_ENCODING
+# untouched, and rejects CL+TE together). The test below is on the header's
+# VALUE, not on its presence: gunicorn also accepts ``identity``, ``compress``,
+# ``deflate`` and ``gzip`` as transfer codings, and a ZERO-byte body under any
+# of those arrives with no Content-Length — so a presence test let a ~90-byte
+# bodiless request pick the ``chunked`` label for itself.
+# Before the split, one bodiless probe — which then 400s, having no body to
+# parse, and charges nobody twice — fired the alarm and disarmed it for the
+# life of the worker; QC sent 25 genuine chunked requests afterwards and got
+# zero records.
 #
 # So only the chunked count speaks, and it speaks TWO ways. It is exported as
 # ``tools_hub_scout_unmetered_bodies_total{framing="chunked"}``, because
@@ -386,7 +391,7 @@ def _note_unmetered_body(chunked: bool) -> None:
         if chunked:
             unmetered_chunked_bodies += 1
         count = unmetered_chunked_bodies
-    SCOUT_UNMETERED_BODIES.labels(framing="chunked" if chunked else "no_body").inc()
+    SCOUT_UNMETERED_BODIES.labels(framing="chunked" if chunked else "other").inc()
     if chunked and count % _LOG_EVERY == 1:
         logger.warning(
             "POST /scout/analyze arrived chunked, with no Content-Length, so "
@@ -410,10 +415,11 @@ def _metered_job_id(source) -> str:
         if length is None:
             # An unknown length is unbounded, so this is the framing an
             # attacker picks to get the pre-refusal parse back. Fail closed for
-            # BOTH shapes that land here — they are indistinguishable by
-            # length, which is the whole point — and report them apart, so the
-            # bodiless one cannot spend the signal. See the counts above.
-            _note_unmetered_body(chunked="Transfer-Encoding" in request.headers)
+            # EVERY shape that lands here — they are indistinguishable by
+            # length, which is the whole point — and report chunked framing
+            # apart, so nothing else can spend the signal. See the counts above.
+            encoding = request.headers.get("Transfer-Encoding", "")
+            _note_unmetered_body(chunked="chunked" in encoding.lower())
             return ""
         if length > _MAX_FOLLOWUP_BODY_BYTES:
             return ""
