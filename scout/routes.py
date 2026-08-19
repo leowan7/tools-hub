@@ -297,6 +297,40 @@ def _find_input_file(job_dir: Path) -> "Path | None":
     return None
 
 
+_GENERIC_ERROR = "Analysis failed. Check that the PDB is valid and try again."
+
+
+def _client_error(exc: BaseException) -> str:
+    """Client-safe text for a caught exception. Log the exception first.
+
+    The pipeline signals "your input is wrong" by raising ``ValueError``
+    with a message written for the user — "Chain 'Z' not found in
+    structure. Available chains: A, B" (``scout/pipeline.py:310``). Those
+    are the product's only diagnostics and are forwarded verbatim.
+
+    Every other type is replaced. The one that forced this is ``OSError``,
+    whose ``__str__`` interpolates ``filename``, so a ``FileNotFoundError``
+    raised anywhere under the pipeline hands the browser an absolute server
+    path. The rule is an allowlist rather than an ``OSError`` denylist
+    because the set of types reaching these handlers is open — the SSE
+    workers catch bare ``Exception`` — and ``ValueError`` is the only one
+    audited as safe to forward (every ``raise ValueError`` under ``scout/``
+    is a curated sentence; none interpolates a path).
+
+    Exact type, not ``isinstance``: ``UnicodeDecodeError`` and
+    ``json.JSONDecodeError`` subclass ``ValueError`` and carry decoder
+    internals rather than advice. ``scout`` defines no ``ValueError``
+    subclass of its own, so the strict check loses nothing.
+
+    An empty message falls back too — the SSE clients render ``data.msg``
+    straight into the banner (``templates/scout/index.html:346``), and a
+    blank banner is worse than a generic one.
+    """
+    if type(exc) is ValueError and str(exc).strip():
+        return str(exc)
+    return _GENERIC_ERROR
+
+
 def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dict]:
     cache_path = job_dir / "analyze_cache.json"
     if not cache_path.exists():
@@ -606,10 +640,10 @@ def analyze():
             from scout.interfaces import detect_interfaces  # noqa: PLC0415
             ppi_interfaces = detect_interfaces(pdb_path, chain_id)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 422
+            return jsonify({"error": _client_error(exc)}), 422
         except Exception:
             logger.exception("Pipeline error for job %s", job_id)
-            return jsonify({"error": "Analysis failed. Check that the PDB is valid and try again."}), 500
+            return jsonify({"error": _GENERIC_ERROR}), 500
 
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
@@ -899,7 +933,7 @@ def progress():
                 }})
             except Exception as exc:
                 logger.exception("SSE pipeline error for job %s", job_id)
-                q.put({"stage": "error", "msg": str(exc)})
+                q.put({"stage": "error", "msg": _client_error(exc)})
 
         if _use_gevent:
             import gevent  # noqa: PLC0415
@@ -1013,7 +1047,19 @@ def feasibility_analyze():
             pdb_path, chain_id, epitope_residues,
         )
     except (ValueError, FileNotFoundError) as exc:
-        return jsonify({"error": str(exc)}), 422
+        # Logged because _client_error drops a FileNotFoundError's path, and
+        # that path is the whole diagnostic. Previously the client got it and
+        # nothing was logged at all.
+        logger.warning(
+            "Feasibility rejected input for job %s", job_id, exc_info=True
+        )
+        return jsonify({"error": _client_error(exc)}), 422
+    except Exception as exc:
+        # Anything else used to escape as an unhandled 500 with a stack-trace
+        # page. The route contracts to return JSON; the UI only reaches it
+        # after the SSE stream reports done, but it is directly callable.
+        logger.exception("Feasibility pipeline error for job %s", job_id)
+        return jsonify({"error": _client_error(exc)}), 500
 
     result_row = {}
     with feasibility_csv.open() as f:
@@ -1138,7 +1184,7 @@ def feasibility_progress():
                 }})
             except Exception as exc:
                 logger.exception("Feasibility SSE error for job %s", job_id)
-                q.put({"stage": "error", "msg": str(exc)})
+                q.put({"stage": "error", "msg": _client_error(exc)})
 
         if _use_gevent:
             import gevent  # noqa: PLC0415
