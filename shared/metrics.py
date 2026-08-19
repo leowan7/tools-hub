@@ -142,7 +142,7 @@ SCOUT_RUNS = Counter(
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",
-    ["outcome"],  # claimed|replay|in_flight|open
+    ["outcome"],  # claimed|replay|in_flight|open|unavailable
 )
 
 
