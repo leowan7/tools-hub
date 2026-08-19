@@ -23,6 +23,10 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from shared.compute_campaigns import PREAUTH_INSUFFICIENT, PREAUTH_OK
 from tests.money_display_guard import assert_template_prints_no_raw_money
+# `_as_dt` rather than a second copy: tests/test_idempotency.py owns the
+# canonical fake for this table and two drifting definitions of "is this row
+# stale" is exactly how a fake stops modelling the thing it stands in for.
+from tests.test_idempotency import _as_dt  # noqa: E402
 from shared.targets import TARGET_READ_OK, DesignTarget, TargetRead
 
 
@@ -2486,9 +2490,10 @@ class _IdemTable:
     def __init__(self, rows):
         self.rows = rows
         self._key = None
-        self._upsert = None
+        self._insert = None
         self._update = None
         self._is_null = []
+        self._at_most = []
         self._pending_delete = False
 
     def select(self, *_a, **_k):
@@ -2507,11 +2512,13 @@ class _IdemTable:
         # overwrite the winner's cached 302 -- and would report the scoping as
         # working while it did nothing.
         #
-        # Accepts BOTH spellings of the null predicate. Of the 17 `.is_()` call
-        # sites in this repo's production code, only the 2 in
-        # `shared/idempotency.py` pass None; the other 15 pass the PostgREST
-        # string "null" (shared/api_keys.py x4, shared/targets.py x4,
-        # shared/jobs.py x3, shared/handoffs.py, shared/compute_campaigns.py,
+        # Accepts BOTH spellings of the null predicate. Of the 19 `.is_()` call
+        # sites in this repo's production code -- counted with `ast`, not grep,
+        # which miscounts a docstring in shared/target_results.py that quotes
+        # one -- only the 2 in `shared/idempotency.py` pass None; the other 17
+        # pass the PostgREST string "null" (shared/targets.py x5,
+        # shared/api_keys.py x4, shared/jobs.py x3, shared/compute_campaigns.py,
+        # shared/handoffs.py, shared/target_results.py,
         # cron/purge_old_storage.py, webhooks/modal.py). Both spellings are
         # valid. Refusing the string would not have caught anything either: an
         # earlier version of this fake asserted `val is None` on the stated
@@ -2524,8 +2531,18 @@ class _IdemTable:
         self._is_null.append(col)
         return self
 
-    def upsert(self, payload, on_conflict="key"):
-        self._upsert = dict(payload)
+    def lte(self, col, val):
+        # Modelled, not accepted-and-ignored. `_claim_key` clears a stale row
+        # with `delete().eq(key).lte("expires_at", now)`, and that predicate is the
+        # entire safety property: it is what stops that delete removing the
+        # LIVE claim a concurrent caller just inserted. Swallow it and the fake
+        # deletes unconditionally, which is the one direction that would make a
+        # double-launch look prevented while it was not.
+        self._at_most.append((col, val))
+        return self
+
+    def insert(self, payload):
+        self._insert = dict(payload)
         return self
 
     def update(self, payload):
@@ -2553,9 +2570,20 @@ class _IdemTable:
         return self
 
     def _matches(self, row):
-        return row is not None and all(
-            row.get(col) is None for col in self._is_null
-        )
+        if row is None:
+            return False
+        if not all(row.get(col) is None for col in self._is_null):
+            return False
+        for col, bound in self._at_most:
+            value = row.get(col)
+            if value is None:
+                return False
+            # Compare timestamps as timestamps. Both sides are ISO-8601 here
+            # and string comparison happens to agree while the offsets match,
+            # which is not a property to depend on.
+            if _as_dt(value) > _as_dt(bound):
+                return False
+        return True
 
     def execute(self):
         if self._pending_delete:
@@ -2565,9 +2593,18 @@ class _IdemTable:
                 # Filters excluded it, so PostgREST neither deletes nor returns.
                 return SimpleNamespace(data=[])
             return SimpleNamespace(data=[self.rows.pop(self._key)])
-        if self._upsert is not None:
-            row = self._upsert
-            self.rows[row["key"]] = row
+        if self._insert is not None:
+            row = self._insert
+            self._insert = None
+            # The PRIMARY KEY, which is the whole basis of the claim: a second
+            # insert of a live key must RAISE the way PostgREST does on a
+            # unique violation, not overwrite. `setdefault` is one atomic
+            # operation, so this stays a real key under threads too.
+            if self.rows.setdefault(row["key"], row) is not row:
+                raise RuntimeError(
+                    "duplicate key value violates unique constraint "
+                    '"request_idempotency_pkey"'
+                )
             return SimpleNamespace(data=[row])
         if self._update is not None and self._key is not None:
             row = self.rows.get(self._key)

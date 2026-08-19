@@ -336,7 +336,7 @@ not for skipping the install.
 
 ## 7. Q5 — recommendation
 
-### Do (implemented in this branch, committed as `9f6fc7d`)
+### Do (shipped in PR #161)
 
 1. **`residue_data[1]` → `residue_data[2]`** in
    `scout/scoring.py::assign_dssp`. Required regardless of every other

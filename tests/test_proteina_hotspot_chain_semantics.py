@@ -427,8 +427,16 @@ def test_the_migration_follows_the_existing_numbering_convention():
     numbers = sorted(
         int(p.name[:4]) for p in (_REPO / "supabase/migrations").glob("*.sql")
     )
-    assert int(path.name[:4]) == numbers[-1], (
-        "the new migration must be the highest-numbered one")
+    # Deliberately NOT "0041 is the highest-numbered migration". That was true
+    # the day it was written and false the moment anyone added another, which
+    # made it a timer rather than a guard: migration 0042 tripped it with
+    # `assert 41 == 42`, on a change that had nothing to do with hotspots. A
+    # test that fails for every future migration is a tax on the next author,
+    # not protection for this one.
+    #
+    # What remains still bites, and covers the hazard the clause was reaching
+    # for: two migrations sharing a number apply in an undefined order, and
+    # that is caught here whatever the numbers are.
     assert len(numbers) == len(set(numbers)), "duplicate migration number"
 
 
