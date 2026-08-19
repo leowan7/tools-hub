@@ -507,6 +507,39 @@ _ALLOWED_IMAGE_CALLS = {
     "workdir",
 }
 
+# Public CLASSES on the modal namespace, read off the installed client, minus
+# Image itself. `_IMAGE_API` matches on the attribute NAME alone, so when modal
+# 1.5 added `Image.from_name`, every app's `modal.Volume.from_name(...)` handle
+# started failing — a false red on nine apps, and one that only appears on the
+# client CI resolves (`modal>=1.4,<2`), not the one a laptop happens to have.
+# Widening `_ALLOWED_IMAGE_CALLS` would have been the wrong fix: it is global, so
+# permitting `Volume.from_name` would permit the real `Image.from_name` forever.
+#
+# Restricted to `isinstance(..., type)` ON PURPOSE. `dir(modal)` also carries the
+# lowercase SUBMODULES (`modal.image`, `modal.volume`, ...), and exempting a
+# receiver spelled `image` would wave through the real
+# `image.pip_install_from_requirements(...)` — the exact call this file exists to
+# catch.
+_MODAL_NON_IMAGE_CLASSES = {
+    n for n in dir(modal) if not n.startswith("_") and isinstance(getattr(modal, n), type)
+} - {"Image"}
+
+
+def _receiver_names_another_modal_class(fn) -> bool:
+    """Is this call's receiver EXPLICITLY a modal class that is not ``Image``?
+
+    The one false-red family that is statically decidable: ``modal.Volume
+    .from_name`` and ``modal.Secret.from_name`` say what they are, right there
+    in the source. A receiver this scan cannot identify — any local variable —
+    stays checked, so nothing is waved through on a guess.
+    """
+    if not isinstance(fn, ast.Attribute):
+        return False
+    receiver = fn.value
+    name = receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", None)
+    return name in _MODAL_NON_IMAGE_CLASSES
+
+
 _FORBIDDEN_KWARGS = {
     "mounts",
     # Repoints Modal's build context away from cwd (the repo root), which is what
@@ -593,7 +626,11 @@ def _scan(source: str) -> dict:
                 )
             if name in _FORBIDDEN_CALLS:
                 out["violations"].append((node.lineno, f"calls .{name}()"))
-            elif name in _IMAGE_API and name not in _ALLOWED_IMAGE_CALLS:
+            elif (
+                name in _IMAGE_API
+                and name not in _ALLOWED_IMAGE_CALLS
+                and not _receiver_names_another_modal_class(fn)
+            ):
                 # Matched on the attribute name alone, so an unrelated call that
                 # happens to share a name with an Image method (`cfg.build()`,
                 # `cfg.clone()`) lands here too. That is the safe direction: it
@@ -728,6 +765,51 @@ def test_image_api_allowlist_is_live_and_refuses_the_context_files_family():
         "these Image methods move local bytes into an image and must stay "
         f"refused: {sorted(must_refuse & _ALLOWED_IMAGE_CALLS)} are allowlisted, "
         f"{sorted(must_refuse - _IMAGE_API)} are no longer on modal.Image."
+    )
+
+
+def test_non_image_receiver_exemption_is_narrow():
+    """Floor for ``_receiver_names_another_modal_class`` — the only exemption here.
+
+    It exists because ``_IMAGE_API`` matches on the attribute name alone and
+    modal 1.5 added ``Image.from_name``, turning all nine apps'
+    ``modal.Volume.from_name(...)`` red. Note this only reproduces on the client
+    CI resolves from ``modal>=1.4,<2``: on modal 1.4.2 there is no
+    ``Image.from_name`` and the false red does not exist at all. So the exemption
+    cannot be trusted to a local run, and every edge below is pinned.
+
+    An exemption is the one thing in this file that can make a check say
+    nothing, so it must stay as narrow as its reason.
+    """
+    # The reason it exists: a different modal class, named explicitly.
+    assert not _scan('vol = modal.Volume.from_name("x", create_if_missing=True)')["violations"]
+    assert not _scan('s = modal.Secret.from_name("x")')["violations"]
+    assert not _scan('from modal import Volume\nvol = Volume.from_name("x")')["violations"]
+
+    # ...and everything it must NOT reach. The refused method is picked off the
+    # INSTALLED client rather than named, because the one that caused this
+    # (`Image.from_name`) exists on modal 1.5 and not on 1.4.2 — a literal here
+    # would pass vacuously on one version and fail on the other, which is the
+    # whole reason this false red reached CI unnoticed.
+    refused = sorted(_IMAGE_API - _ALLOWED_IMAGE_CALLS - _FORBIDDEN_CALLS)[0]
+    assert _scan(f'modal.Image.{refused}("x")')["violations"], "an Image receiver is still checked"
+    assert not _scan(f'modal.Volume.{refused}("x")')["violations"], "a Volume receiver is exempt"
+    assert _scan('modal.Image.from_registry("x")')["violations"], "an Image receiver is still checked"
+    assert _scan('image.pip_install_from_requirements("tools/mpnn/__init__.py")')["violations"], (
+        "a receiver this scan cannot identify must stay checked — waving through "
+        "an unidentifiable receiver is how the exemption becomes the hole"
+    )
+    assert _scan('image.uv_sync("tools/mpnn")')["violations"]
+
+    # The lowercase SUBMODULES must never be exemptable: `modal.image` is a
+    # module, and a receiver spelled `image` is the normal way an app names its
+    # Image. If this set ever admitted them, the line above would go green.
+    assert "image" not in _MODAL_NON_IMAGE_CLASSES
+    assert "Image" not in _MODAL_NON_IMAGE_CLASSES
+    assert {"Volume", "Secret"} <= _MODAL_NON_IMAGE_CLASSES, (
+        f"modal {modal.__version__} no longer exposes Volume/Secret as classes: "
+        f"{sorted(_MODAL_NON_IMAGE_CLASSES)}. The exemption is now dead and the "
+        "nine apps' volume handles are about to go red."
     )
 
 

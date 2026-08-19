@@ -34,6 +34,7 @@ upload list, not a pattern guess.
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -41,14 +42,39 @@ from typing import get_args
 
 import modal
 from modal.cli.import_refs import ImportRef, import_file_or_module
-from modal.image import ImageBuilderVersion
 from modal.mount import NonLocalMountError
 
-# Which builder version a layer's DockerfileSpec is generated for normally comes
-# from the SERVER (`_get_image_builder_version`), which a credential-free probe
-# cannot ask. Read every version the installed client declares and union the
-# answers, so this neither hardcodes one nor misses a version-specific shipper.
-_BUILDER_VERSIONS = get_args(ImageBuilderVersion)
+
+def _builder_versions() -> tuple[str, ...]:
+    """Every image-builder version the installed client declares.
+
+    Which version a layer's ``DockerfileSpec`` is generated for normally comes
+    from the SERVER (``_get_image_builder_version``), which a credential-free
+    probe cannot ask — so ask for all of them and union the answers. That also
+    means this neither hardcodes a version nor misses one Modal adds.
+
+    Looked up in two places because the Literal has already moved once
+    (``modal.image`` on 1.4.2, ``modal._image`` on 1.5.4) and this repo installs
+    an unpinned ``modal>=1.4,<2`` in CI. If it moves again this RAISES rather
+    than falling back to a baked-in list: a silent fallback would keep the probe
+    green while it quietly stopped covering whatever version was added.
+    """
+    for module_name in ("modal.image", "modal._image"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if versions := get_args(getattr(module, "ImageBuilderVersion", None)):
+            return versions
+    raise RuntimeError(
+        f"modal {modal.__version__} declares ImageBuilderVersion in neither "
+        "modal.image nor modal._image. Without a builder version this probe "
+        "cannot ask a layer what it would open, so it would silently stop "
+        "covering DockerfileSpec.context_files — find where it moved."
+    )
+
+
+_BUILDER_VERSIONS = _builder_versions()
 
 # Marks the payload line so incidental stdout from Modal cannot be mistaken for it.
 RESULT_PREFIX = "DEPLOY_UPLOAD_PROBE_JSON:"
