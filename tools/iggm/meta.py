@@ -23,30 +23,41 @@ paper_citation: str = "Wang et al., ICLR 2025"
 paper_url: str = "https://arxiv.org/abs/2504.09248"
 github_url: str = "https://github.com/TencentAI4S/IgGM"
 comparison_one_liner: str = (
-    "Pick IgGM to design or humanize an antibody / nanobody against your "
-    "antigen, or to predict the antibody-antigen complex, all in one model. "
-    "For VHH backbones use RFantibody; for paired scFv CDRs use ESMFold2 "
-    "design; to validate a designed binder's fold use Boltz-2."
+    "You have an antibody or nanobody and an antigen, and you want "
+    "to redesign its binding loops, humanise its framework, raise "
+    "its affinity, or just see how the two dock — one model does "
+    "all of it, aimed at the epitope you name. For a nanobody from "
+    "scratch use RFantibody; for a paired heavy and light antibody "
+    "fragment use ESMFold2 design."
 )
 example_output_id: Optional[str] = None
 
 
 about: dict = {
     "what_it_is": (
-        "IgGM (Wang et al., <em>ICLR</em> 2025). A generative diffusion "
-        "foundation model for antibody and nanobody engineering. One model "
-        "covers antibody-antigen complex structure prediction, CDR design, "
-        "framework redesign / humanization, affinity maturation, and inverse "
-        "(sequence-from-structure) design, all epitope-guided against the "
-        "antigen you upload."
+        "Takes an antibody or nanobody and an antigen and does whatever "
+        "you need to the pair: redesign the binding loops (the CDRs), "
+        "rebuild or humanise the framework around them, raise affinity "
+        "from a wild-type starting point, recover a sequence from a "
+        "structure, or simply predict how the two dock. All of it is "
+        "aimed at the epitope you name, and all of it comes out of one "
+        "model rather than a chain of them. IgGM, Wang et al., "
+        "<em>ICLR</em> 2025."
     ),
     "when_to_use": [
-        "You have an antibody or nanobody sequence and want to redesign its "
-        "CDRs (or framework) against a specific antigen and epitope.",
-        "You want to humanize a framework or mature affinity from a "
-        "wild-type reference.",
-        "You want a fast antibody-antigen complex structure prediction "
-        "before committing to a wet-lab campaign.",
+        (
+            "You already have an antibody or nanobody and want its binding "
+            "loops, or its framework, rebuilt against a specific antigen "
+            "and epitope."
+        ),
+        (
+            "You want to humanise a framework, or push affinity up from a "
+            "wild-type reference."
+        ),
+        (
+            "You want to see how an antibody sits on its antigen before "
+            "committing to a wet-lab campaign."
+        ),
     ],
     "prerequisites": [
         "Antigen structure as PDB or mmCIF (the antigen sequence is read "

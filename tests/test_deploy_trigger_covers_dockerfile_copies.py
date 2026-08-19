@@ -9,7 +9,7 @@ old layer indefinitely.
 
 That is not hypothetical. ``static/example/`` fixtures are COPYed as in-image
 smoke targets by four Dockerfiles (af2, colabfold, esmfold, mpnn) and, until the
-``static/example/**`` entry was added to the trigger, matched no pattern at all
+three fixture entries were added to the trigger, matched no pattern at all
 — ``static/`` is not under ``tools/``, and it is a different path from the
 ``!tools/**/example/**`` negation, which only covers ``tools/<slug>/example/``.
 

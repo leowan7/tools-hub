@@ -363,9 +363,9 @@ adapter = ToolAdapter(
     slug="af2",
     label="AlphaFold2",
     blurb=(
-        "Structure prediction from sequence. Paste a FASTA (monomer or "
-        "multimer), get a predicted structure with pLDDT, PAE, and "
-        "pTM/ipTM. ~5 to 10 min per run."
+        "Paste a sequence — one chain or several — and get a predicted "
+        "3D structure back with per-residue and per-residue-pair "
+        "confidence scores. About 5 to 10 min per run."
     ),
     presets=(
         Preset(

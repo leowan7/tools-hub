@@ -4,6 +4,20 @@
 {% block description %}Frequently asked questions about Ranomics Tools: wallet billing, accounts, data and privacy, run times, what a design is, and what the scores mean.{% endblock %}
 
 {% block jsonld_extra %}
+{# NOTHING IN THE LITERAL BELOW IS A TEMPLATE. A set block is ONE Jinja
+   statement, so an interpolation inside its string literals is never
+   evaluated — it ships the raw braces into Google's structured data,
+   which is what the signup-credit answer did — and a jinja comment
+   inside it is a hard TemplateSyntaxError. Concatenate with ``~`` to
+   pull a value in, and keep comments like this one outside the block.
+   (Do not write a closing comment marker inside a comment either: the
+   lexer scans for the first one and renders everything after it.)
+
+   The ipTM answer's cut-off is READ from shared/metric_glossary.py
+   (jinja global, app.py:365). It said "aim above roughly 0.7", a number
+   with no source that components/about_panel.html had already stopped
+   saying — and this page emits it as FAQPage structured data, so it was
+   the surviving copy Google indexes. #}
 {% set faq_items = [
   {"q": "How does billing work?",
    "a": "You fund a USD wallet and that balance is your spend cap. Each job debits the actual cost of the compute it consumes. There is no subscription, no seat license, and no fixed tier. Design count is unlimited, and the whole pricing surface is one number, your balance."},
@@ -26,13 +40,13 @@
   {"q": "How is my data handled?",
    "a": "Your uploads and results belong to your account and are tied to the email you signed in with. A job link opened under a different account will not show another user's results. See the privacy policy for the full detail."},
   {"q": "Can I run a tool to test it first?",
-   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your ${{ signup_credit() }} signup balance also covers a small first run to see real output on your target."},
+   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $" ~ signup_credit() ~ " signup balance also covers a small first run to see real output on your target."},
   {"q": "How long do runs take?",
    "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large campaign fans out across GPUs to finish sooner. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
-   "a": "A design is one candidate the tool generates, a backbone with a sequence, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
+   "a": "A design is one candidate the tool generates: a backbone — a structure with no sequence decided yet — with a sequence put on it, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
   {"q": "What do the scores mean?",
-   "a": "ipTM is interface confidence, higher is better, aim above roughly 0.7 on a tractable target. pLDDT is per-residue fold confidence, higher is better. i_pAE and pAE are predicted alignment error, lower is better."}
+   "a": "ipTM is interface confidence at the contact between two chains, higher is better: " ~ metric_glossary.get("ipTM", {}).get("good_range", "") ~ ". Individual tools set their own pass bar a little either side of that. pLDDT is per-residue fold confidence, higher is better. i_pAE and pAE are predicted alignment error, lower is better."}
 ] %}
 {% set faq_main_entity = [] %}
 {% for item in faq_items %}
@@ -208,19 +222,33 @@
       <article class="why-card">
         <h3 class="why-card-title">What is a design?</h3>
         <p class="why-card-body">
-          A design is one candidate the tool generates, a backbone with a
-          sequence, scored and ranked against the others in the run. A pilot
+          {# THE GLOSS IS THE COPY FIX, and it has to be made TWICE: this
+             <p> and the faq_items entry at the top of the file are two
+             independent copies of the same answer, one for the reader and
+             one for the FAQPage JSON-LD. "backbone" was unglossed in the
+             design sense here after being glossed on the homepage chooser
+             (round 2) and in the shared recovery legend (round 3) — three
+             rounds, three missed non-tool pages, same word. Wording is
+             lifted verbatim from /help and /tools/mpnn rather than
+             invented a fourth time. #}
+          A design is one candidate the tool generates: a backbone &mdash; a
+          structure with no sequence decided yet &mdash; with a sequence put
+          on it, scored and ranked against the others in the run. A pilot
           of about 8 designs gives a real first signal because roughly 1 in 5
           passes the in-silico filter on a tractable target.
         </p>
       </article>
       <article class="why-card">
         <h3 class="why-card-title">What do the scores mean?</h3>
+        {# Same glossary read as the JSON-LD copy of this answer above, and
+           as components/about_panel.html. Three surfaces, one number. #}
         <p class="why-card-body">
-          ipTM is interface confidence, higher is better, aim above roughly
-          0.7 on a tractable target. pLDDT is per-residue fold confidence,
-          higher is better. i_pAE and pAE are predicted alignment error,
-          lower is better.
+          ipTM is interface confidence at the contact between two chains,
+          higher is better:
+          {{ metric_glossary.get("ipTM", {}).get("good_range", "") }}.
+          Individual tools set their own pass bar a little either side of
+          that. pLDDT is per-residue fold confidence, higher is better.
+          i_pAE and pAE are predicted alignment error, lower is better.
         </p>
       </article>
       <article class="why-card">

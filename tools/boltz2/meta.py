@@ -11,7 +11,8 @@ Shapes
     paper_citation       — short inline citation.
     paper_url            — bioRxiv permalink.
     github_url           — upstream Boltz repository.
-    comparison_one_liner — positioning string vs the rest of the toolkit.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id    — optional job_id of a public demo run (None today).
 """
 
@@ -30,11 +31,12 @@ paper_citation: str = "Wohlwend et al., bioRxiv 2025"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.06.14.659707v2"
 github_url: str = "https://github.com/jwohlwend/boltz"
 comparison_one_liner: str = (
-    "Pick Boltz-2 to validate a designed binder against your antigen. "
-    "Single-sequence cofold with interface confidence (ipTM), "
-    "antibody-trained and orthogonal to AF2-multimer. For sequence "
-    "design, use ProteinMPNN; for de novo backbones, use RFantibody, "
-    "BindCraft, or BoltzGen first."
+    "You already have a binder sequence and the target it should "
+    "hit, and you want to know whether they actually stick together "
+    "before you order DNA. Returns the predicted complex and a "
+    "0-to-1 interface confidence score. Trained on antibody-antigen "
+    "complexes, so it is a genuinely second opinion next to "
+    "AlphaFold2."
 )
 example_output_id: Optional[str] = None
 
@@ -43,22 +45,32 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "Boltz-2 (Wohlwend et al., <em>bioRxiv</em> 2025). An open-weights "
-        "structure prediction model trained on antibody-antigen complexes "
-        "with a calibrated confidence head. Single-sequence mode is "
-        "orthogonal to AF2-multimer: when both agree, the predicted "
-        "complex is real; when they disagree, the disagreement itself is "
-        "informative. Returns a folded complex PDB plus ipTM, pTM, and "
-        "complex_pLDDT per design."
+        "Folds a binder and its target together and tells you how "
+        "confident it is that they touch. It was trained on "
+        "antibody-antigen complexes and works from sequence alone, "
+        "which makes it a genuinely independent second opinion next to "
+        "AlphaFold2 multimer: when the two agree the complex is "
+        "probably real, and when they disagree that is worth knowing "
+        "before you order DNA. Returns the folded complex plus ipTM "
+        "(confidence in the interface), pTM (confidence in the whole "
+        "complex) and per-residue confidence for every design. Boltz-2, "
+        "Wohlwend et al., <em>bioRxiv</em> 2025."
     ),
     "when_to_use": [
-        "You designed binders with MPNN, RFantibody, BindCraft, BoltzGen, "
-        "RFdiffusion, or PXDesign and need to score them against the "
-        "intended antigen.",
-        "You have native or near-native scFv / Fab / nanobody / peptide "
-        "sequences you want a fast independent fold for.",
-        "AF2-multimer ipTM is saturated and you want a second confidence "
-        "channel from a different architecture before ordering DNA.",
+        (
+            "You designed binders with another tool here and need them "
+            "scored against the antigen you actually care about."
+        ),
+        (
+            "You have natural or near-natural antibody fragments (scFv or "
+            "Fab), nanobodies or peptides and want a fast independent fold "
+            "of each."
+        ),
+        (
+            "AlphaFold2 interface confidence has topped out across your "
+            "candidates and you want a second, differently trained opinion "
+            "before committing to synthesis."
+        ),
     ],
     "prerequisites": [
         "Antigen PDB or mmCIF (single chain; the binder is added separately).",

@@ -267,8 +267,15 @@
                      min="30" max="150" {{ pre_value(pre_fill, "binder_length_max", "65") }} placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Range RFdiffusion samples within. Default 55 to 65 residues
-              is a sane starting window for compact binders; 30 to 150 allowed.
+              How long the new binder should be, in residues. Every design
+              draws its own length from this window, so a wide window buys
+              variety and a narrow one buys consistency. <strong>55 to 65</strong>
+              is a compact single-domain binder and the right first try on a
+              small, fairly flat patch. Go to <strong>90 to 150</strong> when
+              the face you are aiming at is broad, or sits in a groove a short
+              binder cannot reach across. Longer binders are also harder to
+              express and purify at the bench, so start short and lengthen
+              only if nothing scores. 30 to 150 allowed.
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>

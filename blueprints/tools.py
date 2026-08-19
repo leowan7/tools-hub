@@ -309,66 +309,159 @@ def _require_tool(tool_slug: str):
 # of /tools/<slug> and only there.
 # ------------------------------------------------------------------
 
-# SEO phrase pairs per tool slug. ``seo_phrase`` is a short natural
-# phrase reused in the page title and lede; ``seo_long`` is a longer
-# phrase used once in body copy. Pulled into one map so the shared
-# preview shell stays free of per-tool branching.
+# SEO phrase pairs per tool slug. Both land in ONE rendered sentence
+# (templates/tools/_form_hero.html):
+#
+#     "{short_name} is a {seo_phrase} you can run through
+#      tools.ranomics.com on a dedicated GPU. {seo_long}."
+#
+# Two rules follow from that frame and both were broken before:
+#
+#   1. ``seo_phrase`` must NOT contain the tool's own name. Every entry
+#      used to start with it, so the lede rendered "RFdiffusion is a
+#      RFdiffusion de novo binder design online you can run through...".
+#      Byte-identical to the deleted _preview.html, faithfully restored,
+#      and wrong on all 14 pages.
+#   2. Every registered tool needs an entry. The old fallback
+#      interpolated the raw slug — "ESMFold2 design is a free
+#      esmfold2-design tool online" — so the tools added after the map
+#      was written leaked a slug on an indexable page. The fallback
+#      below no longer mentions the slug at all, and the map now covers
+#      all 14 so it should never fire.
+#
+# ``seo_phrase`` is a compact noun phrase completing "is a ..." and
+# must NOT end in a subordinate clause: "...against a target you
+# upload" renders as "a target you upload you can run through",
+# which parses as nonsense. Task detail belongs in ``seo_long``,
+# a sentence WITHOUT a terminal period; the template adds it.
+#
+# "free" was dropped from these phrases deliberately. Reading the page
+# is free; running the tool is billed against the wallet, and an
+# indexable page is the wrong place to blur that. The same reasoning
+# applies harder to ``_PREVIEW_TITLE_PHRASES`` below, which is what a
+# search result shows.
+#
+# ``seo_long`` SELLS THE TASK; the adapter's ``blurb`` says what the
+# form does. They render two paragraphs apart inside the same
+# ``<div class="hero">`` (_form_hero.html), and the first draft of this
+# map wrote both to the same brief without either knowing the other was
+# adjacent, so ten of fourteen pages opened with the same sentence
+# twice ("Upload your target, mark the residues you want gripped, and
+# get back..." / "Upload your target, mark the residues you want the
+# binder to touch, and get back..."). Each entry below therefore
+# answers "why reach for THIS one" — the differentiator the blurb does
+# not carry — rather than restating the mechanics one paragraph down.
 _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
     "mpnn": (
-        "free online ProteinMPNN tool",
-        "Run ProteinMPNN sequence design on a backbone PDB with no "
-        "install and no local GPU"
+        "no-install online sequence design tool",
+        "The step between a designed shape and something you can "
+        "actually order: give it any backbone, from any other tool, "
+        "and it proposes the sequences most likely to fold into it"
     ),
     "af2": (
-        "AlphaFold2 multimer without a local GPU",
-        "Fold complexes through your browser with full MSA and "
-        "templates, results land at /jobs"
+        "no-install online structure prediction tool",
+        "The reference-standard fold, with the homolog search and "
+        "templates that make it accurate on natural proteins, and a "
+        "multimer mode that predicts several chains together rather "
+        "than one at a time"
     ),
     "colabfold": (
-        "ColabFold online without Colab",
-        "Fast no-MSA folds in 1 to 2 minutes per run, no MMseqs2 "
-        "round-trip on your laptop"
+        "fast no-install online structure prediction tool",
+        "The quick pass while you are still iterating: no Colab "
+        "notebook to babysit, no MMseqs2 round trip on your own "
+        "laptop, and no queue to sit in between attempts"
     ),
     "esmfold": (
-        "ESMFold online single-sequence fold",
-        "Fastest monomer fold from the ESM-2 language model with no "
-        "MSA, no multimer, no install"
+        "no-install online single-sequence structure prediction tool",
+        "The one to reach for on a sequence you designed yourself: it "
+        "reads the chain directly instead of hunting for natural "
+        "relatives, which is exactly what a de novo binder does not "
+        "have"
     ),
     "bindcraft": (
-        "BindCraft de novo binder design no install",
-        "Hallucinate 60 to 150 residue protein binders against a "
-        "target PDB on a dedicated GPU"
+        "no-install online de novo binder design tool",
+        "Design and in-silico filtering run in one pass, so what comes "
+        "back is already a shortlist rather than raw output you have "
+        "to triage yourself"
     ),
     "rfantibody": (
-        "RFantibody nanobody design online",
-        "Generate VHH scaffolds against a target PDB without setting "
-        "up RoseTTAFold or Rosetta locally"
+        "no-install online nanobody design tool",
+        "Nanobodies are small enough to reach into a cleft a full "
+        "antibody cannot and simple enough to express, and this designs "
+        "them straight onto the patch you name with no RoseTTAFold or "
+        "Rosetta to install"
     ),
     "rfdiffusion": (
-        "RFdiffusion de novo binder design online",
-        "Run RFdiffusion plus AF2 multimer scoring through your "
-        "browser without an A100"
+        "no-install online de novo binder design tool",
+        "The most widely used de novo binder generator, run end to "
+        "end: every design it invents is re-folded with AlphaFold2 "
+        "against your own target, so the confidence score you read is "
+        "measured rather than the generator marking its own work"
     ),
     "boltzgen": (
-        "BoltzGen multi-modality binder design online",
-        "Design mini-proteins, nanobodies, antibodies, or peptides "
-        "against the same target with glycan and PTM support"
+        "no-install online multi-format binder design tool",
+        "One model covers four binder formats against the same site, "
+        "so you can weigh a mini-protein against a nanobody, an "
+        "antibody or a peptide without changing tools — and it reads "
+        "the sugars and modified residues on your target instead of "
+        "ignoring them"
     ),
     "boltz2": (
-        "Boltz-2 cofold validation online",
-        "Validate a designed binder against your antigen with "
-        "single-sequence cofold and interface confidence"
+        "no-install online cofold validation tool",
+        "The cheap second opinion on a shortlist: it works from "
+        "sequence alone, so a whole batch of designs from another tool "
+        "can be re-checked for seconds each before any of them reach "
+        "the bench"
     ),
     "pxdesign": (
-        "PXDesign AF2-IG binder design online",
-        "AF2-initial-guess binder generation with real ipTM, pLDDT, "
-        "and pAE on every candidate"
+        "no-install online AlphaFold2-scored binder design tool",
+        "The same pipeline Ranomics runs for its own wet-lab "
+        "campaigns: every candidate comes back already re-folded "
+        "against your target, carrying its own confidence score for "
+        "the contact rather than a number borrowed from the generator"
     ),
     "iggm": (
-        "IgGM antibody and nanobody design online",
-        "Design or humanize an antibody or nanobody against your "
-        "antigen, or predict the antibody-antigen complex, in one "
-        "diffusion model"
+        "no-install online antibody and nanobody engineering tool",
+        "One model for the antibody work that usually takes four "
+        "separate ones — loop redesign, humanisation, affinity "
+        "maturation and predicting the docked complex all run from the "
+        "same upload"
+    ),
+    "esmfold2-design": (
+        "no-install online antibody-fragment and minibinder design "
+        "tool",
+        "All six binding loops of the scFv are designed together in one "
+        "pass against your target rather than one at a time, and the "
+        "same run can make small de novo binders instead"
+    ),
+    "opendde": (
+        "no-install online all-atom complex prediction tool",
+        "DNA, RNA, cofactors and small molecules are first-class parts "
+        "of the input rather than something to strip out before "
+        "folding, so the complex is modelled as it actually exists"
+    ),
+    "proteina": (
+        "no-install online hard-target binder design tool",
+        # NOT "three independent scoring checks" — no variant runs all
+        # three. tools/proteina/Dockerfile.modal:229-231: "Only
+        # ligand_binder (RF3 is its sole reward) and motif_ame need it;
+        # protein_binder scores on AF2 alone." See the note on
+        # ``comparison_one_liner`` in tools/proteina/meta.py.
+        #
+        # ALSO THE ONLY IMPERATIVE OF THE FOURTEEN. It opened "Upload a
+        # target the usual design tools struggle with", while the other
+        # thirteen ledes are declaratives or noun phrases ("The
+        # reference-standard fold…", "One model covers four binder
+        # formats…"). Worse, proteina's own blurb two paragraphs up in the
+        # same hero already opens "Upload a protein or small-molecule
+        # target", so this was the last page where blurb and lede still
+        # opened on the same verb — the stutter the rest of the rewrite
+        # removed. Same content, declarative frame — and NOT "The one to
+        # reach for", which is already how esmfold's lede opens.
+        "Built for the targets the standard design tools stall on — a "
+        "recessed pocket, a site spanning two chains, or a small molecule "
+        "rather than a protein: every candidate the search generates is "
+        "re-folded against your target before the search builds on it"
     ),
 }
 
@@ -381,7 +474,10 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
     return _PREVIEW_SEO_PHRASES.get(
         slug,
         (
-            f"free {slug} tool online",
+            # No slug interpolation. This is rendered prose on an
+            # indexable page; "a free esmfold2-design tool online" is
+            # what the old f-string produced.
+            "no-install online protein design tool",
             "Run it through your browser on a dedicated GPU with no "
             "install"
         ),
@@ -390,8 +486,15 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
 # Title-only phrases. Kept separate from ``_PREVIEW_SEO_PHRASES`` so the
 # body lede stays grammatical ("X is a <seo_phrase> you can run") while
 # the <title> stays under the 65-char SERP cap.
+#
+# "Free" was dropped here for the same reason it was dropped from the
+# ledes: running is billed against the wallet. A <title> is the most
+# indexable string on the page and the one that shows in the search
+# result, so the half-applied version had the word surviving in exactly
+# the place it misleads most. mpnn was the only one of the fourteen
+# carrying it.
 _PREVIEW_TITLE_PHRASES: dict[str, str] = {
-    "mpnn": "Free Sequence Design",
+    "mpnn": "Sequence Design on a Backbone",
     "af2": "AF2 Multimer No-Install",
     "colabfold": "No Colab Required",
     "esmfold": "Single-Sequence Folding",
@@ -403,6 +506,15 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     "pxdesign": "AF2-IG Binder Design",
     "esmfold2-design": "scFv CDR Design",
     "iggm": "Antibody Design + Structure",
+    # Added with the copy pass: these registered after the map was
+    # written and were falling through to "GPU-Backed Protein Design",
+    # which describes every tool on the hub and therefore none of them.
+    # opendde's first draft read "Protein DNA RNA Ligand Co-Folding",
+    # which rendered a 72-character <title> — over the 65-char SERP cap
+    # this map exists to respect, and repeating "co-folding" from the
+    # short name that precedes it.
+    "opendde": "Protein, DNA, RNA, Ligand",
+    "proteina": "Hard-Target Binder Design",
 }
 
 def _preview_title_phrase(slug: str) -> str:

@@ -3,10 +3,13 @@
 Modal app: ``ranomics-proteina-prod``. GPU: A100-80GB. Campaign tool.
 
 Proteina-Complexa (NVIDIA-BioNeMo, NVIDIA Open Model License) is a
-flow-matching generator wrapped in an inference-time search that filters
-candidates through an AF2 / RF3 / force-field reward stack. It designs de
-novo binders against a **protein** target (PDB), a **small-molecule**
-target (SDF), or an enzyme/motif scaffold (AME).
+flow-matching generator wrapped in an inference-time search that re-folds
+and scores every candidate as it goes. The reward is a MENU, not a
+pipeline: ``protein_binder`` scores on AF2, RF3 is the sole reward for
+``ligand_binder`` and is what ``motif_ame`` needs, and a force field is
+added where it applies (Dockerfile.modal:229-231). It designs de novo
+binders against a **protein** target (PDB), a **small-molecule** target
+(SDF), or an enzyme/motif scaffold (AME).
 
 Runs as a fund-and-drain compute campaign of independent search shards
 (see ``shared/compute_campaigns.py``), NOT a single giant job. One shard is
@@ -784,11 +787,20 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 adapter = ToolAdapter(
     slug="proteina",
     label="Proteina-Complexa",
+    # The BLURB says what this form does; the lede above it
+    # (blueprints/tools.py::_PREVIEW_SEO_PHRASES) sells the task. They
+    # render two paragraphs apart in the same hero, so near-identical
+    # sentences read as a stutter.
+    #
+    # It said "filters every candidate through three independent scoring
+    # checks", which is false — see the note on ``comparison_one_liner``
+    # in meta.py and Dockerfile.modal:229-231. The scoring model follows
+    # the target; no variant runs all three.
     blurb=(
-        "De novo binder design against protein or small-molecule targets, "
-        "run as an inference-time search filtered by an AF2 / RF3 / "
-        "force-field reward stack. Fans out as a fund-and-drain campaign of "
-        "independent search shards; the wallet balance is the only ceiling."
+        "Upload a protein or small-molecule target, name the chain and "
+        "the residues you want gripped, and set how many designs to "
+        "fund. The run fans out across GPUs and stops when your wallet "
+        "does."
     ),
     presets=(
         Preset(

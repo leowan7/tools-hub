@@ -400,10 +400,10 @@ adapter = ToolAdapter(
     slug="iggm",
     label="IgGM",
     blurb=(
-        "Antibody + nanobody design and structure prediction in one "
-        "diffusion model. Predict an antibody-antigen complex, redesign "
-        "CDRs or framework, mature affinity, or recover sequence from "
-        "structure, epitope-guided, from the antigen you upload."
+        "Upload your antigen and an antibody or nanobody, then redesign "
+        "its binding loops, humanise its framework, raise its affinity, "
+        "or just predict how the two dock — all aimed at the epitope "
+        "you name."
     ),
     presets=(
         Preset(
