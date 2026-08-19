@@ -41,28 +41,119 @@ preload_app = True
 # refuse to boot — a crash-on-boot outage, the worst possible outcome.
 workers = max(1, _int_env("WEB_CONCURRENCY", 2))
 
-# NOTE: no `worker_class` is set anywhere (not here, not in the Procfile, not
-# in nixpacks.toml), so gunicorn uses its default **sync** worker, and no
-# `threads` is set either. Consequences worth knowing before reasoning about
-# any concurrency limit in this app:
+# ---------------------------------------------------------------------------
+# WORKER CLASS — sync, on purpose. Read this before changing it.
+# ---------------------------------------------------------------------------
 #
-#   * Each worker serves exactly ONE request at a time. Whole-process
-#     concurrency is `workers` (2 by default) — nothing more.
-#   * gevent is NOT installed (it is not in requirements.txt). Code that
-#     imports it, e.g. scout/routes.py's SSE streaming, takes its threaded
-#     fallback path in production.
-#   * Any in-process counter that caps "N concurrent X per worker" for N > 1
-#     is unreachable under this worker class. scout.ratelimit's 4-slot
-#     anonymous compute cap is exactly that, and is documented there as inert
-#     today rather than removed, since it becomes correct if the worker class
-#     ever changes.
-#   * Any in-process state (rate-limit counters included) is per-worker, so
-#     a per-process limit of L is really `workers x L` fleet-wide, and it
-#     resets on every deploy and worker recycle.
+# No `worker_class` is set here, in the Procfile, or in nixpacks.toml, so
+# gunicorn uses its default **sync** worker and no `threads` is set either.
+# Each worker serves exactly ONE request at a time; whole-process concurrency
+# is `workers`, nothing more. Consequently any in-process counter that caps
+# "N concurrent X per worker" for N > 1 is unreachable — scout.ratelimit's
+# anonymous compute cap is exactly that, and is documented there as inert
+# rather than deleted, because it is the correct guard the moment this line
+# changes.
 #
-# Changing the worker class is a real deployment decision — it needs a new
-# dependency and a look at the blocking calls in request handlers. Do not
-# change it just to make a cap in application code start working.
+# A threaded worker class (`gthread`) was written, measured, reviewed and
+# deliberately NOT adopted. The reasoning is recorded here rather than in a
+# document nobody will find, because the next person to want more concurrency
+# will start in this file.
+#
+# WHAT gthread WOULD BUY. Exactly one thing: other routes stop queueing behind
+# anonymous Scout compute. Under sync workers one anonymous analysis — up to
+# ~15 CPU-seconds at the 8 MB upload cap — occupies a whole worker, so two
+# concurrent ones make the entire site unresponsive, /healthz included. That
+# is a real defect and threads are the only mechanism that fixes it.
+#
+# WHAT IT WOULD NOT BUY: capacity. Measured on this workload (24 pipelines,
+# serial vs an 8-permit semaphore in one process): 1.39x wall throughput for
+# 1.45x the CPU, i.e. ~1.07 effective cores. It is GIL-bound. Under saturation
+# it makes CPU pressure slightly WORSE, because that extra 45% is contention.
+#
+# WHY NOT YET — three reasons, in order of weight.
+#
+#   1. It CANNOT ship before the money-path fixes it widens. Two read-then-act
+#      races on money are live today and owned elsewhere:
+#      `shared/idempotency.py:_claim_key` (an `upsert(on_conflict=)` that
+#      succeeds for BOTH concurrent callers, so the duplicate-submit guard on
+#      ten money-spending POSTs does not guard) and `shared/wallet.py`'s
+#      auto-reload (read balance -> threshold -> 24 h count -> monthly cap ->
+#      charge a card, with no SQL guard and no Stripe idempotency key). These
+#      have already fired once under sync workers — see the incident recorded
+#      at `blueprints/campaigns.py:238-242`, created=2, funded=2. Threads make
+#      them reachable `threads` times more often. That is a sequencing fact,
+#      not an opinion: this line moves after those land, not before.
+#
+#   2. The `timeout` watchdog below is lost, permanently, fleet-wide, and NO
+#      gunicorn setting gives it back. Verified against the installed gunicorn
+#      24.1.1, not from memory: `workers/gthread.py:288-297` calls
+#      `self.notify()` at the top of `while self.alive:` on every pass of the
+#      accept loop, then polls with a hard-coded 1 s timeout, and hands
+#      requests to a ThreadPoolExecutor that the loop never waits on. The
+#      notify is UNCONDITIONAL — it fires even when `can_accept` is False — so
+#      lowering `worker_connections` produces backpressure but still does not
+#      let the arbiter kill a request-wedged worker. Under sync workers a
+#      request that overruns `timeout` takes its worker down and the fleet
+#      self-heals; under gthread every wedged thread is permanent until a
+#      redeploy. Trading an automatic recovery for a manual one is a real
+#      cost, and it is paid by every route in the app, not just Scout's.
+#
+#   3. The thing it protects is not yet under load. Scout was opened to
+#      anonymous callers only in #148. The per-IP limiter still bounds a single
+#      address to ~20 metered hits per 10 minutes, so two overlapping anonymous
+#      analyses is currently an unlikely event whose consequence is ~30 seconds
+#      of slowness that then clears itself.
+#
+# WHY NOT THE OTHER OPTION EITHER. The plan offers a cross-worker semaphore
+# (Postgres advisory lock or counter row) as the alternative. It is not one,
+# for two independent reasons:
+#
+#   * Not implementable on this stack. There is no direct Postgres connection
+#     anywhere in this repo — every query goes through Supabase PostgREST over
+#     HTTP. A session-level `pg_advisory_lock` needs a connection held across
+#     the request, which PostgREST cannot give; `pg_advisory_xact_lock` lives
+#     only for one statement. A counter row is possible via `.rpc()`, but a
+#     worker SIGKILLed while holding a slot leaks it forever, so it needs a
+#     lease and a heartbeat — a distributed protocol, not a Phase 1 change.
+#
+#   * It turns the wrong way. With 2 sync workers, fleet-wide anonymous
+#     concurrency is already at most 2. A cross-worker cap of 2 or more is a
+#     no-op; the only setting that does anything is 1, which HALVES anonymous
+#     capacity to reserve a worker. For a project whose goal is to let six
+#     researchers behind one NAT use the tool at once, that is backwards. It
+#     is the right mechanism for a many-worker deployment and this is a
+#     two-worker one.
+#
+# TO FLIP IT, once (1) has landed: set `worker_class = "gthread"` and
+# `threads = 8` here, and set `worker_connections` to roughly `threads` so a
+# saturated worker stops accepting instead of silently swallowing up to the
+# default 1000 connections. The sizing is already derived in
+# scout/ratelimit.py and needs no rework:
+#
+#     8 threads = 2 anonymous compute slots  (ANON_MAX_CONCURRENT_RUNS —
+#                    CPU-bound, each holds a thread for the whole SSE stream)
+#               + 2 queued waiters           (ANON_MAX_QUEUED_RUNS — parked on
+#                    a condition variable, consuming no CPU)
+#               + 4 for everything else      (page loads, /scout/quota,
+#                    downloads, /healthz, and signed-in routes, which can
+#                    block up to 30 s on Supabase — which is why this is 4
+#                    and not 1)
+#
+# Budget the OS threads honestly if you do: `fetch_known_binders` spawns up to
+# 5 contact-download threads per call and runs for signed-in callers too, who
+# consume no compute slot. So the ceiling is 8 x 5 = 40 contact threads + 4
+# user_event + 2 operator-alert = ~54 per worker, ~108 fleet-wide — not the
+# ~38 an earlier draft of this comment claimed by costing only the four
+# anonymous slots.
+#
+# And it is only survivable at all because the SAbDab fan-out is gone: before
+# that, every anonymous /analyze spawned up to 40 raw unbounded threads of its
+# own. Do not re-enable a per-request fan-out without redoing this sum.
+#
+# One consequence of the worker model that no change here removes: in-process
+# state (rate-limit counters included) is per-worker, so a per-process limit of
+# L is really `workers x L` fleet-wide, and it resets on every deploy and
+# worker recycle. Phase 3 is what fixes that.
 
 # Belt-and-suspenders worker recycle. Supabase calls are now bounded well
 # under this (see shared.supabase_client), so this should rarely fire.

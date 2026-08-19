@@ -148,8 +148,25 @@ def detect_interfaces(pdb_path, target_chain_id: str) -> list:
     try:
         from Bio.PDB import MMCIFParser, PDBParser  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
+        from scipy.spatial import cKDTree  # noqa: PLC0415
     except ImportError:
-        logger.debug("BioPython or NumPy not available; skipping interface detection.")
+        # scipy is checked HERE, up front and loudly, and there is no longer a
+        # pure-Python fallback behind it.
+        #
+        # There used to be one, inside the per-partner loop, and it was an
+        # O(n_target_atoms x n_partner_atoms) double loop in Python: measured
+        # at 323 CPU-s on a 6 MB structure against 0.64 on the cKDTree path, a
+        # ~500x cliff reachable by an import failure rather than by anything
+        # about the input. `scipy>=1.11` is in requirements.txt, so in
+        # production that fallback could only ever have been a silent
+        # catastrophe, never a feature. Skipping interface detection with an
+        # error in the log is the honest degradation.
+        logger.error(
+            "BioPython, NumPy or SciPy unavailable; skipping interface "
+            "detection. scipy is a hard requirement (requirements.txt) — a "
+            "missing one means the image is built wrong.",
+            exc_info=True,
+        )
         return []
 
     pdb_str = str(pdb_path)
@@ -218,44 +235,25 @@ def detect_interfaces(pdb_path, target_chain_id: str) -> list:
         partner_coords = np.array(partner_atoms, dtype=np.float32)
 
         # Find contacts using KDTree for efficiency.
-        try:
-            from scipy.spatial import cKDTree  # noqa: PLC0415
-            partner_tree = cKDTree(partner_coords)
-            # Query each target atom against partner tree.
-            distances, _ = partner_tree.query(target_coords, distance_upper_bound=_CONTACT_CUTOFF)
-            contact_target_atoms = np.where(distances <= _CONTACT_CUTOFF)[0]
+        partner_tree = cKDTree(partner_coords)
+        # Query each target atom against partner tree.
+        distances, _ = partner_tree.query(target_coords, distance_upper_bound=_CONTACT_CUTOFF)
+        contact_target_atoms = np.where(distances <= _CONTACT_CUTOFF)[0]
 
-            # Map back to residue numbers.
-            contact_target_residx = set(target_atom_residx[i] for i in contact_target_atoms)
-            contact_target_resnums = sorted(
-                target_residues[i].id[1] for i in contact_target_residx
-            )
+        # Map back to residue numbers.
+        contact_target_residx = set(target_atom_residx[i] for i in contact_target_atoms)
+        contact_target_resnums = sorted(
+            target_residues[i].id[1] for i in contact_target_residx
+        )
 
-            # Also find partner residues in contact (reverse query).
-            target_tree = cKDTree(target_coords)
-            distances_rev, _ = target_tree.query(partner_coords, distance_upper_bound=_CONTACT_CUTOFF)
-            contact_partner_atoms = np.where(distances_rev <= _CONTACT_CUTOFF)[0]
-            contact_partner_residx = set(partner_atom_residx[i] for i in contact_partner_atoms)
-            contact_partner_resnums = sorted(
-                partner_residues[i].id[1] for i in contact_partner_residx
-            )
-
-        except ImportError:
-            # Fallback: brute-force pairwise distances (slower but no scipy needed).
-            contact_target_residx = set()
-            contact_partner_residx = set()
-            for t_idx, t_coord in enumerate(target_coords):
-                for p_idx, p_coord in enumerate(partner_coords):
-                    dist = np.linalg.norm(t_coord - p_coord)
-                    if dist <= _CONTACT_CUTOFF:
-                        contact_target_residx.add(target_atom_residx[t_idx])
-                        contact_partner_residx.add(partner_atom_residx[p_idx])
-            contact_target_resnums = sorted(
-                target_residues[i].id[1] for i in contact_target_residx
-            )
-            contact_partner_resnums = sorted(
-                partner_residues[i].id[1] for i in contact_partner_residx
-            )
+        # Also find partner residues in contact (reverse query).
+        target_tree = cKDTree(target_coords)
+        distances_rev, _ = target_tree.query(partner_coords, distance_upper_bound=_CONTACT_CUTOFF)
+        contact_partner_atoms = np.where(distances_rev <= _CONTACT_CUTOFF)[0]
+        contact_partner_residx = set(partner_atom_residx[i] for i in contact_partner_atoms)
+        contact_partner_resnums = sorted(
+            partner_residues[i].id[1] for i in contact_partner_residx
+        )
 
         if len(contact_target_resnums) < _MIN_CONTACT_RESIDUES:
             continue

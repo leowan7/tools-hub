@@ -443,3 +443,118 @@ class TestKnownPositive:
         index = epitope_db._sabdab_summary_index()
         assert len(index) > 5_000, f"only {len(index)} entries — endpoint moved?"
         assert "7K8M" in index, "known antibody-antigen complex missing"
+
+
+# ---------------------------------------------------------------------------
+# 8. The accession is caller-controlled input, and the cache is not free
+# ---------------------------------------------------------------------------
+
+
+class TestAccessionIsValidated:
+    """``_extract_uniprot_from_dbref`` reads eight characters out of columns
+    33-41 of a DBREF line in a file the caller uploaded.
+
+    With no format check those eight bytes became a lookup target and a
+    permanent cache key: ``ZZ9QC001`` was accepted, resolved, and cached. The
+    per-target cache is the main thing making the known-binder lookup
+    affordable, and one uploaded line per request defeated it.
+    """
+
+    @pytest.mark.parametrize(
+        "good",
+        ["P00533", "P0DTC2", "P00698", "Q9Y6K9", "A0A123B4C5", "p00533"],
+    )
+    def test_real_accessions_survive(self, good):
+        assert epitope_db._valid_accession(good) == good.upper()
+
+    @pytest.mark.parametrize(
+        "bogus",
+        [
+            "ZZ9QC001",   # the one QC executed
+            "",
+            "   ",
+            "XXXXXXXX",
+            "P0053",      # too short
+            "P005333",    # 7 chars: neither the 6- nor the 10-char form
+            "1P0533",     # must not start with a digit
+            "P00533-2",   # isoform suffix is not an accession
+            "../../etc",
+            "P00533 OR 1=1",
+        ],
+    )
+    def test_junk_is_refused(self, bogus):
+        assert epitope_db._valid_accession(bogus) == ""
+
+    def test_a_bogus_dbref_line_does_not_reach_the_lookup(self, tmp_path):
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "DBREF  9XYZ A    1   129  UNP    ZZ9QC001 FAKE_ENTRY"
+            "           1     129\n"
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
+            "  1.00 20.00           C\nEND\n",
+            encoding="utf-8",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_real_dbref_line_still_resolves(self, tmp_path):
+        """The check must not cost the feature it protects: 1HEW's own DBREF."""
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK"
+            "        19     147\n"
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
+            "  1.00 20.00           C\nEND\n",
+            encoding="utf-8",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "P00698"
+
+    def test_fetch_refuses_a_bogus_accession_without_minting_a_cache_key(
+        self, monkeypatch
+    ):
+        """Belt and braces: the check is also at the function that mints the
+        key, because more than one resolver reaches it."""
+        def _explode(*a, **k):
+            raise AssertionError("query_sabdab was called with junk")
+
+        monkeypatch.setattr(epitope_db, "query_sabdab", _explode)
+        before = len(epitope_db._CACHE)
+        assert epitope_db.fetch_known_binders("ZZ9QC001") == []
+        assert len(epitope_db._CACHE) == before
+
+
+class TestTheCacheIsBounded:
+    """It has no TTL and lives for the whole worker, so it needs a ceiling.
+
+    Validation stops arbitrary keys, but the space of REAL accessions with
+    SAbDab entries is still thousands, and each is reachable by uploading a
+    structure carrying the matching DBREF line.
+    """
+
+    def test_the_cap_holds_under_more_entries_than_the_cap(self, monkeypatch):
+        monkeypatch.setattr(epitope_db, "_CACHE_MAX_ENTRIES", 8)
+        for i in range(40):
+            epitope_db._cache_put(f"key-{i}", [])
+        assert len(epitope_db._CACHE) == 8
+
+    def test_eviction_is_oldest_first(self, monkeypatch):
+        monkeypatch.setattr(epitope_db, "_CACHE_MAX_ENTRIES", 3)
+        for name in ("a", "b", "c", "d"):
+            epitope_db._cache_put(name, [])
+        assert set(epitope_db._CACHE) == {"b", "c", "d"}
+
+    def test_the_shipped_cap_is_a_real_number(self):
+        assert 0 < epitope_db._CACHE_MAX_ENTRIES <= 100_000
+
+    def test_a_real_lookup_still_goes_through_the_bounded_put(self, monkeypatch):
+        monkeypatch.setattr(
+            epitope_db, "query_sabdab", lambda _key: [
+                {"pdb_id": "1ABC", "antigen_chain": "A", "ab_chains": ["H", "L"]}
+            ],
+        )
+        monkeypatch.setattr(
+            epitope_db, "_fetch_and_compute_contacts", lambda *a, **k: [1, 2, 3]
+        )
+        monkeypatch.setattr(epitope_db, "_CACHE_MAX_ENTRIES", 2)
+        for accession in ("P00533", "P00698", "P0DTC2"):
+            assert epitope_db.fetch_known_binders(accession)
+        assert len(epitope_db._CACHE) == 2

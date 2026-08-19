@@ -48,7 +48,14 @@ from scout.quota import (
     record_scout_run,
     requires_scout_quota,
 )
-from scout.ratelimit import anon_compute_slot, anon_rate_limit
+from scout.ratelimit import (
+    REASON_AT_CAPACITY,
+    REASON_BAD_REQUEST,
+    REASON_BUSY,
+    REASON_JOB_EXPIRED,
+    anon_compute_slot,
+    anon_rate_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,19 +112,22 @@ ANON_ANALYZE_LIMIT = 10
 
 # How many anonymous scoring pipelines may run at once in one worker process.
 #
-# INERT AS DEPLOYED — this cap is never reached today. Gunicorn sets no
-# worker_class, so workers are sync and serve one request at a time; in-flight
-# anonymous runs per process can therefore never exceed 1, let alone 4. Real
-# concurrency is bounded by the worker count (WEB_CONCURRENCY, default 2), not
-# by this number. See the note in gunicorn.conf.py.
+# INERT AS DEPLOYED — gunicorn runs sync workers, so a process serves one
+# request at a time and in-flight anonymous runs can never exceed 1, let alone
+# 2. Real concurrency is bounded by the worker count (WEB_CONCURRENCY,
+# default 2). Do not cite this as current protection; see gunicorn.conf.py for
+# the evaluation of the worker-class change and what has to land first.
 #
-# Kept, not deleted, because it is the right guard if the deployment ever
-# moves to gthread/gevent workers: the pipeline is CPU-bound (freesasa +
-# numpy) and would then let simultaneous anonymous runs slow every request
-# sharing the worker. Signed-in callers never consume a slot, so a free
-# visitor could not starve a paying user. Do not cite it as current
-# protection.
-ANON_MAX_CONCURRENT_RUNS = 4
+# Two is derived rather than inherited, so that the flip is a one-line change
+# and not a redesign: see the arithmetic above ANON_MAX_QUEUED_RUNS in
+# scout/ratelimit.py. Short version — a threaded worker is GIL-bound at ~1.07
+# effective cores, and concurrent CPU-bound pipelines under a GIL all finish
+# LATE together rather than one at a time, so more slots push the first free
+# slot further away and buy no throughput at all.
+#
+# Signed-in callers never consume a slot, so a free visitor cannot starve a
+# paying user.
+ANON_MAX_CONCURRENT_RUNS = 2
 
 _BUSY_MESSAGE = (
     "Epitope Scout is busy with other free runs right now. Try again in a "
@@ -217,7 +227,8 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
             "error": (
                 "Epitope Scout is at capacity for anonymous runs right now. "
                 "Try again in a few minutes, or sign in to run it on your account."
-            )
+            ),
+            "reason": REASON_AT_CAPACITY,
         }, 503
     anon = session.get(ANON_SESSION_KEY)
     if anon and count_job_dirs(anon) >= ANON_MAX_LIVE_JOBS_PER_SESSION:
@@ -226,7 +237,8 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
                 "You have several Epitope Scout structures still loaded. "
                 "Earlier ones are cleared automatically within the hour, or "
                 "sign in to keep more at once."
-            )
+            ),
+            "reason": REASON_AT_CAPACITY,
         }, 429
     return None
 
@@ -360,6 +372,60 @@ def _client_error(exc: BaseException) -> str:
         return str(exc)
     return _GENERIC_ERROR
 
+# Per-chain residue counts, written at intake, read by /analyze.
+_CHAIN_INDEX_NAME = "chains.json"
+
+
+def _save_chain_index(job_dir: Path, result) -> None:
+    """Persist the per-chain residue counts this parse already produced.
+
+    /analyze needs the target chain's residue count to cap patch size, and
+    every intake route has already parsed the whole structure to list its
+    chains for the picker. Recomputing it in /analyze meant a second full
+    BioPython parse of a file up to the 8 MB anonymous cap — ~0.8 CPU-s — for
+    a number that was in hand a moment earlier. A few hundred bytes on disk
+    deletes that parse.
+
+    Best effort: if this fails, /analyze parses instead.
+    """
+    try:
+        (job_dir / _CHAIN_INDEX_NAME).write_text(
+            json.dumps({chain.id: chain.residue_count for chain in result.chains}),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.debug("Could not write chain index for %s", job_dir, exc_info=True)
+
+
+def _chain_residue_count(job_dir: Path, pdb_path: Path, chain_id: str) -> "int | None":
+    """Residue count for ``chain_id``, from the intake index or by parsing.
+
+    The parse is a fallback for job directories created before the index
+    existed — a deploy landing mid-session. It MUST be called from inside the
+    caller's compute slot: it is a full parse of a caller-chosen structure,
+    and running it outside the bound left ~0.8 CPU-s of every anonymous
+    analysis unmetered.
+    """
+    try:
+        index = json.loads(
+            (job_dir / _CHAIN_INDEX_NAME).read_text(encoding="utf-8")
+        )
+        count = index.get(chain_id)
+        if isinstance(count, int):
+            return count
+    except (OSError, ValueError, AttributeError):
+        pass
+
+    try:
+        for chain in parse_pdb(pdb_path).chains:
+            if chain.id == chain_id:
+                return chain.residue_count
+    except Exception:
+        logger.debug(
+            "Chain residue count unavailable for %s", pdb_path, exc_info=True
+        )
+    return None
+
 
 def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dict]:
     cache_path = job_dir / "analyze_cache.json"
@@ -462,6 +528,7 @@ def upload():
         # worth keeping is that Scout can read it.
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(save_path, suffix)
 
@@ -554,6 +621,7 @@ def fetch_pdb():
     if result.error:
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(save_path, suffix)
 
@@ -592,6 +660,7 @@ def example():
     if result.error:
         shutil.rmtree(job_dir, ignore_errors=True)
         return jsonify({"error": result.error}), 422
+    _save_chain_index(job_dir, result)
 
     structure_title = _extract_structure_title(dest, ".pdb")
 
@@ -638,9 +707,10 @@ def analyze():
 
     known_binders = []
     ppi_interfaces = []
+    _chain_total = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
-            return jsonify({"error": _BUSY_MESSAGE}), 503
+            return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
         try:
             csv_path_prelim = job_dir / "results.csv"
             if not csv_path_prelim.exists():
@@ -686,19 +756,16 @@ def analyze():
             logger.exception("Pipeline error for job %s", job_id)
             return jsonify({"error": _GENERIC_ERROR}), 500
 
+        # Inside the slot on purpose. This used to be a bare parse_pdb() after
+        # the `with` block, so the most expensive fallback path in the route —
+        # a full parse of a caller-chosen structure up to the 8 MB cap — ran
+        # outside the concurrency bound and was invisible to it. Normally it
+        # is now a small JSON read, because intake already knew the answer.
+        _chain_total = _chain_residue_count(job_dir, pdb_path, chain_id)
+
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
     _MAX_PATCH_FRACTION = 0.30
-
-    _chain_total = None
-    try:
-        _pr = parse_pdb(pdb_path)
-        for _ch in _pr.chains:
-            if _ch.id == chain_id:
-                _chain_total = _ch.residue_count
-                break
-    except Exception:
-        pass
 
     all_rows = []
     all_epitopes = []
@@ -929,12 +996,15 @@ def progress():
 
     if not job_id or not chain_id or pdb_path is None:
         def _error_stream():
-            msg = (
-                "job_id and chain are required."
-                if not job_id or not chain_id
-                else "Job not found or expired. Please re-upload your file."
-            )
-            yield f"data: {json.dumps({'stage': 'error', 'msg': msg})}\n\n"
+            if not job_id or not chain_id:
+                msg = "job_id and chain are required."
+                reason = REASON_BAD_REQUEST
+            else:
+                msg = "Job not found or expired. Please re-upload your file."
+                reason = REASON_JOB_EXPIRED
+            yield "data: " + json.dumps({
+                "stage": "error", "msg": msg, "reason": reason,
+            }) + "\n\n"
 
         return current_app.response_class(
             _error_stream(),
@@ -1012,7 +1082,15 @@ def progress():
         """
         with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as slot:
             if not slot:
-                busy = {"stage": "error", "msg": _BUSY_MESSAGE}
+                # `reason` is what makes this separable from the per-IP 429:
+                # EventSource cannot read a non-2xx body, so both refusals
+                # leave here as HTTP 200 text/event-stream and are otherwise
+                # identical apart from prose. See scout/ratelimit.py.
+                busy = {
+                    "stage": "error",
+                    "msg": _BUSY_MESSAGE,
+                    "reason": REASON_BUSY,
+                }
                 yield f"data: {json.dumps(busy)}\n\n"
                 return
             yield from _generate()
