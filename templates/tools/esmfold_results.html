@@ -36,6 +36,12 @@
 {% set pdb_b64        = output.get('pdb_b64') %}
 {% set pae_b64        = output.get('pae_matrix_b64') %}
 {% set clone_url      = url_for('tools.tool_form', tool='esmfold', clone_from=job.id) %}
+{# "example" is the sentinel job id components/worked_example.html uses when
+   it replays a canned payload on the public tool page. Nothing is stored
+   behind it, so the clone link below is suppressed under it. The data-URI
+   downloads beside it are self-contained and stay — they are the one part
+   of a real result page that works unchanged in an example. #}
+{% set is_example = (job.id == 'example') %}
 
 {# ----- Batch path ----- #}
 {% if raw_designs %}
@@ -171,7 +177,9 @@
       {% endif %}
 
       <div style="margin-top:1rem;">
+        {% if not is_example %}
         <a href="{{ clone_url }}" class="btn-secondary">Run again with different sequence</a>
+        {% endif %}
         {# pdb_b64 / pae_matrix_b64 come straight from run_pipeline.py;
            render as data-URI downloads so the user can pull the
            structure without us adding a server-side export route.
@@ -213,9 +221,11 @@
         canonical residues.
       </p>
 
+      {% if not is_example %}
       <div style="margin-top:1rem;">
         <a href="{{ clone_url }}" class="btn-secondary">Run again</a>
       </div>
+      {% endif %}
     {% endif %}
 
     {% if runtime %}
