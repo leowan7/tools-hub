@@ -642,7 +642,9 @@ function render3DViewer(data) {
       source.close();
       document.getElementById('progress-container').hidden = true;
       if (inputPanel) inputPanel.hidden = false;
-      showAnalyzeError('Could not auto-load: ' + data.msg + '. Please upload the structure manually.');
+      // data.msg is a full sentence ending in '.', so concatenating another
+      // one produced 'try again.. Please upload'. Trim the trailing stop.
+      showAnalyzeError('Could not auto-load: ' + data.msg.replace(/\.$/, '') + '. Please upload the structure manually.');
     } else {
       document.getElementById('progress-bar').style.width = (data.pct || 0) + '%';
       document.getElementById('progress-label').textContent = data.msg || data.stage;

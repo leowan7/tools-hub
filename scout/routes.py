@@ -34,6 +34,7 @@ from flask import (
 
 from shared.auth import login_required
 
+from scout.errors import ScoutInputError
 from scout.jobs import (
     cleanup_old_jobs,
     count_job_dirs,
@@ -297,6 +298,69 @@ def _find_input_file(job_dir: Path) -> "Path | None":
     return None
 
 
+_GENERIC_ERROR = "Analysis failed. Check that the PDB is valid and try again."
+
+
+def _client_error(exc: BaseException) -> str:
+    """Client-safe text for a caught exception.
+
+    Callers log first, except where the text IS the log -- a forwarded
+    ``ScoutInputError`` is already recorded in the response.
+
+    Scout signals "your input is wrong" by raising
+    :class:`~scout.errors.ScoutInputError` with a message written for the
+    person who uploaded the structure -- "Chain 'Z' not found in structure.
+    Available chains: A, B" (``scout/pipeline.py``, 6 sites). Those are the
+    product's only diagnostics and are forwarded verbatim. Everything else
+    is replaced.
+
+    THE ALLOWLIST IS A TYPE SCOUT OWNS, and that is the whole point.
+    Allowlisting ``ValueError`` -- as this did until 2026-08-19 -- made the
+    safety of this function a claim about every frame in the transitive
+    stack: Biopython, numpy, scipy, freesasa, the stdlib, at every version
+    anyone will ever install. Any of them may raise a plain ``ValueError``
+    whose message quotes a path or echoes the caller's own input, and
+    ``int()`` already does the latter. Auditing that set once said nothing
+    about the next release. The guarantee is now a property of this repo.
+
+    The rule the old type was really for still stands. ``OSError.__str__``
+    interpolates ``filename``, so a ``FileNotFoundError`` raised anywhere
+    under the pipeline would hand the browser an absolute server path. It is
+    an allowlist rather than an ``OSError`` denylist because the set of types
+    reaching these handlers is open -- the SSE workers catch bare
+    ``Exception``.
+
+    ``isinstance``, not exact type: subclassing ``ScoutInputError`` is itself
+    the declaration that the message was written for a user, and an exact
+    check would silently downgrade such a subclass to the generic string.
+    The exact check this replaced existed because ``UnicodeDecodeError`` and
+    ``json.JSONDecodeError`` subclass ``ValueError`` without inheriting any
+    promise about their text; nothing outside ``scout`` subclasses this.
+
+    Server-side faults deliberately do NOT get this type -- see
+    ``scout/errors.py``. ``scout/epitope_db.py`` still raises plain
+    ``ValueError`` for a malformed SAbDab summary, which is an operator's
+    problem and reaches the user as the generic message.
+
+    ONE THING THIS DOES NOT COST US, because of a gate two routes away.
+    Biopython answers an empty or non-``data_`` structure file with a plain
+    ``ValueError`` carrying real advice ("Empty file.", "The input mmCIF file
+    must begin with a 'data_' directive."), and those are exactly the
+    messages a stricter allowlist would swallow. They never reach here:
+    every intake path runs ``scout.parser.parse_pdb`` first, which catches
+    everything and answers with its own curated 422. If that gate is ever
+    removed, this function starts eating those messages -- reinstate them as
+    ``ScoutInputError`` at the same time.
+
+    An empty message falls back too -- the SSE clients render ``data.msg``
+    straight into the banner (``templates/scout/index.html:346``), and a
+    blank banner is worse than a generic one.
+    """
+    if isinstance(exc, ScoutInputError) and str(exc).strip():
+        return str(exc)
+    return _GENERIC_ERROR
+
+
 def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dict]:
     cache_path = job_dir / "analyze_cache.json"
     if not cache_path.exists():
@@ -555,8 +619,12 @@ def example():
 @requires_scout_quota
 def analyze():
     data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id", "").strip()
-    chain_id = data.get("chain", "").strip()
+    # str() before strip(): these come straight from user JSON, so a non-string
+    # scalar ({"job_id": 123}) raised AttributeError here -- before any handler
+    # -- and the route answered an HTML 500 to a JSON caller. Reachable
+    # anonymously: this route has no @login_required.
+    job_id = str(data.get("job_id", "")).strip()
+    chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
@@ -606,10 +674,17 @@ def analyze():
             from scout.interfaces import detect_interfaces  # noqa: PLC0415
             ppi_interfaces = detect_interfaces(pdb_path, chain_id)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 422
+            if isinstance(exc, ScoutInputError):
+                return jsonify({"error": _client_error(exc)}), 422
+            # Not the uploader's fault, so do not answer 422 "check that the
+            # PDB is valid" -- the same reasoning the FileNotFoundError clause
+            # in feasibility_analyze already applies. And it is the only
+            # surviving record, since the text is withheld.
+            logger.exception("Pipeline error for job %s", job_id)
+            return jsonify({"error": _GENERIC_ERROR}), 500
         except Exception:
             logger.exception("Pipeline error for job %s", job_id)
-            return jsonify({"error": "Analysis failed. Check that the PDB is valid and try again."}), 500
+            return jsonify({"error": _GENERIC_ERROR}), 500
 
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
@@ -899,7 +974,7 @@ def progress():
                 }})
             except Exception as exc:
                 logger.exception("SSE pipeline error for job %s", job_id)
-                q.put({"stage": "error", "msg": str(exc)})
+                q.put({"stage": "error", "msg": _client_error(exc)})
 
         if _use_gevent:
             import gevent  # noqa: PLC0415
@@ -968,8 +1043,9 @@ def feasibility_analyze():
     from scout.pipeline import run_feasibility_pipeline  # noqa: PLC0415
 
     data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id", "").strip()
-    chain_id = data.get("chain", "").strip()
+    # str() before strip() -- see analyze(); same user-JSON crash, same fix.
+    job_id = str(data.get("job_id", "")).strip()
+    chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
@@ -1002,8 +1078,21 @@ def feasibility_analyze():
                             if num:
                                 epitope_residues.append(int(num))
                         break
-        except (ValueError, KeyError) as exc:
-            return jsonify({"error": f"Failed to parse epitope from results: {exc}"}), 400
+        except (ValueError, KeyError, TypeError):
+            # TypeError: int() on a non-scalar epitope_id straight from user
+            # JSON. This block sits OUTSIDE the main try below, so without it
+            # the route answers an HTML 500 -- the exact failure this change
+            # set out to close. The message is gated for the same reason as
+            # every other client-facing string here.
+            logger.warning("Epitope parse failed for job %s", job_id, exc_info=True)
+            # A flat string rather than _GENERIC_ERROR: it names the actual
+            # failure. int() raises a plain ValueError quoting the caller's own
+            # input ("invalid literal for int() with base 10: 'QCPROBE'"), which
+            # _client_error would now replace anyway -- but with text about the
+            # PDB being invalid, which this is not.
+            return jsonify({
+                "error": "Could not read that epitope from the stored results.",
+            }), 400
 
     if not epitope_residues:
         return jsonify({"error": "epitope_residues or epitope_id is required."}), 400
@@ -1012,8 +1101,37 @@ def feasibility_analyze():
         feasibility_csv = run_feasibility_pipeline(
             pdb_path, chain_id, epitope_residues,
         )
-    except (ValueError, FileNotFoundError) as exc:
-        return jsonify({"error": str(exc)}), 422
+    except FileNotFoundError:
+        # A staged file is missing server-side. Answering 422 "check that the
+        # PDB is valid" blamed the user for the server losing the job; it is
+        # gone, and re-uploading is the actionable instruction. The path is
+        # the whole diagnostic, so it is logged rather than sent.
+        logger.warning(
+            "Feasibility staged file missing for job %s", job_id, exc_info=True
+        )
+        return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
+    except ValueError as exc:
+        if isinstance(exc, ScoutInputError):
+            # Forwarded verbatim, so nothing is hidden that a traceback would
+            # help reconstruct -- and a wrong-chain typo is the most common
+            # user error on this route, so exc_info would be pure log noise.
+            logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
+            return jsonify({"error": _client_error(exc)}), 422
+        # Withheld, so the traceback is the only surviving account of it -- and
+        # 500, not 422, because a plain ValueError is a server fault. Blaming
+        # the upload here is the mistake the FileNotFoundError clause above
+        # was written to avoid.
+        logger.exception("Feasibility pipeline fault for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
+    except Exception:
+        # Anything else used to escape as an unhandled 500 with a stack-trace
+        # page. The route contracts to return JSON; the UI only reaches it
+        # after the SSE stream reports done, but it is directly callable.
+        # _GENERIC_ERROR directly, not _client_error: the ValueError clause
+        # above catches every ValueError by isinstance, so a forward from here
+        # is unreachable and only reads as though it were possible.
+        logger.exception("Feasibility pipeline error for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
 
     result_row = {}
     with feasibility_csv.open() as f:
@@ -1138,7 +1256,7 @@ def feasibility_progress():
                 }})
             except Exception as exc:
                 logger.exception("Feasibility SSE error for job %s", job_id)
-                q.put({"stage": "error", "msg": str(exc)})
+                q.put({"stage": "error", "msg": _client_error(exc)})
 
         if _use_gevent:
             import gevent  # noqa: PLC0415
