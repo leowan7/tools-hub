@@ -44,7 +44,7 @@
   {"q": "How long do runs take?",
    "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large campaign fans out across GPUs to finish sooner. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
-   "a": "A design is one candidate the tool generates, a backbone with a sequence, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
+   "a": "A design is one candidate the tool generates: a backbone — a structure with no sequence decided yet — with a sequence put on it, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
   {"q": "What do the scores mean?",
    "a": "ipTM is interface confidence at the contact between two chains, higher is better: " ~ metric_glossary.get("ipTM", {}).get("good_range", "") ~ ". Individual tools set their own pass bar a little either side of that. pLDDT is per-residue fold confidence, higher is better. i_pAE and pAE are predicted alignment error, lower is better."}
 ] %}
@@ -222,8 +222,18 @@
       <article class="why-card">
         <h3 class="why-card-title">What is a design?</h3>
         <p class="why-card-body">
-          A design is one candidate the tool generates, a backbone with a
-          sequence, scored and ranked against the others in the run. A pilot
+          {# THE GLOSS IS THE COPY FIX, and it has to be made TWICE: this
+             <p> and the faq_items entry at the top of the file are two
+             independent copies of the same answer, one for the reader and
+             one for the FAQPage JSON-LD. "backbone" was unglossed in the
+             design sense here after being glossed on the homepage chooser
+             (round 2) and in the shared recovery legend (round 3) — three
+             rounds, three missed non-tool pages, same word. Wording is
+             lifted verbatim from /help and /tools/mpnn rather than
+             invented a fourth time. #}
+          A design is one candidate the tool generates: a backbone &mdash; a
+          structure with no sequence decided yet &mdash; with a sequence put
+          on it, scored and ranked against the others in the run. A pilot
           of about 8 designs gives a real first signal because roughly 1 in 5
           passes the in-silico filter on a tractable target.
         </p>

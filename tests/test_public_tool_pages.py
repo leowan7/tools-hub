@@ -664,6 +664,155 @@ def _visible_text(markup: str) -> str:
     return re.sub(r"\s+", " ", _html.unescape(stripped)).strip()
 
 
+_JSONLD_BLOCK = re.compile(
+    r'<script type="application/ld\+json">(.*?)</script>', re.S
+)
+
+
+def _jsonld_text(markup: str) -> str:
+    """The OTHER half of the page: every string inside every JSON-LD block.
+
+    ``_visible_text`` drops ``<script>`` bodies whole, which is right for
+    JS and CSS and catastrophic for structured data: it makes every
+    content guard in this file blind to the copy Google actually indexes.
+    QC planted the proteina reward-stack claim in ``/help/faq``'s
+    ``faq_items`` — FAQPage JSON-LD only — and the full suite stayed
+    green (M-P2).
+
+    That page is the reason this is not a theoretical gap. ``faq.html``
+    builds its FAQPage from a ``{% set faq_items = [...] %}`` list at the
+    top and renders its VISIBLE answers from separate hardcoded ``<dd>``
+    blocks ninety lines below: two independent copies of the same text,
+    only one of which any guard could see.
+
+    Values are extracted by PARSING, not by regex over the raw block, so
+    ``\\u2014`` escapes and ``tojson``'s ``\\u003e`` come back as the
+    characters a reader would see. A block that does not parse is
+    returned raw rather than skipped — silently dropping it would be a
+    hole of exactly the kind this function exists to close.
+    ``TestEveryJsonLdBlockIsClean`` is what fails on the malformed JSON
+    itself.
+    """
+    import json
+
+    out: list[str] = []
+    for raw in _JSONLD_BLOCK.findall(markup):
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            out.append(raw)
+            continue
+        stack = [doc]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, str):
+                out.append(node)
+    return re.sub(r"\s+", " ", " ".join(out)).strip()
+
+
+def _page_views(markup: str) -> dict[str, str]:
+    """Both views of one page, keyed by the name a failure should print.
+
+    Every content sweep runs over BOTH. A claim is just as false in a
+    rich result as it is on the page.
+    """
+    return {"visible": _visible_text(markup), "json-ld": _jsonld_text(markup)}
+
+
+#: Paths that must be in any honest enumeration of the public site. Not
+#: the sweep list -- the FLOOR under it, so a discovery that silently
+#: stops finding pages fails instead of passing over nothing.
+_MUST_REACH = ("/", "/tools", "/help", "/help/faq", "/help/getting-started")
+
+#: 14 tool pages + 14 guides + the five above + /pricing, /showcase,
+#: /developability, /privacy, /terms, /login, /signup and the rest. The
+#: measured set is 50; 40 leaves room for a flag change without leaving
+#: room for the sweep to quietly collapse.
+_MIN_PUBLIC_PATHS = 40
+
+
+def _public_get_paths(flask_app, slugs) -> list[str]:
+    """Every anonymously reachable 200 GET, discovered from the url_map.
+
+    ENUMERATION IS THE BUG. ``test_no_rendered_page_claims_the_three_model
+    _stack`` hardcoded 32 paths; QC planted the claim on ``/help`` -- a
+    public page that renders the word "Proteina" and was not on the list
+    -- and the suite stayed green (M-P3). Thirteen further public 200
+    pages were outside it.
+
+    Single-argument rules are expanded by SUBSTITUTING EACH REAL SLUG AND
+    KEEPING WHAT ANSWERS 200, not by matching the argument's name: an
+    earlier version keyed on ``{"slug"}`` and silently skipped
+    ``/help/tools/<tool>``. A route wanting a job id simply does not
+    answer 200 for "rfdiffusion" and drops out on its own.
+    """
+    client = flask_app.test_client()
+    paths = set()
+    for rule in flask_app.url_map.iter_rules():
+        if "GET" not in (rule.methods or set()):
+            continue
+        if not rule.arguments:
+            candidates = [rule.rule]
+        elif len(rule.arguments) == 1:
+            arg = next(iter(rule.arguments))
+            candidates = [rule.rule.replace(f"<{arg}>", s) for s in slugs]
+        else:
+            continue
+        for candidate in candidates:
+            if "<" in candidate:  # a converter like <int:id>
+                continue
+            try:
+                if client.get(candidate).status_code == 200:
+                    paths.add(candidate)
+            except Exception:  # noqa: BLE001, PERF203
+                continue
+    # NON-VACUITY, asserted rather than assumed. Both halves matter: the
+    # floor catches a discovery that collapsed to a handful, the named
+    # paths catch one that stayed large while losing the pages the
+    # claims actually live on.
+    missing = [p for p in _MUST_REACH if p not in paths]
+    assert not missing, (
+        f"page discovery did not reach {missing}; every sweep built on "
+        f"it would be blind there. Found {len(paths)}: {sorted(paths)}"
+    )
+    for slug in slugs:
+        for path in (f"/tools/{slug}", f"/help/tools/{slug}"):
+            assert path in paths, f"discovery missed {path}"
+    assert len(paths) >= _MIN_PUBLIC_PATHS, (
+        f"only {len(paths)} public GET paths discovered, expected at "
+        f"least {_MIN_PUBLIC_PATHS}: {sorted(paths)}"
+    )
+    return sorted(paths)
+
+
+def _marker_haystack(phrase: str) -> str:
+    """Lowercased, space-padded, with every non-alphanumeric run as a space.
+
+    QC's M-P5: ``CLAUSE_MARKERS`` already contains "which", and
+
+        "a binder design tool&mdash;which labs run daily"
+
+    walked past it, because membership was tested as ``f" {m} " in
+    padded`` and an em dash leaves no space before the marker. The list
+    was right; the matching was not. ``&mdash;`` is the house
+    punctuation mark in these very strings, so this is the realistic
+    next draft rather than an adversarial one.
+
+    Normalising the INPUT rather than each marker fixes it for both
+    marker classes at once and for any marker added later.
+    """
+    return f" {re.sub(r'[^0-9a-z]+', ' ', phrase.lower()).strip()} "
+
+
+def _sentences(text: str) -> list[str]:
+    """Split visible copy into sentences. Deliberately naive."""
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+
 def _hero_text(body: str) -> str:
     """Visible text of the page hero, tags stripped and entities resolved."""
     block = re.search(r'<div class="hero">(.*?)</div>', body, re.S)
@@ -831,10 +980,20 @@ class TestRenderedLedeRules:
 
     #: The structural backstop, vocabulary-free. The fourteen real
     #: phrases run 5-7 words ("no-install online de novo binder design
-    #: tool" is the longest at 7); M-D's is 18. Twelve is roughly double
-    #: the longest real one and well under the shortest defect, so it
-    #: fails on shape rather than on any word list.
-    MAX_PHRASE_WORDS = 12
+    #: tool" is the longest at 7); M-D's is 18.
+    #:
+    #: WAS 12, AND 12 WAS THE ONLY THING BETWEEN THE PAGE AND M-P6:
+    #:
+    #:   "a binder design tool to run against a target uploaded from
+    #:    the bench"
+    #:
+    #: which renders round 1's defect A almost verbatim ("...uploaded
+    #: from the bench you can run through..."). ``to run`` is an
+    #: infinitive, so it is in neither closed class, and the phrase is
+    #: EXACTLY twelve words -- ``not > 12``. Eight keeps a full word of
+    #: margin over the longest real phrase and puts the boundary well
+    #: below the shortest clause anyone would write here.
+    MAX_PHRASE_WORDS = 8
 
     def test_lede_phrase_does_not_end_in_a_subordinate_clause(
         self, all_tools_app,
@@ -848,7 +1007,7 @@ class TestRenderedLedeRules:
         offenders = {}
         for slug, hero in self._ledes(all_tools_app).items():
             phrase = _lede_phrase(hero)
-            padded = f" {phrase.lower()} "
+            padded = _marker_haystack(phrase)
             reasons = []
             hits = re.findall(r"\byou\b|\byour\b|\byours\b", phrase, re.I)
             if hits:
@@ -876,11 +1035,14 @@ class TestRenderedLedeRules:
         """The same rule's non-pronoun half, on the widened marker list.
 
         Kept as its own test so a failure names WHICH half broke.
+
+        Matched through ``_marker_haystack``, which is where M-P5 lived:
+        the list already contained "which" and an em dash defeated it.
         """
         offenders = {}
         for slug, hero in self._ledes(all_tools_app).items():
             phrase = _lede_phrase(hero)
-            padded = f" {phrase.lower()} "
+            padded = _marker_haystack(phrase)
             hit = [m for m in self.CLAUSE_MARKERS if f" {m} " in padded]
             if hit:
                 offenders[slug] = (hit, phrase)
@@ -1104,31 +1266,37 @@ class TestIptmThresholdHasOneSource:
     STALE = re.compile(r"\babove\s+roughly\s+\d*\.?\d+", re.I)
 
     def _pages(self, all_tools_app):
+        """Every public page, DISCOVERED. Was 29 hardcoded paths.
+
+        The hardcoded list covered the tool pages and their guides and
+        nothing else, so a stale threshold restored to ``/help`` or
+        ``/pricing`` was outside it -- the same enumeration hole QC
+        measured on the proteina sweep as M-P3.
+        """
         flask_app, slugs = all_tools_app
         client = flask_app.test_client()
         out = {}
-        for path in ["/help/faq"] + [f"/help/tools/{s}" for s in slugs]:
+        for path in _public_get_paths(flask_app, slugs):
             resp = client.get(path)
-            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
-            out[path] = resp.get_data(as_text=True)
-        for slug in slugs:
-            resp = client.get(f"/tools/{slug}")
-            assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
-            out[f"/tools/{slug}"] = resp.get_data(as_text=True)
-        assert len(out) == 2 * len(slugs) + 1
+            if resp.status_code == 200:
+                out[path] = resp.get_data(as_text=True)
+        assert len(out) >= 2 * len(slugs) + 1, sorted(out)
         return out
 
     def test_the_sourceless_threshold_is_gone_everywhere(
         self, all_tools_app,
     ):
+        """Both views. The threshold was still being emitted as FAQPage
+        structured data after the PR claimed it was gone, and JSON-LD is
+        exactly what ``_visible_text`` cannot see (M-P2)."""
         offenders = {}
         for path, body in self._pages(all_tools_app).items():
-            text = _visible_text(body)
-            m = self.STALE.search(text)
-            if m:
-                offenders[path] = text[
-                    max(0, m.start() - 80):m.end() + 80
-                ]
+            for view, text in _page_views(body).items():
+                m = self.STALE.search(text)
+                if m:
+                    offenders[f"{path} ({view})"] = text[
+                        max(0, m.start() - 80):m.end() + 80
+                    ]
         assert not offenders, (
             f"'{self.STALE.pattern}' is a threshold with no source: "
             f"{offenders}"
@@ -1140,18 +1308,67 @@ class TestIptmThresholdHasOneSource:
     # page and the other three are tool-specific.
     LEGEND_TITLE = "What good looks like"
 
-    def _general_legend(self, body: str) -> str:
+    def _legend_entries(self, body: str) -> list[tuple[str, str]]:
+        """The legend's ``<dt>``/``<dd>`` pairs, as visible text.
+
+        Per ENTRY, because the metric a number describes is the whole
+        point -- see the test below.
+        """
         block = re.search(
             r'<aside class="panel about-panel">\s*<div class="panel-header">'
             r'\s*<span class="panel-title">\s*' + self.LEGEND_TITLE +
             r'\s*</span>(.*?)</aside>',
             body, re.S,
         )
-        assert block, (
-            f"the '{self.LEGEND_TITLE}' panel did not render; every "
-            "assertion about its contents would be vacuous"
+        assert block, f"the '{self.LEGEND_TITLE}' panel did not render"
+        pairs = re.findall(
+            r"<dt>(.*?)</dt>\s*(?:<!--.*?-->\s*)*<dd>(.*?)</dd>",
+            block.group(1), re.S,
         )
-        return _visible_text(block.group(1))
+        entries = [(_visible_text(dt), _visible_text(dd)) for dt, dd in pairs]
+        assert len(entries) >= 4, (
+            f"the legend parsed into {len(entries)} dt/dd pairs; the "
+            f"per-metric check below would barely be exercised: {entries}"
+        )
+        return entries
+
+    #: What a THRESHOLD looks like when it is typed into a template. A
+    #: decimal, or an integer percentage. Bare integers are exempt on
+    #: purpose: "on a 0 to 1 scale" is a range description and a bare
+    #: 0 or 1 cannot be a bar.
+    #:
+    #: THE PERCENTAGE IS QC's M-P4. "well calibrated above 40% on
+    #: diverse folds" restored F1 in the one wording that evaded the
+    #: phrase guard (which needs the word "roughly") AND the decimal
+    #: scan (a percentage has no decimal point) at the same time. It
+    #: rendered on all 14 tool pages with the suite green.
+    THRESHOLD_NUM = re.compile(r"\d+\.\d+|\d+\s*%")
+
+    @classmethod
+    def _numbers(cls, text: str) -> set[str]:
+        return {
+            re.sub(r"\s+", "", n) for n in cls.THRESHOLD_NUM.findall(text)
+        }
+
+    @staticmethod
+    def _glossary_keys_for(label: str) -> list[str]:
+        """Which glossary entries a ``<dt>`` label is describing.
+
+        Resolved by word-boundary match on the key or its label, so
+        "ProteinMPNN recovery" finds ``recovery`` and "i_pAE and pAE"
+        finds both. ``\\b`` is what keeps "pAE" out of "i_pAE" and "pTM"
+        out of "ipTM": ``_`` and the letters either side are all word
+        characters, so no boundary falls there.
+        """
+        keys = []
+        for key, entry in _mg.GLOSSARY.items():
+            for name in (key, str(entry.get("label", ""))):
+                if name and re.search(
+                    rf"\b{re.escape(name)}\b", label, re.I
+                ):
+                    keys.append(key)
+                    break
+        return keys
 
     def test_the_general_metric_legend_states_no_unsourced_number(
         self, all_tools_app,
@@ -1162,38 +1379,61 @@ class TestIptmThresholdHasOneSource:
         worded. The "what good looks like" panel is GENERAL guidance —
         byte-identical on all 14 tool pages, so it cannot state a
         tool-specific bar — and every number in it must therefore come
-        out of ``shared/metric_glossary.py``. Any other decimal is a
-        number typed into a template, which is what both defects were:
-        "aim above roughly 0.7" (fixed by this PR) and "well calibrated
-        above roughly 0.4" (F1, which the phrase guard missed by one
-        word, and which was live on 14 indexable pages).
+        out of ``shared/metric_glossary.py``. Any other number is one
+        typed into a template, which is what both defects were: "aim
+        above roughly 0.7" (fixed by this PR) and "well calibrated above
+        roughly 0.4" (F1, which the phrase guard missed by one word, and
+        which was live on 14 indexable pages).
 
-        This is the check that would have caught F1 without anybody
-        guessing that "calibrated" needed adding to a regex.
+        VALIDATED AGAINST THE METRIC'S OWN ENTRY, NOT THE UNION, and it
+        took QC's M-P9 to show why. The first version built ``sourced``
+        from every ``good_range`` in the glossary at once, so
+
+            pLDDT — ... treat anything above 0.75 as reliable.
+
+        passed on all 14 pages: 0.75 is in the union because **ipTM**'s
+        band contains it. pLDDT is a 0-100 scale in the same file
+        ("> 80 very high confidence"), so that sentence is not merely
+        unsourced, it is NONSENSE — and the guard written to be
+        structural rather than phrase-guessing waved it through. A
+        number is only sourced by the metric it is stated about.
+
+        A ``<dt>`` naming no glossary metric at all fails too: an entry
+        the glossary does not describe can state whatever it likes and
+        this check would have nothing to compare it against.
         """
-        sourced = {
-            n
-            for entry in _mg.GLOSSARY.values()
-            for n in re.findall(r"\d*\.?\d+", str(entry.get("good_range", "")))
-        }
-        assert sourced, "the glossary states no numbers at all; vacuous"
+        assert any(
+            self._numbers(str(e.get("good_range", "")))
+            for e in _mg.GLOSSARY.values()
+        ), "no glossary good_range states a number at all; vacuous"
         flask_app, slugs = all_tools_app
         client = flask_app.test_client()
         offenders = {}
         for slug in slugs:
-            legend = self._general_legend(
-                client.get(f"/tools/{slug}").get_data(as_text=True)
-            )
-            # "0 to 1 scale" is a range description, not a threshold, and
-            # a bare 0/1 cannot be a bar. Decimals are what get typed.
-            found = set(re.findall(r"\d+\.\d+", legend))
-            unsourced = sorted(found - sourced)
-            if unsourced:
-                offenders[slug] = (unsourced, legend[:400])
+            body = client.get(f"/tools/{slug}").get_data(as_text=True)
+            for label, definition in self._legend_entries(body):
+                keys = self._glossary_keys_for(label)
+                if not keys:
+                    offenders[f"{slug} ~ {label}"] = (
+                        "names no glossary metric, so any number in it is "
+                        "unsourceable", definition[:200],
+                    )
+                    continue
+                sourced = set()
+                for key in keys:
+                    sourced |= self._numbers(
+                        str(_mg.GLOSSARY[key].get("good_range", ""))
+                    )
+                unsourced = sorted(self._numbers(definition) - sourced)
+                if unsourced:
+                    offenders[f"{slug} ~ {label}"] = (
+                        f"{unsourced} not in {sorted(keys)}'s own "
+                        f"good_range {sorted(sourced)}", definition[:200],
+                    )
         assert not offenders, (
-            "the general metric legend renders numbers that are in no "
-            "glossary good_range, so they are thresholds typed into a "
-            f"template with no source: {offenders}"
+            "the general metric legend states numbers that its own "
+            "metric's glossary good_range does not, so they are "
+            f"thresholds typed into a template with no source: {offenders}"
         )
 
     def test_every_general_legend_reads_the_glossary(self, all_tools_app):
@@ -1272,7 +1512,21 @@ class TestProteinaScoringClaimIsConsistent:
     the source grep missed a copy that reached a reader.
     """
 
-    #: The composite claim, in the shapes it has actually shipped in.
+    #: A REGRESSION-LOCK ON FOUR STRINGS, NOT A CLAIM CHECK. Say so,
+    #: because it has read as more than it is: these are the shapes the
+    #: composite has actually shipped in, and QC paraphrased straight
+    #: past all four (M-P1) with
+    #:
+    #:   "Each search shard filters EVERY candidate through all three
+    #:    scoring models — an AlphaFold2 refold, a RoseTTAFold3 score
+    #:    and a physics force field — before the hub ranks across
+    #:    shards."
+    #:
+    #: which rendered visibly on /tools/proteina with the suite green.
+    #: That is how a writer FIXES a flagged phrase: keep the meaning,
+    #: change the words. The check that does not depend on guessing the
+    #: wording is ``test_every_multi_model_sentence_states_the_mapping``
+    #: below; this stays as the cheap named lock on the four literals.
     CLAIMS = (
         r"AF2\s*/\s*RF3",
         r"three independent scoring checks",
@@ -1280,40 +1534,187 @@ class TestProteinaScoringClaimIsConsistent:
         r"force[-\s]field reward stack",
     )
 
-    def test_no_rendered_page_claims_the_three_model_stack(
-        self, all_tools_app,
-    ):
-        flask_app, slugs = all_tools_app
-        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
-        client = flask_app.test_client()
-        paths = (
-            [f"/tools/{s}" for s in slugs]
-            + [f"/help/tools/{s}" for s in slugs]
-            + ["/", "/tools", "/help/faq", "/help/getting-started"]
-        )
-        offenders = {}
-        seen_proteina = False
-        for path in paths:
-            resp = client.get(path)
-            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
-            text = _visible_text(resp.get_data(as_text=True))
-            if "Proteina" in text:
-                seen_proteina = True
+    #: The two scoring models the composite conflates, by every name
+    #: the copy uses. ``RoseTTAFold-2`` is rfantibody's refolder and has
+    #: nothing to do with this claim, so the ``3`` is anchored.
+    MODEL_NAMES = {
+        "AF2": r"\bAlphaFold\s?2\b|\bAF2\b",
+        "RF3": r"\bRoseTTAFold[\s-]?3\b|\bRF3\b",
+    }
+
+    #: The target types the mapping is keyed on. A sentence that names
+    #: both models and no target type is describing a stack.
+    PROTEIN_TARGET = r"\bprotein\b"
+    LIGAND_TARGET = r"\bligands?\b|\bsmall[-\s]molecule\b|\bmotifs?\b"
+
+    # DISCLOSED CEILING, so it is not rediscovered as a finding. The
+    # rule triggers on AF2 **and** RF3 together, which is the composite
+    # this whole sweep exists for: one model per target type, conflated
+    # into one stack. It deliberately does NOT trigger on a sentence
+    # naming one model and the force field, and there is a live one:
+    #
+    #   tools/proteina/__init__.py:811, the protein_binder preset --
+    #   "Search is scored by AlphaFold2 confidence plus a force-field
+    #   reward" -- against Dockerfile.modal:229-231's "protein_binder
+    #   scores on AF2 alone".
+    #
+    # That is PRE-EXISTING (commit c03aa1d, the tool's first commit),
+    # untouched by this PR, and it is the same soft spot QC round 3
+    # logged as §4c caveat 1: "with a physics force field added where it
+    # applies" is a hedge the two "only" statements leave nowhere to
+    # apply. Which is right -- the preset copy or the Dockerfile note --
+    # is a question about what the container actually runs, not about
+    # wording, so it is not settleable from this file and a guard that
+    # forced one of the two answers would be asserting a fact nobody
+    # here has checked. Resolve it at the source and widen this to
+    # ``len(named) >= 2``; the code already reads as a set.
+    def _claim_offenders(self, path: str, views: dict[str, str]) -> dict:
+        """Both checks over one page's two views. Returns offenders."""
+        found = {}
+        for view, text in views.items():
             for pat in self.CLAIMS:
                 m = re.search(pat, text, re.I)
                 if m:
-                    offenders[f"{path} ~ {pat}"] = text[
+                    found[f"{path} ({view}) ~ {pat}"] = text[
                         max(0, m.start() - 100):m.end() + 140
                     ]
-        # Vacuity guard: if proteina stopped rendering anywhere, the
-        # sweep above would pass by describing nothing.
-        assert seen_proteina, "no page mentioned Proteina at all"
+            for sentence in _sentences(text):
+                named = [
+                    fam for fam, pat in self.MODEL_NAMES.items()
+                    if re.search(pat, sentence, re.I)
+                ]
+                if len(named) < len(self.MODEL_NAMES):
+                    continue
+                missing = [
+                    t for t, pat in (
+                        ("a protein target", self.PROTEIN_TARGET),
+                        ("a ligand/motif target", self.LIGAND_TARGET),
+                    ) if not re.search(pat, sentence, re.I)
+                ]
+                if missing:
+                    found[f"{path} ({view}) ~ {named} without {missing}"] = (
+                        sentence[:400]
+                    )
+        return found
+
+    def test_no_rendered_page_claims_the_three_model_stack(
+        self, all_tools_app,
+    ):
+        """Every public page, discovered, in both views.
+
+        WAS 32 HARDCODED PATHS, and QC planted the claim on ``/help`` --
+        public, 200, renders the word "Proteina", not on the list -- for
+        a green suite (M-P3). Thirteen further public pages were outside
+        it. It also read VISIBLE TEXT ONLY, so the same claim planted in
+        ``/help/faq``'s ``faq_items`` shipped into the FAQPage JSON-LD
+        Google indexes, invisible to every guard in this file (M-P2).
+        Both are closed by discovering the pages and reading both views;
+        neither needed a new claim pattern.
+        """
+        flask_app, slugs = all_tools_app
+        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        client = flask_app.test_client()
+        offenders = {}
+        seen_proteina = 0
+        for path in _public_get_paths(flask_app, slugs):
+            resp = client.get(path)
+            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+            views = _page_views(resp.get_data(as_text=True))
+            if "Proteina" in views["visible"]:
+                seen_proteina += 1
+            offenders.update(self._claim_offenders(path, views))
+        # Vacuity guard. Counted, not a bool: "Proteina" renders on /,
+        # /tools and the guide too, so one hit could be a catalog card
+        # while /tools/proteina renders nothing at all.
+        assert seen_proteina >= 4, (
+            f"only {seen_proteina} pages mentioned Proteina; the sweep "
+            "would be describing pages that do not discuss it"
+        )
         assert not offenders, (
             "a rendered page states the AF2 / RF3 / force-field reward "
             "stack. No variant runs all three, and it contradicts "
             "proteina's own output_summary ('The ligand and motif "
             f"variants score on RF3 only') on the same page: {offenders}"
         )
+
+    def test_every_multi_model_sentence_states_the_mapping(self):
+        """The claim check the four regexes above are not.
+
+        WHY NOT A LONGER LIST. This claim has now escaped detection five
+        times, each time in a new wording, and each round's answer was
+        another literal. A list of false phrasings can only ever catch
+        the drafts somebody already thought of.
+
+        SO IT IS KEYED ON THE TRUTH INSTEAD. The truth is a MAPPING —
+        ``tools/proteina/Dockerfile.modal:229-231``, "Only ligand_binder
+        (RF3 is its sole reward) and motif_ame need it; protein_binder
+        scores on AF2 alone" — and ``meta.py`` states the rule for
+        writers in one line: *say which model scores which target, or
+        say nothing*. So the invariant is that rule, asserted: a
+        sentence naming two or more scoring models must also name both
+        sides of the mapping. Every true sentence in this copy does,
+        because that is what makes it true. The false composite never
+        can, because a stack has no target types to name — and it does
+        not matter how it is worded.
+
+        Scoped to sentences naming TWO models on purpose. "/tools/af2
+        runs AlphaFold2 on a dedicated GPU" names one and is fine; it is
+        the conjunction that is the lie.
+
+        This is the direct unit exercise of the matcher, so a change to
+        it fails here rather than only in a page sweep that might have
+        stopped reaching the page. The page sweep runs it for real.
+        """
+        # The mapping, in the four shapes this copy actually states it.
+        # Read off the rendered page by QC, not invented here.
+        true_copy = [
+            "a protein target is scored by an AlphaFold2 refold, a "
+            "small-molecule or motif target by RoseTTAFold3, with a "
+            "physics force field added where it applies.",
+            "Ranked designs with reward scores (AF2 pLDDT / ipTM for "
+            "protein, RF3 score for ligand / motif, force-field energy "
+            "where applicable).",
+            "The protein-binder variant targets a protein PDB and is "
+            "scored by AlphaFold2 confidence, while a small-molecule "
+            "target is scored by RoseTTAFold3.",
+            "Ranomics Tools runs AlphaFold2 on a dedicated GPU.",
+        ]
+        for sentence in true_copy:
+            assert not self._claim_offenders("t", {"v": sentence}), sentence
+
+        # POSITIVE CONTROLS. Every one of these is false, none shares a
+        # wording with another, and none contains any of the four
+        # CLAIMS literals except the first.
+        false_copy = [
+            # the string that shipped, four times
+            "Each search shard filters candidates through an AF2 / RF3 "
+            "/ force-field reward stack.",
+            # QC's M-P1: the paraphrase that walked past all four
+            "Each search shard filters every candidate through all "
+            "three scoring models — an AlphaFold2 refold, a "
+            "RoseTTAFold3 score and a physics force field — before the "
+            "hub ranks across shards.",
+            # no aggregation word at all, just two models conjoined
+            "Every design is re-folded by AlphaFold2 and rescored by "
+            "RoseTTAFold3 before it is ranked.",
+            # the two-model version with the force field dropped
+            "Candidates are scored by AlphaFold2 and RoseTTAFold3.",
+        ]
+        for sentence in false_copy:
+            assert self._claim_offenders("t", {"v": sentence}), (
+                f"the mapping check passed a composite claim: {sentence!r}"
+            )
+
+        # THE DISCLOSED CEILING, ASSERTED RATHER THAN DESCRIBED, so the
+        # comment above cannot quietly stop being true. This is the live
+        # protein_binder preset sentence: one model plus the force
+        # field, no RF3, so the rule does not reach it. If somebody
+        # widens the trigger, this line fails and points at the
+        # disclosure that needs deleting.
+        assert not self._claim_offenders("t", {"v": (
+            "Search is scored by AlphaFold2 confidence plus a "
+            "force-field reward."
+        )}), "the AF2-plus-force-field ceiling is closed; update the note"
 
     def test_the_scoring_answer_says_which_model_scores_which_target(
         self, all_tools_app,
@@ -1386,7 +1787,10 @@ class TestEveryJsonLdBlockIsClean:
 
     * the TEMPLATES that emit JSON-LD are discovered by reading
       ``templates/`` off disk;
-    * the PAGES are discovered from the app's own url_map;
+    * the PAGES are discovered from the app's own url_map, through the
+      shared ``_public_get_paths`` -- this class's private copy of that
+      crawl was the only one in the file, which is how the proteina
+      sweep next door was still hardcoding 32 paths (M-P3);
     * ``flask.template_rendered`` records which templates the crawl
       actually exercised, and the test FAILS if a discovered JSON-LD
       template was never rendered — that is the completeness argument,
@@ -1406,41 +1810,6 @@ class TestEveryJsonLdBlockIsClean:
         }
         assert found, "no template emits JSON-LD; the crawl below is vacuous"
         return found
-
-    @staticmethod
-    def _crawl_paths(flask_app, slugs) -> list[str]:
-        """Every anonymously reachable GET, from the url_map.
-
-        Single-argument rules are expanded by SUBSTITUTING EACH REAL
-        SLUG AND KEEPING WHAT ANSWERS 200 — not by matching the
-        argument's name. The first version keyed on ``{"slug"}`` and
-        silently skipped ``/help/tools/<tool>``, which is exactly the
-        family M-I planted its defect in: the same guard, missing the
-        same page, for a third reason. A route wanting a job id or a
-        uuid simply does not answer 200 for "rfdiffusion" and drops out
-        on its own.
-        """
-        client = flask_app.test_client()
-        paths = set()
-        for rule in flask_app.url_map.iter_rules():
-            if "GET" not in (rule.methods or set()):
-                continue
-            if not rule.arguments:
-                paths.add(rule.rule)
-                continue
-            if len(rule.arguments) != 1:
-                continue
-            arg = next(iter(rule.arguments))
-            for slug in slugs:
-                candidate = rule.rule.replace(f"<{arg}>", slug)
-                if "<" in candidate:  # a converter like <int:id>
-                    continue
-                try:
-                    if client.get(candidate).status_code == 200:
-                        paths.add(candidate)
-                except Exception:  # noqa: BLE001, PERF203
-                    continue
-        return sorted(paths)
 
     @staticmethod
     def _with_ancestors(flask_app, rendered: set[str]) -> set[str]:
@@ -1501,7 +1870,7 @@ class TestEveryJsonLdBlockIsClean:
         template_rendered.connect(_record, flask_app)
         try:
             blocks: dict[str, list[str]] = {}
-            for path in self._crawl_paths(flask_app, slugs):
+            for path in _public_get_paths(flask_app, slugs):
                 try:
                     resp = client.get(path)
                 except Exception:  # noqa: BLE001  (a route needing real data)
