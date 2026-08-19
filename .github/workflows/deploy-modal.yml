@@ -87,6 +87,11 @@ on:
       # '!tools/**/example/**' negation above, which covers per-tool
       # tools/<slug>/example/ dirs.
       #
+      # "Four" is how many images the fixture CHANGES, not how many redeploy.
+      # The matrix below has no per-path routing, so any entry here that fires
+      # redeploys all nine apps; the other five just rebuild identically. That
+      # is the matrix's shape, not something these three entries introduce.
+      #
       # These three sit AFTER every negation and are unaffected by the ordering
       # rule above in both directions: no 'tools/**' negation can match a
       # 'static/' path, so none of them cancels these, and each is a literal
