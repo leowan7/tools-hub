@@ -314,8 +314,17 @@ def _client_error(exc: BaseException) -> str:
     path. The rule is an allowlist rather than an ``OSError`` denylist
     because the set of types reaching these handlers is open — the SSE
     workers catch bare ``Exception`` — and ``ValueError`` is the only one
-    audited as safe to forward (every ``raise ValueError`` under ``scout/``
-    is a curated sentence; none interpolates a path).
+    audited as safe to forward.
+
+    KNOWN LIMIT OF THAT AUDIT: it covers every ``raise ValueError`` under
+    ``scout/`` (8 sites, all curated sentences, none interpolating a path)
+    and the reachable ones in Biopython, but the RULE's scope is every
+    dependency, every version, forever. A plain ``ValueError`` raised deep in
+    a library with a path in its message would be forwarded. None exists
+    today; nothing stops one appearing. The bounded alternative is a
+    ``ScoutInputError(ValueError)`` raised at those 8 sites and allowlisted
+    by that type instead — then the guarantee is a property of this
+    codebase rather than of other people's release notes.
 
     Exact type, not ``isinstance``: ``UnicodeDecodeError`` and
     ``json.JSONDecodeError`` subclass ``ValueError`` and carry decoder
@@ -589,8 +598,12 @@ def example():
 @requires_scout_quota
 def analyze():
     data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id", "").strip()
-    chain_id = data.get("chain", "").strip()
+    # str() before strip(): these come straight from user JSON, so a non-string
+    # scalar ({"job_id": 123}) raised AttributeError here -- before any handler
+    # -- and the route answered an HTML 500 to a JSON caller. Reachable
+    # anonymously: this route has no @login_required.
+    job_id = str(data.get("job_id", "")).strip()
+    chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
@@ -1002,8 +1015,9 @@ def feasibility_analyze():
     from scout.pipeline import run_feasibility_pipeline  # noqa: PLC0415
 
     data = request.get_json(silent=True) or {}
-    job_id = data.get("job_id", "").strip()
-    chain_id = data.get("chain", "").strip()
+    # str() before strip() -- see analyze(); same user-JSON crash, same fix.
+    job_id = str(data.get("job_id", "")).strip()
+    chain_id = str(data.get("chain", "")).strip()
 
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
@@ -1036,8 +1050,21 @@ def feasibility_analyze():
                             if num:
                                 epitope_residues.append(int(num))
                         break
-        except (ValueError, KeyError) as exc:
-            return jsonify({"error": f"Failed to parse epitope from results: {exc}"}), 400
+        except (ValueError, KeyError, TypeError):
+            # TypeError: int() on a non-scalar epitope_id straight from user
+            # JSON. This block sits OUTSIDE the main try below, so without it
+            # the route answers an HTML 500 -- the exact failure this change
+            # set out to close. The message is gated for the same reason as
+            # every other client-facing string here.
+            logger.warning("Epitope parse failed for job %s", job_id, exc_info=True)
+            # A flat string, NOT _client_error: int() raises a *plain*
+            # ValueError whose message quotes the caller's own input
+            # ("invalid literal for int() with base 10: 'QCPROBE'"), and the
+            # allowlist forwards plain ValueErrors verbatim. Gating this site
+            # through the helper would have looked correct and echoed anyway.
+            return jsonify({
+                "error": "Could not read that epitope from the stored results.",
+            }), 400
 
     if not epitope_residues:
         return jsonify({"error": "epitope_residues or epitope_id is required."}), 400
@@ -1046,20 +1073,30 @@ def feasibility_analyze():
         feasibility_csv = run_feasibility_pipeline(
             pdb_path, chain_id, epitope_residues,
         )
-    except (ValueError, FileNotFoundError) as exc:
-        # Logged because _client_error drops a FileNotFoundError's path, and
-        # that path is the whole diagnostic. Previously the client got it and
-        # nothing was logged at all.
+    except FileNotFoundError:
+        # A staged file is missing server-side. Answering 422 "check that the
+        # PDB is valid" blamed the user for the server losing the job; it is
+        # gone, and re-uploading is the actionable instruction. The path is
+        # the whole diagnostic, so it is logged rather than sent.
         logger.warning(
-            "Feasibility rejected input for job %s", job_id, exc_info=True
+            "Feasibility staged file missing for job %s", job_id, exc_info=True
         )
+        return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
+    except ValueError as exc:
+        # Forwarded verbatim, so nothing is hidden that a traceback would help
+        # reconstruct -- and a wrong-chain typo is the most common user error
+        # on this route, so exc_info here was pure log noise.
+        logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
         return jsonify({"error": _client_error(exc)}), 422
-    except Exception as exc:
+    except Exception:
         # Anything else used to escape as an unhandled 500 with a stack-trace
         # page. The route contracts to return JSON; the UI only reaches it
         # after the SSE stream reports done, but it is directly callable.
+        # _GENERIC_ERROR directly, not _client_error: the ValueError clause
+        # above catches every ValueError by isinstance, so a forward from here
+        # is unreachable and only reads as though it were possible.
         logger.exception("Feasibility pipeline error for job %s", job_id)
-        return jsonify({"error": _client_error(exc)}), 500
+        return jsonify({"error": _GENERIC_ERROR}), 500
 
     result_row = {}
     with feasibility_csv.open() as f:

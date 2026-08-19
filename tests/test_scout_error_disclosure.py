@@ -56,6 +56,13 @@ _LEAK_TOKEN = "private-8f3a2b"
 _USEFUL_MESSAGE = "Chain 'Z' not found in structure. Available chains: A, B"
 
 
+# Minimal results.csv: the epitope_id branch of feasibility_analyze is only
+# reached once one exists, so the TypeError below it is otherwise unreachable.
+_RESULTS_CSV = '''epitope_id,residues
+1,"10,11,12"
+'''
+
+
 def _leaky_oserror() -> FileNotFoundError:
     """The exception whose ``str()`` carries an absolute server path."""
     return FileNotFoundError(2, "No such file or directory", _LEAKY_PATH)
@@ -182,9 +189,11 @@ class TestExceptionTextDoesNotReachTheClient:
             json={"job_id": job_id, "chain": "A", "epitope_residues": [10, 11, 12]},
         )
 
-        assert resp.status_code == 422, resp.data
+        # 404, not 422: a missing staged file is the server losing the job,
+        # not the user's PDB being invalid. Changed after round-1 QC.
+        assert resp.status_code == 404, resp.data
         assert _LEAK_TOKEN not in resp.get_data(as_text=True), resp.data
-        assert resp.get_json()["error"]
+        assert "re-upload" in resp.get_json()["error"].lower()
 
     def test_analyze_json_redacts_a_non_valueerror(
         self, client, monkeypatch, reap_jobs
@@ -362,3 +371,90 @@ class TestSseContractIsIntact:
 
         assert event["stage"] == "error"
         assert isinstance(event["msg"], str) and event["msg"].strip()
+
+
+class TestJsonRoutesAnswerJsonForMalformedInput:
+    """Round-1 QC: the unhandled-500 class was only half closed.
+
+    The original change caught unexpected exceptions from the pipeline call
+    but left three crashes that happen BEFORE it -- two of them on the
+    anonymous route. A JSON-contracted endpoint answering an HTML error page
+    is the defect; the redaction work is what made it visible.
+    """
+
+    def test_analyze_survives_a_non_string_job_id(self, client, reap_jobs):
+        """ANONYMOUS route. {"job_id": 123} used to raise AttributeError.
+
+        The status is 404 once coerced (no such job), not 400 -- the point of
+        the assertion is that a JSON body comes back at all instead of the
+        HTML 500 page an uncaught AttributeError produced.
+        """
+        resp = client.post("/scout/analyze", json={"job_id": 123, "chain": "A"})
+
+        assert resp.status_code != 500, resp.data
+        assert resp.get_json() is not None, "answered HTML, not JSON"
+
+    def test_analyze_survives_a_non_string_chain(self, client, reap_jobs):
+        resp = client.post("/scout/analyze", json={"job_id": "x", "chain": ["A"]})
+
+        assert resp.status_code != 500, resp.data
+        assert resp.get_json() is not None, "answered HTML, not JSON"
+
+    def test_feasibility_analyze_survives_a_non_string_job_id(
+        self, client, reap_jobs
+    ):
+        _login(client)
+        resp = client.post(
+            "/scout/feasibility/analyze", json={"job_id": 123, "chain": "A"}
+        )
+
+        assert resp.status_code in (400, 404), resp.data
+        assert resp.get_json() is not None, "answered HTML, not JSON"
+
+    def test_feasibility_analyze_survives_a_non_scalar_epitope_id(
+        self, client, reap_jobs
+    ):
+        """int({"x": 1}) raises TypeError, which the epitope block never caught.
+
+        That block sits outside the route's main try/except, so the TypeError
+        escaped as an HTML 500 even after the broad handler was added.
+        """
+        _login(client)
+        job_id = _new_job(client)
+        # The epitope branch is only reached once results.csv exists.
+        (TMP / job_id / "results.csv").write_text(_RESULTS_CSV, encoding="utf-8")
+
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={
+                "job_id": job_id,
+                "chain": "A",
+                "epitope_residues": [],
+                "epitope_id": {"x": 1},
+            },
+        )
+
+        assert resp.status_code == 400, resp.data
+        assert resp.get_json() is not None, "answered HTML, not JSON"
+        assert _LEAK_TOKEN not in resp.get_data(as_text=True)
+
+    def test_the_epitope_parse_error_no_longer_echoes_caller_input(
+        self, client, reap_jobs
+    ):
+        """The fifth un-gated site: it reflected the caller's own string back."""
+        _login(client)
+        job_id = _new_job(client)
+        (TMP / job_id / "results.csv").write_text(_RESULTS_CSV, encoding="utf-8")
+
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={
+                "job_id": job_id,
+                "chain": "A",
+                "epitope_residues": [],
+                "epitope_id": "QCPROBE-NOTANINT",
+            },
+        )
+
+        assert resp.status_code == 400, resp.data
+        assert "QCPROBE" not in resp.get_data(as_text=True), resp.data
