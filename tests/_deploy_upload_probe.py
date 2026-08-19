@@ -40,6 +40,7 @@ from pathlib import Path
 
 import modal
 from modal.cli.import_refs import ImportRef, import_file_or_module
+from modal.mount import NonLocalMountError
 
 # Marks the payload line so incidental stdout from Modal cannot be mistaken for it.
 RESULT_PREFIX = "DEPLOY_UPLOAD_PROBE_JSON:"
@@ -55,8 +56,10 @@ def _rel(local_path, repo: Path) -> str:
 def _mount_files(mount, repo: Path) -> list[str]:
     try:
         entries = mount.entries
-    except Exception:
-        return []  # a non-local mount (e.g. the client mount) has no local files
+    except NonLocalMountError:
+        return []  # the client mount, say — carries no local file at all
+    # Anything else propagates: a probe that swallows errors reports an upload
+    # set smaller than the real one, which is the direction that certifies false.
     return [_rel(local, repo) for e in entries for local, _remote in e.get_files_to_upload()]
 
 
@@ -111,7 +114,6 @@ def probe(slug: str) -> dict:
     result = {
         "slug": slug,
         "module_package": getattr(module, "__package__", "<missing>"),
-        "repo_root_on_sys_path": "" in sys.path or str(repo) in sys.path,
         "functions": [],
     }
     for app in [v for v in vars(module).values() if isinstance(v, modal.App)]:
