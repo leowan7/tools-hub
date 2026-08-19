@@ -1,15 +1,60 @@
 # nixpacks.toml — Railway build configuration for the Ranomics
 # tools hub.
 #
-# The hub itself has only pure-Python dependencies, but pinning the
-# Python version and install command here guarantees reproducible builds
-# on Railway. Individual tools under tools/<name>/ may
-# add native dependencies later; extend nixPkgs as needed when that
-# happens.
+# READ THIS FIRST: as of 2026-08-19 this file appears to be INERT. The
+# Railway `web` service in the tools-hub project (production, serving
+# tools.ranomics.com) builds with Railpack, not Nixpacks. Checked in the
+# Railway dashboard — Settings -> Build reads "Builder: Railpack
+# (Default), python@3.13.0" — and the build log of the then-active
+# deployment reads:
+#
+#     using build driver railpack-v0.37.0
+#     prepare railpack-v0.37.0
+#     install mise packages: python
+#
+# Railpack installs tools via mise, and no nix step appears anywhere in
+# that log. The separate `epitope-scout` project (scout.ranomics.com,
+# which deploys from the SEPARATE leowan7/epitope-scout repo, not this
+# one) is on Railpack too.
+#
+# So `nixPkgs` below is very probably doing nothing, and has been for as
+# long as the service has been on Railpack. NOT verified by removing an
+# entry and watching a build fail — only that the builder is Railpack and
+# installs via mise. Treat any native dependency added here as unproven
+# until a build log shows it installing.
+#
+# This matters because README.md still calls this file the deploy's only
+# native-dependency source, and a task built on that premise nearly
+# shipped `nixPkgs = ["gcc", "dssp"]` to install mkdssp for Epitope
+# Scout. That would have been a silent no-op: green build, no binary, and
+# scout/scoring.py::assign_dssp quietly continuing to take its phi/psi
+# fallback — indistinguishable from success, except through the ss_method
+# column added alongside this comment.
+#
+# TO ACTUALLY ADD A NATIVE DEPENDENCY: configure Railpack (railpack.json,
+# or the service's build settings), not this file, and confirm it against
+# a real build log. Nothing in the test suite reads either one.
 #
 # Reference: https://nixpacks.com/docs/config/file
 
 [phases.setup]
+# The mkdssp question for Epitope Scout is live and unresolved; see
+# docs/qc/scout-dssp-install-decision.md. Short version, so nobody
+# re-derives it:
+#   1. PREREQUISITE, met: scout/scoring.py must read residue_data[2], not
+#      [1]. Landed in #161 (b73bfad). With [1] in place, installing mkdssp
+#      took secondary-structure agreement from 70% DOWN to 38%. Re-check
+#      rather than trusting this comment.
+#   2. It is a TRADEOFF. Installing fixes a measured user-facing defect
+#      (the displayed SS label is right ~50% of the time, and the
+#      "loop-only anchor" flag is suppressed on ~2/3 of true loops) but
+#      churns the ranking Scout actually delivers: the top-3 set changes
+#      on 16/30 measured structures (53%), 68% of patches change rank, in
+#      a direction nobody has validated against binder outcomes. Quote
+#      16/30, not the smaller top-1 figure of 11/30 — Scout ships a top-3.
+#   3. It does NOT go through this file. See the header.
+# Provenance is recorded per run in the ss_method column of results.csv;
+# use that data to decide, not this comment.
 nixPkgs = ["gcc"]
 
 [phases.install]

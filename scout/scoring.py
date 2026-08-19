@@ -379,7 +379,7 @@ def _assign_ss_by_phi_psi(model) -> dict:
     return ss_map
 
 
-def assign_dssp(model, pdb_path: str) -> dict:
+def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     """Assign secondary structure labels to residues using DSSP.
 
     Calls Bio.PDB.DSSP with the mkdssp binary. If mkdssp is not installed
@@ -397,6 +397,12 @@ def assign_dssp(model, pdb_path: str) -> dict:
     That absence has never been confirmed at runtime, so treat the DSSP
     branch below as untested in production and check before assuming it
     runs.
+    Do NOT try to fix this by adding dssp to nixpacks.toml: the Railway
+    service builds with Railpack, which does not read that file, so the
+    change is a silent no-op. That was attempted and dropped on
+    2026-08-19 -- see docs/qc/scout-dssp-install-decision.md section 0.
+    Which branch ran is recorded per run in the ss_method column of
+    results.csv; read that rather than inferring.
     See docs/qc/scout-dssp-fallback-measurement.md.
 
     DSSP code mapping:
@@ -414,8 +420,11 @@ def assign_dssp(model, pdb_path: str) -> dict:
         pdb_path: Path to the PDB file on disk (required by DSSP wrapper).
 
     Returns:
-        Dict mapping DSSP keys to one of "helix", "strand", or "loop".
-        Falls back to phi/psi classification if DSSP binary is unavailable.
+        ``(ss_map, method)``. ``ss_map`` maps DSSP keys to one of "helix",
+        "strand", or "loop". ``method`` names the branch that produced it --
+        "dssp", "phi_psi", or "none" -- and is recorded per run so the two
+        are distinguishable after the fact; see the ss_method column in
+        results.csv. Falls back to phi/psi if the DSSP binary is unavailable.
     """
     try:
         dssp_obj = DSSP(model, pdb_path, dssp="mkdssp")
@@ -445,17 +454,25 @@ def assign_dssp(model, pdb_path: str) -> dict:
             else:
                 label = "loop"
             ss_map[dssp_key] = label
-        return ss_map
+        method = "dssp"
     except Exception as exc:
         logger.warning(
             "DSSP binary unavailable (%s); falling back to phi/psi classification",
             exc,
         )
+        method = "phi_psi"
         try:
-            return _assign_ss_by_phi_psi(model)
+            ss_map = _assign_ss_by_phi_psi(model)
         except Exception as fallback_exc:
             logger.warning(
                 "Phi/psi fallback also failed (%s); all residues default to 'loop'",
                 fallback_exc,
             )
-            return {}
+            ss_map = {}
+
+    # An empty map scores every patch at the "loop" floor, so the term
+    # contributed nothing regardless of which branch produced it. Report
+    # that as "none" rather than crediting a branch that yielded no labels
+    # -- _assign_ss_by_phi_psi returns {} through its NORMAL path when
+    # PPBuilder finds no peptides, so this case logs no warning at all.
+    return ss_map, (method if ss_map else "none")

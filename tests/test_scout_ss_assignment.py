@@ -70,8 +70,9 @@ def test_assign_dssp_reads_the_secondary_structure_column(monkeypatch):
     }
     monkeypatch.setattr(scoring, "DSSP", _fake_dssp_factory(rows))
 
-    ss_map = scoring.assign_dssp(object(), "unused.pdb")
+    ss_map, method = scoring.assign_dssp(object(), "unused.pdb")
 
+    assert method == "dssp"
     assert ss_map[("A", (" ", 1, " "))] == "loop"
     assert ss_map[("A", (" ", 2, " "))] == "loop"
     assert ss_map[("A", (" ", 3, " "))] == "loop"
@@ -93,8 +94,9 @@ def test_assign_dssp_maps_every_dssp_code(monkeypatch):
     }
     monkeypatch.setattr(scoring, "DSSP", _fake_dssp_factory(rows))
 
-    ss_map = scoring.assign_dssp(object(), "unused.pdb")
+    ss_map, method = scoring.assign_dssp(object(), "unused.pdb")
 
+    assert method == "dssp"
     for i, (code, expected) in enumerate(codes.items(), start=1):
         assert ss_map[("A", (" ", i, " "))] == expected, f"DSSP code {code!r}"
 
@@ -109,8 +111,28 @@ def test_assign_dssp_falls_back_when_the_binary_is_missing(monkeypatch, caplog):
     monkeypatch.setattr(scoring, "_assign_ss_by_phi_psi", lambda model: sentinel)
 
     with caplog.at_level("WARNING"):
-        assert scoring.assign_dssp(object(), "unused.pdb") is sentinel
+        ss_map, method = scoring.assign_dssp(object(), "unused.pdb")
+    assert ss_map is sentinel
+    assert method == "phi_psi"
     assert "falling back to phi/psi" in caplog.text
+
+
+def test_assign_dssp_reports_none_when_no_labels_were_produced(monkeypatch):
+    """An empty map is "none", not a branch name.
+
+    Every patch lands on the "loop" floor either way, so the SS term carried
+    no signal -- crediting "phi_psi" would overstate what ran. This is the
+    case with no log signal at all: _assign_ss_by_phi_psi returns {} through
+    its NORMAL path when PPBuilder finds no peptides, so the "fallback also
+    failed" warning never fires.
+    """
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+    monkeypatch.setattr(scoring, "_assign_ss_by_phi_psi", lambda model: {})
+
+    assert scoring.assign_dssp(object(), "unused.pdb") == ({}, "none")
 
 
 def _straight_chain(n=4, collinear=True):
@@ -181,3 +203,62 @@ def test_empty_ss_map_scores_every_patch_identically():
     a = _continuous_ss_score(residues[:3], {})
     b = _continuous_ss_score(residues[3:], {})
     assert a == b == 0.2
+
+
+def test_ss_method_reaches_results_csv(tmp_path, monkeypatch):
+    """The provenance value assign_dssp reports must land in the CSV.
+
+    Before this column, "DSSP ran" and "the fallback ran" were identical in
+    every artefact Scout emits, which is why the fallback went unnoticed from
+    launch until 2026-08-19. This is the guard on that: it asserts the value
+    travels from assign_dssp all the way to the file the user downloads.
+
+    freesasa has no Windows wheel, so compute_rsa is swapped for Biopython's
+    ShrakeRupley. That changes patch composition, not the plumbing under test.
+    """
+    import csv
+    import shutil
+    from pathlib import Path
+
+    from Bio.PDB.SASA import ShrakeRupley
+
+    from scout import pipeline
+    from scout.sasa import STANDARD_AA
+
+    def _rsa(structure, chain_id):
+        ShrakeRupley().compute(structure[0], level="R")
+        return {
+            (chain_id, str(res.get_id()[1])): min(res.sasa / 200.0, 1.0)
+            for res in structure[0][chain_id]
+            if res.get_resname() in STANDARD_AA
+        }
+
+    monkeypatch.setattr(pipeline, "compute_rsa", _rsa)
+    monkeypatch.setattr(
+        pipeline, "assign_dssp", lambda model, path: ({}, "sentinel")
+    )
+
+    example = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    dest = tmp_path / "input.pdb"
+    shutil.copy2(example, dest)
+
+    with (pipeline.run_pipeline(dest, "A")).open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    assert rows, "pipeline produced no patches"
+    assert {row["ss_method"] for row in rows} == {"sentinel"}
+
+
+def test_csv_column_lists_are_in_sync():
+    """scout/flags.py hand-duplicates scout/pipeline.py's column list.
+
+    routes.py builds results_annotated.csv by feeding rows read out of
+    results.csv into DictWriter(fieldnames=CSV_COLUMNS_ANNOTATED), and
+    DictWriter raises ValueError on any key it has no fieldname for. So a
+    column added to pipeline.CSV_COLUMNS and not to flags._CSV_COLUMNS_BASE
+    breaks every analyze run in production while the whole suite stays
+    green. Adding ss_method hit exactly that; this is the guard.
+    """
+    from scout import flags, pipeline
+
+    assert flags._CSV_COLUMNS_BASE == pipeline.CSV_COLUMNS

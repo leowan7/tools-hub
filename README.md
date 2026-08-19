@@ -151,9 +151,20 @@ and `.env.example`.
 
 ## Deployment
 
-Designed for Railway via Nixpacks. The build spec is in
-`nixpacks.toml`; the start command is in `Procfile` (also duplicated in
-`nixpacks.toml`).
+Deployed on Railway. **The `web` service builds with Railpack, NOT
+Nixpacks** (dashboard: Settings -> Build; the build log reads
+`using build driver railpack-v0.37.0` / `install mise packages: python`),
+so `nixpacks.toml` appears to be inert and is very probably NOT the build
+spec despite its presence in the repo. Do not add a native dependency
+there and assume it installs — that was tried on 2026-08-19 and dropped;
+see `nixpacks.toml`'s header comment and
+`docs/qc/scout-dssp-install-decision.md` §0. Configure Railpack, and
+confirm against a real build log. The start command is in `Procfile`
+(also duplicated in `nixpacks.toml`).
+
+Note `scout.ranomics.com` is a SEPARATE Railway project deploying from
+the separate `leowan7/epitope-scout` repo; this repo's `web` service
+serves `tools.ranomics.com`.
 
 Health check: `/health` returns `{"status": "ok"}` unauthenticated, so
 the port scanner can verify the app without credentials.

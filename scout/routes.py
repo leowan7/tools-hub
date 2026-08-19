@@ -779,6 +779,10 @@ def analyze():
                 "job_id": job_id,
                 "chain": chain_id,
                 "uniprot_id": uniprot_id or None,
+                # Which secondary-structure branch ran. Constant per run,
+                # so read it off any row. Lets the fallback-vs-DSSP split
+                # be answered from the ledger instead of Railway logs.
+                "ss_method": all_rows[0].get("ss_method") if all_rows else None,
             },
         )
 

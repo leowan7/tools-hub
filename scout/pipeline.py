@@ -14,6 +14,8 @@ the full analysis from PDB file to results.csv:
        agrees with real DSSP on ~70% of residues. Nothing in this repo
        installs mkdssp (checked 2026-08-19), so barring a hand-added
        Railway build package every production run has used the fallback.
+       Which branch actually ran is recorded per run in the ss_method
+       column of results.csv, so this no longer has to be inferred.
        See docs/qc/scout-dssp-fallback-measurement.md.
     7. Write results.csv and return its Path
 
@@ -71,6 +73,14 @@ CSV_COLUMNS = [
     "centroid_y",
     "centroid_z",
     "is_plddt",
+    # Which branch of assign_dssp produced the secondary_structure column:
+    # "dssp" (mkdssp ran), "phi_psi" (Ramachandran fallback), or "none"
+    # (empty map, every patch at the loop floor). Constant across the run,
+    # like is_plddt. Recorded because the two were previously
+    # indistinguishable in every artefact Scout emits, which is how the
+    # fallback ran unnoticed from launch until 2026-08-19.
+    # See docs/qc/scout-dssp-fallback-measurement.md.
+    "ss_method",
 ]
 
 # ---------------------------------------------------------------------------
@@ -258,7 +268,8 @@ def run_pipeline(
         7. Raise if no patches produced.
         8. Compute chain-level B-factor scores (compute_bfactor_scores).
         9. Assign secondary structure (assign_dssp: DSSP if mkdssp is on
-           PATH, else the phi/psi fallback; empty dict = all loop).
+           PATH, else the phi/psi fallback; empty dict = all loop). Which
+           branch ran is recorded in the ss_method CSV column.
         10. Build all-atom coordinate array for burial scoring.
         11. Score geometry for each patch (score_geometry).
         12. Normalize burial across all patches (normalize_burial_scores).
@@ -380,7 +391,7 @@ def run_pipeline(
     # with real DSSP, ss_score biased ~+0.23 high), and beyond that an
     # empty dict = all loop.
     # ------------------------------------------------------------------
-    ss_map = assign_dssp(model, str(pdb_path))
+    ss_map, ss_method = assign_dssp(model, str(pdb_path))
 
     # ------------------------------------------------------------------
     # Step 10: All-atom coordinate array for burial scoring
@@ -510,6 +521,7 @@ def run_pipeline(
             "centroid_y": round(float(centroid[1]), 2),
             "centroid_z": round(float(centroid[2]), 2),
             "is_plddt": "1" if plddt_detected else "0",
+            "ss_method": ss_method,
         })
 
     # Sort by composite_score descending so the download CSV is ranked
