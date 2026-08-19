@@ -503,7 +503,7 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     # which rendered a 72-character <title> — over the 65-char SERP cap
     # this map exists to respect, and repeating "co-folding" from the
     # short name that precedes it.
-    "opendde": "Protein, DNA, RNA and Ligand",
+    "opendde": "Protein, DNA, RNA, Ligand",
     "proteina": "Hard-Target Binder Design",
 }
 
