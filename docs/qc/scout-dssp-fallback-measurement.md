@@ -160,7 +160,8 @@ antibody targets; 3AVE 0.682, 1IGY 0.597, 6M0J:E 0.598).
 ### Effect on `ss_score` itself
 
 `composite_score` differs between arms *only* in the `0.20 * ss_score` term, so
-per-patch `ss_score` can be recovered exactly from the arm composites. Over
+the arm composites give the *difference* in `ss_score` exactly; the absolute
+values below additionally use the all-loop (`{}`) arm introduced in §4. Over
 **281 patches**:
 
 | | real DSSP | phi/psi fallback |
@@ -304,14 +305,25 @@ with `ATOM`, not `HEADER`, and `mkdssp` 4.2.2 rejects it outright
 ("did not start with a valid PDB HEADER line"). Uploads are written to disk
 verbatim (`scout/routes.py:388`, `:483`), and headerless PDBs are routine output
 from design pipelines (RFdiffusion, BindCraft, MPNN). Those inputs will keep
-taking the fallback after `mkdssp` is installed. That is an argument for keeping
-the fallback and documenting it honestly, not for skipping the install.
+taking the fallback after `mkdssp` is installed.
+
+A second class, flagged by round-2 QC and not measured here: `run_pipeline`
+accepts `.cif` (`scout/pipeline.py:297`). Biopython 1.87 skips its
+`label_asym_id`->`auth_asym_id` remap when it detects DSSP 4.x
+(`Bio/PDB/DSSP.py:416,429`), and `_make_dssp_dict` reads the chain from a
+single column, so an mmCIF whose label and auth chain IDs differ raises
+inside `assign_dssp`, the broad `except` swallows it, and the whole
+structure drops to the fallback. It degrades safely -- never wrong labels --
+but nothing records which branch ran, so it would be invisible.
+
+Both are arguments for keeping the fallback and documenting it honestly,
+not for skipping the install.
 
 ---
 
 ## 7. Q5 — recommendation
 
-### Do (implemented in this branch, uncommitted)
+### Do (implemented in this branch, committed as `9f6fc7d`)
 
 1. **`residue_data[1]` → `residue_data[2]`** in
    `scout/scoring.py::assign_dssp`. Required regardless of every other
@@ -364,7 +376,9 @@ product emits.
 - **Do not touch the DSSP key format.** `dssp_map` keys use the DSSP file's
   `res_id` `(' ', resseq, icode)` while `_continuous_ss_score` looks up
   `(chain, residue.get_id())`, so HETATM-flagged standard residues (MSE) would
-  miss. Measured impact: **1 residue in 4487**, and `run_pipeline` step 4 already
+  miss. Impact over the 30-chain set: **1 residue in 4487** (counted by
+  scanning the parsed structures for HETATM-flagged standard residues, not
+  by a DSSP arm), and `run_pipeline` step 4 already
   skips HETATM residues before patch formation so they never reach the lookup.
   Moot.
 
@@ -392,5 +406,6 @@ No existing test changed state. Both runs exited 0.
 | `scout/scoring.py` | `residue_data[1]` → `[2]`; deployment note + why-comment |
 | `scout/pipeline.py` | Four docstring/comment corrections: SS comes from the fallback, not DSSP; feasibility pipeline never used DSSP at all |
 | `nixpacks.toml` | **Unchanged here** — the `dssp` install is deferred to a separate, build-verified PR (§7 item 4) |
+| `requirements.txt` | `biopython>=1.81` -> `>=1.81,<2.0` — the module ships two conflicting tuple orders (round-2 QC finding 4) |
 | `tests/test_scout_ss_assignment.py` | New — 7 tests, first coverage of either SS function |
 | `docs/qc/scout-dssp-fallback-measurement.md` | This document |

@@ -135,6 +135,7 @@ def _straight_chain(n=4, collinear=True):
     return model
 
 
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_phi_psi_fallback_degenerate_geometry_yields_loop_not_a_crash():
     """A NaN dihedral must not become a spurious helix or strand.
 

@@ -11,8 +11,9 @@ the full analysis from PDB file to results.csv:
     6. Score each patch: geometry, B-factor, secondary structure (scoring.py).
        NB: the SS labels come from DSSP only if mkdssp is on PATH in the
        deployed image; otherwise from a phi/psi Ramachandran fallback that
-       agrees with real DSSP on ~70% of residues. As of 2026-08-19 every
-       production run has used the fallback -- nixpacks.toml installs no dssp.
+       agrees with real DSSP on ~70% of residues. Nothing in this repo
+       installs mkdssp (checked 2026-08-19), so barring a hand-added
+       Railway build package every production run has used the fallback.
        See docs/qc/scout-dssp-fallback-measurement.md.
     7. Write results.csv and return its Path
 

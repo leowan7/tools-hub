@@ -387,19 +387,24 @@ def assign_dssp(model, pdb_path: str) -> dict:
     classification (pure Python, no external binary required).
 
     NOTE ON DEPLOYMENT: which branch runs depends entirely on whether
-    mkdssp is on PATH in the deployed image. As of 2026-08-19 it is not
-    (nixpacks.toml installs only gcc), so every production run since the
-    feature shipped has taken the phi/psi fallback: ~70% per-residue agreement
-    with real DSSP, two thirds of true loops called helix or strand, and
-    ss_score biased ~+0.23 high. The DSSP branch below has therefore never
-    executed in production — treat it as untested there, and check
-    nixpacks.toml before assuming it runs.
+    mkdssp is on PATH in the deployed image. Nothing in this repository
+    installs it (checked 2026-08-19: nixpacks.toml, Procfile, the
+    requirements files; there is no Dockerfile or Aptfile). Unless it was
+    added by hand in the Railway dashboard's build settings, every
+    production run since the feature shipped has taken the phi/psi
+    fallback: ~70% per-residue agreement with real DSSP, two thirds of
+    true loops called helix or strand, and ss_score biased ~+0.23 high.
+    That absence has never been confirmed at runtime, so treat the DSSP
+    branch below as untested in production and check before assuming it
+    runs.
     See docs/qc/scout-dssp-fallback-measurement.md.
 
     DSSP code mapping:
         H, G, I -> "helix"
         E, B    -> "strand"
-        all else -> "loop" (T, S, C, ' ')
+        all else -> "loop" (T, S, P, '-')
+    DSSP emits no "C"; Biopython normalises a blank code to "-"
+    (Bio/PDB/DSSP.py:260), and DSSP 4.x added "P" for polyproline II.
 
     Args:
         model: Biopython Model object (structure[0]).
@@ -421,6 +426,14 @@ def assign_dssp(model, pdb_path: str) -> dict:
             # in both alphabets. Measured against mkdssp 4.2.2 on 30 chains,
             # that mistake scored 38% per-residue agreement versus 70% for
             # the phi/psi fallback it was meant to improve on.
+            #
+            # The trap is that Bio.PDB.DSSP ships TWO tuple orders in
+            # one module: the DSSP class yields
+            #   (dssp_index, aa, ss, rel_acc, phi, psi, ...)  -> ss at 2
+            # while dssp_dict_from_pdb_file/_make_dssp_dict yield
+            #   (aa, ss, acc, phi, psi, dssp_index, ...)      -> ss at 1
+            # so [1] is right for the dict API and wrong here. Check
+            # which API you are on before touching this index.
             ss_code = residue_data[2]
             if ss_code in DSSP_HELIX_CODES:
                 label = "helix"
