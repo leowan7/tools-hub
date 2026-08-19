@@ -80,6 +80,30 @@ on:
       - '!tools/**/meta.py'
       - '!tools/**/example/**'
       - '!tools/**/__init__.py'
+      # static/example/ is NOT web-tier only: four Dockerfile.modal files COPY a
+      # fixture out of it as their in-image smoke target. static/ is outside
+      # tools/, so these matched NO trigger at all and editing one left four
+      # images stale with nothing red to say so. A different path from the
+      # '!tools/**/example/**' negation above, which covers per-tool
+      # tools/<slug>/example/ dirs.
+      #
+      # These three sit AFTER every negation and are unaffected by the ordering
+      # rule above in both directions: no 'tools/**' negation can match a
+      # 'static/' path, so none of them cancels these, and each is a literal
+      # file path under static/, so none of them re-includes anything a
+      # negation excludes. They are last only to keep the negation block
+      # contiguous under the 'tools/**' it qualifies.
+      #
+      # Listed file-by-file, not as 'static/example/**': the other two fixtures
+      # there are docs-only, and a glob would rebuild all nine GPU images to
+      # ship a file no image contains — the same waste the negations above
+      # exist to prevent. Safe to keep tight because
+      # tests/test_deploy_trigger_covers_dockerfile_copies.py fails if any
+      # Dockerfile COPYs a path no trigger here covers, so a fourth fixture
+      # cannot be baked in without this list growing to match.
+      - 'static/example/BPTI.fasta'      # af2
+      - 'static/example/ubiquitin.fasta' # colabfold, esmfold
+      - 'static/example/1HEW.pdb'        # mpnn
       - '.github/workflows/deploy-modal.yml'
   workflow_dispatch:
 

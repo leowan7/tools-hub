@@ -131,11 +131,24 @@ _WORKFLOW = _REPO / ".github" / "workflows" / "deploy-modal.yml"
 # Every negation the trigger must keep carrying, in the order they must appear
 # AFTER the positive `tools/**`. GitHub resolves `paths` later-wins, so a
 # negation hoisted above `tools/**` is re-included and silently does nothing.
+#
+# The three `static/example/` entries are positives, not negations: four
+# Dockerfile.modal files COPY a fixture from there as their in-image smoke
+# target, and `static/` is outside `tools/` so nothing else here matched them.
+# Later-wins does not bind them in either direction — no `tools/**` negation can
+# match a `static/` path, so none cancels them, and each is a literal file path,
+# so none re-includes anything a negation excludes. They are pinned last only to
+# keep the negation block contiguous under the `tools/**` it qualifies.
+# tests/test_deploy_trigger_covers_dockerfile_copies.py is what keeps this list
+# in step with what the Dockerfiles actually bake in.
 _EXPECTED_PATHS = [
     "tools/**",
     "!tools/**/meta.py",
     "!tools/**/example/**",
     "!tools/**/__init__.py",
+    "static/example/BPTI.fasta",
+    "static/example/ubiquitin.fasta",
+    "static/example/1HEW.pdb",
     ".github/workflows/deploy-modal.yml",
 ]
 
