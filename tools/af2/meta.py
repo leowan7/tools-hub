@@ -11,7 +11,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — Nature permalink.
     github_url        — upstream ColabFold repository (which bundles AF2).
-    comparison_one_liner — "pick AF2 when..." positioning string.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id — optional job_id of a public demo run (None today).
 """
 
@@ -72,9 +73,12 @@ seo_faq: list[dict] = [
 ]
 
 comparison_one_liner: str = (
-    "Pick AF2 when you need the gold-standard structure prediction with "
-    "calibrated pLDDT and PAE. For faster single-sequence folds use "
-    "ESMFold (D4); for affinity-aware folds use Boltz-2 (D6)."
+    "You have a sequence and want the most trusted 3D prediction of "
+    "it, with per-residue confidence you can act on. It searches "
+    "for related natural sequences first, which is where the "
+    "accuracy comes from and where the time goes. For a faster "
+    "answer use ColabFold or ESMFold; to score a binder against its "
+    "target use Boltz-2."
 )
 example_output_id: Optional[str] = None
 
@@ -83,15 +87,30 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "AlphaFold2 (Jumper et al., <em>Nature</em> 2021) packaged "
-        "via ColabFold (Mirdita et al., <em>Nature Methods</em> 2022). "
-        "Standard MSA-backed structure prediction with calibrated "
-        "pLDDT and PAE, monomer or multimer."
+        "Predicts the 3D structure of a protein from its sequence — one "
+        "chain, or several chains folded together as a complex. It "
+        "searches public databases for related natural sequences first, "
+        "which is where most of its accuracy comes from and most of its "
+        "runtime goes, then returns a structure with per-residue "
+        "confidence (pLDDT) and an estimate of the error between any "
+        "two residues (PAE). Both are calibrated, meaning the numbers "
+        "mean what they say. AlphaFold2, Jumper et al., <em>Nature</em> "
+        "2021, packaged via ColabFold (Mirdita et al., <em>Nature "
+        "Methods</em> 2022)."
     ),
     "when_to_use": [
-        "You need the gold-standard fold with full MSA and templates and calibrated confidence.",
-        "Your target is monomeric or a small multimer (2 to 4 chains).",
-        "You can wait roughly 5 to 10 min per run for MMseqs2 MSA fetch plus 3 recycles.",
+        (
+            "You have a sequence and want the most trusted structure "
+            "prediction available, with confidence numbers you can act on."
+        ),
+        (
+            "Your target is a single chain, or a small complex of two to "
+            "four chains."
+        ),
+        (
+            "You can wait 5 to 10 minutes per run for the homolog search "
+            "and three refinement passes."
+        ),
     ],
     "prerequisites": [
         "Single-letter FASTA sequence(s). Multimers separated by <code>:</code> or pasted as multi-record FASTA.",

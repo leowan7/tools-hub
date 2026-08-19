@@ -310,8 +310,10 @@ adapter = ToolAdapter(
     slug="colabfold",
     label="ColabFold",
     blurb=(
-        "Fast no-MSA fold. Paste a FASTA, get a predicted structure with "
-        "pLDDT and PAE. No-MSA speed tier, ~1 to 2 min per run."
+        "Paste a sequence and get a predicted structure back in one to "
+        "two minutes, with per-residue confidence. Trades a little "
+        "accuracy for speed by skipping the search for related natural "
+        "sequences."
     ),
     presets=(
         Preset(

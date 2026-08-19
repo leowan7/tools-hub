@@ -13,7 +13,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — bioRxiv permalink for the BindCraft paper.
     github_url        — upstream repository.
-    comparison_one_liner — "pick BindCraft when..." positioning string
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
                          rendered on the About panel.
     example_output_id — optional job_id of a public demo run to link to
                          from the About panel. Phase 3 will populate this;
@@ -66,8 +67,11 @@ seo_faq: list[dict] = [
 ]
 
 comparison_one_liner: str = (
-    "Pick BindCraft when you have a target PDB plus known hotspot "
-    "residues and want de novo 60 to 150 aa protein binders."
+    "You have a target structure and know roughly which patch of "
+    "its surface you want gripped, and you want brand-new "
+    "mini-proteins of 60 to 150 residues built to grip it. Every "
+    "candidate is refolded and filtered before you see it, so what "
+    "comes back is already a shortlist."
 )
 example_output_id: Optional[str] = None
 
@@ -76,15 +80,29 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "BindCraft (Pacesa et al., bioRxiv 2024). De novo binder design "
-        "via AlphaFold2-Multimer hallucination with hotspot-focused "
-        "backpropagation, followed by ProteinMPNN sequence design and "
-        "AF2 re-prediction filtering."
+        "Designs brand-new mini-proteins that grip a patch of your "
+        "target. It runs AlphaFold2 multimer backwards — pushing a "
+        "random starting sequence toward one the model believes will "
+        "bind the residues you named — then assigns a real sequence "
+        "with ProteinMPNN and refolds every candidate to check the "
+        "answer survives. What reaches you has already been filtered on "
+        "interface confidence and fold quality. BindCraft, Pacesa et "
+        "al., bioRxiv 2024."
     ),
     "when_to_use": [
-        "You have a target PDB and at least one hotspot residue you want the binder to contact.",
-        "You want de novo 50 to 150 aa protein binders (not antibodies).",
-        "You can wait ~45 min per pilot run and want filtered hits with ipTM and pLDDT above the BindCraft default thresholds.",
+        (
+            "You have a target structure and at least one residue on its "
+            "surface you want the binder to touch."
+        ),
+        (
+            "You want a small de novo protein of 50 to 150 residues, not an "
+            "antibody."
+        ),
+        (
+            "You can wait about 45 minutes for a first run, and you would "
+            "rather see a filtered shortlist than every candidate the run "
+            "generated."
+        ),
     ],
     "prerequisites": [
         "Target structure as <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code>.",

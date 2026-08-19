@@ -121,9 +121,10 @@ adapter = ToolAdapter(
     slug="bindcraft",
     label="BindCraft",
     blurb=(
-        "Structure-based de novo binder design on JAX, AlphaFold2 "
-        "multimer, and ColabDesign. Four hour max session; results are "
-        "emailed on completion."
+        "Upload your target structure, mark the residues you want "
+        "gripped, and get back new mini-proteins of 60 to 150 residues "
+        "built to grip them, already refolded and filtered. Sessions "
+        "run up to four hours; results are emailed when they finish."
     ),
     presets=(
         Preset(

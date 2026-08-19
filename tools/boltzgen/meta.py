@@ -13,7 +13,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — link to the Boltz preprint / repo.
     github_url        — upstream jwohlwend/boltz repo.
-    comparison_one_liner — "pick BoltzGen when..." positioning string.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id — optional job_id of a public demo run; None until
                          Phase 3 populates it.
 """
@@ -52,19 +53,26 @@ seo_faq: list[dict] = [
     },
     {
         "q": "How long does a BoltzGen pilot run take?",
+        # 15 to 60, matching PRESET_RUNTIME above and the "runtime_table"
+        # entry in ``about`` below. Those two are the derived source: the
+        # runtime band on the tool page and the pilot card both read them.
+        # This answer said 30 to 90 and ``when_to_use`` said 5 to 60, so
+        # the same page quoted three different runtimes for one run.
         "a": (
-            "Pilot runs typically finish in 30 to 90 minutes on a "
-            "dedicated A100, depending on target size and modality. "
-            "Billing is by the second of GPU time."
+            "Pilot runs typically finish in 15 to 60 minutes on a "
+            "dedicated A100, depending on target size and the binder "
+            "format you picked. Billing is by the second of GPU time."
         ),
     },
 ]
 
 comparison_one_liner: str = (
-    "Pick BoltzGen when you want one model that can design "
-    "mini-proteins, nanobodies, antibodies, or peptides against the "
-    "same target, or when your target involves glycans, "
-    "post-translational modifications, or non-canonical residues."
+    "You have a target and have not settled on what shape the "
+    "binder should be. One model here aims mini-proteins, "
+    "nanobodies, antibodies or peptides at the same site, so you "
+    "can compare formats instead of guessing. The only design tool "
+    "here that handles sugars and modified residues on the target "
+    "natively."
 )
 example_output_id: Optional[str] = None
 
@@ -73,19 +81,33 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "BoltzGen (Wohlwend et al., MIT 2024). Boltz-2 binder design. "
-        "Jointly generates a binder backbone against a target, "
-        "refolds each candidate end-to-end, and scores affinity via "
-        "ipTM and pLDDT. Ships four design protocols (mini-protein, "
-        "nanobody, antibody, peptide) and handles glycans, "
-        "post-translational modifications, and non-canonical residues "
-        "natively."
+        "Designs a binder against your target and refolds it inside the "
+        "same model, so every candidate arrives already checked against "
+        "the site you aimed at. Four formats share one target — a small "
+        "de novo protein, a nanobody, an antibody, or a short peptide — "
+        "so you can compare formats on the same epitope rather than "
+        "guessing which to commit to. It is the only design tool here "
+        "that handles sugars, post-translational modifications and "
+        "non-standard residues on the target natively. BoltzGen, "
+        "Wohlwend et al., MIT 2024."
     ),
     "when_to_use": [
-        "You want one model that can target the same epitope with mini-proteins, nanobodies, antibodies, or peptides.",
-        "Your target has glycans, PTMs, modified residues, or non-canonical chemistry.",
-        "You want refolding RMSD as a self-consistency signal alongside ipTM and pLDDT.",
-        "You need roughly 5 to 60 min per run and a budget-tunable number of candidates.",
+        (
+            "You have not settled on the binder format and want to aim "
+            "mini-proteins, nanobodies, antibodies and peptides at the same "
+            "site."
+        ),
+        (
+            "Your target carries sugars, modified residues or other "
+            "chemistry a protein-only model would silently drop."
+        ),
+        (
+            "You want each design refolded on its own, so you can see "
+            "whether it folds back to the shape it was designed as."
+        ),
+        (
+            "You can wait 15 to 60 minutes per run."
+        ),
     ],
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
@@ -113,10 +135,16 @@ about: dict = {
         },
         {
             "name": "Binder length (min/max)",
+            # The peptide floor read 5 here and in boltzgen_form.html.
+            # ``_parse_inputs`` in __init__.py:92-95 refuses anything under
+            # 10 and the form inputs carry min="10", so 5 was a number the
+            # tool rejects — and this block renders on the SAME page as the
+            # form, so the two said different things one scroll apart.
             "explanation": (
                 "Residue-count window for the generated binder. Typical "
                 "starting ranges: mini-protein 50 to 100, nanobody "
-                "110 to 130, antibody 110 to 200, peptide 5 to 30."
+                "110 to 130, antibody 110 to 200, peptide 10 to 30. "
+                "10 is the shortest binder this tool accepts."
             ),
         },
         {

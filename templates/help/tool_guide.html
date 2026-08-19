@@ -164,8 +164,18 @@
                components/multichain_iptm_notice.html are the surfaces that
                know the tool and can be specific. A general page cannot, so it
                states the general truth and points at the specific one. #}
-            Predicted confidence at an interface. Higher is better; aim above
-            roughly 0.7 on a tractable target. On a multi-chain target the
+            {# The cut-off is READ from shared/metric_glossary.py (a jinja
+               global, app.py:365), not typed. "aim above roughly 0.7" had
+               no source and sat on the SAME page as the tool's own
+               output_summary above, which for rfdiffusion states ipTM
+               >= 0.65. Third and last home of that literal, after
+               components/about_panel.html and help/faq.html. #}
+            Predicted confidence in the contact between two chains, on a 0 to
+            1 scale. Higher is better:
+            {{ metric_glossary.get("ipTM", {}).get("good_range", "") }}.
+            Individual tools set their own pass bar a little either side of
+            that &mdash; this guide's own results summary above states this
+            tool's. On a multi-chain target the
             number may cover the target's own chain&ndash;chain interface as
             well as the binder's, so read the per-tool note on the results
             table before comparing designs on it.

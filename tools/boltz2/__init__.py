@@ -203,9 +203,10 @@ adapter = ToolAdapter(
     slug="boltz2",
     label="Boltz-2",
     blurb=(
-        "Cofold validation. Validate designed binders against your "
-        "antigen with an antibody-trained cofold model. ~15 s per design "
-        "in single-sequence mode."
+        "Paste a designed binder, upload the target it should hit, and "
+        "get back the predicted complex plus a 0-to-1 confidence score "
+        "for the contact between them. About 15 s per design in "
+        "single-sequence mode."
     ),
     presets=(
         Preset(
