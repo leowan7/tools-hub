@@ -10,14 +10,20 @@ Usage
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from unittest.mock import patch
 
 import pytest
-from flask import Flask, jsonify
+from flask import Flask, Response, jsonify
 
-from shared.idempotency import _compute_key, idempotent
+from shared.idempotency import (
+    _claim_key,
+    _compute_key,
+    _store_response,
+    idempotent,
+)
 
 # This file is already hermetic by a different mechanism -- it builds a bare
 # `Flask(__name__)` rather than calling create_app(), and `patch_deps` below is
@@ -28,16 +34,31 @@ from shared.idempotency import _compute_key, idempotent
 # someone later adds a create_app() test here.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
+USER_ID = "00000000-0000-0000-0000-000000000001"
+
 
 # ---------------------------------------------------------------------------
 # Fake Supabase table + client
 # ---------------------------------------------------------------------------
 
 
+def _as_dt(value: Any) -> datetime:
+    """Compare timestamps as timestamps, the way Postgres does.
+
+    Both sides of the ``expires_at <`` predicate are ISO-8601 strings here, and
+    comparing them as strings happens to work while every one carries the same
+    offset. It stops working the moment one does not, and would then silently
+    pass a stale-row clear that should not have matched.
+    """
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
 class _FakeTable:
     """Minimal in-memory stand-in for a Supabase table client.
 
-    Models two PostgREST behaviours the previous fake ignored, both of which
+    Models three PostgREST behaviours the previous fake ignored, each of which
     silently hid real bugs:
 
     * ``select("a,b")`` **projects** — the returned rows carry only the named
@@ -47,19 +68,38 @@ class _FakeTable:
     * with ``known_columns`` set, an UPDATE naming a column the table does not
       have raises, the way PostgREST does before a migration is applied. That
       is the path ``_store_response``'s fallback exists to survive.
+    * ``insert`` enforces the PRIMARY KEY: a second insert of a key already in
+      the store RAISES, as PostgREST does on a unique violation. This is the
+      whole basis of the claim, so it is modelled with ``dict.setdefault``, one
+      atomic operation, rather than a check-then-set whose own correctness
+      would depend on the GIL. Measured, not assumed: check-then-set here
+      survives 300 runs of the race on CPython today, so this is not a bug
+      being fixed. ``setdefault`` is kept anyway, because a fake standing in
+      for a PRIMARY KEY should not rest on an interpreter detail that a
+      free-threaded build removes.
+
+    ``before_write`` is called once at the start of any write's ``execute()``.
+    The concurrency test uses it to hold every writer at a barrier until all of
+    them have finished READING, which is the interleaving that makes a
+    read-then-write claim admit two winners.
     """
 
     def __init__(
-        self, store: dict[str, dict], known_columns: Optional[set[str]] = None,
+        self,
+        store: dict[str, dict],
+        known_columns: Optional[set[str]] = None,
+        before_write: Optional[Callable[[], Any]] = None,
     ) -> None:
         self._store = store
         self._known_columns = known_columns
+        self._before_write = before_write
         self._filter_key: Optional[str] = None
         self._update_payload: Optional[dict] = None
-        self._pending_upsert: Optional[dict] = None
+        self._pending_insert: Optional[dict] = None
         self._projection: Optional[list[str]] = None
         self._pending_delete = False
         self._is_null: list[str] = []
+        self._at_most: list[tuple[str, Any]] = []
 
     def _project(self, row: dict) -> dict:
         if self._projection is None or "*" in self._projection:
@@ -86,12 +126,16 @@ class _FakeTable:
         in exactly the direction that matters.
 
         postgrest-py renders both ``.is_(col, None)`` and ``.is_(col, "null")``
-        as ``is.null``, and this repo issues both. Of its 17 production call
-        sites, only the 2 in ``shared/idempotency.py`` pass None; the other 15
-        pass the string, across ``shared/api_keys.py`` (x4),
-        ``shared/targets.py`` (x4), ``shared/jobs.py`` (x3),
-        ``shared/handoffs.py``, ``shared/compute_campaigns.py``,
-        ``cron/purge_old_storage.py`` and ``webhooks/modal.py``. Both are
+        as ``is.null``, and this repo issues both. Of its 19 production call
+        sites (counted with ``ast``, not grep -- a docstring in
+        ``shared/target_results.py`` quotes an ``.is_()`` call, so grep reads
+        20 and produced exactly that wrong number here once already), only the
+        2 in ``shared/idempotency.py`` pass
+        None; the other 17 pass the string, across ``shared/targets.py`` (x5),
+        ``shared/api_keys.py`` (x4), ``shared/jobs.py`` (x3),
+        ``shared/compute_campaigns.py``, ``shared/handoffs.py``,
+        ``shared/target_results.py``, ``cron/purge_old_storage.py`` and
+        ``webhooks/modal.py``. Both are
         accepted, because a fake that refused the string would break the moment
         this module was refactored to the majority convention -- and break
         SILENTLY, since the caller swallows it (below).
@@ -111,8 +155,34 @@ class _FakeTable:
         self._is_null.append(column)
         return self
 
-    def upsert(self, payload: dict, on_conflict: str = "key") -> "_FakeTable":
-        self._pending_upsert = payload
+    def lte(self, column: str, value: Any) -> "_FakeTable":
+        """Model the ``<=`` predicate, do not accept-and-ignore it.
+
+        ``_claim_key`` clears a stale row with ``delete().eq(key).lte(
+        "expires_at", now)``. The predicate is the entire safety property: it
+        is what stops that delete removing the LIVE claim a concurrent caller
+        inserted a moment earlier. A fake that dropped it would delete
+        unconditionally and the suite would be blind to a stale-row clear that
+        wipes the winner -- see
+        ``test_a_stalled_caller_cannot_delete_a_claim_that_went_live``, which
+        is the test that actually exercises that ordering.
+        """
+        self._at_most.append((column, value))
+        return self
+
+    def _passes_predicates(self, row: dict) -> bool:
+        if not all(row.get(col) is None for col in self._is_null):
+            return False
+        for column, bound in self._at_most:
+            value = row.get(column)
+            if value is None:
+                return False
+            if _as_dt(value) > _as_dt(bound):
+                return False
+        return True
+
+    def insert(self, payload: dict) -> "_FakeTable":
+        self._pending_insert = payload
         return self
 
     def update(self, payload: dict) -> "_FakeTable":
@@ -124,6 +194,27 @@ class _FakeTable:
         return self
 
     def execute(self) -> Any:
+        if self._before_write is not None and (
+            self._pending_delete
+            or self._pending_insert is not None
+            or self._update_payload is not None
+        ):
+            self._before_write()
+        if self._pending_insert is not None:
+            row = dict(self._pending_insert)
+            self._pending_insert = None
+            self._projection = None
+            self._is_null = []
+            self._at_most = []
+            # setdefault is ONE atomic operation under the GIL. That is what
+            # makes this a PRIMARY KEY rather than a check-then-set carrying
+            # the same race as the bug under test.
+            if self._store.setdefault(row["key"], row) is not row:
+                raise RuntimeError(
+                    "duplicate key value violates unique constraint "
+                    '"request_idempotency_pkey"'
+                )
+            return type("R", (), {"data": [row]})()
         if self._pending_delete:
             # Must actually remove the row. A no-op delete would let
             # _release_key report success while leaving a claim whose
@@ -134,30 +225,22 @@ class _FakeTable:
             key = self._filter_key
             self._filter_key = None
             self._projection = None
-            is_null, self._is_null = self._is_null, []
             removed = None
             if key is not None:
                 candidate = self._store.get(key)
-                # The IS NULL predicate is part of the WHERE clause, so a row
-                # that fails it is not deleted AND not returned.
-                if candidate is not None and all(
-                    candidate.get(col) is None for col in is_null
-                ):
+                # The IS NULL and `<` predicates are part of the WHERE clause,
+                # so a row that fails either is not deleted AND not returned.
+                if candidate is not None and self._passes_predicates(candidate):
                     removed = self._store.pop(key)
+            self._is_null = []
+            self._at_most = []
             return type("R", (), {"data": [removed] if removed else []})()
-        if self._pending_upsert is not None:
-            row = dict(self._pending_upsert)
-            self._store[row["key"]] = row
-            self._pending_upsert = None
-            self._projection = None
-            return type("R", (), {"data": [row]})()
         if self._update_payload is not None and self._filter_key is not None:
             payload = self._update_payload
             self._update_payload = None
             key = self._filter_key
             self._filter_key = None
             self._projection = None
-            is_null, self._is_null = self._is_null, []
             if self._known_columns is not None:
                 unknown = set(payload) - self._known_columns
                 if unknown:
@@ -172,10 +255,10 @@ class _FakeTable:
             # neither written nor returned. Honoured here as well as on the
             # delete path: modelling it for one verb and not the other made the
             # scoping look effective while the clobber still happened.
-            if existing is not None and all(
-                existing.get(col) is None for col in is_null
-            ):
+            if existing is not None and self._passes_predicates(existing):
                 existing.update(payload)
+            self._is_null = []
+            self._at_most = []
             return type("R", (), {"data": []})()
         if self._filter_key is not None:
             row = self._store.get(self._filter_key)
@@ -189,13 +272,21 @@ class _FakeTable:
 
 class _FakeClient:
     def __init__(
-        self, store: dict[str, dict], known_columns: Optional[set[str]] = None,
+        self,
+        store: dict[str, dict],
+        known_columns: Optional[set[str]] = None,
+        before_write: Optional[Callable[[], Any]] = None,
     ) -> None:
         self._store = store
         self._known_columns = known_columns
+        self._before_write = before_write
 
     def table(self, _name: str) -> _FakeTable:
-        return _FakeTable(self._store, known_columns=self._known_columns)
+        return _FakeTable(
+            self._store,
+            known_columns=self._known_columns,
+            before_write=self._before_write,
+        )
 
 
 # The columns request_idempotency had BEFORE migration 0038 added `location`.
@@ -256,7 +347,7 @@ def app(fake_client):
 @pytest.fixture
 def user_ctx():
     class _Ctx:
-        user_id = "00000000-0000-0000-0000-000000000001"
+        user_id = USER_ID
         email = "test@example.com"
         tier = "scout_pro"
         balance = 100
@@ -459,11 +550,395 @@ def test_expired_row_does_not_block_new_request(app, fake_store, user_ctx):
 
 
 def test_fail_open_when_supabase_unavailable(app, user_ctx):
-    """If get_service_client returns None, the handler still runs."""
+    """No client at all: the handler still runs.
+
+    Deliberately NOT the same decision as a client that is present and
+    failing (see the fail-closed test below). With no client, every write that
+    moves money short-circuits on the same missing client -- `reserve_hold` and
+    `top_up_wallet` return None, `_cas_transition` returns False -- so an
+    unguarded handler cannot spend anything, and failing closed here would take
+    every guarded route offline in any environment that never had Supabase set
+    up.
+
+    NOT because "the wallet gate refuses". It does not: nine of the ten guarded
+    routes carry no wallet decorator, and the one that does falls THROUGH on a
+    null wallet row (`shared/wallet_guard.py:219-224`). `_claim_key`'s own
+    docstring forbids the near-identical "the wallet decorator refuses"; this
+    docstring reached for the same false idea in different words and was
+    wrong.
+    """
     with patch("shared.idempotency.get_service_client", return_value=None):
         r = app.test_client().post("/echo", data=b"hello")
     assert r.status_code == 200
     assert app.call_counter["count"] == 1
+
+
+class _ExplodingClient:
+    """A client that is PRESENT and whose every query fails.
+
+    Not the same as no client, but NOT because the wallet gate still works --
+    it does not. `get_or_create_wallet` needs this same client, so
+    `wallet_preflight` returns allow=False, `requires_wallet` falls THROUGH,
+    and the handler runs (status 200). `reserve_hold` then returns None at
+    `shared/wallet.py:575`, so this particular fault does not reach a charge.
+    `_claim_key`'s docstring forbids writing "the wallet gate is working in
+    that case" -- this docstring said it anyway and was wrong.
+
+    What makes it different from no client is scope: a fault confined to the
+    idempotency table alone leaves the money path healthy, and we cannot tell
+    the two apart from in here. That is what the refusal is sized for.
+    """
+
+    def table(self, _name: str) -> Any:
+        raise RuntimeError("connection reset by peer")
+
+
+def test_a_failing_ledger_refuses_instead_of_running_the_handler(app):
+    """A live client whose query fails must fail CLOSED, not open.
+
+    This guard is the only thing standing between a double-click and two wallet
+    holds plus two Modal jobs on the five routes that spend. When it cannot read
+    the ledger it cannot tell a retry from a first attempt, and on that path
+    "run it and hope" is a double charge with nothing downstream to catch it.
+
+    It used to return "open" here and run the handler anyway, so a single
+    PostgREST blip turned every double-submit into two paid launches.
+    """
+    with patch(
+        "shared.idempotency.get_service_client", return_value=_ExplodingClient()
+    ):
+        r = app.test_client().post("/echo", data=b"hello")
+    assert r.status_code == 503, "a ledger we cannot read must refuse"
+    assert app.call_counter["count"] == 0, (
+        "the handler ran without a usable dedup ledger; a retry of this "
+        "request would place a second hold and launch a second job"
+    )
+
+
+class _BrokenAtTable(_FakeTable):
+    """A ledger where ONE verb fails — the shape a partial outage takes.
+
+    A client that fails on every call only ever exercises the first query
+    `_claim_key` makes. The three later refusals need a ledger that answers the
+    fast-path SELECT and then breaks, so each is reachable on its own.
+    """
+
+    def __init__(self, store, *, fail, budget, **kwargs):
+        super().__init__(store, **kwargs)
+        self._fail = fail
+        self._budget = budget
+
+    def execute(self):  # noqa: ANN201
+        if self._pending_delete:
+            verb = "delete"
+        elif self._pending_insert is not None:
+            verb = "insert"
+        elif self._update_payload is not None:
+            verb = "update"
+        else:
+            verb = "select"
+        if verb in self._fail:
+            # `select_survives` spends here, so the fast-path read can succeed
+            # and only the re-read fail.
+            if verb == "select" and self._budget["select"] > 0:
+                self._budget["select"] -= 1
+            else:
+                raise RuntimeError(f"{verb} failed: connection reset by peer")
+        return super().execute()
+
+
+class _BrokenAtClient:
+    def __init__(self, store, *, fail, select_survives=0):
+        self._store = store
+        self._fail = set(fail)
+        self._budget = {"select": select_survives}
+
+    def table(self, _name: str) -> _BrokenAtTable:
+        return _BrokenAtTable(self._store, fail=self._fail, budget=self._budget)
+
+
+def _stale_row(key: str) -> dict:
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    return {
+        "key": key, "user_id": USER_ID, "route": "/echo",
+        "response_status": 200, "response_body": "{}",
+        "content_type": "application/json", "expires_at": past.isoformat(),
+    }
+
+
+@pytest.mark.parametrize(
+    "label, store, client",
+    [
+        (
+            "the stale-row DELETE fails",
+            {"k": _stale_row("k")},
+            lambda store: _BrokenAtClient(store, fail={"delete"}),
+        ),
+        (
+            "the INSERT fails and the re-read fails too",
+            {},
+            lambda store: _BrokenAtClient(
+                store, fail={"insert", "select"}, select_survives=1
+            ),
+        ),
+        (
+            "the INSERT fails and no claim is held",
+            {},
+            lambda store: _BrokenAtClient(store, fail={"insert"}),
+        ),
+    ],
+)
+def test_every_way_the_ledger_can_break_refuses(label, store, client):
+    """All FOUR refusal exits, not just the one the route test happens to hit.
+
+    `_claim_key` gives up in four places, and until this existed only the
+    fast-path SELECT's was covered: the other three could each be flipped back
+    to `"open"` with the whole suite still green, which would quietly restore
+    fail-open on the exits a half-configured deployment actually takes. The
+    fourth is covered by
+    `test_a_failing_ledger_refuses_instead_of_running_the_handler`, which also
+    pins the 503 the decorator turns this into.
+    """
+    with patch(
+        "shared.idempotency.get_service_client", return_value=client(store)
+    ):
+        state, row = _claim_key("k", USER_ID, "/echo", 60)
+    assert (state, row) == ("unavailable", None), (
+        f"{label}: got {state!r}, so the handler runs against a ledger that "
+        "cannot deduplicate it — a retry places a second hold and job"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — the claim has to be a lock, not a suggestion
+#
+# These drive two REAL threads through `_claim_key` with the same key, held at
+# a barrier so that neither writes until both have finished reading. That is
+# the interleaving a read-then-write claim cannot survive.
+#
+# Threads are the test's mechanism, not the production one, and the difference
+# matters for how urgently this reads. `gunicorn.conf.py:42` sets
+# `workers = max(1, _int_env("WEB_CONCURRENCY", 2))` and sets neither
+# `worker_class` nor `threads`, so the shipped default is TWO WORKER PROCESSES.
+# Two processes race on one Postgres table exactly as two threads do. This was
+# reachable in production under the config as deployed, not contingent on the
+# proposed switch to threaded workers -- that would only widen it.
+#
+# Both tests fail against the `upsert(claim_row, on_conflict="key")` this
+# replaced: ON CONFLICT DO UPDATE succeeds for BOTH racing writers, so both are
+# told "claimed" and both run the handler.
+# ---------------------------------------------------------------------------
+
+
+def _race_two_claims(store: dict[str, dict], key: str) -> list[tuple]:
+    """Run two concurrent `_claim_key` calls for `key`; return both outcomes.
+
+    The barrier is the whole point. Without it the two calls would almost
+    always serialise and the loser would simply see the winner's committed row
+    on its own SELECT -- the safe ordering, which proves nothing.
+    """
+    barrier = threading.Barrier(2, timeout=10)
+    client = _FakeClient(store, before_write=barrier.wait)
+    outcomes: list[tuple] = []
+    lock = threading.Lock()
+
+    def claim() -> None:
+        result = _claim_key(key, USER_ID, "/echo", 60)
+        with lock:
+            outcomes.append(result)
+
+    # Patched once, on this thread, around both: `patch` mutates module state
+    # and is not safe to enter and exit concurrently from the workers.
+    with patch("shared.idempotency.get_service_client", return_value=client):
+        threads = [threading.Thread(target=claim) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert not any(t.is_alive() for t in threads), "a claim thread hung"
+
+    assert len(outcomes) == 2, f"expected two outcomes, got {outcomes}"
+    return outcomes
+
+
+def test_two_concurrent_claims_produce_exactly_one_winner():
+    """Exactly one of two simultaneous claims may run the handler."""
+    store: dict[str, dict] = {}
+    outcomes = _race_two_claims(store, "race-fresh-key")
+
+    states = sorted(state for state, _ in outcomes)
+    assert states.count("claimed") == 1, (
+        f"expected exactly one winner, got {states}. Two callers past this "
+        "guard means one click places two wallet holds and launches two "
+        "Modal jobs."
+    )
+    assert states == ["claimed", "in_flight"], (
+        f"the loser must be told the claim is held, got {states}"
+    )
+    assert len(store) == 1, "one claim, one row"
+
+
+def _claim_parked_after_its_read(store: dict[str, dict], key: str):
+    """Start a claim, let its SELECT run, and park it before its first WRITE.
+
+    The barrier used above cannot express this. It releases every caller into
+    its write at the same moment, so each one's read saw the same world its
+    write acts on. The dangerous ordering is the opposite: a caller that read,
+    then LOST THE CPU long enough for someone else to clear the stale row and
+    claim the key, and whose write finally lands on a world that moved. That is
+    the only ordering in which the stale-row DELETE meets a LIVE claim.
+
+    Returns (thread, client, has_read, resume, outcome). The thread is not
+    started; `has_read` fires once its SELECT is done.
+    """
+    has_read = threading.Event()
+    resume = threading.Event()
+    outcome: dict = {}
+
+    def _park() -> None:
+        has_read.set()
+        assert resume.wait(timeout=10), "the parked caller was never resumed"
+
+    client = _FakeClient(store, before_write=_park)
+
+    def _run() -> None:
+        outcome["result"] = _claim_key(key, USER_ID, "/echo", 60)
+
+    return threading.Thread(target=_run), client, has_read, resume, outcome
+
+
+def _run_parked_against_a_winner(store, key, after_winner_claims=None):
+    """Drive the read/stall/write ordering; return (winner, parked) outcomes."""
+    parked, parked_client, has_read, resume, outcome = _claim_parked_after_its_read(
+        store, key
+    )
+    plain = _FakeClient(store)
+
+    def _pick():
+        return parked_client if threading.current_thread() is parked else plain
+
+    with patch("shared.idempotency.get_service_client", _pick):
+        parked.start()
+        assert has_read.wait(timeout=10), "the parked caller never read"
+        winner = _claim_key(key, USER_ID, "/echo", 60)
+        if after_winner_claims is not None:
+            after_winner_claims()
+        resume.set()
+        parked.join(timeout=10)
+    assert not parked.is_alive(), "the parked claim thread hung"
+    return winner, outcome["result"]
+
+
+def test_a_stalled_caller_cannot_delete_a_claim_that_went_live():
+    """The stale-row DELETE must not remove a claim that went live meanwhile.
+
+    A caller reads the expired row, stalls, and by the time its DELETE runs
+    another request has cleared that row and claimed the key. Only the
+    `lte("expires_at", now)` predicate keeps that DELETE off the live claim.
+    Without it the stalled caller wipes the winner, inserts cleanly, and is
+    told "claimed" as well -- so one click funds and launches twice, and the
+    winner's cached response is gone for the next click too.
+
+    This is the test the barrier ones cannot be: drop the predicate from
+    `_claim_key` and only this goes red.
+    """
+    key = "stalled-caller-key"
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    store: dict[str, dict] = {
+        key: {
+            "key": key,
+            "user_id": USER_ID,
+            "route": "/echo",
+            "response_status": 200,
+            "response_body": '{"stale": true}',
+            "content_type": "application/json",
+            "expires_at": past.isoformat(),
+        }
+    }
+    winner, parked = _run_parked_against_a_winner(store, key)
+
+    assert winner[0] == "claimed", f"the unblocked caller should win: {winner}"
+    assert parked[0] == "in_flight", (
+        f"the stalled caller was told {parked[0]!r}. Its DELETE removed a LIVE "
+        "claim, so both callers run: one click, two wallet holds, two jobs."
+    )
+    assert len(store) == 1, "one claim, one row"
+    assert store[key]["response_status"] is None, "the live claim was replaced"
+
+
+def test_a_caller_that_lost_the_race_replays_the_winners_cached_response():
+    """Losing to a request that already FINISHED must replay, not 409.
+
+    This is the only reason `_classify_failed_claim` re-reads instead of
+    answering every failed insert with a blanket 409, and nothing else reaches
+    the branch: the fast-path SELECT catches a completed row long before the
+    insert, so it takes a caller that read while the key was free and wrote
+    after the winner had cached its response.
+    """
+    key = "lost-then-replay-key"
+    store: dict[str, dict] = {}
+
+    def _cache_the_winners_response() -> None:
+        _store_response(key, Response(response='{"launched": 1}', status=200,
+                                      content_type="application/json"))
+
+    winner, parked = _run_parked_against_a_winner(
+        store, key, after_winner_claims=_cache_the_winners_response
+    )
+
+    assert winner[0] == "claimed"
+    state, row = parked
+    assert state == "replay", (
+        f"expected the winner's cached response, got {state!r}: a 409 here "
+        "tells the user their launch is 'still running' when it has finished"
+    )
+    assert row is not None and row["response_status"] == 200
+    assert row["response_body"] == '{"launched": 1}'
+
+
+def test_two_concurrent_claims_over_a_stale_row_produce_exactly_one_winner():
+    """Same, on the path where an expired row has to be cleared first.
+
+    A different code path: both callers see the stale row, so both issue the
+    conditional DELETE before racing to INSERT.
+
+    This does NOT cover the DELETE's predicate, and it cannot. `before_write`
+    releases both callers into their DELETEs together, so both run while the
+    only row present is the stale one -- an unscoped DELETE would remove
+    exactly the row that was going to be cleared anyway, and the test stays
+    green with the predicate deleted (verified). The ordering that catches it
+    is a caller that reads and then stalls, which is
+    `test_a_stalled_caller_cannot_delete_a_claim_that_went_live` above. Do not
+    read this test as guarding `lte`.
+    """
+    key = "race-stale-key"
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    store: dict[str, dict] = {
+        key: {
+            "key": key,
+            "user_id": USER_ID,
+            "route": "/echo",
+            "response_status": 200,
+            "response_body": '{"stale": true}',
+            "content_type": "application/json",
+            "expires_at": past.isoformat(),
+        }
+    }
+    outcomes = _race_two_claims(store, key)
+
+    states = sorted(state for state, _ in outcomes)
+    assert states == ["claimed", "in_flight"], (
+        f"expected exactly one winner over a stale row, got {states}"
+    )
+    assert len(store) == 1, "one claim, one row"
+    surviving = store[key]
+    assert surviving["response_status"] is None, (
+        "the surviving row is the stale one, not the new claim: a replay would "
+        "serve a minute-old response to a request that never ran"
+    )
+    assert _as_dt(surviving["expires_at"]) > datetime.now(timezone.utc), (
+        "the winner's claim must be live, not the expired row it replaced"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -709,13 +1184,16 @@ def test_releasing_never_removes_a_claim_that_already_completed(fake_store):
     """The scoping, not just the delete. This is the leg that makes a duplicate
     launch impossible rather than merely unlikely.
 
-    ``_claim_key`` upserts, and ``ON CONFLICT DO UPDATE`` succeeds for BOTH
-    racing writers, so the SELECT before it is a TOCTOU and not a lock: two
-    concurrent submissions of the same form can each run the handler. Suppose
-    the winner stores a 302 for a launch that really created and funded runs,
-    and the loser then fails validation and releases. Delete by key alone would
-    wipe the winner's cached success, and a third click would launch the whole
-    set a second time -- real money, silently.
+    Delete by key alone would remove a completed row belonging to a DIFFERENT
+    request: a launch that really created and funded runs, whose cached 302 is
+    gone, so the next click launches the whole set a second time -- real money,
+    silently.
+
+    The pairing that first produced it (two racing siblings, both told
+    "claimed" by an upsert that could not fail) is gone; `_claim_key` inserts
+    now and the concurrency tests above hold it to one winner. The scoping is
+    still what stands between that clobber and a claim taken over after its TTL
+    expired, which is documented in full on `_store_response`.
 
     ``response_status IS NULL`` is what confines the release to a claim that
     never finished. Red if that predicate is dropped.
@@ -817,13 +1295,19 @@ def test_a_nul_bearing_value_survives_form_decoding(form_app):
 def test_a_losing_siblings_failure_cannot_overwrite_a_cached_success(fake_store):
     """`_store_response` may only write a claim that has not completed.
 
-    `_claim_key` upserts, and `ON CONFLICT DO UPDATE` succeeds for BOTH racing
-    writers, so two concurrent submissions of the same form can each be told
-    "claimed" (audit A42). The winner launches and caches its 302. The loser
-    then fails -- typically on the velocity cap, because the winner's budgets
-    are already in `_campaign_spend_today` -- and the wrapper's 4xx path calls
-    `_release_key`, which correctly matches nothing, and then falls through to
-    `_store_response`.
+    This reproduces the shape A42 hit in production. Two submissions of the
+    same form were both told "claimed", because `_claim_key` upserted and ON
+    CONFLICT DO UPDATE cannot fail. The winner launches and caches its 302. The
+    loser then fails -- typically on the velocity cap, because the winner's
+    budgets are already in `_campaign_spend_today` -- and the wrapper's 4xx path
+    calls `_release_key`, which correctly matches nothing, and then falls
+    through to `_store_response`.
+
+    `_claim_key` inserts now, so two siblings can no longer be told "claimed"
+    at once and this exact pairing is unreachable. The write is still driven
+    directly here, because the scoping it verifies is what stops the same
+    clobber arriving by the other route `_store_response` documents: a claim
+    whose TTL expired under a slow handler and was taken over.
 
     Unscoped, that write replaced the winner's cached 302 with the loser's 400.
     The user was shown "Nothing was started and nothing was charged" for a

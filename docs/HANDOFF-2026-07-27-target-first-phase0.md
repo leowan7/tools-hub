@@ -53,6 +53,9 @@ inert**, all with a green suite. Do not assume a passing suite means a fix works
   projected an explicit column list without `location`. Use `select("*")`, never
   `,location` — pre-0038 that 400s and `_claim_key` fails OPEN, which means a
   double-clicked submit places a second wallet hold and spawns a second Modal job.
+  **Superseded 2026-08-18 (A42 resolved):** that `except` no longer fails OPEN,
+  it refuses with a 503. `select("*")` is still right; the consequence of
+  getting it wrong is now an outage, not a double-charge.
 - **`82ac902`, half two:** the retention guard re-introduced the PostgREST
   1000-row clamp and failed OPEN, so `--apply` could have deleted live campaigns'
   inputs. Now paged, negation-filtered server-side, fails closed on overrun.
