@@ -299,9 +299,10 @@ adapter = ToolAdapter(
     slug="mpnn",
     label="ProteinMPNN",
     blurb=(
-        "Sequence design from a backbone. Upload a backbone PDB, get N "
-        "candidate sequences with MPNN scores and per-sequence recovery. "
-        "~30 s per run."
+        "Upload a backbone — a structure with no sequence decided yet — "
+        "and get back candidate sequences that should fold into it, "
+        "each with a score and a native-recovery figure. About 30 s per "
+        "run."
     ),
     presets=(
         Preset(

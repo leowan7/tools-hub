@@ -237,9 +237,10 @@ adapter = ToolAdapter(
     slug="esmfold",
     label="ESMFold",
     blurb=(
-        "Single-sequence fold. Paste a FASTA, get a predicted structure "
-        "with pLDDT. ESM-2 language-model fold, monomer only, ~30 s per "
-        "run."
+        "Paste one protein sequence and get a predicted structure back "
+        "in about 30 s, with per-residue confidence. One chain only, "
+        "and no homolog search — so it works on designed sequences with "
+        "no relatives."
     ),
     presets=(
         Preset(

@@ -240,9 +240,10 @@ adapter = ToolAdapter(
     slug="esmfold2-design",
     label="ESMFold2 design",
     blurb=(
-        "Gradient-based binder design via ESMFold2 inversion. Pick a "
-        "paper-validated target preset, choose minibinder or scFv mode, "
-        "and get ranked designs with iPTM scores in one model pass."
+        "Choose your target, pick a small de novo binder or a paired "
+        "heavy + light scFv (a single-chain antibody fragment), and get "
+        "back designs ranked by a 0-to-1 interface confidence score in "
+        "one model pass."
     ),
     presets=(
         Preset(

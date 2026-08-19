@@ -11,7 +11,8 @@ Shapes
     paper_citation    - short inline citation.
     paper_url         - Science / bioRxiv permalink.
     github_url        - upstream ESM repository.
-    comparison_one_liner - "pick ESMFold when..." positioning string.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id - optional job_id of a public demo run (None today).
 """
 
@@ -28,10 +29,11 @@ paper_citation: str = "Lin et al., Science 2023"
 paper_url: str = "https://www.science.org/doi/10.1126/science.ade2574"
 github_url: str = "https://github.com/facebookresearch/esm"
 comparison_one_liner: str = (
-    "Pick ESMFold when you need the fastest possible monomer fold. No "
-    "MSA, no multimer, single-sequence ESM-2 language-model prediction. "
-    "Pair with ColabFold (D3) for multimers or AF2 standalone (D2) for "
-    "full MSA-backed accuracy."
+    "You have one protein sequence and want its 3D shape in about "
+    "30 seconds. No search for relatives, so it works on designed "
+    "or orphan sequences that have no natural family to align "
+    "against. One chain only — for complexes use ColabFold or "
+    "AlphaFold2."
 )
 example_output_id: Optional[str] = None
 
@@ -40,15 +42,25 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "ESMFold (Lin et al., <em>Science</em> 2023). Single-sequence "
-        "monomer structure prediction from the ESM-2 language model. "
-        "No MSA, no multimer support. Fastest fold available when an "
-        "MSA is unavailable or unhelpful."
+        "Predicts the structure of one protein chain from its sequence "
+        "alone, in about 30 seconds. It reads the sequence through a "
+        "protein language model instead of searching for relatives, so "
+        "it still works on designed or orphan sequences that have no "
+        "natural family to align against. One chain only — it cannot "
+        "fold a complex. ESMFold, Lin et al., <em>Science</em> 2023."
     ),
     "when_to_use": [
-        "You need a monomer fold in well under a minute.",
-        "Your sequence has no detectable homologs (orphan or designed).",
-        "You're triaging a large set of sequences and need throughput.",
+        (
+            "You want a single-chain fold in well under a minute."
+        ),
+        (
+            "Your sequence is designed, or has no known relatives, so a "
+            "search for them would come back empty anyway."
+        ),
+        (
+            "You are triaging a large batch of sequences and need "
+            "throughput more than precision."
+        ),
     ],
     "prerequisites": [
         "Single FASTA sequence (monomer only).",
@@ -75,3 +87,26 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A single-sequence monomer fold finishes in well under a minute
+# and has no scale parameter to start small on. There is nothing a
+# pilot tier would reduce.
+PILOT: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

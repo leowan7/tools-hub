@@ -141,10 +141,10 @@ adapter = ToolAdapter(
     slug="rfdiffusion",
     label="RFdiffusion",
     blurb=(
-        "De novo binder design. Composite pipeline combining RFdiffusion "
-        "backbones, ProteinMPNN sequences, and AF2 multimer validation. "
-        "Candidates carry real ipTM, pLDDT, and i_pAE scores. Pilot runs "
-        "in roughly 15 to 30 min on caller targets."
+        "Upload your target structure, mark the residues you want "
+        "gripped, and get back brand-new binders, each carrying a real "
+        "AlphaFold2 confidence score against your target. A pilot run "
+        "takes roughly 15 to 30 min."
     ),
     presets=(
         Preset(

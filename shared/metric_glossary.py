@@ -179,6 +179,27 @@ GLOSSARY: dict[str, dict] = {
     # is why shared/ranking.py keys its cohorts on (tool, preset) rather than on
     # tool alone: two proteina runs at different presets must never be ranked
     # against each other.
+    # ADDED BECAUSE A TEMPLATE WAS STATING A THRESHOLD THIS FILE DID NOT HOLD.
+    # components/about_panel.html renders a general "what good looks like"
+    # legend on all 14 tool pages, and its recovery entry read "well
+    # calibrated above roughly 0.4 on diverse folds" — a number with no
+    # source, four entries below the ipTM one that had just been converted to
+    # a glossary read. The number itself is right and was already sourced
+    # elsewhere: shared/score_legends.py ("mpnn", "recovery") sets good=0.4
+    # and excellent=0.6, and words them "Above 0.4 is a usable design; above
+    # 0.6 is excellent". ``good_range`` below says that and nothing more —
+    # "well calibrated ... on diverse folds" was an unsourced embellishment on
+    # top of a sourced number.
+    "recovery": {
+        "label": "Sequence recovery",
+        "definition": (
+            "Fraction of the native residues a sequence-design model puts "
+            "back when it redesigns a known sequence onto its own backbone. "
+            "Higher means the model reproduces what nature chose more often."
+        ),
+        "good_range": "> 0.4 usable; > 0.6 excellent",
+        "citation": "Dauparas et al., Science 2022 (ProteinMPNN)",
+    },
     "total_reward": {
         "label": "Reward",
         "definition": (
@@ -209,6 +230,9 @@ _FORMAT: dict[str, str] = {
     "filter_status": "str",
     "n_hotspot_contacts": ".0f",
     "epitope_contacts": ".0f",
+    # A 0-1 fraction. The ".3f" default printed a third digit ProteinMPNN's
+    # own FASTA header does not carry.
+    "recovery": ".2f",
     # Two decimals, matching ipAE: under the protein_binder preset this IS an
     # interface pAE in Angstrom, negated. Without an entry it fell to the ".3f"
     # default and printed a third digit the underlying number does not carry.

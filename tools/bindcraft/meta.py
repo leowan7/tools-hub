@@ -13,7 +13,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — bioRxiv permalink for the BindCraft paper.
     github_url        — upstream repository.
-    comparison_one_liner — "pick BindCraft when..." positioning string
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
                          rendered on the About panel.
     example_output_id — optional job_id of a public demo run to link to
                          from the About panel. Phase 3 will populate this;
@@ -66,8 +67,11 @@ seo_faq: list[dict] = [
 ]
 
 comparison_one_liner: str = (
-    "Pick BindCraft when you have a target PDB plus known hotspot "
-    "residues and want de novo 60 to 150 aa protein binders."
+    "You have a target structure and know roughly which patch of "
+    "its surface you want gripped, and you want brand-new "
+    "mini-proteins of 60 to 150 residues built to grip it. Every "
+    "candidate is refolded and filtered before you see it, so what "
+    "comes back is already a shortlist."
 )
 example_output_id: Optional[str] = None
 
@@ -76,15 +80,29 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "BindCraft (Pacesa et al., bioRxiv 2024). De novo binder design "
-        "via AlphaFold2-Multimer hallucination with hotspot-focused "
-        "backpropagation, followed by ProteinMPNN sequence design and "
-        "AF2 re-prediction filtering."
+        "Designs brand-new mini-proteins that grip a patch of your "
+        "target. It runs AlphaFold2 multimer backwards — pushing a "
+        "random starting sequence toward one the model believes will "
+        "bind the residues you named — then assigns a real sequence "
+        "with ProteinMPNN and refolds every candidate to check the "
+        "answer survives. What reaches you has already been filtered on "
+        "interface confidence and fold quality. BindCraft, Pacesa et "
+        "al., bioRxiv 2024."
     ),
     "when_to_use": [
-        "You have a target PDB and at least one hotspot residue you want the binder to contact.",
-        "You want de novo 50 to 150 aa protein binders (not antibodies).",
-        "You can wait ~45 min per pilot run and want filtered hits with ipTM and pLDDT above the BindCraft default thresholds.",
+        (
+            "You have a target structure and at least one residue on its "
+            "surface you want the binder to touch."
+        ),
+        (
+            "You want a small de novo protein of 50 to 150 residues, not an "
+            "antibody."
+        ),
+        (
+            "You can wait about 45 minutes for a first run, and you would "
+            "rather see a filtered shortlist than every candidate the run "
+            "generated."
+        ),
     ],
     "prerequisites": [
         "Target structure as <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code>.",
@@ -131,3 +149,65 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 2 trajectories",
+    "goal": (
+        "Check that your target parses, your hotspots resolve against "
+        "it, and the pipeline returns scored designs &mdash; before "
+        "committing to a run that hunts for hits."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb, .cif or .mmcif), the "
+        "chain ID it sits on, and at least one residue on the face you "
+        "want the binder to touch."
+    ),
+    # 2, not the form's default of 4. BindCraft prices in whole
+    # containers of two trajectories (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container — the smallest complete unit of
+    # work — and exactly half the price of the default. A pilot that
+    # restated the default was a button promising a change it did not
+    # make.
+    "params": {
+        "preset": "pilot",
+        "num_designs": "2",
+    },
+    "next_step": (
+        "Two trajectories tell you the setup works, not whether the "
+        "target is bindable &mdash; BindCraft burns more GPU per design "
+        "than anything else here, which is why the first step is this "
+        "small. Once it comes back clean, clone the run and raise the "
+        "count."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

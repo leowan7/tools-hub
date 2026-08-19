@@ -23,6 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.wallet import SIGNUP_CREDIT_USD
+
 from shared import email as email_mod
 
 
@@ -44,7 +46,9 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("RESEND_API_KEY", "test-key-xxx")
     monkeypatch.setenv("EMAIL_FROM", "Ranomics Tools <noreply@tools.ranomics.com>")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://tools.ranomics.com")
-    monkeypatch.setenv("WALLET_SIGNUP_CREDIT_USD", "5")
+    # No WALLET_SIGNUP_CREDIT_USD here on purpose: the signup-credit email
+    # now reads shared.wallet.SIGNUP_CREDIT_USD directly, so there is no
+    # env override left to set. Setting one would prove nothing.
     monkeypatch.setenv("SUPPORT_EMAIL", "support@ranomics.com")
     # Clear Slack webhooks by default so the Slack tests can flip per-test.
     monkeypatch.delenv("SLACK_SALES_WEBHOOK_URL", raising=False)
@@ -149,11 +153,14 @@ class TestSignupCredit:
         assert ok is True
         _assert_resend_call_shape(mock_resend, "signup_credit")
         body = mock_resend["json"]
-        # Subject should include the $5 dollar amount.
-        assert "$5" in body["subject"]
+        # Subject and body quote the grant. Assert against the constant, not
+        # a literal: this test hardcoded "$5" and so kept passing while the
+        # grant moved to $15 and the email still advertised the old figure.
+        expected = f"${SIGNUP_CREDIT_USD:.0f}"
+        assert expected in body["subject"]
         assert "compute credit" in body["subject"].lower()
         # Body must contain the credit amount and the catalog URL.
-        assert "$5" in body["html"]
+        assert expected in body["html"]
         assert "tools.ranomics.com" in body["html"]
         _assert_dash_free(body["html"], "signup_credit")
 

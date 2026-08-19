@@ -702,14 +702,11 @@ def wallet_checkout():
             + quote("Top up amount must be a number.")
         )
 
-    # If the gate flow passed a return path through the form, preserve
-    # it on the session so /account/topup-complete can route back to
-    # the original tool form. The decorator already stashes
-    # wallet_gate_form, so we only set return_url if the form sent one
-    # and the session has not already captured it.
-    next_url = (request.form.get("next") or "").strip()
-    if next_url and not session.get("wallet_gate_form"):
-        session["wallet_gate_form"] = {"return_url": next_url}
+    # NOTE: this used to stash request.form["next"] on the session as
+    # wallet_gate_form["return_url"]. Nothing ever read that key — the only
+    # reader, topup_complete(), reads gate_payload["tool"], which the
+    # wallet_guard decorator sets. It was a dead write of a user-controlled
+    # value into the session, so it is gone rather than validated.
 
     save_pm_raw = (
         request.form.get("save_payment_method") or ""

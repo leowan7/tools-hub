@@ -26,7 +26,7 @@ on this page. They render below the reference card, from
 
 The explainer renders in BOTH auth states, deliberately. It was
 logged-out-only when the form first went public; that deleted the score
-legend ("aim above roughly 0.7") for the one person who most needs it —
+legend ("what counts as a good ipTM") for the one person who most needs it —
 the user who just submitted a run and is reading the number. It is
 working reference, not anonymous-only marketing.
 
@@ -138,6 +138,9 @@ Usage:
 {# The public explainer. This content used to be the separate
    templates/tools/_preview.html page that logged-out visitors got
    INSTEAD of the form; the form is public now, so it moves here. #}
+{% from "components/pilot_card.html" import pilot_card %}
+{% from "components/worked_example.html" import worked_example %}
+
 {% macro about_public_explainer(adapter) %}
     {% set _pub = tool_public_context(adapter) %}
     {% set _meta = _pub.meta %}
@@ -159,6 +162,18 @@ Usage:
         </div>
       </aside>
     {% endif %}
+
+    {# After "Start here first" (you need hotspots before you can run
+       anything) and before every reference block: this is the one
+       panel in the rail that tells a first-time visitor what to
+       actually DO. Renders nothing for tools with PILOT = None. #}
+    {{ pilot_card(_pub.pilot) }}
+
+    {# Straight after the pilot card, because the two are one argument:
+       here is the run to start with, and here is what a run of this
+       tool actually returned. Renders nothing for the thirteen tools
+       with no captured payload. #}
+    {{ worked_example(adapter, _pub.example) }}
 
     {% if _meta and _meta.comparison_one_liner %}
       <aside class="panel about-panel">
@@ -201,11 +216,26 @@ Usage:
              pxdesign and bindcraft report a number computed over the whole
              complex, and so did boltzgen before the August 2026 container
              update. See shared/metric_glossary.py. #}
+          {# The cut-off is READ from shared/metric_glossary.py, not typed
+             here. It used to say "aim above roughly 0.7" while the runtime
+             card ~40 lines further down the SAME page carried a tool's own
+             output_summary saying ipTM >= 0.65 — a page contradicting
+             itself within one scroll. 0.65 is the value with a source
+             behind it: shared/score_legends.py sets rfdiffusion's ipTM
+             "good" at 0.65 and the glossary's acceptable band agrees. 0.7
+             was in this template and nowhere else.
+
+             ``metric_glossary`` is a jinja global (app.py) holding
+             shared.metric_glossary.GLOSSARY, so it is visible here even
+             though every form imports this macro WITHOUT context. #}
           <dd>
-            Predicted confidence at an interface. Higher is better; aim above
-            roughly 0.7 on a tractable target. On a multi-chain target it may
-            cover the target's own chain&ndash;chain interface as well as the
-            binder's.
+            Predicted confidence in the contact between two chains, on a 0
+            to 1 scale. Higher is better:
+            {{ metric_glossary.get('ipTM', {}).get('good_range', '') }}.
+            Individual tools set their own pass bar a little either side of
+            that &mdash; the guide for the tool you ran states its one. On a
+            multi-chain target the number may cover the target's own
+            chain&ndash;chain interface as well as the binder's.
           </dd>
           <dt><strong>pLDDT</strong></dt>
           <dd>
@@ -218,10 +248,21 @@ Usage:
             whole structure (pAE). Lower is better.
           </dd>
           <dt><strong>ProteinMPNN recovery</strong></dt>
+          {# Same correction as the ipTM entry above, four entries later, and
+             it survived that pass: this read "well calibrated above roughly
+             0.4 on diverse folds" — a general-guidance threshold on 14
+             indexable pages with no source, phrased almost identically to the
+             "aim above roughly 0.7" that had just been removed 18 lines up.
+             0.4 is the right number and was already sourced, just not from
+             here: shared/score_legends.py ("mpnn", "recovery") sets good=0.4
+             and excellent=0.6. It now has a glossary key of its own and is
+             READ, so the number cannot drift away from the legend that
+             classifies the actual results table. #}
           <dd>
             Fraction of native residues recovered when ProteinMPNN redesigns a
-            known sequence on its native backbone. Higher is better; well
-            calibrated above roughly 0.4 on diverse folds.
+            known sequence on its native backbone &mdash; the folded shape on
+            its own, before a sequence is chosen for it. Higher is better:
+            {{ metric_glossary.get('recovery', {}).get('good_range', '') }}.
           </dd>
         </dl>
       </div>

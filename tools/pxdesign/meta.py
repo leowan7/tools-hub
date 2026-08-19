@@ -35,11 +35,12 @@ github_url: str = ""
 
 # One-line decision helper shown in the "About" panel.
 comparison_one_liner: str = (
-    "Pick PXDesign when AF2 confidence against a defined target "
-    "matters and you want real ipTM, pLDDT, and pAE on every candidate. "
-    "For hallucination-driven binder design without AF2 filtering use "
-    "BindCraft, for antibody and nanobody CDRs use RFantibody, and for "
-    "target structure generation without binder design use BoltzGen."
+    "You have a target and you want every single candidate to "
+    "arrive with a real AlphaFold2 confidence score against that "
+    "target, not a cheaper stand-in. This is the pipeline Ranomics "
+    "runs for its own wet-lab campaigns. For design without that "
+    "filtering step use BindCraft; for antibody formats use "
+    "RFantibody or IgGM."
 )
 
 # Optional reference job id that the form page can link to as an
@@ -64,16 +65,29 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "PXDesign is a Ranomics in-house binder-design pipeline. An "
-        "RFdiffusion-style backbone generator paired with JAX AF2 in "
-        "Initial Guess mode for fast, accurate scoring (Bennett et al., "
-        "<em>Nature Communications</em> 2023). Every candidate carries "
-        "real ipTM, pLDDT, and pAE from the AF2-IG stage."
+        "Designs binders against your target and then scores every one "
+        "of them with AlphaFold2 run against that same target, so "
+        "nothing reaches you on a cheaper stand-in number. The scoring "
+        "uses AlphaFold2's initial-guess mode, which is far quicker "
+        "than a full multimer prediction and is what makes "
+        "per-candidate scoring affordable at all. This is the pipeline "
+        "Ranomics runs for its own wet-lab campaigns. PXDesign is "
+        "in-house; the initial-guess method is Bennett et al., "
+        "<em>Nature Communications</em> 2023."
     ),
     "when_to_use": [
-        "AF2 confidence against a defined target matters and you want real ipTM, pLDDT, and pAE on every candidate.",
-        "You want faster scoring than full AF2 multimer (Initial Guess shortcut).",
-        "You want the same scoring pipeline that drives Ranomics' wet-lab campaigns.",
+        (
+            "You want an AlphaFold2 confidence number against your actual "
+            "target on every candidate, not on a filtered subset."
+        ),
+        (
+            "You want that scoring faster than a full AlphaFold2 multimer "
+            "run on each design."
+        ),
+        (
+            "You want the same pipeline Ranomics runs for its own wet-lab "
+            "campaigns."
+        ),
     ],
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
@@ -116,3 +130,54 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 4 designs",
+    "goal": (
+        "See whether your target and the face you picked give designs "
+        "with usable AF2 confidence, before scaling."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb or .cif), the chain ID, "
+        "and at least one residue on the face you want bound."
+    ),
+    "params": {
+        "preset": "pilot",
+        "num_designs": "4",
+    },
+    "next_step": (
+        "If any of the four comes back with good interface confidence, "
+        "clone the run and raise the design count."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

@@ -10,8 +10,11 @@ factory-local modal_client -> current_app.modal_client, and self-refs ->
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from flask import (
@@ -25,6 +28,7 @@ from flask import (
     url_for,
 )
 
+from scout.handoff import VALID_HANDOFF_TOOLS
 from shared import resample as _resample
 from shared.auth import login_required
 from shared.credits import load_user_context
@@ -74,6 +78,8 @@ from shared.tools_catalog import (
     group_catalog,
 )
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
+from shared.tool_meta import meta_for
+from shared.wallet_estimates import estimated_cost_for_tool
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
 
@@ -303,66 +309,159 @@ def _require_tool(tool_slug: str):
 # of /tools/<slug> and only there.
 # ------------------------------------------------------------------
 
-# SEO phrase pairs per tool slug. ``seo_phrase`` is a short natural
-# phrase reused in the page title and lede; ``seo_long`` is a longer
-# phrase used once in body copy. Pulled into one map so the shared
-# preview shell stays free of per-tool branching.
+# SEO phrase pairs per tool slug. Both land in ONE rendered sentence
+# (templates/tools/_form_hero.html):
+#
+#     "{short_name} is a {seo_phrase} you can run through
+#      tools.ranomics.com on a dedicated GPU. {seo_long}."
+#
+# Two rules follow from that frame and both were broken before:
+#
+#   1. ``seo_phrase`` must NOT contain the tool's own name. Every entry
+#      used to start with it, so the lede rendered "RFdiffusion is a
+#      RFdiffusion de novo binder design online you can run through...".
+#      Byte-identical to the deleted _preview.html, faithfully restored,
+#      and wrong on all 14 pages.
+#   2. Every registered tool needs an entry. The old fallback
+#      interpolated the raw slug — "ESMFold2 design is a free
+#      esmfold2-design tool online" — so the tools added after the map
+#      was written leaked a slug on an indexable page. The fallback
+#      below no longer mentions the slug at all, and the map now covers
+#      all 14 so it should never fire.
+#
+# ``seo_phrase`` is a compact noun phrase completing "is a ..." and
+# must NOT end in a subordinate clause: "...against a target you
+# upload" renders as "a target you upload you can run through",
+# which parses as nonsense. Task detail belongs in ``seo_long``,
+# a sentence WITHOUT a terminal period; the template adds it.
+#
+# "free" was dropped from these phrases deliberately. Reading the page
+# is free; running the tool is billed against the wallet, and an
+# indexable page is the wrong place to blur that. The same reasoning
+# applies harder to ``_PREVIEW_TITLE_PHRASES`` below, which is what a
+# search result shows.
+#
+# ``seo_long`` SELLS THE TASK; the adapter's ``blurb`` says what the
+# form does. They render two paragraphs apart inside the same
+# ``<div class="hero">`` (_form_hero.html), and the first draft of this
+# map wrote both to the same brief without either knowing the other was
+# adjacent, so ten of fourteen pages opened with the same sentence
+# twice ("Upload your target, mark the residues you want gripped, and
+# get back..." / "Upload your target, mark the residues you want the
+# binder to touch, and get back..."). Each entry below therefore
+# answers "why reach for THIS one" — the differentiator the blurb does
+# not carry — rather than restating the mechanics one paragraph down.
 _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
     "mpnn": (
-        "free online ProteinMPNN tool",
-        "Run ProteinMPNN sequence design on a backbone PDB with no "
-        "install and no local GPU"
+        "no-install online sequence design tool",
+        "The step between a designed shape and something you can "
+        "actually order: give it any backbone, from any other tool, "
+        "and it proposes the sequences most likely to fold into it"
     ),
     "af2": (
-        "AlphaFold2 multimer without a local GPU",
-        "Fold complexes through your browser with full MSA and "
-        "templates, results land at /jobs"
+        "no-install online structure prediction tool",
+        "The reference-standard fold, with the homolog search and "
+        "templates that make it accurate on natural proteins, and a "
+        "multimer mode that predicts several chains together rather "
+        "than one at a time"
     ),
     "colabfold": (
-        "ColabFold online without Colab",
-        "Fast no-MSA folds in 1 to 2 minutes per run, no MMseqs2 "
-        "round-trip on your laptop"
+        "fast no-install online structure prediction tool",
+        "The quick pass while you are still iterating: no Colab "
+        "notebook to babysit, no MMseqs2 round trip on your own "
+        "laptop, and no queue to sit in between attempts"
     ),
     "esmfold": (
-        "ESMFold online single-sequence fold",
-        "Fastest monomer fold from the ESM-2 language model with no "
-        "MSA, no multimer, no install"
+        "no-install online single-sequence structure prediction tool",
+        "The one to reach for on a sequence you designed yourself: it "
+        "reads the chain directly instead of hunting for natural "
+        "relatives, which is exactly what a de novo binder does not "
+        "have"
     ),
     "bindcraft": (
-        "BindCraft de novo binder design no install",
-        "Hallucinate 60 to 150 residue protein binders against a "
-        "target PDB on a dedicated GPU"
+        "no-install online de novo binder design tool",
+        "Design and in-silico filtering run in one pass, so what comes "
+        "back is already a shortlist rather than raw output you have "
+        "to triage yourself"
     ),
     "rfantibody": (
-        "RFantibody nanobody design online",
-        "Generate VHH scaffolds against a target PDB without setting "
-        "up RoseTTAFold or Rosetta locally"
+        "no-install online nanobody design tool",
+        "Nanobodies are small enough to reach into a cleft a full "
+        "antibody cannot and simple enough to express, and this designs "
+        "them straight onto the patch you name with no RoseTTAFold or "
+        "Rosetta to install"
     ),
     "rfdiffusion": (
-        "RFdiffusion de novo binder design online",
-        "Run RFdiffusion plus AF2 multimer scoring through your "
-        "browser without an A100"
+        "no-install online de novo binder design tool",
+        "The most widely used de novo binder generator, run end to "
+        "end: every design it invents is re-folded with AlphaFold2 "
+        "against your own target, so the confidence score you read is "
+        "measured rather than the generator marking its own work"
     ),
     "boltzgen": (
-        "BoltzGen multi-modality binder design online",
-        "Design mini-proteins, nanobodies, antibodies, or peptides "
-        "against the same target with glycan and PTM support"
+        "no-install online multi-format binder design tool",
+        "One model covers four binder formats against the same site, "
+        "so you can weigh a mini-protein against a nanobody, an "
+        "antibody or a peptide without changing tools — and it reads "
+        "the sugars and modified residues on your target instead of "
+        "ignoring them"
     ),
     "boltz2": (
-        "Boltz-2 cofold validation online",
-        "Validate a designed binder against your antigen with "
-        "single-sequence cofold and interface confidence"
+        "no-install online cofold validation tool",
+        "The cheap second opinion on a shortlist: it works from "
+        "sequence alone, so a whole batch of designs from another tool "
+        "can be re-checked for seconds each before any of them reach "
+        "the bench"
     ),
     "pxdesign": (
-        "PXDesign AF2-IG binder design online",
-        "AF2-initial-guess binder generation with real ipTM, pLDDT, "
-        "and pAE on every candidate"
+        "no-install online AlphaFold2-scored binder design tool",
+        "The same pipeline Ranomics runs for its own wet-lab "
+        "campaigns: every candidate comes back already re-folded "
+        "against your target, carrying its own confidence score for "
+        "the contact rather than a number borrowed from the generator"
     ),
     "iggm": (
-        "IgGM antibody and nanobody design online",
-        "Design or humanize an antibody or nanobody against your "
-        "antigen, or predict the antibody-antigen complex, in one "
-        "diffusion model"
+        "no-install online antibody and nanobody engineering tool",
+        "One model for the antibody work that usually takes four "
+        "separate ones — loop redesign, humanisation, affinity "
+        "maturation and predicting the docked complex all run from the "
+        "same upload"
+    ),
+    "esmfold2-design": (
+        "no-install online antibody-fragment and minibinder design "
+        "tool",
+        "All six binding loops of the scFv are designed together in one "
+        "pass against your target rather than one at a time, and the "
+        "same run can make small de novo binders instead"
+    ),
+    "opendde": (
+        "no-install online all-atom complex prediction tool",
+        "DNA, RNA, cofactors and small molecules are first-class parts "
+        "of the input rather than something to strip out before "
+        "folding, so the complex is modelled as it actually exists"
+    ),
+    "proteina": (
+        "no-install online hard-target binder design tool",
+        # NOT "three independent scoring checks" — no variant runs all
+        # three. tools/proteina/Dockerfile.modal:229-231: "Only
+        # ligand_binder (RF3 is its sole reward) and motif_ame need it;
+        # protein_binder scores on AF2 alone." See the note on
+        # ``comparison_one_liner`` in tools/proteina/meta.py.
+        #
+        # ALSO THE ONLY IMPERATIVE OF THE FOURTEEN. It opened "Upload a
+        # target the usual design tools struggle with", while the other
+        # thirteen ledes are declaratives or noun phrases ("The
+        # reference-standard fold…", "One model covers four binder
+        # formats…"). Worse, proteina's own blurb two paragraphs up in the
+        # same hero already opens "Upload a protein or small-molecule
+        # target", so this was the last page where blurb and lede still
+        # opened on the same verb — the stutter the rest of the rewrite
+        # removed. Same content, declarative frame — and NOT "The one to
+        # reach for", which is already how esmfold's lede opens.
+        "Built for the targets the standard design tools stall on — a "
+        "recessed pocket, a site spanning two chains, or a small molecule "
+        "rather than a protein: every candidate the search generates is "
+        "re-folded against your target before the search builds on it"
     ),
 }
 
@@ -375,7 +474,10 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
     return _PREVIEW_SEO_PHRASES.get(
         slug,
         (
-            f"free {slug} tool online",
+            # No slug interpolation. This is rendered prose on an
+            # indexable page; "a free esmfold2-design tool online" is
+            # what the old f-string produced.
+            "no-install online protein design tool",
             "Run it through your browser on a dedicated GPU with no "
             "install"
         ),
@@ -384,8 +486,15 @@ def _preview_seo_phrases(slug: str) -> tuple[str, str]:
 # Title-only phrases. Kept separate from ``_PREVIEW_SEO_PHRASES`` so the
 # body lede stays grammatical ("X is a <seo_phrase> you can run") while
 # the <title> stays under the 65-char SERP cap.
+#
+# "Free" was dropped here for the same reason it was dropped from the
+# ledes: running is billed against the wallet. A <title> is the most
+# indexable string on the page and the one that shows in the search
+# result, so the half-applied version had the word surviving in exactly
+# the place it misleads most. mpnn was the only one of the fourteen
+# carrying it.
 _PREVIEW_TITLE_PHRASES: dict[str, str] = {
-    "mpnn": "Free Sequence Design",
+    "mpnn": "Sequence Design on a Backbone",
     "af2": "AF2 Multimer No-Install",
     "colabfold": "No Colab Required",
     "esmfold": "Single-Sequence Folding",
@@ -397,6 +506,15 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     "pxdesign": "AF2-IG Binder Design",
     "esmfold2-design": "scFv CDR Design",
     "iggm": "Antibody Design + Structure",
+    # Added with the copy pass: these registered after the map was
+    # written and were falling through to "GPU-Backed Protein Design",
+    # which describes every tool on the hub and therefore none of them.
+    # opendde's first draft read "Protein DNA RNA Ligand Co-Folding",
+    # which rendered a 72-character <title> — over the 65-char SERP cap
+    # this map exists to respect, and repeating "co-folding" from the
+    # short name that precedes it.
+    "opendde": "Protein, DNA, RNA, Ligand",
+    "proteina": "Hard-Target Binder Design",
 }
 
 def _preview_title_phrase(slug: str) -> str:
@@ -529,20 +647,17 @@ def _related_tool_cards(slug: str) -> list[dict]:
     Each card carries slug, short_name, one-line description, and
     the tool_form URL so the template stays declarative.
     """
-    import importlib  # noqa: PLC0415
     out: list[dict] = []
     for related_slug in _RELATED_TOOLS.get(slug, ()):
         related_adapter = tool_base.get(related_slug)
         if related_adapter is None or not tool_enabled(related_slug):
             continue
         blurb = related_adapter.blurb or ""
-        try:
-            rmeta = importlib.import_module(f"tools.{related_slug}.meta")
-            one_liner = getattr(rmeta, "comparison_one_liner", None)
-            if one_liner:
-                blurb = one_liner
-        except ImportError:
-            pass
+        one_liner = getattr(
+            meta_for(related_slug), "comparison_one_liner", None,
+        )
+        if one_liner:
+            blurb = one_liner
         out.append({
             "slug": related_slug,
             "short_name": _short_name_for_label(related_adapter.label),
@@ -550,6 +665,28 @@ def _related_tool_cards(slug: str) -> list[dict]:
             "url": url_for("tools.tool_form", tool=related_slug),
         })
     return out
+
+def _preset_runtime_text(meta, preset_slug: str) -> str | None:
+    """The typical runtime for ONE preset, or None.
+
+    Two sources because two generations of metadata are live:
+    ``PRESET_RUNTIME[slug]["typical_minutes"]`` (a bare number or
+    range, so the unit is appended here) and the older
+    ``preset_runtime_rows`` (already carries "min"). rfdiffusion and
+    pxdesign still only have the legacy rows, so a lookup that reads
+    PRESET_RUNTIME alone reports nothing for the two most-used design
+    tools.
+    """
+    if meta is None:
+        return None
+    entry = (getattr(meta, "PRESET_RUNTIME", None) or {}).get(preset_slug) or {}
+    if entry.get("typical_minutes"):
+        return f"{entry['typical_minutes']} min"
+    for row in getattr(meta, "preset_runtime_rows", None) or ():
+        if row.get("slug") == preset_slug and row.get("runtime"):
+            return row["runtime"]
+    return None
+
 
 def _runtime_band_for_adapter(adapter, meta) -> str:
     """Compute the same runtime band string used on the homepage cards.
@@ -560,20 +697,9 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     """
     if meta is None:
         return "—"
-    runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
-    legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-    legacy_by_slug = {
-        r.get("slug"): r.get("runtime")
-        for r in legacy_rows
-        if r.get("slug") and r.get("runtime")
-    }
     runtimes: list[str] = []
     for preset in adapter.presets:
-        entry = runtime_map.get(preset.slug) or {}
-        if entry.get("typical_minutes"):
-            rt = f"{entry['typical_minutes']} min"
-        else:
-            rt = legacy_by_slug.get(preset.slug)
+        rt = _preset_runtime_text(meta, preset.slug)
         if rt and rt not in runtimes:
             runtimes.append(rt)
     if len(runtimes) >= 2:
@@ -581,6 +707,225 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     if len(runtimes) == 1:
         return runtimes[0]
     return "—"
+
+
+def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
+    """Map stored ``job.inputs`` keys onto the form's field names, in place.
+
+    ``clone_from`` copies ``job.inputs`` straight into ``pre_fill`` and
+    the form then looks each field up BY NAME. Where ``validate()``
+    stored something under a different name, or nested, the lookup
+    misses and the field silently falls back to its hard-coded default —
+    so a user cloning a 400-design run to re-run it gets a different
+    parameter set with no warning anywhere. That is a live bug
+    independent of the redesign; it is fixed here, once, rather than in
+    each form, because every clone for every tool passes through this
+    one function.
+
+    Four shapes, all measured against what ``validate()`` returns:
+
+    * ANY list-valued input, handled last and generically by
+      ``_as_form_text``: a stored list reaches Jinja unconverted and is
+      rendered with ``repr``, so cloning a Boltz-2 run put
+      ``[{'name': 'd0', 'sequence': ...}]`` into the FASTA textarea.
+      ``hotspot_residues`` (a list on six adapters) falls out of the same
+      rule rather than needing its own line, which is what it had.
+    * ``binder_length`` is stored as ``{"min": .., "max": ..}`` by
+      rfdiffusion and as ``[lo, hi]`` by proteina, while both forms ask
+      for it as two number inputs. bindcraft and boltzgen store the two
+      halves flat and are already fine; pxdesign stores a scalar under
+      the same name its single field uses, so ``isinstance`` is what
+      keeps this from corrupting it.
+    * MPNN calls the field ``chains_to_design`` and stores it as
+      ``target_chain``, so cloning an MPNN job silently reset the chain
+      selection to "A".
+
+    ``setdefault`` throughout: a key the form already reads under its
+    own name always wins over a derived one.
+    """
+    bl = pre_fill.get("binder_length")
+    if isinstance(bl, dict):
+        lo, hi = bl.get("min"), bl.get("max")
+    elif isinstance(bl, (list, tuple)) and len(bl) == 2:
+        lo, hi = bl[0], bl[1]
+    else:
+        lo = hi = None
+    if lo is not None:
+        pre_fill.setdefault("binder_length_min", lo)
+    if hi is not None:
+        pre_fill.setdefault("binder_length_max", hi)
+
+    if slug == "mpnn" and pre_fill.get("target_chain") is not None:
+        pre_fill.setdefault("chains_to_design", pre_fill["target_chain"])
+
+    # Every remaining list becomes text. LAST, so the shape-specific
+    # rules above still see the structure they were written against.
+    for key, value in pre_fill.items():
+        if isinstance(value, (list, tuple)):
+            pre_fill[key] = _as_form_text(value)
+
+
+def _as_form_text(value) -> str:
+    """Collapse a stored list into something a text control can render.
+
+    ``pre_fill`` reaches the templates as-is and every field reads it by
+    name, so anything that is not already a string is handed to Jinja and
+    stringified with ``repr``. ``boltz2`` stores ``binder_sequences`` as
+    ``[{"name": .., "sequence": ..}]`` and its textarea rendered exactly
+    that — ``[{'name': 'd0', 'sequence': 'QVRL...'}]`` — into a box the
+    user is asked to submit as FASTA. Cloning a Boltz-2 run therefore
+    produced a form that could not be submitted at all.
+
+    Fixed here rather than in boltz2_form.html because the defect is the
+    shape, not the tool: ``hotspot_residues`` is a list on six adapters
+    and was already being joined a few lines up, ``af2`` stores
+    ``fasta_records`` in the same record shape and af2_form.html carries
+    a hand-rolled Jinja loop to rebuild the FASTA. This is that logic,
+    once, on the one function every clone for every tool passes through.
+
+    Two shapes, both measured off the adapters' own ``validate()``:
+
+    * a list of records carrying ``sequence`` -> FASTA, which is what the
+      textareas ask for and what the parsers read back.
+    * a list of scalars -> comma-separated, which is what the single-line
+      fields (hotspots, epitopes, chains) ask for.
+
+    Anything else is joined on commas too. That can still be wrong for a
+    shape nobody has written yet, but it is never a ``repr`` in a form
+    field, which is the failure this exists to stop.
+    """
+    items = list(value)
+    if items and all(
+        isinstance(i, dict) and i.get("sequence") for i in items
+    ):
+        lines = []
+        for index, record in enumerate(items):
+            name = record.get("name") or record.get("header") or f"seq_{index}"
+            lines.append(f">{name}")
+            lines.append(str(record["sequence"]))
+        return "\n".join(lines)
+    return ",".join(str(i) for i in items)
+
+
+# Hotspot residues are the first hard stop a bench biologist hits: they
+# know their target, they do not know which residues on it to name, and
+# nothing on the pilot card said where to get them — the Epitope Scout
+# deflection lived only in the form field's help text, further down the
+# page than someone starting a pilot is looking.
+#
+# THE CARD HAS TWO SEPARABLE JOBS and they need two different predicates.
+# Conflating them shipped both a false promise and a missing one:
+#
+#   (a) "this tool asks for hotspots"  -> _needs_hotspots, below.
+#   (b) "and Scout can hand them back" -> scout.handoff.VALID_HANDOFF_TOOLS.
+#
+# The first cut of this derived (a) from which adapters' ``validate()``
+# refuses an empty hotspot field. That is the wrong property for copy a
+# user reads: it put rfdiffusion in — which refuses, but is NOT a Scout
+# handoff target, so the card promised a round trip that dead-ends — and
+# left boltzgen out, which IS a handoff target and whose own about panel
+# asks for a hotspot residue, purely because its validate() happens to
+# tolerate an empty field and run unsteered.
+#
+# So (a) now reads the tool's OWN STATED PREREQUISITES — the same
+# ``about["prerequisites"]`` bullets rendered on the page right below the
+# card. Derived, not a hand-maintained list, and it agrees by
+# construction with what the user is being told two panels down.
+def _needs_hotspots(meta) -> bool:
+    """Does this tool's about panel ask the user for a hotspot residue?
+
+    ``"Optional: a list of antigen hotspot residues"`` (boltz2) and
+    ``"Optionally, hotspot residues to aim the binder"`` (proteina) are
+    not a requirement and must not raise a card — hence the ``option``
+    exclusion, which covers both spellings.
+    """
+    about = getattr(meta, "about", None) or {}
+    return any(
+        "hotspot" in str(item).lower() and "option" not in str(item).lower()
+        for item in (about.get("prerequisites") or ())
+    )
+
+
+def _pilot_context(adapter, meta) -> dict | None:
+    """The guided starter recipe for a tool, with its numbers derived.
+
+    ``tools/<slug>/meta.py`` declares only the WORDS and the parameter
+    set (``PILOT``); the price and the runtime are computed here from
+    the same two sources the rest of the app already uses —
+    ``shared.wallet_estimates.estimated_cost_for_tool`` and the
+    preset runtime map. A hand-written price in meta.py would be a
+    second rate card and would drift off the real one.
+
+    ``PILOT["params"]`` keys are FORM FIELD NAMES, so the same dict
+    both pre-fills the form (``?pilot=1``) and feeds the estimator —
+    which is what the form's own live estimate posts, so the two
+    numbers cannot disagree.
+
+    Returns None when the tool declares ``PILOT = None`` (the fast
+    predictors: a 40-second ESMFold run needs no pilot ceremony).
+    """
+    pilot = getattr(meta, "PILOT", None)
+    if not pilot:
+        return None
+    params = dict(pilot.get("params") or {})
+    return dict(
+        pilot,
+        params=params,
+        cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
+        runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
+        url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
+        # Rendered by components/pilot_card.html as the "this tool asks
+        # for these, and here is where to get them" line. Both flags are
+        # derived, so one macro edit reaches every tool and neither can be
+        # hand-edited into disagreeing with the surface it describes.
+        hotspot_help_url=(
+            url_for("scout.index") if _needs_hotspots(meta) else None
+        ),
+        # Only these tools can actually receive the residues back. Scout's
+        # picker offers exactly this set; on anything else the user has to
+        # copy the numbers across by hand, and the copy says so.
+        hotspot_handoff=adapter.slug in VALID_HANDOFF_TOOLS,
+    )
+
+
+@lru_cache(maxsize=None)
+def _example_result(slug: str) -> dict | None:
+    """``tools/<slug>/example/result.json``, or None.
+
+    A real ``job.result`` captured once from a completed run. Cached
+    for the process lifetime because the file is static and this is
+    read on every render of a public, crawlable page.
+    """
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "tools" / slug.replace("-", "_") / "example" / "result.json"
+    )
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _example_context(adapter, meta) -> dict | None:
+    """The worked example for a tool: narration + the real payload.
+
+    Returns None unless BOTH halves are present. Narration with no
+    payload would render a description of results above an empty
+    results panel, and a payload with no narration is an unlabelled
+    table of numbers — either is worse than the tool simply not having
+    an example yet, which is the state of thirteen of the fourteen.
+    """
+    example = getattr(meta, "EXAMPLE", None)
+    if not example:
+        return None
+    result = _example_result(adapter.slug)
+    if result is None:
+        logger.warning(
+            "EXAMPLE declared for %s but example/result.json is missing "
+            "or unreadable; rendering no worked example", adapter.slug,
+        )
+        return None
+    return dict(example, result=result)
 
 def _showcase_note(slug: str) -> dict | None:
     """The showcase card for a tool, with its URL resolved, or None."""
@@ -595,17 +940,31 @@ def _showcase_note(slug: str) -> dict | None:
 def _public_tool_context(adapter) -> dict:
     """SEO + explainer context the tool page needs in BOTH auth states.
 
-    Was computed only on the logged-out preview branch. The preview
-    shell is gone — /tools/<slug> now renders the real form for
-    everyone — so this travels with every render and the explainer
-    macros read it directly.
+    Memoised on ``flask.g`` — i.e. for the life of ONE request, and no
+    longer. Two callers build this per render: ``tool_form`` passes it
+    into the template, and the ``tool_public_context`` jinja global
+    (app.py) rebuilds it inside ``about_panel.html`` because macros are
+    imported without context. Each build runs ``_pilot_context`` ->
+    ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
+    an uncached Supabase SELECT on ``tool_jobs_p90``. /tools/<slug> is
+    publicly indexable now, so that was two network round trips per
+    crawler hit for one page.
+
+    ``flask.g`` rather than ``lru_cache`` deliberately: the dict holds
+    ``url_for(..., _external=True)`` breadcrumbs and a live price, so a
+    process-lifetime cache would pin the first request's host into every
+    later response and freeze the estimate against p90 drift.
     """
-    import importlib  # noqa: PLC0415
-    tool_meta = None
-    try:
-        tool_meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-    except ImportError:
-        pass
+    cache = g.setdefault("_public_tool_ctx", {})
+    hit = cache.get(adapter.slug)
+    if hit is None:
+        hit = cache[adapter.slug] = _build_public_tool_context(adapter)
+    return hit
+
+
+def _build_public_tool_context(adapter) -> dict:
+    """Assemble the context. Call ``_public_tool_context`` instead."""
+    tool_meta = meta_for(adapter.slug)
 
     short_name = _short_name_for_label(adapter.label)
     seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
@@ -663,6 +1022,8 @@ def _public_tool_context(adapter) -> dict:
             if tech_slug else None
         ),
         "related_tools": _related_tool_cards(adapter.slug),
+        "pilot": _pilot_context(adapter, tool_meta),
+        "example": _example_context(adapter, tool_meta),
         "prerequisite": _prerequisite_tool(adapter.slug),
         "showcase_note": _showcase_note(adapter.slug),
         "breadcrumbs": [
@@ -710,7 +1071,26 @@ def tool_form(tool: str):
         return err
 
     public_ctx = _public_tool_context(adapter)
-    login_next = url_for("tools.tool_form", tool=adapter.slug)
+
+    # NOTE: there is no ``login_next`` here any more. It was computed on
+    # both render branches and passed into the template, but no template
+    # ever read it — the sign-in link lives in
+    # components/_signin_cta.html and gets its href from the
+    # ``signin_url()`` jinja global (app.py), because that file is
+    # reached through macros imported WITHOUT context and cannot see a
+    # context variable. A dead duplicate of a live helper is worse than
+    # nothing: the QC pass that found the dropped query string fixed it
+    # here, where it changes no behaviour at all. The real fix is in
+    # ``_signin_url``.
+
+    # Fifth pre-fill source, and the only one that works logged OUT:
+    # ``?pilot=1`` loads the tool's declared starter recipe. It is a
+    # constant from meta.py rather than anything owner-scoped, so
+    # unlike clone_from / from_job / handoff / resample_from it needs
+    # no user context and is resolved before the anonymous branch.
+    pilot_pre_fill: dict = {}
+    if request.args.get("pilot") and public_ctx.get("pilot"):
+        pilot_pre_fill = dict(public_ctx["pilot"]["params"])
 
     # Logged-out: same template, same URL, no user context loaded.
     # ``authenticated=False`` is what flips the shared macros —
@@ -722,13 +1102,12 @@ def tool_form(tool: str):
             adapter.form_template,
             adapter=adapter,
             error=None,
-            pre_fill={},
+            pre_fill=pilot_pre_fill,
             pdb_source=None,
             workspace_ctx=None,
             wallet=None,
             single_container_ceiling=None,
             authenticated=False,
-            login_next=login_next,
             # SEO title/description only on the anonymous render —
             # crawlers are always anonymous, and the signed-in page
             # keeps the plain "<Tool> — Ranomics Tools" title it has
@@ -782,10 +1161,7 @@ def tool_form(tool: str):
                 k: v for k, v in (prior.inputs or {}).items()
                 if not k.startswith("_")
             }
-            # Normalize list-typed inputs back to form-friendly strings.
-            hs = pre_fill.get("hotspot_residues")
-            if isinstance(hs, list):
-                pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
+            _normalize_clone_pre_fill(adapter.slug, pre_fill)
             stored_path = (prior.inputs or {}).get("_pdb_storage_path")
             stored_name = (prior.inputs or {}).get("_pdb_filename")
             if stored_path and stored_name:
@@ -884,6 +1260,13 @@ def tool_form(tool: str):
                 },
             )
 
+    # Pilot recipe, applied LAST and only as a fallback: a job-derived
+    # source (clone/handoff/resample) names a real earlier run and must
+    # win over a generic starter recipe if both query params are
+    # somehow present.
+    if pilot_pre_fill and not pre_fill:
+        pre_fill = dict(pilot_pre_fill)
+
     # The wallet estimate partial reads balance_usd for first paint
     # so the form lights up with the user's real balance even before
     # the /api/wallet/estimate call returns. Falls back to 0 if the
@@ -910,7 +1293,6 @@ def tool_form(tool: str):
         wallet=wallet_for_form,
         single_container_ceiling=campaign_ceiling,
         authenticated=True,
-        login_next=login_next,
         **public_ctx,
     )
 

@@ -119,21 +119,49 @@ seo_faq: list[dict] = [
     },
     {
         "q": "How are Proteina-Complexa designs scored and ranked?",
+        # THE FIFTH SURFACE. This answer renders twice on /tools/proteina —
+        # as visible FAQ copy and inside the FAQPage JSON-LD, so it is
+        # rich-result eligible — and it used to read "Each search shard
+        # filters candidates through an AF2 / RF3 / force-field reward
+        # stack". No shard does. Dockerfile.modal:229-231: "Only
+        # ligand_binder (RF3 is its sole reward) and motif_ame need it;
+        # protein_binder scores on AF2 alone." That made this answer the
+        # direct negation of ``about["output_summary"]`` below ("The ligand
+        # and motif variants score on RF3 only"), two paragraphs away on
+        # the same page. The which-model-follows-the-target clause is
+        # copied verbatim from ``about["what_it_is"]`` so the page states
+        # the mapping in one voice rather than three.
         "a": (
-            "Each search shard filters candidates through an AF2 / RF3 / "
-            "force-field reward stack, and the hub then selects a global "
-            "top-K across all shards with post-hoc structural diversity "
-            "clustering, so you get diverse high-reward designs rather than "
-            "near-duplicates."
+            "Every candidate is re-folded and scored against your target as "
+            "it is generated, and which model does that scoring follows the "
+            "target: a protein target is scored by an AlphaFold2 refold, a "
+            "small-molecule or motif target by RoseTTAFold3, with a physics "
+            "force field added where it applies. Each shard keeps what "
+            "scores well, and the hub then ranks across every shard at once "
+            "and clusters the winners, so you get a spread of different "
+            "high-scoring designs rather than near-duplicates."
         ),
     },
 ]
 
+# THE REWARD STACK IS A MENU, NOT A PIPELINE. This one-liner is the
+# highest-blast-radius string in the package — it feeds the homepage
+# card, /tools, and /help/tools/proteina — and it shipped for review
+# reading "every candidate is filtered through three independent
+# scoring checks". No variant runs all three.
+# Dockerfile.modal:229-231: "Only ligand_binder (RF3 is its sole
+# reward) and motif_ame need it; protein_binder scores on AF2 alone,
+# so it runs regardless of this switch." The comment ~70 lines above
+# says the same, and ``about["output_summary"]`` below — which renders
+# one scroll away on the same page — already said the true version.
+# Say which model scores which target, or say nothing.
 comparison_one_liner: str = (
-    "Pick Proteina-Complexa when you want de novo binders against a protein "
-    "OR a small-molecule (ligand) target, scored by a full AF2 / RF3 / "
-    "force-field reward stack, and you want to scale the search across many "
-    "GPUs with the wallet as the only ceiling."
+    "You have a hard target — a recessed pocket, a site spanning "
+    "two chains, or a small molecule rather than a protein — and "
+    "you want to throw as much search at it as your balance allows. "
+    "Every candidate is re-folded and scored against your target as "
+    "it is generated, and the run fans out across as many GPUs as "
+    "you fund."
 )
 example_output_id: Optional[str] = None
 
@@ -142,23 +170,46 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "Proteina-Complexa (Geffner et al., NVIDIA 2025). A flow-matching "
-        "generator wrapped in an inference-time search that filters designs "
-        "through an AlphaFold2 / RoseTTAFold3 / force-field reward stack. It "
-        "designs de novo binders against protein targets, small-molecule "
-        "(ligand) targets, and enzyme / motif active sites. Runs here as a "
-        "fund-and-drain campaign of independent seeded search shards, with "
-        "global cross-shard top-K and post-hoc diversity clustering."
+        "Designs binders for the targets the standard tools find hard: "
+        "a recessed pocket, a site spanning two chains, a small "
+        "molecule instead of a protein, an enzyme active site. Rather "
+        "than generating candidates and hoping, it searches — it "
+        "generates, re-folds every candidate and scores how well it "
+        "grips your target, keeps what scores well and generates "
+        "again from there. Which model does that scoring follows the "
+        "target: a protein target is scored by an AlphaFold2 refold, "
+        "a small-molecule or motif target by RoseTTAFold3, with a "
+        "physics force field added where it applies. "
+        "The run splits into independent shards "
+        "across as many GPUs as your balance funds, then ranks globally "
+        "across all of them and clusters the winners, so you get a "
+        "spread of different designs rather than many copies of one. "
+        "Proteina-Complexa, Geffner et al., NVIDIA 2025."
     ),
     "when_to_use": [
-        "You want to aim a de novo binder at a specific epitope, including a "
-        "recessed or occluded one, using hotspot residues.",
-        "Your target is multi-chain and the site you care about spans more than "
-        "one chain.",
-        "You want de novo binders against a small-molecule target, not just a protein.",
-        "You want an inference-time search filtered by an AF2 / RF3 / force-field reward, not raw generation.",
-        "You want to scale the search across many GPUs with the prepaid wallet as the only ceiling.",
-        "You want diverse high-reward designs (global top-K + diversity clustering) rather than near-duplicates.",
+        (
+            "You want to aim a binder at one specific patch, including a "
+            "recessed or partly shielded one, by naming residues on it."
+        ),
+        (
+            "The site you care about spans more than one chain of your "
+            "target."
+        ),
+        (
+            "Your target is a small molecule rather than a protein."
+        ),
+        (
+            "You would rather pay for a search that filters as it goes than "
+            "for raw generation you have to filter afterwards."
+        ),
+        (
+            "You want to scale the search across many GPUs, with your "
+            "prepaid balance as the only ceiling."
+        ),
+        (
+            "You want a spread of different good designs rather than many "
+            "variations on one."
+        ),
     ],
     "prerequisites": [
         "A target: your own structure (<code>.pdb</code>/<code>.cif</code>) for "
@@ -247,3 +298,78 @@ about: dict = {
     "model_license_notice": model_license_notice,
     "reward_attributions": reward_attributions,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: one shard, 8 designs",
+    # "see what the reward stack returns" was both jargon on a page aimed
+    # at a bench biologist and the loosest of the reward-stack strings —
+    # the pilot runs protein_binder, which scores on AF2, not a stack.
+    "goal": (
+        "Run the smallest complete unit of a Proteina search against "
+        "your own target and see how the designs score against it."
+    ),
+    "you_need": (
+        "A structure file for your target and its chain ID &mdash; or a "
+        "chain and residue range such as <code>A1-150</code>. Hotspot "
+        "residues are optional, and are what aims the binder at one "
+        "specific face."
+    ),
+    # num_designs stays at 8 because 8 IS the floor: proteina is a
+    # fixed-container tool (compute_campaigns._FIXED_CONTAINER_TOOLS),
+    # one shard is one whole A100-80GB container, and the estimate is
+    # flat from 1 design to 8. Asking for fewer costs exactly the same
+    # and returns less, so there is no cheaper first run to offer.
+    #
+    # What the pilot does change is the length window. The form leaves
+    # both boxes blank, which silently means 60-120 rather than
+    # unconstrained; 60-100 is a narrower, more designable first search
+    # and makes the implicit default visible instead of leaving the
+    # user to discover it in the help text.
+    "params": {
+        "preset": "protein_binder",
+        "num_designs": "8",
+        "binder_length_min": "60",
+        "binder_length_max": "100",
+    },
+    "next_step": (
+        "8 designs is one shard on one GPU, and it costs the same as "
+        "one design would &mdash; a shard is a whole container. Raise "
+        "the count and the run fans out across GPUs as a campaign "
+        "bounded by your wallet, with a single ranked list pooled "
+        "across every shard. Widen the length window once you know the "
+        "target is workable."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# A real payload exists on disk (proteina_direct_out/smoke_result.json,
+# 2026-08-06) and is NOT shippable: it pre-dates the pLDDT polarity fix
+# in #129 (merged 9fbe547, 2026-08-09), so its af2_plddt column holds
+# 1 - pLDDT on every candidate. Publishing an inverted confidence column
+# as a worked example would teach the metric backwards. Its scores are
+# also degenerate (af2_iptm 0.09 to 0.10 across all 8, binder_scrmsd 34
+# to 41 A), so it is not a picture of a working run either. Capture a
+# post-fix delivered shard and this becomes a one-file change.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

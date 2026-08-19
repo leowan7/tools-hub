@@ -137,9 +137,15 @@
             <input type="text" name="task_name" id="task_name" maxlength="64"
                    placeholder="02_PDL1" {{ pre_value(pre_fill, "task_name", "") }}
                    class="proteina-field" style="max-width: 320px;">
+            {# Was "its own target, chain range, hotspots and binder
+               length". That is the FIRST use of "hotspot" on the page and
+               the glossed field is in #custom-fields, which this branch
+               hides -- a reader on the curated path never sees the
+               definition. The list is not worth the wall: the fields it
+               names are right below, greyed out. #}
             <div class="proteina-help">
-              A curated benchmark task. It carries its own target, chain range,
-              hotspots and binder length, so those fields do not apply. Blank
+              A curated benchmark task. It comes with its own target and its
+              own design settings, so the fields below do not apply. Blank
               uses the variant's default task.
             </div>
           </div>
@@ -179,8 +185,14 @@
             <input type="text" name="hotspot_residues" id="hotspot_residues"
                    placeholder="A45,A67,A89" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                    class="proteina-field" style="max-width: 320px;">
+            {# Gloss matched to templates/components/pilot_card.html (PR #154),
+               not reworded: "the numbered residues on the patch of your target
+               you want the binder to sit on, written in your PDB's own
+               numbering". This form is a priority block and had the term
+               unglossed on first use. #}
             <div class="proteina-help">
-              Optional. Residues the binder should contact, in original PDB
+              Optional. The numbered residues on the patch of your target you
+              want the binder to sit on, written in your PDB&rsquo;s own
               numbering. A plain number is read as the target chain; when the
               run targets more than one chain it is refused, because
               <code>241</code> cannot say which protomer it means — prefix the
@@ -221,13 +233,22 @@
                      class="proteina-field">
             </div>
             <div class="proteina-help">
-              Each design's length is drawn uniformly from this range. Blank
-              uses 60 to 120, the model's own default.
+              How long the new binder should be, in residues. Every design
+              draws its own length from this window, so a wide window buys
+              variety and a narrow one buys consistency. Match it to the face
+              you are aiming at: 50 to 80 for a small, fairly flat patch, 100
+              to 200 for a broad one or a site spanning two chains, where a
+              short binder cannot reach across. Longer binders also cost more
+              GPU time per design and are harder to express at the bench.
+              Leaving both blank is <em>not</em> unconstrained &mdash; it means
+              60 to 120, the model's own default. 20 to 300 allowed.
             </div>
           </div>
 
           <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-          <input type="number" name="num_designs" id="num_designs" min="1" max="1000" value="8"
+          {# See rfdiffusion_form.html: pre_value, not a hard-coded value, so
+             ?clone_from= and ?pilot=1 can set the design count. #}
+          <input type="number" name="num_designs" id="num_designs" min="1" max="1000" {{ pre_value(pre_fill, "num_designs", "8") }}
                  {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                  class="proteina-field" style="max-width: 120px;">
           <div class="proteina-help">

@@ -11,7 +11,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — Nature Methods / bioRxiv permalink.
     github_url        — upstream ColabFold repository.
-    comparison_one_liner — "pick ColabFold when..." positioning string.
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
     example_output_id — optional job_id of a public demo run (None today).
 """
 
@@ -28,10 +29,11 @@ paper_citation: str = "Mirdita et al., Nature Methods 2022"
 paper_url: str = "https://www.nature.com/articles/s41592-022-01488-1"
 github_url: str = "https://github.com/sokrypton/ColabFold"
 comparison_one_liner: str = (
-    "Pick ColabFold when you need a fast no-MSA fold. 1 to 2 min per "
-    "run, no MMseqs2 round-trip. Pair with AF2 standalone (D2) when "
-    "you want full MSA and templates, or with ESMFold (D4) for "
-    "single-sequence monomers on an even smaller GPU."
+    "You have a sequence and want its 3D shape in a minute or two, "
+    "trading a little accuracy for speed. It skips the search for "
+    "related natural sequences that full AlphaFold2 runs. Use it to "
+    "triage a batch; use AlphaFold2 when the answer has to be "
+    "right."
 )
 example_output_id: Optional[str] = None
 
@@ -40,15 +42,28 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "ColabFold (Mirdita et al., <em>Nature Methods</em> 2022) "
-        "running AlphaFold2 weights without MMseqs2 MSA fetch. Faster "
-        "than full AF2 at the cost of MSA-derived accuracy. Useful when "
-        "you need a structure quickly and the target has a tractable fold."
+        "Predicts a structure from a sequence in one to two minutes by "
+        "skipping the search for related natural sequences that full "
+        "AlphaFold2 runs. Same AlphaFold2 weights, less evidence to "
+        "work from — so a little less accurate and a lot faster. Useful "
+        "for triaging a batch of sequences or getting a quick look at a "
+        "well-behaved fold. ColabFold, Mirdita et al., <em>Nature "
+        "Methods</em> 2022."
     ),
     "when_to_use": [
-        "You need a structure in 1 to 2 minutes and can tolerate slightly lower accuracy than full-MSA AF2.",
-        "You're folding many sequences sequentially and need throughput.",
-        "Your target is a well-folded monomer or small multimer with no exotic chemistry.",
+        (
+            "You want a structure in a couple of minutes and can live with "
+            "slightly less accuracy than full AlphaFold2."
+        ),
+        (
+            "You are folding a batch of sequences one after another and "
+            "throughput matters more than the last few points of "
+            "confidence."
+        ),
+        (
+            "Your target is a well-behaved single chain or small complex "
+            "with no unusual chemistry."
+        ),
     ],
     "prerequisites": [
         "Single-letter FASTA sequence(s).",
@@ -81,3 +96,25 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# No pilot. See templates/components/pilot_card.html — the card simply
+# does not render.
+# ---------------------------------------------------------------------------
+# A 1 to 2 minute no-MSA fold with no scale parameter to start
+# small on. Nothing for a pilot tier to reduce.
+PILOT: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

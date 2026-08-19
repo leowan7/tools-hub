@@ -9,7 +9,7 @@ Lifecycle
 ---------
 ::
 
-    record_signup_credit()                  # one-time $5 grant on first signup
+    record_signup_credit()                  # one-time SIGNUP_CREDIT_USD grant
         |
         v
     top_up_wallet()                         # Stripe Checkout success webhook
@@ -94,9 +94,10 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # with headroom.
 #
 # This number is user-visible in ~18 places. Do NOT hardcode it in copy:
-# templates read it through the ``signup_credit`` jinja global, which is
-# sourced from here. shared/email.py reads WALLET_SIGNUP_CREDIT_USD from the
-# environment and its default is kept in step with this value.
+# templates read it through the ``signup_credit`` jinja global and Python
+# callers import this constant, both sourced from here. There is no env
+# override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
+# changed only the welcome email, never the grant.
 SIGNUP_CREDIT_USD = Decimal("15.00")
 
 # Send the low-balance email when balance drops below this.

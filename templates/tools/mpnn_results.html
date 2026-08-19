@@ -113,12 +113,20 @@
       </p>
     {% endif %}
 
+    {# ``example`` is set by components/worked_example.html, which replays a
+       canned payload through this partial on the public /tools/mpnn page.
+       Both controls below are keyed on job.id, which is the literal string
+       "example" there — so both would 404. They are the only job-scoped
+       links this partial emits; tests/test_worked_examples.py re-derives
+       that rather than trusting it. #}
+    {% if not example %}
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
       {% if sequences %}
         <a href="{{ url_for('jobs.export_fasta', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download FASTA</a>
       {% endif %}
     </div>
+    {% endif %}
 
     {% if output.get('runtime_seconds') %}
       <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">

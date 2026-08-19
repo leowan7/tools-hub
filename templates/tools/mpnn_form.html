@@ -44,8 +44,11 @@
                      {% if not pdb_source %}required{% endif %}
                      class="field-input" style="max-width: 520px;">
               <div class="field-helper">
-                Upload the backbone structure as .pdb, .cif, or .mmcif.
-                Only the C&alpha; / backbone atoms are used; side chains are ignored.
+                Upload the backbone as .pdb, .cif, or .mmcif &mdash; a 3D
+                shape whose sequence you have not decided yet, or one whose
+                sequence you want to replace. Only the backbone atoms are
+                read, so side chains and any sequence already in the file are
+                ignored: the shape is the input, not the sequence.
               </div>
             </div>
 
@@ -54,9 +57,12 @@
               <input type="text" name="chains_to_design" id="chains_to_design" {{ pre_value(pre_fill, "chains_to_design", "A") }} maxlength="24"
                      class="field-input" style="max-width: 240px;">
               <div class="field-helper">
-                Space- or comma-separated chain IDs that MPNN should redesign
-                (e.g. <code>A</code>, <code>A B</code>, <code>H L</code>).
-                Other chains stay fixed as context.
+                Which chains get a new sequence &mdash; usually just your
+                binder. Space- or comma-separated
+                (<code>A</code>, <code>A B</code>, <code>H L</code>). Chains
+                you leave out keep their existing sequence and are still seen
+                by the model, so a target chain left out here shapes the
+                design without being changed by it.
               </div>
             </div>
 
@@ -65,7 +71,10 @@
               <input type="number" name="num_seq_per_target" id="num_seq_per_target" {{ pre_value(pre_fill, "num_seq_per_target", "50") }} min="1" max="1000"
                      class="field-input" style="max-width: 160px;">
               <div class="field-helper">
-                How many candidate sequences to sample (1 to 1000).
+                How many candidate sequences to propose (1 to 1000). They
+                are all designed for the same backbone; more candidates means
+                more to choose from when you fold or order, at no extra
+                runtime worth worrying about. 50 is a reasonable default.
               </div>
             </div>
 
@@ -74,8 +83,12 @@
               <input type="number" step="0.01" name="sampling_temp" id="sampling_temp" {{ pre_value(pre_fill, "sampling_temp", "0.1") }} min="0.01" max="1"
                      class="field-input" style="max-width: 160px;">
               <div class="field-helper">
-                Lower = more conservative (closer to argmax); higher = more diverse.
-                Defaults to 0.1 per the upstream README.
+                How much the model is allowed to stray from its single
+                best guess at each position. Low (0.1, the default) gives
+                near-identical sequences that are the safest bet for folding
+                back into your backbone; raising it toward 0.3 buys diversity
+                at the cost of confidence, which is worth doing only once a
+                low-temperature batch has failed to give you anything.
               </div>
             </div>
 

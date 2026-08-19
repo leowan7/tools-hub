@@ -183,9 +183,9 @@ adapter = ToolAdapter(
     slug="rfantibody",
     label="RFantibody",
     blurb=(
-        "Structure-based VHH (nanobody) binder design. Generates "
-        "single-domain antibody candidates against a target epitope, "
-        "then validates the fold with RoseTTAFold-2."
+        "Upload your target structure, mark the patch you want gripped, "
+        "and get back nanobody (single-domain antibody) candidates, "
+        "each refolded and scored against the target."
     ),
     presets=(
         Preset(

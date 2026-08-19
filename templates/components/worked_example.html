@@ -1,0 +1,99 @@
+{# worked_example.html — one real run of this tool, and what it returned.
+
+The single biggest gap for a new user is that nothing on the site showed
+what comes back. The deleted preview shell had a dashed box reading
+"Screenshot placeholder" where this goes.
+
+WHAT MAKES THIS NOT DRIFT: the output renders through the tool's OWN
+``adapter.results_partial`` — the same include templates/job_detail.html
+uses on a real job page. The partials read only ``job.result``,
+``job.id`` and ``job.status``, so a stub ``job`` mapping is the entire
+integration. A screenshot would go stale silently; this cannot.
+
+THE HAZARD IS LINKS. Results partials emit job-scoped URLs — a clone
+link keyed on ``job.id``, artifact downloads keyed on storage paths —
+and with ``job.id = "example"`` every one of them 404s. ``example`` is
+set to true below and DOES reach the include (Jinja dumps the local
+frame into an included template's context, inside a macro as well as
+out), and each partial that ships an EXAMPLE suppresses its job-scoped
+controls under it. ``tests/test_worked_examples.py`` renders every
+EXAMPLE through its partial and fails on any surviving job-scoped href,
+so a tool that gains an EXAMPLE without adding the guard is caught
+rather than shipped.
+
+Deliberately NOT reproduced here: the 3D viewer from job_detail.html.
+It pulls artifacts from Supabase storage, which an example has none of.
+A plain download of the input structure from static/example/ instead.
+
+Numbers in the narration are RECORDED FACTS from one specific past run,
+unlike the pilot card above, which derives its price live. The closing
+line labels them that way so the two never read as contradictory.
+
+Usage:
+
+    {% from "components/worked_example.html" import worked_example %}
+    {{ worked_example(adapter, ex) }}
+#}
+
+{% macro worked_example(adapter, ex) %}
+  {% if ex and adapter.results_partial %}
+    <aside class="panel about-panel">
+      <div class="panel-header">
+        <span class="panel-title">A run we actually did</span>
+      </div>
+      <div class="panel-body">
+        <h3>The target</h3>
+        <p>{{ ex.target|safe }}</p>
+        <p>{{ ex.why_this_target|safe }}</p>
+
+        <h3>What we put in the form</h3>
+        <dl>
+          {% for field, value, why in ex.inputs_used %}
+            <dt><strong>{{ field }}</strong> &mdash; <code>{{ value }}</code></dt>
+            <dd>{{ why|safe }}</dd>
+          {% endfor %}
+        </dl>
+        {% if ex.structure_file %}
+          <p>
+            <a href="{{ url_for('static', filename='example/' ~ ex.structure_file) }}" download>
+              Download the structure we used ({{ ex.structure_file }})
+            </a>
+          </p>
+        {% endif %}
+
+        <h3>What came back</h3>
+        <p>{{ ex.what_came_back|safe }}</p>
+      </div>
+    </aside>
+
+    {# The tool's real results component, outside the panel body so it
+       keeps its own chrome — exactly as it renders on /jobs/<id>. #}
+    {% set example = true %}
+    {% set job = {
+         "id": "example",
+         "status": "succeeded",
+         "tool": adapter.slug,
+         "inputs": {},
+         "result": ex.result,
+       } %}
+    {% include adapter.results_partial %}
+
+    <aside class="panel about-panel">
+      <div class="panel-body">
+        <h3>How to read that</h3>
+        <p>{{ ex.how_to_read_it|safe }}</p>
+
+        <h3>What happened next</h3>
+        <p>{{ ex.what_we_did_next|safe }}</p>
+
+        <p style="color: var(--text-tertiary); font-size: 0.8rem;">
+          Recorded from that one run
+          {%- if ex.cost_usd %}, which cost ${{ ex.cost_usd }}{% endif %}
+          {%- if ex.runtime %}, and took {{ ex.runtime }}{% endif %}.
+          That is what it did, not a quote for yours &mdash; the estimate
+          on the form is the live number for your own inputs.
+        </p>
+      </div>
+    </aside>
+  {% endif %}
+{% endmacro %}

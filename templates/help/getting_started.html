@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Getting started — Ranomics Tools{% endblock %}
-{% block description %}Step by step guide to running your first protein design on Ranomics Tools. Create an account, add funds, pick a tool, submit a run, and read the results.{% endblock %}
+{% block description %}How to run your first protein design on Ranomics Tools: start from the target you already have, open the tool and read the form, run a small pilot, read the scores, then scale up or switch tools.{% endblock %}
 
 {% block head_extra %}
   <style>
@@ -48,70 +48,102 @@
   <div class="hero">
     <h1>Getting started</h1>
     <p class="subtitle">
-      One full run, from signup to a shortlist worth taking into the lab.
+      Start from the protein you already have, run one small job on it, and
+      read what comes back.
     </p>
   </div>
 
   <section class="section">
     <ol class="help-steps">
       <li>
-        <h2 class="help-step-title">Create an account</h2>
+        <h2 class="help-step-title">Start from what you already have</h2>
         <p class="help-step-body">
-          Sign up with your email at tools.ranomics.com. New accounts start
-          with a small wallet balance so you can try a tool right away.
+          Two things decide which tool you need: what is on your bench right
+          now, and what you want back. A 3D structure of a target you want
+          something to stick to. A structure with no sequence yet, and you
+          need sequences that fold into it. A sequence, and you want to see
+          its predicted shape or whether it will survive being made. Each of
+          those is a different tool, and you do not need to know any model
+          names to find it — the
+          <a href="{{ url_for('public.index') }}">home page</a> groups the
+          tools by that question, and the
+          <a href="{{ url_for('tools.tools_comparison') }}">full tool list</a>
+          puts them side by side with typical runtimes.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Add funds to your wallet</h2>
+        <h2 class="help-step-title">Open the tool page and look at the form</h2>
         <p class="help-step-body">
-          Top up a USD wallet from your account. The minimum top-up is $20,
-          and that balance is your spend cap. Each job debits the actual
-          cost of the compute it uses, so there is no subscription and no
-          monthly minimum.
+          You do not need an account to look. The tool page shows the exact
+          inputs the run asks for, and a cost estimate that updates live as
+          you change the settings. Most binder design tools want three
+          things: your target structure as a PDB or mmCIF file, which chain
+          in that file to aim at, and a few hotspot residues — the specific
+          amino acids on the target's surface you want the new binder to
+          touch. If you do not know yours yet,
+          <a href="{{ url_for('scout.index') }}">score your target's surface
+          with Epitope Scout</a> first — it is free, and it is the step
+          before any of this, not a fallback for when a paid run comes back
+          empty. Structure prediction tools want a sequence instead.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Pick a tool</h2>
+        <h2 class="help-step-title">Start the tool's named pilot</h2>
         <p class="help-step-body">
-          Browse the
-          <a href="{{ url_for('tools.tools_comparison') }}">tool catalog</a>
-          and choose the model that fits your target. Each tool lists what
-          it is built for and a typical runtime.
+          Most tool pages carry a pilot card: a named first run on your own
+          target, sized to tell you whether the setup works before you spend
+          on a large one. It states what the run is for, what you need in
+          hand, and roughly what it costs before you commit anything.
+          <strong>Load these settings</strong> fills the form with exactly
+          those values — you supply your own structure and hotspots on top.
+          A few tools have no pilot card, because their smallest possible
+          run is already the only run they do; on those, just submit the
+          form.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Upload a PDB or pick chains</h2>
+        <h2 class="help-step-title">Sign in and submit</h2>
         <p class="help-step-body">
-          Upload your target structure as a PDB or mmCIF file, then mark the
-          chain and hotspot residues the design should engage. Sequence
-          tools instead ask which chains to redesign.
+          Submitting is the first point that needs an account. Billing is a
+          USD wallet and that balance is your spend cap — no subscription,
+          no monthly minimum, and a new account starts with
+          ${{ signup_credit() }} already in it, which covers every pilot on
+          the site. Before you confirm you see the estimated cost and what
+          your balance will be afterwards; a hold is placed against the
+          estimate while the job runs and the final charge settles against
+          the compute actually used. See
+          <a href="{{ url_for('public.pricing') }}">pricing</a> for how holds
+          and top-ups work.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Submit a run</h2>
+        <h2 class="help-step-title">Read the result</h2>
         <p class="help-step-body">
-          The form shows an estimated cost and your balance after the job
-          before you confirm. Submit when the parameters look right. A
-          wallet hold is placed against the estimate while the job runs.
+          The job page streams progress while the GPU works, then hands back
+          your candidates ranked by score. Open any one of them in the 3D
+          viewer, and export the score table as CSV or the sequences as
+          FASTA. Each score has a rough cut-off above which a design is
+          worth taking further — the
+          <a href="{{ url_for('public.help_index') }}">guide for the tool you
+          ran</a> spells out which number to sort on and where its cut-off
+          sits.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Watch live progress and read results</h2>
+        <h2 class="help-step-title">Scale up, or switch tools</h2>
         <p class="help-step-body">
-          The job page streams progress while the GPU works. When it
-          finishes you get ranked candidates with their scores, and the
-          final charge settles against the hold.
+          If the pilot produced anything that scored well, clone the run and
+          raise the design count — the setup is proven, so the only thing
+          missing is volume. If nothing scored well, the setup is the usual
+          culprit rather than the model: the wrong chain, the wrong patch of
+          surface, or a target that is genuinely hard to bind. Score the
+          target's surface first with
+          <a href="{{ url_for('scout.index') }}">Epitope Scout</a>, or move
+          to a tool built for the kind of binder you need.
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Open the 3D viewer and export</h2>
-        <p class="help-step-body">
-          Inspect any candidate in the built-in 3D viewer, then export the
-          results as CSV for the score table or FASTA for the sequences.
-        </p>
-      </li>
-      <li>
-        <h2 class="help-step-title">Star the best candidates and send the shortlist to the wet lab</h2>
+        <h2 class="help-step-title">Take the shortlist to the bench</h2>
         <p class="help-step-body">
           Star the designs worth pursuing to build a shortlist, then hand it
           off to a
@@ -126,10 +158,11 @@
     <div class="panel" style="margin-top: 1.25rem;">
       <div class="panel-body">
         <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">
-          A pilot of about 8 designs gives a real first signal, because
-          roughly 1 in 5 designs passes the in-silico filter on a tractable
-          target. Start small, read the scores, then scale the run up once
-          you trust the setup.
+          What to expect from a pilot: about 8 designs gives a real first
+          signal, because roughly 1 in 5 designs passes the in-silico
+          filter — the computational quality check the tool applies before
+          anything reaches you — on a tractable target. Start small, read
+          the scores, then scale the run up once you trust the setup.
         </p>
       </div>
     </div>

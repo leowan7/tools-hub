@@ -13,6 +13,7 @@ anonymous visitors into ``/login?next=``.
 # visible here. Without it this test iterates an empty registry and
 # passes vacuously -- green while the bug ships. The explicit count
 # assertion below keeps that failure mode from coming back silently.
+import pathlib
 import re
 
 import app  # noqa: F401
@@ -74,6 +75,54 @@ def test_every_adapter_has_a_category():
     assert not missing, (
         f"adapters with no _TOOL_CATEGORIES entry (they render under "
         f'"Other" on the homepage): {missing}'
+    )
+
+
+def test_every_adapter_resolves_its_meta_in_the_catalog(monkeypatch):
+    """The catalog must not silently render a tool with no metadata.
+
+    ``_build_tools_catalog`` built the meta module path by interpolating
+    the adapter slug raw. Package directories use underscores and
+    ``esmfold2-design`` does not, so that import raised ImportError, the
+    ``except ImportError: pass`` swallowed it, and the tool rendered on
+    the homepage with no runtime band, no positioning line and no
+    citation — which looks exactly like a tool that simply has none.
+    Four other call sites had the same bug and were moved to
+    ``shared.tool_meta.meta_for``; this was the fifth.
+
+    Asserting on the OUTPUT rather than on the import mechanism, so it
+    keeps holding if the loading changes again.
+    """
+    from app import create_app
+    from shared.feature_flags import flag_name
+    from shared.tools_catalog import _build_tools_catalog
+
+    slugs = {a.slug for a in tool_base.all_adapters()}
+    assert len(slugs) >= 14, f"adapter registry holds {len(slugs)} tools"
+    # monkeypatch, not bare os.environ: the sibling ``flask_app`` fixture
+    # above already sets these through monkeypatch, and this test used to
+    # set fourteen FLAG_TOOL_* vars and SESSION_SECRET_KEY with no restore,
+    # leaking them into whatever ran next.
+    for slug in slugs:
+        monkeypatch.setenv(flag_name(slug), "on")
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+
+    flask_app = create_app()
+    with flask_app.test_request_context("/"):
+        catalog = _build_tools_catalog()
+
+    listed = {e["slug"] for e in catalog}
+    assert slugs <= listed, f"missing from the catalog: {sorted(slugs - listed)}"
+
+    blank = sorted(
+        e["slug"] for e in catalog
+        if e["slug"] in slugs
+        and "—" in (e["runtime_band"], e["comparison_one_liner"],
+                    e["paper_citation"])
+    )
+    assert not blank, (
+        f"catalog entries with no metadata resolved (hyphen-vs-underscore "
+        f"slug, most likely): {blank}"
     )
 
 
@@ -202,3 +251,48 @@ def test_anonymous_catalog_links_actually_resolve(flask_app, page):
         f"catalog links on {page} that an anonymous visitor cannot open: "
         f"{walled}"
     )
+
+
+# ---------------------------------------------------------------------
+# README tool table. It listed ten tools while fourteen were live, and
+# then went stale a second time the moment the bands were renamed to the
+# task-first labels. Nothing else in the repo reads it, so nothing else
+# notices.
+# ---------------------------------------------------------------------
+
+_README = pathlib.Path(__file__).resolve().parents[1] / "README.md"
+_GPU_ROW = re.compile(
+    r"^\| ([^|]+?) \| `([a-z0-9-]+)` \| ([^|]+?) \| `([^`]+)` \|$", re.M
+)
+
+
+def test_readme_tool_table_matches_the_live_registry():
+    adapters = tool_base.all_adapters()
+    assert len(adapters) >= 14, "empty registry; this test asserts nothing"
+
+    rows = _GPU_ROW.findall(_README.read_text(encoding="utf-8"))
+    assert rows, "no GPU tool rows parsed out of README.md"
+
+    listed = {slug for _, slug, _, _ in rows}
+    assert listed == {a.slug for a in adapters}
+
+    for _, slug, category, route in rows:
+        assert category.strip() == _TOOL_CATEGORIES[slug], (
+            f"README lists {slug} under {category.strip()!r}, "
+            f"_TOOL_CATEGORIES says {_TOOL_CATEGORIES[slug]!r}"
+        )
+        assert route == f"/tools/{slug}"
+
+
+def test_readme_hardcoded_tool_table_matches_the_catalog():
+    text = _README.read_text(encoding="utf-8")
+    assert _HARDCODED_TOOLS, "no hardcoded tools; this test asserts nothing"
+    for entry in _HARDCODED_TOOLS:
+        row = re.search(
+            rf"^\| {re.escape(entry['name'])} \| ([^|]+?) \|", text, re.M
+        )
+        assert row, f"README.md has no row for {entry['name']}"
+        assert row.group(1).strip() == entry["category"], (
+            f"README lists {entry['name']} under {row.group(1).strip()!r}, "
+            f"the catalog says {entry['category']!r}"
+        )

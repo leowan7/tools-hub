@@ -14,7 +14,8 @@ Shapes
     paper_citation    — short inline citation.
     paper_url         — bioRxiv permalink for the RFantibody paper.
     github_url        — upstream RosettaCommons repo.
-    comparison_one_liner — "pick RFantibody when..." positioning string
+    comparison_one_liner — what you have / what you get, plus
+                           which sibling tool to use instead.
                          rendered on the About panel.
     example_output_id — optional job_id of a public demo run to link to
                          from the About panel. Phase 3 will populate this;
@@ -34,9 +35,12 @@ paper_citation: str = "Bennett et al., bioRxiv 2024"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2"
 github_url: str = "https://github.com/RosettaCommons/RFantibody"
 comparison_one_liner: str = (
-    "Pick RFantibody when you need a VHH (nanobody) scaffold against a "
-    "target PDB. For de novo non-antibody binders, use BindCraft. For "
-    "designs involving modified residues or glycans, use BoltzGen."
+    "You have a target structure and want nanobodies — "
+    "single-domain antibodies you can carry straight into yeast "
+    "display, mammalian display or a hybridoma workflow. Each "
+    "candidate is refolded and scored against the target before you "
+    "see it. For non-antibody mini-proteins use RFdiffusion or "
+    "BindCraft; for sugar-coated targets use BoltzGen."
 )
 example_output_id: Optional[str] = None
 
@@ -45,15 +49,27 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "RFantibody (Bennett et al., bioRxiv 2024). RoseTTAFold-derived "
-        "diffusion model that generates VHH (single-domain heavy-chain "
-        "antibody) scaffolds against a target. Outputs are scored with "
-        "AF2 re-prediction (pAE, pLDDT, ipAE)."
+        "Designs nanobodies — single-domain antibodies, the VHH format "
+        "— against a patch of your target, then refolds each one with "
+        "AlphaFold2 and reports how confident it is about the contact. "
+        "Nanobodies are the format that carries most easily into yeast "
+        "display, mammalian display and hybridoma workflows, which is "
+        "the usual reason to pick this over a de novo mini-protein. "
+        "RFantibody, Bennett et al., bioRxiv 2024."
     ),
     "when_to_use": [
-        "You want a VHH (nanobody) scaffold rather than a de novo mini-protein.",
-        "Your downstream validation uses yeast display, mammalian display, or hybridoma workflows.",
-        "Your target is a standard protein epitope without heavy glycosylation.",
+        (
+            "You want a nanobody scaffold rather than a de novo "
+            "mini-protein."
+        ),
+        (
+            "Your downstream work is yeast display, mammalian display or a "
+            "hybridoma workflow."
+        ),
+        (
+            "Your target is an ordinary protein epitope without heavy sugar "
+            "coverage."
+        ),
     ],
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
@@ -88,3 +104,62 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "Starter pilot: 2 nanobodies",
+    "goal": (
+        "Check that a VHH scaffold can be placed on the face you "
+        "picked at all, before scaling up."
+    ),
+    "you_need": (
+        "A structure file for your target (.pdb or .cif), the chain ID, "
+        "and at least one residue defining the face you want bound."
+    ),
+    # 2, not the form's default of 4. RFantibody prices in whole
+    # containers of two designs (wallet_estimates designs_per_run_
+    # baseline=2), so 2 is one container and half the default's price,
+    # while 1 costs the same as 2. A pilot equal to the default was a
+    # button that promised a change it did not make.
+    "params": {
+        "preset": "pilot",
+        "num_designs": "2",
+    },
+    "next_step": (
+        "Two designs answer whether the epitope is reachable by a VHH "
+        "at all, not whether it is a good one. Roughly 1 in 5 clears "
+        "the confidence bar on a tractable target, so once these come "
+        "back scored, clone the run and raise the count to 10 or more "
+        "before reading anything into the numbers."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

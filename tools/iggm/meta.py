@@ -23,30 +23,41 @@ paper_citation: str = "Wang et al., ICLR 2025"
 paper_url: str = "https://arxiv.org/abs/2504.09248"
 github_url: str = "https://github.com/TencentAI4S/IgGM"
 comparison_one_liner: str = (
-    "Pick IgGM to design or humanize an antibody / nanobody against your "
-    "antigen, or to predict the antibody-antigen complex, all in one model. "
-    "For VHH backbones use RFantibody; for paired scFv CDRs use ESMFold2 "
-    "design; to validate a designed binder's fold use Boltz-2."
+    "You have an antibody or nanobody and an antigen, and you want "
+    "to redesign its binding loops, humanise its framework, raise "
+    "its affinity, or just see how the two dock — one model does "
+    "all of it, aimed at the epitope you name. For a nanobody from "
+    "scratch use RFantibody; for a paired heavy and light antibody "
+    "fragment use ESMFold2 design."
 )
 example_output_id: Optional[str] = None
 
 
 about: dict = {
     "what_it_is": (
-        "IgGM (Wang et al., <em>ICLR</em> 2025). A generative diffusion "
-        "foundation model for antibody and nanobody engineering. One model "
-        "covers antibody-antigen complex structure prediction, CDR design, "
-        "framework redesign / humanization, affinity maturation, and inverse "
-        "(sequence-from-structure) design, all epitope-guided against the "
-        "antigen you upload."
+        "Takes an antibody or nanobody and an antigen and does whatever "
+        "you need to the pair: redesign the binding loops (the CDRs), "
+        "rebuild or humanise the framework around them, raise affinity "
+        "from a wild-type starting point, recover a sequence from a "
+        "structure, or simply predict how the two dock. All of it is "
+        "aimed at the epitope you name, and all of it comes out of one "
+        "model rather than a chain of them. IgGM, Wang et al., "
+        "<em>ICLR</em> 2025."
     ),
     "when_to_use": [
-        "You have an antibody or nanobody sequence and want to redesign its "
-        "CDRs (or framework) against a specific antigen and epitope.",
-        "You want to humanize a framework or mature affinity from a "
-        "wild-type reference.",
-        "You want a fast antibody-antigen complex structure prediction "
-        "before committing to a wet-lab campaign.",
+        (
+            "You already have an antibody or nanobody and want its binding "
+            "loops, or its framework, rebuilt against a specific antigen "
+            "and epitope."
+        ),
+        (
+            "You want to humanise a framework, or push affinity up from a "
+            "wild-type reference."
+        ),
+        (
+            "You want to see how an antibody sits on its antigen before "
+            "committing to a wet-lab campaign."
+        ),
     ],
     "prerequisites": [
         "Antigen structure as PDB or mmCIF (the antigen sequence is read "
@@ -127,3 +138,63 @@ about: dict = {
 # IgGM-bundled 8iv5 / 8hpu complexes) are exercised Modal-side from the cloned
 # repo, not bundled here.
 examples: list[dict] = []
+
+
+# ---------------------------------------------------------------------------
+# PILOT — the guided starter recipe rendered by
+# templates/components/pilot_card.html.
+#
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
+# at render time (blueprints/tools.py::_pilot_context) from
+# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
+# from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month.
+#
+# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate — so the card's price and the
+# form's live price cannot disagree. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
+# ---------------------------------------------------------------------------
+PILOT: dict | None = {
+    "label": "A guided first run",
+    "goal": (
+        "Before designing anything, check that IgGM can place your "
+        "existing antibody on your antigen. A single sample in "
+        "prediction mode is already the smallest run IgGM offers, so "
+        "these are the form&rsquo;s own defaults &mdash; a guided first "
+        "run at the tool&rsquo;s normal cost, not a cheaper trial."
+    ),
+    "you_need": (
+        "Your antigen structure file, and your antibody heavy chain "
+        "sequence. The light chain is optional &mdash; omit it for a "
+        "nanobody."
+    ),
+    # Identical to the form's defaults, and measured to be unavoidable.
+    # complex_prediction is the first preset (so already checked) and
+    # the only single-pass one; num_samples=1 is the field minimum. The
+    # whole run is $0.08, which is the floor for this tool. Nothing on
+    # this form buys a cheaper or smaller first run.
+    "params": {
+        "preset": "complex_prediction",
+        "num_samples": "1",
+    },
+    "next_step": (
+        "If the predicted complex looks right, switch the mode to CDR "
+        "design and mark the positions you want redesigned with X."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# EXAMPLE — one real past run, rendered by
+# templates/components/worked_example.html. None here, deliberately:
+# No real completed-run payload for this tool exists anywhere on disk
+# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
+# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
+# under runs/ are pipeline-stage outputs, not job results. Capture one from
+# a real run and this becomes a two-file change: example/result.json plus
+# the narration below.
+# ---------------------------------------------------------------------------
+EXAMPLE: dict | None = None

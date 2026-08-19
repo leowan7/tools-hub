@@ -553,8 +553,8 @@ def run_feasibility_pipeline(
 
     This pipeline reuses parsing, RSA, B-factor, and DSSP from the main
     pipeline, then adds feasibility-specific scoring: surface topology,
-    geometric accessibility, glycan proximity, prior binder precedent,
-    and PPI interface competition.
+    geometric accessibility, glycan proximity, and PPI interface
+    competition.
 
     Args:
         pdb_path: Path to input PDB/mmCIF file.
@@ -576,6 +576,7 @@ def run_feasibility_pipeline(
         generate_recommendations,
     )
     from scout.glycan import detect_glycosylation_sequons, score_glycan_proximity
+    from scout.interfaces import detect_interfaces
 
     pdb_path = Path(pdb_path)
     if not pdb_path.exists():
@@ -688,20 +689,29 @@ def run_feasibility_pipeline(
 
     # Step 8: Interface competition
     _emit("interfaces", 75)
-    competition_score = 1.0  # default: no competition
-    try:
-        from scout.interfaces import detect_ppi_interfaces
-        interfaces = detect_ppi_interfaces(model, chain_id)
-        if interfaces:
-            for iface in interfaces:
-                contact_set = set(iface.get("contact_residues", []))
-                overlap = epitope_set & contact_set
-                if overlap:
-                    overlap_frac = len(overlap) / len(epitope_set)
-                    competition_score = max(0.1, 1.0 - overlap_frac)
-                    break
-    except Exception:
-        logger.warning("PPI interface detection failed; using default score")
+    # Deliberately not wrapped in try/except: this dimension carries 10% of the
+    # composite, so a detector that cannot run must fail the request rather than
+    # quietly score a neutral 1.0. A swallowed ImportError here (the name imported
+    # never existed) held competition_score at 1.0 for every run from 3ba4c5d
+    # until this fix. detect_interfaces() already returns [] for the legitimate
+    # "nothing to compete with" cases: single-chain structures and no partner
+    # clearing the contact threshold.
+    competition_score = 1.0  # default: no endogenous partner contacts the epitope
+    contact_resnums = set()
+    for iface in detect_interfaces(pdb_path, chain_id):
+        # Union, not the largest single partner: two partners each burying half
+        # the epitope occlude all of it, and taking the max would score that as
+        # half-free — erring optimistic, the same direction as the bug above.
+        contact_resnums |= set(iface.get("contact_residues", ()))
+
+    # Denominator is the residues actually resolved in the chain, which is what
+    # the other four dimensions are scored over. Using the raw request would let
+    # a residue number absent from the structure dilute the buried fraction and
+    # inflate the score. patch_residues is non-empty (guarded above).
+    scored_resnums = {r.get_id()[1] for r in patch_residues}
+    occluded = len(scored_resnums & contact_resnums)
+    if occluded:
+        competition_score = max(0.1, 1.0 - occluded / len(scored_resnums))
 
     # Step 10: Composite scoring and recommendations
     _emit("scoring", 95)
