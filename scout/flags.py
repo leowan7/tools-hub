@@ -10,8 +10,14 @@ import re
 # fails to import at module level (freesasa not available without MSVC).
 # To keep this module importable on all platforms, we duplicate the column list
 # here and import the pipeline version at runtime inside functions that need it.
-# CSV_COLUMNS must stay in sync with analysis.pipeline.CSV_COLUMNS — single
+# CSV_COLUMNS must stay in sync with scout.pipeline.CSV_COLUMNS — single
 # source of truth is pipeline.py; update both if the column list changes.
+# That obligation is now enforced by test_csv_column_lists_are_in_sync in
+# tests/test_scout_ss_assignment.py. It is not cosmetic: routes.py writes
+# results_annotated.csv with DictWriter(fieldnames=CSV_COLUMNS_ANNOTATED)
+# from rows read out of results.csv, and DictWriter raises on a key it has
+# no fieldname for — so a column added to pipeline.py and not here breaks
+# every analyze run, not just the download.
 _CSV_COLUMNS_BASE = [
     "epitope_id",
     "residues",
@@ -30,6 +36,7 @@ _CSV_COLUMNS_BASE = [
     "centroid_y",
     "centroid_z",
     "is_plddt",
+    "ss_method",
 ]
 
 # Annotated CSV column order — used for both top-3 and full CSV download paths.

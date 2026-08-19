@@ -85,6 +85,12 @@ Reproduction scripts are in the session scratchpad, not committed: `measure.py`
   **nothing**: the binary has never been in the deploy at any commit.
 - No `NIXPACKS_*` / `APT_PKGS` override is declared anywhere in the repo, and
   `nixpacks.toml` is the only native-dependency source (`README.md:154`).
+  **CORRECTION 2026-08-19: that README claim is wrong, and so is this
+  bullet.** The service builds with Railpack, not Nixpacks, so
+  `nixpacks.toml` is not read at all. The CONCLUSION of this section is
+  unaffected — mkdssp is absent either way, and even more certainly so —
+  but the reasoning above surveys the wrong file. See
+  `docs/qc/scout-dssp-install-decision.md` §0.
 
 One thing this cannot rule out from the repo alone: a package added by hand in
 the Railway dashboard's own build settings. Confirming that needs someone with
@@ -300,7 +306,14 @@ before this branch.
 
 ### `mkdssp` will not cover every input
 
-`static/example/3s7g_fc_ab.pdb` — one of Scout's three shipped examples — starts
+`static/example/3s7g_fc_ab.pdb` — **corrected 2026-08-19: this is NOT a Scout
+example.** `/scout/example` hardcodes `1HEW.pdb` (`scout/routes.py`), which has
+a HEADER, and `git grep 3s7g_fc_ab` returns docs only — no code, template or JS
+hit. The file is a Proteina Fc campaign target
+(`docs/HANDOFF-2026-08-07-fc-run-ready.md`), unreachable from Scout's UI. The
+headerless obstacle below is real — `upload()` writes uploads verbatim and
+design-pipeline output routinely lacks a HEADER — but this file does not
+demonstrate it. It starts
 with `ATOM`, not `HEADER`, and `mkdssp` 4.2.2 rejects it outright
 ("did not start with a valid PDB HEADER line"). Uploads are written to disk
 verbatim (`scout/routes.py:388`, `:483`), and headerless PDBs are routine output
@@ -339,20 +352,20 @@ not for skipping the install.
    deployment note on `assign_dssp`. The user-facing copy in
    `templates/scout/index.html` says "secondary structure score" without naming
    DSSP, so it is not false and was left alone.
-4. **`nixpacks.toml`: `nixPkgs = ["gcc", "dssp"]`** — the actual remediation.
-   **DEFERRED — not in this branch.** Split out 2026-08-19: it activates a
-   code path that has never once executed in production, and no Railway build
-   was run to verify it. It also has to clear its own value bar first — the
-   §4 control says dropping the SS term entirely is statistically
-   indistinguishable from real DSSP on rank fidelity (Wilcoxon p = 0.73), and
-   `3s7g_fc_ab.pdb`, a shipped Scout example, has no PDB HEADER, which
-   mkdssp 4.x rejects outright. Tracked as separate, build-verified work.
-   Justified by r=0.37, +0.23 bias, 37% top-1 change, 50% label agreement.
-   `pkgs/by-name/ds/dssp` was confirmed to exist in nixpkgs and provides
-   `bin/mkdssp`.
-   **Unverified: no Railway build was run.** Before merge, confirm the build log
-   shows `dssp` installing and that a Scout run stops logging "DSSP binary
-   unavailable". Must ship with (1) or not at all.
+4. **`nixpacks.toml`: `nixPkgs = ["gcc", "dssp"]`** — the proposed remediation.
+   **ATTEMPTED AND DROPPED 2026-08-19. It cannot work from this file:**
+   the Railway service builds with Railpack, not Nixpacks, so
+   `nixpacks.toml` is not read. A commit was written and reviewed across
+   four QC rounds before anyone checked the builder. See
+   `docs/qc/scout-dssp-install-decision.md` §0 for the evidence and §2/§3
+   for the merits, which were settled separately and still stand.
+   An intermediate draft declined it on the §4 control; that reading was
+   withdrawn as an overreach §4 compares the phi/psi fallback against
+   no-SS-term, BOTH scored against real DSSP (rho 0.7872 vs 0.7874), so it
+   constrains the fallback, not the SS term.
+   Retrying means Railpack configuration plus a build log showing mkdssp
+   installing and a live run that stops logging "DSSP binary unavailable".
+   Must ship with (1) or not at all.
 
 ### Also worth doing (not implemented — out of scope for this branch)
 
@@ -405,7 +418,7 @@ No existing test changed state. Both runs exited 0.
 |---|---|
 | `scout/scoring.py` | `residue_data[1]` → `[2]`; deployment note + why-comment |
 | `scout/pipeline.py` | Four docstring/comment corrections: SS comes from the fallback, not DSSP; feasibility pipeline never used DSSP at all |
-| `nixpacks.toml` | **Unchanged here** — the `dssp` install is deferred to a separate, build-verified PR (§7 item 4) |
+| `nixpacks.toml` | **Unchanged in #161.** The `dssp` install was attempted separately, then dropped unmerged — the deploy does not read this file (§7 item 4) |
 | `requirements.txt` | `biopython>=1.81` -> `>=1.81,<2.0` — the module ships two conflicting tuple orders (round-2 QC finding 4) |
 | `tests/test_scout_ss_assignment.py` | New — 7 tests, first coverage of either SS function |
 | `docs/qc/scout-dssp-fallback-measurement.md` | This document |
