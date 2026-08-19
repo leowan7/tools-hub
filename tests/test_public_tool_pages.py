@@ -1653,9 +1653,23 @@ class TestProteinaScoringClaimIsConsistent:
         say nothing*. So the invariant is that rule, asserted: a
         sentence naming two or more scoring models must also name both
         sides of the mapping. Every true sentence in this copy does,
-        because that is what makes it true. The false composite never
-        can, because a stack has no target types to name — and it does
-        not matter how it is worded.
+        because that is what makes it true.
+
+        WHAT THIS IS NOT. An earlier version of this docstring claimed
+        the false composite "never can" name both sides, because a stack
+        has no target types to name. That is wrong, and QC round 4
+        produced four counterexamples that pass, one of which renders:
+
+            "Whether the target is a protein or a small molecule, every
+            Proteina candidate is put through AlphaFold2, RoseTTAFold3
+            and a physics force field together."
+
+        Naming both target types is in fact the natural way to write
+        "whatever your target is". So this is a BAR-RAISER, not an
+        invariant: it kills every wording that reached production so
+        far, and it makes the surviving lie harder to write by accident
+        — but a determined draft can still clear it. Do not read a green
+        run here as proof the page is honest.
 
         Scoped to sentences naming TWO models on purpose. "/tools/af2
         runs AlphaFold2 on a dedicated GPU" names one and is fine; it is
