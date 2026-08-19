@@ -26,34 +26,45 @@ on:
     branches: [main]
     paths:
       # meta.py, example/ and __init__.py are WEB-TIER ONLY — no
-      # Dockerfile.modal COPYs them and no modal_app.py add_local_*s them
-      # (each only ships its own run_pipeline.py), so an edit there cannot
-      # change a container. Excluding them stops web-tier-only PRs from
-      # redeploying all nine GPU images. The meta.py importers are
-      # tools/pxdesign/__init__.py and tools/rfdiffusion/__init__.py, both
-      # re-exporting for templates.
+      # Dockerfile.modal COPYs them and no modal_app.py add_local_*s them (the
+      # only tools-side file any image gets is that app's own run_pipeline.py),
+      # so an edit there cannot change a container. Excluding them stops
+      # web-tier-only PRs from redeploying all nine GPU images. The meta.py
+      # importers are tools/pxdesign/__init__.py and
+      # tools/rfdiffusion/__init__.py, both re-exporting for templates.
       #
       # __init__.py holds the Flask-side adapter class. `modal deploy
       # tools/<slug>/modal_app.py` loads that file in SCRIPT mode, so its
       # __package__ is "" and Modal mounts the single file, not the `tools`
       # package (FunctionInfoType.FILE).
       #
-      # tests/test_deploy_paths_exclusions.py is what keeps that true. It runs
-      # Modal's own loader over each of the nine apps in a subprocess and fails
-      # if the resulting upload set — entrypoint mount, spec mounts, and every
-      # image mount layer and build-context mount — contains any __init__.py, so
-      # it catches a local-source mount however it is spelled. It also fails
-      # statically on a package import, on an add_local_*/mounts= of anything
-      # but the app's own run_pipeline.py, and on a COPY of any tools-side
-      # __init__.py from a Dockerfile.modal or from .dockerfile_commands([...]).
-      # It also pins the Deploy step below to a FILE path: `modal deploy -m
+      # tests/test_deploy_paths_exclusions.py is what keeps that true, three
+      # ways. (1) It runs Modal's own loader over each of the nine apps in a
+      # subprocess and fails if the resulting upload set — entrypoint mount,
+      # spec mounts, and every image mount layer and build-context mount —
+      # contains any __init__.py. That sees MOUNTS; it cannot see local bytes
+      # shipped as DockerfileSpec.context_files, which is not a mount. (2) So it
+      # also fails statically on a package import, on a COPY of any tools-side
+      # __init__.py from a Dockerfile.modal or from .dockerfile_commands([...]),
+      # and on any modal.Image method outside a reviewed allowlist read off
+      # dir(modal.Image) — that is what covers the context_files family
+      # (pip_install_from_requirements, poetry_install_from_file, uv_sync, ...)
+      # and any method a future Modal adds. add_local_file and from_dockerfile
+      # are allowed but must name the app's own run_pipeline.py /
+      # Dockerfile.modal; mounts=, context_dir=, context_files= and spec_file=
+      # are refused outright. (3) It pins the Deploy step below to a FILE path:
+      # every `modal deploy` line in this job, shell comments stripped, must be
+      # the `modal deploy "$app_file"` form, because `modal deploy -m
       # tools.<app>.modal_app` would load the same source in PACKAGE mode and
-      # mount the whole tools package, so do not change that line either.
+      # mount the whole tools package. Do not change that line either.
       #
-      # Two known gaps, both LOUD rather than silent, so neither can leave a
-      # stale image behind: `ADD` (Modal's COPY parser ignores it, so the docker
-      # build fails) and importlib/__import__ of the package (ImportError inside
-      # the container). Detail in that file's docstring.
+      # Three known gaps. Two are LOUD rather than silent, so neither can leave
+      # a stale image behind: `ADD` (Modal's COPY parser ignores it, so the
+      # docker build fails) and importlib/__import__ of the package
+      # (ImportError inside the container). The third is silent and accepted: a
+      # local-path KWARG that a future Modal adds to an already-allowlisted
+      # method and routes through context_files. Detail in that file's
+      # docstring.
       #
       # Order matters: a later negation wins over the earlier 'tools/**'.
       - 'tools/**'

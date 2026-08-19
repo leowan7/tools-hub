@@ -34,6 +34,10 @@ Checked two ways on purpose:
 1. **Syntactically** — ``ast`` over each ``modal_app.py`` and Modal's own COPY
    parser over every ``Dockerfile.modal`` *and* every literal
    ``.dockerfile_commands([...])`` list. Fast, and it names the offending line.
+   Image methods are checked against an ALLOWLIST read off ``dir(modal.Image)``,
+   not a denylist: most of Modal's image API moves local bytes through
+   ``DockerfileSpec.context_files``, which is not a mount and which check 2
+   below is therefore structurally blind to.
 2. **Behaviourally** — ``tests/_deploy_upload_probe.py`` drives Modal's real
    loader per app in a subprocess and reads back the actual upload set
    (entrypoint mount, spec mounts, image ``_mount_layers`` and every
@@ -42,6 +46,12 @@ Checked two ways on purpose:
    rests on ``import_file_or_module`` resolving these files in script mode, and
    ``modal>=1.4,<2`` does not bound that — CI reinstalls the client fresh on
    every deploy. A syntactic scan structurally cannot notice.
+
+Neither check can see script-vs-package mode, which is a property of the
+*invocation* — the probe hardcodes ``use_module_mode=False``, so it reports FILE
+by construction however the workflow is written. That is pinned separately, by
+reading the deploy job's own shell lines
+(``test_deploy_step_still_passes_a_FILE_path_to_modal_deploy``).
 
 Not covered on purpose:
 
@@ -57,6 +67,13 @@ Not covered on purpose:
   the package into the image (verified: the upload set is unchanged), so the
   failure mode is a loud in-container ``ImportError`` on every run, not a stale
   image.
+* a local-path keyword that a FUTURE modal adds to one of the eleven methods in
+  ``_ALLOWED_IMAGE_CALLS`` and routes through ``context_files``. The allowlist
+  covers a new *method*; it does not cover a new *kwarg* on an allowed one, and
+  that is the one shape here that would be silent rather than loud. Pinning each
+  allowed method's full signature would close it, at the price of a red CI on
+  every cosmetic Modal kwarg addition — not worth it while the two kwargs that
+  exist today (``context_files=``, ``spec_file=``) are banned by name.
 """
 
 from __future__ import annotations
@@ -67,6 +84,7 @@ import pathlib
 import subprocess
 import sys
 
+import modal
 import pytest
 import yaml
 from modal._utils.docker_utils import extract_copy_command_patterns
@@ -126,23 +144,65 @@ def test_every_app_has_the_excluded_init_and_a_modal_app():
     assert not missing, f"deployed apps missing __init__.py or modal_app.py: {missing}"
 
 
+def _shell_lines(run_blocks) -> list[str]:
+    """Executable lines of some ``run:`` blocks — comment-only lines dropped.
+
+    Stripping matters: the check below is the ONLY thing in the repo that can
+    see script-vs-package mode, and a substring match can only ever be
+    satisfied, never contradicted. Rewriting the command while leaving the old
+    one above it as ``# was: modal deploy "$app_file"`` is the most ordinary way
+    a person edits a command line, and it would keep the literal in view while
+    the real invocation had changed.
+    """
+    return [
+        stripped
+        for block in run_blocks
+        for line in block.splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    ]
+
+
+def _deploy_job_shell_lines() -> list[str]:
+    doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    return _shell_lines(s["run"] for s in doc["jobs"]["deploy"]["steps"] if "run" in s)
+
+
+def test_shell_line_scan_ignores_commented_out_commands():
+    """Non-vacuity floor for ``_shell_lines``."""
+    lines = _shell_lines(['# was: modal deploy "$app_file" | tee x.log\nmodal deploy -m "tools.mpnn.modal_app"'])
+    assert lines == ['modal deploy -m "tools.mpnn.modal_app"'], lines
+
+
 def test_deploy_step_still_passes_a_FILE_path_to_modal_deploy():
     """Script mode is a property of HOW the workflow invokes modal, not just of
     the source. ``modal deploy tools/<app>/modal_app.py`` loads by path
     (``FunctionInfoType.FILE``); ``modal deploy -m tools.<app>.modal_app`` would
     load the same source as a package, mount all of ``tools``, and make the
     ``!tools/**/__init__.py`` exclusion unsafe — with every other test here,
-    probe included, still green, because they all assume the path form.
+    probe included, still green, because they all assume the path form (the
+    probe hardcodes ``use_module_mode=False``, so it reports FILE by
+    construction no matter what the workflow does).
+
+    Stated positively, and per invocation rather than over the joined text:
+    EVERY ``modal deploy`` the job runs must be the file-path form. An
+    enumeration of module spellings (``-m``, ``--module``, ...) would be a
+    denylist that the next spelling walks past.
     """
-    doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
-    steps = doc["jobs"]["deploy"]["steps"]
-    runs = "\n".join(s["run"] for s in steps if "run" in s)
+    lines = _deploy_job_shell_lines()
+    runs = "\n".join(lines)
     assert 'app_file="tools/${{ matrix.app }}/modal_app.py"' in runs, (
         "the deploy step no longer builds a tools/<app>/modal_app.py path; "
         f"re-derive the script-mode premise. Steps run:\n{runs}"
     )
-    assert 'modal deploy "$app_file"' in runs, (
-        "the deploy step no longer runs `modal deploy \"$app_file\"`. Anything "
+    invocations = [ln for ln in lines if "modal deploy" in ln]
+    assert invocations, (
+        "the deploy job runs no `modal deploy` at all — this pin is now "
+        f"asserting nothing. Steps run:\n{runs}"
+    )
+    not_a_file_path = [ln for ln in invocations if not ln.startswith('modal deploy "$app_file"')]
+    assert not not_a_file_path, (
+        "the deploy job invokes modal deploy with something other than the "
+        f"`modal deploy \"$app_file\"` file path: {not_a_file_path}. Anything "
         "module-shaped (`modal deploy -m ...`) loads in PACKAGE mode and mounts "
         f"the whole tools package. Steps run:\n{runs}"
     )
@@ -251,15 +311,77 @@ def test_dockerfile_copies_no_adapter_package(path):
 _FORBIDDEN_CALLS = {
     "add_local_dir",  # a directory mount can sweep in __init__.py
     "add_local_python_source",  # mounts whole importable packages by name
+    # Pre-1.0 spellings, gone from `dir(modal.Image)` and so invisible to the
+    # allowlist below. Kept so a downgrade or a shim cannot resurrect them.
     "copy_local_dir",
     "copy_local_file",
 }
+
+# Modal's Image API as the INSTALLED CLIENT reports it, not an enumeration. A
+# denylist of dangerous methods goes stale silently the moment Modal adds one —
+# which is exactly how `context_files=` got through. This inverts it: anything
+# on the Image that is not on the reviewed-safe list below fails, including a
+# method a future `modal>=1.4,<2` introduces.
+_IMAGE_API = {n for n in dir(modal.Image) if not n.startswith("_")}
+
+# Reviewed against modal 1.4.2 by BUILDING each candidate image and reading the
+# `DockerfileSpec` its `dockerfile_function` returns — not by reading the docs.
+# Every method here came back with `context_files` empty (or holding only
+# Modal's own `/modal_requirements.txt`), and either takes no local path at all
+# or has its path argument resolved and compared below (`add_local_file`,
+# `from_dockerfile`) or its COPY patterns scanned (`dockerfile_commands`,
+# `from_dockerfile`).
+#
+# What is deliberately NOT here is the `context_files` family: methods that read
+# LOCAL BYTES and ship them straight into the build context without ever
+# creating a mount (`modal/image.py`: `for filename, path in
+# dockerfile.context_files.items(): open(path, "rb")`). Measured, one image each:
+#
+#   pip_install_from_requirements(p)   -> {"/.requirements.txt": p}
+#   poetry_install_from_file(a, b)     -> {"/.pyproject.toml": a, "/.poetry.lock": b}
+#   uv_sync(d)                         -> {"/.pyproject.toml": ..., "/.uv.lock": ...}
+#   uv_pip_install(requirements=[p])   -> {"/.0_requirements.txt": p}
+#   micromamba_install(spec_file=p)    -> {"/spec.yaml": p}      <- kwarg-banned
+#   dockerfile_commands(context_files=)-> whatever you pass       <- kwarg-banned
+#
+# The probe is STRUCTURALLY blind to every one of them — it walks mounts, and
+# these are not mounts — and the COPY scan sees only the in-context filename
+# (`/.requirements.txt`), never the local path it was read from.
+#
+# Two more are refused for a different reason, so do not "fix" them by
+# allowlisting: `pip_install_from_pyproject(p)` ships no bytes but inlines p's
+# CONTENT into the RUN command (measured: a canary package name from the local
+# file appears in `spec.commands`), and `run_function` runs a local function at
+# build time with `include_source=True` by default. `pip_install_private_repos`
+# genuinely returns `context_files={}` and is off the list only because no app
+# needs it.
+_ALLOWED_IMAGE_CALLS = {
+    "add_local_file",
+    "apt_install",
+    "debian_slim",
+    "dockerfile_commands",
+    "env",
+    "from_dockerfile",
+    "micromamba",
+    "micromamba_install",
+    "pip_install",
+    "run_commands",
+    "workdir",
+}
+
 _FORBIDDEN_KWARGS = {
     "mounts",
     # Repoints Modal's build context away from cwd (the repo root), which is what
     # `_init_paths_pulled` matches COPY patterns against. Allowing it would let
     # the COPY scan above answer confidently and wrongly.
     "context_dir",
+    # The `context_files` channel, reached through the two allowed methods that
+    # expose it. `dockerfile_commands(context_files={"/.x": "tools/mpnn/__init__.py"})`
+    # bakes the adapter into the image while the COPY it pairs with names only
+    # `/.x`; `micromamba_install(spec_file=...)` does the same with one local
+    # path. Neither is a mount, so neither layer of this file can see it.
+    "context_files",
+    "spec_file",
 }
 
 
@@ -297,6 +419,14 @@ def _scan(source: str) -> dict:
             name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
             if name in _FORBIDDEN_CALLS:
                 out["violations"].append((node.lineno, f"calls .{name}()"))
+            elif name in _IMAGE_API and name not in _ALLOWED_IMAGE_CALLS:
+                # Matched on the attribute name alone, so an unrelated call that
+                # happens to share a name with an Image method lands here too.
+                # That is the safe direction: it is loud, and the fix is to
+                # review the method and add it to _ALLOWED_IMAGE_CALLS.
+                out["violations"].append(
+                    (node.lineno, f"calls .{name}(), which is not in _ALLOWED_IMAGE_CALLS")
+                )
             if name == "add_local_file":
                 # A name/f-string here is fine — resolve it from module-level
                 # string constants below rather than waving it through.
@@ -366,6 +496,75 @@ def _resolve(arg, scan) -> str | None:
     return None
 
 
+def test_image_api_allowlist_is_live_and_refuses_the_context_files_family():
+    """Non-vacuity floor for the allowlist, plus the audit result as an assertion.
+
+    ``_IMAGE_API`` is read off the installed client, so it has two ways to rot:
+    it could come back empty (every call waved through), or Modal could rename an
+    allowed method (the allowlist entry goes dead and the new name is refused
+    without anyone noticing why). Both fail here.
+
+    The second half pins the audit itself: the four ``context_files`` methods,
+    the two package mounters and the two that reach local source another way
+    must all be refused. If a future Modal renames one of them, this goes red
+    and the rename gets re-reviewed rather than silently re-opening the channel.
+    """
+    assert {"add_local_file", "from_dockerfile", "dockerfile_commands"} <= _IMAGE_API, (
+        f"dir(modal.Image) no longer looks like the Image API: {sorted(_IMAGE_API)}. "
+        "The allowlist check in _scan() is now waving every method call through."
+    )
+    dead = _ALLOWED_IMAGE_CALLS - _IMAGE_API
+    assert not dead, (
+        f"allowlisted Image methods that modal {modal.__version__} does not have: "
+        f"{sorted(dead)}. Modal renamed or removed them; re-review before editing "
+        "this list, because whatever replaced them is currently refused."
+    )
+    must_refuse = {
+        # measured: ships local bytes via DockerfileSpec.context_files, no mount
+        "pip_install_from_requirements",
+        "poetry_install_from_file",
+        "uv_pip_install",
+        "uv_sync",
+        # mounts importable packages, i.e. every tools/**/__init__.py
+        "add_local_dir",
+        "add_local_python_source",
+        # measured: inlines the local file's CONTENT into the RUN command
+        "pip_install_from_pyproject",
+        # runs a local function at build time; include_source defaults True
+        "run_function",
+    }
+    assert must_refuse <= (_IMAGE_API - _ALLOWED_IMAGE_CALLS), (
+        "these Image methods move local bytes into an image and must stay "
+        f"refused: {sorted(must_refuse & _ALLOWED_IMAGE_CALLS)} are allowlisted, "
+        f"{sorted(must_refuse - _IMAGE_API)} are no longer on modal.Image."
+    )
+
+
+def test_scan_flags_every_forbidden_call_and_kwarg():
+    """Non-vacuity floor for ``_scan``'s violation branch itself.
+
+    No app uses any of these today, so ``test_modal_app_stays_self_contained``
+    asserts ``not scan["violations"]`` over nine files that never populate it.
+    Without this, an AST refactor could stop detecting them entirely and nine
+    tests would stay green over nothing.
+    """
+    for src in (
+        'image.pip_install_from_requirements("tools/mpnn/__init__.py")',
+        'image.add_local_dir("tools", "/root")',
+        'image.copy_local_file("tools/mpnn/__init__.py", "/root/x.py")',
+        'image.uv_sync("tools/mpnn")',
+        'image.dockerfile_commands(["COPY /.x /root/x.py"], context_files={"/.x": "tools/mpnn/__init__.py"})',
+        'image.micromamba_install(spec_file="tools/mpnn/__init__.py")',
+        'image.run_function(build)',
+    ):
+        assert _scan(src)["violations"], f"_scan() saw nothing wrong with: {src}"
+    # ...and does not cry wolf over what the nine apps really do.
+    assert not _scan(
+        'image.micromamba_install("cudatoolkit", channels=["conda-forge"])'
+        '.add_local_file(_P, _R, copy=True)'
+    )["violations"]
+
+
 @pytest.mark.parametrize("app", _APPS)
 def test_modal_app_stays_self_contained(app):
     path = _REPO / "tools" / app / "modal_app.py"
@@ -397,7 +596,10 @@ def test_modal_app_stays_self_contained(app):
         f"{app}/modal_app.py "
         + "; ".join(f"line {n}: {why}" for n, why in scan["violations"])
         + ". These can pull local Python source (including tools/**/__init__.py) "
-        "into the image, which deploy-modal.yml's exclusion assumes never happens."
+        "into the image, which deploy-modal.yml's exclusion assumes never "
+        "happens. If it is an Image method that provably ships no local bytes — "
+        "check modal/image.py for a DockerfileSpec(context_files=...) built from "
+        "one of its arguments — add it to _ALLOWED_IMAGE_CALLS with that reason."
     )
 
     resolved = [(n, _resolve(a, scan)) for n, a in scan["local_files"]]
@@ -536,6 +738,22 @@ def test_modal_really_uploads_no_adapter_package(app):
             "The probe's walk over Modal's mounts has drifted; fix it before "
             "trusting anything else in this test."
         )
+
+    # Both of those live on the OUTERMOST layer, so the floor above survives a
+    # walk that stops recursing into base images — and everything the deeper
+    # layers bake in would vanish from view with nothing red. An image that
+    # yielded a local file necessarily has a layer under it: `add_local_file(
+    # copy=True)` builds `_from_args(base_images={"base": self}, ...)`. So one
+    # walked layer means `_image_chain` stopped following the chain, not that the
+    # image is flat.
+    shallow = [f["name"] for f in fns if f["image_files"] and f["image_layers_walked"] < 2]
+    assert not shallow, (
+        f"{app}: {shallow} reported image files from a single walked layer. "
+        "_deploy_upload_probe._image_chain has stopped recursing through "
+        "base_images/base_image, so this test now certifies only the outermost "
+        f"layer. Per-function layers walked: "
+        f"{ {f['name']: f['image_layers_walked'] for f in fns} }"
+    )
 
     adapters = [p for p in uploaded if p.endswith("__init__.py")]
     assert not adapters, (
