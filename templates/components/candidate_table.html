@@ -61,6 +61,12 @@
 {% set scope = target_id if target_id else (campaign_id if campaign_id else job_id) %}
 {% set export_base = ('/targets/' ~ target_id) if target_id else (('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id)) %}
 {% set table_id = 'cand-table-' ~ scope %}
+{# "example" is the sentinel job id components/worked_example.html uses to
+   replay a canned payload on a public tool page. Nothing is stored behind
+   it, so every job-scoped control below is suppressed under it. See the
+   header of components/results_shell.html for why this keys on job_id
+   rather than on worked_example's ``example`` flag. #}
+{% set is_example = (job_id == 'example') %}
 {# ``pooled`` = this table merges rows from more than one source job, so the
    per-job rank each row carries is meaningless as a column and the ranking
    layer's own ordering is authoritative. Keyed on target_id rather than on
@@ -333,6 +339,7 @@
 </style>
 
 {# ── Action bar ────────────────────────────────────────────────── #}
+{% if not is_example %}
 <div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}" data-scope="{{ scope }}"{% if campaign_id %} data-campaign-id="{{ campaign_id }}"{% endif %}>
   {# The export routes accept ?sort=, and the sort toggle on the target page
      claims "the export links have to carry the same mode for the file to match
@@ -391,6 +398,7 @@
     <span class="cand-shortlist-hint" id="shortlist-hint-{{ scope }}">Star a design to shortlist it</span>
   </div>
 </div>
+{% endif %}
 
 {# ── Table ─────────────────────────────────────────────────────── #}
 {# Per-tool score legend lookup. Returns ``{col_key: {good, excellent,
@@ -502,7 +510,7 @@
            jobs that emit pdb_content_b64 WITHOUT a pdb_key fall through to
            the inline data: URL. That path is legacy; modern adapters always
            set pdb_key. #}
-        {% set use_url     = raw_pdb_key %}
+        {% set use_url     = raw_pdb_key and not is_example %}
         {% set pdb_url     = '/api/jobs/' ~ src_job ~ '/pdb/' ~ (pdb_key | urlencode) %}
         {% set has_pdb     = use_url or has_b64 %}
 
@@ -680,7 +688,7 @@
 </div>
 
 {# ── CTA bar ───────────────────────────────────────────────────── #}
-{% if clone_url %}
+{% if clone_url and not is_example %}
 <div style="margin-top:1rem;">
   <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
 </div>
@@ -698,6 +706,7 @@
    hierarchy, which is what that phase changed in the action bar above. The
    subtitle below WAS edited afterwards, under A93: it said "scopes a yeast
    display campaign" above a radio group that offers three assays. #}
+{% if not is_example %}
 <div id="campaign-modal-{{ scope }}"
      class="modal-overlay"
      style="display:none;"
@@ -822,6 +831,7 @@
     </form>
   </div>
 </div>
+{% endif %}
 
 <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/candidate_table.js') }}"></script>

@@ -370,6 +370,10 @@ PILOT: dict | None = {
 # as a worked example would teach the metric backwards. Its scores are
 # also degenerate (af2_iptm 0.09 to 0.10 across all 8, binder_scrmsd 34
 # to 41 A), so it is not a picture of a working run either. Capture a
-# post-fix delivered shard and this becomes a one-file change.
+# post-fix delivered shard and this becomes a one-file change:
+# scripts/capture_example_result.py --list proteina will show the
+# succeeded runs to pick from. Check af2_iptm in the summary it prints
+# before shipping — the shard on disk is a FAILED run, not just an old
+# one, and reads as a working example only if nobody looks.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = None
