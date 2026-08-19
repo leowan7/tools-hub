@@ -386,10 +386,28 @@ def assign_dssp(model, pdb_path: str) -> dict:
     or the PDB file cannot be read, falls back to phi/psi Ramachandran
     classification (pure Python, no external binary required).
 
+    NOTE ON DEPLOYMENT: which branch runs depends entirely on whether
+    mkdssp is on PATH in the deployed image. Nothing in this repository
+    installs it (checked 2026-08-19: nixpacks.toml, Procfile, the
+    requirements files; there is no Dockerfile or Aptfile). Unless it was
+    added by hand in the Railway dashboard's build settings, every
+    production run since the feature shipped has taken the phi/psi
+    fallback: ~70% per-residue agreement with real DSSP, two thirds of
+    true loops called helix or strand, and ss_score biased ~+0.23 high.
+    That absence has never been confirmed at runtime, so treat the DSSP
+    branch below as untested in production and check before assuming it
+    runs.
+    See docs/qc/scout-dssp-fallback-measurement.md.
+
     DSSP code mapping:
         H, G, I -> "helix"
         E, B    -> "strand"
-        all else -> "loop" (T, S, C, ' ')
+        all else -> "loop" (T, S, '-', and any code not listed above)
+    DSSP emits no "C"; Biopython normalises a blank code to "-"
+    (Bio/PDB/DSSP.py:260). Biopython 1.87 documents H/B/E/G/I/T/S/-
+    only (Bio/PDB/DSSP.py:24-37); DSSP 4.x is reported to add "P" for
+    polyproline II, which is unverified here and maps to "loop" either
+    way -- as does any future code, which is the point of the else.
 
     Args:
         model: Biopython Model object (structure[0]).
@@ -404,7 +422,22 @@ def assign_dssp(model, pdb_path: str) -> dict:
         ss_map = {}
         for dssp_key in dssp_obj.property_keys:
             residue_data = dssp_obj[dssp_key]
-            ss_code = residue_data[1]
+            # Index 2 is the secondary-structure column. Index 1 is the
+            # one-letter AMINO ACID -- reading it (as this code did until
+            # 2026-08-19) silently classified every His/Gly/Ile as "helix"
+            # and every Glu as "strand", because H/G/I/E are valid letters
+            # in both alphabets. Measured against mkdssp 4.2.2 on 30 chains,
+            # that mistake scored 38% per-residue agreement versus 70% for
+            # the phi/psi fallback it was meant to improve on.
+            #
+            # The trap is that Bio.PDB.DSSP ships TWO tuple orders in
+            # one module: the DSSP class yields
+            #   (dssp_index, aa, ss, rel_acc, phi, psi, ...)  -> ss at 2
+            # while dssp_dict_from_pdb_file/_make_dssp_dict yield
+            #   (aa, ss, acc, phi, psi, dssp_index, ...)      -> ss at 1
+            # so [1] is right for the dict API and wrong here. Check
+            # which API you are on before touching this index.
+            ss_code = residue_data[2]
             if ss_code in DSSP_HELIX_CODES:
                 label = "helix"
             elif ss_code in DSSP_STRAND_CODES:

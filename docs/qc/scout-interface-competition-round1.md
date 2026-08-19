@@ -219,7 +219,7 @@ Latent rather than live, because the UI calls this route only after the SSE repo
 to `competition_score == 1.0`. Both are narrow — pipeline Step 1 already parsed the same
 file, and with a *stricter* parser than `detect_interfaces` uses — but the new code
 comment's claim that `detect_interfaces` returns `[]` only "for the legitimate ... cases"
-is not quite true. Separately, `scout/scoring.py:416-428` degrades DSSP → phi/psi → `{}`
+is not quite true. Separately, `scout/scoring.py::assign_dssp` degrades DSSP → phi/psi → `{}`
 ("everything is a loop"); not a feasibility dimension and the fallback is disclosed, but
 it is the same family and worth a line in whatever register tracks these.
 
