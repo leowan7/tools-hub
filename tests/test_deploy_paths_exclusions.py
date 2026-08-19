@@ -439,6 +439,22 @@ _FORBIDDEN_CALLS = {
     # allowlist below. Kept so a downgrade or a shim cannot resurrect them.
     "copy_local_dir",
     "copy_local_file",
+    # These two are Image methods, so the allowlist below would already refuse
+    # them -- but that branch is skipped for a receiver the modal-class
+    # exemption accepts, and THIS branch is checked first. They are here rather
+    # than only in `_ALLOWED_IMAGE_CALLS`'s complement because they are the two
+    # refused methods `_deploy_upload_probe` cannot see: every other refused
+    # method ships its bytes through `DockerfileSpec.context_files`, which the
+    # probe reads back off each layer, so a spelling that evades this scan is
+    # still caught there. `run_function` hides its mount in a `build_function`
+    # free variable and `pip_install_from_pyproject` inlines the file's CONTENT
+    # into `spec.commands`; neither channel is walked. For those two the scan is
+    # the only check, so it must not be skippable by naming a receiver
+    # `Secret`. MEASURED: `Secret = modal.Image.from_dockerfile(...)` plus
+    # `Secret.run_function(_adapter.build_payload)` mounted all 104 files of the
+    # `tools` package into the mpnn image with the whole suite green.
+    "pip_install_from_pyproject",
+    "run_function",
 }
 
 # Modal's Image API as the INSTALLED CLIENT reports it, not an enumeration. A
@@ -525,19 +541,51 @@ _MODAL_NON_IMAGE_CLASSES = {
 } - {"Image"}
 
 
-def _receiver_names_another_modal_class(fn) -> bool:
+def _modal_bound_names(tree) -> set:
+    """Names this module bound with ``from modal import <a non-Image class>``.
+
+    Only these bare names may be exempted below. Collected in their own pass
+    because ``ast.walk`` gives no ordering guarantee between the import and the
+    calls that rely on it.
+    """
+    return {
+        (alias.asname or alias.name)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "") == "modal"
+        and not node.level
+        for alias in node.names
+        if alias.name in _MODAL_NON_IMAGE_CLASSES
+    }
+
+
+def _receiver_is_another_modal_class(fn, modal_bound_names) -> bool:
     """Is this call's receiver EXPLICITLY a modal class that is not ``Image``?
 
     The one false-red family that is statically decidable: ``modal.Volume
     .from_name`` and ``modal.Secret.from_name`` say what they are, right there
     in the source. A receiver this scan cannot identify — any local variable —
     stays checked, so nothing is waved through on a guess.
+
+    "Explicitly" has to mean the BINDING, not the spelling. An earlier version
+    read the receiver's name and asked whether that name was a modal class,
+    which exempted any local variable that happened to be spelled like one:
+    ``Secret = modal.Image.from_dockerfile(...)`` then ``Secret.run_function(f)``
+    passed, and shipped every adapter into a GPU image with the suite green. So
+    a bare name counts only when this module actually imported it from modal,
+    and a dotted receiver only when the chain is rooted at the ``modal`` module
+    itself — ``_h.Volume.uv_sync(...)`` is somebody's helper, not modal's.
     """
     if not isinstance(fn, ast.Attribute):
         return False
     receiver = fn.value
-    name = receiver.attr if isinstance(receiver, ast.Attribute) else getattr(receiver, "id", None)
-    return name in _MODAL_NON_IMAGE_CLASSES
+    if isinstance(receiver, ast.Attribute):
+        return (
+            isinstance(receiver.value, ast.Name)
+            and receiver.value.id == "modal"
+            and receiver.attr in _MODAL_NON_IMAGE_CLASSES
+        )
+    return isinstance(receiver, ast.Name) and receiver.id in modal_bound_names
 
 
 _FORBIDDEN_KWARGS = {
@@ -558,6 +606,7 @@ _FORBIDDEN_KWARGS = {
 
 def _scan(source: str) -> dict:
     tree = ast.parse(source)
+    modal_bound_names = _modal_bound_names(tree)
     # Attribute nodes that ARE a call's callee, so the "bound but not called"
     # check below does not double-report every ordinary `image.pip_install(...)`.
     called_funcs = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
@@ -629,7 +678,7 @@ def _scan(source: str) -> dict:
             elif (
                 name in _IMAGE_API
                 and name not in _ALLOWED_IMAGE_CALLS
-                and not _receiver_names_another_modal_class(fn)
+                and not _receiver_is_another_modal_class(fn, modal_bound_names)
             ):
                 # Matched on the attribute name alone, so an unrelated call that
                 # happens to share a name with an Image method (`cfg.build()`,
@@ -769,7 +818,7 @@ def test_image_api_allowlist_is_live_and_refuses_the_context_files_family():
 
 
 def test_non_image_receiver_exemption_is_narrow():
-    """Floor for ``_receiver_names_another_modal_class`` — the only exemption here.
+    """Floor for ``_receiver_is_another_modal_class`` — the only exemption here.
 
     It exists because ``_IMAGE_API`` matches on the attribute name alone and
     modal 1.5 added ``Image.from_name``, turning all nine apps'
@@ -800,6 +849,44 @@ def test_non_image_receiver_exemption_is_narrow():
         "an unidentifiable receiver is how the exemption becomes the hole"
     )
     assert _scan('image.uv_sync("tools/mpnn")')["violations"]
+
+    # A local variable SPELLED like a modal class is not a modal class. Every
+    # source below was green while this exemption matched on the name alone, and
+    # the first one really did mount all 104 files of the `tools` package into
+    # the mpnn image with the full suite passing. `Volume = modal.Image` is not
+    # here because it never passed: its receiver is a Call, not a Name, so it
+    # was caught by accident — which is why binding the INSTANCE is the shape
+    # that has to be pinned.
+    _BIND = 'Secret = modal.Image.from_dockerfile("D")'
+    for src in (
+        _BIND + '\n' + 'Secret.run_function(build)',
+        _BIND + '\n' + 'Secret.pip_install_from_pyproject("p")',
+        _BIND.replace("Secret", "Volume") + '\n' + 'Volume.uv_sync("tools/mpnn")',
+        _BIND.replace("Secret", "Dict")
+        + '\n'
+        + 'Dict.uv_pip_install(requirements=["tools/mpnn/__init__.py"])',
+        # ...and a dotted receiver that is not rooted at the `modal` module.
+        '_h.Volume.pip_install_from_requirements("tools/mpnn/__init__.py")',
+    ):
+        assert _scan(src)["violations"], (
+            f"a receiver named after a modal class is exempted: {src!r}. The "
+            "exemption must key on the BINDING, not on the spelling."
+        )
+
+    # Importing the class is the binding that earns the exemption, and it must
+    # keep working through an alias — `from modal import Volume as V`.
+    assert not _scan('from modal import Volume as V' + '\n' + 'V.from_name("x")')["violations"]
+    # ...but importing that name from somewhere else does not.
+    assert _scan(
+        'from notmodal import Volume' + '\n' + 'Volume.uv_sync("tools/mpnn")'
+    )["violations"]
+
+    # `run_function` and `pip_install_from_pyproject` are the two refused
+    # methods the behavioural probe cannot see, so they are additionally in
+    # `_FORBIDDEN_CALLS`, which is checked BEFORE this exemption — no receiver
+    # spelling reaches them, not even a genuinely imported modal class.
+    assert _scan('from modal import Secret' + '\n' + 'Secret.run_function(build)')["violations"]
+    assert {"run_function", "pip_install_from_pyproject"} <= _FORBIDDEN_CALLS
 
     # The lowercase SUBMODULES must never be exemptable: `modal.image` is a
     # module, and a receiver spelled `image` is the normal way an app names its
