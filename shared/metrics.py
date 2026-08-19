@@ -139,6 +139,20 @@ SCOUT_RUNS = Counter(
     "Epitope Scout analysis runs recorded (signed-in only).",
 )
 
+# The anonymous /scout/analyze meter needs Content-Length to decide whether a
+# body is small enough to read for its follow-up credit (see
+# ``scout.ratelimit._MAX_FOLLOWUP_BODY_BYTES``). When the length is unreadable
+# it fails closed, and nothing is refused — so no refusal-rate metric moves.
+# This is the one that does. Alert on the ``chunked`` label: sustained, it means
+# the edge is re-framing every POST and anonymous capacity has halved.
+# ``no_body`` is a POST with no body at all, i.e. scanner noise, kept apart so
+# it cannot drown the label that matters.
+SCOUT_UNMETERED_BODIES = Counter(
+    "tools_hub_scout_unmetered_bodies_total",
+    "POST /scout/analyze bodies the anonymous meter could not size, by framing.",
+    ["framing"],  # chunked|no_body
+)
+
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",

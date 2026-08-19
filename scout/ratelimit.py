@@ -103,7 +103,7 @@ from flask import jsonify, request, session
 # RIGHT (TRUSTED_PROXY_HOPS, default 1) precisely so this key cannot be chosen
 # by the caller — a leftmost read would let one header nullify every bucket
 # below. Do not swap it for an inline header parse.
-from shared.metrics import _client_ip
+from shared.metrics import SCOUT_UNMETERED_BODIES, _client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -341,8 +341,8 @@ JOB_ID_SOURCES = (job_id_in_query, job_id_in_body)
 # it is given, once the request has been allowed.
 _MAX_FOLLOWUP_BODY_BYTES = 4096
 
-# How many follow-up bodies arrived with NO Content-Length and therefore lost
-# their credit.
+# How many follow-up bodies the meter could not size — and how many of those
+# were genuinely chunked.
 #
 # This is the ONE way the bound above fails in production with every test still
 # green, so it does not get to be silent. The meter needs Content-Length to
@@ -353,28 +353,53 @@ _MAX_FOLLOWUP_BODY_BYTES = 4096
 # because nothing is being refused. That is precisely the plan's "outage that
 # does not look like one".
 #
-# The WARNING fires ONCE per process, not per request. Transfer-Encoding is
-# caller-chosen, so this path is attacker-reachable, and a log write per
-# refused request would hand straight back the per-request cost the bound above
-# exists to remove. The counter keeps rising after the log, which is what
-# separates "one odd client" from "the edge re-framed everything"; a real
-# metric for it belongs to Phase 6, and this is the number it should export.
+# TWO COUNTS, because ``length is None`` does not mean "chunked". It means "no
+# measurable length", and a POST with NO BODY AT ALL — a scanner's opening
+# move — reads exactly the same way. Measured over real sockets: a bodiless
+# POST leaves both Content-Length and Transfer-Encoding unset, a chunked one
+# leaves Content-Length unset and Transfer-Encoding set, so the two ARE
+# distinguishable (gunicorn 24.1.1 maps that header through to
+# HTTP_TRANSFER_ENCODING untouched, and rejects CL+TE together). Before the
+# split, one bodiless probe — which then 400s, having no body to parse, and
+# charges nobody twice — fired the alarm and disarmed it for the life of the
+# worker; QC sent 25 genuine chunked requests afterwards and got zero records.
+#
+# So only the chunked count speaks, and it speaks TWO ways. It is exported as
+# ``tools_hub_scout_unmetered_bodies_total{framing="chunked"}``, because
+# nothing outside this process can read a module global, and the WARNING is a
+# 1-in-``_LOG_EVERY`` sample rather than a once-per-process latch:
+# ``gunicorn.conf.py`` sets no ``max_requests``, so workers never recycle and
+# "once per process" meant once per DEPLOY — a single attacker-chosen chunked
+# request bought permanent silence. Sampling keeps the per-request log cost the
+# bound exists to remove at 1%, while an edge re-framing everything goes on
+# saying so.
 unmetered_bodies = 0
+unmetered_chunked_bodies = 0
+
+_LOG_EVERY = 100
 
 
-def _note_unmetered_body() -> None:
-    global unmetered_bodies
+def _note_unmetered_body(chunked: bool) -> None:
+    global unmetered_bodies, unmetered_chunked_bodies
     with _LOCK:
         unmetered_bodies += 1
-        first = unmetered_bodies == 1
-    if first:
+        if chunked:
+            unmetered_chunked_bodies += 1
+        count = unmetered_chunked_bodies
+    SCOUT_UNMETERED_BODIES.labels(framing="chunked" if chunked else "no_body").inc()
+    if chunked and count % _LOG_EVERY == 1:
         logger.warning(
-            "POST /scout/analyze arrived with no Content-Length, so the meter "
-            "could not read its follow-up credit and the analysis was charged "
-            "twice. One client can provoke this deliberately; if it is EVERY "
-            "request, the edge is re-framing the body as chunked and anonymous "
-            "analyze capacity has silently halved. Count so far in this "
-            "worker: scout.ratelimit.unmetered_bodies."
+            "POST /scout/analyze arrived chunked, with no Content-Length, so "
+            "the meter could not size the body and this request could not "
+            "redeem a follow-up credit — it was metered on its own. What that "
+            "cost depends on what happened next: a request that is refused, or "
+            "whose body is unusable, runs no analysis and pays for none. One "
+            "client can provoke this deliberately; if it is EVERY request, the "
+            "edge is re-framing the body and anonymous analyze capacity has "
+            "halved back to five researchers per window. Chunked count so far "
+            "in this worker: %d (scout.ratelimit.unmetered_chunked_bodies, "
+            "exported as tools_hub_scout_unmetered_bodies_total).",
+            count,
         )
 
 
@@ -384,9 +409,11 @@ def _metered_job_id(source) -> str:
         length = request.content_length
         if length is None:
             # An unknown length is unbounded, so this is the framing an
-            # attacker picks to get the pre-refusal parse back. Fail closed
-            # here, but say so out loud — see the counter above.
-            _note_unmetered_body()
+            # attacker picks to get the pre-refusal parse back. Fail closed for
+            # BOTH shapes that land here — they are indistinguishable by
+            # length, which is the whole point — and report them apart, so the
+            # bodiless one cannot spend the signal. See the counts above.
+            _note_unmetered_body(chunked="Transfer-Encoding" in request.headers)
             return ""
         if length > _MAX_FOLLOWUP_BODY_BYTES:
             return ""
@@ -427,16 +454,18 @@ def _spend_followup(key: tuple[str, str, str]) -> bool:
 
 def reset() -> None:
     """Drop every counter. Test helper; not used by request handling."""
-    global _INFLIGHT, _WAITING, unmetered_bodies
+    global _INFLIGHT, _WAITING, unmetered_bodies, unmetered_chunked_bodies
     with _LOCK:
         _WINDOWS.clear()
         # Credits too, or one test's unspent credit gives the next test a
         # free request and the charge assertions there quietly stop meaning
         # anything.
         _FOLLOWUP.clear()
-        # Re-arms the once-per-process warning as well as zeroing the count,
-        # so a test can assert the alarm fires rather than only the counter.
+        # Puts the WARNING's 1-in-_LOG_EVERY sample back on its first request
+        # as well as zeroing the counts, so a test can assert the alarm fires
+        # rather than only that the counter moved.
         unmetered_bodies = 0
+        unmetered_chunked_bodies = 0
     with _INFLIGHT_LOCK:
         _INFLIGHT = 0
         # _WAITING too, or a test that leaves a waiter parked shrinks the

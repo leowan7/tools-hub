@@ -240,6 +240,72 @@ def _count_json_parses(monkeypatch) -> list:
     return parses
 
 
+def _unmetered_metric(framing: str) -> float:
+    """The EXPORTED value of the unmetered-body counter for one framing.
+
+    Read as a delta by every caller: the Prometheus registry is process-global
+    and lives for the whole session, so an absolute value here would depend on
+    which other tests ran first.
+    """
+    from prometheus_client import REGISTRY  # noqa: PLC0415
+
+    value = REGISTRY.get_sample_value(
+        "tools_hub_scout_unmetered_bodies_total", {"framing": framing}
+    )
+    return value if value is not None else 0.0
+
+
+def _alarm_records(caplog) -> list:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "scout.ratelimit"
+        and record.levelno >= logging.WARNING
+        and "no Content-Length" in record.getMessage()
+    ]
+
+
+def _meter_one_body(app, chunked: bool) -> str:
+    """Run the meter's body path once, with no HTTP round trip.
+
+    The alarm's own properties — does the count go on counting, does the
+    WARNING go on firing — belong to ``_note_unmetered_body``, and watching its
+    SECOND sample land costs ``_LOG_EVERY + 1`` calls. Through the app that is
+    a hundred full requests of noise around a two-line question.
+
+    Asserts its own premises, because both shapes here are ordinary POSTs as
+    far as werkzeug is concerned: a fixture that quietly grew a Content-Length,
+    or lost its ``Transfer-Encoding``, would never reach the branch under test
+    and every assertion downstream would pass on nothing.
+    """
+    from flask import request as flask_request  # noqa: PLC0415
+    from werkzeug.test import EnvironBuilder  # noqa: PLC0415
+
+    builder = EnvironBuilder(
+        "/scout/analyze",
+        method="POST",
+        headers={"Transfer-Encoding": "chunked"} if chunked else None,
+    )
+    environ = builder.get_environ()
+    # ABSENT, not empty: werkzeug reads a blank Content-Length as 0, which is a
+    # perfectly measurable length and never reaches the branch under test. With
+    # the key gone, the two shapes differ by the Transfer-Encoding header and
+    # nothing else — which is exactly the variable the split turns on.
+    environ.pop("CONTENT_LENGTH", None)
+    if chunked:
+        environ["wsgi.input_terminated"] = True
+
+    with app.request_context(environ):
+        assert flask_request.content_length is None, (
+            "this framing has a readable length, so it never reaches the "
+            "branch that counts and warns"
+        )
+        assert ("Transfer-Encoding" in flask_request.headers) is chunked, (
+            "the framing under test is not the framing being sent"
+        )
+        return ratelimit._metered_job_id(ratelimit.job_id_in_body)
+
+
 # ---------------------------------------------------------------------------
 # The win
 # ---------------------------------------------------------------------------
@@ -904,31 +970,50 @@ class TestTheMeterAndTheViewReadTheSameJobId:
     def test_a_body_of_unknown_length_cannot_redeem_a_credit_and_says_so(
         self, client, stub_pipeline, reap_jobs, caplog
     ):
-        """Fails closed — and refuses to fail closed QUIETLY.
+        """Fails closed, the analysis still happens — and it does not fail
+        closed QUIETLY.
 
-        Declining an unreadable-size body costs the caller its credit, so the
+        Declining an unreadable-size body costs the caller its credit, so this
         pair is billed twice. That is the right trade against an attacker, but
         it is also what happens to EVERY analysis if Railway's edge ever
         re-frames /scout/analyze as chunked: capacity silently halves back to
         five researchers per window while the refusal rate — the thing Phase 6
         would alarm on — does not move at all, because nothing is refused.
 
-        So the condition is counted and announced. Both halves are asserted
-        here: without the counter nobody in production can see it, and without
-        the log nobody outside this process can.
+        "Nothing is refused" is the whole premise of the alarm, and it is
+        ASSERTED here rather than assumed: the finalise still returns 200, and
+        still does not re-run the pipeline, so the extra charge is the only
+        effect. Until this test checked the status and ``stub_pipeline`` — the
+        two things every sibling test in this class checks — "fails closed but
+        still works" was a docstring, and a fail-closed that had grown into a
+        refusal would have read as green.
+
+        The signal is asserted in all three places it has to exist: the
+        chunked-only count, the WARNING, and the exported metric. Nothing
+        scrapes a module global, so the first two alone are not an alarm
+        anyone outside this process can hear.
         """
         job_id = client.get("/scout/example").get_json()["job_id"]
         _progress(client, job_id)
         assert _ip_charges() == 1
+        assert stub_pipeline == [job_id], stub_pipeline
         assert ratelimit.unmetered_bodies == 0
+        exported = _unmetered_metric("chunked")
 
         with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
-            client.post(
+            finalised = client.post(
                 "/scout/analyze",
                 json={"job_id": job_id, "chain": "A"},
                 **CHUNKED,
             )
 
+        assert finalised.status_code == 200, finalised.get_data(as_text=True)
+        assert stub_pipeline == [job_id], (
+            f"the finalise ran the pipeline again ({stub_pipeline}); losing "
+            f"the credit must cost one extra CHARGE, not a second full run — "
+            f"and an outage nothing refuses is the only reason this alarm "
+            f"exists"
+        )
         assert _ip_charges() == 2, (
             "a body with no Content-Length redeemed a follow-up credit; the "
             "meter read a body whose size it could not check first"
@@ -937,13 +1022,138 @@ class TestTheMeterAndTheViewReadTheSameJobId:
             "the one framing that silently halves anonymous capacity in "
             "production went uncounted"
         )
-        assert any(
-            "no Content-Length" in record.getMessage()
-            for record in caplog.records
-            if record.levelno >= logging.WARNING
-        ), (
+        assert ratelimit.unmetered_chunked_bodies == 1, (
+            "counted as generic noise rather than as chunked framing, which "
+            "is the only label the alarm reads"
+        )
+        assert _unmetered_metric("chunked") - exported == 1, (
+            "the count moved only inside this process; nothing scrapes a "
+            "module global, so production still sees nothing"
+        )
+        assert len(_alarm_records(caplog)) == 1, (
             "nothing was logged, so an edge re-framing every /scout/analyze "
             "as chunked would halve capacity with no signal anywhere"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The alarm itself
+# ---------------------------------------------------------------------------
+
+
+class TestTheAlarmItself:
+    """The alarm is the only warning production gets, and nothing pins it.
+
+    QC capped the counter at 1 (+26 B) and made the WARNING fire on every
+    request (+8 B) and reported every scout test green either way; re-run here
+    against a45252f's own unchanged test file, both mutations leave 241 passed
+    / 4 skipped on ``-k scout``. Worse, QC measured the shipped alarm SILENT in
+    practice — reproduced here over real sockets: one bodiless POST, a 400 that
+    charges nobody twice, tripped the once-per-process latch, and 25 genuine
+    chunked requests afterwards produced ZERO log records.
+
+    So these tests are about the alarm's own properties, not about metering.
+    They call the meter directly: the properties belong to
+    ``_note_unmetered_body``, and the second log sample is 101 calls away.
+    """
+
+    def test_the_count_keeps_rising_after_the_first_warning(self, app):
+        """A counter that stops counting cannot separate one odd client from
+        an edge that re-framed everything, which is the ONE question it is
+        there to answer."""
+        ratelimit.reset()
+
+        for _ in range(3):
+            assert _meter_one_body(app, chunked=True) == "", (
+                "an unreadable body handed the meter a credit key; the guard "
+                "must go on failing closed however loudly it reports"
+            )
+
+        assert ratelimit.unmetered_chunked_bodies == 3, (
+            f"the chunked count stuck at {ratelimit.unmetered_chunked_bodies} "
+            f"after 3 chunked bodies"
+        )
+        assert ratelimit.unmetered_bodies == 3, ratelimit.unmetered_bodies
+
+    def test_the_warning_is_sampled_and_not_one_per_request(self, app, caplog):
+        """A log write per request hands straight back the per-request cost
+        the size bound exists to remove, on a path an attacker chooses."""
+        ratelimit.reset()
+
+        with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
+            for _ in range(3):
+                _meter_one_body(app, chunked=True)
+
+        assert len(_alarm_records(caplog)) == 1, (
+            f"{len(_alarm_records(caplog))} records for 3 requests; the "
+            f"WARNING is sampled 1 in {ratelimit._LOG_EVERY}"
+        )
+
+    def test_the_warning_re_arms_instead_of_latching_off_for_the_deploy(
+        self, app, caplog
+    ):
+        """Once per PROCESS was once per deploy.
+
+        ``gunicorn.conf.py`` sets no ``max_requests``, so workers are never
+        recycled. One chunked request — which any caller may send deliberately
+        — therefore bought silence until the next deploy, and the alarm was
+        loudest exactly when the traffic was least interesting.
+        """
+        ratelimit.reset()
+
+        with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
+            for _ in range(ratelimit._LOG_EVERY + 1):
+                _meter_one_body(app, chunked=True)
+
+        assert len(_alarm_records(caplog)) == 2, (
+            f"{len(_alarm_records(caplog))} records across "
+            f"{ratelimit._LOG_EVERY + 1} chunked requests; a latch that never "
+            f"re-arms is silent for the life of the deploy"
+        )
+
+    def test_a_bodiless_post_cannot_spend_the_chunked_signal(self, app, caplog):
+        """``length is None`` is "no measurable length", NOT "chunked".
+
+        A POST with no body at all reads identically to the meter and is a
+        scanner's opening move; it then 400s, having no body to parse, so it
+        costs nobody a second charge. Measured over real sockets: the bodiless
+        one carries neither Content-Length nor Transfer-Encoding, the chunked
+        one carries Transfer-Encoding — which is what makes them separable.
+
+        Both still fail closed. Only the reporting differs.
+        """
+        ratelimit.reset()
+        exported = _unmetered_metric("no_body")
+
+        with caplog.at_level(logging.WARNING, logger="scout.ratelimit"):
+            for _ in range(3):
+                assert _meter_one_body(app, chunked=False) == "", (
+                    "a body of unknown length handed the meter a credit key; "
+                    "reporting the two framings apart must not relax EITHER"
+                )
+
+            assert _alarm_records(caplog) == [], (
+                "scanner noise fired the alarm, which is how the shipped "
+                "version went silent before any real chunked request arrived"
+            )
+            assert ratelimit.unmetered_chunked_bodies == 0, (
+                "a bodiless POST was counted as chunked framing, so it "
+                "advances the sample the real signal rides on"
+            )
+            assert ratelimit.unmetered_bodies == 3, (
+                "the bodiless framing is not counted at all; it must be "
+                "visible, just not as the thing that halves capacity"
+            )
+            assert _unmetered_metric("no_body") - exported == 3, (
+                "nothing was exported for the bodiless framing"
+            )
+
+            # And the signal it must not have spent is still there to fire.
+            _meter_one_body(app, chunked=True)
+
+        assert len(_alarm_records(caplog)) == 1, (
+            "the first genuine chunked body did not warn; the noise ahead of "
+            "it had consumed the alarm"
         )
 
 
