@@ -865,8 +865,6 @@ def test_non_image_receiver_exemption_is_narrow():
     # that has to be pinned.
     _BIND = 'Secret = modal.Image.from_dockerfile("D")'
     for src in (
-        _BIND + '\n' + 'Secret.run_function(build)',
-        _BIND + '\n' + 'Secret.pip_install_from_pyproject("p")',
         _BIND.replace("Secret", "Volume") + '\n' + 'Volume.uv_sync("tools/mpnn")',
         _BIND.replace("Secret", "Dict")
         + '\n'
@@ -877,6 +875,19 @@ def test_non_image_receiver_exemption_is_narrow():
         assert _scan(src)["violations"], (
             f"a receiver named after a modal class is exempted: {src!r}. The "
             "exemption must key on the BINDING, not on the spelling."
+        )
+
+    # Doubly covered: the receiver rule above catches these, AND so does
+    # `_FORBIDDEN_CALLS`. Measured, one mechanism at a time -- reverting only
+    # the receiver rule leaves them red, dropping only the denylist entries
+    # leaves them red. The case that pins the denylist ON ITS OWN is the
+    # genuinely modal-bound receiver further down, which nothing else refuses.
+    for src in (
+        _BIND + '\n' + 'Secret.run_function(build)',
+        _BIND + '\n' + 'Secret.pip_install_from_pyproject("p")',
+    ):
+        assert _scan(src)["violations"], (
+            f"a probe-blind method reached through a receiver: {src!r}"
         )
 
     # Importing the class is the binding that earns the exemption, and it must
@@ -891,8 +902,30 @@ def test_non_image_receiver_exemption_is_narrow():
     # methods the behavioural probe cannot see, so they are additionally in
     # `_FORBIDDEN_CALLS`, which is checked BEFORE this exemption — no receiver
     # spelling reaches them, not even a genuinely imported modal class.
-    assert _scan('from modal import Secret' + '\n' + 'Secret.run_function(build)')["violations"]
+    assert _scan('from modal import Secret' + '\n' + 'Secret.run_function(build)')[
+        "violations"
+    ], (
+        "`run_function` reached through a GENUINELY modal-bound receiver. This "
+        "is the one case the receiver rule cannot refuse -- the import is real "
+        "-- so it pins `_FORBIDDEN_CALLS` on its own. It is also the only cover "
+        "`run_function` has: every other refused byte-shipping method routes "
+        "through `DockerfileSpec.context_files`, which `_deploy_upload_probe` "
+        "reads back, but `run_function` hides its mount in a `build_function` "
+        "free variable the probe does not walk (MEASURED: with the scan "
+        "neutered and the reproduction landed, the probe test stays green)."
+    )
     assert {"run_function", "pip_install_from_pyproject"} <= _FORBIDDEN_CALLS
+
+    # `_modal_bound_names` reads `from modal import ...` anywhere in the module,
+    # including inside a function, a `try`, or an `if TYPE_CHECKING` -- and
+    # `from modal import Volume as image` binds the exemption to a name the
+    # assertion below is meant to keep out. Audited, and none of it is
+    # reachable: everything such a receiver can reach is
+    # `_IMAGE_API - _ALLOWED - _FORBIDDEN`, of which exactly four ship local
+    # bytes, and the probe covers all four (two by name, two by raising, which
+    # is loud because `_run_probe` asserts exit 0). Narrowing this to
+    # `tree.body` would close three of those routes; it is left wide because a
+    # loud false red on a legal spelling no app uses is the worse trade.
 
     # The lowercase SUBMODULES must never be exemptable: `modal.image` is a
     # module, and a receiver spelled `image` is the normal way an app names its
