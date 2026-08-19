@@ -730,13 +730,31 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     * ``"no_payment_method"`` (no saved card or Stripe customer;
       auto-reload disabled)
     * ``"no_amount_configured"`` (reload amount unset; auto-reload disabled)
-    * ``"rate_limited"`` (already reloaded once in the last 24h)
+    * ``"rate_limited"`` (a reload already landed, or a charge was already
+      dispatched, within the last 24h)
     * ``"monthly_cap"`` (current-month total plus reload would exceed cap)
     * ``"triggered"`` (off-session PaymentIntent dispatched)
     * ``"stripe_error"`` (the off-session charge failed; on a permanent
       failure such as a declined or unusable card, auto-reload is
       disabled and the user is emailed)
     * ``"missing_service_client"`` (no service-role client available)
+
+    Bounded to one off-session charge per rolling 24h by
+    :func:`_claim_auto_reload_dispatch`, which is taken BEFORE the Stripe call
+    and never released. The price of failing closed: when the charge then
+    fails transiently (a Stripe outage) auto-reload stays enabled but will not
+    retry until the window rolls, and the user tops up by hand in the
+    meantime. Preferred over releasing the claim, which would risk a second
+    charge every time a dispatch reached Stripe but the response did not
+    reach us.
+
+    The monthly cap rides on the same claim rather than getting one of its
+    own. It reads settled ``auto_reload`` credits, so it under-reads by any
+    charge still in flight — but at most ONE charge can now be in flight per
+    user, so the cap can be overshot by at most a single ``reload_amount``,
+    and only if a webhook is more than 24h late. Before the claim the
+    overshoot was unbounded for the same reason the 24h gate was: a whole
+    settle wave could pass the check on one stale read.
     """
     client = get_service_client()
     if client is None:
@@ -807,6 +825,22 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             user_id=user_id, total_usd=month_total, cap_usd=monthly_cap,
         )
         return "monthly_cap"
+    # Last gate before money moves, and the authoritative one. Placed after
+    # every cheap reject above so a wallet that was never going to reload
+    # (above threshold, capped, misconfigured) does not burn its 24h window.
+    #
+    # No email here. The count-based branch above owns the user-facing
+    # rate-limit notice; losing the claim means a dispatch went out within the
+    # last 24h that the ledger cannot see yet, and telling someone whose card
+    # was charged seconds ago that we declined to top them up would be false —
+    # the top-up is already on its way.
+    if not _claim_auto_reload_dispatch(user_id):
+        logger.info(
+            "auto_reload_if_needed: dispatch claim already held for %s "
+            "(charge in flight or settled within 24h); not charging again.",
+            user_id,
+        )
+        return "rate_limited"
     # Stripe off-session PaymentIntent. Wave 2 Agent E provides
     # :func:`billing.checkout.create_off_session_payment_intent`. Import
     # lazily so this module is testable without the Stripe SDK on path.
@@ -1043,6 +1077,60 @@ def _auto_reload_count_24h(user_id: str) -> int:
             "auto_reload_count_24h failed for %s", user_id, exc_info=True
         )
         return 0
+
+
+def _claim_auto_reload_dispatch(user_id: str) -> bool:
+    """Reserve this user's one auto-reload dispatch for the next 24h.
+
+    Returns True iff this call won the claim and may charge the card.
+
+    :func:`_auto_reload_count_24h` cannot bound dispatches on its own. The
+    ``kind='auto_reload'`` row it counts is written by :func:`top_up_wallet`
+    from the ``payment_intent.succeeded`` handler in ``webhooks/stripe.py``,
+    so it appears only after Stripe settles the charge. Between dispatch and
+    that webhook the count still reads 0, and since :func:`_post_settle_hooks`
+    calls :func:`auto_reload_if_needed` on every job settle — and Modal
+    completions arrive in waves — two settles a second apart both read 0 and
+    both used to fire their own PaymentIntent. Nothing downstream caught it:
+    ``billing.checkout.create_off_session_payment_intent`` sends no Stripe
+    idempotency key, and :func:`top_up_wallet` dedups on ``stripe_event_id``,
+    which catches webhook redelivery rather than two distinct charges.
+
+    Claiming at dispatch time closes that window. The filter is on the
+    PRE-update value, so Postgres re-evaluates it after taking the row lock
+    and exactly one of several concurrent callers wins — the same
+    compare-and-set shape as ``shared.compute_campaigns._cas_transition``.
+    Sequential callers, which is what a settle wave actually produces, are
+    excluded by the committed value alone.
+
+    Fails CLOSED. A claim we could not write is treated as lost, so a Supabase
+    blip stops auto-reload instead of reopening an unbounded number of
+    charges; the manual top-up path is unaffected. That is also why the claim
+    is never rolled back when the Stripe call then fails — a dispatch that
+    timed out may still have reached Stripe, and releasing the claim to be
+    tidy would let the next settle charge the card a second time. The cost of
+    that choice is stated on :func:`auto_reload_if_needed`.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+    try:
+        response = (
+            client.table("user_wallets")
+            .update({"auto_reload_last_dispatch_at": now.isoformat()})
+            .eq("user_id", user_id)
+            .lt("auto_reload_last_dispatch_at", cutoff.isoformat())
+            .execute()
+        )
+        return bool(getattr(response, "data", None))
+    except Exception:
+        logger.warning(
+            "auto-reload dispatch claim failed for %s; treating it as held "
+            "elsewhere so no charge goes out.", user_id, exc_info=True,
+        )
+        return False
 
 
 def _auto_reload_total_month(user_id: str) -> Decimal:
