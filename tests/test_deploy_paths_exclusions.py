@@ -315,6 +315,10 @@ def test_deploy_step_still_passes_a_FILE_path_to_modal_deploy():
 def test_workflow_still_carries_every_trigger_entry_in_order():
     """This pin covers BOTH kinds of entry, and they fail opposite ways.
 
+    Renamed from ``test_workflow_still_carries_every_negation_in_order``, which
+    is the identifier older QC reports and commit messages refer to; spelled out
+    here so a grep for the old name still lands on the test that replaced it.
+
     It was named for the negations alone, from when they were all it held. The
     three `static/example/` fixture entries are positives with an entirely
     different failure mode, so the name and the message both have to say so —
@@ -324,8 +328,14 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
     doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1).
     trigger = doc[True] if True in doc else doc["on"]
-    assert trigger["push"]["paths"] == _EXPECTED_PATHS, (
-        f"deploy-modal.yml push.paths is {trigger['push']['paths']!r}, expected "
+    # `.get`, not `[...]`: `paths` going missing — most plausibly replaced by
+    # `paths-ignore`, which GitHub allows only one of — is a state this pin
+    # should REPORT, naming the expected list. A bare `KeyError: 'paths'` says
+    # none of that. Same treatment as `_TRIGGER_PATHS` in
+    # tests/test_deploy_trigger_covers_dockerfile_copies.py.
+    actual = trigger["push"].get("paths")
+    assert actual == _EXPECTED_PATHS, (
+        f"deploy-modal.yml push.paths is {actual!r}, expected "
         f"{_EXPECTED_PATHS!r}.\n"
         "Which entry moved decides which way this breaks.\n"
         "  NEGATIONS (`!tools/**/...`) — GitHub applies `paths` later-wins, so "

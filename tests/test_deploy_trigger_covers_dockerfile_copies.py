@@ -68,61 +68,72 @@ def _push_filter() -> dict:
 _TRIGGER_PATHS = list(_push_filter().get("paths", []))
 
 
-# GitHub filter patterns are NOT globs. Per its documented syntax, `?` means
-# "zero or one of the PRECEDING character" and `+` means "one or more of the
-# preceding character" — regex quantifiers, not wildcards — `[]` is an
-# alphanumeric class, and `\` escapes the following character so it is matched
-# literally (`foo\*bar` is the literal four-token string `foo*bar`, not a
-# wildcard). `_to_regex` models none of the four, so it refuses them rather than
+# GitHub filter patterns are NOT globs. Its "Filter pattern cheat sheet"
+# (`github/docs`, content/actions/reference/workflows-and-actions/
+# workflow-syntax.md) enumerates exactly six specials: `*`, `**`, `?`, `+`,
+# `[]`, `!`. Three of those are regex quantifiers rather than wildcards — `?`
+# is "zero or one of the PRECEDING character", `+` is "one or more of the
+# preceding character", `[]` is a single alphanumeric from the listed set or
+# range. `_to_regex` models none of the three, so it refuses them rather than
 # guessing. Refusing matters most in a NEGATION: rendering `+`/`[]` as literals
 # under-models the exclusion, the guard then believes a path is covered when the
 # real filter excludes it, and that is silent staleness — the exact failure this
 # module exists to catch. In a positive pattern the same mistake is merely
 # noisy, and `?` is wrong in both directions.
 #
-# `\` is worse than any of them, because the naive reading is wrong in BOTH
-# halves at once: `re.escape` turns it into a literal backslash AND the
-# character it was escaping keeps its wildcard meaning, so `foo\*bar` compiles
-# to `^foo\\[^/]*bar$` — which matches neither GitHub's literal `foo*bar` nor
-# the `fooXbar` a glob reader would expect, only a path with a real backslash in
-# it. No path this module tests could ever match, so a `\` pattern would read as
-# "matches nothing" and quietly subtract itself from the filter.
+# `\` is refused for the opposite reason: not because it means something this
+# translator cannot model, but because GitHub documents NO meaning for it at
+# all. `grep -i 'escape\|backslash'` over the whole 72 KB of workflow-syntax.md
+# returns nothing, and the cheat sheet's six specials do not include it. So an
+# escaping convention cannot be assumed, and neither can the literal reading:
+# `re.escape` would turn `foo\*bar` into `^foo\\[^/]*bar$`, which matches only a
+# path containing a real backslash — nothing on a POSIX repo path — so the
+# pattern would read as "matches nothing" and quietly subtract itself from the
+# filter. Undocumented plus silently-empty is the case to refuse, not to model.
+# (A previous revision of this file asserted `\` WAS a documented escape. It is
+# not. That claim was invented; this comment is what the source actually says.)
 _UNMODELLED_METACHARS = frozenset("?+[]\\")
 
 
 def _to_regex(pattern: str) -> re.Pattern:
     """GitHub filter-pattern -> anchored regex, for the subset modelled here.
 
-    * ``**/`` is modelled as any number of leading segments INCLUDING zero, so
-      ``**/README.md`` is taken to hit the repo-root file too. This one is a
-      CONVENTION, not a verified GitHub fact — see below;
+    * ``**/`` matches any number of leading segments INCLUDING zero, so
+      ``**/README.md`` hits the repo-root file too. This is GitHub's DOCUMENTED
+      behaviour, not a glob convention borrowed from elsewhere — citation below;
     * a trailing ``/**`` matches the directory and everything under it;
     * a bare ``**`` matches across ``/``;
     * ``*`` matches within one segment, never across ``/``.
 
-    On that first bullet, honestly: the zero-segment reading is what git,
-    gitignore and most glob engines do, and GitHub's cheat-sheet table is
-    usually read that way, but GitHub's own prose defines ``**`` only as "zero
-    or more of any character", which read literally says something different.
-    Its engine is not runnable here, so nobody on this branch has confirmed
-    which it is. ``tests/test_deploy_paths_exclusions.py`` hedges the same point
-    where it notes that "``**`` handling differs" for the top-level
-    ``tools/__init__.py``.
+    Source for the first bullet, because it is the one worth being able to
+    re-check: repo ``github/docs``, path
+    ``content/actions/reference/workflows-and-actions/workflow-syntax.md``,
+    section "Patterns to match file paths". Five rows of that table show a
+    ``**`` consuming zero segments, two of them decisive on their own:
 
-    The ambiguity is bounded rather than resolved, and the bound is structural:
-    every live ``**/`` in the trigger is inside a NEGATION (asserted below, so
-    it cannot quietly stop being true). Modelling ``**/`` permissively can
-    therefore only over-exclude — this module would call a path uncovered that
-    GitHub in fact covers, and the guard goes RED on a healthy Dockerfile. That
-    is a false alarm someone has to look at. The dangerous direction is the
-    opposite one, under-modelling a negation so a genuinely-excluded path reads
-    as covered, and the permissive reading cannot land there. Loud beats
-    silent, so the model is deliberately the permissive one.
+    * ``'**/README.md'`` lists ``README.md`` — repo root, no leading directory
+      — alongside ``js/README.md``;
+    * ``'**/docs/**'`` lists ``docs/hello.md``, again with nothing before
+      ``docs``;
+    * and likewise ``'**/*-post.md'`` -> ``my-post.md``,
+      ``'**/migrate-*.sql'`` -> ``migrate-10909.sql``, and ``docs/**/*.md`` ->
+      ``docs/README.md`` (zero segments consumed mid-pattern).
 
-    Everything else is a literal, except the three metacharacters above, which
-    raise. Written out rather than handed to ``fnmatch`` because ``fnmatch``
-    renders both ``*`` and ``**`` as ``.*`` and would call ``tools/*/meta.py`` a
-    match for ``tools/a/b/meta.py``.
+    Read the TABLE, not the cheat sheet's one-line prose. That prose says only
+    ``**`` "Matches zero or more of any character", which taken literally makes
+    ``**/README.md`` require a leading ``/`` and so NOT match ``README.md`` —
+    contradicting the table's own worked example. The examples are what the
+    engine does; the prose is a simplification. Rendered docs.github.com drops
+    this table, which is how an earlier QC round came to call the zero-segment
+    reading unverified and this docstring came to describe it as a mere
+    convention. It is neither: it is documented, and
+    ``test_matches_githubs_documented_filter_pattern_examples`` below now pins
+    every row of the table so this cannot be re-litigated from memory again.
+
+    Everything else is a literal, except the metacharacters in
+    ``_UNMODELLED_METACHARS`` above, which raise. Written out rather than handed
+    to ``fnmatch`` because ``fnmatch`` renders both ``*`` and ``**`` as ``.*``
+    and would call ``tools/*/meta.py`` a match for ``tools/a/b/meta.py``.
     """
     unmodelled = "".join(sorted(_UNMODELLED_METACHARS & set(pattern)))
     if unmodelled:
@@ -153,16 +164,21 @@ def _to_regex(pattern: str) -> re.Pattern:
     return re.compile("^" + "".join(out) + "$")
 
 
-def _triggers_deploy(path: str) -> bool:
+def _triggers_deploy(path: str, patterns: list[str] | None = None) -> bool:
     """Would a push touching ``path`` run the deploy workflow?
 
     Later-wins, which is GitHub's rule: a negation after a matching positive
     excludes, and a positive after a matching negation re-includes. Evaluating
     the whole list in order — rather than short-circuiting on the first hit — is
     the only way to get that right.
+
+    ``patterns`` defaults to the live trigger. It is overridable only so the
+    conformance test below can run GitHub's own two documented negation examples
+    through this exact function rather than a copy of it — a copy could drift
+    from the real resolver and still look green.
     """
     hit = False
-    for pattern in _TRIGGER_PATHS:
+    for pattern in _TRIGGER_PATHS if patterns is None else patterns:
         negated = pattern.startswith("!")
         if _to_regex(pattern[1:] if negated else pattern).match(path):
             hit = not negated
@@ -258,6 +274,85 @@ def test_to_regex_refuses_rather_than_guesses():
         assert _to_regex(pattern)
 
 
+# Every row of GitHub's "Patterns to match file paths" table, transcribed from
+# `github/docs`, content/actions/reference/workflows-and-actions/
+# workflow-syntax.md. Pattern -> the example matches that row lists.
+#
+# This is the anchor the rest of the module's pattern reasoning hangs off. It
+# exists because the previous revision argued about `**/` semantics from memory
+# and from the RENDERED docs page, which drops this table entirely — and talked
+# itself out of a correct implementation. Facts about an external system belong
+# in an executable check against that system's own published examples, not in a
+# docstring where the next reader has to take them on trust.
+_DOC_ROWS = [
+    ("*", ["README.md", "server.rb"]),
+    ("**", ["all/the/files.md"]),
+    ("*.js", ["app.js", "index.js"]),
+    # `**` NOT followed by `/` still crosses directory boundaries — three depths
+    # in one row, which is the row most likely to catch a translator that models
+    # `**` as if it were `*`.
+    ("**.js", ["index.js", "js/index.js", "src/js/app.js"]),
+    ("docs/*", ["docs/README.md", "docs/file.txt"]),
+    ("docs/**", ["docs/README.md", "docs/mona/octocat.txt"]),
+    # zero segments consumed MID-pattern, not just leading
+    ("docs/**/*.md", ["docs/README.md", "docs/mona/hello-world.md", "docs/a/markdown/file.md"]),
+    ("**/docs/**", ["docs/hello.md", "dir/docs/my-file.txt", "space/docs/plan/space.doc"]),
+    # the decisive zero-leading-segment row: `README.md` at the repo root
+    ("**/README.md", ["README.md", "js/README.md"]),
+    ("**/*src/**", ["a/src/app.js", "my-src/code/js/app.js"]),
+    ("**/*-post.md", ["my-post.md", "path/their-post.md"]),
+    ("**/migrate-*.sql", ["migrate-10909.sql", "db/migrate-v1.0.sql", "db/sept/migrate-v1.sql"]),
+]
+
+
+@pytest.mark.parametrize("pattern,examples", _DOC_ROWS, ids=[r[0] for r in _DOC_ROWS])
+def test_matches_githubs_documented_filter_pattern_examples(pattern, examples):
+    """Conformance, row by row, against GitHub's published worked examples."""
+    rx = _to_regex(pattern)
+    missed = [e for e in examples if not rx.match(e)]
+    assert not missed, (
+        f"_to_regex({pattern!r}) -> {rx.pattern!r} fails to match {missed}, which "
+        "GitHub's own 'Patterns to match file paths' table lists as matches for "
+        "that pattern (github/docs, content/actions/reference/"
+        "workflows-and-actions/workflow-syntax.md). The table is the spec; this "
+        "translator is wrong, not the table."
+    )
+
+
+def test_matches_githubs_documented_negation_examples():
+    """The two later-wins rows — the semantics the whole guard rests on.
+
+    Run through ``_triggers_deploy`` itself, so a drift between the real
+    resolver and these examples cannot hide behind a local reimplementation.
+    """
+    # '*.md' + '!README.md': matches hello.md; does NOT match README.md or docs/hello.md
+    two = ["*.md", "!README.md"]
+    assert _triggers_deploy("hello.md", two)
+    assert not _triggers_deploy("README.md", two), "a later negation must exclude"
+    assert not _triggers_deploy("docs/hello.md", two), "`*` must not cross `/`"
+    # + 'README*': a positive after a negation RE-INCLUDES
+    three = ["*.md", "!README.md", "README*"]
+    for path in ("hello.md", "README.md", "README.doc"):
+        assert _triggers_deploy(path, three), (
+            f"{path!r} should be re-included by the trailing positive `README*`. "
+            "GitHub: 'Patterns are checked sequentially. A pattern that negates a "
+            "previous pattern will re-include file paths.'"
+        )
+
+
+def test_documented_rows_using_refused_constructs_are_refused():
+    """The one documented row this translator declines rather than models.
+
+    ``'*.jsx?'`` is in the same table, and GitHub defines its `?` as "zero or
+    one of the PRECEDING character" — which is why it matches BOTH ``page.js``
+    and ``page.jsx``. That is knowable and documented; modelling it is simply
+    not worth it for a filter that has never used one. Refusing stays correct,
+    but it is refused as UNMODELLED, not as unknown.
+    """
+    with pytest.raises(NotImplementedError):
+        _to_regex("*.jsx?")
+
+
 def test_tracked_file_list_is_populated():
     assert len(_TRACKED) > 100, f"git ls-files returned {len(_TRACKED)} paths — not a real checkout"
 
@@ -275,34 +370,31 @@ def test_pattern_translation_distinguishes_star_from_globstar():
     # single `*` must not cross a separator
     assert not _to_regex("tools/*/meta.py").match("tools/a/b/meta.py")
     assert _to_regex("tools/*/meta.py").match("tools/a/meta.py")
-    # `**/` is MODELLED as matching zero leading segments. Unverified against
-    # GitHub's real engine — see `_to_regex`. Pinned anyway, with the reason the
-    # unverified choice is the safe one attached to the assertion rather than
-    # left in prose.
+    # `**/` matches zero leading segments — GitHub's documented behaviour, per
+    # the "Patterns to match file paths" table. Kept here as a spot-check; the
+    # full table is pinned by
+    # test_matches_githubs_documented_filter_pattern_examples below.
+    #
+    # There used to be a second assertion here requiring every live `**/` entry
+    # to be a NEGATION, on the theory that the zero-segment reading was
+    # unverified and safe only in that position. Deleted, for two independent
+    # reasons. Its rationale was simply false — the reading is documented and
+    # this translator matches the table row for row — so it was enforcing a
+    # caveat that does not exist. And it did not even do that: it selected on
+    # the literal substring "**/", so `static/**`, `docs/**`, bare `**` and
+    # `**.js` all sailed past it while its own message claimed a "structural"
+    # bound. A guard whose stated reason is wrong AND whose reach is narrower
+    # than it claims is the thing this module exists to catch, not to contain.
     assert _to_regex("**/README.md").match("README.md"), (
-        "`**/` no longer matches zero leading segments. That is the PERMISSIVE "
-        "reading and it is deliberate: every live `**/` in the trigger is a "
-        "negation (see the assertion below), so over-matching can only "
-        "over-exclude and turn this guard RED on a file GitHub actually covers "
-        "— a false alarm. Under-matching a negation is the silent-staleness "
-        "direction. Do not tighten this to resolve the ambiguity in GitHub's "
-        "docs; verify against GitHub's engine first, and re-check the negation "
-        "assertion below if you do."
+        "`**/` stopped matching zero leading segments. That is not a tunable "
+        "preference — it is what GitHub documents. See github/docs, "
+        "content/actions/reference/workflows-and-actions/workflow-syntax.md, "
+        "section 'Patterns to match file paths': the `'**/README.md'` row lists "
+        "`README.md` at the repo root as a match, and the `'**/docs/**'` row "
+        "lists `docs/hello.md`. Read that table rather than the cheat sheet's "
+        "one-line prose, which is a simplification that contradicts it."
     )
     assert _to_regex("**/README.md").match("docs/a/README.md")
-    # The structural bound the permissive reading rests on. Load-bearing for the
-    # paragraph in `_to_regex`, so it is asserted rather than asserted-in-prose:
-    # add a POSITIVE `**/` entry to the trigger and the safety argument above
-    # stops holding, because over-matching a positive over-INCLUDES instead.
-    positive_globstars = [p for p in _TRIGGER_PATHS if "**/" in p and not p.startswith("!")]
-    assert not positive_globstars, (
-        f"deploy trigger grew positive `**/` pattern(s) {positive_globstars}. Every "
-        "`**/` here was a negation, which is what makes _to_regex's unverified "
-        "zero-segment reading safe: over-matching a negation over-excludes and "
-        "fails loud. In a POSITIVE it over-includes instead, so this module "
-        "would report coverage GitHub does not give — silent staleness. Verify "
-        "`**/` against GitHub's real engine before adding one."
-    )
     # plainly-untriggered paths stay untriggered
     assert not _triggers_deploy("README.md")
     assert not _triggers_deploy("app.py")
