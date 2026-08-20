@@ -32,6 +32,7 @@ otherwise the scan has gone blind and everything above it is vacuous.
 from __future__ import annotations
 
 import json
+import statistics
 import re
 from pathlib import Path
 
@@ -505,6 +506,60 @@ class TestExampleNumbersComeFromThePayload:
         # No structure_file: static/example/ carries no 1YCR.
         assert not example.get("structure_file")
 
+
+    def test_pxdesign_narration_matches_its_result_json(self, tools_app):
+        """Third pin. This example's whole lesson is a contrast between two
+        columns, so if either median drifts the page argues for something
+        the table no longer shows."""
+        _, slugs = tools_app
+        example = _examples(slugs)["pxdesign"]
+        result = json.loads(
+            (REPO / "tools" / "pxdesign" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        cands = result["candidates"]
+        scores = [c["scores"] for c in cands]
+        iptm = [s["ipTM"] for s in scores]
+        plddt = [s["pLDDT"] for s in scores]
+
+        assert len(cands) == 25 == result["total_designs"]
+        assert sum(1 for s in scores if s["filter_status"] == "pass") == 2
+        assert max(iptm) == 0.88
+        assert statistics.median(iptm) == 0.14
+        assert statistics.median(plddt) == 91
+        # The headline claim, re-counted rather than trusted.
+        assert sum(
+            1 for s in scores if s["pLDDT"] >= 85 and s["ipTM"] < 0.3
+        ) == 21
+        # Rank 1 is the design the narration describes.
+        assert scores[0]["ipTM"] == 0.88 and scores[0]["pLDDT"] == 88.0
+
+        blurb = example["what_came_back"]
+        for figure in ("25 designs", "2 passed", "0.88", "88", "91",
+                       "0.14", "21 of the 25"):
+            assert figure in blurb, f"{figure} missing from what_came_back"
+
+        # Only ipTM / pLDDT / pAE / filter_status: the four keys the live
+        # tool emits. An example that carried complex RMSD or buried area
+        # would render a payload shape pxdesign never returns, so those two
+        # figures stay in prose and this asserts they cannot creep in.
+        assert all(
+            set(s) == {"ipTM", "pLDDT", "pAE", "filter_status"} for s in scores
+        )
+        reading = example["how_to_read_it"]
+        assert "0.50" in reading and "3.0" in reading
+        assert "Sort by ipTM, never by pLDDT." in reading
+
+        # No sequences, no structures, no target identity anywhere.
+        blob = json.dumps(result)
+        for leaked in ("sequence", "pdb_key", "pdb_content_b64", "struct_path"):
+            assert leaked not in blob, f"{leaked} leaked into the payload"
+        assert not example.get("structure_file")
+
+        # The length counts are 25 per bin and the prose must keep saying so
+        # rather than reporting 0/2/2/4 as a trend.
+        nxt = example["what_we_did_next"]
+        assert "0, 2, 2 and 4" in nxt and "25 per bin" in nxt
 
 class TestCaptureScrubsBeforeItPublishes:
     """scripts/capture_example_result.py pulls from the PRODUCTION jobs

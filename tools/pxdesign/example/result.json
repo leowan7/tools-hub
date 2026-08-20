@@ -1,0 +1,232 @@
+{
+  "candidate_count": 25,
+  "candidates": [
+    {
+      "rank": 1,
+      "scores": {
+        "filter_status": "pass",
+        "ipTM": 0.88,
+        "pAE": 6.28,
+        "pLDDT": 88.0
+      }
+    },
+    {
+      "rank": 2,
+      "scores": {
+        "filter_status": "pass",
+        "ipTM": 0.77,
+        "pAE": 9.83,
+        "pLDDT": 78.0
+      }
+    },
+    {
+      "rank": 3,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.17,
+        "pAE": 27.36,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "rank": 4,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.15,
+        "pAE": 27.82,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "rank": 5,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.0,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 6,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 27.78,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 7,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.17,
+        "pLDDT": 80.0
+      }
+    },
+    {
+      "rank": 8,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.04,
+        "pLDDT": 93.0
+      }
+    },
+    {
+      "rank": 9,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 27.89,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 10,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.0,
+        "pLDDT": 92.0
+      }
+    },
+    {
+      "rank": 11,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.12,
+        "pLDDT": 92.0
+      }
+    },
+    {
+      "rank": 12,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.26,
+        "pLDDT": 88.0
+      }
+    },
+    {
+      "rank": 13,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.04,
+        "pLDDT": 93.0
+      }
+    },
+    {
+      "rank": 14,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.36,
+        "pLDDT": 68.0
+      }
+    },
+    {
+      "rank": 15,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.06,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 16,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.07,
+        "pLDDT": 93.0
+      }
+    },
+    {
+      "rank": 17,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.14,
+        "pAE": 28.31,
+        "pLDDT": 88.0
+      }
+    },
+    {
+      "rank": 18,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.18,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 19,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.17,
+        "pLDDT": 86.0
+      }
+    },
+    {
+      "rank": 20,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.24,
+        "pLDDT": 85.0
+      }
+    },
+    {
+      "rank": 21,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.21,
+        "pLDDT": 92.0
+      }
+    },
+    {
+      "rank": 22,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.26,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "rank": 23,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.17,
+        "pLDDT": 92.0
+      }
+    },
+    {
+      "rank": 24,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.19,
+        "pLDDT": 92.0
+      }
+    },
+    {
+      "rank": 25,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipTM": 0.13,
+        "pAE": 28.24,
+        "pLDDT": 93.0
+      }
+    }
+  ],
+  "runtime_minutes": 23.0,
+  "total_designs": 25
+}
