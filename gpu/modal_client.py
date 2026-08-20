@@ -31,6 +31,12 @@ the webhook handler updates tool_jobs independently.
 Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. TimeoutError
 means "still running"; anything else propagates as an error dict.
 
+Every Modal gRPC round trip runs inside ``_bounded_modal_call``, because the
+SDK applies no deadline of its own and these are called from request handlers.
+Each of submit / poll / cancel makes exactly ONE bounded call covering both of
+its hops, so a method's worst case is one budget rather than two. See
+``_MODAL_CALL_TIMEOUT_SEC`` for the number and for why stacking is not safe.
+
 Offline degradation
 -------------------
 When the ``modal`` package is not importable (local dev without the
@@ -50,12 +56,117 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import threading
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 from contracts.rpc import ToolPayload
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# Wall-clock ceiling on any single Modal gRPC round trip made from a request
+# handler.
+#
+# Modal's client sets NO deadline of its own. ``Retry()`` defaults both
+# ``attempt_timeout`` and ``total_timeout`` to None (modal 1.4.2,
+# ``_utils/grpc_utils.py``), ``_grpc_client.py`` applies that as the default
+# retry policy, and the timeout the RPC finally receives is therefore
+# ``None``. grpclib's keepalive is off by default and the channel options set
+# only HTTP/2 window sizes, so a half-open connection is never detected
+# either. Only the initial handshake is bounded. A stale channel means the
+# handshake succeeds, the request is written, and the response never arrives:
+# the call blocks forever.
+#
+# This repo has already had that outage — see the note in
+# ``shared/supabase_client.py`` for 2026-06-10, same cause (Railway egress,
+# idle HTTP/2 goes stale). What saved it was gunicorn's sync worker being
+# killed at ``timeout``, which is a process-level backstop, not a fix: it
+# takes out every other in-flight request on that worker too. Bound the call
+# instead, so the failure costs one request rather than one worker.
+#
+# Why 90 s, and not the "generous" 30 s this started at.
+#
+# 30 s was set from how long a healthy control-plane call takes (well under a
+# second) rather than from how long the SDK is entitled to take, and it lands
+# BELOW Modal's own retry budget. In modal 1.4.2,
+# ``_utils/grpc_utils.py:231``:
+#
+#     @retry(n_attempts=18, base_delay=0.1, attempt_timeout=10.0,
+#            max_delay=5.0, total_timeout=63.0)
+#     async def connect_channel(channel): ...
+#
+# Establishing the channel is allowed **63 s** across 18 attempts, by design,
+# for exactly the transient blips this deadline exists to survive. Any of
+# these calls can be the one that triggers a connect. Capping below 63 s turns
+# a blip the SDK would have ridden out into a hard failure — on ``submit``
+# that means a released wallet hold and an error the user did not need to see.
+#
+# So the cap is bracketed on both sides:
+#
+#     63 s  <  _MODAL_CALL_TIMEOUT_SEC  <  gunicorn `timeout` (120 s default)
+#
+# Above 63 s so we never preempt the SDK's own retry; below the worker
+# watchdog so a wedged channel costs one request rather than the worker and
+# every other request on it. 90 s sits in the middle with 30 s of headroom
+# under the watchdog for the rest of the request.
+#
+# That bracket is why each public method makes exactly ONE bounded call.
+# ``submit`` used to bound ``from_name`` and ``spawn`` separately, which at
+# 90 s each would be a 180 s worst case — straight through the watchdog — and
+# which also opened a real orphan window: ``from_name`` inside its budget,
+# ``spawn`` cut at its own, and a ``spawn`` that lands a second after we gave
+# up is a **billed GPU job with no job row tracking it**. One call, one
+# budget, per method.
+#
+# Coupling to record: ``gunicorn.conf.py:164`` floors the watchdog at 60 s
+# (`max(60, GUNICORN_TIMEOUT)`). Setting GUNICORN_TIMEOUT below 90 puts the
+# watchdog back underneath this cap and restores the old take-out-the-worker
+# behaviour. Do not lower it without lowering this too.
+_MODAL_CALL_TIMEOUT_SEC = 90.0
+
+
+class ModalCallTimeout(TimeoutError):
+    """A Modal gRPC call exceeded ``_MODAL_CALL_TIMEOUT_SEC``."""
+
+
+def _bounded_modal_call(what: str, fn: Callable[[], _T]) -> _T:
+    """Run ``fn`` with a hard wall-clock cap and surface a timeout as an error.
+
+    The Modal SDK exposes no per-call deadline (see
+    ``_MODAL_CALL_TIMEOUT_SEC``), so the cap has to come from outside the
+    call. Same shape as ``shared.webhooks._resolve_addrinfo_bounded``, and
+    for the same reason: a daemon worker joined for a bounded time, with no
+    process-wide state touched.
+
+    ponytail: on timeout the worker thread is orphaned and stays blocked on
+    the dead channel for the life of the process — one thread per timed-out
+    call, which is the price of Python having no way to interrupt a blocking
+    C-level read. That is strictly better than the caller blocking forever,
+    and it is bounded by how often Modal can time out. Revisit only if Modal
+    ever exposes a real deadline.
+    """
+    box: Dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller
+            box["error"] = exc
+
+    worker = threading.Thread(
+        target=_worker, name=f"modal-{what}", daemon=True
+    )
+    worker.start()
+    worker.join(_MODAL_CALL_TIMEOUT_SEC)
+    if worker.is_alive():
+        raise ModalCallTimeout(
+            f"Modal {what} did not return within {_MODAL_CALL_TIMEOUT_SEC:g}s"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 CONTRACT_VERSION = "2.0.0"
@@ -281,13 +392,20 @@ class ModalClient:
                 function_call_id=fake_id, gpu_seconds_cap=cap
             ).to_dict()
 
-        try:
+        def _lookup_and_spawn() -> Any:
+            # ONE bounded call, not two. Two budgets would stack past the
+            # gunicorn watchdog, and a `spawn` cut on its own deadline can
+            # still land — a billed GPU job with no job row. See
+            # ``_MODAL_CALL_TIMEOUT_SEC``.
             fn = modal.Function.from_name(
                 modal_app_name(tool),
                 "run_tool",
                 environment_name=self.environment,
             )
-            function_call = fn.spawn(payload)
+            return fn.spawn(payload)
+
+        try:
+            function_call = _bounded_modal_call("submit", _lookup_and_spawn)
             fc_id = getattr(function_call, "object_id", None) or str(function_call)
         except Exception as exc:  # pragma: no cover — exercised live only
             logger.exception("Modal submit failed for tool=%s", tool)
@@ -333,12 +451,23 @@ class ModalClient:
                 "error": "modal package not available",
             }
 
-        try:
+        def _fetch() -> Any:
+            # Non-blocking poll. timeout=0 raises TimeoutError when the
+            # function has not yet returned. One bounded call covers both
+            # hops — see ``_MODAL_CALL_TIMEOUT_SEC``.
             fc = modal.FunctionCall.from_id(function_call_id)
+            return fc.get(timeout=0)
+
+        try:
             try:
-                # Non-blocking poll. timeout=0 raises TimeoutError when
-                # the function has not yet returned.
-                raw_result = fc.get(timeout=0)
+                raw_result = _bounded_modal_call("poll", _fetch)
+            except ModalCallTimeout:
+                # Our own wall-clock cap on a wedged channel, NOT Modal's
+                # "not finished yet" signal. Both leave the job row alone and
+                # both are retried by the next poll, but only one of them is
+                # visible in the logs — so do not let it fall into the
+                # `except TimeoutError` below and be reported as healthy.
+                raise
             except TimeoutError:
                 return {
                     "status": "running",
@@ -378,9 +507,12 @@ class ModalClient:
         if modal is None:
             return {"ok": True, "error": "modal package not available"}
 
+        def _lookup_and_cancel() -> None:
+            # One bounded call — see ``_MODAL_CALL_TIMEOUT_SEC``.
+            modal.FunctionCall.from_id(function_call_id).cancel()
+
         try:
-            fc = modal.FunctionCall.from_id(function_call_id)
-            fc.cancel()
+            _bounded_modal_call("cancel", _lookup_and_cancel)
         except Exception as exc:  # pragma: no cover — exercised live only
             logger.warning(
                 "Modal cancel failed for fc=%s", function_call_id, exc_info=True

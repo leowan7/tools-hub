@@ -35,6 +35,7 @@ from pathlib import Path
 import numpy as np
 from Bio.PDB import MMCIFParser, PDBParser
 
+from scout.errors import ScoutInputError
 from scout.patches import cluster_surface_residues, get_cb_coord
 from scout.sasa import STANDARD_AA, SURFACE_RSA_THRESHOLD, compute_rsa
 from scout.scoring import (
@@ -290,8 +291,12 @@ def run_pipeline(
         Path to the written results.csv file.
 
     Raises:
-        ValueError: If chain_id is not present in the PDB, or if too few
+        ScoutInputError: If chain_id is not present in the PDB, or if too few
             surface residues exist to form patches, or if no patches are formed.
+            The type matters: scout/routes.py forwards this one's message to
+            the browser verbatim and replaces every other exception, so a
+            plain ValueError here silently becomes "Analysis failed."
+            See scout/errors.py.
         FileNotFoundError: If pdb_path does not exist on disk.
     """
     pdb_path = Path(pdb_path)
@@ -318,7 +323,7 @@ def run_pipeline(
     # ------------------------------------------------------------------
     available_chains = [chain.get_id() for chain in model.get_chains()]
     if chain_id not in available_chains:
-        raise ValueError(
+        raise ScoutInputError(
             f"Chain '{chain_id}' not found in structure. "
             f"Available chains: {', '.join(sorted(available_chains))}"
         )
@@ -358,7 +363,7 @@ def run_pipeline(
     from scout.patches import MIN_PATCH_SIZE  # avoid circular at module level
 
     if len(surface_residues) < MIN_PATCH_SIZE:
-        raise ValueError(
+        raise ScoutInputError(
             f"Too few surface residues ({len(surface_residues)}) to form patches. "
             "Check chain selection or RSA threshold."
         )
@@ -373,7 +378,7 @@ def run_pipeline(
     # Step 7: Guard — patches must be non-empty
     # ------------------------------------------------------------------
     if not patches:
-        raise ValueError(
+        raise ScoutInputError(
             "No patches formed. The chain may be too small or fully buried."
         )
 
@@ -589,7 +594,8 @@ def run_feasibility_pipeline(
         Path to feasibility_results.csv in the same directory as pdb_path.
 
     Raises:
-        ValueError: If chain or residues are invalid.
+        ScoutInputError: If chain or residues are invalid. The type is
+            load-bearing -- see run_pipeline above and scout/errors.py.
         FileNotFoundError: If pdb_path does not exist.
     """
     from scout.accessibility import score_approach_cone
@@ -619,7 +625,7 @@ def run_feasibility_pipeline(
 
     available_chains = [c.get_id() for c in model.get_chains()]
     if chain_id not in available_chains:
-        raise ValueError(
+        raise ScoutInputError(
             f"Chain '{chain_id}' not found. Available: {', '.join(sorted(available_chains))}"
         )
     chain = model[chain_id]
@@ -643,7 +649,7 @@ def run_feasibility_pipeline(
             patch_residues.append(residue)
 
     if not patch_residues:
-        raise ValueError(
+        raise ScoutInputError(
             f"No valid residues found for epitope selection "
             f"(requested: {epitope_residues})"
         )
@@ -659,7 +665,7 @@ def run_feasibility_pipeline(
     cb_coords = [get_cb_coord(r) for r in patch_residues]
     cb_coords = [c for c in cb_coords if c is not None]
     if not cb_coords:
-        raise ValueError("No Cb/Ca coordinates found for epitope residues")
+        raise ScoutInputError("No Cb/Ca coordinates found for epitope residues")
     patch_centroid = np.mean(cb_coords, axis=0)
 
     _emit("bfactor", 35)

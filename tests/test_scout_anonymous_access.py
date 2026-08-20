@@ -140,6 +140,23 @@ def _login(client, *, user_id="u-anon-test", email="someone@example.com"):
         sess["user_id"] = user_id
 
 
+def _rotate_anon_session(client, label: str) -> None:
+    """Hand this client a fresh anonymous id, discarding the old one.
+
+    The per-session tier keys on that id, so a client that keeps one meets
+    the tight limit and never reaches the per-IP limit behind it. Rotating is
+    what an attacker does for free; several tests below need the per-IP tier
+    specifically and so have to do the same.
+    """
+    with client.session_transaction() as sess:
+        sess[scout_routes.ANON_SESSION_KEY] = f"anon:{label}"
+
+
+def _hits(bucket: str, key: str) -> int:
+    entry = ratelimit._WINDOWS.get((bucket, key))
+    return entry[1] if entry else 0
+
+
 # ---------------------------------------------------------------------------
 # The promise: the whole flow works with no account
 # ---------------------------------------------------------------------------
@@ -373,14 +390,34 @@ class TestRateLimit:
         assert 429 in statuses, statuses
 
     def test_progress_limit_returns_an_sse_error_not_a_429_body(self, client):
-        """EventSource cannot read a 429, so the SSE route degrades in-band."""
+        """EventSource cannot read a 429, so the SSE route degrades in-band.
+
+        Rotated anonymous ids on purpose: the per-session tier is tighter, so
+        reaching the per-IP one from a single client means presenting a fresh
+        id each time. That is free for an attacker, which is exactly why the
+        per-IP tier is the true bound.
+        """
         resp = None
-        for _ in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+            _rotate_anon_session(client, f"sse{i}")
             resp = client.get("/scout/progress?job_id=x&chain=A")
         assert resp.mimetype == "text/event-stream"
         payload = json.loads(resp.get_data(as_text=True).split("data: ", 1)[1])
         assert payload["stage"] == "error"
+        assert payload["reason"] == ratelimit.REASON_RATE_LIMITED
         assert "Too many" in payload["msg"]
+
+    def test_the_session_tier_bites_before_the_per_ip_one(self, client):
+        """One session that keeps its cookie meets the tight tier first, and
+        is told something true about it: sign in, not "your network"."""
+        resp = None
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT + 2):
+            resp = client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        assert resp.status_code == 429
+        assert resp.get_json()["reason"] == ratelimit.REASON_SESSION_LIMITED
+        assert _hits("scout_analyze", "127.0.0.1") == (
+            scout_routes.ANON_ANALYZE_SESSION_LIMIT
+        ), "a session-tier refusal must not spend the shared per-IP allowance"
 
     def test_signed_in_users_are_not_ip_limited(self, client, reap_jobs):
         _login(client)
@@ -694,3 +731,249 @@ class TestCounterTableEviction:
         size = len(ratelimit._WINDOWS)
         ratelimit.reset()
         assert size < 20, f"expired windows were not reclaimed: {size} entries held"
+
+
+# ---------------------------------------------------------------------------
+# Refusals must be tellable apart
+# ---------------------------------------------------------------------------
+
+
+class TestRefusalsAreDistinguishable:
+    """There are three ways Scout says no to an anonymous caller, and on the
+    SSE route the status code cannot tell them apart.
+
+    ``EventSource`` cannot read a non-2xx body, so both the per-IP limit and
+    the compute shed answer HTTP 200 ``text/event-stream``. Anything measuring
+    refusal rate from status codes therefore counts both as successes and
+    conflates them with each other. A machine-readable ``reason`` is what
+    makes them separable without parsing prose that a copy edit will change.
+    """
+
+    @staticmethod
+    def _sse_payload(resp):
+        """Read the frame and CLOSE the stream.
+
+        A streaming response whose generator is never exhausted leaves the
+        request context to be torn down by the garbage collector, which Flask
+        notices and complains about. Closing here keeps the noise out of every
+        other test in the file.
+        """
+        try:
+            return json.loads(resp.get_data(as_text=True).split("data: ", 1)[1])
+        finally:
+            resp.close()
+
+    def test_per_ip_429_names_its_reason(self, client, reap_jobs):
+        resp = None
+        for _ in range(scout_routes.ANON_INTAKE_LIMIT + 2):
+            resp = _upload(client, b"garbage\n")
+        assert resp.status_code == 429
+        assert resp.get_json()["reason"] == ratelimit.REASON_RATE_LIMITED
+
+    def test_compute_shed_503_names_a_different_reason(
+        self, client, monkeypatch, reap_jobs
+    ):
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
+        resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+        assert resp.status_code == 503
+        assert resp.get_json()["reason"] == ratelimit.REASON_BUSY
+
+    def test_capacity_refusal_names_its_reason(self, client, monkeypatch, reap_jobs):
+        monkeypatch.setattr(scout_routes, "ANON_MAX_LIVE_JOBS", 0)
+        resp = client.get("/scout/example")
+        assert resp.status_code == 503
+        assert resp.get_json()["reason"] == ratelimit.REASON_AT_CAPACITY
+
+    def test_the_two_sse_refusals_are_identical_apart_from_reason(
+        self, client, monkeypatch, reap_jobs
+    ):
+        """The whole finding, in one test. Same status, same mimetype, same
+        stage — only ``reason`` separates a rate limit from a compute shed."""
+        job_id = client.get("/scout/example").get_json()["job_id"]
+
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
+        shed = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 4)
+
+        limited = None
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+            if limited is not None:
+                limited.close()
+            _rotate_anon_session(client, f"tier{i}")
+            limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+
+        # Indistinguishable at every layer a metric could read...
+        assert shed.status_code == limited.status_code == 200
+        assert shed.mimetype == limited.mimetype == "text/event-stream"
+        shed_body = self._sse_payload(shed)
+        limited_body = self._sse_payload(limited)
+        assert shed_body["stage"] == limited_body["stage"] == "error"
+        # ...except this one.
+        assert shed_body["reason"] == ratelimit.REASON_BUSY
+        assert limited_body["reason"] == ratelimit.REASON_RATE_LIMITED
+        assert shed_body["reason"] != limited_body["reason"]
+
+    def test_an_expired_job_names_its_reason(self, client):
+        """Not a refusal, but it arrives in the same frame as one. A counter
+        that keys on ``{"stage": "error"}`` alone reads reaper pressure as
+        load shedding."""
+        body = self._sse_payload(
+            client.get("/scout/progress?job_id=3f8e0c92-0000-4000-8000-abcdefabcdef&chain=A")
+        )
+        assert body["stage"] == "error"
+        assert body["reason"] == ratelimit.REASON_JOB_EXPIRED
+
+    def test_a_missing_parameter_names_a_different_reason(self, client):
+        """A front-end bug and an expired job need different responses, and
+        the route already knows which one it is."""
+        body = self._sse_payload(client.get("/scout/progress?job_id=&chain="))
+        assert body["stage"] == "error"
+        assert body["reason"] == ratelimit.REASON_BAD_REQUEST
+
+    def test_every_progress_error_frame_names_a_distinct_reason(
+        self, client, monkeypatch, reap_jobs
+    ):
+        """All FIVE ways ``/scout/progress`` can emit ``stage: error``, in one
+        test. Every frame must carry a reason and no two may share one —
+        otherwise Phase 6's counters cannot separate the causes, which is the
+        only thing the field is for.
+
+        The two rate-limit tiers are both here on purpose. They mean very
+        different things — one caller over their own allowance versus a whole
+        institution over the shared one — and merging them would hide the
+        second inside the first, which is the case the plan calls an outage
+        that does not look like one.
+        """
+        job_id = client.get("/scout/example").get_json()["job_id"]
+
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
+        frames = {
+            "shed": self._sse_payload(
+                client.get(f"/scout/progress?job_id={job_id}&chain=A")
+            )
+        }
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 4)
+        frames["bad_request"] = self._sse_payload(
+            client.get("/scout/progress?job_id=&chain=")
+        )
+        frames["expired"] = self._sse_payload(
+            client.get("/scout/progress?job_id=3f8e0c92-0000-4000-8000-abcdefabcdef&chain=A")
+        )
+
+        # Keeping one cookie reaches the tight tier...
+        session_limited = None
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT + 2):
+            if session_limited is not None:
+                session_limited.close()
+            session_limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+        frames["session_limited"] = self._sse_payload(session_limited)
+
+        # ...and rotating them reaches the true bound behind it.
+        limited = None
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+            if limited is not None:
+                limited.close()
+            _rotate_anon_session(client, f"distinct{i}")
+            limited = client.get(f"/scout/progress?job_id={job_id}&chain=A")
+        frames["rate_limited"] = self._sse_payload(limited)
+
+        for name, body in frames.items():
+            assert body["stage"] == "error", f"{name}: {body}"
+            assert body.get("reason"), f"{name} frame carries no reason: {body}"
+
+        reasons = {name: body["reason"] for name, body in frames.items()}
+        assert reasons["session_limited"] == ratelimit.REASON_SESSION_LIMITED, reasons
+        assert reasons["rate_limited"] == ratelimit.REASON_RATE_LIMITED, reasons
+        assert len(set(reasons.values())) == len(frames), (
+            f"two error frames share a reason, so they cannot be told "
+            f"apart: {reasons}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Every parse the route pays for is inside the concurrency bound
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeParsesInsideTheBound:
+    """``/analyze`` used to call ``parse_pdb`` after the ``with
+    anon_compute_slot(...)`` block had exited, to recover the target chain's
+    residue count.
+
+    That is a full BioPython parse of a caller-chosen structure — up to the
+    8 MB anonymous cap — running OUTSIDE the thing that is supposed to bound
+    anonymous compute. A semaphore that does not cover the most expensive
+    fallback in the route is not a bound.
+
+    It is also recomputation: every intake route already parsed the structure
+    to list its chains for the picker, so the number was known.
+    """
+
+    def test_intake_records_the_chain_residue_counts(self, client, reap_jobs):
+        payload = client.get("/scout/example").get_json()
+        index_path = TMP / payload["job_id"] / scout_routes._CHAIN_INDEX_NAME
+        assert index_path.exists(), "intake did not record the chain index"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        by_id = {c["id"]: c["residue_count"] for c in payload["chains"]}
+        assert index == by_id, "the recorded counts differ from the ones served"
+
+    def test_upload_records_them_too(self, client, reap_jobs):
+        payload = _upload(client, _tiny_pdb(12)).get_json()
+        index_path = TMP / payload["job_id"] / scout_routes._CHAIN_INDEX_NAME
+        assert json.loads(index_path.read_text(encoding="utf-8"))["A"] == 12
+
+    def test_analyze_does_not_reparse_when_the_index_is_there(
+        self, client, monkeypatch, stub_scoring, reap_jobs
+    ):
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        _write_results_csv(job_id)
+
+        calls = []
+        real = scout_routes.parse_pdb
+        monkeypatch.setattr(
+            scout_routes, "parse_pdb",
+            lambda p: (calls.append(p), real(p))[1],
+        )
+        resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+        assert resp.status_code == 200, resp.data
+        assert calls == [], f"re-parsed {len(calls)}x despite the intake index"
+
+    def test_the_fallback_parse_runs_inside_the_compute_slot(
+        self, client, monkeypatch, stub_scoring, reap_jobs
+    ):
+        """A job dir created before the index existed — a deploy landing
+        mid-session — still has to parse. That parse must be metered."""
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        _write_results_csv(job_id)
+        (TMP / job_id / scout_routes._CHAIN_INDEX_NAME).unlink()
+
+        inflight_during_parse = []
+        real = scout_routes.parse_pdb
+
+        def _watched(path):
+            inflight_during_parse.append(ratelimit.inflight_anon_runs())
+            return real(path)
+
+        monkeypatch.setattr(scout_routes, "parse_pdb", _watched)
+        resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+        assert resp.status_code == 200, resp.data
+        assert inflight_during_parse, "the fallback parse never ran"
+        assert all(n >= 1 for n in inflight_during_parse), (
+            f"parse_pdb ran with inflight={inflight_during_parse} — it is "
+            f"outside the compute slot, so the concurrency bound cannot see it"
+        )
+
+    def test_the_recovered_count_is_the_one_the_filter_uses(
+        self, client, reap_jobs
+    ):
+        """The count caps patch size at 30% of the chain, so a wrong number is
+        a wrong ranking, not just a wasted parse. Index and parse must agree."""
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        job_dir = TMP / job_id
+        pdb_path = scout_routes._find_input_file(job_dir)
+        index_path = job_dir / scout_routes._CHAIN_INDEX_NAME
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index_path.unlink()
+        from_parse = scout_routes._chain_residue_count(job_dir, pdb_path, "A")
+        assert from_parse == index["A"]
