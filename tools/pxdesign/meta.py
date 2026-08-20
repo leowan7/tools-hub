@@ -171,17 +171,102 @@ PILOT: dict | None = {
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE — one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/pxdesign/example/result.json replayed through this tool's OWN results
+# partial, so the demo can never drift from the real job page.
+#
+# PROVENANCE. One `pilot`-tier call against ranomics-pxdesign-prod — the same
+# Modal app this form submits to. It was one of four calls in a 100-design
+# round, one call per binder length; the payload here is that ONE call,
+# because job.result is per submission and pooling all four would render a
+# shape no single job produces. Rebuilt from the campaign's own result by
+# scripts/_build_pxdesign_example.py; re-run it to re-derive every number
+# here. Scores only: no designed sequences, no structures, target unnamed.
+#
+# ONE DELIBERATE EDIT. That campaign applied a third filter after these two —
+# a clash check against a sugar the target carries — which is meaningless off
+# that target and would identify it. Designs are marked pass/below-threshold
+# here on the two general filters only, so the counts below are the two-filter
+# counts and will not match the campaign's own reports.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "A two-chain human secreted protein, about 210 residues per chain, "
+        "from a solved crystal structure. Six hotspot residues, three on "
+        "each chain, across the two-fold interface where the chains meet."
+    ),
+    "why_this_target": (
+        "The binding site sits on a symmetry axis, so a binder has to reach "
+        "both chains at once rather than settle on either one. That is a "
+        "harder ask than a single flat face, and it is why so much of this "
+        "round fails in the specific way shown below."
+    ),
+    "inputs_used": [
+        (
+            "Target structure",
+            "the two-chain crystal structure",
+            "Both chains staged together. Handing over one chain would let "
+            "the model design against half a site that does not exist on "
+            "its own.",
+        ),
+        (
+            "Hotspot residues",
+            "6 residues, 3 per chain",
+            "The face we wanted engaged, given symmetrically so neither "
+            "chain reads as the whole target.",
+        ),
+        (
+            "Binder length",
+            "63",
+            "One of four calls we made at 50, 57, 63 and 70. The pilot "
+            "tier draws a fresh seed per call, so fanning out over lengths "
+            "buys seed diversity and length coverage from four calls.",
+        ),
+        (
+            "Number of designs",
+            "25",
+            "Enough to see the shape of the failure, cheap enough to "
+            "throw away. 100 across the four calls.",
+        ),
+    ],
+    "what_came_back": (
+        "25 designs, of which <strong>2 passed</strong>. The best scored "
+        "ipTM 0.88 at pLDDT 88, with the re-folded complex landing 1.64 &Aring; "
+        "from where the generator put it and 577 &Aring;&sup2; of surface "
+        "buried against the target. "
+        "The other 23 are the point of showing you this. The median pLDDT "
+        "in this call is 91 &mdash; high &mdash; while the median ipTM is "
+        "0.14. <strong>21 of the 25 designs fold beautifully and do not "
+        "bind anything.</strong> All four calls looked like this; 8 of the "
+        "full 100 passed."
+    ),
+    "how_to_read_it": (
+        "Those two columns answer different questions and this round is what "
+        "it looks like when you confuse them. pLDDT is the model's confidence "
+        "in the shape of the binder considered alone; ipTM is its confidence "
+        "that the binder and the target form the complex you asked for. A "
+        "design can be a textbook helical bundle and dock nowhere near the "
+        "site, and 21 of these are exactly that. Sort by ipTM, never by "
+        "pLDDT. "
+        "The filter behind the pass/below-threshold column is the tool "
+        "re-folding each design from scratch and checking it lands where the "
+        "generator claimed: ipTM at or above 0.50 and the re-folded complex "
+        "within 3.0 &Aring;. That second half is what bites &mdash; across "
+        "the round the median complex misses by 13.7 &Aring;, while all 8 "
+        "survivors land "
+        "inside 2.3 &Aring;. A design that clears the first and fails the "
+        "second has folded correctly in the wrong place."
+    ),
+    "what_we_did_next": (
+        "Kept the 8 and re-ran at longer binder lengths. Passes by length "
+        "here were 0, 2, 2 and 4 out of 25 at 50, 57, 63 and 70 residues, "
+        "which is 25 per bin &mdash; suggestive, nowhere near enough to call "
+        "a length effect, and the reason the next round was a scale-up rather "
+        "than a conclusion. If your own pilot returns a page of high pLDDT "
+        "and low ipTM, that is not a broken run: it is this result, and the "
+        "answer is more designs or a different site, not a different setting."
+    ),
+    "cost_usd": "1.42",
+    "runtime": "23 minutes",
+}
