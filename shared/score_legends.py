@@ -22,8 +22,21 @@ from typing import NotRequired, Optional, TypedDict
 
 
 class Legend(TypedDict):
-    good: float
-    excellent: float
+    # OPTIONAL, because a legend is allowed to have no bar. Nothing renders
+    # these — ``legend_text`` and ``email_caption`` read ``explanation`` and
+    # ``caveat`` only — so they are the module's record of what the numbers
+    # mean, and a wrong one sits inert until someone wires it up.
+    #
+    # boltzgen's ipTM omits them. It carried 0.7/0.8, which are the Boltz-2
+    # COFOLD bars, against a number produced by a generator confidence head
+    # that has never reached 0.7 in 460 designs across two targets. A field
+    # named ``good`` holding a value the metric cannot attain is not a
+    # harmless copy: it is the same claim the explanation was making, kept in
+    # data. Omit rather than invent a replacement — no run here pairs that
+    # number against a cofold on the same designs, so there is nothing to
+    # calibrate a bar from.
+    good: NotRequired[float]
+    excellent: NotRequired[float]
     direction: str  # "higher_is_better" or "lower_is_better"
 
     # ONE LINE. It is not only the column tooltip: shared/email.py puts it
@@ -304,8 +317,15 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
 
     # ── BoltzGen (Boltz-1 distilled generator + refold check) ────────
     ("boltzgen", "ipTM"): {
-        "good": 0.7,
-        "excellent": 0.8,
+        # NO ``good``/``excellent`` — see the Legend TypedDict. They were 0.7
+        # and 0.8, copied from the boltz2 cofold legend directly below, and
+        # this number is not on that scale. 460 self-hosted designs over two
+        # unrelated targets top out at 0.650; the same designs re-scored on a
+        # real Boltz-2 cofold span 0.363-0.852. So the bar was not a stretch
+        # goal, it was unreachable, and the explanation asserting it is what
+        # made every finished run read as a failure to the person who paid
+        # for it. llm-proteinDesigner fix/boltzgen-unreachable-gate removes
+        # the matching container-side gate leg for the same reason.
         "direction": "higher_is_better",
         # llm-proteinDesigner#18 (squash-merged as 311c29f; the Modal deploy
         # for that SHA is green) puts `design_to_target_iptm` first in
@@ -369,9 +389,9 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # second string saying the same thing, and every regression in this
         # area so far has been two copies of one claim drifting apart.
         "explanation": (
-            "Interface pTM from the BoltzGen confidence head — the "
-            "binder-to-target interface. Above 0.7 is a credible binder; "
-            "above 0.8 is strong."
+            "Interface pTM, the binder-to-target interface as BoltzGen's "
+            "generator scores it. Not on the Boltz-2 cofold scale, so 0.7 "
+            "does not apply. Rank on it, then re-fold a shortlist to confirm."
         ),
         # Deixis-free for the same reason the banner is
         # (components/multichain_iptm_notice.html): this renders in a column
@@ -405,13 +425,19 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "as indicative too."
         ),
     },
+    # These two DO keep their bars, and the reason is the point of the split:
+    # both are measured on BoltzGen's refold, which folds the binder on its
+    # own. So each describes the binder and nothing else, which is the
+    # quantity 80 and 1.5 A were calibrated on. Only ipTM lacked a reading of
+    # its own kind — a fold with no target in it has no interface to score.
     ("boltzgen", "pLDDT"): {
         "good": 80,
         "excellent": 90,
         "direction": "higher_is_better",
         "explanation": (
-            "pLDDT-equivalent confidence on the generated structure. "
-            "Above 80 is confidently folded; above 90 is high confidence."
+            "pLDDT of the binder, refolded on its own from its designed "
+            "sequence. Above 80 is confidently folded; above 90 is high "
+            "confidence."
         ),
     },
     ("boltzgen", "refolding_rmsd"): {
@@ -419,8 +445,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 1.0,
         "direction": "lower_is_better",
         "explanation": (
-            "Cross-check RMSD between the generator's structure and "
-            "the AF2 refold of its sequence. Below 1.5 angstroms is "
+            "Backbone RMSD between the designed binder and BoltzGen's "
+            "refold of its sequence. Below 1.5 angstroms is "
             "self-consistent; below 1.0 is excellent."
         ),
     },

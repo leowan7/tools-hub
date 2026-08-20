@@ -1442,11 +1442,32 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
         "the legend never says the ORDER is affected; past limit=300 the "
         "ipTM order decides which designs appear at all"
     )
-    # Thresholds were calibrated on single-chain runs where the two keys nearly
-    # coincide, so they remain the best available anchor and must not drift
-    # silently alongside a wording change.
-    assert legend["good"] == 0.7
-    assert legend["excellent"] == 0.8
+    # THE THRESHOLDS ARE GONE, AND THE COMMENT THAT JUSTIFIED THEM WAS WRONG.
+    # It read: "calibrated on single-chain runs where the two keys nearly
+    # coincide, so they remain the best available anchor". The two keys do
+    # coincide on a single-chain target — and the coincident value still never
+    # reaches 0.7. Six single-chain production runs, 65 candidates, max 0.659,
+    # nothing passing; 460 self-hosted designs over two targets, max 0.650.
+    # 0.7/0.8 were not calibrated on anything, they were copied from the
+    # ("boltz2", "ipTM") entry directly below, which IS the calibrated cofold
+    # and is a different measurement. The same designs re-scored on a real
+    # Boltz-2 cofold span 0.363-0.852.
+    #
+    # So the anchor is absent rather than corrected: nothing pairs the in-run
+    # number against a cofold on the same designs, so there is no bar to state.
+    # Pinned in full by tests/test_boltzgen_iptm_has_no_cofold_bar.py; asserted
+    # here too because this is the test a wording change runs, and a bar that
+    # says one thing while the wording says another is how the two drift.
+    assert "good" not in legend and "excellent" not in legend, (
+        f"boltzgen ipTM claims good={legend.get('good')} / "
+        f"excellent={legend.get('excellent')} again — 0.7 is the Boltz-2 "
+        f"cofold bar and this number has never reached 0.65"
+    )
+    assert "0.7 does not apply" in explanation, (
+        "the legend dropped the bar from its data but no longer tells the "
+        "reader the 0.7 scale they know from every other tool here is the "
+        "wrong one to apply"
+    )
 
 
 # ---------------------------------------------------------------------------
