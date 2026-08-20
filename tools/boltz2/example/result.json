@@ -1,0 +1,157 @@
+{
+  "antigen_length": 85,
+  "designs": [
+    {
+      "complex_iplddt": 0.9616,
+      "complex_plddt": 0.9609,
+      "filter_status": "strict_pass",
+      "iptm": 0.9522,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 01",
+      "ptm": 0.9726,
+      "rank": 0
+    },
+    {
+      "complex_iplddt": 0.9669,
+      "complex_plddt": 0.9663,
+      "filter_status": "strict_pass",
+      "iptm": 0.9501,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 02",
+      "ptm": 0.9646,
+      "rank": 1
+    },
+    {
+      "complex_iplddt": 0.964,
+      "complex_plddt": 0.9713,
+      "filter_status": "strict_pass",
+      "iptm": 0.95,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 03",
+      "ptm": 0.9684,
+      "rank": 2
+    },
+    {
+      "complex_iplddt": 0.9457,
+      "complex_plddt": 0.9534,
+      "filter_status": "strict_pass",
+      "iptm": 0.9423,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 04",
+      "ptm": 0.9629,
+      "rank": 3
+    },
+    {
+      "complex_iplddt": 0.9712,
+      "complex_plddt": 0.9666,
+      "filter_status": "strict_pass",
+      "iptm": 0.9401,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 05",
+      "ptm": 0.9628,
+      "rank": 4
+    },
+    {
+      "complex_iplddt": 0.9434,
+      "complex_plddt": 0.951,
+      "filter_status": "strict_pass",
+      "iptm": 0.9387,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 06",
+      "ptm": 0.9588,
+      "rank": 5
+    },
+    {
+      "complex_iplddt": 0.9643,
+      "complex_plddt": 0.9574,
+      "filter_status": "strict_pass",
+      "iptm": 0.9363,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 07",
+      "ptm": 0.963,
+      "rank": 6
+    },
+    {
+      "complex_iplddt": 0.9653,
+      "complex_plddt": 0.9642,
+      "filter_status": "strict_pass",
+      "iptm": 0.9351,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 08",
+      "ptm": 0.9604,
+      "rank": 7
+    },
+    {
+      "complex_iplddt": 0.9577,
+      "complex_plddt": 0.953,
+      "filter_status": "strict_pass",
+      "iptm": 0.9101,
+      "n_hotspot_contacts": 14,
+      "n_hotspots": 14,
+      "name": "design 09",
+      "ptm": 0.9482,
+      "rank": 8
+    },
+    {
+      "complex_iplddt": 0.9609,
+      "complex_plddt": 0.9625,
+      "filter_status": "strict_pass",
+      "iptm": 0.9094,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 10",
+      "ptm": 0.9424,
+      "rank": 9
+    },
+    {
+      "complex_iplddt": 0.8942,
+      "complex_plddt": 0.9126,
+      "filter_status": "strict_pass",
+      "iptm": 0.8859,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 11",
+      "ptm": 0.9576,
+      "rank": 10
+    },
+    {
+      "complex_iplddt": 0.9268,
+      "complex_plddt": 0.9484,
+      "filter_status": "strict_pass",
+      "iptm": 0.8738,
+      "n_hotspot_contacts": 13,
+      "n_hotspots": 14,
+      "name": "design 12",
+      "ptm": 0.9406,
+      "rank": 11
+    }
+  ],
+  "designs_completed": 12,
+  "designs_total": 12,
+  "hotspots_requested": [
+    54,
+    57,
+    58,
+    61,
+    62,
+    67,
+    72,
+    75,
+    86,
+    91,
+    93,
+    96,
+    99,
+    100
+  ],
+  "n_failures": 0,
+  "tier": "msa_server"
+}

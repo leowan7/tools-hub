@@ -208,6 +208,25 @@ class TestExampleDeclaration:
             assert path.is_file(), f"{slug}: EXAMPLE declared, {path} missing"
             assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
 
+    def test_no_html_entity_in_an_escaped_narration_field(self, tools_app):
+        """``inputs_used`` renders as ``{{ field }}`` / ``{{ value }}``,
+        without ``|safe`` — unlike every prose field beside it. So an
+        ``&ndash;`` written there reaches the page as the six literal
+        characters, which is exactly what happened. Prose fields may
+        keep their entities; these two may not."""
+        _, slugs = tools_app
+        bad = {}
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            for field, value, _why in example["inputs_used"]:
+                for cell in (field, value):
+                    if re.search(r"&[a-zA-Z]+;|&#\d+;", cell):
+                        bad.setdefault(slug, []).append(cell)
+        assert not bad, (
+            f"HTML entities in a field rendered without |safe: {bad}"
+        )
+
     def test_structure_file_exists(self, tools_app):
         """The offered download must be a file that is actually served."""
         _, slugs = tools_app
@@ -370,6 +389,42 @@ class TestEveryPartialIsExampleSafe:
                     broken[f"{slug}/{shape}"] = dead
         assert not broken, f"guard depends on a flag the macros never see: {broken}"
 
+    # Copy that names a control the example suppresses. Not cosmetic: the
+    # wet-lab panel told the reader the designs "above" were theirs to
+    # download and pointed at a shortlist button, on a page carrying
+    # neither. A dead link is caught by the scan above; a sentence
+    # describing a button that is not there is not, so it is pinned here.
+    PROMISES_A_SUPPRESSED_CONTROL = (
+        "shortlist button above",
+        "designs above are yours to download",
+    )
+
+    def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
+        flask_app, slugs = tools_app
+        offenders = {}
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            html = flask_app.test_client().get(f"/tools/{slug}").get_data(
+                as_text=True,
+            )
+            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+            if found:
+                offenders[slug] = found
+        assert not offenders, f"example page promises absent controls: {offenders}"
+
+    def test_a_real_results_page_still_makes_those_promises(self, tools_app):
+        """The control. If the phrases vanished from the real page too,
+        the test above would pass by scanning for text nobody writes."""
+        flask_app, _ = tools_app
+        html = _render_partial(
+            flask_app, "boltz2", job_id="real-job-1", example=False,
+        )
+        assert "shortlist button above" in html, (
+            "the phrase is gone from the real results page as well, so the "
+            "example-side assertion no longer proves anything"
+        )
+
 
 class TestExampleNumbersComeFromThePayload:
     """The narration must not drift off the data it sits beside.
@@ -397,6 +452,58 @@ class TestExampleNumbersComeFromThePayload:
         assert "53% and 50%" in example["what_came_back"]
         assert "0.76" in example["what_came_back"]
         assert "2" == example["inputs_used"][2][1]
+
+    def test_boltz2_narration_matches_its_result_json(self, tools_app):
+        """Same pin for boltz2. Its scores sit FLAT on the design rather
+        than nested under ``scores``, which is the shape difference that
+        made the capture script print nothing at all until it handled
+        both — so the figures here are worth holding down."""
+        _, slugs = tools_app
+        example = _examples(slugs)["boltz2"]
+        result = json.loads(
+            (REPO / "tools" / "boltz2" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        designs = result["designs"]
+        assert len(designs) == 12
+        assert result["antigen_length"] == 85
+        assert result["hotspots_requested"] == [
+            54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100,
+        ]
+        iptm = [d["iptm"] for d in designs]
+        plddt = [d["complex_plddt"] * 100 for d in designs]
+        hits = {d["n_hotspot_contacts"] for d in designs}
+        # "every one strict_pass ... 0.874 to 0.952 ... 91.3 to 97.1 ...
+        #  13 or 14 of the 14 cleft residues"
+        assert all(d["filter_status"] == "strict_pass" for d in designs)
+        assert (round(min(iptm), 3), round(max(iptm), 3)) == (0.874, 0.952)
+        assert (round(min(plddt), 1), round(max(plddt), 1)) == (91.3, 97.1)
+        assert hits == {13, 14}
+        assert {d["n_hotspots"] for d in designs} == {14}
+        blurb = example["what_came_back"]
+        for figure in ("0.874", "0.952", "91.3", "97.1", "strict_pass",
+                       "13 or 14"):
+            assert figure in blurb, f"{figure} missing from what_came_back"
+        assert "1YCR" in example["target"] and "85 residues" in example["target"]
+        assert example["inputs_used"][2][1] == (
+            "54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100"
+        )
+
+        # The reference band is quoted in prose because those folds are
+        # NOT rows in the payload — see the comment in meta.py. Nothing
+        # in this file can re-derive them, so this pins the shape of the
+        # claim instead: three named binders, each with a range, and the
+        # affinity caveat that is the whole point of quoting them.
+        reading = example["how_to_read_it"]
+        for ref in ("p53", "PDI", "PMI"):
+            assert ref in reading, f"{ref} missing from how_to_read_it"
+        assert "0.905" in reading and "0.941" in reading
+        assert "does not rank affinity" in reading
+
+        # No invented price: campaign compute, not a wallet-billed job.
+        assert not example.get("cost_usd")
+        # No structure_file: static/example/ carries no 1YCR.
+        assert not example.get("structure_file")
 
 
 class TestCaptureScrubsBeforeItPublishes:

@@ -179,10 +179,21 @@
       <div style="flex: 1 1 320px;">
         <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Validating in the lab is optional</strong>
         <span style="color: var(--text-secondary); font-size: 0.9rem;">
+          {# Both halves of the normal sentence name a control the worked
+             example suppresses — the per-design download and the shortlist
+             button — so under the example sentinel it would promise two
+             things that are not on the page. Same offer, phrased about the
+             reader's own run instead of about this table. #}
+          {% if is_example %}
+          Designs from your own run are yours to download and take anywhere.
+          If you do want them made and measured, Ranomics runs yeast display,
+          mammalian display, BLI and DMS on the same data loop.
+          {% else %}
           The designs above are yours to download and take anywhere. If you do
           want them made and measured, Ranomics runs yeast display, mammalian
           display, BLI and DMS on the same data loop &mdash; either through the
           shortlist button above, or by reading up first.
+          {% endif %}
         </span>
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">

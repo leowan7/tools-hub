@@ -179,17 +179,107 @@ PILOT: dict | None = {
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE — one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/boltz2/example/result.json replayed through this tool's OWN results
+# partial, so the demo cannot drift from the real results page.
+#
+# EVERY NUMBER BELOW IS A RECORDED FACT FROM THAT RUN. Provenance: the
+# MDM2 peptide campaign, step 06 (Boltz-2 cofold of the design panel plus
+# three literature reference peptides at three seeds each). ipTM is the
+# binder:target pair value from each prediction's own confidence JSON, not
+# the all-pairs figure; pLDDT is complex_plddt from the same file; the
+# contact counts were measured against the 14 cleft residues. filter_status
+# was not hand-assigned — it is run_pipeline.classify() called on those
+# three numbers, so the label means exactly what it means on a live job.
+#
+# THE REFERENCE PEPTIDES ARE NOT ROWS IN THE PAYLOAD, deliberately. They
+# carry no contact count, so the hotspot grid would have rendered them
+# "0 / 14" — claiming the native p53 ligand touches none of the cleft it
+# is defined by. Their numbers live in the narration instead, where they
+# can be labelled. The band quoted below is the full min-to-max across
+# all three seeds of each.
+#
+# NO DESIGNED SEQUENCES. The peptides are Ranomics campaign output; the
+# page teaches the reader to read the scores without handing over the
+# designs. The three references are published literature and are named.
+#
+# No cost_usd: this was campaign compute, not a wallet-billed hub job, so
+# there is no per-run dollar figure that would mean anything to a reader.
+# The estimate on the form is the live number for their own inputs.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "MDM2 &mdash; PDB <code>1YCR</code>, chain A, 85 residues. The "
+        "pocket p53 binds."
+    ),
+    "why_this_target": (
+        "Because this one can be marked. MDM2 is the most heavily "
+        "characterised protein-protein interface in drug discovery: the "
+        "natural ligand is known, several tighter binders have been "
+        "published, and every one of them has a measured affinity. So we "
+        "can fold designs and known binders through the identical path "
+        "and read the designs against a real scale rather than against a "
+        "threshold somebody picked."
+    ),
+    "inputs_used": [
+        (
+            "Antigen structure",
+            "1YCR, chain A",
+            "MDM2's p53-binding domain. Chain B in that file is the p53 "
+            "peptide itself and was removed &mdash; leaving it in would "
+            "have let the model copy the answer.",
+        ),
+        (
+            "Binder sequences",
+            "12 designed peptides, 12 to 20 residues",
+            "Submitted in one batch. Boltz-2 designs nothing; it folds "
+            "what you give it against the target and scores the "
+            "interface, so a batch is just twelve independent verdicts.",
+        ),
+        (
+            "Hotspot residues",
+            "54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100",
+            "The 14 residues lining the cleft &mdash; L54, L57, G58, "
+            "I61, M62, Y67, Q72, V75, F86, F91, V93, H96, I99, Y100 "
+            "&mdash; where p53's Phe19, Trp23 and Leu26 insert. Naming "
+            "them makes the run report whether a design lands in the "
+            "pocket, instead of only whether it scores well somewhere.",
+        ),
+        (
+            "Preset",
+            "msa_server",
+            "Builds an alignment for the antigen before folding. Worth "
+            "it on a target with many known relatives.",
+        ),
+    ],
+    "what_came_back": (
+        "Twelve complexes, every one <code>strict_pass</code>. ipTM runs "
+        "from 0.874 to 0.952, complex pLDDT from 91.3 to 97.1, and each "
+        "design contacts 13 or 14 of the 14 cleft residues."
+    ),
+    "how_to_read_it": (
+        "Read the numbers against the scale, not against zero. Folded "
+        "through the identical path, three published MDM2 binders scored: "
+        "the native p53 peptide 0.933&ndash;0.941, PDI 0.930&ndash;0.935, "
+        "and PMI 0.905&ndash;0.912, each across three seeds. The designs "
+        "sit inside that band and the better half sit above it &mdash; "
+        "which is the useful reading of 0.94, rather than &ldquo;0.94 "
+        "sounds high&rdquo;. "
+        "Now the part worth carrying away: PMI is the tightest of the "
+        "three at roughly 3 nM, an order of magnitude better than the "
+        "native peptide, and it scored the LOWEST of the three. ipTM "
+        "tells you the model is confident these two things form the "
+        "complex you asked about. It does not rank affinity, and nothing "
+        "on this page does. Treat a good score as a reason to make the "
+        "molecule, never as a predicted K&#8321;."
+    ),
+    "what_we_did_next": (
+        "Took the panel into a developability screen &mdash; several of "
+        "the twelve were then rejected on protease liability, which the "
+        "interface score says nothing about &mdash; and carried what "
+        "survived toward synthesis. On your own candidates the same shape "
+        "works: fold the batch, keep what clears the bar, and let the "
+        "next filter be the one this score cannot see."
+    ),
+}
