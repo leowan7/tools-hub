@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 
 CSV_COLUMNS = [
     "epitope_id",
+    # The chain these scores describe. results.csv is written per job dir, not
+    # per chain, so without this stamp the file cannot say which chain it holds
+    # and a reader has to guess — see _results_csv_for_chain in scout/routes.py.
+    "chain_id",
     "residues",
     "residue_count",
     "mean_rsa",
@@ -510,6 +514,7 @@ def run_pipeline(
 
         rows.append({
             "epitope_id": patch_idx + 1,
+            "chain_id": chain_id,
             "residues": residues_str,
             "residue_count": len(patch),
             "mean_rsa": mean_rsa,
@@ -552,6 +557,12 @@ def run_pipeline(
 
 FEASIBILITY_CSV_COLUMNS = [
     "epitope_id",
+    # Same reason as CSV_COLUMNS: this file is written per job dir, not per
+    # chain, and /scout/feasibility/download serves it with no chain parameter
+    # at all. A chain-B request that stops at the results gate leaves chain A's
+    # file in place, so without this stamp the delivered CSV cannot say which
+    # chain it describes.
+    "chain_id",
     "residues",
     "residue_count",
     "composite_feasibility",
@@ -763,6 +774,7 @@ def run_feasibility_pipeline(
     feasibility_csv_path = pdb_path.parent / "feasibility_results.csv"
     row = {
         "epitope_id": 1,
+        "chain_id": chain_id,
         "residues": residues_str,
         "residue_count": len(patch_residues),
         "composite_feasibility": composite,

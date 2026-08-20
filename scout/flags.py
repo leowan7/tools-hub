@@ -20,6 +20,7 @@ import re
 # every analyze run, not just the download.
 _CSV_COLUMNS_BASE = [
     "epitope_id",
+    "chain_id",
     "residues",
     "residue_count",
     "mean_rsa",

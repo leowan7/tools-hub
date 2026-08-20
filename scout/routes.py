@@ -525,7 +525,121 @@ def _chain_residue_count(job_dir: Path, pdb_path: Path, chain_id: str) -> "int |
     return None
 
 
-def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dict]:
+# A chain id is whatever byte PDB column 22 (or an mmCIF auth_asym_id) holds,
+# and parse_pdb hands it to the dropdown untouched, so ``_``, ``-``, ``.``,
+# ``=`` and ``@`` are all ids this app itself offers. Anything stricter refuses
+# a structure the user just uploaded. Reject only what is unsafe to carry into
+# a CSV cell or a log line; the cap sits far above any real auth_asym_id.
+#
+# Control characters are not what stops SSE frame forging — every emitter here
+# builds its payload with json.dumps, which escapes newlines on its own.
+_CHAIN_ID_MAX_LEN = 64
+
+
+def _valid_chain(chain_id: str) -> bool:
+    return (
+        bool(chain_id)
+        and len(chain_id) <= _CHAIN_ID_MAX_LEN
+        and all(ch >= " " and ch != "\x7f" for ch in chain_id)
+    )
+
+
+def _results_csv_for_chain(job_dir: Path, chain_id: str) -> "Path | None":
+    """``results.csv`` for this job, but only if it holds *chain_id*'s scores.
+
+    The file is written per job directory, not per chain, so its existence says
+    nothing about which chain was scored. Treating it as a cache key is what
+    made ``/scout/analyze`` answer a request for chain B with chain A's
+    epitopes: HTTP 200, no pipeline run, no visible signal. Returning None on a
+    mismatch turns that into a cache miss, which costs a rescore and nothing
+    else.
+
+    Route every chain-resolving reader through here. ``download()`` is the
+    deliberate exception — it takes no chain at all, and is kept honest from the
+    other end by ``_remove_derived_result_files``.
+
+    A CSV with no ``chain_id`` column (written before this stamp existed) and
+    one with no data rows are both misses: neither can name its chain.
+    """
+    if _results_csv_chain_id(job_dir) != chain_id:
+        return None
+    return job_dir / "results.csv"
+
+
+def _remove_derived_result_files(job_dir: Path) -> None:
+    """Invalidate the three DOWNLOADABLE files derived from ``results.csv``.
+
+    Once results.csv is rewritten for another chain these three describe a chain
+    that is no longer there, and ``/scout/download`` takes no chain parameter,
+    so it hands back whatever it finds. ``analyze_cache.json`` is excluded on
+    purpose: it stamps its own chain and ``_get_binder_overlaps`` checks it.
+
+    **Call this immediately after every ``run_pipeline``** — at the rewrite, not
+    at the readers, because run_pipeline has TWO callers and ``/scout/progress``
+    is the one that actually executes the pipeline and hands the browser a
+    download_url.
+
+    Best-effort: a file that will not delete must not take a successful scoring
+    run down with it. Windows raises WinError 32 whenever a preceding
+    /scout/download still holds the handle open.
+    """
+    for name in ("epitopes.csv", "epitopes_annotated.csv", "results_annotated.csv"):
+        _unlink_quietly(job_dir / name)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Delete a derived result file, or log why it could not be deleted.
+
+    Every delete of a derived file goes through here, so the PermissionError
+    Windows raises on a still-open handle cannot 500 the view.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning(
+            "Could not invalidate derived result file %s; /scout/download may "
+            "serve a stale copy of it until the next successful run.",
+            path,
+        )
+
+
+def _results_csv_chain_id(job_dir: Path) -> "str | None":
+    """Which chain ``results.csv`` holds, or None if it cannot say.
+
+    None covers every way the file fails to name a chain — absent, unreadable,
+    header-only, or written before the ``chain_id`` stamp existed. All of them
+    mean "no cached result for anyone", never "some other chain's result".
+
+    Kept separate from ``_results_csv_for_chain`` so ``/scout/analyze`` can tell
+    a cross-chain collision (a stamp naming a DIFFERENT chain) from a run that
+    simply scored nothing; those need different answers.
+    """
+    csv_path = job_dir / "results.csv"
+    if not csv_path.exists():
+        return None
+    try:
+        with csv_path.open(newline="") as csv_file:
+            first_row = next(csv_module.DictReader(csv_file), None)
+    except (OSError, csv_module.Error, UnicodeDecodeError):
+        return None
+    if first_row is None:
+        return None
+    # A blank chain_id names no chain: fold it in with the can't-say cases
+    # rather than letting it compare unequal to every real chain.
+    return first_row.get("chain_id") or None
+
+
+def _get_binder_overlaps(
+    job_dir: Path, epitope_residues: list[int], chain_id: str
+) -> list[dict]:
+    """Known binders that contact *epitope_residues*, for *chain_id* only.
+
+    The cache has always recorded which chain it was built for and nothing read
+    it. Feasibility called with explicit ``epitope_residues`` skips the
+    results.csv gate, so this was the last path by which one chain's binders
+    could be reported against another chain's epitope — residue numbers collide
+    across chains routinely.
+    """
     cache_path = job_dir / "analyze_cache.json"
     if not cache_path.exists():
         return []
@@ -533,7 +647,10 @@ def _get_binder_overlaps(job_dir: Path, epitope_residues: list[int]) -> list[dic
     try:
         with cache_path.open() as f:
             cache = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+
+    if cache.get("chain") != chain_id:
         return []
 
     epitope_set = set(epitope_residues)
@@ -814,8 +931,8 @@ def analyze():
     # one job while the view ran another, which is the diversion above.
     chain_id = str(data.get("chain", "")).strip()
 
-    if not job_id or not chain_id:
-        return jsonify({"error": "job_id and chain are required."}), 400
+    if not job_id or not _valid_chain(chain_id):
+        return jsonify({"error": "job_id and a valid chain id are required."}), 400
 
     job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
@@ -831,10 +948,10 @@ def analyze():
         if not _slot:
             return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
         try:
-            csv_path_prelim = job_dir / "results.csv"
-            if not csv_path_prelim.exists():
+            if _results_csv_for_chain(job_dir, chain_id) is None:
                 from scout.pipeline import run_pipeline  # noqa: PLC0415
                 run_pipeline(pdb_path, chain_id)
+                _remove_derived_result_files(job_dir)
 
             known_binders = []
             uniprot_id = ""
@@ -888,44 +1005,72 @@ def analyze():
 
     all_rows = []
     all_epitopes = []
-    csv_path = job_dir / "results.csv"
-    if csv_path.exists():
-        with csv_path.open(newline="") as csv_file:
-            reader = csv_module.DictReader(csv_file)
-            fieldnames = reader.fieldnames or []
-            for row in reader:
-                resi_nums = sorted(int(n) for n in re.findall(r'\d+', row.get("residues", "")))
-                if len(resi_nums) > 1:
-                    filtered = []
-                    for k, num in enumerate(resi_nums):
-                        prev_gap = abs(num - resi_nums[k - 1]) if k > 0 else 999
-                        next_gap = abs(resi_nums[k + 1] - num) if k + 1 < len(resi_nums) else 999
-                        if min(prev_gap, next_gap) <= 20:
-                            filtered.append(num)
-                    resi_nums = filtered if filtered else resi_nums
-                filled_nums = []
+    csv_path = _results_csv_for_chain(job_dir, chain_id)
+    if csv_path is None:
+        # The pipeline either just ran for this chain or its results were
+        # already on disk, so a miss here is not normal. Falling through would
+        # read zero epitopes, conclude "nothing qualifying", DELETE the derived
+        # epitopes*.csv, truncate results_annotated.csv to a header and serve
+        # that as a 200.
+        #
+        # A stamp naming a different chain means a concurrent request overwrote
+        # the file mid-run, and retrying resolves it. No stamp means this run
+        # produced no scoreable rows — a different problem with a different fix.
+        stamped = _results_csv_chain_id(job_dir)
+        if stamped is not None:
+            # A concurrent run on chain `stamped` owns results.csv. Touch
+            # nothing beside it — deleting another live run's output is
+            # destructive, and what it has rebuilt is not knowable from here.
+            return jsonify({
+                "error": "Another analysis on this job replaced the results "
+                         "while this one was running. Please run it again."
+            }), 409
+
+        # Nothing owns results.csv, so this run scored nothing. No cleanup here:
+        # the run_pipeline above already invalidated the derived files, which is
+        # the only place that rule lives.
+        return jsonify({
+            "error": f"No surface patches could be scored for chain {chain_id}. "
+                     "Try a different chain, or check the structure has resolved "
+                     "side chains for that chain."
+        }), 422
+
+    with csv_path.open(newline="") as csv_file:
+        reader = csv_module.DictReader(csv_file)
+        fieldnames = reader.fieldnames or []
+        for row in reader:
+            resi_nums = sorted(int(n) for n in re.findall(r'\d+', row.get("residues", "")))
+            if len(resi_nums) > 1:
+                filtered = []
                 for k, num in enumerate(resi_nums):
-                    filled_nums.append(num)
-                    if k + 1 < len(resi_nums):
-                        gap = resi_nums[k + 1] - num
-                        if 1 < gap <= 4:
-                            filled_nums.extend(range(num + 1, resi_nums[k + 1]))
-                composite = float(row.get("composite_score", 0))
-                rcount = int(row.get("residue_count", 0))
-                all_rows.append(dict(row))
-                all_epitopes.append({
-                    "epitope_id": int(row.get("epitope_id", row.get("patch_id", 0))),
-                    "residues": row.get("residues", ""),
-                    "residue_numbers": filled_nums,
-                    "residue_count": rcount,
-                    "composite_score": composite,
-                    "mean_rsa": float(row.get("mean_rsa", 0)),
-                    "secondary_structure": row.get("secondary_structure", "loop"),
-                    "centroid_x": float(row.get("centroid_x", 0)),
-                    "centroid_y": float(row.get("centroid_y", 0)),
-                    "centroid_z": float(row.get("centroid_z", 0)),
-                    "_row": dict(row),
-                })
+                    prev_gap = abs(num - resi_nums[k - 1]) if k > 0 else 999
+                    next_gap = abs(resi_nums[k + 1] - num) if k + 1 < len(resi_nums) else 999
+                    if min(prev_gap, next_gap) <= 20:
+                        filtered.append(num)
+                resi_nums = filtered if filtered else resi_nums
+            filled_nums = []
+            for k, num in enumerate(resi_nums):
+                filled_nums.append(num)
+                if k + 1 < len(resi_nums):
+                    gap = resi_nums[k + 1] - num
+                    if 1 < gap <= 4:
+                        filled_nums.extend(range(num + 1, resi_nums[k + 1]))
+            composite = float(row.get("composite_score", 0))
+            rcount = int(row.get("residue_count", 0))
+            all_rows.append(dict(row))
+            all_epitopes.append({
+                "epitope_id": int(row.get("epitope_id", row.get("patch_id", 0))),
+                "residues": row.get("residues", ""),
+                "residue_numbers": filled_nums,
+                "residue_count": rcount,
+                "composite_score": composite,
+                "mean_rsa": float(row.get("mean_rsa", 0)),
+                "secondary_structure": row.get("secondary_structure", "loop"),
+                "centroid_x": float(row.get("centroid_x", 0)),
+                "centroid_y": float(row.get("centroid_y", 0)),
+                "centroid_z": float(row.get("centroid_z", 0)),
+                "_row": dict(row),
+            })
 
     _max_resi = (
         int(_chain_total * _MAX_PATCH_FRACTION)
@@ -984,6 +1129,11 @@ def analyze():
             is_plddt=_is_plddt,
         )
 
+    # Both top-3 files are rewritten or removed on every run that reaches here;
+    # earlier returns are covered beside run_pipeline instead. A chain that
+    # scores nothing qualifying used to skip the write and leave the PREVIOUS
+    # chain's file for /scout/download — the same job-scoped assumption as the
+    # results.csv cache, one file further on.
     epitopes_annotated_path = job_dir / "epitopes_annotated.csv"
     if top3:
         with epitopes_annotated_path.open("w", newline="") as csv_file:
@@ -994,6 +1144,8 @@ def analyze():
                 row["epitope_id"] = rank
                 row["quality_flags"] = epitope["quality_flags"]
                 writer.writerow(row)
+    else:
+        _unlink_quietly(epitopes_annotated_path)
 
     results_annotated_path = job_dir / "results_annotated.csv"
     with results_annotated_path.open("w", newline="") as csv_file:
@@ -1013,6 +1165,8 @@ def analyze():
                 row = epitope["_row"].copy()
                 row["epitope_id"] = rank
                 writer.writerow(row)
+    else:
+        _unlink_quietly(epitopes_csv_path)
 
     for e in top3:
         e.pop("_row", None)
@@ -1126,10 +1280,10 @@ def progress():
     job_dir = _resolve_job_dir(job_id) if job_id else None
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
-    if not job_id or not chain_id or pdb_path is None:
+    if not job_id or not _valid_chain(chain_id) or pdb_path is None:
         def _error_stream():
-            if not job_id or not chain_id:
-                msg = "job_id and chain are required."
+            if not job_id or not _valid_chain(chain_id):
+                msg = "job_id and a valid chain id are required."
                 reason = REASON_BAD_REQUEST
             else:
                 msg = "Job not found or expired. Please re-upload your file."
@@ -1166,6 +1320,7 @@ def progress():
             try:
                 from scout.pipeline import run_pipeline  # noqa: PLC0415
                 run_pipeline(pdb_path, chain_id, progress_callback=callback)
+                _remove_derived_result_files(pdb_path.parent)
 
                 q.put({"stage": "done", "pct": 100, "result": {
                     "download_url": url_for("scout.download", job_id=job_id),
@@ -1257,8 +1412,8 @@ def feasibility_analyze():
     job_id = str(data.get("job_id", "")).strip()
     chain_id = str(data.get("chain", "")).strip()
 
-    if not job_id or not chain_id:
-        return jsonify({"error": "job_id and chain are required."}), 400
+    if not job_id or not _valid_chain(chain_id):
+        return jsonify({"error": "job_id and a valid chain id are required."}), 400
 
     job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
@@ -1271,9 +1426,9 @@ def feasibility_analyze():
     epitope_id = data.get("epitope_id")
 
     if not epitope_residues and epitope_id is not None:
-        results_csv = job_dir / "results.csv"
-        if not results_csv.exists():
-            return jsonify({"error": "No Epitope Scout results found for this job. Run epitope analysis first."}), 404
+        results_csv = _results_csv_for_chain(job_dir, chain_id)
+        if results_csv is None:
+            return jsonify({"error": f"No Epitope Scout results found for chain {chain_id} on this job. Run epitope analysis on that chain first."}), 404
 
         try:
             epitope_id = int(epitope_id)
@@ -1305,6 +1460,14 @@ def feasibility_analyze():
             }), 400
 
     if not epitope_residues:
+        # "Neither was supplied" and "that epitope_id is not in this chain"
+        # are different problems; answering the second with the first tells the
+        # user to send a field they already sent.
+        if epitope_id is not None:
+            return jsonify({
+                "error": f"Epitope {epitope_id} is not in chain {chain_id}'s "
+                         "results. Pick an epitope from that chain's results table."
+            }), 404
         return jsonify({"error": "epitope_residues or epitope_id is required."}), 400
 
     try:
@@ -1381,7 +1544,7 @@ def feasibility_analyze():
         "pdb_url": url_for("scout.serve_pdb", job_id=job_id),
         "pdb_format": pdb_path.suffix.lstrip("."),
         "chain": chain_id,
-        "known_binder_overlaps": _get_binder_overlaps(job_dir, epitope_residues),
+        "known_binder_overlaps": _get_binder_overlaps(job_dir, epitope_residues, chain_id),
     }), 200
 
 
@@ -1398,9 +1561,9 @@ def feasibility_progress():
     job_dir = _resolve_job_dir(job_id) if job_id else None
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
-    if not job_id or not chain_id or pdb_path is None:
+    if not job_id or not _valid_chain(chain_id) or pdb_path is None:
         def _error_stream():
-            msg = "job_id and chain are required." if not job_id or not chain_id else "Job not found or expired."
+            msg = "job_id and a valid chain id are required." if not job_id or not _valid_chain(chain_id) else "Job not found or expired."
             yield f"data: {json.dumps({'stage': 'error', 'msg': msg})}\n\n"
         return current_app.response_class(
             _error_stream(), mimetype="text/event-stream",
@@ -1408,11 +1571,12 @@ def feasibility_progress():
         )
 
     epitope_residues: list[int] = []
+    results_csv = None
     if epitope_str:
         epitope_residues = [int(x.strip()) for x in epitope_str.split(",") if x.strip().lstrip("-").isdigit()]
     elif epitope_id:
-        results_csv = job_dir / "results.csv"
-        if results_csv.exists():
+        results_csv = _results_csv_for_chain(job_dir, chain_id)
+        if results_csv is not None:
             try:
                 eid = int(epitope_id)
                 with results_csv.open() as f:
@@ -1428,8 +1592,26 @@ def feasibility_progress():
                 pass
 
     if not epitope_residues:
+        # Both UI paths open this stream before the JSON route, so this is the
+        # message the user actually reads. "No results for this chain" is only
+        # true when the chain gate missed; when it passed, the chain HAS been
+        # analysed and the epitope_id simply is not in it, and telling the user
+        # to analyse that chain sends them where they have already been.
+        if epitope_str or not epitope_id:
+            _msg = "No epitope residues specified."
+        elif results_csv is None:
+            _msg = (
+                f"No Epitope Scout results found for chain {chain_id} on this "
+                "job. Run epitope analysis on that chain first."
+            )
+        else:
+            _msg = (
+                f"Epitope {epitope_id} is not in chain {chain_id}'s results. "
+                "Pick an epitope from that chain's results table."
+            )
+
         def _err():
-            yield f"data: {json.dumps({'stage': 'error', 'msg': 'No epitope residues specified.'})}\n\n"
+            yield f"data: {json.dumps({'stage': 'error', 'msg': _msg})}\n\n"
         return current_app.response_class(
             _err(), mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

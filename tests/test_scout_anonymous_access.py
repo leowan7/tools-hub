@@ -96,13 +96,20 @@ def _upload(client, data: bytes, filename: str = "target.pdb"):
     )
 
 
-def _write_results_csv(job_id: str) -> None:
-    """Drop in the ``results.csv`` a real pipeline run would have written."""
+def _write_results_csv(job_id: str, chain: str = "A") -> None:
+    """Drop in the ``results.csv`` a real pipeline run would have written.
+
+    ``chain_id`` has to be stamped for the same reason the pipeline stamps it:
+    a CSV that cannot name its chain is a cache miss, so an unstamped stub here
+    would send every one of these tests into the real freesasa pipeline. Which
+    chain is scored is pinned by tests/test_scout_chain_scoped_results.py.
+    """
     import csv
 
     row = dict.fromkeys(_CSV_COLUMNS_BASE, "0")
     row.update({
         "epitope_id": "1",
+        "chain_id": chain,
         "residues": "A10,A11,A12,A13,A14,A15,A16",
         "residue_count": "7",
         "mean_rsa": "0.55",

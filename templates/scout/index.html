@@ -427,14 +427,22 @@
       // Show results section
       document.getElementById('results-section').hidden = false;
 
-      // Download links
+      _clearChainScopedResults();
+
+      // Download links. The top-3 link serves epitopes_annotated.csv, which the
+      // backend now DELETES when a chain scores nothing qualifying, so the link
+      // has to track whether there is a top 3 or it is a dead download. The
+      // all-patches link stays: results_annotated.csv is written on every run.
+      var epitopes = data.epitopes || [];
       var dl = document.getElementById('download-link');
       var dlFull = document.getElementById('download-link-full');
       dl.href = data.download_url;
-      dl.style.display = 'inline-flex';
+      dl.style.display = epitopes.length > 0 ? 'inline-flex' : 'none';
       if (data.download_url_full) {
         dlFull.href = data.download_url_full;
         dlFull.style.display = 'inline-flex';
+      } else {
+        dlFull.style.display = 'none';
       }
 
       // UniProt bar
@@ -449,10 +457,13 @@
       }
 
       // Render 3D viewer with epitopes
-      var epitopes = data.epitopes || [];
-
       if (epitopes.length > 0) {
         renderViewer(data.pdb_url, data.pdb_format || 'pdb', data.chain, epitopes);
+      } else {
+        showAnalyzeError(
+          'No epitopes scored above threshold for chain ' + (data.chain || '') +
+          '. The all-patches CSV below has every surface patch that was scored.'
+        );
       }
 
       // Known binders
@@ -538,7 +549,7 @@
       } catch (_) { /* surface overlay failed — ribbon already rendered */ }
 
       renderLegend(epitopes, _viewerChainInfo);
-      renderEpitopeTable(epitopes);
+      renderEpitopeTable(epitopes, chain);
     }
 
     // Store chain info from viewer for legend
@@ -634,7 +645,7 @@
       },
     };
 
-    function renderEpitopeTable(epitopes) {
+    function renderEpitopeTable(epitopes, chain) {
       const tbody = document.getElementById('epitope-table-body');
       tbody.innerHTML = '';
 
@@ -663,7 +674,10 @@
         // Feasibility runs on a separate, deeper page that still needs an
         // account; anonymous visitors are told so here rather than being
         // bounced to /login after the click.
-        var feasibilityHref = '/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + document.getElementById('chain-select').value;
+        // ``chain`` is the chain the backend scored, NOT the live dropdown: the
+        // dropdown stays enabled during a run, so re-reading it here could pair
+        // one chain's epitope_id with another chain's id.
+        var feasibilityHref = '/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + encodeURIComponent(chain || document.getElementById('chain-select').value);
         var feasibilityCell = SCOUT_AUTHENTICATED
           ? '<td><a href="' + feasibilityHref + '" class="feasibility-link">Assess feasibility</a></td>'
           : '<td><a href="/login?next=' + encodeURIComponent(feasibilityHref) + '" class="feasibility-link">Sign in to assess</a></td>';
@@ -815,6 +829,35 @@
       var el = document.getElementById('analyze-error');
       el.textContent = msg;
       el.style.display = 'block';
+      // Every failure path routes through here, so the button is re-enabled
+      // here rather than in each caller. _finalizeAnalysis's finally runs only
+      // on stage:done, so an SSE error used to leave the button disabled
+      // reading "Analyzing…" with Reset — which discards the job — the only way
+      // out.
+      var btn = document.getElementById('analyze-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Analyze epitopes'; }
+    }
+
+    // Every element on the page that describes ONE chain's results. Called
+    // unconditionally and first in _handleAnalysisResult: renderViewer is async
+    // and nobody awaits it, so clearing inside it — or inside a branch only
+    // some responses take — leaves the PREVIOUS chain's table, legend and flag
+    // cards on screen under the new chain's UniProt bar, permanently whenever
+    // renderViewer returns early (a failed /scout/pdb fetch does exactly that).
+    //
+    // Add new per-chain elements to this list, not to a caller. #ppi-section is
+    // absent on purpose: renderPpiInterfaces has no call site, so clearing it
+    // would be a guard standing over code that does not run.
+    function _clearChainScopedResults() {
+      document.getElementById('viewer-container').innerHTML = '';
+      document.getElementById('epitope-legend').innerHTML = '';
+      document.getElementById('epitope-table-body').innerHTML = '';
+      document.getElementById('known-binders-body').innerHTML = '';
+      document.getElementById('known-binders-section').hidden = true;
+      document.getElementById('uniprot-info').innerHTML = '';
+      document.getElementById('uniprot-bar').hidden = true;
+      document.getElementById('flag-ref-grid').innerHTML = '';
+      document.getElementById('flag-reference').hidden = true;
     }
 
     function resetAll() {
@@ -834,17 +877,14 @@
       document.getElementById('analyze-error').style.display = 'none';
       document.getElementById('progress-container').hidden = true;
       document.getElementById('progress-bar').style.width = '0%';
-      document.getElementById('epitope-table-body').innerHTML = '';
-      document.getElementById('known-binders-body').innerHTML = '';
-      document.getElementById('known-binders-section').hidden = true;
-      document.getElementById('ppi-section').hidden = true;
+      _clearChainScopedResults();
+      // Not in the shared clear: nothing populates the PPI section today, but a
+      // full reset should still put the page back exactly as it loaded.
       document.getElementById('ppi-table-body').innerHTML = '';
-      document.getElementById('uniprot-bar').hidden = true;
-      document.getElementById('viewer-container').innerHTML = '';
-      document.getElementById('epitope-legend').innerHTML = '';
+      document.getElementById('ppi-section').hidden = true;
+      _currentPpiInterfaces = [];
       var btn = document.getElementById('analyze-btn');
       if (btn) { btn.disabled = false; btn.textContent = 'Analyze epitopes'; }
-      _currentPpiInterfaces = [];
     }
 
     // -----------------------------------------------------------------------
