@@ -13,6 +13,19 @@ name: Synthetic smoke (Platform API)
 # auth, idempotency, persistence, or response-shape regressions -- even when
 # the site still looks "up".
 #
+# A SECOND, INDEPENDENT JOB in this file guards DEPLOY DRIFT. It is not a
+# step ahead of the smoke, and the two do not depend on each other -- neither
+# declares `needs:`, so they run in PARALLEL and both report. That is
+# deliberate: as a step it exited non-zero on four of five paths BEFORE the
+# smoke ran, so a /health blip deleted the deep end-to-end signal entirely.
+# See the comment above the `deploy-drift` job for the reasoning, and do not
+# "restore consistency" by folding it back into a step.
+#
+# Production serving an older commit than main is invisible to every other
+# layer, because stale code is still perfectly healthy code. Everything else
+# here answers "is production working?"; that job answers "is production the
+# thing we merged?", which nothing else asks.
+#
 # The second step is the ONLY consumer of /metrics. Phase 6 of the anonymous
 # rate-limiting plan asks for an alert on REFUSAL rate rather than error rate
 # ("a limiter refusing 40% of real users is an outage that does not look like
@@ -79,6 +92,109 @@ permissions:
   contents: read
 
 jobs:
+  # Its own job, not a step ahead of the smoke. As a step it exited 1 on four of
+  # five paths BEFORE the smoke ran, so a /health blip deleted the deep
+  # end-to-end signal entirely -- and its own message told the reader to compare
+  # against "the smoke below", a result its placement guaranteed would not
+  # exist. Separate jobs run independently and both report.
+  deploy-drift:
+    name: Production is running current code
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # merge-base and rev-list need real ancestry; depth-1 has none. This
+          # also fetches every remote branch, which is why the "is it on main"
+          # gate below is load-bearing rather than paranoid.
+          fetch-depth: 0
+
+      # A merge to main does NOT reliably redeploy. On 2026-08-20 Railway
+      # created no deployment at all for 2ec3cce (#173) -- no entry in its
+      # history, not even a skipped one, with Watch Paths empty so nothing
+      # filtered it out -- and production served the previous commit for 8.6
+      # hours. Nothing detected it and nothing could have: stale code is still
+      # healthy code, so every other layer here was correctly green throughout.
+      #
+      # This is the only check that asks "is production the thing we merged?"
+      # rather than "is production working?".
+      - name: Compare the deployed build against main
+        env:
+          HEALTH_URL: https://tools.ranomics.com/health
+          # Observed deploy latency for #174 was ~4 minutes end to end, so this
+          # is roughly 5x headroom. It is a bound on how long a legitimate
+          # deploy may take, NOT a tuning knob: raising it widens the window in
+          # which real drift goes unreported.
+          GRACE: '20 minutes ago'
+          # Always the remote ref, never HEAD. On workflow_dispatch from a
+          # branch -- which the `workflow_dispatch` trigger above allows --
+          # HEAD is that branch, and
+          # comparing production against unmerged WIP reports drift that does
+          # not exist.
+          MAIN_REF: refs/remotes/origin/main
+        run: |
+          set -euo pipefail
+
+          BODY=$(curl -fsS --max-time 20 "$HEALTH_URL") || {
+            echo "::error::Could not read ${HEALTH_URL} (unreachable, timed out, or non-2xx). This says nothing about deploy drift either way -- read the Platform API smoke job, which runs independently, to tell an outage from a blip."
+            exit 1
+          }
+
+          # Not "// empty": the endpoint reports the literal string "unknown"
+          # when RAILWAY_GIT_COMMIT_SHA is unset (blueprints/public.py,
+          # _build_sha), so the likeliest misconfiguration arrives as a VALUE,
+          # never as an absent field. Requiring a hex object name catches that,
+          # and also catches ref names like "main" or "HEAD" -- which git would
+          # happily resolve locally and certify a pass against.
+          DEPLOYED=$(printf '%s' "$BODY" | jq -r '.build // empty' 2>/dev/null || true)
+          if ! printf '%s' "$DEPLOYED" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            # Truncate the BODY, not DEPLOYED: jq's parse error is swallowed
+            # above, so a 2xx serving non-JSON (an edge error page) arrives
+            # here with DEPLOYED EMPTY, and the operator would be told "no
+            # build field" while never seeing what was actually served.
+            SAFE=$(printf '%s' "${DEPLOYED:-<no build field; body was: ${BODY}>}" | tr -dc '[:print:]' | cut -c1-200)
+            echo "::error::/health did not report a commit SHA (got: ${SAFE}). Deploy drift CANNOT be detected until this is fixed -- check RAILWAY_GIT_COMMIT_SHA on the web service. A pass here would be meaningless, so this fails instead."
+            exit 1
+          fi
+
+          if ! git cat-file -e "${DEPLOYED}^{commit}" 2>/dev/null; then
+            echo "::error::Production reports build ${DEPLOYED}, which is not a commit in this repository at all."
+            exit 1
+          fi
+
+          # Forward ancestry alone is a FALSE PASS waiting to happen: it asks
+          # only "is production at or ahead of the bar", so a commit deployed by
+          # hand from any pushed branch descending from the bar answers yes.
+          # fetch-depth 0 puts every such branch in this clone, so git resolves
+          # it happily. Production must be ON main.
+          if ! git merge-base --is-ancestor "$DEPLOYED" "$MAIN_REF"; then
+            echo "::error::Production is running ${DEPLOYED:0:7}, which is NOT an ancestor of main. It was deployed from a branch rather than from main -- check the Railway deployment's source before redeploying."
+            exit 1
+          fi
+
+          # --first-parent, because a merge-commit PR splices side-branch
+          # commits into main's ancestry carrying their ORIGINAL committer
+          # dates (this repo allows merge commits and has 162 of them, and
+          # committer dates on main run up to ~72h LATER than author dates).
+          # Without it, rev-list can return a just-arrived commit already older
+          # than the window, and the grace window stops protecting anything.
+          BAR=$(git rev-list -1 --first-parent --before="$GRACE" "$MAIN_REF")
+          if [ -z "$BAR" ]; then
+            echo "No commit on main is older than '${GRACE}'; nothing to compare against yet."
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$BAR" "$DEPLOYED"; then
+            echo "OK: production at ${DEPLOYED:0:7}, on main and at or ahead of ${BAR:0:7}."
+            exit 0
+          fi
+
+          echo "::error::DEPLOY DRIFT -- production is running ${DEPLOYED:0:7} but ${BAR:0:7} landed on main $(git log -1 --format=%cr "$BAR") and never shipped. Redeploy the web service from the Railway dashboard; full runbook under 'Deploy drift detected' in ALERTING.md."
+          echo "Merged but NOT in production:"
+          git log --oneline --no-decorate "${DEPLOYED}..${MAIN_REF}"
+          exit 1
+
   smoke:
     name: Platform API end-to-end smoke
     runs-on: ubuntu-latest
