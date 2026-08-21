@@ -422,11 +422,14 @@ EXAMPLE: dict | None = {
         (
             "Hotspot residues",
             "18 residues, 9 per chain, each written with its chain letter",
-            "On a two-fold homodimer a bare <code>241</code> matches the "
-            "first chain only. The run then steers one protomer while the "
-            "request reads as if it steered both, and nothing in the output "
-            "says so. Writing <code>A241</code> and <code>B241</code> is "
-            "what makes the ask symmetric.",
+            "The chain letter is required once a run names more than one "
+            "target chain, and the form refuses a bare <code>241</code> "
+            "there. It has to: the model matches hotspots literally as "
+            "chain plus number, and on a homodimer whose two protomers "
+            "share one numbering a bare token would resolve to chain A "
+            "alone &mdash; a run that looks symmetric and is not. Writing "
+            "<code>A241</code> and <code>B241</code> is what makes the ask "
+            "symmetric.",
         ),
         (
             "Binder length",

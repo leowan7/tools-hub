@@ -663,6 +663,31 @@ class TestExampleNumbersComeFromThePayload:
         assert "ranks 51 to 64" in reading
         assert "binder_scrmsd" in reading and "af2_plddt" in reading
 
+        # THE HOTSPOT NOTE IS PINNED TO THE LIVE GATE, not to memory. The
+        # first draft of it described the PRE-#130 behaviour — a bare
+        # token silently promoted onto chain A — which #130 replaced with
+        # a refusal. Prose about a fixed bug reads as current advice, so
+        # the claim is asserted against the validator that enforces it.
+        from tools import proteina as proteina_adapter
+
+        hotspot_why = example["inputs_used"][1][2]
+        assert "refuses a bare" in hotspot_why
+        spec, err = proteina_adapter.validate(
+            {
+                "preset": "protein_binder",
+                "target_input": "A1-40,B500-539",
+                "hotspot_residues": "520",
+                "binder_length_min": "60",
+                "binder_length_max": "80",
+                "_has_custom_target": "1",
+            },
+            {},
+        )
+        assert err and spec is None, (
+            "a bare hotspot on a two-chain proteina run is accepted again — "
+            "the worked example tells the reader it is refused"
+        )
+
         # THE pLDDT POLARITY CHECK the previous EXAMPLE = None note asked
         # for. Pre-#129 payloads stored 1 - pLDDT, which flips both signs.
         # This is the assertion a re-capture from an old run cannot pass.
