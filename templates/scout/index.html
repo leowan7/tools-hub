@@ -121,7 +121,7 @@
               </div>
               <div id="file-summary" class="file-summary" hidden></div>
               <div id="structure-title" class="structure-title" hidden></div>
-              <div id="error-message" class="error-message" hidden></div>
+              <div id="error-message" class="error-message" role="status" aria-live="polite" hidden></div>
             </div>
 
             <!-- Chain select -->
@@ -343,7 +343,7 @@
           source.close();
           _activeSource = null;
           resetProgress();
-          showAnalyzeError(data.msg || 'Analysis failed.');
+          showAnalyzeError(data.msg || 'Analysis failed.', data.reason);
         } else {
           var info = STAGES[data.stage] || {};
           bar.style.width = (info.pct || data.pct || 0) + '%';
@@ -404,7 +404,7 @@
         var data = await resp.json();
         if (!resp.ok) {
           resetProgress();
-          showAnalyzeError(data.error || 'Analysis failed.');
+          showAnalyzeError(data.error || 'Analysis failed.', data.reason);
           return;
         }
         completeProgress();
@@ -822,12 +822,80 @@
     // UI helpers
     // -----------------------------------------------------------------------
     function showSpinner(visible) { document.getElementById('spinner').hidden = !visible; }
-    function showError(msg) { var el = document.getElementById('error-message'); el.textContent = msg; el.hidden = false; }
+
+    // Phase 5 - a rate-limit refusal is a conversion moment, not a dead end.
+    //
+    // Signing in bypasses BOTH anonymous tiers: scout/ratelimit.py
+    // short-circuits the whole decorator on session['user_email'], so the
+    // offer is honest at the per-IP wall and the per-session one alike.
+    //
+    // All three rate-limit reasons are here, INCLUDING no_session. An earlier
+    // version of this file used the reason as a proxy for "are cookies
+    // blocked" and was wrong in BOTH directions, which independent QC caught:
+    //
+    //  * it under-blocked. scout/routes.py gives /upload, /fetch-pdb and
+    //    /example NO session tier, so the cookie-less branch never runs there
+    //    and those refusals arrive as rate_limited. A cookies-blocked visitor
+    //    got the sign-in link anyway — at the INTAKE wall, which QC measured to
+    //    be the first one a real lab meets.
+    //  * it over-blocked. ANON_SESSION_KEY is minted lazily by the owner-key helper, not by a successful
+    //    intake, so no_session also covers a visitor whose cookies work fine
+    //    and who simply has not uploaded yet. Signing in WOULD have helped
+    //    them, and suppressing the link denied them a working way forward.
+    //
+    // The reason cannot answer the question. navigator.cookieEnabled can, and
+    // it answers it in the one place that actually knows: the browser.
+    // busy and at_capacity are here too, and an earlier version wrongly left
+    // them out on the reasoning that "the queue is global". It is not. QC
+    // measured both and the code says so outright:
+    //   * anon_compute_slot() yields True for a signed-in caller WITHOUT
+    //     consuming a slot - "a free-tier visitor must never be able to starve
+    //     someone who is paying" - so busy clears on sign-in.
+    //   * scout/routes.py returns None from the live-job check when
+    //     _signed_in_owner_key() is set, so at_capacity clears too.
+    // Both server messages already tell the visitor to sign in, so excluding
+    // them meant the page withheld the one control that acts on its own advice.
+    var SIGNIN_HELPS = {
+      rate_limited: 1,
+      session_rate_limited: 1,
+      no_session: 1,
+      busy: 1,
+      at_capacity: 1,
+    };
+
+    function signinCanHelp(reason) {
+      if (!SIGNIN_HELPS[reason]) return false;
+      // Signing in stores a session cookie, so without cookies it cannot work
+      // and the offer would be a promise the product cannot keep.
+      try { return navigator.cookieEnabled !== false; } catch (_) { return true; }
+    }
+
+    function appendSigninCta(el, reason) {
+      if (!signinCanHelp(reason)) return;
+      el.appendChild(document.createTextNode(' '));
+      var a = document.createElement('a');
+      a.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+      a.textContent = 'Sign in to keep going →';
+      a.style.color = 'inherit';
+      a.style.textDecoration = 'underline';
+      el.appendChild(a);
+    }
+
+    // The message stays textContent and the link is a built element, so the
+    // server string is still never parsed as HTML - as XSS-safe as the plain
+    // textContent version this replaces.
+    function showError(msg, reason) {
+      var el = document.getElementById('error-message');
+      el.textContent = msg;
+      appendSigninCta(el, reason);
+      el.hidden = false;
+    }
     function hideError() { document.getElementById('error-message').hidden = true; }
 
-    function showAnalyzeError(msg) {
+    function showAnalyzeError(msg, reason) {
       var el = document.getElementById('analyze-error');
       el.textContent = msg;
+      appendSigninCta(el, reason);
       el.style.display = 'block';
       // Every failure path routes through here, so the button is re-enabled
       // here rather than in each caller. _finalizeAnalysis's finally runs only
@@ -940,7 +1008,7 @@
           document.getElementById('chain-section').hidden = false;
           document.getElementById('analyze-section').hidden = false;
         } else {
-          showError(data.error || 'Upload failed.');
+          showError(data.error || 'Upload failed.', data.reason);
         }
       } catch (_) {
         showError('Network error.');
@@ -1041,7 +1109,7 @@
           document.getElementById('chain-section').hidden = false;
           document.getElementById('analyze-section').hidden = false;
         } else {
-          showError(data.error || 'Failed to fetch PDB.');
+          showError(data.error || 'Failed to fetch PDB.', data.reason);
         }
       } catch (_) {
         showError('Network error. Could not reach RCSB.');
@@ -1063,7 +1131,7 @@
       try {
         var resp = await fetch('/scout/example');
         var data = await resp.json();
-        if (!resp.ok) { alert(data.error || 'Failed to load example.'); return; }
+        if (!resp.ok) { showError(data.error || 'Failed to load example.', data.reason); return; }
 
         document.getElementById('job-id').value = data.job_id;
         var chainSelect = document.getElementById('chain-select');
@@ -1080,7 +1148,7 @@
         document.getElementById('analyze-section').hidden = false;
         runAnalysis();
       } catch (_) {
-        alert('Failed to load example.');
+        showError('Network error. Could not load the example.');
       } finally {
         btn.disabled = false;
         btn.textContent = 'Load example (1HEW)';
