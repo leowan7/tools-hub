@@ -117,6 +117,11 @@ def stub_pipeline(monkeypatch):
         row = dict.fromkeys(_CSV_COLUMNS_BASE, "0")
         row.update({
             "epitope_id": "1",
+            # Stamp the chain, as the real run_pipeline does. fromkeys defaults
+            # it to "0" otherwise, which is a legal chain id naming a chain
+            # nobody asked for, and /analyze reads that as a cross-chain
+            # overwrite by a concurrent request.
+            "chain_id": chain_id,
             "residues": "A10,A11,A12,A13,A14,A15,A16",
             "residue_count": "7",
             "mean_rsa": "0.55",

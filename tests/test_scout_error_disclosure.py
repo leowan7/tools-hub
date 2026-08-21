@@ -67,8 +67,8 @@ _USEFUL_MESSAGE = "Chain 'Z' not found in structure. Available chains: A, B"
 
 # Minimal results.csv: the epitope_id branch of feasibility_analyze is only
 # reached once one exists, so the TypeError below it is otherwise unreachable.
-_RESULTS_CSV = '''epitope_id,residues
-1,"10,11,12"
+_RESULTS_CSV = '''epitope_id,chain_id,residues
+1,A,"10,11,12"
 '''
 
 
