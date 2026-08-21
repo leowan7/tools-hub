@@ -189,6 +189,16 @@ PILOT: dict | None = {
 # that target and would identify it. Designs are marked pass/below-threshold
 # here on the two general filters only, so the counts below are the two-filter
 # counts and will not match the campaign's own reports.
+#
+# COST CORRECTED 2026-08-21. This first shipped at $1.42, which is the
+# campaign's own record of the RAW Modal cost for the call. What a reader of
+# this page would be charged is that figure through the wallet — see
+# shared.wallet.WALLET_MARKUP — so the published price was 18% under what the
+# run would actually settle at. It is now recomputed from the same 1380 GPU-
+# seconds against this tool's rate-card entry, and
+# tests/test_worked_examples.py recomputes it again on every run so a
+# rate-card change fails a test instead of leaving a stale price in front of
+# a customer.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
@@ -267,6 +277,6 @@ EXAMPLE: dict | None = {
         "and low ipTM, that is not a broken run: it is this result, and the "
         "answer is more designs or a different site, not a different setting."
     ),
-    "cost_usd": "1.42",
+    "cost_usd": "1.68",
     "runtime": "23 minutes",
 }
