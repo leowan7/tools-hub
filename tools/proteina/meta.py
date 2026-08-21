@@ -361,19 +361,144 @@ PILOT: dict | None = {
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# A real payload exists on disk (proteina_direct_out/smoke_result.json,
-# 2026-08-06) and is NOT shippable: it pre-dates the pLDDT polarity fix
-# in #129 (merged 9fbe547, 2026-08-09), so its af2_plddt column holds
-# 1 - pLDDT on every candidate. Publishing an inverted confidence column
-# as a worked example would teach the metric backwards. Its scores are
-# also degenerate (af2_iptm 0.09 to 0.10 across all 8, binder_scrmsd 34
-# to 41 A), so it is not a picture of a working run either. Capture a
-# post-fix delivered shard and this becomes a one-file change:
-# scripts/capture_example_result.py --list proteina will show the
-# succeeded runs to pick from. Check af2_iptm in the summary it prints
-# before shipping — the shard on disk is a FAILED run, not just an old
-# one, and reads as a working example only if nobody looks.
+# EXAMPLE - one real past run, rendered by
+# templates/components/worked_example.html.
+#
+# PROVENANCE. One shard of the tier-2 length sweep, 2026-08-10: 64 designs
+# from a single ranomics-proteina-prod call (3447 GPU-seconds), re-derived by
+# scripts/_build_proteina_example.py. One shard is one job, so this is the
+# shape a single submission returns, not an aggregate over the campaign's 46
+# shards. The target is the same two-chain protein the PXDesign example uses
+# and is described the same way; the hotspot set is different (18 here, 6
+# there) because these were different rounds.
+#
+# THE PREVIOUS NOTE HERE WAS RIGHT TO REFUSE THE OLD PAYLOAD, and this one
+# clears both of its objections. It rejected proteina_direct_out/
+# smoke_result.json for pre-dating the pLDDT polarity fix (#129, 9fbe547,
+# 2026-08-09). This shard ran 2026-08-10, after it, and the polarity is
+# checked rather than assumed: af2_plddt correlates +0.63 with af2_iptm and
+# +0.62 with total_reward across the 64, and the top-12 median pLDDT (0.840)
+# is above the bottom-12 (0.733). Under the inversion every one of those
+# signs would flip.
+#
+# It also called that payload degenerate - "af2_iptm 0.09 to 0.10 across all
+# 8, binder_scrmsd 34 to 41 A" - without naming the cause. That signature is
+# now identified: it is the generator returning the target's own sequence
+# back as the binder. Twelve of this shard's 64 designs do exactly that, at
+# af2_iptm 0.086-0.098 and binder_scrmsd 32-44 A. The old smoke run was 8
+# for 8 of them.
+#
+# SELF-COPIES ARE NOT FILTERED BY THE TOOL and are shown here on purpose.
+# tools/proteina/run_pipeline.py has no notion of target overlap, so a real
+# operator gets these rows too; hiding them would misreport the output. They
+# do sort to the bottom on total_reward (ranks 51-64 here), and across all
+# 17,024 designs of the campaign not one self-copy ever cleared ipTM 0.80.
+#
+# COST is the customer-facing charge for 3447 GPU-seconds on this tool's GPU
+# class, from shared.wallet.compute_charge_usd - not the campaign's raw Modal
+# cost. tests/test_worked_examples.py recomputes it, so a rate-card change
+# fails a test instead of leaving a stale price on a public page.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "A two-chain human secreted protein, about 210 residues per chain, "
+        "from a solved crystal structure. Eighteen hotspot residues, nine on "
+        "each chain, across the two-fold interface where the chains meet."
+    ),
+    "why_this_target": (
+        "The site sits on a symmetry axis, so a binder has to reach both "
+        "chains at once rather than settle on either one. It is also a "
+        "target whose own sequence the generator already knows well, which "
+        "turns out to be what this run is worth reading for."
+    ),
+    "inputs_used": [
+        (
+            "Target structure",
+            "the two-chain crystal structure, chains A and B",
+            "Both chains staged and both named as target chains. Give one "
+            "chain and the model designs against half a site that does not "
+            "exist on its own.",
+        ),
+        (
+            "Hotspot residues",
+            "18 residues, 9 per chain, each written with its chain letter",
+            "On a two-fold homodimer a bare <code>241</code> matches the "
+            "first chain only. The run then steers one protomer while the "
+            "request reads as if it steered both, and nothing in the output "
+            "says so. Writing <code>A241</code> and <code>B241</code> is "
+            "what makes the ask symmetric.",
+        ),
+        (
+            "Binder length",
+            "60 to 69",
+            "A window, not a number &mdash; the generator draws a length "
+            "per design. Leaving the field empty gives you 60 to 120; this "
+            "is the bottom of that default, where binders are cheaper to "
+            "fold and easier to order later.",
+        ),
+        (
+            "Number of designs",
+            "64",
+            "One shard: 16 starting samples with 4 replicas each. A shard "
+            "is one container, so all 64 came back from a single call.",
+        ),
+        (
+            "RF3 rescoring",
+            "off",
+            "Why the <code>rf3_score</code> column below is empty on every "
+            "row. It is a second scoring stack for ligand and motif work; "
+            "a protein binder run does not need it and it is not free.",
+        ),
+    ],
+    "what_came_back": (
+        "64 designs, of which <strong>12 passed</strong> &mdash; ipTM at or "
+        "above 0.80 with the re-folded complex landing within 5 &Aring;. "
+        "They are ranks 1 to 11 and 13, so on this shard the ranking and the "
+        "filter agree: the top of the table is the answer. The best scored "
+        "ipTM 0.89 at pLDDT 0.89, re-folding 1.32 &Aring; from where the "
+        "generator put it. "
+        "Of the 52 that did not pass, 30 failed on the re-fold. "
+        "<strong>Twelve of those 30 are the model handing the target's own "
+        "sequence back as the binder</strong> &mdash; literal copies of a "
+        "stretch of the chain it was asked to bind."
+    ),
+    "how_to_read_it": (
+        "<strong>Read <code>binder_scrmsd</code> before you trust "
+        "<code>af2_plddt</code>.</strong> The twelve copies score pLDDT "
+        "0.71 to 0.76 &mdash; unremarkable, nothing that reads as broken "
+        "&mdash; while their <code>binder_scrmsd</code> is 32 to 44 &Aring; "
+        "against a median of 2.0 &Aring; for everything else. That column "
+        "is the generator's backbone compared against an independent re-fold "
+        "of its own sequence, and a target fragment re-folds into the target's "
+        "shape rather than the shape it was drawn as. "
+        "ipTM agrees (0.086 to 0.098, against 0.67 median) and "
+        "<code>total_reward</code> sends all twelve to ranks 51 to 64, so "
+        "reading the top of the table is safe. Reading the whole table is "
+        "what needs this paragraph. "
+        "<strong>The scores shortlist; they do not diagnose.</strong> "
+        "Thirteen rows here carry that profile &mdash; re-fold past 30 "
+        "&Aring; at ipTM under 0.10 &mdash; and twelve of them are copies. "
+        "The thirteenth, at rank 55, is an ordinary de-novo sequence that "
+        "shares 4% of itself with the target and simply failed to re-fold. "
+        "Its pLDDT is 0.58, below the band the twelve sit in, but that gap "
+        "is one shard's worth of evidence and not a rule. We know which "
+        "twelve because we compared each sequence against the target's, "
+        "which takes a substring search and no GPU. If a row of yours looks "
+        "like this, that comparison is the check that settles it."
+    ),
+    "what_we_did_next": (
+        "Scaled the same settings out to 17,024 designs across four rounds. "
+        "Target self-copies ran at 29% of everything generated and "
+        "<strong>not one of them ever cleared ipTM 0.80</strong>, so the "
+        "score gate that was already there kept them out of every shortlist. "
+        "That is the reassuring version: on this target the failure mode is "
+        "loud and it is caught. It is worth a look at your own output anyway, "
+        "because nothing in the tool is checking for it. "
+        "One note on price. This run holds against your wallet at the "
+        "per-run ceiling and settles on the GPU seconds it actually used, "
+        "which is why 57 minutes bills at a small fraction of the hold you "
+        "see at submit. The surplus is released, not spent."
+    ),
+    "cost_usd": "6.02",
+    "runtime": "57 minutes",
+}

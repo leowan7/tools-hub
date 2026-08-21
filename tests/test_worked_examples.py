@@ -561,6 +561,173 @@ class TestExampleNumbersComeFromThePayload:
         nxt = example["what_we_did_next"]
         assert "0, 2, 2 and 4" in nxt and "25 per bin" in nxt
 
+    def test_proteina_narration_matches_its_result_json(self, tools_app):
+        """Proteina's example exists to name one failure mode: the
+        generator handing the target's own sequence back as the binder.
+        That claim rests on three numbers — how many rows do it, what
+        their ``binder_scrmsd`` is, and what their ``af2_plddt`` is — and
+        the third is the load-bearing one, because the whole point is
+        that pLDDT does NOT flag them. Re-derived here so a copy edit
+        cannot soften any of the three."""
+        _, slugs = tools_app
+        example = _examples(slugs)["proteina"]
+        result = json.loads(
+            (REPO / "tools" / "proteina" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        cands = result["candidates"]
+        assert len(cands) == 64
+        assert result["gpu_seconds"] == 3447
+
+        def col(key, rows=None):
+            return [c["scores"][key] for c in (rows if rows is not None else cands)]
+
+        # Ranks are the pipeline's own order: total_reward descending.
+        assert [c["rank"] for c in cands] == list(range(1, 65))
+        rewards = col("total_reward")
+        assert rewards == sorted(rewards, reverse=True)
+
+        # "12 passed — ipTM at or above 0.80 with the re-folded complex
+        #  landing within 5 A ... ranks 1 to 11 and 13"
+        passed = [
+            c for c in cands
+            if c["scores"]["af2_iptm"] >= 0.80
+            and c["scores"]["binder_scrmsd"] < 5.0
+        ]
+        assert len(passed) == 12
+        assert [c["rank"] for c in passed] == list(range(1, 12)) + [13]
+        assert "12 passed" in example["what_came_back"]
+        assert "ranks 1 to 11 and 13" in example["what_came_back"]
+
+        # "The best scored ipTM 0.89 at pLDDT 0.89, re-folding 1.32 A"
+        top = cands[0]["scores"]
+        assert round(top["af2_iptm"], 2) == 0.89
+        assert round(top["af2_plddt"], 2) == 0.89
+        assert round(top["binder_scrmsd"], 2) == 1.32
+        assert "1.32 &Aring;" in example["what_came_back"]
+
+        # "Of the 52 that did not pass, 30 failed on the re-fold."
+        assert len(cands) - len(passed) == 52
+        failed_refold = [c for c in cands if c["scores"]["binder_scrmsd"] >= 5.0]
+        assert len(failed_refold) == 30
+        assert "52 that did not pass, 30 failed" in example["what_came_back"]
+
+        reading = example["how_to_read_it"]
+
+        # THE SHORTLIST, AND WHY IT IS NOT THE ANSWER. The score profile
+        # the prose names catches THIRTEEN rows; only twelve of them are
+        # copies. Which twelve is a sequence-vs-target measurement, and
+        # this payload deliberately carries no sequences, so the test pins
+        # the shortlist and the one member that is not a copy rather than
+        # pretending the scores settle it. An earlier draft asserted 12
+        # here and was wrong by exactly this row.
+        band = [
+            c for c in cands
+            if c["scores"]["binder_scrmsd"] >= 30.0
+            and c["scores"]["af2_iptm"] < 0.10
+        ]
+        assert len(band) == 13
+        assert "Thirteen rows here" in reading
+        assert "twelve of them are copies" in reading
+        assert "Twelve of those 30" in example["what_came_back"]
+
+        odd = [c for c in band if c["scores"]["af2_plddt"] < 0.70]
+        assert [c["rank"] for c in odd] == [55]
+        assert round(odd[0]["scores"]["af2_plddt"], 2) == 0.58
+        assert "rank 55" in reading and "0.58" in reading
+        copies = [c for c in band if c not in odd]
+        assert len(copies) == 12
+
+        # pLDDT does NOT flag them: 0.71-0.76, inside the shard's own
+        # spread. If a re-capture ever made these look broken on pLDDT,
+        # the paragraph would be arguing for a check nobody needs.
+        cp = col("af2_plddt", copies)
+        assert 0.70 <= min(cp) and max(cp) < 0.77
+        assert "0.71 to 0.76" in reading
+        cs = col("binder_scrmsd", copies)
+        assert 32.0 <= min(cs) and max(cs) <= 44.5
+        assert "32 to 44 &Aring;" in reading
+        ci = col("af2_iptm", copies)
+        assert 0.086 <= min(ci) and max(ci) <= 0.098
+        assert "0.086 to 0.098" in reading
+
+        # ... against the rest of the shard.
+        rest = [c for c in cands if c not in copies]
+        assert round(statistics.median(col("binder_scrmsd", rest)), 1) == 2.0
+        assert "median of 2.0 &Aring;" in reading
+        assert round(statistics.median(col("af2_iptm", rest)), 2) == 0.67
+        assert "0.67 median" in reading
+
+        # "total_reward sends all twelve to ranks 51 to 64"
+        assert min(c["rank"] for c in copies) >= 51
+        assert "ranks 51 to 64" in reading
+        assert "binder_scrmsd" in reading and "af2_plddt" in reading
+
+        # THE pLDDT POLARITY CHECK the previous EXAMPLE = None note asked
+        # for. Pre-#129 payloads stored 1 - pLDDT, which flips both signs.
+        # This is the assertion a re-capture from an old run cannot pass.
+        plddt, iptm = col("af2_plddt"), col("af2_iptm")
+        assert statistics.correlation(plddt, iptm) > 0.5
+        assert statistics.correlation(plddt, rewards) > 0.5
+        assert (statistics.median(col("af2_plddt", cands[:12]))
+                > statistics.median(col("af2_plddt", cands[-12:])))
+
+        # rf3_score and cluster_id are ABSENT, not zero. The narration
+        # tells the reader that column is empty because RF3 was off, and a
+        # stub value of 0 would render a confident "0.00" instead of the
+        # em dash — see templates/components/candidate_table.html.
+        for c in cands:
+            assert set(c["scores"]) == {
+                "total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd",
+            }
+        assert "rf3_score" in example["inputs_used"][4][2]
+
+        blob = json.dumps(result)
+        for leaked in ("sequence", "pdb_key", "pdb_content_b64", "struct_path"):
+            assert leaked not in blob, f"{leaked} leaked into the payload"
+        assert not example.get("structure_file")
+
+        # The campaign-scale claim, which is NOT derivable from this
+        # payload and so is pinned as prose only.
+        nxt = example["what_we_did_next"]
+        assert "17,024 designs" in nxt and "29%" in nxt
+
+    # GPU-seconds behind each example's recorded cost. proteina carries it
+    # in the payload; pxdesign's payload records runtime_minutes instead.
+    _EXAMPLE_GPU_SECONDS = {"proteina": 3447.0, "pxdesign": 1380.0}
+
+    def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):
+        """``cost_usd`` tells a reader what a run of this tool costs, on a
+        page they can read without signing in, so it has to be the
+        CUSTOMER-facing charge rather than the raw Modal cost. The two
+        differ by shared.wallet.WALLET_MARKUP, and the first pxdesign
+        example quoted the raw figure — 18% under what the wallet would
+        actually settle at.
+
+        Recomputing it here also ties the page to the rate card: change a
+        tool's ``gpu_class`` in shared/wallet_estimates.py and this fails
+        rather than leaving a stale price in front of a customer."""
+        from decimal import Decimal
+
+        from shared.wallet import compute_charge_usd
+        from shared.wallet_estimates import TOOL_SPECS
+
+        _, slugs = tools_app
+        for slug, example in _examples(slugs).items():
+            gpu_seconds = self._EXAMPLE_GPU_SECONDS.get(slug)
+            if gpu_seconds is None:
+                continue
+            spec = TOOL_SPECS[slug]
+            expected = compute_charge_usd(gpu_seconds, spec.gpu_class)
+            assert Decimal(example["cost_usd"]) == expected.quantize(
+                Decimal("0.01"),
+            ), (
+                f"{slug} example says ${example['cost_usd']} but "
+                f"{gpu_seconds:.0f} GPU-s on {spec.gpu_class} settles at "
+                f"${expected}"
+            )
+
+
 class TestCaptureScrubsBeforeItPublishes:
     """scripts/capture_example_result.py pulls from the PRODUCTION jobs
     table and writes into a page anyone can read. The scrub is the only
