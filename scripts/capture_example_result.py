@@ -75,6 +75,42 @@ def scrub(obj, _path=""):
     return obj, removed
 
 
+# Fields that are a DESIGNED sequence -- something a model wrote, as
+# opposed to a published reference the user pasted in. The publishing
+# rule for these pages is scores and published references only, so
+# these come out of any payload that carries them. ``sequence`` is
+# deliberately NOT here: on the single-fold predictors it is the
+# user's own input, which for a natural protein is a published
+# reference and is the one field that lets a reader check the example.
+# Strip it per-tool with --drop-sequence when the input was a design.
+DESIGNED_SEQUENCE_KEYS = frozenset({
+    "best_sequence", "designed_sequence", "binder_sequence",
+})
+
+
+def drop_keys(obj, keys):
+    """Recursively delete ``keys``. Returns (clean, n_removed)."""
+    n = 0
+    if isinstance(obj, dict):
+        out = {}
+        for key, val in obj.items():
+            if key in keys:
+                n += 1
+                continue
+            sub, sub_n = drop_keys(val, keys)
+            out[key] = sub
+            n += sub_n
+        return out, n
+    if isinstance(obj, list):
+        out = []
+        for val in obj:
+            sub, sub_n = drop_keys(val, keys)
+            out.append(sub)
+            n += sub_n
+        return out, n
+    return obj, n
+
+
 def trim_structures(result, inline_pdb):
     """Handle the embedded PDBs, which dominate payload size.
 
@@ -135,6 +171,45 @@ def summarise(slug, result):
     if seqs:
         print("  sequences: {}, length {}".format(
             len(seqs), len(seqs[0].get("seq") or "")))
+
+    # Single-fold payloads have no candidates[] at all, so everything
+    # above prints nothing for them and this summary used to report a
+    # bare tier and runtime -- for the one shape whose whole result IS
+    # these scalars. A silent summary is the failure this function
+    # exists to prevent, so read the single-fold scores directly.
+    if not rows:
+        for key in ("mean_plddt", "ptm", "iptm", "total_length",
+                    "total_aa", "chain_count", "num_chains",
+                    "num_recycles", "use_templates"):
+            if result.get(key) is not None:
+                print("  {}: {}".format(key, result[key]))
+        plddt = result.get("plddt_per_residue") or []
+        if plddt:
+            # ESMFold reports pLDDT on 0-1, ColabFold and AF2 on 0-100.
+            # Normalise so the confidence bands below mean the same
+            # thing whichever tool wrote the payload.
+            scale = 100.0 if max(plddt) <= 1.0 else 1.0
+            vals = sorted(v * scale for v in plddt)
+            n = len(vals)
+            mean = sum(vals) / n
+            print("  plddt_per_residue: n={} mean {:.1f} median {:.1f} "
+                  "min {:.1f} max {:.1f}".format(
+                      n, mean, vals[n // 2], vals[0], vals[-1]))
+            for lo, hi, lab in ((0, 50, "<50 disordered"),
+                                (50, 70, "50-70 low"),
+                                (70, 90, "70-90 confident"),
+                                (90, 101, ">90 very high")):
+                c = sum(1 for v in vals if lo <= v < hi)
+                print("    {:16s} {:4d}  {:5.1f}%".format(
+                    lab, c, 100.0 * c / n))
+            # Order matters for the shape: a uniformly low chain is a
+            # disordered protein, a low N-terminus on an otherwise high
+            # chain is a floppy tail. The mean cannot tell them apart.
+            step = max(1, n // 12)
+            raw = [v * scale for v in plddt]
+            print("    N->C profile: " + " ".join(
+                "{:.0f}".format(sum(raw[i:i + step]) / len(raw[i:i + step]))
+                for i in range(0, n, step)))
     print("  ^ READ THESE. A completed run can still be a failed one.")
 
 
@@ -149,6 +224,16 @@ def main():
                     help="keep the inline PDB for the top N designs so "
                          "their download works on the example page "
                          "(default 1; 0 keeps none)")
+    ap.add_argument("--keep-pae", action="store_true",
+                    help="keep pae_matrix_b64. It is the single largest "
+                         "field on a single-fold payload (145-315 KB) and "
+                         "drives only the specialist pAE panel, which both "
+                         "predictor partials already render conditionally, "
+                         "so it is dropped by default.")
+    ap.add_argument("--drop-sequence", action="store_true",
+                    help="also drop the top-level `sequence`. Use when the "
+                         "folded input was itself a design rather than a "
+                         "published reference.")
     args = ap.parse_args()
 
     from shared.credits import get_service_client
@@ -192,6 +277,14 @@ def main():
         return 1
 
     result, removed = scrub(result)
+
+    doomed = set(DESIGNED_SEQUENCE_KEYS)
+    if args.drop_sequence:
+        doomed.add("sequence")
+    if not args.keep_pae:
+        doomed.add("pae_matrix_b64")
+    result, n_dropped = drop_keys(result, doomed)
+
     kept = trim_structures(result, args.inline_pdb)
 
     dest = REPO_ROOT / "tools" / args.slug.replace("-", "_") / "example"
@@ -205,6 +298,8 @@ def main():
     print("scrubbed {} sensitive field(s){}".format(
         len(removed),
         (": " + str(sorted(set(removed))[:8])) if removed else ""))
+    print("dropped {} designed-sequence/size field(s): {}".format(
+        n_dropped, sorted(doomed)))
     print("inline PDBs kept: {}".format(kept))
     summarise(args.slug, result)
     print("\nnext: write EXAMPLE in tools/" + args.slug + "/meta.py, then run")

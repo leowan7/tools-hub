@@ -1,0 +1,90 @@
+{
+  "binder_label": "minibinder",
+  "binder_name": "minibinder",
+  "candidates": [
+    {
+      "name": "seed0_rank0",
+      "pdb_key": "seed0_design_0_complex.pdb",
+      "rank": 0,
+      "scores": {
+        "filter_status": "drop",
+        "final_loss": 3.6964001655578613,
+        "iPTM_proxy": null,
+        "ipTM": 0.9555796384811401,
+        "pI": 11.954517555236816,
+        "seed": 0
+      },
+      "seed": 0
+    },
+    {
+      "name": "seed1_rank1",
+      "pdb_key": "seed1_design_0_complex.pdb",
+      "rank": 1,
+      "scores": {
+        "filter_status": "strict_pass",
+        "final_loss": 3.4749045372009277,
+        "iPTM_proxy": null,
+        "ipTM": 0.9353567957878113,
+        "pI": 5.669371223449708,
+        "seed": 1
+      },
+      "seed": 1
+    }
+  ],
+  "designs": [
+    {
+      "cdr_distogram_iptm_proxy": null,
+      "distogram_iptm_proxy": null,
+      "filter_status": "drop",
+      "final_loss": 3.6964001655578613,
+      "iptm": 0.9555796384811401,
+      "isoelectric_point": 11.954517555236816,
+      "name": "seed0_design_0",
+      "pdb_key": "seed0_design_0_complex.pdb",
+      "rank": 0,
+      "scores": {
+        "cdr_distogram_iptm_proxy": null,
+        "distogram_iptm_proxy": null,
+        "filter_status": "drop",
+        "final_loss": 3.6964001655578613,
+        "iptm": 0.9555796384811401,
+        "isoelectric_point": 11.954517555236816
+      },
+      "seed": 0
+    },
+    {
+      "cdr_distogram_iptm_proxy": null,
+      "distogram_iptm_proxy": null,
+      "filter_status": "strict_pass",
+      "final_loss": 3.4749045372009277,
+      "iptm": 0.9353567957878113,
+      "isoelectric_point": 5.669371223449708,
+      "name": "seed1_design_0",
+      "pdb_key": "seed1_design_0_complex.pdb",
+      "rank": 1,
+      "scores": {
+        "cdr_distogram_iptm_proxy": null,
+        "distogram_iptm_proxy": null,
+        "filter_status": "strict_pass",
+        "final_loss": 3.4749045372009277,
+        "iptm": 0.9353567957878113,
+        "isoelectric_point": 5.669371223449708
+      },
+      "seed": 1
+    }
+  ],
+  "designs_completed": 2,
+  "designs_total": 2,
+  "failure_notes": [],
+  "is_antibody": false,
+  "n_failures": 0,
+  "n_seeds": 2,
+  "preset": "minibinder",
+  "runtime_seconds": 306,
+  "seeds_failed": 0,
+  "seeds_succeeded": 2,
+  "target_label": "PD-L1",
+  "target_name": "pd-l1",
+  "tier": "minibinder",
+  "use_scaling_critics": false
+}

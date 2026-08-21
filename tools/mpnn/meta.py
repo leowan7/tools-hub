@@ -240,13 +240,13 @@ EXAMPLE: dict | None = {
             "before design.",
         ),
         (
-            "Chain(s) to design",
+            "Chains to design",
             "A",
             "The single protein chain. 1HEW's other chain is a sugar "
             "ligand, not protein.",
         ),
         (
-            "Sequences to sample",
+            "Number of sequences",
             "2",
             "Deliberately tiny. This run existed to prove the pipeline "
             "worked end to end, not to produce a design set.",

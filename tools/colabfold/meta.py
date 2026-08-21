@@ -108,17 +108,105 @@ PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE - one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/colabfold/example/result.json replayed through this tool's OWN results
+# partial, so the demo can never drift from the real job page.
+#
+# PROVENANCE. One `standalone` run on the same Modal app this form submits to,
+# pulled from the jobs table by scripts/capture_example_result.py (job
+# 9beb0103, 55 GPU-seconds). Re-run that script against the same job to
+# re-derive every figure below.
+#
+# The folded sequence was a ProteinMPNN DESIGN, so it was dropped at capture
+# (--drop-sequence) under the no-designed-sequences rule. Every score it
+# earned is kept; the narration describes the sequence without publishing it.
+# pae_matrix_b64 went too - 22 KB for the specialist pAE panel, which this
+# partial renders conditionally. plddt_per_residue is kept, because it IS this
+# example.
+#
+# UNITS. ColabFold reports pLDDT on 0-100 and this partial prints mean_plddt
+# raw, so the page shows 61.05. The sibling ESMFold page reports the same
+# metric on 0-1. Quote what THIS page renders.
+#
+# COST is compute_charge_usd(55, "A100-40GB") - the charge, not the raw Modal
+# cost. tests/test_worked_examples.py recomputes it from the rate card.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "Not a natural protein &mdash; a 101-residue sequence ProteinMPNN had "
+        "just written for a backbone, brought straight here to be checked."
+    ),
+    "why_this_target": (
+        "This is the step that catches design failures before they cost "
+        "anything at the bench. ProteinMPNN scores its own output, but those "
+        "numbers only say the sequence suits the backbone it was handed "
+        "&mdash; they are not a prediction that it folds. Re-folding it here, "
+        "with a model that never saw that backbone, is an independent check. "
+        "This run is one that did not come back clean."
+    ),
+    "inputs_used": [
+        (
+            "Preset",
+            "Standalone, one FASTA",
+            "One design, folded on its own. The batch preset takes a whole "
+            "set of MPNN outputs in a single submission, which is the usual "
+            "way to run this once the loop is worth having.",
+        ),
+        (
+            "FASTA",
+            "101 aa, one chain",
+            "The top-ranked MPNN sequence for that backbone, pasted as FASTA.",
+        ),
+        (
+            "Number of recycles",
+            "2",
+            "How many times the model refines its own answer. More recycles "
+            "let a borderline fold settle and cost proportionally more; 2 is "
+            "enough to see whether a design is in trouble.",
+        ),
+        (
+            "Use PDB templates",
+            "off",
+            "Left off on purpose. Handing the model the backbone the design "
+            "was built for would be marking its own homework &mdash; the "
+            "point is an independent opinion.",
+        ),
+    ],
+    "what_came_back": (
+        "A mean pLDDT of <strong>61.05</strong> and a pTM of 0.62 &mdash; "
+        "under any threshold you would set, a fail. "
+        "But the mean is the wrong summary here, and opening "
+        "<em>Per-residue pLDDT</em> shows why. The first "
+        "<strong>22 residues</strong> are red, every one below 50. The other "
+        "79 average 67.3 and climb to <strong>89.9</strong> at residue 50, "
+        "with 27 residues at or above 70. <strong>This is not a design that "
+        "failed everywhere. It is a folded core with a 22-residue tail "
+        "hanging off the front.</strong>"
+    ),
+    "how_to_read_it": (
+        "One number for a whole chain averages together the parts the model "
+        "is sure of and the parts it is not, and the two failures that hides "
+        "need opposite responses. Uniformly low across the whole strip means "
+        "the sequence does not fold and the design is dead. Low at one end "
+        "and high through the middle &mdash; this run &mdash; means most of "
+        "the design is fine and a specific, locatable piece of it is not. "
+        "<strong>The mean cannot tell those apart; the strip can.</strong> "
+        "Read the trace before deciding the fate of a design, because the "
+        "difference between them is a redesign versus a 22-residue edit. "
+        "It is still a fail as submitted: a floppy 22-residue terminus is a "
+        "protease target and it will not behave in an assay. But you now know "
+        "which 22 residues, which is a different morning's work."
+    ),
+    "what_we_did_next": (
+        "The move a result like this points to is to trim the tail and re-fold. "
+        "If the remaining 79 residues hold up alone, the core was real and the "
+        "terminus was the whole problem. If the core collapses without it, the "
+        "fold depended on that tail after all and it is the backbone that "
+        "needs revisiting, not the sequence. Either way it is one more cheap "
+        "fold before anything gets ordered, which is the reason this step is "
+        "in the loop at all."
+    ),
+    "cost_usd": "0.07",
+    "runtime": "55 seconds",
+}

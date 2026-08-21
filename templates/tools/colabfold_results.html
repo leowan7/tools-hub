@@ -197,7 +197,16 @@
              download="colabfold_{{ job.id }}_pae.npz"
              class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
         {% endif %}
-        {% if pdb_b64 %}
+        {# The two downloads above are self-contained data: URIs and work
+           on the worked-example page as well as a real job page, so they
+           stay. This one does not: ?resample_from= sends a job id to the
+           MPNN form, which resolves it against the jobs table, and the
+           example sentinel has nothing behind it. Guarded here rather
+           than in the shared macros because this anchor sits in the
+           partial's own standalone branch, outside them. af2 guards the
+           equivalent block wholesale; these two partials keep the
+           downloads, hence the narrower condition. #}
+        {% if pdb_b64 and not is_example %}
           <a href="{{ url_for('tools.tool_form', tool='mpnn') }}?resample_from={{ job.id }}"
              class="btn-secondary" style="margin-left:0.5rem;"
              title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">

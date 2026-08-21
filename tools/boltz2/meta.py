@@ -224,7 +224,7 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Antigen structure",
+            "Antigen PDB",
             "1YCR, chain A",
             "MDM2's p53-binding domain. Chain B in that file is the p53 "
             "peptide itself and was removed &mdash; leaving it in would "

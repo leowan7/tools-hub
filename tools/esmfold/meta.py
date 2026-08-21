@@ -100,17 +100,98 @@ PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE - one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/esmfold/example/result.json replayed through this tool's OWN results
+# partial, so the demo can never drift from the real job page.
+#
+# PROVENANCE. One `standalone` run on the same Modal app this form submits to,
+# pulled from the jobs table by scripts/capture_example_result.py (job
+# 800c4ddc, 32 GPU-seconds). Re-run that script against the same job to
+# re-derive every figure below - it prints the pLDDT distribution the
+# narration quotes.
+#
+# The folded sequence is human myelin basic protein, a PUBLISHED REFERENCE
+# sequence, so it stays in the payload: it is the one field that lets a reader
+# check this example against the literature. No designed sequence appears
+# anywhere in it.
+#
+# pae_matrix_b64 was dropped at capture - 145 KB driving only the specialist
+# pAE panel, which this partial already renders conditionally.
+# plddt_per_residue is kept, because it IS this example.
+#
+# UNITS. ESMFold reports pLDDT on 0-1 and this partial prints mean_plddt raw
+# ("%.2f" straight from the payload), so the page shows 0.39 and the prose
+# says 0.39. ColabFold and AF2 report the same metric on 0-100. Quote what
+# THIS page renders, not the sibling tool's scale.
+#
+# COST is compute_charge_usd(32, "A100-40GB") - what a reader would be
+# charged, not the raw Modal cost. tests/test_worked_examples.py recomputes it
+# from the rate card on every run, so a rate change fails a test instead of
+# leaving a stale price in front of a customer.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "Human myelin basic protein &mdash; one chain, 304 residues, pasted "
+        "as plain FASTA. A published reference sequence, not a design."
+    ),
+    "why_this_target": (
+        "Myelin basic protein is one of the textbook <em>intrinsically "
+        "disordered</em> proteins: on its own in solution it has no single "
+        "fixed structure to predict. That makes it a useful example "
+        "precisely because the answer is known in advance: it shows what "
+        "something every user runs into sooner or later actually looks like "
+        "&mdash; a low score coming back, and no obvious way to tell whether "
+        "the tool failed or the protein did."
+    ),
+    "inputs_used": [
+        (
+            "Preset",
+            "Standalone, one FASTA",
+            "One chain, one fold. The other preset, batch, folds many "
+            "sequences in a single submission.",
+        ),
+        (
+            "FASTA (single chain)",
+            "304 aa, one chain",
+            "Pasted as FASTA. ESMFold reads the sequence alone &mdash; there "
+            "is no MSA step and nothing else to configure, which is why it "
+            "comes back in well under a minute.",
+        ),
+    ],
+    "what_came_back": (
+        "A complete structure, a mean pLDDT of <strong>0.39</strong> and a "
+        "pTM of 0.119. Open <em>Per-residue pLDDT</em> under the result and "
+        "the whole 304-residue strip is red. <strong>Not one residue of the "
+        "304 reaches 70</strong>; the highest anywhere in the chain is 65.9, "
+        "and 91% sit below 50. The longest unbroken stretch that even "
+        "reaches 50 is 10 residues long."
+    ),
+    "how_to_read_it": (
+        "<strong>That is the correct answer, not a failed run.</strong> The "
+        "model is not confused about this protein; it is reporting that the "
+        "protein has no one shape to report, which is what the disorder "
+        "literature says about it too. A run that genuinely breaks returns an "
+        "error, not a structure. "
+        "What separates the two readings is the <em>shape</em> of the "
+        "per-residue strip, not the mean. Here it is flat and low from end to "
+        "end &mdash; no folded region anywhere. A low mean with a high "
+        "plateau in the middle and red only at the edges would be the "
+        "opposite finding: a real folded region with floppy ends, where the "
+        "middle is trustworthy and only the termini are not. Similar mean, "
+        "different result, and the mean alone cannot tell them apart. Open "
+        "the strip."
+    ),
+    "what_we_did_next": (
+        "Nothing, because there is nothing here to fix &mdash; no setting on "
+        "this form would raise that number, and running it again returns the "
+        "same structure. When a chain comes back like this the useful move is "
+        "to change the question rather than the parameters: fold the fragment "
+        "that is known to fold, or fold it together with the partner it binds, "
+        "since many disordered proteins take a definite shape only in complex. "
+        "If instead you are looking at a <em>designed</em> sequence scoring "
+        "like this, that is a real failure and the design needs redoing."
+    ),
+    "cost_usd": "0.04",
+    "runtime": "32 seconds",
+}

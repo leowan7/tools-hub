@@ -1,0 +1,131 @@
+{
+  "designs": [
+    {
+      "iptm": null,
+      "mean_plddt": 75.93,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx0",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx0.pdb",
+      "ptm": 0.73,
+      "rank": 0,
+      "runtime_seconds": 101,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 75.17,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx1",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx1.pdb",
+      "ptm": 0.73,
+      "rank": 1,
+      "runtime_seconds": 131,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 74.16,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx2",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx2.pdb",
+      "ptm": 0.72,
+      "rank": 2,
+      "runtime_seconds": 160,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 74.5,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx3",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx3.pdb",
+      "ptm": 0.71,
+      "rank": 3,
+      "runtime_seconds": 186,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 75.04,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx4",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx4.pdb",
+      "ptm": 0.71,
+      "rank": 4,
+      "runtime_seconds": 213,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 74.57,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx5",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx5.pdb",
+      "ptm": 0.72,
+      "rank": 5,
+      "runtime_seconds": 245,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 75.37,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx6",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx6.pdb",
+      "ptm": 0.73,
+      "rank": 6,
+      "runtime_seconds": 277,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 74.88,
+      "model_preset": "monomer",
+      "name": "pretrained_k10_idx7",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k10_idx7.pdb",
+      "ptm": 0.73,
+      "rank": 7,
+      "runtime_seconds": 303,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 75.16,
+      "model_preset": "monomer",
+      "name": "pretrained_k6_idx0",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k6_idx0.pdb",
+      "ptm": 0.73,
+      "rank": 8,
+      "runtime_seconds": 331,
+      "total_aa": 333
+    },
+    {
+      "iptm": null,
+      "mean_plddt": 75.71,
+      "model_preset": "monomer",
+      "name": "pretrained_k6_idx1",
+      "num_chains": 1,
+      "pdb_key": "pretrained_k6_idx1.pdb",
+      "ptm": 0.73,
+      "rank": 9,
+      "runtime_seconds": 358,
+      "total_aa": 333
+    }
+  ],
+  "designs_completed": 10,
+  "designs_total": 10,
+  "n_failures": 0,
+  "num_recycles": 3,
+  "runtime_seconds": 388,
+  "tier": "batch",
+  "use_templates": true
+}

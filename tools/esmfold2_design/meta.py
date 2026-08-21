@@ -244,13 +244,105 @@ PILOT: dict | None = {
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# The one archived payload (.deploy-logs/esmfold2-prewarm.log) is a
-# container prewarm whose single design was DROPPED by the filter, and
-# whose binder sequence is a poly-glycine / poly-leucine bundle that AF2
-# nonetheless scored at ipTM 0.956. Publishing 0.956 beside a junk
-# sequence would teach a reader to trust the number, which is the exact
-# opposite of the lesson.
+# EXAMPLE - one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/esmfold2_design/example/result.json replayed through this tool's OWN
+# results partial, so the demo can never drift from the real job page.
+#
+# PROVENANCE. One `minibinder` run at n_seeds=2 on the same Modal app this
+# form submits to, pulled from the jobs table by
+# scripts/capture_example_result.py (job 2b917b54, 306 GPU-seconds).
+#
+# This supersedes the note that stood here refusing an example. That refusal
+# was right about its own payload: a single design scored ipTM 0.956 while
+# being a junk poly-leucine bundle, and publishing 0.956 beside it would have
+# taught a reader to trust the number. This run has TWO designs - the same
+# artifact at 0.956, and a real one at 0.935 that the filter passed - and with
+# both on screen the number teaches the opposite lesson, which is the right
+# one.
+#
+# Every designed sequence was dropped at capture (--drop-sequence) under the
+# no-designed-sequences rule: 9 fields across designs[] and candidates[] plus
+# the top-level best_sequence. The scores that decide the run are all kept.
+# The target is PD-L1, which is safe to name because it is one of this form's
+# built-in preset targets - public by construction, not a customer's.
+#
+# COST is compute_charge_usd(306, "H100") - the charge, not the raw Modal
+# cost. tests/test_worked_examples.py recomputes it from the rate card.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "PD-L1, the checkpoint protein &mdash; picked from this form's "
+        "built-in target list rather than uploaded, so there was no structure "
+        "to prepare."
+    ),
+    "why_this_target": (
+        "PD-L1 is about as well-trodden as a binder target gets, which makes "
+        "it the right place to show what this tool's scores do and do not "
+        "settle. Two seeds is the smallest run that could show it at all, and "
+        "this one happens to show it clearly."
+    ),
+    "inputs_used": [
+        (
+            "Target preset",
+            "PD-L1 (Q9NZQ7, 17 to 132), immune checkpoint",
+            "A built-in target, so there was no structure to upload or "
+            "prepare &mdash; usually the slowest part of a first run. The "
+            "preset covers the IgV domain, which is the face a binder needs.",
+        ),
+        (
+            "Binder mode",
+            "De novo minibinder (60 to 200 aa)",
+            "A small de novo binder rather than an antibody. The tool judges "
+            "antibodies on different criteria, so this choice changes which "
+            "columns come back &mdash; the pI column below is a minibinder "
+            "column.",
+        ),
+        (
+            "Seeds to run",
+            "2",
+            "Two independent starting points. Each seed explores separately, "
+            "so two seeds is two genuinely different attempts rather than two "
+            "variations on one &mdash; which is what makes the comparison "
+            "below meaningful.",
+        ),
+    ],
+    "what_came_back": (
+        "Two designs, both scoring far above the interface-confidence bar. "
+        "Seed 0 came back at <strong>ipTM 0.956</strong>, the better of the "
+        "two. Seed 1 came back at 0.935. "
+        "<strong>The tool passed seed 1 and dropped seed 0.</strong> "
+        "The reason is in the <code>pI</code> column: seed 1 has an isoelectric "
+        "point of 5.67, and seed 0 has one of <strong>11.95</strong>."
+    ),
+    "how_to_read_it": (
+        "The filter is <code>ipTM &gt; 0.75</code> <em>and</em> "
+        "<code>pI &lt; 6</code>, and the second half is the one doing work "
+        "here. A pI near 12 means a strongly positively charged peptide at "
+        "the pH of every buffer you own. Those stick to things &mdash; "
+        "membranes, columns, the wrong protein &mdash; and they read as "
+        "binders in an assay for reasons that have nothing to do with the "
+        "site you aimed at. Seed 0's sequence is a third leucine by "
+        "composition, with alanine and arginine making up most of the rest "
+        "and a run of seven glycines through the middle &mdash; which is the "
+        "shape of thing that pI is describing. "
+        "<strong>The higher score is the one you must not order.</strong> "
+        "A 0.02 difference in ipTM is noise; the gap between pI 5.67 and 11.95 "
+        "is the entire decision. "
+        "So read <code>filter_status</code> first and treat the score column "
+        "as a tie-breaker among the designs that survive it &mdash; never the "
+        "other way round. Sorting this table by ipTM puts the worst design on "
+        "top."
+    ),
+    "what_we_did_next": (
+        "Seed 1 is the one worth anything here, and a two-seed run that yields "
+        "one usable design is a signal to widen rather than to proceed: the "
+        "same settings at more seeds give a set to choose among instead of a "
+        "single survivor. Seed 0 is worth keeping in view as a reminder of "
+        "what a top score can look like &mdash; the next junk design will "
+        "score just as well, and the pI column will be the thing that catches "
+        "it again."
+    ),
+    "cost_usd": "1.26",
+    "runtime": "5 minutes",
+}

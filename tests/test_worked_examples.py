@@ -719,7 +719,16 @@ class TestExampleNumbersComeFromThePayload:
 
     # GPU-seconds behind each example's recorded cost. proteina carries it
     # in the payload; pxdesign's payload records runtime_minutes instead.
-    _EXAMPLE_GPU_SECONDS = {"proteina": 3447.0, "pxdesign": 1380.0}
+    # The four predictors record it as runtime_seconds, which for these
+    # jobs equals the gpu_seconds_used the wallet settled on.
+    _EXAMPLE_GPU_SECONDS = {
+        "proteina": 3447.0,
+        "pxdesign": 1380.0,
+        "esmfold": 32.0,
+        "colabfold": 55.0,
+        "af2": 388.0,
+        "esmfold2-design": 306.0,
+    }
 
     def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):
         """``cost_usd`` tells a reader what a run of this tool costs, on a
@@ -751,6 +760,263 @@ class TestExampleNumbersComeFromThePayload:
                 f"{gpu_seconds:.0f} GPU-s on {spec.gpu_class} settles at "
                 f"${expected}"
             )
+
+
+    # ---------------- the four predictors ----------------
+    #
+    # Each of these examples is built on ONE reading of its payload, and
+    # the reading is the whole value of the page: a mean that hides a
+    # shape, a spread too narrow to rank, a top score that must not be
+    # ordered. A copy edit that rounds a figure away takes the lesson
+    # with it, so every number the prose quotes is recomputed here from
+    # the JSON beside it.
+
+    @staticmethod
+    def _plddt_pct(result):
+        """Per-residue pLDDT on a 0-100 scale.
+
+        ESMFold reports 0-1 and ColabFold reports 0-100 for the same
+        metric. Each page prints its own payload raw, so the NARRATION
+        differs by tool on purpose -- but a distribution has to be
+        compared on one scale, which is this.
+        """
+        vals = result["plddt_per_residue"]
+        scale = 100.0 if max(vals) <= 1.0 else 1.0
+        return [v * scale for v in vals]
+
+    def test_esmfold_narration_matches_its_result_json(self, tools_app):
+        """The disordered-protein reading: low EVERYWHERE, which is the
+        correct answer rather than a failure. The claim that carries it
+        is that no residue reaches 70 -- one residue at 71 would make
+        the page wrong."""
+        _, slugs = tools_app
+        example = _examples(slugs)["esmfold"]
+        result = json.loads(
+            (REPO / "tools" / "esmfold" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        assert result["total_length"] == 304
+        assert result["mean_plddt"] == 0.39
+        assert round(result["ptm"], 3) == 0.119
+
+        pct = self._plddt_pct(result)
+        assert len(pct) == 304
+        assert sum(1 for v in pct if v >= 70) == 0, (
+            "the example's central claim is that NOTHING reaches 70"
+        )
+        assert round(max(pct), 1) == 65.9
+        assert round(100 * sum(1 for v in pct if v < 50) / len(pct)) == 91
+
+        longest = run = 0
+        for v in pct:
+            run = run + 1 if v >= 50 else 0
+            longest = max(longest, run)
+        assert longest == 10
+
+        came = example["what_came_back"]
+        assert "0.39" in came and "0.119" in came
+        assert "65.9" in came and "91%" in came
+        assert "10 residues" in came
+        assert "<strong>Not one residue of the 304 reaches 70</strong>" in came
+        # The reading, not just the numbers.
+        assert "correct answer, not a failed run" in example["how_to_read_it"]
+
+    def test_colabfold_narration_matches_its_result_json(self, tools_app):
+        """The opposite reading on a similar-looking number: a mean that
+        hides a folded core plus a floppy tail. The 22-residue boundary
+        is load-bearing -- it is what turns 'redesign it' into 'trim
+        22 residues'."""
+        _, slugs = tools_app
+        example = _examples(slugs)["colabfold"]
+        result = json.loads(
+            (REPO / "tools" / "colabfold" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        assert result["total_length"] == 101
+        assert result["mean_plddt"] == 61.05
+        assert result["ptm"] == 0.62
+        assert result["num_recycles"] == 2
+        assert result["use_templates"] is False
+
+        pct = self._plddt_pct(result)
+        lead = 0
+        while lead < len(pct) and pct[lead] < 50:
+            lead += 1
+        assert lead == 22, "the N-terminal disordered run is the finding"
+        rest = pct[lead:]
+        assert len(rest) == 79
+        assert round(sum(rest) / len(rest), 1) == 67.3
+        assert round(max(pct), 1) == 89.9
+        assert sum(1 for v in rest if v >= 70) == 27
+
+        came = example["what_came_back"]
+        for figure in ("61.05", "0.62", "22 residues", "67.3", "89.9",
+                       "27 residues"):
+            assert figure in came, figure
+        assert "The mean cannot tell those apart" in example["how_to_read_it"]
+
+    def test_af2_narration_matches_its_result_json(self, tools_app):
+        """Ten designs that agree. The spread figures are the point: if
+        a future capture widened them the 'this is not a ranking'
+        reading would stop being true, and this fails rather than
+        letting the page keep asserting it."""
+        _, slugs = tools_app
+        example = _examples(slugs)["af2"]
+        result = json.loads(
+            (REPO / "tools" / "af2" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        designs = result["designs"]
+        assert len(designs) == 10
+        assert result["designs_completed"] == 10 and result["n_failures"] == 0
+        assert {d["total_aa"] for d in designs} == {333}
+        assert {d["model_preset"] for d in designs} == {"monomer"}
+        assert all(d["iptm"] is None for d in designs), (
+            "the narration tells the reader a blank ipTM column is a "
+            "monomer run, not a low score"
+        )
+
+        plddt = [d["mean_plddt"] for d in designs]
+        ptm = [d["ptm"] for d in designs]
+        assert min(plddt) == 74.16 and max(plddt) == 75.93
+        assert round(max(plddt) - min(plddt), 2) == 1.77
+        assert min(ptm) == 0.71 and max(ptm) == 0.73
+        assert round(max(ptm) - min(ptm), 2) == 0.02
+
+        came = example["what_came_back"]
+        assert "74.16 to 75.93" in came
+        assert "0.71 to 0.73" in came
+        assert "1.77 pLDDT points" in came and "spans 0.02" in came
+        assert "sort order, not a" in example["how_to_read_it"]
+
+    def test_esmfold2_design_narration_matches_its_result_json(
+        self, tools_app,
+    ):
+        """The top-scoring design is the rejected one. That inversion is
+        the entire example, so it is asserted as a RELATION between the
+        two rows rather than as two remembered numbers -- swap the
+        payload for one where the best score also passes and this
+        fails, as it should."""
+        _, slugs = tools_app
+        example = _examples(slugs)["esmfold2-design"]
+        result = json.loads(
+            (REPO / "tools" / "esmfold2_design" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        designs = result["designs"]
+        assert len(designs) == 2
+        assert result["target_name"] == "pd-l1"
+        assert result["is_antibody"] is False
+
+        best = max(designs, key=lambda d: d["iptm"])
+        worst = min(designs, key=lambda d: d["iptm"])
+        assert best["filter_status"] == "drop", (
+            "the example teaches that the HIGHEST ipTM was rejected"
+        )
+        assert worst["filter_status"] == "strict_pass"
+        assert best["isoelectric_point"] > 6 > worst["isoelectric_point"]
+
+        assert round(best["iptm"], 3) == 0.956
+        assert round(worst["iptm"], 3) == 0.935
+        assert round(best["isoelectric_point"], 2) == 11.95
+        assert round(worst["isoelectric_point"], 2) == 5.67
+        # ipTM separates them by noise; pI separates them by a mile.
+        assert round(best["iptm"] - worst["iptm"], 2) == 0.02
+
+        came = example["what_came_back"]
+        for figure in ("0.956", "0.935", "5.67", "11.95"):
+            assert figure in came, figure
+        read = example["how_to_read_it"]
+        assert "The higher score is the one you must not order." in read
+        assert "0.02 difference in ipTM is noise" in read
+
+    def test_no_example_publishes_a_designed_sequence(self, tools_app):
+        """The publishing rule for these pages is scores and published
+        references only. Two of the predictor payloads arrived carrying
+        model-written sequences -- colabfold's folded input was an MPNN
+        design, and esmfold2-design's payload held nine sequence fields
+        including a top-level ``best_sequence`` -- and capture strips
+        them. This is the check that they stay stripped, because the
+        page is public and a re-capture is one flag away from putting
+        them back.
+
+        esmfold is the deliberate exception and is asserted, not
+        skipped: its ``sequence`` is a published reference protein,
+        which is what lets a reader check the example at all.
+        """
+        _, slugs = tools_app
+        designed = {"best_sequence", "designed_sequence", "binder_sequence"}
+
+        def walk(node, path=""):
+            if isinstance(node, dict):
+                for key, val in node.items():
+                    here = f"{path}.{key}" if path else key
+                    assert key not in designed, f"{here} is a designed sequence"
+                    yield from walk(val, here)
+            elif isinstance(node, list):
+                for i, val in enumerate(node):
+                    yield from walk(val, f"{path}[{i}]")
+            else:
+                yield path, node
+
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            path = (
+                REPO / "tools" / slug.replace("-", "_")
+                / "example" / "result.json"
+            )
+            result = json.loads(path.read_text(encoding="utf-8"))
+            for where, _ in walk(result):
+                pass
+            if slug in ("colabfold", "esmfold2-design"):
+                assert "sequence" not in result, (
+                    f"{slug} folded a design; its sequence must not ship"
+                )
+                for row in result.get("designs", []):
+                    assert "sequence" not in row
+
+        esmfold = json.loads(
+            (REPO / "tools" / "esmfold" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        assert len(esmfold["sequence"]) == 304, (
+            "esmfold's input is a published reference and is kept on "
+            "purpose -- it is what makes the example checkable"
+        )
+
+
+    def test_input_field_names_exist_on_the_form(self, tools_app):
+        """``inputs_used`` names a form field and the value put in it, and
+        it renders directly below that form. A name the form does not use
+        sends the reader looking for a control that is not there.
+
+        Caught four of these by hand on the predictors: the pages said
+        "Mode / Single sequence", "Recycles" and "Use templates" where
+        the forms say "Preset / Standalone, one FASTA", "Number of
+        recycles" and "Use PDB templates" -- and one named a "Model"
+        field that does not exist at all, because AF2 derives monomer vs
+        multimer from the record rather than asking. Prose is the surface
+        with no compiler, so it gets this instead.
+        """
+        _, slugs = tools_app
+        from tools import base as tool_base
+
+        missing = {}
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            form = (
+                REPO / "templates"
+                / tool_base.get(slug).form_template
+            ).read_text(encoding="utf-8")
+            for field, _value, _why in example["inputs_used"]:
+                if field not in form:
+                    missing.setdefault(slug, []).append(field)
+        assert not missing, (
+            "worked-example input names that appear on no form label: "
+            f"{missing}"
+        )
 
 
 class TestCaptureScrubsBeforeItPublishes:

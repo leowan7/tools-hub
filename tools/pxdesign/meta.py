@@ -214,7 +214,7 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Target structure",
+            "Target PDB",
             "the two-chain crystal structure",
             "Both chains staged together. Handing over one chain would let "
             "the model design against half a site that does not exist on "
