@@ -1,5 +1,25 @@
 # Should Epitope Scout install `mkdssp`? — decision
 
+> **SUPERSEDED 2026-08-21 — do not resume the install work.**
+> The question this document answers ("how do we get real DSSP into the
+> deployed image?") was resolved without a binary. `scout/pydssp_numpy.py`
+> is the DSSP algorithm in 113 vendored MIT lines, with no new dependency;
+> it agrees with mkdssp 4.2.2 on **97.9%** of residues against the
+> fallback's 70.2%, and it *accepts headerless coordinate files that
+> mkdssp 4.2.2 refuses outright*.
+>
+> It is **not** "strictly better" than the install, and an earlier draft of
+> this banner said so wrongly: mkdssp is the *oracle* those 97.9% are
+> measured against, so the binary wins on accuracy by the 2.1 points pydssp
+> gives up. pydssp wins on coverage, and on needing no install at all —
+> which is what makes the Railpack blocker stop mattering.
+> See `docs/qc/scout-pydssp-adoption.md`.
+>
+> The merits analysis below is still worth reading (§2 and §7 in
+> particular, which record where earlier drafts were wrong), and §0 remains
+> the authoritative account of why `nixpacks.toml` is inert. But the
+> "decision" it reaches is no longer the live one.
+
 **Decision (2026-08-19): the install is BLOCKED on a mechanism defect, not
 on the merits. `nixpacks.toml` is not read by this deploy.**
 
@@ -55,6 +75,15 @@ route nobody checked. The existing `gcc` entry is presumably inert too.
    package was NOT established. If that host is the Scout users reach,
    everything here — the provenance column included — may not reach them.
    Settle this before more Scout work lands in this repo.
+
+   > **RESOLVED 2026-08-21.** `scout.ranomics.com` 301-redirects to
+   > `https://tools.ranomics.com/scout/` (verified by `curl -sI`, which
+   > returns `301` then `200`). `leowan7/epitope-scout` is a pure redirect
+   > shell: its `app.py` redirects every path except `/health`, and it has
+   > done so since 2026-04-24; everything else was deleted on 2026-08-19
+   > (`a8c3bf3`). **This repo's `scout/` package is what users reach**, so
+   > #158, #161, #165 and this change all landed in the right place. The
+   > README still described the old arrangement and has been corrected.
 
 **NOT verified:** that Railpack ignores `nixpacks.toml` outright. The
 inference is "builder is Railpack" plus "installs via mise" plus no nix

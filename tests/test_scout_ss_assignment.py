@@ -12,6 +12,8 @@ branch is exercised on every machine.
 Evidence: docs/qc/scout-dssp-fallback-measurement.md
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from Bio.PDB.Atom import Atom
@@ -20,6 +22,7 @@ from Bio.PDB.Model import Model
 from Bio.PDB.Residue import Residue
 
 from scout import scoring
+from scout.sasa import STANDARD_AA
 
 
 class _FakeDSSP:
@@ -102,7 +105,12 @@ def test_assign_dssp_maps_every_dssp_code(monkeypatch):
 
 
 def test_assign_dssp_falls_back_when_the_binary_is_missing(monkeypatch, caplog):
-    """No mkdssp on PATH (the production reality) must not raise."""
+    """No mkdssp on PATH (the production reality) must not raise.
+
+    ``object()`` has no get_chains, so the pydssp branch raises internally
+    and is skipped -- which is the point: a broken branch must fall through
+    to the next one rather than propagate.
+    """
     def _boom(model, pdb_path, dssp="mkdssp"):
         raise FileNotFoundError("mkdssp")
 
@@ -114,7 +122,88 @@ def test_assign_dssp_falls_back_when_the_binary_is_missing(monkeypatch, caplog):
         ss_map, method = scoring.assign_dssp(object(), "unused.pdb")
     assert ss_map is sentinel
     assert method == "phi_psi"
-    assert "falling back to phi/psi" in caplog.text
+    assert "falling back to in-process assignment" in caplog.text
+    assert "pydssp SS assignment failed" in caplog.text
+
+
+def test_pydssp_refuses_partial_assignment_so_ss_method_cannot_lie(monkeypatch):
+    """A partial pydssp map would make ss_method report a branch that did not run.
+
+    assign_dssp only falls through when the map is ENTIRELY empty. So if
+    pydssp skipped one chain (or one residue) and labelled the rest, the run
+    would be stamped ss_method="pydssp" while run_pipeline scored the skipped
+    chain wholly on the "loop" floor -- ss_map.get(key, "loop"). Whole-model
+    all-or-nothing is what makes the single per-run column truthful, so it is
+    asserted here rather than assumed.
+    """
+    import copy
+
+    model = _example_model()
+    assert len(scoring._assign_ss_by_pydssp(model)) == 129, "fixture sanity"
+
+    maimed = copy.deepcopy(model)
+    victim = next(r for r in maimed["A"].get_residues() if "O" in r)
+    victim.detach_child("O")
+
+    # Not 128 labels -- zero. One unusable residue must sink the whole map.
+    assert scoring._assign_ss_by_pydssp(maimed) == {}
+
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+    ss_map, method = scoring.assign_dssp(maimed, "unused.pdb")
+    assert method == "phi_psi", "must name the branch that actually labelled"
+    assert ss_map, "phi/psi needs no O and should still cover this model"
+
+
+def test_pydssp_falls_through_above_the_residue_cap(monkeypatch):
+    """pydssp is O(L^2) in memory; an uncapped chain is an OOM vector.
+
+    ANON_MAX_UPLOAD_BYTES admits ~25,900 backbone-only residues in one chain,
+    which extrapolates to ~85 GB of float64 H-bond map. numpy's lazy commit
+    means that allocation SUCCEEDS, so there is no MemoryError to catch -- the
+    worker dies touching the pages. The cap must therefore be checked before
+    the array is built, not defended with try/except.
+    """
+    model = _example_model()
+    assert len(scoring._assign_ss_by_pydssp(model)) == 129
+
+    monkeypatch.setattr(scoring, "_PYDSSP_MAX_RESIDUES", 50)
+    assert scoring._assign_ss_by_pydssp(model) == {}
+
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+    _, method = scoring.assign_dssp(model, "unused.pdb")
+    assert method == "phi_psi"
+
+
+def test_assign_dssp_falls_through_when_mkdssp_returns_no_keys(monkeypatch):
+    """mkdssp can RETURN empty instead of raising, and that must fall through.
+
+    Regression test for a real defect: the fallback chain used to live
+    entirely inside ``except``, so a DSSP() call that succeeded with zero
+    ``property_keys`` set method="dssp", skipped pydssp and phi/psi
+    altogether, and returned ("none") -- silently scoring every patch at the
+    loop floor while a perfectly readable backbone sat in the model. The
+    docstring promised "skipped when it raises OR yields no labels"; only
+    the raise half was implemented.
+    """
+    class _EmptyDSSP:
+        property_keys = ()
+
+        def __init__(self, model, pdb_path, dssp="mkdssp"):
+            pass
+
+    monkeypatch.setattr(scoring, "DSSP", _EmptyDSSP)
+    sentinel = {("A", (" ", 1, " ")): "strand"}
+    monkeypatch.setattr(scoring, "_assign_ss_by_pydssp", lambda model: sentinel)
+
+    ss_map, method = scoring.assign_dssp(object(), "unused.pdb")
+    assert ss_map is sentinel
+    assert method == "pydssp"
 
 
 def test_assign_dssp_reports_none_when_no_labels_were_produced(monkeypatch):
@@ -179,7 +268,7 @@ def test_phi_psi_fallback_degenerate_geometry_yields_loop_not_a_crash():
 def test_phi_psi_fallback_returns_empty_without_raising(build):
     """The {} outcome is reached by returning {}, never by an exception.
 
-    assign_dssp only logs "Phi/psi fallback also failed" when
+    assign_dssp only logs "phi_psi SS assignment failed" when
     _assign_ss_by_phi_psi RAISES. It does not raise on empty input, so that
     second warning is effectively unreachable and an all-loop score carries
     no log signal.
@@ -262,3 +351,192 @@ def test_csv_column_lists_are_in_sync():
     from scout import flags, pipeline
 
     assert flags._CSV_COLUMNS_BASE == pipeline.CSV_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# pydssp branch (added 2026-08-21)
+# ---------------------------------------------------------------------------
+#
+# mkdssp 4.2.2 truth for static/example/1HEW.pdb chain A, generated with the
+# real binary and the corrected tuple index (residue_data[2]); H/G/I folded to
+# H, E/B to E, everything else to L. 129 residues, resseq 1-129 contiguous,
+# every one carrying a full N/CA/C/O backbone. If the fixture ever changes,
+# regenerate by running mkdssp 4.2.2 over it directly -- the script that did
+# so lives in a session scratchpad, not this repo (see section 10 of
+# docs/qc/scout-pydssp-adoption.md).
+_1HEW_MKDSSP_TRUTH = (
+    "LELLHHHHHHHHHHLLLLLELLELHHHHHHHHHHHHLLELLLEEELLLLLEEELLLLEEL"
+    "LLLLELLLLLLLLLLLLLEHHHHHLLLLHHHHHHHHHHHLLLLHHHHLHHHHHHLLLLLH"
+    "HHHHLLLLL"
+)
+_SS_LETTER = {"helix": "H", "strand": "E", "loop": "L"}
+
+
+def _example_model(name="1HEW.pdb"):
+    from Bio.PDB import PDBParser
+
+    path = Path(__file__).resolve().parents[1] / "static" / "example" / name
+    return PDBParser(QUIET=True).get_structure("x", str(path))[0]
+
+
+def _pydssp_string(model, chain_id="A"):
+    """Chain's pydssp labels as an H/E/L string, in file order."""
+    ss_map = scoring._assign_ss_by_pydssp(model)
+    out = []
+    for residue in model[chain_id].get_residues():
+        if residue.get_id()[0] != " " or residue.resname not in STANDARD_AA:
+            continue
+        if not all(a in residue for a in scoring._PYDSSP_BACKBONE):
+            continue
+        out.append(_SS_LETTER[ss_map[(chain_id, residue.get_id())]])
+    return "".join(out)
+
+
+def test_pydssp_reproduces_mkdssp_on_the_bundled_1hew_fixture():
+    """The whole point of the branch: it must agree with the real binary.
+
+    This is the test that fails if the vendored algorithm is subtly broken.
+    The phi/psi fallback it replaced scores ~0.70 here, so the 0.90 floor is
+    comfortably below the measured 0.969 and still far above anything the
+    old branch could reach.
+    """
+    got = _pydssp_string(_example_model())
+    assert len(got) == len(_1HEW_MKDSSP_TRUTH)
+    agree = sum(a == b for a, b in zip(got, _1HEW_MKDSSP_TRUTH))
+    assert agree / len(got) >= 0.90, (
+        "pydssp agreed on %d/%d residues\n  truth  %s\n  pydssp %s"
+        % (agree, len(got), _1HEW_MKDSSP_TRUTH, got)
+    )
+    # Not a degenerate all-one-label answer that could pass a loose ratio.
+    assert set(got) == {"H", "E", "L"}
+
+
+def test_pydssp_label_columns_are_not_transposed():
+    """Guard the one-hot column order, which fails silently if flipped.
+
+    scout/pydssp_numpy.assign returns np.stack([loop, helix, strand]), so
+    _PYDSSP_LABELS must match that exactly. Swapping helix and strand keeps
+    every label a legal value and every downstream call working -- it just
+    makes the answers wrong, which is precisely the failure #161 shipped.
+    """
+    assert scoring._PYDSSP_LABELS == ("loop", "helix", "strand")
+    # Independently: a helix-rich chain must come back helix-dominant.
+    got = _pydssp_string(_example_model())
+    assert got.count("H") > got.count("E"), (
+        "1HEW is mostly-alpha; strand-dominant output means the columns are "
+        "transposed, not that the structure changed"
+    )
+
+
+def test_pydssp_is_preferred_over_phi_psi(monkeypatch):
+    """With no mkdssp, a full backbone must take the pydssp branch."""
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+    monkeypatch.setattr(
+        scoring, "_assign_ss_by_phi_psi",
+        lambda model: pytest.fail("phi/psi ran despite a readable backbone"),
+    )
+
+    ss_map, method = scoring.assign_dssp(_example_model(), "unused.pdb")
+    assert method == "pydssp"
+    assert len(ss_map) == 129
+
+
+def test_phi_psi_still_covers_backbones_pydssp_cannot_read(monkeypatch):
+    """An O-stripped model has no H-bonds to find, so phi/psi must catch it.
+
+    This is why the phi/psi branch survives rather than being deleted: DSSP
+    needs the carbonyl oxygen, dihedrals do not.
+    """
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+    model = _example_model()
+    for residue in list(model.get_residues()):
+        if "O" in residue:
+            residue.detach_child("O")
+
+    assert scoring._assign_ss_by_pydssp(model) == {}
+    ss_map, method = scoring.assign_dssp(model, "unused.pdb")
+    assert method == "phi_psi"
+    assert ss_map, "phi/psi produced nothing for a model that still has N/CA/C"
+
+
+def test_a_chain_too_short_to_assign_aborts_the_whole_map():
+    """One unassignable chain must sink the map, not just drop itself.
+
+    turn5 reads the offset-5 diagonal, so a chain under _PYDSSP_MIN_RESIDUES
+    raises on a shape mismatch inside the algorithm. Dropping only that chain
+    would leave a partial map, and assign_dssp falls through only on an empty
+    one -- so the run would be stamped ss_method="pydssp" while the short
+    chain read as "loop" throughout.
+
+    Uses a TWO-chain fixture deliberately: on a single-chain model "skip the
+    chain" and "abort the map" are indistinguishable, and an earlier version
+    of this test could not tell them apart.
+    """
+    model = _example_model("3s7g_fc_ab.pdb")
+    assert len(scoring._assign_ss_by_pydssp(model)) == 130, "fixture sanity"
+
+    chain = model["A"]
+    keep = [r.get_id() for r in chain.get_residues()][:5]
+    for residue in list(chain.get_residues()):
+        if residue.get_id() not in keep:
+            chain.detach_child(residue.get_id())
+    assert len(list(chain.get_residues())) == 5
+
+    # Not chain B's 65 labels -- nothing at all.
+    assert scoring._assign_ss_by_pydssp(model) == {}
+
+
+def _ideal_helix_coords(n=12):
+    """N/CA/C/O backbone traced along an ideal alpha helix.
+
+    Only used to prove the poisoned-import copy still computes; the accuracy
+    claim is carried by the 1HEW fixture test above.
+    """
+    rise, turn, radius = 1.5, np.deg2rad(100.0), 2.3
+    coords = []
+    for i in range(n):
+        base = np.array([radius * np.cos(i * turn),
+                         radius * np.sin(i * turn),
+                         i * rise])
+        # crude but valid backbone offsets; the geometry only has to be finite
+        coords.append([base + np.array(d) for d in
+                       ((-0.6, 0.3, -0.4), (0.0, 0.0, 0.0),
+                        (0.7, 0.5, 0.4), (0.9, 1.6, 0.6))])
+    return np.asarray(coords, dtype=float)
+
+
+def test_vendored_pydssp_needs_no_einops(monkeypatch):
+    """The vendored copy must stay dependency-free.
+
+    It was rewritten off einops specifically to avoid adding a dependency
+    for eleven broadcast calls, and einops is NOT in requirements.txt -- so if
+    an upstream re-sync quietly restores those calls, the module would blow
+    up in production while a grep-for-the-word test stayed green (the word
+    appears in this file's comments by design). Import it with einops
+    poisoned instead, which tests the property rather than the spelling.
+    """
+    import builtins
+    import importlib
+    import sys
+
+    real_import = builtins.__import__
+
+    def _no_einops(name, *args, **kwargs):
+        if name == "einops" or name.startswith("einops."):
+            raise ImportError("einops is deliberately not a dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_einops)
+    monkeypatch.delitem(sys.modules, "scout.pydssp_numpy", raising=False)
+    vendored = importlib.import_module("scout.pydssp_numpy")
+
+    # and it still computes, not merely imports
+    onehot = vendored.assign(_ideal_helix_coords())
+    assert onehot.shape == (12, 3)
+    assert onehot.sum(-1).tolist() == [1] * 12, "one-hot rows must sum to 1"

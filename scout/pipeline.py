@@ -9,14 +9,15 @@ the full analysis from PDB file to results.csv:
     4. Filter surface residues (RSA >= SURFACE_RSA_THRESHOLD, standard AA only)
     5. Cluster surface residues into patches (patches.py)
     6. Score each patch: geometry, B-factor, secondary structure (scoring.py).
-       NB: the SS labels come from DSSP only if mkdssp is on PATH in the
-       deployed image; otherwise from a phi/psi Ramachandran fallback that
-       agrees with real DSSP on ~70% of residues. Nothing in this repo
-       installs mkdssp (checked 2026-08-19), so barring a hand-added
-       Railway build package every production run has used the fallback.
+       NB: the SS labels come from mkdssp only if it is on PATH in the
+       deployed image, which nothing in this repo arranges (checked
+       2026-08-19). The normal path is instead an in-process
+       implementation of the same DSSP algorithm, which agrees with real
+       DSSP on 97.9% of residues; a phi/psi Ramachandran fallback (~70%)
+       remains behind it for backbones missing the O atoms DSSP needs.
        Which branch actually ran is recorded per run in the ss_method
-       column of results.csv, so this no longer has to be inferred.
-       See docs/qc/scout-dssp-fallback-measurement.md.
+       column of results.csv, so this never has to be inferred.
+       See docs/qc/scout-pydssp-adoption.md.
     7. Write results.csv and return its Path
 
 This is the single function called by the Flask /analyze route.
@@ -79,12 +80,13 @@ CSV_COLUMNS = [
     "centroid_z",
     "is_plddt",
     # Which branch of assign_dssp produced the secondary_structure column:
-    # "dssp" (mkdssp ran), "phi_psi" (Ramachandran fallback), or "none"
-    # (empty map, every patch at the loop floor). Constant across the run,
-    # like is_plddt. Recorded because the two were previously
-    # indistinguishable in every artefact Scout emits, which is how the
-    # fallback ran unnoticed from launch until 2026-08-19.
-    # See docs/qc/scout-dssp-fallback-measurement.md.
+    # "dssp" (mkdssp ran), "pydssp" (in-process DSSP, the normal path),
+    # "phi_psi" (Ramachandran fallback), or "none" (empty map, every patch
+    # at the loop floor). Constant across the run, like is_plddt. Recorded
+    # because these were previously indistinguishable in every artefact
+    # Scout emits, which is how the phi/psi fallback ran unnoticed from
+    # launch until 2026-08-19.
+    # See docs/qc/scout-pydssp-adoption.md.
     "ss_method",
 ]
 
@@ -272,9 +274,9 @@ def run_pipeline(
         6. Cluster surface residues (cluster_surface_residues).
         7. Raise if no patches produced.
         8. Compute chain-level B-factor scores (compute_bfactor_scores).
-        9. Assign secondary structure (assign_dssp: DSSP if mkdssp is on
-           PATH, else the phi/psi fallback; empty dict = all loop). Which
-           branch ran is recorded in the ss_method CSV column.
+        9. Assign secondary structure (assign_dssp: mkdssp if on PATH,
+           else in-process pydssp, else the phi/psi fallback; empty dict =
+           all loop). Which branch ran is recorded in the ss_method column.
         10. Build all-atom coordinate array for burial scoring.
         11. Score geometry for each patch (score_geometry).
         12. Normalize burial across all patches (normalize_burial_scores).
@@ -395,10 +397,11 @@ def run_pipeline(
     bfactor_scores = compute_bfactor_scores(all_chain_residues, plddt_mode=plddt_detected)
 
     # ------------------------------------------------------------------
-    # Step 9: Secondary structure. Real DSSP only if mkdssp is on PATH in
-    # the deployed image; otherwise the phi/psi fallback (~70% agreement
-    # with real DSSP, ss_score biased ~+0.23 high), and beyond that an
-    # empty dict = all loop.
+    # Step 9: Secondary structure. Real DSSP if mkdssp is on PATH in the
+    # deployed image; otherwise pydssp, the same algorithm in process (~97.9%
+    # agreement); and only if that cannot read the backbone, the phi/psi
+    # fallback (~70% agreement, ss_score biased ~+0.23 high). Beyond that an
+    # empty dict = all loop. ss_method records which one actually ran.
     # ------------------------------------------------------------------
     ss_map, ss_method = assign_dssp(model, str(pdb_path))
 

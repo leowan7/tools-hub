@@ -109,6 +109,17 @@ undercount. Production does not install it: `nixpacks.toml` sets
 unavailable … falling back to phi/psi classification", which is production's real
 path. **No CPU escapes the measurement.** Confirmed, not assumed.
 
+> **Superseded in part, 2026-08-21.** Scout no longer falls straight from
+> mkdssp to phi/psi: `scout/pydssp_numpy.py` now sits between them and is the
+> path these numbers were *not* measured on. pydssp is O(L^2) in time and
+> memory where phi/psi was O(L), so the CPU figures here are a floor, not the
+> current cost. The exposure is bounded by `_PYDSSP_MAX_RESIDUES = 2000`
+> (scout/scoring.py), above which a chain falls through to phi/psi and these
+> numbers apply again; at that cap one chain costs ~1.6 CPU-s and ~0.51 GB.
+> The `~9 CPU-s` adversarial `/progress` figure in `scout/routes.py:145` was
+> derived here and has **not** been re-measured against the new branch.
+> See `docs/qc/scout-pydssp-adoption.md`.
+
 ### 1.3 Worst case — I do NOT reproduce the builder's number
 
 Same six RCSB entries, all six file sizes matching the builder's table exactly:

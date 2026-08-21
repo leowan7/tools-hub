@@ -163,8 +163,16 @@ confirm against a real build log. The start command is in `Procfile`
 (also duplicated in `nixpacks.toml`).
 
 Note `scout.ranomics.com` is a SEPARATE Railway project deploying from
-the separate `leowan7/epitope-scout` repo; this repo's `web` service
-serves `tools.ranomics.com`.
+the separate `leowan7/epitope-scout` repo — but that project is only a
+**301-redirect shell**, and has been since 2026-04-24. It redirects every
+path except `/health` to `https://tools.ranomics.com/scout/`; the rest of
+that repo was deleted on 2026-08-19 (`a8c3bf3`) because a stale, broken
+copy of Scout's `analysis/` package there was a trap for anyone grepping
+the org. Verified 2026-08-21: `curl -sI https://scout.ranomics.com/`
+returns `301` to `https://tools.ranomics.com/scout/`, which returns `200`.
+
+**Scout code changes belong in this repo**, in `scout/`. Users reach the
+same app on both hostnames.
 
 Health check: `/health` returns `{"status": "ok"}` unauthenticated, so
 the port scanner can verify the app without credentials.
