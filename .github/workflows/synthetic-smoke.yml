@@ -13,10 +13,26 @@ name: Synthetic smoke (Platform API)
 # auth, idempotency, persistence, or response-shape regressions -- even when
 # the site still looks "up".
 #
+# The second step is the ONLY consumer of /metrics. Phase 6 of the anonymous
+# rate-limiting plan asks for an alert on REFUSAL rate rather than error rate
+# ("a limiter refusing 40% of real users is an outage that does not look like
+# one"), and nothing scraped /metrics at all -- no Prometheus, no Grafana, no
+# scrape config anywhere in the repo. This runner already has the two things
+# that alert needs: it runs outside Railway, and a non-zero exit already emails
+# the owner. See scripts/check_refusal_rate.py for what the ratio is and, more
+# importantly, what it is not (counters reset on deploy, so it is "since
+# container boot", not a windowed rate).
+#
 # Prerequisites:
 #   - Repository secret RK_LIVE_KEY: a member-role Platform API key minted at
 #     https://tools.ranomics.com/account/api-keys
 #     (Settings > Secrets and variables > Actions > New repository secret).
+#   - Repository secret METRICS_TOKEN: any long random string, set to the SAME
+#     value as the METRICS_TOKEN service variable on the Railway deployment.
+#     /metrics is deny-by-default, so with the variable unset on Railway it
+#     403s and the refusal-rate step fails the job (deliberately -- a monitor
+#     that goes quiet when its own plumbing breaks is the failure mode Phase 6
+#     exists to stop).
 #
 # Cleanup: the smoke withdraws the row it creates. Its final step is
 # DELETE /experiments/{id}, which runs whenever the create response carried
@@ -67,6 +83,7 @@ jobs:
     timeout-minutes: 10
     env:
       RK_LIVE_KEY: ${{ secrets.RK_LIVE_KEY }}
+      METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,8 +100,24 @@ jobs:
             exit 1
           fi
 
+      - name: Guard - METRICS_TOKEN is set
+        run: |
+          if [ -z "${METRICS_TOKEN}" ]; then
+            echo "::error::METRICS_TOKEN repo secret is not set. Generate one (e.g. openssl rand -hex 32), add it under Settings > Secrets and variables > Actions, and set the SAME value as a METRICS_TOKEN service variable on the Railway deployment."
+            exit 1
+          fi
+
       # The smoke script uses only the Python standard library, so there is
       # nothing to pip install. It exits 0 on all-pass, non-zero on any
       # failure (which fails this job and triggers the GitHub failure email).
       - name: Run Platform API smoke
         run: python scripts/smoke_platform_api.py
+
+      # Same rules: stdlib only, non-zero exit fails the job. Runs after the
+      # API smoke so an outright outage is reported as an outage rather than as
+      # an unreachable /metrics. Thresholds are overridable here without a code
+      # change -- REFUSAL_RATE_THRESHOLD (default 0.20) and
+      # REFUSAL_RATE_MIN_SAMPLES (default 50, the denominator below which the
+      # check reports and skips because the counters reset on deploy).
+      - name: Check Epitope Scout refusal rate
+        run: python scripts/check_refusal_rate.py
