@@ -103,7 +103,7 @@ from flask import jsonify, request, session
 # RIGHT (TRUSTED_PROXY_HOPS, default 1) precisely so this key cannot be chosen
 # by the caller — a leftmost read would let one header nullify every bucket
 # below. Do not swap it for an inline header parse.
-from shared.metrics import SCOUT_UNMETERED_BODIES, _client_ip
+from shared.metrics import SCOUT_UNMETERED_BODIES, _client_ip, observe_scout_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -744,6 +744,13 @@ REASON_JOB_EXPIRED = "job_expired"     # job dir reaped or never existed
 
 def _refuse(*, sse: bool, retry_after: int, reason: str, message: str):
     """Build the refusal both tiers share, in the shape the route can carry."""
+    # ONE call site for THREE reasons (rate_limited / session_rate_limited /
+    # no_session), counted here rather than at the two tiers above precisely
+    # because this is where they already converge — and counted BEFORE the
+    # response is built, not inside the SSE generator, since a generator body
+    # does not run until the client iterates the response and the refusal has
+    # already been decided by the time we get here.
+    observe_scout_refusal(reason)
     if sse:
         from flask import current_app  # noqa: PLC0415
 

@@ -33,6 +33,7 @@ from flask import (
 )
 
 from shared.auth import login_required
+from shared.metrics import observe_scout_refusal
 
 from scout.errors import ScoutInputError
 from scout.jobs import (
@@ -321,6 +322,7 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
         return None
     if count_job_dirs(ANON_OWNER_PREFIX) >= ANON_MAX_LIVE_JOBS:
         logger.warning("Scout anonymous job capacity reached (%d).", ANON_MAX_LIVE_JOBS)
+        observe_scout_refusal(REASON_AT_CAPACITY)
         return {
             "error": (
                 "Epitope Scout is at capacity for anonymous runs right now. "
@@ -330,6 +332,9 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
         }, 503
     anon = session.get(ANON_SESSION_KEY)
     if anon and count_job_dirs(anon) >= ANON_MAX_LIVE_JOBS_PER_SESSION:
+        # Same reason as the branch above, DIFFERENT status code (429 vs 503).
+        # One refusal, counted once, which a status-code metric could not do.
+        observe_scout_refusal(REASON_AT_CAPACITY)
         return {
             "error": (
                 "You have several Epitope Scout structures still loaded. "
@@ -946,6 +951,7 @@ def analyze():
     _chain_total = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
+            observe_scout_refusal(REASON_BUSY)
             return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
         try:
             if _results_csv_for_chain(job_dir, chain_id) is None:
@@ -1281,13 +1287,21 @@ def progress():
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not _valid_chain(chain_id) or pdb_path is None:
+        # Reason picked HERE rather than inside the generator, so the count and
+        # the frame cannot pick different ones — and so the count happens when
+        # we decide to refuse. A generator body does not run until the response
+        # is iterated, and this one is not wrapped in stream_with_context, so
+        # in-generator counting would fire late, off the request context, and
+        # not at all for a client that hangs up first.
+        if not job_id or not _valid_chain(chain_id):
+            msg = "job_id and a valid chain id are required."
+            reason = REASON_BAD_REQUEST
+        else:
+            msg = "Job not found or expired. Please re-upload your file."
+            reason = REASON_JOB_EXPIRED
+        observe_scout_refusal(reason)
+
         def _error_stream():
-            if not job_id or not _valid_chain(chain_id):
-                msg = "job_id and a valid chain id are required."
-                reason = REASON_BAD_REQUEST
-            else:
-                msg = "Job not found or expired. Please re-upload your file."
-                reason = REASON_JOB_EXPIRED
             yield "data: " + json.dumps({
                 "stage": "error", "msg": msg, "reason": reason,
             }) + "\n\n"
@@ -1378,6 +1392,12 @@ def progress():
                     "msg": _BUSY_MESSAGE,
                     "reason": REASON_BUSY,
                 }
+                # INSIDE the generator, unavoidably: the slot is taken when the
+                # response starts being iterated, so the shed does not even
+                # exist as a decision until this frame runs. Hoisting it would
+                # count refusals that never happened. This body IS inside
+                # stream_with_context, so request.endpoint still resolves.
+                observe_scout_refusal(REASON_BUSY)
                 yield f"data: {json.dumps(busy)}\n\n"
                 return
             yield from _generate()
