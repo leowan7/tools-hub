@@ -1,9 +1,12 @@
 # Should Epitope Scout install `mkdssp`? — decision
 
-> **SUPERSEDED 2026-08-21 — do not resume the install work.**
-> The question this document answers ("how do we get real DSSP into the
-> deployed image?") was resolved without a binary. `scout/pydssp_numpy.py`
-> is the DSSP algorithm in 113 vendored MIT lines, with no new dependency;
+> **SUPERSEDED 2026-08-21 (pending merge — the branch is not deployed).**
+> Do not resume the install work. The question this document answers ("how do
+> we get real DSSP into the deployed image?") is answered without a binary by
+> an open branch; it is answered in code, not yet in production. `scout/pydssp_numpy.py`
+> is DSSP's H-bond algorithm -- simplified, per upstream: no beta-bulge,
+> approximate amide H, 3-state output -- in 113 vendored MIT lines, with no
+> new dependency;
 > it agrees with mkdssp 4.2.2 on **97.9%** of residues against the
 > fallback's 70.2%, and it *accepts headerless coordinate files that
 > mkdssp 4.2.2 refuses outright*.

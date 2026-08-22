@@ -21,8 +21,10 @@ because it has no hydrogen-bond information. **That argument is correct and
 is not challenged here.** It is precisely the reason this change does not
 touch the thresholds: rather than tune a signal that lacks the necessary
 information, it supplies the missing information. `pydssp` computes the
-electrostatic H-bond map and reads helices and bridge ladders off it — the
-real DSSP algorithm, just without the binary.
+electrostatic H-bond map and reads helices and bridge ladders off it — DSSP's
+own algorithm without the binary, simplified as upstream documents (no
+beta-bulge, approximate amide H, 3-state output), which is what the measured
+97.9% rather than 100% agreement reflects.
 
 The parallel option, installing `mkdssp`, was examined in
 `docs/qc/scout-dssp-install-decision.md` and blocked: Railway builds this
@@ -83,7 +85,7 @@ denominate different things. Left unresolved. The comparison rests on the two
 control figures above, which do reproduce exactly.
 
 (Line numbers are deliberately not cited into that document: this very commit
-added a banner to it and shifted every line by 14.)
+added a banner to it and shifted every line below it by 17.)
 
 ---
 
@@ -257,7 +259,7 @@ word, which would false-positive on the comments documenting the change.
 One further, non-einops edit: upstream's
 `np.clip(cutoff - margin - e, a_min=-margin, a_max=margin)` is written
 positionally as `np.clip(cutoff - margin - e, -margin, margin)`
-(`scout/pydssp_numpy.py:107`). Behaviour-identical, but it *is* a second
+(in `scout/pydssp_numpy.py`). Behaviour-identical, but it *is* a second
 difference from upstream, and this file's whole justification is that it stays
 diffable -- so it is recorded rather than described as "the only edit".
 
@@ -272,7 +274,7 @@ proline hook both stay) so it remains diffable against upstream.
 ```
 mkdssp binary   ->  "dssp"
       | unavailable / raises / empty result
-pydssp          ->  "pydssp"     <- the normal path in production
+pydssp          ->  "pydssp"     <- the normal path once this lands
       | empty result
 phi/psi         ->  "phi_psi"
       | empty result
@@ -393,13 +395,17 @@ answers wrong — exactly the failure mode #161 shipped.
 
 ## 8. Runtime
 
-Mean of 5 calls after a warm-up, on the vendored numpy backend:
+Mean of 5 calls after a warm-up, on the vendored numpy backend and the repo
+venv. (Re-measured in QC round 9: the original row values — 3.3 / 93.7 /
+160.4 ms — were 1.7-2.7x high and did not reproduce, and the `6m0j` entry was
+bit-for-bit the measured `1igy` value, which is what a column shifted by one
+row looks like. Residue counts were correct throughout.)
 
 | chain | residues | per call |
 |---|---|---|
-| `1ubq:A` | 76 | 3.3 ms |
-| `1igy:B` | 434 | 93.7 ms |
-| `6m0j:A` | 597 | 160.4 ms |
+| `1ubq:A` | 76 | 1.1 ms |
+| `1igy:B` | 434 | 48.0 ms |
+| `6m0j:A` | 597 | 90.5 ms |
 
 The H-bond map is O(L^2) in **time and memory**, and memory is the binding
 constraint — the earlier draft of this section quoted no memory figure at all,
@@ -409,14 +415,15 @@ which is how the ceiling below went unnoticed:
 |---|---|---|
 | 600 | 0.09 s | 0.05 GB |
 | 1000 | 0.26 s | 0.13 GB |
-| **2000 (the cap)** | **1.59 s** | **0.51 GB** |
+| **2000 (the cap)** | **1.02 s** | **0.51 GB** |
 | 6000 | ~9 s | ~4.3 GB |
 | ~25,900 (the 8 MB upload cap) | — | **~85 GB** |
 
 The branch this replaced was O(L), so nothing upstream ever needed a residue
 bound. `ANON_MAX_UPLOAD_BYTES = 8 MB` (`scout/routes.py`) admits roughly
 25,900 backbone-only residues in a single chain on an **unauthenticated**
-route. numpy's lazy commit means an allocation that large *succeeds*, so there
+route. Under Linux's default memory overcommit — the production platform, and
+not a numpy property — an allocation that large *succeeds*, so there
 is no `MemoryError` to catch — the worker dies touching the pages. A
 try/except cannot defend this; the size must be checked first.
 
@@ -429,8 +436,8 @@ the box, and `ss_method` honestly reports `"phi_psi"`. Guarded by
 genuinely bounded — the arrays are freed between chains, so peak stays at one
 chain's 0.51 GB, and the OOM vector is closed. Time is not: the same ~25,900
 residues split as 13 chains of 1,999 clears every per-chain check and costs
-13x the cap's per-chain time — at the 1.59 s per 2,000-residue chain in the
-table above, roughly **21 CPU-seconds on one anonymous request**, against a branch
+13x the cap's per-chain time — at 1.02 s per 2,000-residue chain, roughly
+**13 CPU-seconds on one anonymous request**, against a branch
 that was O(L) and effectively free. Bounded in practice only by the route's
 concurrency slot and the anon rate limiter, both of which now carry more cost
 per admitted request than when they were sized.
@@ -482,6 +489,18 @@ Stated as plainly as the rest:
   absent from the dev venv, so `run_pipeline` could not be driven over the
   corpus. Still the cheapest thing to check after deploy: count rows in a
   real `results.csv` at `composite_score` in [0.40, 0.45).
+- **The 97.9% was measured before the all-or-nothing rule existed.** Section 1
+  says both arms were driven through the real shipped functions, and they
+  were — but the shipped function has since changed: it now returns `{}` for
+  the whole model if any chain has a standard residue missing a backbone atom
+  (section 4). Under today's code, a corpus structure with one such residue
+  would contribute no labels at all rather than a near-complete map, so the
+  headline could not be reproduced from it unchanged. QC probed 10 of the ~29
+  corpus structures — 1A6M, 1BJ1, 1EMA, 1IGY, 1TUP, 1UBQ, 3AVE, 3HFM, 4HHB,
+  6M0J, chosen to cover every multi-chain, antibody and disordered candidate —
+  and **all have zero standard residues missing a backbone atom**, so all
+  still return full maps. The figure is therefore very likely intact, but it
+  was not re-run end to end after the rule landed.
 - **No proline correction.** Upstream's `donor_mask` hook (proline has no
   amide H) is left unused, exactly as during measurement. The 97.9% figure
   is *with* that approximation, so closing it could only help. Independently
@@ -516,5 +535,5 @@ are not checked in:
 - `coverage_test.py` — inputs mkdssp refuses, plus timing
 - `gen_truth.py` — regenerates the embedded 1HEW truth string
 
-The in-repo regression anchors are the six new tests in
+The in-repo regression anchors are the nine new tests in
 `tests/test_scout_ss_assignment.py`, which need no binary and no corpus.

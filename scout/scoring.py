@@ -400,12 +400,13 @@ _PYDSSP_MIN_RESIDUES = 6
 #
 #     L =   600     0.09 s    0.05 GB
 #     L =  1000     0.26 s    0.13 GB
-#     L =  2000     1.59 s    0.51 GB   <- the cap
+#     L =  2000     1.02 s    0.51 GB   <- the cap
 #
 # The phi/psi branch this replaced was O(L), so nothing upstream ever needed a
 # residue bound. ANON_MAX_UPLOAD_BYTES (scout/routes.py) admits ~25,900
 # backbone-only residues in a single chain, which extrapolates to ~85 GB and
-# would OOM the worker: numpy's lazy commit means the allocation SUCCEEDS and
+# would OOM the worker: under Linux's default memory overcommit (the
+# production platform) the allocation SUCCEEDS and
 # there is no MemoryError to catch, the process just dies touching the pages.
 # Above the cap, fall through to phi/psi -- worse labels, but O(L) and honest,
 # because ss_method then says "phi_psi".
@@ -426,7 +427,11 @@ def _try_ss(assign_fn, model, name: str) -> dict:
 
 
 def _assign_ss_by_pydssp(model) -> dict:
-    """Assign SS from backbone geometry using the real DSSP algorithm.
+    """Assign SS from backbone geometry using DSSP's hydrogen-bond algorithm.
+
+    Simplified relative to mkdssp (no beta-bulge annotation, approximate amide
+    H, 3-state output) -- see scout/pydssp_numpy.py -- which is why agreement
+    is 97.9% and not 100%.
 
     This is not a Ramachandran approximation like _assign_ss_by_phi_psi: it
     builds the electrostatic hydrogen-bond map and reads helices and bridge
@@ -434,8 +439,10 @@ def _assign_ss_by_pydssp(model) -> dict:
     rather than just enough atoms for a dihedral. See scout/pydssp_numpy.py.
 
     Runs one chain at a time. Feeding chains separately hides inter-chain
-    beta pairing from the bridge search, measured at ~0.3 points of
-    per-residue agreement; concatenating them instead would invent a
+    beta pairing from the bridge search, bounded at roughly 0.3 points of
+    per-residue agreement -- a between-group comparison (single-chain
+    structures vs the whole corpus), not a controlled measurement, so it is
+    confounded with which structures happen to be multi-chain; concatenating them instead would invent a
     peptide bond at every chain junction, which is both worse and
     unmeasured, so per-chain is deliberate.
 
@@ -546,8 +553,9 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     Three branches, tried in order, each reported by name in ``method``:
 
       1. ``"dssp"``    -- Bio.PDB.DSSP driving the real mkdssp binary.
-      2. ``"pydssp"``  -- the same DSSP algorithm in process, from backbone
-         coordinates alone (scout/pydssp_numpy.py). Needs N, CA, C and O.
+      2. ``"pydssp"``  -- DSSP's H-bond algorithm in process, simplified
+         (see scout/pydssp_numpy.py), from backbone coordinates alone.
+         Agrees with mkdssp on 97.9% of residues. Needs N, CA, C and O.
       3. ``"phi_psi"`` -- Ramachandran classification from dihedrals, which
          needs no carbonyl O and so still covers O-stripped backbones that
          (2) cannot read. It does not cover CA-only models: PPBuilder needs
@@ -560,7 +568,8 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     NOTE ON DEPLOYMENT: whether branch (1) runs depends entirely on whether
     mkdssp is on PATH in the deployed image. Nothing in this repository
     installs it (checked 2026-08-19: nixpacks.toml, Procfile, the
-    requirements files; there is no Dockerfile or Aptfile), so unless it
+    requirements files; the web service has no Dockerfile or Aptfile, though
+    the GPU tools do), so unless it
     was added by hand in the Railway dashboard's build settings, branch (1)
     never runs in production. That absence has never been confirmed at
     runtime, so read the ss_method column of a real run rather than
@@ -579,7 +588,7 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     files that mkdssp 4.2.2 refuses outright, which matters because users
     upload design-pipeline output. See docs/qc/scout-pydssp-adoption.md.
 
-    Before 2026-08-21 branch (2) did not exist and (3) was the normal path,
+    Before this change branch (2) did not exist and (3) was the normal path,
     so any results.csv with ss_method="phi_psi" carries the old accuracy:
     ~70% per-residue, two thirds of true loops called helix or strand, and
     ss_score biased ~+0.23 high.

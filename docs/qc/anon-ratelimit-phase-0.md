@@ -109,16 +109,24 @@ undercount. Production does not install it: `nixpacks.toml` sets
 unavailable … falling back to phi/psi classification", which is production's real
 path. **No CPU escapes the measurement.** Confirmed, not assumed.
 
-> **Superseded in part, 2026-08-21.** Scout no longer falls straight from
-> mkdssp to phi/psi: `scout/pydssp_numpy.py` now sits between them and is the
-> path these numbers were *not* measured on. pydssp is O(L^2) in time and
-> memory where phi/psi was O(L), so the CPU figures here are a floor, not the
-> current cost. The exposure is bounded by `_PYDSSP_MAX_RESIDUES = 2000`
-> (scout/scoring.py), above which a chain falls through to phi/psi and these
-> numbers apply again; at that cap one chain costs ~1.6 CPU-s and ~0.51 GB.
-> The `~9 CPU-s` adversarial `/progress` figure in `scout/routes.py:145` was
-> derived here and has **not** been re-measured against the new branch.
-> See `docs/qc/scout-pydssp-adoption.md`.
+> **Superseded in part, 2026-08-21 (pending merge — not yet deployed).**
+> A branch adds `scout/pydssp_numpy.py` between mkdssp and phi/psi, and these
+> numbers were *not* measured on it. pydssp is O(L^2) in time and memory where
+> phi/psi was O(L), so the CPU figures here become a floor rather than the
+> cost. Until that branch deploys, the figures below still describe production.
+>
+> **Memory is bounded; CPU is not.** `_PYDSSP_MAX_RESIDUES = 2000`
+> (scout/scoring.py) is a **per-chain** cap, and the arrays are freed between
+> chains, so peak memory holds at ~0.51 GB however many chains arrive. Nothing
+> caps the chain COUNT. `ANON_MAX_UPLOAD_BYTES = 8 MiB` admits ~25,900
+> backbone residues, and splitting them into 13 chains of 1,999 clears every
+> per-chain check: at a re-measured 1.02 s per 2,000-residue chain that is
+> **~13 CPU-s on a single anonymous request** — above the `~9 CPU-s`
+> adversarial `/progress` figure at `scout/routes.py:145` that this document
+> derived and that the limiter was sized against. That figure has **not** been
+> re-measured against the new branch, and an earlier version of this banner
+> wrongly called the exposure bounded and quoted ~1.6 CPU-s.
+> See `docs/qc/scout-pydssp-adoption.md` sections 8 and 9.
 
 ### 1.3 Worst case — I do NOT reproduce the builder's number
 

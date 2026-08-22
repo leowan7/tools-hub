@@ -31,15 +31,22 @@ declares ``torch`` as a hard install dependency for its dispatcher, which
 would pull ~800MB onto the web dyno for a 113-line numpy routine that never
 touches it. Only this backend module is needed.
 
-EDITS vs upstream, both mechanical. First, the eleven ``einops`` calls
+EDITS vs upstream. Two are semantic-but-mechanical; the third is cosmetic
+and is the one that hurts diffability, so it is named rather than glossed.
+First, the eleven ``einops`` calls
 (8 ``repeat``, 3 ``rearrange``) are rewritten as numpy broadcasting and
 ``swapaxes``, so this drops the ``einops`` dependency too; every ``repeat``
 fed an elementwise op that broadcasts identically, so the results are
 unchanged -- verified bit-identical against upstream on 31 chains / 4552
 residues. Second, ``np.clip(..., a_min=-margin, a_max=margin)`` is written
 positionally; behaviour-identical, recorded only because
-diffability is this file's whole point. See
-docs/qc/scout-pydssp-adoption.md.
+diffability is this file's whole point. Third, the whole file is PEP8
+reformatted -- spaces inside slices, spaces around keyword defaults, some
+line wrapping, one ``if x: return y`` split across two lines, one ``noqa``.
+No logic is touched (a token-level diff against upstream shows only the
+first two edits), but roughly two lines in five differ textually, so a plain
+``diff`` against a new upstream release will be noisy. Normalise whitespace
+before comparing. See docs/qc/scout-pydssp-adoption.md.
 
 KEEP THIS A FAITHFUL COPY. Do not refactor it to taste (drop the unused
 batch dimension, inline the helpers, rename things): it has to stay
@@ -47,10 +54,21 @@ diffable against upstream so fixes there can be picked up. ``donor_mask``
 is unused by Scout and looks dead, but it is upstream's hook for proline
 (no amide H) and is how that correction would be added.
 
-This implements the real DSSP algorithm -- electrostatic H-bond energies,
-turns 3/4/5, helices 3/4/5, and parallel/antiparallel bridge ladders --
-NOT a Ramachandran approximation. Against mkdssp 4.2.2 it agrees on 97.9%
-of residues, versus 70.2% for the phi/psi fallback it displaces.
+This implements DSSP's hydrogen-bond algorithm -- electrostatic H-bond
+energies, turns 3/4/5, helices 3/4/5, and parallel/antiparallel bridge
+ladders -- and NOT a Ramachandran approximation. That contrast is the point;
+"a complete DSSP" is not the claim. Upstream describes itself as a simplified
+implementation, and three simplifications survive here:
+
+  * beta-BULGE annotation is absent, so a bulge reads as loop, not strand;
+  * the amide-H position is approximated -- upstream's own "a little bit lazy
+    (but should be OK)" comment is preserved verbatim below;
+  * output is 3-state (loop/helix/strand), never DSSP's 8-state code.
+
+The proline `donor_mask` correction is likewise available but unused (above).
+Those simplifications are exactly why agreement with mkdssp 4.2.2 is 97.9% of
+residues rather than 100% -- still against 70.2% for the phi/psi fallback it
+displaces.
 """
 
 import numpy as np

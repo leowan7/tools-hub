@@ -8,9 +8,11 @@ is urgent-adjacent for a different reason.**
 > differing on the same 11/30) as the control arm of a later measurement.
 > The fix chosen was **not** threshold recalibration — this document's
 > argument against that, r=0.37 without hydrogen-bond information, is
-> correct and was the reason. Instead the missing information is now
-> supplied: `scout/pydssp_numpy.py` runs the real DSSP algorithm in
-> process, at 97.9% agreement with 0.981 loop recall. See
+> correct and was the reason. Instead the missing information is supplied by
+> an open branch (**not merged, not deployed** as of writing):
+> `scout/pydssp_numpy.py` runs DSSP's H-bond algorithm in process — simplified
+> per upstream, so 97.9% agreement rather than 100%, with 0.981 loop recall.
+> Until it deploys, the figures below still describe production. See
 > `docs/qc/scout-pydssp-adoption.md`.
 >
 > The claim below that "every run since the feature shipped has used the

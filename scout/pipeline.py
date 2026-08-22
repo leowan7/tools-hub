@@ -11,10 +11,11 @@ the full analysis from PDB file to results.csv:
     6. Score each patch: geometry, B-factor, secondary structure (scoring.py).
        NB: the SS labels come from mkdssp only if it is on PATH in the
        deployed image, which nothing in this repo arranges (checked
-       2026-08-19). The normal path is instead an in-process
-       implementation of the same DSSP algorithm, which agrees with real
+       2026-08-19). The normal path is instead an in-process, simplified
+       implementation of DSSP's H-bond algorithm, which agrees with real
        DSSP on 97.9% of residues; a phi/psi Ramachandran fallback (~70%)
-       remains behind it for backbones missing the O atoms DSSP needs.
+       remains behind it for backbones pydssp cannot use -- missing O atoms,
+       or a chain outside the 6-2000 residue window.
        Which branch actually ran is recorded per run in the ss_method
        column of results.csv, so this never has to be inferred.
        See docs/qc/scout-pydssp-adoption.md.
