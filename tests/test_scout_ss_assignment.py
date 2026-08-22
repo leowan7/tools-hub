@@ -459,9 +459,15 @@ def test_pydssp_is_preferred_over_phi_psi(monkeypatch):
         raise FileNotFoundError("mkdssp")
 
     monkeypatch.setattr(scoring, "DSSP", _boom)
+    # Arity matters here beyond tidiness. pytest.fail raises Failed, which
+    # subclasses BaseException, NOT Exception -- chosen deliberately so it
+    # escapes _try_ss's blanket `except Exception` and actually fails the run.
+    # A one-arg stub gives _try_ss a TypeError to swallow FIRST, so the body
+    # never executes and the guard silently degrades.
     monkeypatch.setattr(
         scoring, "_assign_ss_by_phi_psi",
-        lambda model: pytest.fail("phi/psi ran despite a readable backbone"),
+        lambda model, chain_id=None: pytest.fail(
+            "phi/psi ran despite a readable backbone"),
     )
 
     ss_map, method = scoring.assign_dssp(_example_model(), "unused.pdb")
@@ -655,3 +661,72 @@ def test_the_mkdssp_branch_falls_through_when_it_misses_the_scored_chain(monkeyp
     ss_map, method = scoring.assign_dssp(object(), "unused.pdb", "A")
     assert method == "pydssp", "chain B's labels must not stand in for chain A's"
     assert ss_map is sentinel
+
+
+def test_phi_psi_is_scoped_to_the_chain_too(monkeypatch):
+    """The third filter, and it fails the same way the other two would.
+
+    phi/psi is the branch that actually runs when pydssp cannot read the
+    backbone, so an unscoped one is the live hole: score a CA-only chain A
+    beside an intact chain B and phi/psi labels B, which makes the map
+    non-empty, which stops the fall-through -- so the run reports
+    ss_method="phi_psi" while every chain-A patch sits on the "loop" floor.
+    Scoped, neither branch can read A and the honest answer is "none".
+    """
+    model = _example_model("3s7g_fc_ab.pdb")
+    for residue in list(model["A"].get_residues()):
+        for atom_id in [a.get_id() for a in residue if a.get_id() != "CA"]:
+            residue.detach_child(atom_id)
+
+    def _boom(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _boom)
+
+    # Chain B is intact and would happily supply 65 labels -- none of which
+    # describe the chain being scored.
+    ss_map, method = scoring.assign_dssp(model, "unused.pdb", "A")
+    assert ss_map == {}, "chain B's labels must not stand in for chain A's"
+    assert method == "none"
+
+
+def test_run_pipeline_passes_the_scored_chain_to_assign_dssp(tmp_path, monkeypatch):
+    """The call site is what makes this a bound, not just an option.
+
+    assign_dssp defaults chain_id to None (whole model) so the tests above
+    can drive multi-chain behaviour directly. That default means a caller
+    which forgets the argument silently restores the unbounded O(L^2)-times-
+    chain-count cost, and every other test here would stay green. This is the
+    guard on the production call actually passing it.
+    """
+    import shutil
+    from pathlib import Path
+
+    from Bio.PDB.SASA import ShrakeRupley
+
+    from scout import pipeline
+    from scout.sasa import STANDARD_AA
+
+    def _rsa(structure, chain_id):
+        ShrakeRupley().compute(structure[0], level="R")
+        return {
+            (chain_id, str(res.get_id()[1])): min(res.sasa / 200.0, 1.0)
+            for res in structure[0][chain_id]
+            if res.get_resname() in STANDARD_AA
+        }
+
+    seen = []
+
+    def _record(model, path, chain_id=None):
+        seen.append(chain_id)
+        return {}, "recorded"
+
+    monkeypatch.setattr(pipeline, "compute_rsa", _rsa)
+    monkeypatch.setattr(pipeline, "assign_dssp", _record)
+
+    example = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    dest = tmp_path / "input.pdb"
+    shutil.copy2(example, dest)
+    pipeline.run_pipeline(dest, "A")
+
+    assert seen == ["A"], f"run_pipeline must scope SS to the chain it scores, got {seen}"

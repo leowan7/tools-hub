@@ -511,19 +511,22 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
         if not standard:
             continue  # no protein in this chain -- nothing to claim either way
 
-        # All-or-nothing, deliberately. Returning a PARTIAL map would make
-        # ss_method lie: assign_dssp only falls through when the map is
-        # entirely empty, so one unlabelled chain among several would still be
-        # reported as "pydssp" while run_pipeline scored that chain entirely on
-        # the "loop" floor (ss_map.get(key, "loop")). Bail out instead and let
-        # phi/psi try the whole model: it needs only N/CA/C, so it recovers an
-        # O-stripped chain in full (measured 129/129 on 1HEW).
+        # All-or-nothing over whatever is IN SCOPE. Returning a PARTIAL map
+        # would make ss_method lie: assign_dssp only falls through when the map
+        # is entirely empty, so an unlabelled residue would still be reported
+        # as "pydssp" while run_pipeline scored it on the "loop" floor
+        # (ss_map.get(key, "loop")). Bail out and let phi/psi try instead: it
+        # needs only N/CA/C, so it recovers an O-stripped chain in full
+        # (measured 129/129 on 1HEW).
         #
         # That is a recovery, NOT a guarantee. A CA-only chain defeats phi/psi
-        # too, and phi/psi returns its PARTIAL map under ss_method="phi_psi"
-        # (measured 65/130 on 3s7g with chain B stripped to CA, the other 65
-        # scored on the loop floor). All-or-nothing is this branch's rule;
-        # phi/psi's pre-existing partial behaviour is untouched here.
+        # too, and phi/psi returns whatever it CAN read under
+        # ss_method="phi_psi". Scoping bounds how much that can cost: with a
+        # chain_id, both branches see one chain, so phi/psi either covers it or
+        # returns {} and the honest answer is "none". Only the whole-model path
+        # (chain_id=None) can still produce a partial phi/psi map -- measured
+        # 65/130 on 3s7g with chain B stripped to CA, the other 65 on the loop
+        # floor. Guarded by test_phi_psi_is_scoped_to_the_chain_too.
         if len(residues) != len(standard):
             logger.warning(
                 "pydssp: chain %s has %d standard residues missing a backbone "
