@@ -3,6 +3,25 @@
 **Verdict: yes, fix it — but on the normal cycle, not as an incident. One part
 is urgent-adjacent for a different reason.**
 
+> **Follow-up 2026-08-21.** Everything measured here still holds, and the
+> phi/psi figures were reproduced exactly (0.7018 vs the 70.2% below, top-1
+> differing on the same 11/30) as the control arm of a later measurement.
+> The fix chosen was **not** threshold recalibration — this document's
+> argument against that, r=0.37 without hydrogen-bond information, is
+> correct and was the reason. Instead the missing information is supplied by
+> an open branch (**not merged, not deployed** as of writing):
+> `scout/pydssp_numpy.py` runs DSSP's H-bond algorithm in process — simplified
+> per upstream, so 97.9% agreement rather than 100%, with 0.981 loop recall.
+> Until it deploys, the figures below still describe production. See
+> `docs/qc/scout-pydssp-adoption.md`.
+>
+> The claim below that "every run since the feature shipped has used the
+> fallback" rests on mkdssp being absent from the deployed image, which
+> **has still never been confirmed at runtime** — the `assign_dssp`
+> docstring carries that same hedge and this change does not lift it.
+> Whatever its status before, it becomes historical after this change:
+> read the `ss_method` column of the run in question rather than assuming.
+
 Epitope Scout has never once run DSSP in production. Every run since the
 feature shipped has scored secondary structure with the phi/psi Ramachandran
 fallback, which agrees with real DSSP on **70.2%** of residues, calls **66% of
