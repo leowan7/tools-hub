@@ -361,3 +361,107 @@ def test_login_post_failure_rerenders_sanitised_next(client, hostile):
     assert fields, "hidden next field missing"
     for value in fields:
         assert value == b"/", value
+
+
+# ----------------------------------------------------------------------
+# /signup carries ``next`` too (Phase 5 of the anonymous rate-limiting
+# work). Scout's rate-limit refusal links a bounced visitor to
+# /login?next=/scout so they resume where they were; both panels of
+# login.html live on one page and switchTab() only toggles CSS, so the
+# signup form has to carry the value or clicking "Create account" drops
+# it silently.
+#
+# That gives signup the SAME open-redirect surface login already had, so
+# it gets the same corpus rather than a fresh, thinner one. These would
+# all have passed before the change too — signup pinned next to "/" — so
+# they are guarding the new plumbing, not proving it exists. The
+# preserves-internal cases are the ones that would go red on a revert.
+# ----------------------------------------------------------------------
+
+def _next_fields(payload: bytes) -> list[bytes]:
+    return re.findall(rb'name="next"\s+value="([^"]*)"', payload)
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_signup_get_sanitises_next(client, hostile):
+    resp = client.get("/signup", query_string={"next": hostile})
+    assert resp.status_code == 200
+    fields = _next_fields(resp.data)
+    assert fields, "hidden next field missing"
+    for value in fields:
+        assert value == b"/", value
+
+
+@pytest.mark.parametrize("safe", SAFE)
+def test_signup_get_preserves_internal_next(client, safe):
+    """The half that actually exercises the change: an internal path has to
+    survive to the form, or the visitor still lands on "/" and restarts."""
+    from html import unescape
+
+    resp = client.get("/signup", query_string={"next": safe})
+    assert resp.status_code == 200
+    fields = _next_fields(resp.data)
+    assert fields, "hidden next field missing"
+    for value in fields:
+        assert unescape(value.decode()) == safe, value
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_signup_post_failure_rerenders_sanitised_next(client, hostile):
+    """The POST re-render path, same property as login's."""
+    resp = client.post(
+        "/signup",
+        data={"email": "", "password": "", "password2": "", "next": hostile},
+    )
+    assert resp.status_code == 200
+    for value in _next_fields(resp.data):
+        assert value == b"/", value
+
+
+def test_both_login_panels_carry_next(client):
+    """Sign-in and Create-account are two panels of ONE page. If only the
+    sign-in form carries next, a bounced visitor who clicks "Create account"
+    loses where they were going and lands on "/" after signing up."""
+    resp = client.get("/login", query_string={"next": "/scout"})
+    assert resp.status_code == 200
+    fields = _next_fields(resp.data)
+    assert fields.count(b"/scout") == 2, (
+        f"expected the value in BOTH panels, found {fields!r}"
+    )
+
+
+# ----------------------------------------------------------------------
+# signup() reads ``next`` from request.values, which MERGES the query
+# string and the form body — and Werkzeug resolves that merge with the
+# query string FIRST. So an attacker-supplied query param beats the
+# form field the page itself rendered. safe_next runs on the result
+# either way, which is why this is safe; QC found it guarded but
+# untested, and an untested guard is one refactor from being no guard.
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+def test_signup_query_string_cannot_smuggle_an_offsite_next_past_the_form(
+    client, hostile
+):
+    resp = client.post(
+        "/signup",
+        query_string={"next": hostile},
+        data={"email": "", "password": "", "password2": "", "next": "/jobs"},
+    )
+    assert resp.status_code == 200
+    for value in _next_fields(resp.data):
+        assert value == b"/", (
+            f"a query-string next survived to the form: {value!r}"
+        )
+
+
+def test_which_source_wins_is_pinned_so_a_refactor_has_to_notice():
+    """Not a security property — a documentation one. Both sources are
+    same-origin-validated, so either winning is safe; this exists so that if
+    the precedence ever flips, somebody reads the comment above."""
+    from blueprints.auth import safe_next
+    from werkzeug.datastructures import CombinedMultiDict, MultiDict
+
+    values = CombinedMultiDict([MultiDict([("next", "/query")]),
+                                MultiDict([("next", "/form")])])
+    assert safe_next(values.get("next")) == "/query"
