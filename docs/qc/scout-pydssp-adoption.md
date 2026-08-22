@@ -307,6 +307,18 @@ of 130 under `ss_method="phi_psi"`, and the other 65 residues score on the
 but it means the column guarantees *which branch ran*, not *that the branch
 covered everything*. Only the pydssp branch guarantees both.
 
+The mkdssp branch has the same hole — QC drove a stub `DSSP()` exposing a
+single `property_key` over a 130-residue two-chain model and got
+`ss_method="dssp"` at 1/130 coverage with no fall-through — and the rule is
+deliberately **not** extended to it either. `dssp_map` keys use the DSSP
+file's `res_id`, which misses HETATM-flagged standard residues, so a strict
+`len(map) == len(standard)` test would fall through on any structure
+containing one `MSE`. Since SeMet phasing is routine, that would quietly
+disable the most accurate branch for a whole class of real inputs in order to
+close a hole in a branch that, on current evidence, never runs in production.
+Enforcing completeness where it costs nothing (pydssp) and declining where it
+would cost the branch itself is the deliberate asymmetry.
+
 An earlier draft of this section asserted that assignment "is whole-model
 all-or-nothing, so that single per-run value remains truthful". **It was not,
 and QC caught it.** `_assign_ss_by_pydssp` skipped any chain missing a
@@ -400,6 +412,14 @@ venv. (Re-measured in QC round 9: the original row values — 3.3 / 93.7 /
 160.4 ms — were 1.7-2.7x high and did not reproduce, and the `6m0j` entry was
 bit-for-bit the measured `1igy` value, which is what a column shifted by one
 row looks like. Residue counts were correct throughout.)
+
+These three do not need the PDB files to check. Anchoring on an independent
+in-repo measurement — L = 1000 at 0.249 s, with L = 2000 and 3000 at 1.022 s
+and 2.288 s confirming the exponent (ratio 2.24 against a predicted 2.25) —
+O(L^2) predicts 1.4 / 46.9 / 88.7 ms for 76 / 434 / 597 residues. The values
+above sit at **1.02x** that curve for the two larger chains (the 76-residue
+one runs under it, where fixed overhead dominates and a pure quadratic
+under-predicts). The replaced values sat at 1.8-2.3x it.
 
 | chain | residues | per call |
 |---|---|---|
