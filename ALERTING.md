@@ -468,6 +468,7 @@ it there in addition to or instead of email.
 | `RESEND_API_KEY` | `shared/email.py` | unset | Enables outbound email; alerts no-op without it |
 | `SLACK_OPS_WEBHOOK_URL` | `shared/email.py` | unset | Optional ops Slack channel |
 | `RK_LIVE_KEY` | synthetic monitor runner | unset | Member-role Platform API key for the smoke |
+| `METRICS_TOKEN` | Railway service **and** synthetic monitor runner | unset | Bearer for `/metrics`, which is deny-by-default. The SAME value must be set in both places or the scrape 403s. Unset on the runner, the refusal-rate check skips with a warning and the Platform API smoke still runs; unset on Railway (but set on the runner) the check FAILS the job |
 | `SENTRY_DSN` | future | unset | Enables Sentry when Tier 2 error tracking is revisited |
 
 ---
@@ -531,6 +532,62 @@ Only sweep when the summary says so:
   (regression tests in `tests/test_smoke_platform_api_network.py`). If you see a
   traceback rather than `OVERALL:`, assume a row leaked, sweep for a recent
   `smoke-test-…` row in the admin list, and fix the escape.
+
+### Synthetic smoke FAILED at "Check Epitope Scout refusal rate"
+
+Same job, completely different alarm. The Platform API smoke passed (it runs
+first, and it is the step above this one); what failed is
+`scripts/check_refusal_rate.py`, which scrapes `/metrics` with the
+`METRICS_TOKEN` bearer and fails when Epitope Scout is refusing too large a
+share of its own anonymous traffic. **`/health` and `/readyz` stay green through
+this** — a limiter refusing 40% of real users is an outage that does not look
+like one, and that is the only thing this check exists to catch.
+
+Read the per-reason split the step printed:
+
+- **`rate_limited`** — the per-IP tier. A whole network (a university NAT, an
+  institute VPN) hit the shared ceiling, so real researchers are being turned
+  away for each other's traffic. This is the outage case. The knob is
+  `ANON_INTAKE_LIMIT` / `ANON_ANALYZE_LIMIT` in `scout/routes.py`.
+- **`busy` / `at_capacity`** — the box is under pressure: compute slots or live
+  job dirs are full. Check Railway CPU/memory and whether something is holding
+  slots open.
+- **`session_rate_limited`** alone — ordinary over-use by individual callers,
+  not an incident. This is the intended conversion nudge.
+- **`no_session`** — callers arriving without a cookie share one bucket. A
+  spike here can mean a bot, or that cookies stopped being set.
+- **`bad_request` / `job_expired`** are printed `(reported only)` and are NOT in
+  the numerator; they never fire this alert.
+
+**The caveat that matters: this is not a windowed rate.** Prometheus counters
+are monotonic and reset when the container restarts, so every number is *since
+container boot*. Consequences, both directions:
+
+- A refusal spike that ended hours ago still shows, diluted, until the next
+  deploy. **Redeploying resets the counters** — which clears the alert without
+  fixing anything, so do not use it as the remedy.
+- Just after a deploy the denominator is tiny and one request swings the ratio;
+  `REFUSAL_RATE_MIN_SAMPLES` (default 50) is the floor that makes the check
+  report and `SKIP` rather than fire on that.
+- What survives both is a *sustained* refusal rate, which is the condition worth
+  paging on.
+
+Other ways this step fails, none of which are a Scout incident:
+
+- **`ERROR: ... answered HTTP 403`** — `METRICS_TOKEN` does not match. The repo
+  secret and the Railway service variable must be the same value; keep it ASCII.
+- **`answered 200 with no parseable samples (0 bytes)`** — `/metrics` is up but
+  rendering nothing. This has shipped here before (`PROMETHEUS_MULTIPROC_DIR`
+  set after gunicorn's `--preload`); see the `/metrics` notes in `shared/metrics.py`.
+- **`could not reach ...`** — transport failure. If the Platform API smoke above
+  passed, suspect the scrape URL rather than the site.
+- **`Refusal-rate check SKIPPED`** (a warning annotation, job still green) —
+  `METRICS_TOKEN` is not set on the runner, so this alarm is *not running*. The
+  Platform API smoke still is. Set the secret to turn it on.
+
+Reproduce by hand: `METRICS_TOKEN=... python scripts/check_refusal_rate.py`.
+Tune without a code change via `REFUSAL_RATE_THRESHOLD` (default 0.20) and
+`REFUSAL_RATE_MIN_SAMPLES` (default 50) in the workflow step.
 
 ### Railway emailed a deploy failure / crash / OOM
 

@@ -410,10 +410,13 @@ def observe_scout_refusal(reason: str) -> None:
     ``_observe_request`` does it — so the six call sites stay one-liners.
 
     Safe to call OUTSIDE a request context, where it degrades to ``unknown``
-    rather than raising into the guard below and dropping the sample: one of
-    the six sites lives inside a streamed response's generator, and a
-    generator body runs after Flask has popped the request context unless it
-    was wrapped in ``stream_with_context``.
+    rather than raising and losing the sample. **No current site needs that**:
+    five sit in view bodies and the sixth sits in a generator that IS wrapped
+    in ``stream_with_context``, so all six resolve a real endpoint name. The
+    guard is there for the SEVENTH — an increment dropped into an unwrapped
+    streamed generator runs after Flask has popped the request context, and
+    ``request.endpoint`` raises there. Cheap defence-in-depth for a function
+    that must never raise into a refusal path.
     """
     try:
         route = (request.endpoint or "unknown") if has_request_context() else "unknown"
