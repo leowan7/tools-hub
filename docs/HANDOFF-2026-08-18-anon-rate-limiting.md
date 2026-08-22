@@ -112,6 +112,32 @@ recorded here; both documents are in `docs/qc/`.
 Metered routes are exactly five: `/upload`, `/fetch-pdb`, `/example`,
 `/analyze`, `/progress`.
 
+**[SUPERSEDED 2026-08-22 — the "metered cost of one analyse click" row above
+reads 2, and it is now 1.]** That row was measured at `37a0f3a`, correctly, and
+then `#171` (`9eea7fb`) introduced the `PAIR_OPENS` / `PAIR_CLOSES` follow-up
+credit for the express purpose of making the pair share ONE charge. Re-measured
+at `d3c60c8`: **1**. The row is left in place because it is a true record of
+what Phase 0 found, but it is the single most consulted number in this document
+and it has already propagated as a live figure into at least one later task.
+Anything downstream that multiplies or divides by 2 here is wrong by a factor
+of two. See `docs/DECISION-2026-08-22-per-ip-ceiling.md`.
+
+**[SUPERSEDED 2026-08-22 — "Defensible per-IP ceiling: O(100)" above is NOT
+defensible under the current cost model.]** That row was derived when one
+analysis cost 2 charges and the adversarial spend was reckoned at ~9 CPU-s.
+Under the `now:` model in `scout/routes.py` — one charge buys a whole ~15
+CPU-s analysis — the number of addresses needed to saturate the fleet is
+
+    addresses = (W x 600) / (W x C x 15) = 40 / C
+
+for `W` workers and a per-worker ceiling `C`. **The worker count cancels.** At
+today's `C=10` that is 4 addresses. At `C=100` it is **0.4** — a SINGLE
+address would demand ~2.5x the entire fleet budget. O(100) is off by more than
+an order of magnitude against the CPU arithmetic, and it is exactly the row a
+Phase 4 implementer would reach for. The defensible ceiling under this model
+is not a bigger number; it is a better key than the IP. See
+`docs/DECISION-2026-08-22-per-ip-ceiling.md` §4.
+
 **Caveat that must travel with the NAT number:** people-per-address is not
 concurrent-users-per-IP-per-600s. 95-284 is an upper bound on population, not
 a measurement of simultaneous demand. Do not treat it as the latter.
@@ -193,6 +219,29 @@ Measured, end to end: of six researchers behind one NAT, **the 6th is refused**
 with no concurrency involved at all — one analysis costs 2 metered hits against a
 limit of 10.
 
+**[SUPERSEDED 2026-08-22 — the two bullets and the paragraph above describe the
+PRE-`#171` cost model. Re-measured at `d3c60c8`; see
+`docs/DECISION-2026-08-22-per-ip-ceiling.md`.]** This section was written
+2026-08-18 and landed unchanged in `#172` (`9432824`), but `#171` (`9eea7fb`)
+had already changed the arithmetic it rests on, and nobody refreshed it. It has
+since misled at least one task that quoted it in good faith. Corrections:
+
+- **One analysis costs ONE metered hit, not two.** The `PAIR_OPENS` /
+  `PAIR_CLOSES` follow-up credit exists precisely so the two requests share a
+  single charge; `scout/ratelimit.py`'s module docstring says so outright.
+  Measured: 1.
+- **Worst adversarial spend is ~300 CPU-s per IP per window, not ~180, and
+  ~4 addresses saturate the fleet, not ~7.** `scout/routes.py` carries both
+  rows explicitly, the 180/~7 pair labelled `before:` and the 300/~4 pair
+  labelled `now:`. Quote the `now:` row.
+- **The 6th researcher is no longer the one refused.** At one charge per
+  analysis the wall is the 11th analysis, or the 11th *structure* on the
+  intake bucket, whichever the workload reaches first. Which of the two binds
+  depends on chains-per-structure, not on headcount.
+
+The section's HEADLINE CLAIM is unaffected and still correct: Phase 4 must not
+cite Phase 1 as its safety argument. Only the numbers underneath it rotted.
+
 ---
 
 ## Phase 1 — Make the cost bound real
@@ -257,6 +306,35 @@ first for that reason. Whatever replaces it inherits that requirement.
 
 Phase 1 is what makes "generous" safe. Without it, this phase is just a bigger
 hole. Set the ceiling from Phase 0's NAT number, not from intuition.
+
+**[SUPERSEDED 2026-08-22 — ALL THREE sentences of the paragraph above are
+wrong, and this document says so ELSEWHERE.]** Two independent claims: the
+middle sentence ("without it, this phase is just a bigger hole") restates the
+first and falls with it.
+
+*"Set the ceiling from Phase 0's NAT number"* is refuted three times over in
+this same file: by the `O(100)` supersession block above (that number is not
+defensible under the current cost model), by the caveat that
+people-per-address is an upper bound on POPULATION and not a measurement of
+simultaneous demand, and by "What Phase 4 must NOT do" ABOVE, which insists the
+ceiling be sized against CPU. Size it against the CPU budget; the NAT number
+tells you what a lab COSTS, never what the box can AFFORD.
+
+*"Phase 1 is what makes 'generous' safe"* is wrong for a separate reason.
+"What Phase 4 must NOT do" already states that Phase 0's
+budget is CPU *time*, not concurrency, so neither the semaphore nor its absence
+makes a loosened ceiling safe. Both sentences have coexisted here since the
+document was written, which is why `scout/routes.py` could cite this one as a
+precondition and the plan could forbid exactly that citation. A semaphore
+bounds how many requests run AT ONCE; the ceiling bounds how much CPU one
+address can DEMAND IN A WINDOW, and neither converts into the other.
+
+What Phase 1 does govern is the CONSEQUENCE of saturation, not its threshold —
+without it a saturated sync fleet queues invisibly with `/healthz` behind it
+instead of shedding. So: size the ceiling against the CPU budget, and require
+Phase 1 only before accepting a ceiling whose WORST case exceeds it. Full
+argument, with the arithmetic, in
+`docs/DECISION-2026-08-22-per-ip-ceiling.md` §§2-3.
 
 ## Phase 5 inputs — MEASURED, and one earlier claim retracted
 
