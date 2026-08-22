@@ -138,12 +138,18 @@ CA-density surface proxy because `freesasa` is absent from the dev venv:
 | largest single gain | +0.008 |
 
 The shift is one-directional: essentially every patch loses, none gains
-materially. An epitope that scored in [0.40, 0.45) therefore disappears from
-the displayed set. `top3` is drawn only from candidates clearing the floor,
-so a structure whose patches all sit near it can return fewer epitopes — or
-none. The empty case itself is handled (`epitopes_annotated.csv` is rewritten
-or removed on every run that reaches there), so this is a scoring-visibility
-change, not a stale-file bug.
+materially. An epitope sitting just above the floor — within the shift, so
+roughly [0.40, 0.45) at the mean, though the per-patch loss varies — can
+therefore drop out of the displayed set. `top3` is drawn only from candidates
+clearing the floor, so a structure whose patches all sit near it can return
+fewer epitopes, or none.
+
+Two things bound how much this matters. The empty case is handled rather than
+left stale: `epitopes_annotated.csv` is written when `top3` is non-empty and
+`_unlink_quietly`'d when it is not. And the floor gates only the *displayed*
+set — `results_annotated.csv` is written from `all_epitopes` unfiltered, so a
+sub-floor epitope is still in the download. What changes is what Scout puts in
+front of the user.
 
 The displayed label and its quality flag move with it. `compute_quality_flags`
 raises **"loop-only anchor"** on `secondary_structure == "loop"`:
@@ -423,8 +429,8 @@ the box, and `ss_method` honestly reports `"phi_psi"`. Guarded by
 genuinely bounded — the arrays are freed between chains, so peak stays at one
 chain's 0.51 GB, and the OOM vector is closed. Time is not: the same ~25,900
 residues split as 13 chains of 1,999 clears every per-chain check and costs
-13x the cap's per-chain time — measured 1.05 s per 2,000-residue chain in this
-pass, so roughly **14 CPU-seconds on one anonymous request**, against a branch
+13x the cap's per-chain time — at the 1.59 s per 2,000-residue chain in the
+table above, roughly **21 CPU-seconds on one anonymous request**, against a branch
 that was O(L) and effectively free. Bounded in practice only by the route's
 concurrency slot and the anon rate limiter, both of which now carry more cost
 per admitted request than when they were sized.

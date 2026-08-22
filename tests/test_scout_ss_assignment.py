@@ -560,7 +560,8 @@ def test_vendored_pydssp_needs_no_einops(monkeypatch):
     assert onehot.shape == (12, 3)
     # Exactly 1 holds for THIS synthetic ideal helix. It is not a general
     # invariant of the algorithm: a real residue can satisfy the helix and
-    # bridge tests at once (measured: 1 in 7538), and argmax then breaks the
+    # bridge tests at once (1 of the 678 residues in static/example, on
+    # 1HEW:A), and argmax then breaks the
     # tie to helix -- DSSP's own H-over-E priority. Do not widen this to a
     # corpus without relaxing it to >= 1.
     assert onehot.sum(-1).tolist() == [1] * 12, "ideal helix: one label each"
