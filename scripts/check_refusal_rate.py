@@ -185,7 +185,7 @@ def evaluate(
         lines.append(
             "FAIL: Epitope Scout is refusing more anonymous traffic than the "
             "threshold allows. This is the outage that does not look like one "
-            "— /health stays green through it. Check the per-reason split "
+            "- /health stays green through it. Check the per-reason split "
             "above: rate_limited means a whole network hit the shared ceiling, "
             "busy/at_capacity mean the box is under pressure, "
             "session_rate_limited alone is ordinary over-use."
