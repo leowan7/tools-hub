@@ -399,10 +399,11 @@ def run_pipeline(
 
     # ------------------------------------------------------------------
     # Step 9: Secondary structure. Real DSSP if mkdssp is on PATH in the
-    # deployed image; otherwise pydssp, the same algorithm in process (~97.9%
-    # agreement); and only if that cannot read the backbone, the phi/psi
-    # fallback (~70% agreement, ss_score biased ~+0.23 high). Beyond that an
-    # empty dict = all loop. ss_method records which one actually ran.
+    # deployed image; otherwise pydssp -- DSSP's H-bond algorithm in process,
+    # simplified per upstream, ~97.9% agreement; and where pydssp cannot run
+    # (missing O atoms, or a chain outside its 6-2000 residue window) the
+    # phi/psi fallback (~70% agreement, ss_score biased ~+0.23 high). Beyond
+    # that an empty dict = all loop. ss_method records which one actually ran.
     # ------------------------------------------------------------------
     ss_map, ss_method = assign_dssp(model, str(pdb_path))
 
