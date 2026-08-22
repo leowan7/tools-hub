@@ -330,16 +330,18 @@ on the `"loop"` floor while the provenance column claimed a measurement. The
 same held per residue.
 
 The property is now **enforced rather than assumed**: pydssp returns `{}`
-unless it labels every standard residue of every chain, so a partial result
-can never be stamped `"pydssp"`. Guarded by
+unless it labels every standard residue *in scope* — the scored chain on the
+production path, every chain when none is named — so a partial result can
+never be stamped `"pydssp"`. Guarded by
 `test_pydssp_refuses_partial_assignment_so_ss_method_cannot_lie`.
 
-The cost of that strictness: one unusable chain sends the whole model to
-phi/psi, including chains pydssp could have read. That is the deliberate
-trade — a truthful column over a marginally better label. It is also
-avoidable rather than fundamental: `run_pipeline` consumes labels for the
-scored chain only, so scoping the assignment to that chain would retire the
-trade-off entirely (section 8).
+The cost of that strictness *was* that one unusable chain sent the whole
+model to phi/psi, including chains pydssp could have read — a truthful column
+bought with a marginally worse label. **That trade is now retired**, because
+it was avoidable rather than fundamental: assignment is scoped to the scored
+chain, so an unreadable neighbour is never looked at and can neither sink the
+map nor cost an allocation (section 8). The all-or-nothing rule still holds,
+now over the chain actually in scope.
 
 ---
 
@@ -462,7 +464,8 @@ that was O(L) and effectively free. Bounded in practice only by the route's
 concurrency slot and the anon rate limiter, both of which now carry more cost
 per admitted request than when they were sized.
 
-The waste is avoidable, which is why no second constant was added here.
+**This was fixed in the follow-up rather than papered over with a second
+constant.**
 `assign_dssp` has exactly one caller (`run_pipeline`), and that caller scores
 **one** chain: `surface_residues` is built from `model[chain_id]`, patches
 come from those residues, and `_majority_ss` / `_continuous_ss_score` look up
@@ -470,8 +473,45 @@ only `(chain_id, ...)`. Every other chain in the model is labelled and thrown
 away. Scoping the assignment to the scored chain would bound the model-level
 cost at one chain with no new constant, and would also retire the
 all-or-nothing trade-off in section 4 — an unreadable neighbour chain could no
-longer drag the scored chain down to phi/psi. Deliberately **not** done in this
-branch: it changes `assign_dssp`'s contract, and this branch is already large.
+longer drag the scored chain down to phi/psi.
+
+Done, in the commit carrying this paragraph (**not yet deployed**).
+`assign_dssp` takes a `chain_id`; every branch is restricted to it, including
+the mkdssp branch's output — which closed a latent hole of its own, since a map
+covering only OTHER chains used to satisfy the "did this branch produce
+labels?" test and stamp `ss_method="dssp"` over a scored chain with none.
+
+Measured, one 65-residue chain replicated N times, chain A scored:
+
+| chains | whole-model | scoped | saving | ceiling |
+|---|---|---|---|---|
+| 2 | 2.21 ms | 1.10 ms | 2.01x | 2x |
+| 4 | 4.43 ms | 1.10 ms | 4.03x | 4x |
+| 8 | 9.23 ms | 1.09 ms | 8.47x | 8x |
+| 13 | 14.81 ms | 1.09 ms | **13.64x** | 13x |
+
+(Medians of 15 timed calls after a warm-up. A first single-shot pass gave
+2.6x and 4.7x at N=2 and N=4 — *above* the chain-count ceiling, which the
+scoped path cannot beat by more than the work it skips. Those were noise;
+these are medians, and they sit just under or at the ceiling as they must.)
+
+The scoped column is **flat in chain count** — that is the property that
+matters, not the ratio. The per-chain cap is now the per-request cap, so the
+~13 CPU-s SS figure is no longer reachable. (It does not put a whole request
+back under the ~9 CPU-s the anon limiter was sized on: that budget covers
+`run_pipeline` entire and was measured when SS was free. See
+`docs/qc/anon-ratelimit-phase-0.md`.)
+
+On a model whose chain B is CA-only, chain A now returns `ss_method="pydssp"`
+where it previously returned `"phi_psi"` — it moves from the branch that
+averages ~70% agreement to the one that averages 97.9%. Those are corpus
+means over 30 chains, not this structure's rates; what is proven for a given
+input is the branch it lands on.
+
+The mkdssp branch is filtered but not made cheaper — the binary still reads
+the whole file, and a map that misses the scored chain now falls through and
+runs pydssp as well, which is strictly more work. That is a correctness fix,
+not a saving, and mkdssp is believed absent in production anyway.
 
 **Knock-on:** `docs/qc/anon-ratelimit-phase-0.md` sized the anonymous rate
 limiter by measuring the *phi/psi* branch and recording that as production's
@@ -512,7 +552,8 @@ Stated as plainly as the rest:
 - **The 97.9% was measured before the all-or-nothing rule existed.** Section 1
   says both arms were driven through the real shipped functions, and they
   were — but the shipped function has since changed: it now returns `{}` for
-  the whole model if any chain has a standard residue missing a backbone atom
+  everything in scope if a chain in scope has a standard residue missing a
+  backbone atom, and the corpus measurement drives the whole-model path
   (section 4). Under today's code, a corpus structure with one such residue
   would contribute no labels at all rather than a near-complete map, so the
   headline could not be reproduced from it unchanged. QC probed 10 of the ~29

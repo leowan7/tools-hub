@@ -404,8 +404,16 @@ def run_pipeline(
     # (missing O atoms, or a chain outside its 6-2000 residue window) the
     # phi/psi fallback (~70% agreement, ss_score biased ~+0.23 high). Beyond
     # that an empty dict = all loop. ss_method records which one actually ran.
+    #
+    # Scoped to chain_id because only chain_id's labels are ever read: every
+    # patch below comes from model[chain_id], and _majority_ss /
+    # _continuous_ss_score look up (chain_id, ...). Labelling the rest of the
+    # model was pure waste, and since pydssp is O(L^2) per chain with no cap
+    # on chain COUNT, it was also how a multi-chain upload multiplied the
+    # per-chain ceiling. It further means a neighbour chain that pydssp
+    # cannot read no longer drags this chain down to the phi/psi branch.
     # ------------------------------------------------------------------
-    ss_map, ss_method = assign_dssp(model, str(pdb_path))
+    ss_map, ss_method = assign_dssp(model, str(pdb_path), chain_id)
 
     # ------------------------------------------------------------------
     # Step 10: All-atom coordinate array for burial scoring

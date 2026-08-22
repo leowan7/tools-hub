@@ -109,11 +109,12 @@ undercount. Production does not install it: `nixpacks.toml` sets
 unavailable … falling back to phi/psi classification", which is production's real
 path. **No CPU escapes the measurement.** Confirmed, not assumed.
 
-> **Superseded in part, 2026-08-21 (pending merge — not yet deployed).**
-> A branch adds `scout/pydssp_numpy.py` between mkdssp and phi/psi, and these
-> numbers were *not* measured on it. pydssp is O(L^2) in time and memory where
-> phi/psi was O(L), so the CPU figures here become a floor rather than the
-> cost. Until that branch deploys, the figures below still describe production.
+> **Superseded in part. pydssp is LIVE** — merged as `8503988` (#178) and
+> deployed, confirmed by `/health` reporting that SHA. These numbers were
+> *not* measured on it: `scout/pydssp_numpy.py` now sits between mkdssp and
+> phi/psi, and it is O(L^2) in time and memory where phi/psi was O(L). So the
+> CPU figures below are a **floor**, not the current cost, and they no longer
+> describe production.
 >
 > **Memory is bounded; CPU is not.** `_PYDSSP_MAX_RESIDUES = 2000`
 > (scout/scoring.py) is a **per-chain** cap, and the arrays are freed between
@@ -126,6 +127,24 @@ path. **No CPU escapes the measurement.** Confirmed, not assumed.
 > derived and that the limiter was sized against. That figure has **not** been
 > re-measured against the new branch, and an earlier version of this banner
 > wrongly called the exposure bounded and quoted ~1.6 CPU-s.
+>
+> **The multi-chain multiplier is closed** as of the commit carrying this
+> paragraph (**not yet deployed**): SS assignment is scoped to the chain being
+> scored, the only chain whose labels are ever read, so the per-chain cap
+> becomes the per-request cap and cost stops scaling with chain count
+> (measured 13.6x on a 13-chain model, and flat thereafter). The SS term's
+> worst case drops from ~13 CPU-s to one chain at ~1.02 s.
+>
+> That does NOT put the request back inside the limiter's budget, and an
+> earlier version of this paragraph said it did. `~9 CPU-s` at
+> `scout/routes.py:145` is **`run_pipeline` at the 8 MB cap** — the whole
+> request, parse and RSA and clustering and scoring — measured when SS was
+> phi/psi and effectively free. Adding one capped pydssp chain to it gives
+> roughly **10 CPU-s, still above the sizing figure**. Comparing a
+> single-term cost against a whole-request budget is the error; the ~9 CPU-s
+> still has not been re-measured end to end against pydssp.
+>
+> Until this commit deploys, the ~13 CPU-s multi-chain figure is live.
 > See `docs/qc/scout-pydssp-adoption.md` sections 8 and 9.
 
 ### 1.3 Worst case — I do NOT reproduce the builder's number

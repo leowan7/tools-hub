@@ -332,7 +332,7 @@ def compute_bfactor_scores(chain_residues: list, plddt_mode: bool = False) -> di
 # DSSP secondary structure — STRUCT-05
 # ---------------------------------------------------------------------------
 
-def _assign_ss_by_phi_psi(model) -> dict:
+def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
     """Fallback SS assignment using backbone phi/psi angles (Ramachandran).
 
     Used when mkdssp is not installed. Classifies each residue based on
@@ -348,6 +348,7 @@ def _assign_ss_by_phi_psi(model) -> dict:
 
     Args:
         model: Biopython Model object (structure[0]).
+        chain_id: Restrict to this chain. None labels every chain.
 
     Returns:
         Dict mapping (chain_id, residue.get_id()) to one of
@@ -359,7 +360,9 @@ def _assign_ss_by_phi_psi(model) -> dict:
     ppb = PPBuilder()
 
     for chain in model.get_chains():
-        chain_id = chain.get_id()
+        cid = chain.get_id()
+        if chain_id is not None and cid != chain_id:
+            continue
         for pp in ppb.build_peptides(chain):
             phi_psi = pp.get_phi_psi_list()
             for residue, (phi, psi) in zip(pp, phi_psi):
@@ -375,7 +378,7 @@ def _assign_ss_by_phi_psi(model) -> dict:
                         label = "strand"
                     else:
                         label = "loop"
-                key = (chain_id, residue.get_id())
+                key = (cid, residue.get_id())
                 ss_map[key] = label
 
     return ss_map
@@ -413,20 +416,20 @@ _PYDSSP_MIN_RESIDUES = 6
 _PYDSSP_MAX_RESIDUES = 2000
 
 
-def _try_ss(assign_fn, model, name: str) -> dict:
+def _try_ss(assign_fn, model, name: str, chain_id=None) -> dict:
     """Run one SS assigner, returning {} instead of raising.
 
     Fallback selection below is driven by whether a branch produced labels,
     so a failure has to look like an empty result rather than an exception.
     """
     try:
-        return assign_fn(model)
+        return assign_fn(model, chain_id)
     except Exception as exc:  # noqa: BLE001 - any failure means "try the next one"
         logger.warning("%s SS assignment failed (%s)", name, exc)
         return {}
 
 
-def _assign_ss_by_pydssp(model) -> dict:
+def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
     """Assign SS from backbone geometry using DSSP's hydrogen-bond algorithm.
 
     Simplified relative to mkdssp (no beta-bulge annotation, approximate amide
@@ -478,17 +481,23 @@ def _assign_ss_by_pydssp(model) -> dict:
 
     Returns:
         Dict mapping (chain_id, residue.get_id()) to one of "helix", "strand",
-        or "loop" -- covering EVERY standard residue of every chain, or else
-        empty. It is deliberately all-or-nothing: assign_dssp falls through
-        only on an empty map, so a partial result would be reported as
-        ss_method="pydssp" while the unlabelled residues silently read as
-        "loop". Returns {} if any chain has a standard residue missing a
-        backbone atom, is shorter than _PYDSSP_MIN_RESIDUES, or is longer
-        than _PYDSSP_MAX_RESIDUES.
+        or "loop" -- covering EVERY standard residue of the chains it was
+        asked for, or else empty. It is deliberately all-or-nothing:
+        assign_dssp falls through only on an empty map, so a partial result
+        would be reported as ss_method="pydssp" while the unlabelled residues
+        silently read as "loop". Returns {} if a chain IN SCOPE has a standard
+        residue missing a backbone atom, is shorter than _PYDSSP_MIN_RESIDUES,
+        or is longer than _PYDSSP_MAX_RESIDUES.
+
+        Scope is the point. With chain_id set, an unreadable NEIGHBOUR chain
+        is irrelevant -- it is never looked at, so it can neither sink the
+        map nor cost an O(L^2) allocation.
     """
     ss_map = {}
     for chain in model.get_chains():
-        chain_id = chain.get_id()
+        cid = chain.get_id()
+        if chain_id is not None and cid != chain_id:
+            continue
         standard, residues, coords = [], [], []
         for residue in chain.get_residues():
             if residue.get_id()[0] != " " or residue.resname not in STANDARD_AA:
@@ -502,31 +511,34 @@ def _assign_ss_by_pydssp(model) -> dict:
         if not standard:
             continue  # no protein in this chain -- nothing to claim either way
 
-        # All-or-nothing, deliberately. Returning a PARTIAL map would make
-        # ss_method lie: assign_dssp only falls through when the map is
-        # entirely empty, so one unlabelled chain among several would still be
-        # reported as "pydssp" while run_pipeline scored that chain entirely on
-        # the "loop" floor (ss_map.get(key, "loop")). Bail out instead and let
-        # phi/psi try the whole model: it needs only N/CA/C, so it recovers an
-        # O-stripped chain in full (measured 129/129 on 1HEW).
+        # All-or-nothing over whatever is IN SCOPE. Returning a PARTIAL map
+        # would make ss_method lie: assign_dssp only falls through when the map
+        # is entirely empty, so an unlabelled residue would still be reported
+        # as "pydssp" while run_pipeline scored it on the "loop" floor
+        # (ss_map.get(key, "loop")). Bail out and let phi/psi try instead: it
+        # needs only N/CA/C, so it recovers an O-stripped chain in full
+        # (measured 129/129 on 1HEW).
         #
         # That is a recovery, NOT a guarantee. A CA-only chain defeats phi/psi
-        # too, and phi/psi returns its PARTIAL map under ss_method="phi_psi"
-        # (measured 65/130 on 3s7g with chain B stripped to CA, the other 65
-        # scored on the loop floor). All-or-nothing is this branch's rule;
-        # phi/psi's pre-existing partial behaviour is untouched here.
+        # too, and phi/psi returns whatever it CAN read under
+        # ss_method="phi_psi". Scoping bounds how much that can cost: with a
+        # chain_id, both branches see one chain, so phi/psi either covers it or
+        # returns {} and the honest answer is "none". Only the whole-model path
+        # (chain_id=None) can still produce a partial phi/psi map -- measured
+        # 65/130 on 3s7g with chain B stripped to CA, the other 65 on the loop
+        # floor. Guarded by test_phi_psi_is_scoped_to_the_chain_too.
         if len(residues) != len(standard):
             logger.warning(
                 "pydssp: chain %s has %d standard residues missing a backbone "
                 "atom; falling through so ss_method stays truthful",
-                chain_id,
+                cid,
                 len(standard) - len(residues),
             )
             return {}
         if len(standard) < _PYDSSP_MIN_RESIDUES:
             logger.warning(
                 "pydssp: chain %s has only %d residues (needs %d)",
-                chain_id,
+                cid,
                 len(standard),
                 _PYDSSP_MIN_RESIDUES,
             )
@@ -535,7 +547,7 @@ def _assign_ss_by_pydssp(model) -> dict:
             logger.warning(
                 "pydssp: chain %s has %d residues, over the %d cap; falling "
                 "through to keep the O(L^2) allocation bounded",
-                chain_id,
+                cid,
                 len(standard),
                 _PYDSSP_MAX_RESIDUES,
             )
@@ -543,11 +555,11 @@ def _assign_ss_by_pydssp(model) -> dict:
 
         onehot = np.asarray(pydssp_assign(np.asarray(coords, dtype=float)))
         for residue, column in zip(residues, onehot.argmax(-1)):
-            ss_map[(chain_id, residue.get_id())] = _PYDSSP_LABELS[column]
+            ss_map[(cid, residue.get_id())] = _PYDSSP_LABELS[column]
     return ss_map
 
 
-def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
+def assign_dssp(model, pdb_path: str, chain_id=None) -> tuple[dict, str]:
     """Assign secondary structure labels to residues using DSSP.
 
     Three branches, tried in order, each reported by name in ``method``:
@@ -607,6 +619,11 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     Args:
         model: Biopython Model object (structure[0]).
         pdb_path: Path to the PDB file on disk (required by DSSP wrapper).
+        chain_id: The chain whose labels will actually be READ. Every branch
+            is restricted to it, and the fall-through test below therefore
+            asks "did this branch label the scored chain?" rather than "did
+            it label anything?". None labels every chain, which is what the
+            tests use to exercise multi-chain behaviour directly.
 
     Returns:
         ``(ss_map, method)``. ``ss_map`` maps (chain_id, residue.get_id())
@@ -644,7 +661,8 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
                 label = "strand"
             else:
                 label = "loop"
-            ss_map[dssp_key] = label
+            if chain_id is None or dssp_key[0] == chain_id:
+                ss_map[dssp_key] = label
         method = "dssp"
     except Exception as exc:
         logger.warning(
@@ -662,14 +680,16 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
     # version of this function treated that as a successful "dssp" run and
     # returned "none" without ever trying the two branches below.
     if not ss_map:
-        ss_map, method = _try_ss(_assign_ss_by_pydssp, model, "pydssp"), "pydssp"
+        ss_map, method = (
+            _try_ss(_assign_ss_by_pydssp, model, "pydssp", chain_id), "pydssp")
     if not ss_map:
         # pydssp is more accurate but needs a complete N/CA/C/O backbone.
         # phi/psi needs no carbonyl O, so it still covers O-stripped models
         # that pydssp cannot read. It does NOT cover CA-only models --
         # PPBuilder needs C and N, so those yield {} from both branches and
         # ss_method is "none". O-stripped is the whole reason this is here.
-        ss_map, method = _try_ss(_assign_ss_by_phi_psi, model, "phi_psi"), "phi_psi"
+        ss_map, method = (
+            _try_ss(_assign_ss_by_phi_psi, model, "phi_psi", chain_id), "phi_psi")
 
     # An empty map scores every patch at the "loop" floor, so the term
     # contributed nothing regardless of which branch produced it. Report
