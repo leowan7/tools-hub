@@ -11,6 +11,7 @@ Usage
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
@@ -195,6 +196,32 @@ def test_metrics_token_is_read_per_request_not_snapshotted(monkeypatch):
     assert client.get(
         "/metrics", headers={"Authorization": "Bearer second"}
     ).status_code == 200
+
+
+def test_the_token_comparison_is_constant_time():
+    """The bearer check must use ``hmac.compare_digest``, not ``==``.
+
+    This reads the SOURCE rather than measuring anything, and that is
+    deliberate: a wall-clock timing assertion is not reliably testable on a
+    shared CI runner — it would either be so loose it passes for ``==`` too, or
+    so tight it flakes under load — so the honest thing to pin is the call
+    itself. Every behavioural property of the gate is covered by the tests
+    above; the only property left is *how* the two strings are compared, and a
+    short-circuiting ``==`` leaks the length of the matching prefix through
+    timing while passing every one of them.
+
+    /metrics is an authentication control now (deny-by-default, this bearer is
+    the only credential on it), so the comparison being constant-time is part
+    of its contract and not an implementation detail.
+    """
+    from shared.metrics import _metrics_token_ok  # noqa: PLC0415
+
+    source = inspect.getsource(_metrics_token_ok)
+    assert "hmac.compare_digest(" in source, (
+        "_metrics_token_ok no longer compares the bearer with "
+        "hmac.compare_digest — a plain == is a timing oracle on the only "
+        "credential guarding /metrics"
+    )
 
 
 # ---------------------------------------------------------------------------
