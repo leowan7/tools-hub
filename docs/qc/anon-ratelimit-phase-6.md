@@ -624,3 +624,63 @@ the builder's search did not find, `app.py:831-854`.
 Merge after **M1** (move one YAML block) and **M2** (one test). Both are small
 and neither touches shipped behaviour. The L-findings are all fit for follow-up
 and none of them should hold the branch.
+
+---
+
+## Fixes applied — 2026-08-22
+
+Appended by a separate agent acting on this report. It did not build Phase 6
+and did not run this QC round. **Nothing above this line was edited**; the
+findings stand as recorded.
+
+| Finding | Status | Commit |
+| --- | --- | --- |
+| **M1** — the guard disables the Platform API monitor | **CLOSED** | `efcaf75` |
+| **M2** — the "must stay inside the generator" invariant is prose only | **CLOSED** | `225b3f2` |
+| **L1** — the constant-time comparison is not pinned | **CLOSED** | `834857c` |
+| **L2** — the `has_request_context()` guard's stated reason is stale | **CLOSED** (comment only; guard kept) | `f22ef09` |
+| **L7** — no runbook, no env-var row, stale `METRICS_ALLOWED_CIDR` pointer | **CLOSED** | `f22ef09` |
+| L3 — SSE abandon under-report | left as recorded | — |
+| L4 — denominator counts signed-in traffic | left as recorded | — |
+| L5 — three uncounted 413-style paths | left as recorded | — |
+| L6 — `/scout/analyze`'s 404 twin | left as recorded | — |
+
+**M1.** The separate `Guard - METRICS_TOKEN is set` step is gone; its check now
+lives inside `Check Epitope Scout refusal rate`, which is the last step, so the
+ordering cannot silently regress again. An unset `METRICS_TOKEN` now **skips**
+that check (exit 0) with a `::warning::` annotation plus a `GITHUB_STEP_SUMMARY`
+block, rather than failing the job — an unset NEW secret degrades to "the new
+check is not running yet" instead of "the old check is dead". Not
+`continue-on-error`: every other failure of the step still fails the job.
+Verified by parsing the workflow (step order; no step before the smoke
+references `METRICS_TOKEN`) and by executing the step body under
+`bash --noprofile --norc -e -o pipefail` — empty token → exit 0 + warning,
+set token → the script really runs and a real failure still exits 1.
+
+**M2.** `test_a_progress_run_that_is_not_shed_counts_no_busy_refusal` drives a
+`/scout/progress` that completes (slot granted, stub pipeline, job dir under
+`tmp_path`) and asserts `SCOUT_REFUSALS{reason="busy",route="scout.progress"}`
+does not move. Mutation **10** re-applied by exact-string replacement and
+confirmed landed with `git diff --unified=0`
+(`+    observe_scout_refusal(REASON_BUSY)` at view level,
+`-                observe_scout_refusal(REASON_BUSY)` inside `_slotted`):
+**1 failed, 11 passed, exit 1** — and only the new test fails, which reproduces
+this report's finding that the hoist survives the other eleven. Reverted:
+**12 passed, exit 0**.
+
+**L1.** `test_the_token_comparison_is_constant_time` asserts the source of
+`_metrics_token_ok` calls `hmac.compare_digest`. Source inspection rather than
+timing is deliberate and the docstring says why. Mutation **12** re-applied:
+**1 failed, 28 passed, exit 1**; reverted: **29 passed, exit 0**.
+
+**Suite, measured first-hand** with the repo venv by absolute path, `-m pytest
+-q` from the worktree root, no path argument, pytest's own exit code:
+
+| Side | SHA | Result | pytest exit |
+| --- | --- | --- | --- |
+| Merge base | `d3c60c8` | 5796 passed, 21 skipped in 300.53s | 0 |
+| After fixes | `f22ef09` + this appended note | 5834 passed, 21 skipped in 273.51s | 0 |
+
+**Delta vs `d3c60c8`: +38 passed, 0 failed, skips unchanged (21 → 21)** — the
++36 this report measured at `b33dc90`, plus the two tests added here (M2, L1).
+No flakes; no re-runs needed.
