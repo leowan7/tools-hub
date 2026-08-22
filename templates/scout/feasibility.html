@@ -5,6 +5,7 @@
 {% block robots %}noindex,follow{% endblock %}
 
 {% block head_extra %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='scout.css') }}">
   <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
 {% endblock %}
 
