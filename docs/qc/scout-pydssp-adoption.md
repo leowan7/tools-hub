@@ -112,6 +112,102 @@ alternative considered — relabelling without touching the ranking — would
 have left the ranking wrong on purpose while making the label claim it was
 right. That option was dropped for this reason.
 
+### The shift rank churn does not capture
+
+Ranking is relative; two user-visible things are absolute, and a uniform
+downward shift moves both while leaving ranks untouched.
+
+`_continuous_ss_score` spans 0.20 (loop) to 1.00 (strand) and carries
+`_COMPOSITE_SS_WEIGHT = 0.20`, so the SS term alone can move a composite by
+0.16. Correcting a systematic over-call of helix/strand therefore pushes
+composites **down**, and `scout/routes.py` filters displayed epitopes at an
+absolute `_MIN_COMPOSITE = 0.40`.
+
+Measured over the three distinct bundled structures (1HEW, 3ave, 3s7g;
+57 patches), driving this repo's own `cluster_surface_residues` with a
+CA-density surface proxy because `freesasa` is absent from the dev venv:
+
+| Δ composite from the SS term | |
+|---|---|
+| mean | **−0.053** |
+| median | −0.048 |
+| patches that lose score | 47/57 (82.5%) |
+| lose more than 0.05 | 27/57 (47.4%) |
+| lose more than 0.10 | 9/57 (15.8%) |
+| largest single drop | **−0.160** |
+| largest single gain | +0.008 |
+
+The shift is one-directional: essentially every patch loses, none gains
+materially. An epitope that scored in [0.40, 0.45) therefore disappears from
+the displayed set. `top3` is drawn only from candidates clearing the floor,
+so a structure whose patches all sit near it can return fewer epitopes — or
+none. The empty case itself is handled (`epitopes_annotated.csv` is rewritten
+or removed on every run that reaches there), so this is a scoring-visibility
+change, not a stale-file bug.
+
+The displayed label and its quality flag move with it. `compute_quality_flags`
+raises **"loop-only anchor"** on `secondary_structure == "loop"`:
+
+| over the same 57 patches | before | after |
+|---|---|---|
+| displayed `secondary_structure` unchanged | — | 28/57 (49.1%) |
+| patches flagged "loop-only anchor" | 11/57 (19%) | **40/57 (70%)** |
+
+Surfaces are loop-rich, so 70% is the honest number and 19% was the artefact
+— but a user comparing against a saved report sees a warning appear on half
+their epitopes.
+
+Both figures corroborate the earlier 30-chain measurement independently: it
+recorded mean |Δ composite| 0.046 (max 0.154) and displayed-label agreement
+50.4%, against 0.053 / 0.160 and 49.1% here on a different corpus and code
+path.
+
+**`_MIN_COMPOSITE` is left at 0.40 by this change.** Moving a user-visible
+display threshold is a product decision, and the fallback-measurement doc's
+argument against recalibration (r = 0.37 without hydrogen-bond information)
+is specifically about the *phi/psi angle windows*, not about this floor — it
+does not settle the question either way. What is no longer true is the
+premise the floor inherited: it was chosen while every SS score carried a
++0.23 bias.
+
+### Gap damage scales with junction COUNT, not residues lost
+
+A residue the file never resolved, or one excluded as non-standard, never
+enters the standard-residue count, so the completeness guard sees no mismatch
+and the coordinate array closes over it. DSSP finds turns and bridges at fixed
+array offsets (i to i+3/4/5), so those offsets now run on renumbered indices —
+one junction perturbs every offset that spans it, whether the junction swallowed
+one residue or fifty.
+
+Measured on `1HEW:A` against its vendored mkdssp oracle (intact agreement
+0.969), removing the same residues two ways:
+
+| residues removed | junctions | agreement | delta |
+|---|---|---|---|
+| one 12-residue block | 1 | 0.957 | −0.012 |
+| 12 scattered singles | 12 | 0.897 | **−0.072** |
+| one 24-residue block | 1 | 0.943 | −0.026 |
+| 24 scattered singles | 24 | 0.857 | **−0.112** |
+
+Identical residue loss, **six times the damage** when it arrives as separate
+junctions — roughly 0.5–0.6 points per junction, near-linear. An independent
+QC pass reached the same law on a different corpus (−0.5 to −0.8 pp per
+junction; a 26-junction chain losing 19.4 points).
+
+**The common trigger is selenomethionine.** `STANDARD_AA` has 20 entries and
+`MSE` is not among them, so every SeMet residue is a junction — and SeMet
+phasing is routine in the PDB. The same QC pass measured `3fhk:A` falling
+99.3% → 89.9% with its 9 MSE residues, and `2i39:A` 100% → 90.9% with 7.
+
+Two things follow. This is a real cost of adopting an algorithm that reads
+fixed sequence offsets, where the phi/psi branch it replaces computes each
+dihedral locally and is barely affected by a junction. And `ss_method` still
+reads `"pydssp"` throughout: the run carries no signal that its labels were
+degraded. **Not fixed here** — mapping `MSE` to `MET` would close most of it,
+but residue selection is shared with `compute_rsa` and patch construction, so
+changing it late in this branch risks misaligning keys across modules. It is
+the strongest follow-up candidate.
+
 ---
 
 ## 3. Vendoring, and why not `pip install pydssp`
@@ -195,6 +291,14 @@ case is the whole justification.
 `ss_method` stays honest: it gains `"pydssp"` as a fourth value, recorded per
 run by `scout/pipeline.py` exactly as before.
 
+The all-or-nothing rule below is **this branch's rule, not a property of the
+column**. phi/psi still returns whatever it can and stamps `"phi_psi"` over
+it: on `3s7g` with chain B reduced to CA-only, `assign_dssp` returns 65 labels
+of 130 under `ss_method="phi_psi"`, and the other 65 residues score on the
+`"loop"` floor. That behaviour predates this branch and is unchanged by it,
+but it means the column guarantees *which branch ran*, not *that the branch
+covered everything*. Only the pydssp branch guarantees both.
+
 An earlier draft of this section asserted that assignment "is whole-model
 all-or-nothing, so that single per-run value remains truthful". **It was not,
 and QC caught it.** `_assign_ss_by_pydssp` skipped any chain missing a
@@ -212,7 +316,10 @@ can never be stamped `"pydssp"`. Guarded by
 
 The cost of that strictness: one unusable chain sends the whole model to
 phi/psi, including chains pydssp could have read. That is the deliberate
-trade — a truthful column over a marginally better label.
+trade — a truthful column over a marginally better label. It is also
+avoidable rather than fundamental: `run_pipeline` consumes labels for the
+scored chain only, so scoping the assignment to that chain would retire the
+trade-off entirely (section 8).
 
 ---
 
@@ -312,6 +419,27 @@ through to phi/psi, which is O(L) and gives worse labels but cannot exhaust
 the box, and `ss_method` honestly reports `"phi_psi"`. Guarded by
 `test_pydssp_falls_through_above_the_residue_cap`.
 
+**The cap is per chain, and the model-level cost is not bounded.** Memory is
+genuinely bounded — the arrays are freed between chains, so peak stays at one
+chain's 0.51 GB, and the OOM vector is closed. Time is not: the same ~25,900
+residues split as 13 chains of 1,999 clears every per-chain check and costs
+13x the cap's per-chain time — measured 1.05 s per 2,000-residue chain in this
+pass, so roughly **14 CPU-seconds on one anonymous request**, against a branch
+that was O(L) and effectively free. Bounded in practice only by the route's
+concurrency slot and the anon rate limiter, both of which now carry more cost
+per admitted request than when they were sized.
+
+The waste is avoidable, which is why no second constant was added here.
+`assign_dssp` has exactly one caller (`run_pipeline`), and that caller scores
+**one** chain: `surface_residues` is built from `model[chain_id]`, patches
+come from those residues, and `_majority_ss` / `_continuous_ss_score` look up
+only `(chain_id, ...)`. Every other chain in the model is labelled and thrown
+away. Scoping the assignment to the scored chain would bound the model-level
+cost at one chain with no new constant, and would also retire the
+all-or-nothing trade-off in section 4 — an unreadable neighbour chain could no
+longer drag the scored chain down to phi/psi. Deliberately **not** done in this
+branch: it changes `assign_dssp`'s contract, and this branch is already large.
+
 **Knock-on:** `docs/qc/anon-ratelimit-phase-0.md` sized the anonymous rate
 limiter by measuring the *phi/psi* branch and recording that as production's
 real path. That is no longer true, and the `~9 CPU-s` adversarial `/progress`
@@ -341,28 +469,28 @@ Stated as plainly as the rest:
   the `assign_dssp` docstring.
 - **Oracle coverage.** mkdssp refused `3s7g`, so it contributes to the
   coverage table in section 6 but not to the 30-chain accuracy figures.
-- **The `_MIN_COMPOSITE = 0.40` display floor was not re-examined.** Loop
-  recall moving 0.339 -> 0.981 pushes `_continuous_ss_score` down for patches
-  that were previously mislabelled helix/strand, and `scout/routes.py` filters
-  displayed epitopes at that absolute threshold. A run that returned three
-  epitopes could now return fewer. This document measures ranking *churn* but
-  not *patches dropped below the floor*; `freesasa` is absent from the dev
-  venv so `run_pipeline` could not be driven over the corpus to settle it.
-  Raised by QC, unresolved, and the cheapest thing to check after deploy.
+- **How many epitopes actually cross the `_MIN_COMPOSITE = 0.40` floor.**
+  The *shift* is now measured (section 2: mean −0.053, max −0.160,
+  one-directional) but the shift alone does not say how many epitopes cross
+  the floor, because that needs the absolute composite and `freesasa` is
+  absent from the dev venv, so `run_pipeline` could not be driven over the
+  corpus. Still the cheapest thing to check after deploy: count rows in a
+  real `results.csv` at `composite_score` in [0.40, 0.45).
 - **No proline correction.** Upstream's `donor_mask` hook (proline has no
   amide H) is left unused, exactly as during measurement. The 97.9% figure
-  is *with* that approximation, so closing it could only help.
+  is *with* that approximation, so closing it could only help. Independently
+  measured on upstream's own TS50 corpus: enabling it moves mean per-chain
+  accuracy 0.97268 → 0.97542, i.e. **+0.27 points**, entirely in loop recall.
+  Small, real, and not taken here.
 - **Non-standard residues.** Residues outside `STANDARD_AA` are skipped and
   read as "loop" downstream, matching prior behaviour for missing keys, but
   this was not separately measured. (Residues missing a *backbone* atom are a
   different case and no longer skipped — one of them now aborts the whole
   assignment, per the all-or-nothing rule in section 4.)
-- **Chain gaps are only lightly covered.** Skipping residues closes gaps in
-  the coordinate array, which misplaces the pseudo-hydrogen on the single
-  residue after each gap (see the note in `_assign_ss_by_pydssp`). Only
-  **2 of the 30** accuracy chains are gapped — `1ema:A` (5 gaps) and
-  `1igy:B` (26 gaps) — so the cost is inside the headline figure but is
-  thinly sampled. (The 31-chain / 4552-residue figure quoted in section 3 is
+- **Chain gaps: the per-residue cost is now measured (section 2), the
+  patch-level cost is not.** Only **2 of the 30** accuracy chains are gapped
+  — `1ema:A` (5 gaps) and `1igy:B` (26 gaps) — so the headline figure
+  contains the cost but samples it thinly. (The 31-chain / 4552-residue figure quoted in section 3 is
   the *vendoring-equality* corpus, which adds a 3s7g chain that mkdssp
   refuses and so cannot contribute to accuracy.) `1igy:B`, the worst case
   available, still labelled 34 of its 35 patches (97.1%) correctly. A structure with many short gaps could do worse

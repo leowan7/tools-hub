@@ -37,7 +37,7 @@ EDITS vs upstream, both mechanical. First, the eleven ``einops`` calls
 fed an elementwise op that broadcasts identically, so the results are
 unchanged -- verified bit-identical against upstream on 31 chains / 4552
 residues. Second, ``np.clip(..., a_min=-margin, a_max=margin)`` is written
-positionally (line 107); behaviour-identical, recorded only because
+positionally; behaviour-identical, recorded only because
 diffability is this file's whole point. See
 docs/qc/scout-pydssp-adoption.md.
 

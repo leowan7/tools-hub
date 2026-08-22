@@ -391,9 +391,12 @@ _PYDSSP_LABELS = ("loop", "helix", "strand")
 # raises on a shape mismatch rather than returning an empty result.
 _PYDSSP_MIN_RESIDUES = 6
 
-# Per-chain ceiling. pydssp is O(L^2) in BOTH time and memory -- it
-# materialises four (L-1, L-1, 3) float64 arrays for the H-bond map -- so cost
-# grows ~4x for every doubling. Measured on the repo venv:
+# Per-chain ceiling. pydssp is O(L^2) in BOTH time and memory -- the H-bond
+# map and the four bridge terms are all l x l -- so cost grows ~4x for every
+# doubling. (Upstream MATERIALISES four (L-1, L-1, 3) float64 arrays via einops
+# `repeat`; the broadcast rewrite in scout/pydssp_numpy.py does not, which is
+# why the figures below are lower than that model predicts. They are measured,
+# not derived.) Measured on the repo venv:
 #
 #     L =   600     0.09 s    0.05 GB
 #     L =  1000     0.26 s    0.13 GB
@@ -436,13 +439,16 @@ def _assign_ss_by_pydssp(model) -> dict:
     peptide bond at every chain junction, which is both worse and
     unmeasured, so per-chain is deliberate.
 
-    Residues missing a backbone atom are skipped, as are chains too short to
-    carry a turn. Skipped residues are simply absent from the map, which
-    _majority_ss and _continuous_ss_score already read as "loop".
+    A standard residue missing a backbone atom, a chain too short to carry a
+    turn, and a chain over the size cap each abort the WHOLE map -- see
+    Returns. Nothing is quietly dropped: a partial map would let ss_method
+    name a branch that never labelled those residues.
 
-    Skipping closes gaps in the array, so a chain with an unresolved loop (or
-    a non-standard residue like MSE) ends up with two sequence-distant
-    residues adjacent. Two consequences, neither of them clean:
+    Gaps survive that rule, because a gap is not a skip. A residue the file
+    never resolved, or one excluded as non-standard (MSE, any HETATM), never
+    enters the standard-residue count either, so the guard above sees no
+    mismatch and the coordinate array simply closes over it -- leaving two
+    sequence-distant residues adjacent. Two consequences, neither clean:
 
       * the pseudo-H is derived from the C(i)->N(i+1) vector, so it is wrong
         for the single residue following each gap;
@@ -494,7 +500,14 @@ def _assign_ss_by_pydssp(model) -> dict:
         # entirely empty, so one unlabelled chain among several would still be
         # reported as "pydssp" while run_pipeline scored that chain entirely on
         # the "loop" floor (ss_map.get(key, "loop")). Bail out instead and let
-        # phi/psi label the whole model, which it can do without an O atom.
+        # phi/psi try the whole model: it needs only N/CA/C, so it recovers an
+        # O-stripped chain in full (measured 129/129 on 1HEW).
+        #
+        # That is a recovery, NOT a guarantee. A CA-only chain defeats phi/psi
+        # too, and phi/psi returns its PARTIAL map under ss_method="phi_psi"
+        # (measured 65/130 on 3s7g with chain B stripped to CA, the other 65
+        # scored on the loop floor). All-or-nothing is this branch's rule;
+        # phi/psi's pre-existing partial behaviour is untouched here.
         if len(residues) != len(standard):
             logger.warning(
                 "pydssp: chain %s has %d standard residues missing a backbone "
@@ -629,7 +642,10 @@ def assign_dssp(model, pdb_path: str) -> tuple[dict, str]:
             "DSSP binary unavailable (%s); falling back to in-process assignment",
             exc,
         )
-        ss_map, method = {}, "dssp"
+        # "none", not "dssp": the map is empty, so the branches below always
+        # overwrite this. Naming the branch that just FAILED here would go
+        # live the moment anyone adds an early return above them.
+        ss_map, method = {}, "none"
 
     # Each branch is skipped when it raises OR yields no labels. Testing
     # emptiness here rather than only in the except block matters: DSSP()

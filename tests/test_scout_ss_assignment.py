@@ -135,17 +135,22 @@ def test_pydssp_refuses_partial_assignment_so_ss_method_cannot_lie(monkeypatch):
     chain wholly on the "loop" floor -- ss_map.get(key, "loop"). Whole-model
     all-or-nothing is what makes the single per-run column truthful, so it is
     asserted here rather than assumed.
+
+    TWO-chain fixture, deliberately. On a single-chain model "skip the chain"
+    and "abort the map" both yield {} and the assertion cannot tell them
+    apart -- this test used 1HEW (one protein chain; B is the NAG) and passed
+    against a `continue` mutant of the very guard it names.
     """
     import copy
 
-    model = _example_model()
-    assert len(scoring._assign_ss_by_pydssp(model)) == 129, "fixture sanity"
+    model = _example_model("3s7g_fc_ab.pdb")
+    assert len(scoring._assign_ss_by_pydssp(model)) == 130, "fixture sanity"
 
     maimed = copy.deepcopy(model)
     victim = next(r for r in maimed["A"].get_residues() if "O" in r)
     victim.detach_child("O")
 
-    # Not 128 labels -- zero. One unusable residue must sink the whole map.
+    # Not chain B's 65 labels -- zero. One unusable residue sinks the map.
     assert scoring._assign_ss_by_pydssp(maimed) == {}
 
     def _boom(model, pdb_path, dssp="mkdssp"):
@@ -165,11 +170,25 @@ def test_pydssp_falls_through_above_the_residue_cap(monkeypatch):
     means that allocation SUCCEEDS, so there is no MemoryError to catch -- the
     worker dies touching the pages. The cap must therefore be checked before
     the array is built, not defended with try/except.
+
+    TWO-chain fixture with UNEQUAL chains, deliberately: with the cap at 50,
+    chain A (65 residues) is over it and chain B (trimmed to 30) is under, so
+    aborting the map and skipping the offending chain give different answers.
+    Equal-length chains would both breach the cap and hide the difference
+    again, which is how the 1HEW version of this test passed against a
+    `continue` mutant of its own guard.
     """
-    model = _example_model()
-    assert len(scoring._assign_ss_by_pydssp(model)) == 129
+    model = _example_model("3s7g_fc_ab.pdb")
+    assert len(scoring._assign_ss_by_pydssp(model)) == 130, "fixture sanity"
+
+    chain_b = model["B"]
+    keep = [r.get_id() for r in chain_b.get_residues()][:30]
+    for residue in list(chain_b.get_residues()):
+        if residue.get_id() not in keep:
+            chain_b.detach_child(residue.get_id())
 
     monkeypatch.setattr(scoring, "_PYDSSP_MAX_RESIDUES", 50)
+    # Not chain B's 30 labels -- nothing at all.
     assert scoring._assign_ss_by_pydssp(model) == {}
 
     def _boom(model, pdb_path, dssp="mkdssp"):
@@ -539,4 +558,9 @@ def test_vendored_pydssp_needs_no_einops(monkeypatch):
     # and it still computes, not merely imports
     onehot = vendored.assign(_ideal_helix_coords())
     assert onehot.shape == (12, 3)
-    assert onehot.sum(-1).tolist() == [1] * 12, "one-hot rows must sum to 1"
+    # Exactly 1 holds for THIS synthetic ideal helix. It is not a general
+    # invariant of the algorithm: a real residue can satisfy the helix and
+    # bridge tests at once (measured: 1 in 7538), and argmax then breaks the
+    # tie to helix -- DSSP's own H-over-E priority. Do not widen this to a
+    # corpus without relaxing it to >= 1.
+    assert onehot.sum(-1).tolist() == [1] * 12, "ideal helix: one label each"
