@@ -337,9 +337,10 @@ can never be stamped `"pydssp"`. Guarded by
 The cost of that strictness: one unusable chain sends the whole model to
 phi/psi, including chains pydssp could have read. That is the deliberate
 trade — a truthful column over a marginally better label. It is also
-avoidable rather than fundamental: `run_pipeline` consumes labels for the
-scored chain only, so scoping the assignment to that chain would retire the
-trade-off entirely (section 8).
+avoidable rather than fundamental, and **it is now retired**: assignment is
+scoped to the scored chain, so an unreadable neighbour is never looked at and
+cannot sink anything (section 8). The all-or-nothing
+rule still holds, now over the chain actually in scope.
 
 ---
 
@@ -462,7 +463,8 @@ that was O(L) and effectively free. Bounded in practice only by the route's
 concurrency slot and the anon rate limiter, both of which now carry more cost
 per admitted request than when they were sized.
 
-The waste is avoidable, which is why no second constant was added here.
+**This was fixed in the follow-up rather than papered over with a second
+constant.**
 `assign_dssp` has exactly one caller (`run_pipeline`), and that caller scores
 **one** chain: `surface_residues` is built from `model[chain_id]`, patches
 come from those residues, and `_majority_ss` / `_continuous_ss_score` look up
@@ -470,8 +472,28 @@ only `(chain_id, ...)`. Every other chain in the model is labelled and thrown
 away. Scoping the assignment to the scored chain would bound the model-level
 cost at one chain with no new constant, and would also retire the
 all-or-nothing trade-off in section 4 — an unreadable neighbour chain could no
-longer drag the scored chain down to phi/psi. Deliberately **not** done in this
-branch: it changes `assign_dssp`'s contract, and this branch is already large.
+longer drag the scored chain down to phi/psi.
+
+Done, in the commit carrying this paragraph (**not yet deployed**).
+`assign_dssp` takes a `chain_id`; every branch is restricted to it, including
+the mkdssp branch's output — which closed a latent hole of its own, since a map
+covering only OTHER chains used to satisfy the "did this branch produce
+labels?" test and stamp `ss_method="dssp"` over a scored chain with none.
+
+Measured, one 65-residue chain replicated N times, chain A scored:
+
+| chains | whole-model | scoped | saving |
+|---|---|---|---|
+| 2 | 3.0 ms | 1.1 ms | 2.6x |
+| 4 | 5.9 ms | 1.3 ms | 4.7x |
+| 8 | 9.9 ms | 1.2 ms | 8.5x |
+| 13 | 15.7 ms | 1.2 ms | **13.4x** |
+
+The scoped column is **flat in chain count** — that is the property that
+matters. The per-chain cap is now the per-request cap, so the ~13 CPU-s
+figure above is no longer reachable. And on a model whose chain B is CA-only,
+chain A now returns `ss_method="pydssp"` where it previously returned
+`"phi_psi"` — 97.9% agreement instead of ~70%, for the same input.
 
 **Knock-on:** `docs/qc/anon-ratelimit-phase-0.md` sized the anonymous rate
 limiter by measuring the *phi/psi* branch and recording that as production's

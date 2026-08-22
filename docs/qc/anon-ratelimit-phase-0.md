@@ -126,6 +126,14 @@ path. **No CPU escapes the measurement.** Confirmed, not assumed.
 > derived and that the limiter was sized against. That figure has **not** been
 > re-measured against the new branch, and an earlier version of this banner
 > wrongly called the exposure bounded and quoted ~1.6 CPU-s.
+>
+> **The multi-chain multiplier is closed** as of the commit carrying this
+> paragraph (**not yet deployed**): SS assignment is scoped to the chain being
+> scored, the only chain whose labels are ever read, so the per-chain cap
+> becomes the per-request cap and cost stops scaling with chain count
+> (measured 13.4x faster on a 13-chain model, and flat thereafter). Worst case
+> is one chain at ~1.02 s, back under the ~9 CPU-s the limiter was sized on.
+> Until it deploys, the ~13 CPU-s figure above is what production carries.
 > See `docs/qc/scout-pydssp-adoption.md` sections 8 and 9.
 
 ### 1.3 Worst case — I do NOT reproduce the builder's number
