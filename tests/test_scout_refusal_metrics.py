@@ -95,6 +95,38 @@ def shed(monkeypatch):
     monkeypatch.setattr(scout_routes, "anon_compute_slot", lambda *a, **k: _no_slot())
 
 
+@contextmanager
+def _a_slot():
+    """The opposite of ``_no_slot``: capacity is free, so nobody is shed."""
+    yield True
+
+
+@pytest.fixture
+def not_shed(monkeypatch, tmp_path):
+    """A /scout/progress request that runs to completion: a slot is granted and
+    the pipeline is a fast stub, so the stream ends in ``done``, not a refusal.
+
+    ``run_pipeline`` is patched on ``scout.pipeline`` rather than on
+    ``scout.routes`` because the worker imports it inside its own body. The job
+    dir is ``tmp_path`` so the real ``_remove_derived_result_files`` that runs
+    on success cannot reach anything in the repo.
+    """
+    import scout.pipeline  # noqa: PLC0415
+
+    monkeypatch.setattr(scout_routes, "anon_compute_slot", lambda *a, **k: _a_slot())
+    monkeypatch.setattr(scout_routes, "_resolve_job_dir", lambda job_id: tmp_path)
+    monkeypatch.setattr(
+        scout_routes, "_find_input_file", lambda job_dir: tmp_path / "input.pdb"
+    )
+
+    def _fake_pipeline(pdb_path, chain_id, progress_callback=None, **_kw):
+        if progress_callback:
+            progress_callback("scoring", 50)
+        return None
+
+    monkeypatch.setattr(scout.pipeline, "run_pipeline", _fake_pipeline)
+
+
 @pytest.fixture
 def staged_job(monkeypatch):
     """Get past job resolution so the compute-slot branch is what answers."""
@@ -250,6 +282,43 @@ def test_the_sse_busy_refusal_is_counted_even_though_it_answers_200(
     assert _refusals("busy", "scout.progress") == before + 1, (
         "the SSE shed did not move the refusal counter — the increment is "
         "either outside the generator's live path or absent"
+    )
+
+
+def test_a_progress_run_that_is_not_shed_counts_no_busy_refusal(app, not_shed):
+    """The negative half of site 5, and the one that pins WHERE the increment
+    lives.
+
+    The test above only proves the counter moves when the caller IS shed, and
+    that stays true if the increment is hoisted out of ``_slotted()`` up to the
+    view body — so on its own it cannot tell a correct build from a broken one.
+    This is the case that can: a slot IS available, the stream runs to
+    ``done``, nothing is refused, and ``busy`` must not move. Hoisted, this
+    request counts a refusal that never happened, every healthy
+    ``/scout/progress`` inflates the ratio, and the 6-hourly
+    ``check_refusal_rate.py`` pages on a service that is fine. An alarm that
+    cries wolf on healthy traffic is worse than no alarm, because operators
+    learn to ignore it.
+
+    The increment has to stay inside the generator for a structural reason:
+    ``anon_compute_slot`` is entered when the response starts being iterated,
+    so "were we shed?" is not a decision that exists yet when the view returns.
+    """
+    before = _refusals("busy", "scout.progress")
+
+    response = app.test_client().get(f"/scout/progress?job_id={BOGUS_JOB}&chain=A")
+    body = response.get_data(as_text=True)
+    response.close()
+
+    assert response.status_code == 200
+    assert '"stage": "done"' in body, (
+        "the fixture did not produce a successful run, so this test is not "
+        f"exercising the not-shed path: {body!r}"
+    )
+    assert '"reason": "busy"' not in body
+    assert _refusals("busy", "scout.progress") == before, (
+        "a /scout/progress request that was NOT shed counted a busy refusal — "
+        "the increment has been hoisted out of the compute-slot generator"
     )
 
 
