@@ -4,27 +4,7 @@
 {% block description %}Upload a protein structure or UniProt accession and identify surface-exposed, solvent-accessible epitopes ranked by binder design feasibility — accessibility, hydrophobic exposure, rigidity, and hot-spot density.{% endblock %}
 
 {% block head_extra %}
-  <style>
-    /* Scout paywall quota pill — inline so we do not need to touch
-       static/style.css (outside of this stream's ALLOW). */
-    .scout-quota-pill {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      margin: 0.75rem 0 1.25rem;
-      padding: 0.55rem 0.9rem;
-      border: 1px solid rgba(120, 130, 160, 0.25);
-      border-radius: 8px;
-      background: rgba(120, 130, 160, 0.06);
-      font-size: 0.85rem;
-      color: inherit;
-    }
-    .scout-quota-pill--warn {
-      border-color: rgba(204, 130, 40, 0.45);
-      background: rgba(204, 130, 40, 0.08);
-    }
-  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='scout.css') }}">
   <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
 {% endblock %}
 

@@ -1,0 +1,1274 @@
+/* ==========================================================================
+   Epitope Scout — component styles
+   Aesthetic: dark editorial — scientific journal on matte black paper.
+   Design system source: ranomics-website-2026/DESIGN.md
+
+   Provenance. Scout's templates were ported into tools-hub from the
+   standalone `leowan7/epitope-scout` repo; its stylesheet was not.
+   `static/style.css` says as much in its own header — "trimmed to only what
+   the hub/auth/coming-soon pages need" — so every Scout component class
+   arrived here with no rule behind it. **92** of them across index.html and
+   feasibility.html, or 96 counting four more applied at runtime via
+   `element.className = …` rather than a `class=` attribute. The visible
+   result was a 1058px upload icon where `1.5rem` — 30px, at the hub's 20px
+   root — was intended, a bare native file input, and a 3D viewer that
+   mounted into a zero-height container and never rendered.
+
+   This file is that stylesheet recovered from the source repo at
+   `182d6e54` (the parent of `a8c3bf35`, "delete the retired Scout app"),
+   with four things removed because tools-hub already owns them:
+
+     * the `:root` token block — the hub's tokens are the current ones and
+       three had drifted (it darkened --text-secondary and --text-tertiary,
+       and fixed a 'GeistMono' -> 'Geist Mono' typo). Only --info is carried
+       over, below, because the hub lacks it.
+     * 20 shell classes — navbar, brand, panel, hero, btn-primary/secondary,
+       app-container, subtitle, section-title. Loaded after style.css these
+       would win and restyle the chrome on Scout pages only.
+     * bare `html`/`body`/`main`/`footer` rules and the `*, *::before,
+       *::after` reset, plus a `::selection` that duplicates the hub's and a
+       `[hidden]` the hub already sets !important.
+     * `.brand-tool` and `.panel:hover`. The first is dead — the only brand
+       markup is _header.html, which uses the hub's `.brand-tool-link`. The
+       second would give Scout pages a panel hover the rest of the site
+       does not have.
+
+   Kept deliberately: `.btn-primary:disabled` and `.btn-secondary:disabled`.
+   Those are additive — the hub defines no disabled state, and Scout disables
+   the Analyze button for the duration of a run.
+
+   Known issue, deliberately not fixed here. Roughly 14 rules below use
+   `var(--text-tertiary)` for hint and citation text — `.upload-secondary`,
+   `.control-hint`, `.dim-desc`, `.rec-citation`, `.score-ref`, `.no-flags`
+   and others. Against `--bg-surface` the hub's `#4F5B6B` gives **2.66:1**,
+   below WCAG AA (4.5:1) and below the 3:1 UI floor; the source stylesheet's
+   own `--text-tertiary` was `#8A95A6`, which gives 6.05:1. Until this file
+   existed those elements were unstyled and inherited `--text-primary` at
+   14.7:1, so restoring the design is what makes the shortfall visible. The
+   token is the hub's site-wide value (35 uses in style.css), so changing it —
+   or moving these rules to `--text-secondary` — is a design-system decision,
+   not a Scout one. Flagged rather than silently taken.
+
+   Loaded by templates/scout/index.html and templates/scout/feasibility.html
+   via their head_extra blocks. Kept out of style.css on purpose: that file is
+   shared by every page and is the busiest merge surface in the repo.
+   ========================================================================== */
+
+:root {
+  /* Informational accent — used by the PPI interface and binder-overlap
+     badges. The only token from the source stylesheet the hub does not
+     already define. */
+  --info: #4A8EC2;
+}
+
+/* --------------------------------------------------------------------------
+   Design tokens
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Selection
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Reset / base
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Main layout — wide container
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Panel (card)
+   -------------------------------------------------------------------------- */
+
+/* The source stylesheet centred this icon by making `.panel-title` a flex row
+   with `gap: 0.5rem`. The hub's `.panel-title` (style.css:606) carries the same
+   six typographic declarations but none of the three layout ones, and that rule
+   is dropped here because style.css owns it -- so the icon has no flex parent
+   and the `flex-shrink: 0` this rule used to carry was inert. Centre and space
+   it as the inline element it actually is, which keeps the fix inside a
+   Scout-owned class instead of making every panel title on the site a flex
+   container. */
+.panel-title-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-text);
+  vertical-align: middle;
+  margin-right: 0.5rem;
+}
+
+/* --------------------------------------------------------------------------
+   Hero header
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Input controls row — horizontal layout
+   -------------------------------------------------------------------------- */
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 1rem;
+  align-items: end;
+}
+
+@media (max-width: 768px) {
+  .controls-grid {
+    grid-template-columns: 1fr;
+  }
+
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.control-label {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--accent-text);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------------
+   Upload zone — compact
+   -------------------------------------------------------------------------- */
+
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color 0.2s, background 0.2s;
+  background: var(--bg-surface);
+  position: relative;
+}
+
+.upload-zone:hover {
+  border-color: var(--accent);
+  background: rgba(43, 158, 126, 0.04);
+}
+
+.upload-zone.has-file {
+  border-color: var(--accent);
+  background: rgba(43, 158, 126, 0.06);
+  border-style: solid;
+}
+
+#pdb-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.upload-label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+}
+
+.upload-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+
+.upload-zone:hover .upload-icon {
+  color: var(--accent-text);
+}
+
+.upload-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.upload-primary {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.upload-secondary {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
+.pdb-id-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.or-divider {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.pdb-id-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  max-width: 180px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pdb-id-input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.pdb-id-input::placeholder {
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
+/* --------------------------------------------------------------------------
+   Status elements
+   -------------------------------------------------------------------------- */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.spinner-ring {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(43, 158, 126, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+
+}
+
+.file-summary {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--success);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.file-summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--success);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.structure-title {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.error-message {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--error);
+  background: var(--error-bg);
+  border: 1px solid rgba(196, 91, 83, 0.2);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.7rem;
+  line-height: 1.4;
+}
+
+/* --------------------------------------------------------------------------
+   Chain select
+   -------------------------------------------------------------------------- */
+
+.chain-select {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%234F5B6B'%3E%3Cpath fill-rule='evenodd' d='M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.chain-select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.chain-select option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+   -------------------------------------------------------------------------- */
+
+.btn-primary:disabled {
+  background: var(--text-tertiary);
+  color: var(--bg-deep);
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+
+.btn-reset {
+  background: none;
+  border: none;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.2s;
+  padding: 0;
+}
+
+.btn-reset:hover {
+  color: var(--warm-white);
+}
+
+.btn-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-text);
+  text-decoration: none;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.75rem;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.download-link:hover {
+  background: var(--accent-glow); border-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+   Progress bar
+   -------------------------------------------------------------------------- */
+
+.progress-track {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0.75rem;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.progress-label {
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------------------
+   3D viewer — LARGE and prominent
+   -------------------------------------------------------------------------- */
+
+.viewer-wrapper {
+  background: var(--bg-deep);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.viewer-container {
+  width: 100%;
+  height: 600px;
+  background: var(--bg-deep);
+  position: relative;
+}
+
+.viewer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.viewer-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.73rem;
+  color: var(--text-secondary);
+}
+
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.legend-meta {
+  color: var(--text-tertiary);
+}
+
+.legend-break {
+  flex-basis: 100%;
+  height: 0;
+}
+
+.legend-chain .legend-label {
+  font-weight: 500;
+  font-size: 0.68rem;
+}
+
+.legend-chain .legend-meta {
+  font-size: 0.65rem;
+}
+
+.legend-chain .legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.viewer-downloads {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.viewer-dl-btn {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent-glow);
+  border: 1px solid rgba(43, 158, 126, 0.2);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  text-decoration: none;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.viewer-dl-btn:hover {
+  background: rgba(43, 158, 126, 0.2);
+}
+
+/* --------------------------------------------------------------------------
+   Results grid — two-column layout for tables
+   -------------------------------------------------------------------------- */
+
+.results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 900px) {
+  .results-grid {
+    grid-template-columns: 1fr;
+  }
+
+}
+
+.results-full {
+  grid-column: 1 / -1;
+}
+
+/* --------------------------------------------------------------------------
+   Data tables
+   -------------------------------------------------------------------------- */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.data-table th {
+  text-align: left;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  vertical-align: top;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr {
+  transition: background 0.15s;
+}
+
+.data-table tbody tr:hover {
+  background: var(--bg-elevated);
+}
+
+.mono-cell {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--accent-text);
+  word-break: break-all;
+  max-width: 200px;
+}
+
+/* --------------------------------------------------------------------------
+   Section headers inside panels
+   -------------------------------------------------------------------------- */
+
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.section-count {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+}
+
+/* --------------------------------------------------------------------------
+   PPI interface badges
+   -------------------------------------------------------------------------- */
+
+.interface-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.interface-badge.large {
+  background: rgba(196, 91, 83, 0.1);
+  color: #E8736B;
+  border: 1px solid rgba(196, 91, 83, 0.25);
+}
+
+.interface-badge.medium {
+  background: rgba(196, 154, 58, 0.1);
+  color: var(--warning);
+  border: 1px solid rgba(196, 154, 58, 0.25);
+}
+
+.interface-badge.small {
+  background: rgba(74, 142, 194, 0.1);
+  color: var(--info);
+  border: 1px solid rgba(74, 142, 194, 0.25);
+}
+
+/* --------------------------------------------------------------------------
+   Binder / overlap badges
+   -------------------------------------------------------------------------- */
+
+.binder-type-badge {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  border: 1px solid rgba(43, 158, 126, 0.2);
+  white-space: nowrap;
+}
+
+.overlap-badge {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+  margin-right: 0.2rem;
+}
+
+.pdb-link {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-text);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.pdb-link:hover {
+  text-decoration: underline; color: var(--warm-white);
+}
+
+.seq-warning {
+  background: rgba(196, 154, 58, 0.08);
+  border: 1px solid var(--warning);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.78rem;
+  color: #D4AE4A;
+  margin-bottom: 0.6rem;
+  line-height: 1.45;
+}
+
+/* --------------------------------------------------------------------------
+   Quality flag badges
+   -------------------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.badge-orange {
+  background: rgba(196, 154, 58, 0.12);
+  color: #D4AE4A;
+  border: 1px solid rgba(196, 154, 58, 0.25);
+}
+
+.badge-red {
+  background: rgba(196, 91, 83, 0.12);
+  color: #E8736B;
+  border: 1px solid rgba(196, 91, 83, 0.25);
+}
+
+.badge-yellow {
+  background: rgba(196, 154, 58, 0.12);
+  color: #D4AE4A;
+  border: 1px solid rgba(196, 154, 58, 0.25);
+}
+
+.badge-blue {
+  background: rgba(74, 142, 194, 0.12);
+  color: var(--info);
+  border: 1px solid rgba(74, 142, 194, 0.25);
+}
+
+.badge-neutral {
+  background: rgba(79, 91, 107, 0.15);
+  color: var(--text-secondary);
+  border: 1px solid rgba(79, 91, 107, 0.25);
+}
+
+.no-flags {
+  color: var(--text-tertiary);
+}
+
+.flags-cell {
+  min-width: 9rem; vertical-align: top;
+}
+
+/* --------------------------------------------------------------------------
+   Flag reference guide
+   -------------------------------------------------------------------------- */
+
+.flag-reference {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.flag-ref-title {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--accent-text);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 0.6rem;
+}
+
+.flag-ref-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.flag-ref-item {
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.flag-ref-header {
+  margin-bottom: 0.3rem;
+}
+
+.flag-ref-meaning {
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+}
+
+.flag-ref-implication {
+  color: var(--text-primary);
+}
+
+.flag-ref-implication strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* --------------------------------------------------------------------------
+   Score methodology explainer
+   -------------------------------------------------------------------------- */
+
+.score-explainer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.score-explainer summary {
+  padding: 0.55rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition: color 0.15s;
+}
+
+.score-explainer summary:hover {
+  color: var(--text-primary);
+}
+
+.score-explainer summary::-webkit-details-marker {
+  display: none;
+}
+
+.score-explainer summary::before {
+  content: '+ '; font-family: var(--font-mono); color: var(--accent-text);
+}
+
+.score-explainer[open] summary::before {
+  content: '- ';
+}
+
+.score-explainer-body {
+  padding: 0.65rem 0.85rem 0.85rem;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.score-explainer-body > p {
+  color: var(--text-secondary);
+  margin-bottom: 0.6rem;
+}
+
+.score-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.score-terms dt {
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.score-terms dd {
+  margin: 0.1rem 0 0;
+  color: var(--text-secondary);
+  padding-left: 2.2rem;
+}
+
+.score-weight {
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.08rem 0.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(43, 158, 126, 0.2);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.score-note {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-style: italic;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.5rem;
+  margin-top: 0.2rem;
+}
+
+.score-ref {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.66rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.field-description {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 0.4rem;
+  max-width: 38rem;
+}
+
+/* --------------------------------------------------------------------------
+   UniProt info bar
+   -------------------------------------------------------------------------- */
+
+.uniprot-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.uniprot-label {
+  font-weight: 600;
+  color: var(--accent-text);
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+}
+
+/* --------------------------------------------------------------------------
+   Empty state
+   -------------------------------------------------------------------------- */
+
+.empty-state {
+  text-align: center;
+  padding: 1.5rem;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+   Feasibility Scorer
+   -------------------------------------------------------------------------- */
+
+.epitope-input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  resize: vertical;
+}
+
+.epitope-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(43,158,126,0.15);
+}
+
+.control-hint {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-top: 0.25rem;
+}
+
+.tier-badge {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+}
+
+.feasibility-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+.feasibility-score-card {
+  text-align: center;
+  padding: 1.5rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.score-display {
+  margin-bottom: 0.75rem;
+}
+
+.score-number {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: block;
+  line-height: 1;
+}
+
+.score-label {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.25rem;
+  display: block;
+}
+
+.score-tier {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.dim-row {
+  margin-bottom: 1rem;
+}
+
+.dim-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.25rem;
+}
+
+.dim-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dim-score {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.dim-track {
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dim-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.dim-desc {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-top: 0.2rem;
+  line-height: 1.4;
+}
+
+.recommendations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.rec-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.rec-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.rec-value {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.rec-citation {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  margin: 0.4rem 0 0;
+  font-style: italic;
+}
+
+.risk-title {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.risk-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.risk-list li {
+  font-size: 0.8rem;
+  color: #D47843;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+  line-height: 1.4;
+}
+
+.risk-list li:last-child {
+  border-bottom: none;
+}
+
+.risk-list li::before {
+  content: "\26A0";
+  margin-right: 0.5rem;
+}
+
+.cta-panel {
+  border: 1px solid var(--accent); border-radius: 10px;
+}
+
+.cta-title {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem;
+}
+
+.cta-text {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  max-width: 48ch;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+.feasibility-link {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+.feasibility-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.feasibility-note-prominent {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .viewer-container {
+    height: 400px;
+  }
+
+  .controls-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feasibility-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .recommendations-grid {
+    grid-template-columns: 1fr;
+  }
+
+}
+
+/* --------------------------------------------------------------------------
+   Added here — not in the recovered stylesheet
+   -------------------------------------------------------------------------- */
+
+/* The feasibility page's drag-and-drop handlers toggle `.drag-over` on the
+   upload zone (feasibility.html:272-279). The handlers are not new — they
+   exist at `182d6e54` too — the source stylesheet simply never had a rule for
+   the state, so the drag target has never highlighted. Same specificity as
+   `.upload-zone:hover`, so it has to stay below it to win on source order. */
+.upload-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(43, 158, 126, 0.10);
+  border-style: solid;
+}
+
+/* Right-hand track of `.feasibility-grid` (200px 1fr). Grid items default to
+   min-width:auto, so a wide dimension bar would push the track past 1fr and
+   overflow the panel instead of shrinking. */
+.dimensions-panel {
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Quota pill
+   Moved verbatim from the inline <style> in scout/index.html, whose comment
+   said it was inlined only because style.css was outside that stream's
+   allowlist. Values unchanged — this is a relocation, not a restyle.
+   -------------------------------------------------------------------------- */
+
+.scout-quota-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid rgba(120, 130, 160, 0.25);
+  border-radius: 8px;
+  background: rgba(120, 130, 160, 0.06);
+  font-size: 0.85rem;
+  color: inherit;
+}
+
+.scout-quota-pill--warn {
+  border-color: rgba(204, 130, 40, 0.45);
+  background: rgba(204, 130, 40, 0.08);
+}
