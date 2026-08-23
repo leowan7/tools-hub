@@ -11,7 +11,6 @@ Usage
 
 from __future__ import annotations
 
-import inspect
 import json
 import subprocess
 import sys
@@ -198,29 +197,39 @@ def test_metrics_token_is_read_per_request_not_snapshotted(monkeypatch):
     ).status_code == 200
 
 
-def test_the_token_comparison_is_constant_time():
-    """The bearer check must use ``hmac.compare_digest``, not ``==``.
+def test_the_token_comparison_is_constant_time(monkeypatch):
+    """The bearer check must DECIDE through ``hmac.compare_digest``, not ``==``.
 
-    This reads the SOURCE rather than measuring anything, and that is
-    deliberate: a wall-clock timing assertion is not reliably testable on a
-    shared CI runner — it would either be so loose it passes for ``==`` too, or
-    so tight it flakes under load — so the honest thing to pin is the call
-    itself. Every behavioural property of the gate is covered by the tests
-    above; the only property left is *how* the two strings are compared, and a
-    short-circuiting ``==`` leaks the length of the matching prefix through
-    timing while passing every one of them.
+    Behavioural, not a source grep, and the distinction earned its place: an
+    earlier version of this test asserted ``"hmac.compare_digest("`` appeared
+    in the function's source, which a dead call sitting beside a live ``==``
+    walks straight through. This forces ``compare_digest`` to return True and
+    presents the WRONG token: if the verdict really flows through that call the
+    gate opens, and if the code decided with ``==`` the wrong token is still
+    refused and this test fails.
+
+    No clock is involved on purpose. A wall-clock timing assertion is not
+    reliably testable on a shared CI runner — it would either be so loose it
+    passes for ``==`` too, or so tight it flakes under load. This pins the
+    dataflow instead, which is the part a mutation actually changes.
 
     /metrics is an authentication control now (deny-by-default, this bearer is
     the only credential on it), so the comparison being constant-time is part
     of its contract and not an implementation detail.
     """
-    from shared.metrics import _metrics_token_ok  # noqa: PLC0415
+    flask_app = _token_app(monkeypatch, "the-real-token")
+    monkeypatch.setattr(
+        "shared.metrics.hmac.compare_digest", lambda _a, _b: True
+    )
 
-    source = inspect.getsource(_metrics_token_ok)
-    assert "hmac.compare_digest(" in source, (
-        "_metrics_token_ok no longer compares the bearer with "
-        "hmac.compare_digest — a plain == is a timing oracle on the only "
-        "credential guarding /metrics"
+    resp = flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer wrong-token"}
+    )
+
+    assert resp.status_code == 200, (
+        "forcing hmac.compare_digest to True did not open the gate for a wrong "
+        "token, so _metrics_token_ok is not deciding through it — a plain == "
+        "is a timing oracle on the only credential guarding /metrics"
     )
 
 

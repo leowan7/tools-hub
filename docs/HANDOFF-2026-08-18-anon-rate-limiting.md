@@ -323,9 +323,18 @@ addressed; what each turned into is recorded under the bullet.
   → Neither. The CIDR gate was REMOVED (see the superseded ground-truth row
   above for the three reasons it could not work) and replaced with a
   `METRICS_TOKEN` bearer. **Leo must set `METRICS_TOKEN` as a Railway service
-  variable and add the same value as a `METRICS_TOKEN` repository secret**, or
-  the new smoke step fails the job — deliberately, since a monitor that goes
-  quiet when its own plumbing breaks is the failure this phase exists to stop.
+  variable and add the same value as a `METRICS_TOKEN` repository secret.**
+
+  **CI WILL NOT REMIND YOU.** Until both are set, the refusal-rate step SKIPS
+  with a warning annotation and the job stays GREEN. That is deliberate — an
+  unset new secret must not turn the 6-hourly job red forever, because that
+  failure email is indistinguishable from a real Scout outage and is how
+  monitors get muted. The cost of the trade is that the new alarm is silently
+  inactive until someone does the manual step, and GitHub does not email on
+  warnings. **This bullet said the opposite until 2026-08-22** — it promised a
+  red build that will never arrive, which is exactly the reason to defer the
+  manual step. Round 1 of QC cleared that sentence correctly and the fix for
+  its own M1 finding then falsified it.
 
 ---
 

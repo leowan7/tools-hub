@@ -147,7 +147,7 @@ jobs:
               echo ""
               echo "\`METRICS_TOKEN\` is not set, so the Epitope Scout refusal-rate alarm is **not running**."
               echo "The Platform API smoke (Tier 2) above ran normally."
-            } >> "$GITHUB_STEP_SUMMARY"
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 0
           fi
           python scripts/check_refusal_rate.py
