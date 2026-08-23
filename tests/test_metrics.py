@@ -218,18 +218,42 @@ def test_the_token_comparison_is_constant_time(monkeypatch):
     of its contract and not an implementation detail.
     """
     flask_app = _token_app(monkeypatch, "the-real-token")
-    monkeypatch.setattr(
-        "shared.metrics.hmac.compare_digest", lambda _a, _b: True
+    wrong = {"Authorization": "Bearer wrong-token"}
+
+    # Both halves matter, and the FIRST is why this is a differential rather
+    # than a bare `== 200`: an endpoint with no gate at all also answers 200,
+    # so the open half alone would pass against a deleted gate. Pinning the
+    # closed half here means one test cannot be satisfied by removing the
+    # thing it is testing.
+    assert flask_app.test_client().get("/metrics", headers=wrong).status_code == 403, (
+        "a wrong token reached /metrics even before compare_digest was "
+        "patched — the gate is not closed at all"
     )
 
-    resp = flask_app.test_client().get(
-        "/metrics", headers={"Authorization": "Bearer wrong-token"}
-    )
+    monkeypatch.setattr("shared.metrics.hmac.compare_digest", lambda _a, _b: True)
 
-    assert resp.status_code == 200, (
+    assert flask_app.test_client().get("/metrics", headers=wrong).status_code == 200, (
         "forcing hmac.compare_digest to True did not open the gate for a wrong "
         "token, so _metrics_token_ok is not deciding through it — a plain == "
         "is a timing oracle on the only credential guarding /metrics"
+    )
+
+    # The REJECT path alone is not enough. A short-circuiting
+    # ``if presented == expected: return True`` placed AHEAD of a live
+    # compare_digest passes both assertions above — every request they send
+    # carries a wrong token, so the fast path never fires — while leaking the
+    # matching-prefix length of a CORRECT-so-far token, which is the only
+    # timing oracle an attacker can actually walk. Forcing compare_digest
+    # FALSE and presenting the RIGHT token is what closes that: the accept
+    # decision must flow through the call too, not just the reject decision.
+    monkeypatch.setattr("shared.metrics.hmac.compare_digest", lambda _a, _b: False)
+
+    assert flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer the-real-token"}
+    ).status_code == 403, (
+        "forcing hmac.compare_digest to False still admitted the CORRECT "
+        "token, so something upstream of it accepts — an == short-circuit on "
+        "the accept path is a timing oracle even with compare_digest present"
     )
 
 

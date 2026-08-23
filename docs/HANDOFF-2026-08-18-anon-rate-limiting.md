@@ -325,8 +325,21 @@ addressed; what each turned into is recorded under the bullet.
   `METRICS_TOKEN` bearer. **Leo must set `METRICS_TOKEN` as a Railway service
   variable and add the same value as a `METRICS_TOKEN` repository secret.**
 
-  **CI WILL NOT REMIND YOU.** Until both are set, the refusal-rate step SKIPS
-  with a warning annotation and the job stays GREEN. That is deliberate — an
+  **CI WILL NOT REMIND YOU.** The step keys off the REPO SECRET alone, and
+  Railway's variable only matters once the step actually runs. Measured, all
+  four cells:
+
+  | repo secret | Railway var | job |
+  |---|---|---|
+  | unset | unset | GREEN — step skips with a warning |
+  | unset | **set** | GREEN — step skips; Railway's value is never read |
+  | **set** | unset | **RED** — step runs, `/metrics` 403s, exit 1 |
+  | **set** | **set** | GREEN — the alarm is live |
+
+  So the silent state is "repo secret unset", whatever Railway holds — an
+  earlier version of this bullet said "neither set", which is wrong in the
+  second row. The only loud misconfiguration is repo-secret-without-Railway.
+  The skip is deliberate — an
   unset new secret must not turn the 6-hourly job red forever, because that
   failure email is indistinguishable from a real Scout outage and is how
   monitors get muted. The cost of the trade is that the new alarm is silently
