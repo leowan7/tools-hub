@@ -68,6 +68,15 @@ protection.
 | Limiter state | in-memory dict, **per worker**, lost on deploy | `scout/ratelimit.py` |
 | `METRICS_ALLOWED_CIDR` | **not set**, so `/metrics` 403s for everyone | Railway service variables |
 
+**[Superseded by Phase 6, 2026-08-22]** the last row is now history: the CIDR
+gate is GONE and `METRICS_ALLOWED_CIDR` is read by nothing. Do not set it. It
+could never have worked — `_ip_allowed()` resolved through `_client_ip()`, so
+the allowlist inherited `X-Forwarded-For` forgeability with a two-guess space;
+its unforgeable alternative `request.remote_addr` is Railway's shared edge PoP;
+and the consumer that needed it is a GitHub-hosted runner with no stable
+address. `/metrics` is now gated on a `METRICS_TOKEN` bearer, still deny by
+default. See the `shared/metrics.py` docstring.
+
 **[Note added at landing, 2026-08-20]** the worker-class row above cites
 `nixpacks.toml`. That file is **INERT** — Railway builds this repo with Railpack
 via mise, not Nixpacks, and editing it changes nothing. The row's CONCLUSION
@@ -289,13 +298,43 @@ then email, then account.
 
 ## Phase 6 — Observability
 
+**BUILT 2026-08-22 on `feat/anon-phase6-observability`.** All three bullets are
+addressed; what each turned into is recorded under the bullet.
+
 - **Separate the two 429s.** QC found the per-IP limiter and the per-session
   live-job cap both return 429 with different bodies; any measurement taken
   from status codes alone conflates them. Distinct metrics, distinct messages.
+  → The messages shipped with Phase 5 (seven reason codes). The metric is
+  `tools_hub_scout_refusals_total{reason,route}`, incremented at six sites
+  covering all seven reasons. The status codes were never the right key: one
+  event leaves the app as 429, 503 **and HTTP 200 `text/event-stream`**, so the
+  SSE refusals were being counted as *successes*.
 - **Alert on refusal rate**, not just error rate. A limiter refusing 40% of
   real users is an outage that does not look like one.
+  → This was a MISSING CONSUMER, not a missing threshold: nothing scraped
+  `/metrics` at all. `scripts/check_refusal_rate.py` now runs as a step in the
+  existing 6h `synthetic-smoke` workflow, which already runs outside Railway
+  and already emails the owner on a non-zero exit. Note the honest limitation
+  written into that script: counters reset on deploy, so the ratio is "since
+  container boot", not a windowed rate, and a minimum denominator stops it
+  firing on a handful of post-deploy samples.
 - `/metrics` is currently 403 for everyone because `METRICS_ALLOWED_CIDR` is
   unset. Either set it or stop treating the endpoint as reachable.
+  → Neither. The CIDR gate was REMOVED (see the superseded ground-truth row
+  above for the three reasons it could not work) and replaced with a
+  `METRICS_TOKEN` bearer. **Leo must set `METRICS_TOKEN` as a Railway service
+  variable and add the same value as a `METRICS_TOKEN` repository secret.**
+
+  **CI WILL NOT REMIND YOU.** Until both are set, the refusal-rate step SKIPS
+  with a warning annotation and the job stays GREEN. That is deliberate — an
+  unset new secret must not turn the 6-hourly job red forever, because that
+  failure email is indistinguishable from a real Scout outage and is how
+  monitors get muted. The cost of the trade is that the new alarm is silently
+  inactive until someone does the manual step, and GitHub does not email on
+  warnings. **This bullet said the opposite until 2026-08-22** — it promised a
+  red build that will never arrive, which is exactly the reason to defer the
+  manual step. Round 1 of QC cleared that sentence correctly and the fix for
+  its own M1 finding then falsified it.
 
 ---
 

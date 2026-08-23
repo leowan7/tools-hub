@@ -13,10 +13,28 @@ name: Synthetic smoke (Platform API)
 # auth, idempotency, persistence, or response-shape regressions -- even when
 # the site still looks "up".
 #
+# The second step is the ONLY consumer of /metrics. Phase 6 of the anonymous
+# rate-limiting plan asks for an alert on REFUSAL rate rather than error rate
+# ("a limiter refusing 40% of real users is an outage that does not look like
+# one"), and nothing scraped /metrics at all -- no Prometheus, no Grafana, no
+# scrape config anywhere in the repo. This runner already has the two things
+# that alert needs: it runs outside Railway, and a non-zero exit already emails
+# the owner. See scripts/check_refusal_rate.py for what the ratio is and, more
+# importantly, what it is not (counters reset on deploy, so it is "since
+# container boot", not a windowed rate).
+#
 # Prerequisites:
 #   - Repository secret RK_LIVE_KEY: a member-role Platform API key minted at
 #     https://tools.ranomics.com/account/api-keys
 #     (Settings > Secrets and variables > Actions > New repository secret).
+#   - Repository secret METRICS_TOKEN: any long random string, set to the SAME
+#     value as the METRICS_TOKEN service variable on the Railway deployment.
+#     Until the repo secret exists the refusal-rate step SKIPS loudly instead
+#     of failing -- see the comment on that step -- because it must never be
+#     able to block the Platform API smoke above it. Once it IS set, /metrics
+#     being unreachable or answering 403 DOES fail the job (deliberately -- a
+#     monitor that goes quiet when its own plumbing breaks is the failure mode
+#     Phase 6 exists to stop).
 #
 # Cleanup: the smoke withdraws the row it creates. Its final step is
 # DELETE /experiments/{id}, which runs whenever the create response carried
@@ -67,6 +85,7 @@ jobs:
     timeout-minutes: 10
     env:
       RK_LIVE_KEY: ${{ secrets.RK_LIVE_KEY }}
+      METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -86,5 +105,49 @@ jobs:
       # The smoke script uses only the Python standard library, so there is
       # nothing to pip install. It exits 0 on all-pass, non-zero on any
       # failure (which fails this job and triggers the GitHub failure email).
+      #
+      # This is Tier 2 and it is PRE-EXISTING. Nothing added later may be able
+      # to stop it running: every step above it is either setup or a guard on
+      # its OWN credential (RK_LIVE_KEY).
       - name: Run Platform API smoke
         run: python scripts/smoke_platform_api.py
+
+      # Same rules: stdlib only, non-zero exit fails the job. Deliberately the
+      # LAST step, and deliberately unable to take out the step above it:
+      #
+      #   * It runs AFTER the API smoke so an outright outage is reported as an
+      #     outage rather than as an unreachable /metrics.
+      #   * Its METRICS_TOKEN precondition is checked HERE, in the step that
+      #     needs it, NOT as an earlier guard step. An earlier guard would exit
+      #     non-zero before scripts/smoke_platform_api.py ever ran, silently
+      #     taking ALERTING.md's Tier 2 monitor offline for the whole window
+      #     between this merging and Leo setting the secret.
+      #   * An unset METRICS_TOKEN SKIPS this check instead of failing the job,
+      #     so a not-yet-configured NEW alarm degrades to "the new check is not
+      #     running yet" rather than "the old check is dead". The skip is loud
+      #     on purpose -- a ::warning:: annotation plus a job-summary block --
+      #     so a green tick can never be read as "refusal rate is fine" when it
+      #     means "nobody looked". Not continue-on-error: every OTHER failure
+      #     of this step is a real failure and still fails the job.
+      #
+      # check_refusal_rate.py exits 2 by itself when METRICS_TOKEN is unset,
+      # which is the right answer for a human running it by hand. Here we
+      # pre-empt it: a pending manual action is not an incident.
+      #
+      # Thresholds are overridable here without a code change --
+      # REFUSAL_RATE_THRESHOLD (default 0.20) and REFUSAL_RATE_MIN_SAMPLES
+      # (default 50, the denominator below which the check reports and skips
+      # because the counters reset on deploy).
+      - name: Check Epitope Scout refusal rate
+        run: |
+          if [ -z "${METRICS_TOKEN}" ]; then
+            echo "::warning title=Refusal-rate check SKIPPED::METRICS_TOKEN repo secret is not set, so the Epitope Scout refusal-rate alarm did NOT run. Generate one (e.g. openssl rand -hex 32), add it under Settings > Secrets and variables > Actions, and set the SAME value as a METRICS_TOKEN service variable on the Railway deployment."
+            {
+              echo "### Refusal-rate check SKIPPED"
+              echo ""
+              echo "\`METRICS_TOKEN\` is not set, so the Epitope Scout refusal-rate alarm is **not running**."
+              echo "The Platform API smoke (Tier 2) above ran normally."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+          python scripts/check_refusal_rate.py

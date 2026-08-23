@@ -555,3 +555,29 @@ Two conditions the plan must carry into Phase 1:
 - Production probes used only read-only `railway` commands plus ordinary HTTP
   GETs to public endpoints. Nothing was deployed, and no production data was
   written.
+
+---
+
+## Correction note — 2026-08-22 (Phase 6)
+
+Appended, not edited: the measurements above are the Phase 0 record and stand
+as taken. One forward-looking instruction in them has since been overtaken by
+the code.
+
+**§7 row 5** says true production CPU-seconds could be read "from a `/metrics`
+scrape once `METRICS_ALLOWED_CIDR` is set". **`METRICS_ALLOWED_CIDR` no longer
+exists.** Phase 6 replaced the address-based allowlist with a bearer token:
+`/metrics` is deny-by-default and admits a request only when it presents
+`Authorization: Bearer <METRICS_TOKEN>` matching the `METRICS_TOKEN` service
+variable on Railway. Setting `METRICS_ALLOWED_CIDR` today does nothing at all —
+the variable is read by no code, and a request carrying no bearer still gets a
+403 with it set to `0.0.0.0/0`.
+
+Substitute instruction for that row: set `METRICS_TOKEN` on the Railway service,
+then scrape with the same value as a bearer —
+`curl -H "Authorization: Bearer $METRICS_TOKEN" https://tools.ranomics.com/metrics`.
+See `ALERTING.md` (environment variables, and the "Check Epitope Scout refusal
+rate" runbook) and `scripts/check_refusal_rate.py`.
+
+Nothing else in this document is affected: no other finding depends on that
+variable.
