@@ -7,14 +7,16 @@
    standalone `leowan7/epitope-scout` repo; its stylesheet was not.
    `static/style.css` says as much in its own header — "trimmed to only what
    the hub/auth/coming-soon pages need" — so every Scout component class
-   arrived here with no rule behind it. 93 of them, across index.html and
-   feasibility.html. The visible result was a 1058px upload icon (intended:
-   24px), a bare native file input, and a 3D viewer that mounted into a
-   zero-height container and never rendered.
+   arrived here with no rule behind it. **92** of them across index.html and
+   feasibility.html, or 96 counting four more applied at runtime via
+   `element.className = …` rather than a `class=` attribute. The visible
+   result was a 1058px upload icon where `1.5rem` — 30px, at the hub's 20px
+   root — was intended, a bare native file input, and a 3D viewer that
+   mounted into a zero-height container and never rendered.
 
    This file is that stylesheet recovered from the source repo at
    `182d6e54` (the parent of `a8c3bf35`, "delete the retired Scout app"),
-   with three things removed because tools-hub already owns them:
+   with four things removed because tools-hub already owns them:
 
      * the `:root` token block — the hub's tokens are the current ones and
        three had drifted (it darkened --text-secondary and --text-tertiary,
@@ -23,12 +25,29 @@
      * 20 shell classes — navbar, brand, panel, hero, btn-primary/secondary,
        app-container, subtitle, section-title. Loaded after style.css these
        would win and restyle the chrome on Scout pages only.
-     * bare `html`/`body`/`main`/`footer` rules, plus a `::selection` that
-       duplicates the hub's and a `[hidden]` the hub already sets !important.
+     * bare `html`/`body`/`main`/`footer` rules and the `*, *::before,
+       *::after` reset, plus a `::selection` that duplicates the hub's and a
+       `[hidden]` the hub already sets !important.
+     * `.brand-tool` and `.panel:hover`. The first is dead — the only brand
+       markup is _header.html, which uses the hub's `.brand-tool-link`. The
+       second would give Scout pages a panel hover the rest of the site
+       does not have.
 
    Kept deliberately: `.btn-primary:disabled` and `.btn-secondary:disabled`.
    Those are additive — the hub defines no disabled state, and Scout disables
    the Analyze button for the duration of a run.
+
+   Known issue, deliberately not fixed here. Roughly 14 rules below use
+   `var(--text-tertiary)` for hint and citation text — `.upload-secondary`,
+   `.control-hint`, `.dim-desc`, `.rec-citation`, `.score-ref`, `.no-flags`
+   and others. Against `--bg-surface` the hub's `#4F5B6B` gives **2.66:1**,
+   below WCAG AA (4.5:1) and below the 3:1 UI floor; the source stylesheet's
+   own `--text-tertiary` was `#8A95A6`, which gives 6.05:1. Until this file
+   existed those elements were unstyled and inherited `--text-primary` at
+   14.7:1, so restoring the design is what makes the shortfall visible. The
+   token is the hub's site-wide value (35 uses in style.css), so changing it —
+   or moving these rules to `--text-secondary` — is a design-system decision,
+   not a Scout one. Flagged rather than silently taken.
 
    Loaded by templates/scout/index.html and templates/scout/feasibility.html
    via their head_extra blocks. Kept out of style.css on purpose: that file is
@@ -62,11 +81,20 @@
    Panel (card)
    -------------------------------------------------------------------------- */
 
+/* The source stylesheet centred this icon by making `.panel-title` a flex row
+   with `gap: 0.5rem`. The hub's `.panel-title` (style.css:606) carries the same
+   six typographic declarations but none of the three layout ones, and that rule
+   is dropped here because style.css owns it -- so the icon has no flex parent
+   and the `flex-shrink: 0` this rule used to carry was inert. Centre and space
+   it as the inline element it actually is, which keeps the fix inside a
+   Scout-owned class instead of making every panel title on the site a flex
+   container. */
 .panel-title-icon {
   width: 16px;
   height: 16px;
   color: var(--accent-text);
-  flex-shrink: 0;
+  vertical-align: middle;
+  margin-right: 0.5rem;
 }
 
 /* --------------------------------------------------------------------------
@@ -1202,9 +1230,10 @@
    -------------------------------------------------------------------------- */
 
 /* The feasibility page's drag-and-drop handlers toggle `.drag-over` on the
-   upload zone (feasibility.html:272-276). The source stylesheet predates
-   them, so this state had no rule. Same specificity as `.upload-zone:hover`,
-   so it has to stay below it to win on source order. */
+   upload zone (feasibility.html:272-279). The handlers are not new — they
+   exist at `182d6e54` too — the source stylesheet simply never had a rule for
+   the state, so the drag target has never highlighted. Same specificity as
+   `.upload-zone:hover`, so it has to stay below it to win on source order. */
 .upload-zone.drag-over {
   border-color: var(--accent);
   background: rgba(43, 158, 126, 0.10);
