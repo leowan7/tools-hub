@@ -12,6 +12,7 @@ branch is exercised on every machine.
 Evidence: docs/qc/scout-dssp-fallback-measurement.md
 """
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -841,7 +842,7 @@ def test_selenomethionine_at_chain_edges_is_handled_like_any_residue(label, targ
 
     Kept because the current selector is a plain filter where an edge bug is
     unlikely, but a future continuity or peptide-bond check (see the residual
-    risk noted at _PYDSSP_MODIFIED_AA) would land exactly here.
+    risk noted at _MODIFIED_AA) would land exactly here.
     """
     text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
     variant = _model_from_text(_rewrite_residues(text, targets, "MSE", "HETATM"))
@@ -1043,3 +1044,177 @@ def test_modified_residues_count_toward_the_max_residue_cap(monkeypatch):
     # Room for the MSE too, and it comes straight back in full.
     monkeypatch.setattr(scoring, "_PYDSSP_MAX_RESIDUES", 129)
     assert len(scoring._assign_ss_by_pydssp(semet, "A")) == 129
+
+
+# ---------------------------------------------------------------------------
+# phi/psi: modified residues must not split the peptide
+# ---------------------------------------------------------------------------
+def test_phi_psi_keeps_modified_residues_in_the_peptide():
+    """MSE must not cut the polypeptide, and its neighbours must keep dihedrals.
+
+    THIS IS THE GUARD FOR A PRIVATE-API DEPENDENCY. _assign_ss_by_phi_psi
+    overrides ``PPBuilder._accept``, which is private Biopython API, and
+    requirements.txt pins a RANGE (>=1.81,<2.0). If an upgrade renames or
+    removes ``_accept``, the override silently stops being called and the
+    peptide splits at every MSE again -- exactly today's bug, restored without
+    a single error. Nothing else would notice: a partial phi/psi map is a
+    normal result, so there is no completeness guard to trip.
+
+    Measured on this fixture before the fix: one 129-residue peptide became
+    three (11/92/24), residues 12 and 105 lost their labels outright, and
+    11, 13 and 106 fell helix -> loop.
+    """
+    path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    text = path.read_text()
+
+    control = _model_from_text(text)                          # MET, no junction
+    semet = _model_from_text(_as_selenomethionine(text))      # same coords as MSE
+
+    # One uninterrupted peptide, not three.
+    pps = scoring._ScoutPPBuilder().build_peptides(semet["A"])
+    assert [len(pp) for pp in pps] == [129]
+    assert "MSE" in {r.resname for pp in pps for r in pp}
+
+    # And the labels match the junction-free control exactly -- same keys,
+    # same values, including the two MSE and their four neighbours.
+    got = _labels_ignoring_hetflag(scoring._assign_ss_by_phi_psi(semet, "A"))
+    want = _labels_ignoring_hetflag(scoring._assign_ss_by_phi_psi(control, "A"))
+    assert got == want
+    assert len(got) == 129
+
+
+def test_phi_psi_accept_is_a_strict_superset_of_biopythons():
+    """The override must only ADD residues, never remove any.
+
+    THIS IS THE GUARD THE FIRST VERSION OF THIS CHANGE DID NOT HAVE, and it
+    is why that version shipped a regression into review. It reused
+    _is_pydssp_polymer_residue, which demands `hetflag == " "` for the
+    canonical 20. Stock ``_accept(residue, 1)`` is
+    ``is_aa(residue, standard=True)`` -- RESNAME ONLY, hetflag ignored. So
+    the override was not a superset but INCOMPARABLE, and it cut the peptide
+    at every in-polymer canonical residue recorded as HETATM.
+
+    Asserting "our builder rejects NAG" does NOT catch that: stock rejects
+    NAG too, so that assertion passes against a completely reverted fix.
+    The property with teeth is the IMPLICATION, checked in both directions.
+    """
+    from Bio.PDB.Polypeptide import PPBuilder
+
+    def _res(hetflag, resname):
+        res = Residue((hetflag, 1, " "), resname, "")
+        for name in scoring._PYDSSP_BACKBONE:
+            res.add(Atom(name, np.zeros(3), 0.0, 1.0, " ", name, 1, "C"))
+        return res
+
+    scout, stock = scoring._ScoutPPBuilder(), PPBuilder()
+
+    probes = [
+        (" ", "ALA"), (" ", "GLY"), (" ", "TRP"),
+        ("H_ALA", "ALA"), ("H_GLY", "GLY"), ("H_MET", "MET"),   # the regressed case
+        ("H_MSE", "MSE"), ("H_SEC", "SEC"), (" ", "MSE"),
+        ("H_NAG", "NAG"), ("H_LIG", "LIG"), ("H_HEM", "HEM"),
+        ("H_ATP", "ATP"), ("H_SEP", "SEP"), ("H_FME", "FME"), ("W", "HOH"),
+    ]
+
+    added = set()
+    for hetflag, resname in probes:
+        res = _res(hetflag, resname)
+        stock_takes, scout_takes = stock._accept(res, 1), scout._accept(res, 1)
+        # Direction 1: never lose one Biopython would have taken.
+        assert not (stock_takes and not scout_takes), (
+            f"{resname}/{hetflag} accepted by stock but REJECTED here -- "
+            "the override must be a superset"
+        )
+        if scout_takes and not stock_takes:
+            added.add(resname)
+
+    # Direction 2: add EXACTLY the modified-residue whitelist, nothing else.
+    # This is what keeps it away from aa_only=0, which would also add NAG,
+    # LIG, HEM, ATP, SEP and FME -- the last two SILENTLY, since they are in
+    # protein_letters_3to1_extended.
+    assert added == set(scoring._MODIFIED_AA) == {"MSE", "SEC"}
+    with warnings.catch_warnings():
+        # aa_only=0 warns for the four it reaches via the atom-name branch;
+        # SEP and FME it takes in silence. Both behaviours are Biopython's.
+        warnings.simplefilter("ignore")
+        for resname in ("NAG", "LIG", "HEM", "ATP", "SEP", "FME"):
+            assert stock._accept(_res(f"H_{resname}", resname), 0), (
+                f"{resname} no longer taken by aa_only=0 -- rationale is stale"
+            )
+
+
+def test_a_residue_sandwiched_between_two_modified_ones_keeps_its_key():
+    """MSE-X-MSE strands X entirely -- a FOURTH loss mode, not a degraded label.
+
+    The other three modes cost a label's VALUE (the MSE itself, plus psi of
+    the residue before and phi of the residue after). This one costs the KEY:
+    X is isolated between two rejected residues, never forms a connected
+    pair, and build_peptides emits no peptide for it at all -- so it falls to
+    the "loop" floor via ss_map.get(key, "loop") with nothing recording that
+    it was never assigned.
+
+    It matters more than the MSE labels themselves, because X is an ordinary
+    canonical residue: pipeline.py:356 admits it into patches, where MSE is
+    filtered out under either spelling. Found by independent review, which
+    measured 39 such keys across a 70-structure corpus (17 of them non-loop).
+    """
+    path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    text = path.read_text()
+
+    # 1HEW chain A has MET at 12 and 105. Make 11 and 13 MSE so residue 12
+    # is the sandwiched one, and keep a MET->MSE-free control for its label.
+    def _to_mse(raw, resseqs):
+        out = []
+        for line in raw.splitlines(True):
+            if line.startswith(("ATOM  ", "HETATM")) and line[21] == "A":
+                try:
+                    seq = int(line[22:26])
+                except ValueError:
+                    seq = None
+                if seq in resseqs:
+                    line = "HETATM" + line[6:17] + "MSE" + line[20:]
+            out.append(line)
+        return "".join(out)
+
+    sandwiched = _model_from_text(_to_mse(text, {11, 13}))
+    got = _labels_ignoring_hetflag(scoring._assign_ss_by_phi_psi(sandwiched, "A"))
+
+    assert ("A", 12, " ") in got, "residue 12 was stranded between two MSE"
+    assert len(got) == 129
+
+
+def test_phi_psi_does_not_cut_at_hetatm_spelled_canonical_residues():
+    """An in-polymer canonical residue spelled HETATM must not split the chain.
+
+    Regression test for a defect this change itself introduced and an
+    independent review caught: the first version cut the peptide here, losing
+    the residue's own label and dropping BOTH its neighbours to "loop" --
+    and the neighbours are ordinary ATOM residues, so the pipeline consumes
+    them (pipeline.py:356 admits them into patches, and _majority_ss /
+    _continuous_ss_score read them).
+    """
+    path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    text = path.read_text()
+
+    def _as_hetatm(raw, resseqs):
+        out = []
+        for line in raw.splitlines(True):
+            if line.startswith("ATOM  ") and line[21] == "A":
+                try:
+                    seq = int(line[22:26])
+                except ValueError:
+                    seq = None
+                if seq in resseqs:
+                    line = "HETATM" + line[6:]   # resname deliberately unchanged
+            out.append(line)
+        return "".join(out)
+
+    control = _labels_ignoring_hetflag(
+        scoring._assign_ss_by_phi_psi(_model_from_text(text), "A"))
+    mutated = _labels_ignoring_hetflag(
+        scoring._assign_ss_by_phi_psi(
+            _model_from_text(_as_hetatm(text, {60, 61, 62})), "A"))
+
+    assert set(control) - set(mutated) == set(), "HETATM spelling dropped labels"
+    assert mutated == control, "HETATM spelling moved labels"
+    assert len(mutated) == 129
