@@ -29,9 +29,10 @@ class Legend(TypedDict):
     #
     # boltzgen's ipTM omits them. It carried 0.7/0.8, which are the Boltz-2
     # COFOLD bars, against a number a generator confidence head produces from
-    # its own output. On the audited 100-design replicate — the one run where
-    # this legend's own column was captured — `design_to_target_iptm` spans
-    # 0.084-0.583, 0/100 over 0.70.
+    # its own output. On the audited 100-design replicate
+    # `design_to_target_iptm` spans 0.084-0.583, 0/100 over 0.70. That is the
+    # largest capture of THIS column on a multi-chain target; the peptide
+    # trees below carry it too, on a single-chain one.
     #
     # CITE THAT, NOT THE FAMILIAR "460 designs, max 0.650". The 460 figure is
     # BoltzGen's bare `iptm`, averaged over EVERY chain pair, so on a
@@ -351,9 +352,12 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # interface (see the Legend TypedDict).
         #
         # For scale, the same campaign's designs re-scored on a real Boltz-2
-        # cofold span 0.166-0.806 on `binder_to_target`, the per-chain-pair
-        # column feld1/13_boltz_cofold.py exists to read precisely because it
-        # cannot pick up target-internal contacts (29 rows, 1 over 0.70). Its
+        # cofold span 0.166-0.806 on `binder_to_target` (29 rows, 1 over
+        # 0.70) — the per-chain-pair column feld1/13_boltz_cofold.py exists to
+        # read, since X:A and X:B are binder-to-target pairs with, in its
+        # words, "no target-internal contamination possible". It is the better
+        # of those two pairs, so it sits ~0.03 above their mean; that is well
+        # inside the gap to 0.70 and does not change the conclusion. Its
         # complex-wide `cofold_iptm` sibling reads 0.263-0.852 and is the
         # wrong column for the same reason the 460 figure is.
         # llm-proteinDesigner fix/boltzgen-unreachable-gate removes the
@@ -657,9 +661,11 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # THIS repo, and citing it unqualified sent readers looking for one.
 #
 # This matters more than a mis-rendered number because ipTM is also the
-# RANKING key (shared/result_columns.py). It no longer labels filter_status:
-# llm-proteinDesigner fix/boltzgen-unreachable-gate drops that leg, so the
-# label is pLDDT and refolding RMSD only.
+# RANKING key (shared/result_columns.py), and it labels filter_status --
+# until the container half lands. llm-proteinDesigner
+# fix/boltzgen-unreachable-gate drops that leg, leaving pLDDT and refolding
+# RMSD; PRESENT TENSE ONLY ONCE THAT IS DEPLOYED, since a results page renders
+# whatever the job stored and the branch is not on master yet.
 #
 # BOLTZGEN IS OUT, AND THE RUNS THAT PREDATE THE FIX ARE WHY IT TOOK AN
 # ARGUMENT. llm-proteinDesigner#18 (squash-merged as 311c29f, Modal deploy

@@ -261,8 +261,12 @@ def test_the_boltzgen_caption_is_in_the_mail_and_describes_only_the_mail(chain):
     assert "binder-to-target interface" in caption
     # NOT "0.7 and 0.8 are both present", which is what this asserted and what
     # made it a guard on the defect rather than against it. Those are the
-    # Boltz-2 COFOLD bars; BoltzGen never cofolds, and its number has not
-    # reached 0.65 in 460 designs over two targets. So this line was pinning a
+    # Boltz-2 COFOLD bars, and the audited run never cofolds -- its refold
+    # folds the binder alone, so the number has no interface in it. (Do NOT
+    # reach for "0.65 in 460 designs": that figure is the bare all-chain-pair
+    # `iptm`, a different column -- shared/score_legends.py has the note. On
+    # this legend's own column the audited run gives 0.084-0.583.) So this
+    # line was pinning a
     # caption that told every user, on every completed run, that the run had
     # failed — see tests/test_boltzgen_iptm_has_no_cofold_bar.py.
     #

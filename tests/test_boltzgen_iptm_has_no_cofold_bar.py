@@ -28,9 +28,14 @@ and the unscoped version ("it can never reach 0.7") is false twice over:
 
   * the same self-hosted pipeline on peptide-anything reaches 0.777, with
     16/36 over 0.70  (boltzgen-workspace/mdm2-peptide)
-  * the HOSTED Boltz API — different product, different schema, fields named
-    binding_confidence / structure_confidence — clears 0.70 routinely, max
-    0.983. feld1/11_engine_audit.py measured that deliberately AS A CONTROL.
+  * the HOSTED Boltz API clears 0.70 routinely, max 0.983 (42.5% over 0.70 on
+    the matched 3AVE/miniprotein subset; 60.3% across all hosted designs). A
+    different SERVICE, aggregated retrospectively from campaign manifests by
+    feld1/12_engine_evidence.py -- not a control run by 11_engine_audit.py,
+    which makes no HTTP call at all. Its records DO carry an `iptm` field, and
+    whether that is the same quantity as ours is explicitly open
+    (11_engine_audit.py says so). Keep the populations apart for that reason,
+    not because we know they differ.
 
 Pooling those populations is how a reviewer talks themselves into either
 "the bar was fine" or "the premise collapsed". Neither follows. The bar comes

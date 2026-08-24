@@ -1445,10 +1445,18 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     # THE THRESHOLDS ARE GONE, AND THE COMMENT THAT JUSTIFIED THEM WAS WRONG.
     # It read: "calibrated on single-chain runs where the two keys nearly
     # coincide, so they remain the best available anchor". The two keys do
-    # coincide on a single-chain target, and on the audited replicate of that
-    # protocol the coincident value spans 0.084-0.583, 0/100 over 0.70.
-    # (Six single-chain production runs, 65 candidates, max 0.659 — but read
-    # the column note below before pooling those two figures.)
+    # coincide on a single-chain target -- that much is true, and it is why
+    # the old comment sounded reasonable. It does not rescue 0.7/0.8, because
+    # the coincident value is not near them either: six single-chain
+    # production runs, 65 candidates, max 0.659 (column unrecorded for those
+    # runs; treat it as indicative, not as this legend's column).
+    #
+    # NOTE THE AUDITED RUN IS NOT ONE OF THEM. Its target is the Fel d 1
+    # homodimer -- chains A and B plus two NAGs -- so it is exactly the case
+    # where the two keys DIVERGE: bare `iptm` 0.450-0.649 against
+    # `design_to_target_iptm` 0.084-0.583 on the same 100 designs. That
+    # divergence is this banner's whole subject, so do not cite the audit as
+    # a single-chain measurement.
     # 0.7/0.8 were not calibrated on anything, they were copied from the
     # ("boltz2", "ipTM") entry directly below, which IS the calibrated cofold
     # and is a different measurement. The same designs re-scored on a real
