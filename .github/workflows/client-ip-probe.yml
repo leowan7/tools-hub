@@ -18,7 +18,7 @@ name: Client IP probe (diagnostic)
 #     token, connection refused, DNS failure and an unset URL. That is a claim
 #     about the script, NOT a guarantee about the job: a timeout-minutes
 #     cancellation or a runner infrastructure error can still conclude
-#     `failure`. Headroom is deliberate (12 curls x --max-time 20 against a
+#     `failure`. Headroom is deliberate (15 curls x --max-time 20 against a
 #     600 s budget, no checkout step). It is read by a human opening the run, not by
 #     an alert. If you ever make it assert something, give it its own branch.
 #
@@ -83,6 +83,19 @@ jobs:
           echo "=== 3. Multi-value forged, distinguishable entries."
           echo "=== Read forwarding_headers to see what the edge appended, if anything."
           curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-For: 192.0.2.111, 192.0.2.222" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 4. Forged X-Real-Ip. Is the edge's own header client-settable?"
+          echo "=== If X-Real-Ip comes back as 198.51.100.7, it is NOT trustworthy."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 5. Forged X-Real-Ip AND X-Forwarded-For together."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" -H "X-Forwarded-For: 198.51.100.8, 198.51.100.9" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 6. Forged X-Forwarded-Host / -Proto, checked for the same reason."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-Host: evil.example" -H "X-Forwarded-Proto: http" "${URL}" || echo "(request failed)"
           echo
 
           echo "=== Never fails on purpose; read the JSON above."

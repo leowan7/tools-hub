@@ -300,11 +300,16 @@ argument in miniature: a refusal count without a reason label is not evidence.
 2. **Whether Railway's edge appends, overwrites, or forwards
    `X-Forwarded-For` verbatim.** Phase 2. Unchanged, still unverified, still
    the hard gate. See the next section — this one is actionable now.
-   **ANSWERED 2026-08-24, and by none of the three cases below:** the resolved
-   key *varies per request*, so the per-IP tier never refuses anyone and the
-   ceiling this document is about does not operate at all. The conclusion here
-   stands; the CPU-budget ground does not, because it was protecting a control
-   that does not run. See
+   **ANSWERED 2026-08-24. It is the OVERWRITE case below** — the edge discards
+   everything the caller sends — **with a wrinkle the table does not have: it
+   then appends its own internal hop, and that hop rotates.** So one-hop
+   resolution keyed on a rotating edge address and the per-IP tier never
+   refused anyone. The ceiling this document is about did not operate at all.
+   The conclusion here stands; the CPU-budget ground does not, because it was
+   protecting a control that does not run. **A fix exists and is landing** —
+   keying on `X-Real-Ip` — after which this ceiling binds for the FIRST time
+   and the "six researchers behind one NAT" case becomes reachable rather than
+   theoretical. Re-read this decision then. See
    [`MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md`](MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md).
 3. **Real refusal-by-reason rates in production.** That is Phase 6, and it is
    why Phase 6 goes first. Every number above is a simulation.

@@ -65,6 +65,7 @@ Usage
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
 import time
@@ -296,16 +297,62 @@ def _client_ip() -> str:
     its own identity by sending ``X-Forwarded-For: <anything>``, which
     nullifies every per-IP control keyed off this function.
 
-    With the default one trusted hop, a single-value header returns that
-    value whether the edge *appends* to the header or *overwrites* it, so
-    this is correct under both semantics without needing to know which
-    Railway does. Assumes no untrusted hop sits between the client and the
-    edge; ``TRUSTED_PROXY_HOPS`` is the knob if that stops being true.
+    At the default one hop, prefers ``X-Real-Ip``, which Railway's edge sets
+    from the socket it actually saw and rewrites on every request — measured,
+    not assumed. The ``X-Forwarded-For`` hop arithmetic below is the fallback
+    whenever that header is absent or is not a bare IP address, and is
+    unchanged. Setting ``TRUSTED_PROXY_HOPS`` to anything but 1 selects the
+    hop arithmetic outright, so the knob still means what its docstring says.
+
+    With one trusted hop, a single-value header returns that value whether
+    the edge *appends* or *overwrites*, so the fallback is correct under
+    both semantics. ``TRUSTED_PROXY_HOPS`` is the knob if an untrusted hop
+    ever sits between the client and the edge.
 
     Falls back to the socket peer when the header is absent or unusable.
     """
     hops = _trusted_proxy_hops()
     if hops:
+        # X-Real-Ip FIRST, because it is the only value here measured to be
+        # both edge-written and unforgeable. On 2026-08-24 a live probe sent
+        # forged X-Real-Ip, X-Forwarded-For, X-Forwarded-Host and
+        # X-Forwarded-Proto: Railway's edge discarded every one and rewrote
+        # X-Forwarded-For as `<real client>, <internal proxy>` with
+        # X-Real-Ip set to the same real client.
+        #
+        # This is what makes the per-IP limiter work at all. The trailing
+        # internal hop ROTATES across a pool (.101/.102/.104 within one probe
+        # run), so counting one hop from the right keyed on a different value
+        # nearly every request and the tier never refused anyone. See
+        # docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+        #
+        # Preferred over raising TRUSTED_PROXY_HOPS to 2, deliberately: a hop
+        # INDEX is only safe while the caller cannot lengthen the chain, so it
+        # would silently become forgeable if the edge ever appended instead of
+        # overwriting. A single edge-written header has no index to shift.
+        # Gated on hops because TRUSTED_PROXY_HOPS=0 means "no proxy in front,
+        # trust only the socket peer", and then no header is trustworthy.
+        # hops == 1 ONLY. Any other value means the operator is telling us the
+        # topology is not the measured one -- another proxy in front, per
+        # _trusted_proxy_hops' own docstring -- and then X-Real-Ip is whatever
+        # THAT proxy's egress looked like to Railway, which would collapse
+        # every visitor behind it onto one key. The knob has to keep working.
+        #
+        # Validated as a bare IP, not merely non-blank. Duplicate X-Real-Ip
+        # headers MERGE into one comma-joined WSGI value, so "a single header
+        # has no index to shift" is only true once a comma-joined value is
+        # rejected. ip_address() rejects that and the rest of the junk class
+        # in one line: hostnames, host:port, empty, whitespace, 2000-char
+        # strings. Anything it rejects falls through to the chain below rather
+        # than becoming a limiter key verbatim.
+        real_ip = request.headers.get("X-Real-Ip", "").strip()
+        if real_ip and hops == 1:
+            try:
+                ipaddress.ip_address(real_ip)
+            except ValueError:
+                pass
+            else:
+                return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:
@@ -401,8 +448,9 @@ def register_metrics(flask_app: Flask) -> None:
         """Echo what this process actually receives about the caller's address.
 
         The anonymous per-IP limiter keys on ``_client_ip()``. Production
-        measurement on 2026-08-24 showed that key VARYING between identical
-        requests, so the tier never refuses anyone -- but nothing in the app
+        measurement on 2026-08-24 showed that key varying between identical
+        requests, so the tier never refused anyone (FIXED the same day by
+        preferring ``X-Real-Ip``; this endpoint is what established why) -- but nothing in the app
         could say what it was resolving to or why, because the resolution is
         pure inference from headers we never logged. See
         docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
