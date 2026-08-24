@@ -1442,11 +1442,53 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
         "the legend never says the ORDER is affected; past limit=300 the "
         "ipTM order decides which designs appear at all"
     )
-    # Thresholds were calibrated on single-chain runs where the two keys nearly
-    # coincide, so they remain the best available anchor and must not drift
-    # silently alongside a wording change.
-    assert legend["good"] == 0.7
-    assert legend["excellent"] == 0.8
+    # THE THRESHOLDS ARE GONE, AND THE COMMENT THAT JUSTIFIED THEM WAS WRONG.
+    # It read: "calibrated on single-chain runs where the two keys nearly
+    # coincide, so they remain the best available anchor". The two keys do
+    # coincide on a single-chain target -- that much is true, and it is why
+    # the old comment sounded reasonable. It does not rescue 0.7/0.8, because
+    # the coincident value is not near them either: six single-chain
+    # production runs, 65 candidates, max 0.659 (column unrecorded for those
+    # runs; treat it as indicative, not as this legend's column).
+    #
+    # NOTE THE AUDITED RUN IS NOT ONE OF THEM. Its target is the Fel d 1
+    # homodimer -- chains A and B plus two NAGs -- so it is exactly the case
+    # where the two keys DIVERGE: bare `iptm` 0.450-0.649 against
+    # `design_to_target_iptm` 0.084-0.583 on the same 100 designs. That
+    # divergence is this banner's whole subject, so do not cite the audit as
+    # a single-chain measurement.
+    # 0.7/0.8 were not calibrated on anything, they were copied from the
+    # ("boltz2", "ipTM") entry directly below, which IS the calibrated cofold
+    # and is a different measurement. The same designs re-scored on a real
+    # Boltz-2 cofold, read on the CLEAN per-chain-pair column, span
+    # 0.166-0.806 with 1/29 over 0.70.
+    #
+    # QUOTE THE RIGHT COLUMN. The widely-cited "460 designs, max 0.650" is
+    # BoltzGen's bare `iptm`, an interface-pTM averaged over EVERY chain pair,
+    # so on the Fel d 1 homodimer it carries the target's own A:B crystal
+    # interface — the very contamination this banner exists to warn about.
+    # boltzgen-workspace/aglyco-fc-vhh/modal_design.py records that it "read
+    # ~2x high" and that all 460 were concluded on it; 13_boltz_cofold.py adds
+    # that the binder-interface column was dropped inside the container for
+    # those runs and is unrecoverable. On the audited n100 the two sit side by
+    # side: bare `iptm` 0.450-0.649, `design_to_target_iptm` 0.084-0.583. The
+    # legend describes the SECOND one, so cite that.
+    #
+    # So the anchor is absent rather than corrected: nothing pairs the in-run
+    # number against a cofold on the same designs, so there is no bar to state.
+    # Pinned in full by tests/test_boltzgen_iptm_has_no_cofold_bar.py; asserted
+    # here too because this is the test a wording change runs, and a bar that
+    # says one thing while the wording says another is how the two drift.
+    assert "good" not in legend and "excellent" not in legend, (
+        f"boltzgen ipTM claims good={legend.get('good')} / "
+        f"excellent={legend.get('excellent')} again — 0.7 is the Boltz-2 "
+        f"cofold bar, measured on a fold this run does not perform"
+    )
+    assert "0.7 does not apply" in explanation, (
+        "the legend dropped the bar from its data but no longer tells the "
+        "reader the 0.7 scale they know from every other tool here is the "
+        "wrong one to apply"
+    )
 
 
 # ---------------------------------------------------------------------------

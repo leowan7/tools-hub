@@ -80,10 +80,19 @@ example_output_id: Optional[str] = None
 # Structured about-panel content. Consumed by the shared
 # components/about_panel.html macro on the form page.
 about: dict = {
+    # "already checked against the site you aimed at" was not true of the
+    # refold and is the claim the whole tool was read through. BoltzGen runs
+    # one refold and it folds the BINDER ALONE — no target in it, so nothing
+    # about the site can be checked there. That fold is a self-consistency
+    # check, which is worth having and is what it now says. The interface
+    # number is the generator's own confidence, not a second opinion, so the
+    # honest instruction is to rank on it and re-fold a shortlist.
     "what_it_is": (
-        "Designs a binder against your target and refolds it inside the "
-        "same model, so every candidate arrives already checked against "
-        "the site you aimed at. Four formats share one target — a small "
+        "Designs a binder against your target, then refolds each candidate "
+        "from its own sequence so you can see whether it holds the shape it "
+        "was designed as. The interface score is the generator's own read, "
+        "not a second opinion, so rank on it and re-fold a shortlist before "
+        "you trust it. Four formats share one target — a small "
         "de novo protein, a nanobody, an antibody, or a short peptide — "
         "so you can compare formats on the same epitope rather than "
         "guessing which to commit to. It is the only design tool here "

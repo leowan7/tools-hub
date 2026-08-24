@@ -257,11 +257,30 @@ def test_the_boltzgen_caption_is_in_the_mail_and_describes_only_the_mail(chain):
             f"the {part} body lost the score the caption interprets"
         )
 
-    # What it must say: the metric, and the bar.
+    # What it must say: the metric, and what to do with the number.
     assert "binder-to-target interface" in caption
-    assert "0.7" in caption and "0.8" in caption, (
-        "the caption dropped the thresholds, which are the actionable half of "
-        f"a one-line interpretation: {caption!r}"
+    # NOT "0.7 and 0.8 are both present", which is what this asserted and what
+    # made it a guard on the defect rather than against it. Those are the
+    # Boltz-2 COFOLD bars, and the audited run never cofolds -- its refold
+    # folds the binder alone, so the number has no interface in it. (Do NOT
+    # reach for "0.65 in 460 designs": that figure is the bare all-chain-pair
+    # `iptm`, a different column -- shared/score_legends.py has the note. On
+    # this legend's own column the audited run gives 0.084-0.583.) So this
+    # line was pinning a
+    # caption that told every user, on every completed run, that the run had
+    # failed — see tests/test_boltzgen_iptm_has_no_cofold_bar.py.
+    #
+    # The underlying rule survives: a one-line interpretation has to leave the
+    # reader able to act. For 31 legends that is still a threshold pair. For
+    # this one it is that the familiar scale is the wrong one and a re-fold is
+    # what settles it, so that is what gets asserted.
+    assert "0.7 does not apply" in caption, (
+        "the caption states a number without saying the 0.7 scale every other "
+        f"tool here uses is not the one to read it on: {caption!r}"
+    )
+    assert "re-fold" in caption, (
+        "the caption disclaims the scale and then leaves the reader with "
+        f"nothing to do about it: {caption!r}"
     )
 
     # The premise: there is no table in this message for the copy to describe.
