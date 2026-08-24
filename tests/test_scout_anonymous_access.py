@@ -1110,29 +1110,24 @@ class TestAnalyzeParsesInsideTheBound:
 def test_the_two_anon_ceilings_must_move_together() -> None:
     """Tripwire on the INTAKE/ANALYZE pair only. It does NOT guard the Phase 3 coupling.
 
-    What it guards: `docs/DECISION-2026-08-22-per-ip-ceiling.md` §5 argues that
-    which ceiling binds depends on the SHAPE of a lab, not its size -- many
-    researchers with one structure each meet intake; few researchers with many
-    chains each meet analyze. So moving one and not the other leaves half the
-    users it was meant to serve refused exactly where they are today.
+    What it guards: the ceiling decision's section 5 argues that which ceiling
+    binds depends on the SHAPE of a lab, not its size -- many researchers with
+    one structure each meet intake; few researchers with many chains each meet
+    analyze. Moving one and not the other leaves half of them refused exactly
+    where they are today. Equality is a conservative proxy for that, not the
+    principle; if a coupled change wants unequal constants, the doc changes
+    first and this test with it.
 
-    Equality is a CONSERVATIVE PROXY for that, not the principle. `routes.py`
-    calls the `10 == 10` balance ACCIDENTAL, and the honest coupled change might
-    well be unequal constants -- this test would block that, deliberately, so
-    that the decision doc has to be updated first and this test with it.
-
-    What it does NOT guard, so nobody mistakes a green run for cover: the
-    re-take's headline finding is that raising the constants and building
-    Phase 3 are each undesirable alone. **Raising BOTH constants to 20 without
-    Phase 3 -- the case `routes.py` now shouts DO NOT about, and the one that
-    drops the saturation threshold to two addresses -- passes this test
-    cleanly.** Phase 3 landing alone passes too. Nothing executable guards the
-    coupling; it is a comment and a doc section, and that is a known gap.
+    What it does NOT guard, so a green run is not mistaken for cover: raising
+    BOTH constants to 20 passes cleanly, and so does Phase 3 landing alone.
+    Nothing executable can see "Phase 3 landed", so the coupling lives in a
+    comment on ANON_ANALYZE_LIMIT and in the doc. That is a known gap.
     """
     assert scout_routes.ANON_INTAKE_LIMIT == scout_routes.ANON_ANALYZE_LIMIT, (
         "The anonymous intake and analyze ceilings have diverged "
         f"({scout_routes.ANON_INTAKE_LIMIT} vs {scout_routes.ANON_ANALYZE_LIMIT}). "
         "Which one binds depends on the shape of the lab, so moving one alone "
-        "buys nothing for half of them -- see the ceiling decision doc §5. "
-        "If the divergence is intended, update that doc and this test together."
+        "buys nothing for half of them -- see section 5 of "
+        "docs/DECISION-2026-08-22-per-ip-ceiling.md. If the divergence is "
+        "intended, update that doc and this test together."
     )

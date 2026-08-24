@@ -3,20 +3,18 @@
 **Reviewed at:** `d3c60c8` (= origin/main at the time of writing).
 **Measured first-hand**, not quoted: see "Evidence" below.
 
-> **RE-TAKEN 2026-08-24 — read ["Re-taken"](#re-taken-2026-08-24--the-trigger-this-document-set-has-fired) at the bottom first.**
-> Unknown 2 (what Railway's edge does with `X-Forwarded-For`) is ANSWERED and
-> the per-IP key is FIXED, so the ceiling this document is about now binds for
-> the first time. **The conclusion below is unchanged — do not raise the
-> ceiling — but §4's CPU reasoning was carrying a caveat saying it was
-> protecting a control that does not run, and that caveat is now removed.**
-> **One sentence IS retracted:** §4a's reason 2 ("not every attacker forges the
-> header — the naive ones do not, and the ceiling stops them") is now known
-> false. The ceiling stopped nobody, naive or competent. Everything else in
-> §§1-5 stands as written.
-
-Two documents disagree about what must be true before `ANON_ANALYZE_LIMIT`
-can be raised. This resolves the disagreement, and then reports a third
-finding that makes the disagreement largely moot.
+> **RE-TAKEN 2026-08-24 — read ["Re-taken"](#re-taken-2026-08-24) at the bottom
+> before acting on anything here.** Unknown 2 is ANSWERED and the per-IP key is
+> FIXED, so this ceiling binds for the first time.
+>
+> **The recommendation has CHANGED. Build Phase 3 (shared counters) on its own;
+> do NOT raise the constants.** §4 said "do not raise", and that half stands —
+> raising them is still the loosening. What is new is that Phase 3 alone is
+> strictly safer, and the earlier reading of it as a 2x cost to users was wrong.
+>
+> **Retracted below, marked inline:** all of §4a's reason 2, and the second half
+> of §4a's premise. **Model-dependent:** §4's strike of lever 1
+> (`WEB_CONCURRENCY`) holds only while counters are per-worker.
 
 ---
 
@@ -214,7 +212,11 @@ hearing rather than a footnote:
 > The ceiling binds only callers who do NOT forge `X-Forwarded-For` — that
 > is, honest users. An attacker rotates the header and is unbounded today.
 > So the ceiling currently delivers approximately zero protection and one
-> hundred percent of the pain. Raising it costs nothing that is not already
+> hundred percent of the pain.
+
+**Half of that premise is RETRACTED 2026-08-24.** "Zero protection" was
+right. "One hundred percent of the pain" was wrong: the tier refused
+nobody, honest users included, so it delivered no pain either. See R5. Raising it costs nothing that is not already
 > lost, and helps every lab immediately.
 
 **Its premise holds in at most one of three cases** — see the correction under
@@ -229,9 +231,11 @@ Even granting its premise, it is rejected, for three reasons:
 1. **The same reasoning removes the limiter entirely**, which is plainly
    wrong. Any argument whose logic extends to "so delete it" has proved too
    much.
-2. **Not every attacker forges the header.** The naive ones do not, and the
-   ceiling stops them. "Zero protection" is measured against the competent
-   attacker only.
+2. ~~**Not every attacker forges the header.** The naive ones do not, and
+   the ceiling stops them. "Zero protection" is measured against the
+   competent attacker only.~~ **RETRACTED 2026-08-24, all three sentences.**
+   The tier bucketed nobody, so it stopped neither the naive nor the
+   competent. See R5.
 3. **Timing.** Phase 2 makes the ceiling real. Raising the number *before*
    Phase 2 and landing Phase 2 *after* means shipping a genuine hole and then
    switching it on. Do not loosen a control in the same window in which you
@@ -257,8 +261,9 @@ which one binds depends on the shape of the lab, not on its size:
 So raising only `ANON_ANALYZE_LIMIT` serves the second lab and leaves the
 first refused at exactly the same point as today. The two constants have to
 move together, or the change buys nothing for half the users it targets. The
-`10 == 10` balance is documented in `scout/routes.py` as ACCIDENTAL and
-nothing asserts it.
+`10 == 10` balance is documented in `scout/routes.py` as ACCIDENTAL. It
+was unasserted until 2026-08-24; `test_the_two_anon_ceilings_must_move_together`
+now pins it as a conservative proxy for this section.
 
 ---
 
@@ -317,7 +322,9 @@ argument in miniature: a refusal count without a reason label is not evidence.
    resolution keyed on a rotating edge address and the per-IP tier never
    refused anyone. The ceiling this document is about did not operate at all.
    The conclusion here stands; the CPU-budget ground does not, because it was
-   protecting a control that does not run. **A fix exists and is landing** —
+   protecting a control that does not run. **SUPERSEDED 2026-08-24: the fix
+   landed (`#189`, `237fbf3`) and was production-verified, so the CPU-budget
+   ground now stands. See R1.** **A fix exists and is landing** —
    keying on `X-Real-Ip` — after which this ceiling binds for the FIRST time
    and the "six researchers behind one NAT" case becomes reachable rather than
    theoretical. Re-read this decision then. See
@@ -373,243 +380,122 @@ Run that before writing a line of Phase 2.
 
 ---
 
-## Re-taken 2026-08-24 — the trigger this document set has fired
+## Re-taken 2026-08-24
 
-Unknown 2 above says to re-read this decision once the per-IP key is fixed.
-It is fixed: `#189`, main `237fbf3`. Two independent instruments confirm it:
+Third version. The first two were long analytical sections and independent QC
+returned DO NOT SHIP on both — each round's prose invented a mechanism that the
+source refuted. This one is deliberately short: fewer claims, fewer things to be
+wrong about. Sub-sections are **R1-R6**; a bare "§4" means the original.
 
-- **the wall itself** — 26 anonymous `POST /scout/upload` against production,
-  20 admitted, refused at request 21 with `reason="rate_limited"`.
-- **the key's own source** — `#192` added
-  `tools_hub_client_ip_source_total{source}`; against prod at `05bce72` it read
-  `x_real_ip 100.0%`, i.e. the limiter resolves its key the way `#189` claims,
-  not merely walling for some other reason. **n = 3 resolutions.** Thin, but it
-  is a different question from the one the wall answers.
+### R1. The fix is real
 
-**The before/after probes are NOT a controlled A/B, and it matters.** The
-pre-fix run (46 requests, 0 refused) carried a constant forged
-`X-Forwarded-For`; the post-fix run carried none and relied on the edge, which
-is the production path. `MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md`
-flags this about itself. They are two probes of a changed system, not one probe
-run twice.
+`#189`, main `237fbf3`. Two instruments:
 
-Sub-sections below are numbered **R1-R7** because this document already has a
-§1-§5; a bare "§4" always means the original.
+- **the wall** — 26 anonymous `POST /scout/upload`: 20 admitted, refused at 21,
+  `reason="rate_limited"`.
+- **the key's source** — `tools_hub_client_ip_source_total` read `x_real_ip`
+  100% against prod at `05bce72`. **n = 3.**
 
-### R1. The conclusion survives, and §4's arithmetic now describes production
+**Not a controlled A/B:** the pre-fix probe (46 requests, 0 refused) carried a
+constant forged `X-Forwarded-For`; the post-fix one carried none.
 
-§4 concluded the ceiling cannot be raised, because at `C = 10` four addresses
-already saturate the CPU budget. Unknown 2's answer then undercut the ground:
-*"the CPU-budget ground does not stand, because it was protecting a control
-that does not run."* **That caveat is removed.** The arithmetic never changed —
+### R2. The wall is 20 CHARGES, not 20 analyses
 
-    addresses to saturate = (W x 600) / (W x C x 15) = 40 / C
+`_FOLLOWUP` — the credit that makes a paired `/scout/progress` + `/scout/analyze`
+cost one charge instead of two — is a process-local dict, like the counters.
+`scout/ratelimit.py`'s docstring: *"a credit granted on worker 1 is invisible to
+worker 2, so a `/analyze` that lands on the other worker is charged."*
 
-`W` still cancels, and it is four addresses at `C = 10`.
+So a paired analysis costs **1 charge if both land on one worker, 2 if they
+split.** The split ratio is **UNMEASURED**. No mechanism is claimed for it here;
+an earlier draft argued the SSE stream pins a worker and biases the split, which
+is false — `templates/scout/index.html:317-321` closes the stream *before*
+issuing `/analyze`. Two real routes to 2 charges do exist and are also
+unmeasured: `FOLLOWUP_TTL_SECONDS = 120` expiring on a slow pipeline, and
+`_metered_job_id` returning `""` for a chunked or >4 KB body.
 
-**This is the ADVERSARIAL number, and R3's charge inflation does not touch it.**
-That is not a coincidence and it is worth stating: the inflation in R3 comes
-from losing a pairing CREDIT, and an attacker driving `/scout/analyze` without
-opening a pair never had a credit to lose. The number that sizes the ceiling
-against abuse is therefore unaffected. The number that describes a real lab is
-not.
+### R3. The numbers
 
-**One caveat before citing `40 / C` unhedged.** The denominator is `W x C x 15`
-*because the limit is per worker*. Under Phase 3 the limit stops being
-per-worker and the formula becomes `40W / C`. A reader who applies the
-per-worker form to the Phase 3 end state recommended in R6 computes
-`40 / 20 = 2` addresses and concludes the paired change halves the saturation
-threshold. The correct value is `40 x 2 / 20 = 4` — unchanged. Always carry the
-form with the counter model it belongs to.
+Budget is 1,200 CPU-s per window (2 workers x 600 s) and an adversarial analysis
+is ~15 CPU-s — both from §4, both inheriting unknown 1.
 
-### R2. What changed, at the strength the measurement actually supports
-
-**Not "the ceiling bounded nobody at all".** The key was a rotating internal
-edge hop drawn from a POOL, and the measurement doc is explicit that this is a
-pool rather than a fresh value per request — and equally explicit that *"the
-pool's true size was never measured."* Three hops were observed from one
-runner:
-
-| | before `#189` | after `#189` |
-|---|---|---|
-| what bounded a single machine | an unmeasured multiple of the wall — ~3 pool addresses observed, so a ceiling near **60** intake requests | **20** |
-| bounded by the caller's own identity | no | yes |
-
-So the bound was roughly **3x looser, not absent.** And whether one machine
-could saturate the fleet was **never established**: saturation needs ~80
-analyses (1,200 CPU-s / 15), and 60 < 80 at the observed pool size. An earlier
-draft of this section claimed "one machine saturated the fleet, now it takes
-four addresses." That was wrong in the first half and is withdrawn. **The
-defensible delta is that a caller is now bounded by its own identity for the
-first time** — which is the qualitative change worth having, independent of the
-factor.
-
-**§4a's premise was HALF true, and the missing half is the interesting one.**
-Its premise was *"the ceiling currently delivers approximately zero protection
-and one hundred percent of the pain."* Zero protection: correct. One hundred
-percent of the pain: **wrong** — the tier refused nobody, honest users
-included, so it delivered no pain either. A control that buckets nobody is not
-a control that hurts only the innocent; it is simply not running.
-
-**§4a's three reasons, re-read.** §4a was rejected for three reasons:
-
-1. *proves too much* — stands.
-2. *"not every attacker forges the header. The naive ones do not, and the
-   ceiling stops them."* — **RETRACTED.** The ceiling stopped nobody. This is
-   the one sentence in §§1-5 that this re-take withdraws.
-3. *timing — do not loosen a control in the same window in which you are
-   making it effective.* — **this was the operative one.** Its stated mechanism
-   was wrong (it named a forged-header bypass; the real cause was a rotating
-   internal hop), but its decision rule is precisely the sequence that then
-   occurred. An earlier draft said "none of the three was operative." That was
-   wrong and is withdrawn.
-
-### R3. The lab numbers: the wall is 20 CHARGES, which is 10-20 ANALYSES
-
-The Evidence table was measured on a single worker, and production runs
-`WEB_CONCURRENCY = 2`, so the fleet wall for one address is `limit x workers`
-= **20 charges** per 600 s. Converting charges to analyses is where an earlier
-draft of this section went wrong, and the reason is in `scout/ratelimit.py`'s
-own docstring:
-
-> PHASE 3 WILL CHANGE THIS. When the window counters move to shared, durable
-> state, `_FOLLOWUP` MUST MOVE WITH THEM. It is per-worker for exactly the same
-> reason the counters are [...] a credit granted on worker 1 is invisible to
-> worker 2, so a `/analyze` that lands on the other worker is charged.
-
-`/scout/progress` opens the pair and `/scout/analyze` closes it, and the credit
-that makes an analysis cost one charge instead of two **lives in process
-memory, like the counters.** So at fleet scale:
-
-| paired requests land | charges per analysis | analyses inside a 20-charge wall |
-|---|---|---|
-| on the same worker | 1 | 20 |
-| split across workers | 2 | 10 |
-
-**The split probability is unmeasured**, and there is a reason to think it is
-not 50/50: a sync worker is pinned for the whole `/progress` SSE stream, so the
-paired `/analyze` arrives while that worker is busy and is more likely to be
-taken by the other one. That biases toward 2 charges, i.e. toward the bottom of
-the band.
-
-**Consequences, replacing the lab table an earlier draft of this section
-carried.** Quote lab capacity as a BAND, in analyses, and note that intake is a
-separate bucket with its own 20-charge wall:
-
-| lab shape, one NAT address | analyses | charges (1x - 2x) | vs a 20-charge wall |
+| | wall (charges) | lab (analyses) | adversarial addresses to saturate |
 |---|---|---|---|
-| 6 researchers x 1 chain | 6 | 6 - 12 | fits either way |
-| 6 researchers x 2 chains | 12 | 12 - 24 | fits at best, over at worst |
-| 6 researchers x 3 chains | 18 | 18 - 36 | over the wall unless the pairing holds |
-| 1 researcher x 12 chains | 12 | 12 - 24 | the SESSION tier's wall is `8 x 2 = 16` charges fleet-wide, so this fits at best and binds at worst |
+| **today** (per-worker counters, `C = 10`) | 20 | 10 - 20 | **4 - 6.7** |
+| **Phase 3 alone** (shared, `C = 10`) | 10 | exactly 10 | **8** |
+| Phase 3 + both constants at 20 | 20 | exactly 20 | **4** |
+| constants at 20 alone | 40 | 20 - 40 | **2** |
 
-**The claim "the commissioning brief's 'researcher #4 is refused on their
-second chain' does not happen in production" is WITHDRAWN.** At the pessimistic
-end of the band the fleet behaves exactly like the single-worker probe that
-produced that finding, so it is not excluded — merely less likely, by an
-unmeasured amount.
+**§4's "4 addresses" is the credit-working case, not a floor.** `routes.py`'s own
+rows make this explicit: *"all aimed at /progress = ~180 CPU-s/IP, so ~7
+addresses"* versus *"each buying a whole analysis = ~300 CPU-s/IP, so ~4"*. The
+`/progress` leg is ~9 CPU-s and a whole analysis ~15, so an attacker who cannot
+land the credit falls back to `/progress`-only at 180 CPU-s = 6.7 addresses. An
+earlier draft claimed the adversarial figure was immune to the charge model. It
+is not; it moves for the same reason the lab figure does.
 
-### R4. Per-process state taxes honest users specifically
+### R4. Recommendation: build Phase 3 ALONE. Do not raise the constants.
 
-Two claims here; the first is derivable and the second is not, so only the
-first is made.
+This **changes** the earlier recommendation, which was to land both together.
 
-**Derivable: the pairing credit is the thing that degrades, and only honest
-users hold one.** An attacker driving `/scout/analyze` directly never opens a
-pair, so pays exactly one charge per analysis whatever the fleet does. A real
-lab uses the paired flow and pays between one and two. **Per-process state
-therefore costs legitimate users up to 2x of their quota and costs an attacker
-nothing.** That is the argument R5 rests on, and it needs no assumption about
-how requests are paced.
+- **Phase 3 alone is strictly safer**: saturation goes from 4-6.7 addresses to 8,
+  and criterion 5 (*"A deploy mid-window does not reset an attacker's quota"*)
+  is met.
+- **Its cost to labs is between nothing and a halving**, not the 2x an earlier
+  draft claimed: today a lab gets 10-20 analyses, after Phase 3 exactly 10. If
+  splits are common today, it costs them nothing.
+- **Right now that cost is zero regardless.** Organic anonymous Scout traffic
+  measured **zero** across three readings — 122 at 06:20, still 122 six hours
+  later, every request our own probes.
+- **Raising the constants is the loosening**, alone (2 addresses) or paired
+  (pins the attacker at 4, the worst end of today's band, because shared
+  `_FOLLOWUP` makes the credit reliable for them too). §4's objection stands.
 
-**Also true, and already on record:** which worker a request lands on is
-arbitrary, so two independent counters need not fill evenly and the first
-refusal can fall anywhere from request 11 to request 21. This is not a new
-finding — `docs/qc/anon-ratelimit-phase-0.md:612` records the fleet figure as
-holding *"only if requests distribute evenly across workers — they need not"*,
-and `ratelimit.py` says a caller's requests "land on whichever worker is free."
+**If Phase 3 is built, three things move together or it is a regression:**
+`_FOLLOWUP` (`ratelimit.py` says so in caps); `ANON_ANALYZE_SESSION_LIMIT = 8`
+(`routes.py:304`), whose fleet wall also halves 16 -> 8 and which is charged
+FIRST, so it binds before the per-IP tier; and §4's strike of lever 1 — under
+shared counters `W` stops cancelling, so `WEB_CONCURRENCY` becomes a real budget
+lever *and* stops lifting both walls together.
 
-**NOT claimed, and an earlier draft did claim it:** that a 48-request
-cookieless probe showing refusals from request 10 is a second reading of this
-wall. It is not. It drove the **session** tier (`anon:no-session`, limit 8,
-reason `no_session`), which is a different bucket with a different key — and a
-GLOBALLY SHARED one that any other cookieless caller charges concurrently, so
-its interleaving has an alternative explanation that was never excluded. No
-pacing was recorded for either probe, so "one was sequential, the other was
-issued fast" was invented to explain the difference. A real lab carries
-cookies and never enters that bucket at all.
+**Options this document still does not evaluate**, named so nobody thinks they
+were rejected: LOWERING the constant (`routes.py` calls dropping it to 6 a
+one-line lever restoring ~180 CPU-s), and raising `WEB_CONCURRENCY` under
+today's per-worker counters.
 
-### R5. The coupling: each change is UNDESIRABLE alone, for OPPOSITE reasons
+### R5. Retractions
 
-This is the finding that most changes what to do next. The word is
-*undesirable*, not *unsafe*, and the distinction is the point.
+From §§1-5, marked inline where they sit:
 
-| | fleet wall (charges) | adversarial addresses to saturate |
-|---|---|---|
-| today (per-process, `C = 10`, `W = 2`) | 20 | 4 |
-| **Phase 3 alone, constants untouched** | **10** | **8** |
-| Phase 3 **and** both constants at 20 | 20 | 4 |
-| **constants at 20 alone, no Phase 3** | **40** | **2** |
+- **§4a reason 2, all three sentences.** The ceiling stopped nobody.
+- **§4a's premise, second half.** "One hundred percent of the pain" — the tier
+  refused nobody, so there was no pain either. "Zero protection" stands.
+- **§4's lever-1 strike is model-dependent**, not wrong: it holds only while
+  counters are per-worker.
+- **§4a reason 3 stands but its mechanism was misattributed** — it named a
+  forged-header bypass; the cause was a rotating internal hop. Its decision rule
+  (do not loosen a control while the fix making it effective is in flight) is
+  the sequence that then occurred.
 
-- **Phase 3 alone is strictly SAFER and merely less generous.** Per-address
-  adversarial demand falls to `10 x 15 = 150` CPU-s, so the saturation
-  threshold RISES from four addresses to eight. What it costs is legitimate
-  users: the wall halves from 20 charges to 10. Phase 3 is currently filed
-  purely as an attacker-quota fix (criterion 5, "a deploy mid-window must not
-  reset a quota"); nobody has written down that it is also a **2x tightening
-  on real users**, and whoever picks it up will not discover that from its
-  ticket.
-- **Raising the constants alone is the actual security regression** — wall 40,
-  saturation two addresses. That is §4's standing objection, unchanged.
+From this re-take's own earlier drafts, so they are not re-derived: the ceiling
+was **not** unbounded before `#189` (the key rotated over a pool of ~3 observed
+addresses, so ~60 analyze charges rather than none — and the pool size was never
+measured); there is **no** ragged-refusal band starting near request 12 (that
+number was scaled from a probe of a different tier); and the SSE split-bias
+mechanism in R2 is false.
 
-**Landed together — shared counters plus both constants at 20 — the pair is:**
+### R6. Unknowns
 
-- **attacker-neutral inside a window**: four addresses to saturate before and
-  after (`40W / C` = `40 x 2 / 20` = 4);
-- **strictly tighter across windows**: criterion 5 is met, so a deploy stops
-  handing an attacker a fresh quota, which today it does;
-- **strictly better for a lab**: the wall becomes exact instead of depending on
-  where paired requests land, which by R4 is a tax paid only by honest users.
-
-**Phase 3 must move `_FOLLOWUP` with the counters.** `ratelimit.py` already
-requires this in bold, and R3 is why: leave the credit in process memory while
-the counters become exact and the offset that makes an analysis cost one charge
-stops working.
-
-### R6. Recommendation
-
-1. **Do not raise either constant on its own.** §4's objection stands and is
-   now properly grounded.
-2. **Do not build Phase 3 on its own either** — not because it is unsafe, but
-   because it silently halves the wall for legitimate anonymous users.
-3. **If either is wanted, land them as one change:** shared counters (including
-   `_FOLLOWUP`) plus `ANON_INTAKE_LIMIT = ANON_ANALYZE_LIMIT = 20`. Both
-   constants, because §5 shows moving one alone serves only half the lab
-   shapes.
-4. **Measure unknown 1 first.** It is the only input that could change the
-   arithmetic, and it is currently biased toward refusing a raise.
-5. **Urgency is low, and this should be said plainly.** Organic anonymous
-   Scout traffic has measured **zero** across three readings — the denominator
-   read 122 at 06:20 and still 122 at 12:20, six hours later, and the earlier
-   readings of 3 and 28 were separate container lifetimes rather than part of
-   that run. Every one of them was our own probes. No lab has yet hit this
-   wall, because no lab has yet arrived. Sign-in remains the designed escape
-   hatch and Phase 5 already routes refused visitors to it.
-
-### R7. What still gates a raise
-
-- **Unknown 1 is UNCHANGED and is now the binding one.** The ~15 CPU-s
-  adversarial cost per analysis has still not been re-measured since `#180`
-  scoped secondary-structure assignment to the scored chain. Every saturation
-  figure here inherits it, so all of them are **pessimistic by an unknown
-  margin — in the direction that would permit a raise.** Measure it in the
-  container; `freesasa` is not installed on the Windows dev box.
-- **Unknown 2 is ANSWERED** — see the head of this section.
-- **Unknown 3 is shipped but still cannot be read.** Phase 6 landed the
-  refusal-by-reason counters, but with zero organic anonymous traffic and a
-  50-sample floor the alarm normally SKIPs, so there is still no production
-  refusal data. **This decision is still taken on simulation**, exactly as the
-  original was.
-- **NEW: the charge/analysis split ratio is unmeasured**, and R3's whole band
-  hangs on it. It is cheap to measure — drive N paired analyses from one
-  address against production and read the per-IP counter's movement against N.
+1. **Unknown 1 is the binding gate, unchanged.** The ~15 CPU-s figure has not
+   been re-measured since `#180`. Every number in R3 inherits it and is
+   **pessimistic by an unknown margin — in the direction that would permit a
+   raise.** Measure in the container; `freesasa` is absent on the Windows box.
+2. **The charge/analysis split ratio**, which R3's whole lab column hangs on.
+   There is no charge counter to read it from — `/metrics` exposes requests and
+   refusals, not charges. Drive paired analyses from one address until
+   `refusals_total{reason="rate_limited"}` moves and count completed analyses:
+   10 means always-split, 20 means always-paired. It costs ~300 CPU-s of real
+   production compute, so it is cheap in money and not free in load.
+3. **Unknown 3 shipped but still cannot be read.** Zero organic traffic and a
+   50-sample floor mean the Phase 6 alarm normally SKIPs. **This decision is
+   still taken on simulation**, as the original was.

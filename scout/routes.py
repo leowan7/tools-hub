@@ -124,13 +124,19 @@ ANON_RATE_WINDOW_SECONDS = 600
 # instruments the refusal a visitor actually sees, so it has to instrument this
 # one too, not only the analyze bucket.
 #
-# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL and nothing asserts it.
+# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL. It was unasserted until
+# 2026-08-24; tests/test_scout_anonymous_access.py::
+# test_the_two_anon_ceilings_must_move_together now pins it as a conservative
+# proxy for the decision doc's §5 coupling.
 # Neither number moved; what moved was the cost of an analysis, which lifted
 # the effective analyze ceiling from 5 to 10 and landed on this 10 by
 # coincidence. Change either one and the wall moves to the other, silently.
 # COUPLED: read the DO-NOT-CHANGE block on ANON_ANALYZE_LIMIT below before
-# moving this. The ceiling decision's recommendation moves BOTH constants or
-# neither -- which one binds depends on the shape of the lab, not its size.
+# moving this -- which one binds depends on the shape of the lab, not its
+# size, so moving one alone serves only half of them. But do NOT import that
+# block's charge arithmetic: intake has no session tier and no pairing
+# (ratelimit.py:863, no session_limit), so here 1 request = 1 charge exactly
+# and the fleet wall is exactly 20.
 ANON_INTAKE_LIMIT = 10
 
 # ---------------------------------------------------------------------------
@@ -240,34 +246,36 @@ ANON_INTAKE_LIMIT = 10
 # only while vCPU scales with W, and Railway's allocation is an explicit
 # unknown. Stated in full in docs/DECISION-2026-08-22-per-ip-ceiling.md §4.
 #
-# DO NOT CHANGE THIS NUMBER WITHOUT PHASE 3, AND DO NOT DO PHASE 3 WITHOUT
-# CHANGING THIS NUMBER. The ceiling decision was re-taken 2026-08-24 once the
-# per-IP key was fixed; see its "Re-taken" section, R5. Each change alone is
-# UNDESIRABLE, and for OPPOSITE reasons -- "unsafe" is the wrong word for half
-# of it:
+# DO NOT RAISE THIS NUMBER. The ceiling decision was re-taken 2026-08-24 once
+# the per-IP key was fixed; see its "Re-taken" section, R3/R4. Raising it is the
+# LOOSENING -- alone it takes the fleet wall to 40 charges and saturation from
+# 4-6.7 addresses down to 2. Pairing it with Phase 3 does not rescue that: it
+# pins the attacker at 4, the worst end of today's band, because shared
+# _FOLLOWUP makes the pairing credit reliable for them too.
 #
-#   Phase 3 alone (shared counters, this constant left at 10) is strictly
-#   SAFER -- per-address adversarial demand falls to 150 CPU-s and the
-#   saturation threshold RISES from 4 addresses to 8. What it costs is
-#   legitimate users: the fleet wall halves from 20 charges to 10. Phase 3 is
-#   filed purely as an attacker-quota fix, so whoever picks it up will not
-#   learn from its ticket that it is also a 2x tightening on real users.
+# PHASE 3 ALONE IS THE RECOMMENDED CHANGE, and it does not touch this constant.
+# Shared counters take the wall to 10 charges: saturation rises 4-6.7 -> 8
+# (strictly safer) and criterion 5 is met. Its cost to a lab is between NOTHING
+# and a halving -- today a lab gets 10-20 analyses, after Phase 3 exactly 10 --
+# and with organic anonymous traffic measured at zero the cost is currently nil.
 #
-#   Raising this alone, with counters still per-process, is the actual
-#   regression: the wall doubles to 40 and saturation drops from four
-#   addresses to two, which is the objection §4 already makes.
+# UNITS, because this block mixes them: the wall is 20 CHARGES, which is 10-20
+# ANALYSES. _FOLLOWUP is process-local like the counters, so a paired
+# /progress + /analyze costs 1 charge on one worker and 2 when it splits. The
+# split ratio is UNMEASURED -- do not infer one from the SSE stream; the client
+# closes it BEFORE issuing /analyze (templates/scout/index.html:317).
 #
-# Landed together -- shared counters plus BOTH constants at 20 -- the pair is
-# attacker-neutral inside a window (40W/C = 4 addresses either way), strictly
-# tighter across windows (a deploy stops resetting the quota), and strictly
-# better for a lab.
+# The 300 CPU-s / 4-addresses figure above is the CREDIT-WORKING case, not a
+# floor: the /progress leg alone is ~9 CPU-s, so an attacker who cannot land the
+# credit falls back to /progress-only at ~180 CPU-s = ~6.7 addresses, which is
+# exactly what the "before:" row measures.
 #
-# UNITS: the wall is 20 CHARGES, which is 10-20 ANALYSES. _FOLLOWUP is
-# per-process like the counters, so a paired analysis costs 1 charge when
-# /progress and /analyze land on the same worker and 2 when they split -- and
-# only honest users hold that credit, since an attacker driving /analyze
-# directly never opens a pair. Phase 3 must move _FOLLOWUP too; the module
-# docstring in ratelimit.py already requires it.
+# IF PHASE 3 IS BUILT, three things move with it or it is a regression:
+# _FOLLOWUP (ratelimit.py requires this); ANON_ANALYZE_SESSION_LIMIT below,
+# whose fleet wall also halves 16 -> 8 and which is charged FIRST; and §4's
+# strike of lever 1 -- under shared counters W stops cancelling, so
+# WEB_CONCURRENCY becomes a real budget lever and stops lifting both walls
+# together.
 ANON_ANALYZE_LIMIT = 10
 
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
@@ -301,6 +309,10 @@ ANON_ANALYZE_LIMIT = 10
 # little room between the tiers, so this one is thin. It becomes the real
 # workhorse when Phase 2 lets the per-IP number rise; the structure is what
 # makes that a number change rather than a redesign.
+# PHASE 3 HALVES THIS TOO: the fleet wall is 8 x workers = 16 today and would
+# become exactly 8 under shared counters. This tier is charged FIRST
+# (ratelimit.py), so it binds before the per-IP ceiling and a lab meets it
+# first. Any Phase 3 change must size this deliberately, not inherit it.
 ANON_ANALYZE_SESSION_LIMIT = 8
 
 # How many anonymous scoring pipelines may run at once in one worker process.
