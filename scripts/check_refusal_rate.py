@@ -189,17 +189,47 @@ def evaluate(
     # silently gone back to keying on a rotating internal hop.
     if sources:
         total_res = sum(sources.values())
-        lines.append("rate-limit key source (reported only):")
+        lines.append(
+            "rate-limit key RESOLUTIONS (reported only, anonymous only; a "
+            "paired route resolves twice, so these are not request counts):"
+        )
         for source in sorted(sources, key=lambda k: -sources[k]):
             count = sources[source]
             share = count / total_res if total_res else 0.0
             lines.append(f"  {source:<22} {count:>8.0f}  {share:>6.1%}")
+        # Two different failures land here and they need OPPOSITE responses,
+        # so the note must not assert one cause. forwarded_chain means the key
+        # is a rotating internal hop -> the limiter silently bounds NOBODY.
+        # peer means the key is Railway's shared edge PoP -> it bounds EVERYONE
+        # as one caller, i.e. a mass-refusal outage. Naming only the first
+        # sends an operator hunting an open limiter during a lockout.
         if total_res and sources.get("x_real_ip", 0.0) / total_res < 0.5:
             lines.append(
-                "  NOTE: most keys did NOT come from X-Real-Ip. On Railway that "
-                "means the header stopped arriving and the per-IP limiter is "
-                "keying on a rotating internal hop again -- i.e. inert. See "
-                "docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md."
+                "  NOTE: most keys did NOT come from X-Real-Ip, so it is no "
+                "longer being USED for the rate-limit key -- it stopped "
+                "arriving, its value is malformed, or TRUSTED_PROXY_HOPS is no "
+                "longer 1."
+            )
+            if sources.get("forwarded_chain", 0.0) > sources.get("peer", 0.0):
+                lines.append(
+                    "  -> mostly forwarded_chain: on Railway the key is then a "
+                    "ROTATING internal hop, so the per-IP limiter is INERT and "
+                    "refusing nobody. Symptom: no refusals at all."
+                )
+            if sources.get("peer", 0.0) > 0:
+                lines.append(
+                    "  -> any peer at all: the key is Railway's SHARED edge "
+                    "address, so every visitor collapses onto one bucket. "
+                    "Symptom: mass refusals of legitimate users."
+                )
+            if sources.get("x_real_ip_rejected", 0.0) > 0:
+                lines.append(
+                    "  -> x_real_ip_rejected: the edge IS still setting the "
+                    "header but its value is not a bare IP. Something between "
+                    "the edge and the app is mangling it."
+                )
+            lines.append(
+                "  See docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md."
             )
 
     # Everything that is not one of the two non-refusals counts, so a reason

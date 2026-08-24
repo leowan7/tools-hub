@@ -210,7 +210,7 @@ SCOUT_REFUSALS = Counter(
 CLIENT_IP_SOURCE = Counter(
     "tools_hub_client_ip_source_total",
     "Which input produced the anonymous rate-limit key, per resolution.",
-    ["source"],
+    ["source"],  # x_real_ip | x_real_ip_rejected | forwarded_chain | peer
 )
 # Exists because the failure it detects is SILENT and total. The limiter keys
 # on _client_ip(); on Railway that resolves from X-Real-Ip. If that header ever
@@ -269,6 +269,22 @@ def _metrics_token_ok() -> bool:
         )
     except (TypeError, ValueError, UnicodeError):
         return False
+
+
+def _note_ip_source(source: str) -> None:
+    """Count one key resolution. MUST NOT raise -- see the callers.
+
+    Every other counter in this file is wrapped this way ("metrics must never
+    break app"), and this one needs it more than most: it fires inside
+    ``_client_ip()``, which decides whether an anonymous caller is refused. An
+    unguarded increment turns a full metrics disk into a 500 on every anonymous
+    Scout route. Measured: OSError(28) out of ``labels()`` propagated straight
+    through ``_client_ip`` before this wrapper existed.
+    """
+    try:
+        CLIENT_IP_SOURCE.labels(source=source).inc()
+    except Exception:  # pragma: no cover - metrics must never break app
+        logger.debug("client_ip_source increment failed", exc_info=True)
 
 
 def _trusted_proxy_hops() -> int:
@@ -377,18 +393,21 @@ def _client_ip() -> str:
             try:
                 ipaddress.ip_address(real_ip)
             except ValueError:
-                pass
+                # Present but unusable. Distinct from "absent" because an
+                # operator acts on it differently: the edge is still
+                # setting the header, something is mangling its value.
+                _note_ip_source("x_real_ip_rejected")
             else:
-                CLIENT_IP_SOURCE.labels(source="x_real_ip").inc()
+                _note_ip_source("x_real_ip")
                 return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:
             # Clamped so a chain SHORTER than the configured hop count yields
             # the leftmost entry rather than raising.
-            CLIENT_IP_SOURCE.labels(source="forwarded_chain").inc()
+            _note_ip_source("forwarded_chain")
             return chain[max(0, len(chain) - hops)]
-    CLIENT_IP_SOURCE.labels(source="peer").inc()
+    _note_ip_source("peer")
     return request.remote_addr or ""
 
 

@@ -849,3 +849,89 @@ def test_a_rejected_x_real_ip_counts_as_the_chain_not_as_x_real_ip(monkeypatch):
 
     assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
     assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_rejected_x_real_ip_gets_its_own_label(monkeypatch):
+    """Present-but-unusable is NOT the same as absent, and an operator acts on
+    them differently: a rejected value means the edge is still setting the
+    header and something between it and the app is mangling the value.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "evil.example:8080", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip_rejected", 0.0) - before.get("x_real_ip_rejected", 0.0) == 1
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+
+
+def test_zero_hops_counts_as_peer(monkeypatch):
+    """TRUSTED_PROXY_HOPS=0 skips every header, so the key is the socket peer.
+
+    Uncovered until 2026-08-24: a mutation moving the peer increment inside
+    `if hops:` left this path counting NOTHING, so a deployment that had turned
+    headers off would show a silently shrinking denominator.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"},
+        hops=0,
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("peer", 0.0) - before.get("peer", 0.0) == 1
+
+
+def test_a_blank_x_real_ip_counts_as_the_chain(monkeypatch):
+    """Blank means unused, so it must not be counted as x_real_ip -- that would
+    report the detector healthy while the chain supplied the key."""
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "   ", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_valid_x_real_ip_at_another_hop_count_is_not_counted_as_used(monkeypatch):
+    """TRUSTED_PROXY_HOPS != 1 selects the chain, so X-Real-Ip is present and
+    valid but NOT used. Counting it as used would hide the very config change
+    that turned the preference off."""
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.5.5.5, 6.6.6.6, 7.7.7.7"},
+        hops=2,
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_failing_counter_cannot_break_the_rate_limit_gate(monkeypatch):
+    """THE safety property. _client_ip() decides whether a caller is refused.
+
+    Measured before the guard existed: OSError(28) out of `labels()` propagated
+    straight through _client_ip(), which turns a full metrics disk into a 500
+    on every anonymous Scout route. PROMETHEUS_MULTIPROC_DIR lives on Railway's
+    ephemeral filesystem and this repo has a prior incident of a reaper
+    deleting a shared tmp/, so it is not hypothetical.
+
+    Every other counter in shared/metrics.py is wrapped the same way; this one
+    needs it most, because it is the only one on a gate.
+    """
+    import shared.metrics as metrics_module
+    from unittest import mock  # noqa: PLC0415
+
+    exploding = mock.MagicMock()
+    exploding.labels.side_effect = OSError(28, "No space left on device")
+    monkeypatch.setattr(metrics_module, "CLIENT_IP_SOURCE", exploding)
+
+    # Each of the three resolution paths, all of which increment.
+    assert _ip_under({"X-Real-Ip": "4.236.158.49"}, monkeypatch=monkeypatch) == "4.236.158.49"
+    assert _ip_under({"X-Forwarded-For": "1.1.1.1, 2.2.2.2"}, monkeypatch=monkeypatch) == "2.2.2.2"
+    assert _ip_under({}, monkeypatch=monkeypatch) == "203.0.113.7"
+    assert exploding.labels.called, "the mutation-proof needs the counter to be reached"
