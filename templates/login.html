@@ -71,6 +71,11 @@
 
         <form method="POST" action="{{ url_for('auth.signup') }}" autocomplete="on">
           {{ csrf_input() }}
+          {# Same hidden field the sign-in panel carries. Both panels live on
+             this one page and switchTab() only toggles CSS, so without this a
+             visitor sent here by a Scout rate-limit refusal who clicks
+             "Create account" silently loses where they were going. #}
+          {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
           {# Signed timestamp + honeypot pair: server rejects submits
              whose timestamp arrives <2s after render (bot speed) or
              >1h later (stale token), or whose hidden honeypot field

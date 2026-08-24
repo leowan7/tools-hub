@@ -68,6 +68,15 @@ protection.
 | Limiter state | in-memory dict, **per worker**, lost on deploy | `scout/ratelimit.py` |
 | `METRICS_ALLOWED_CIDR` | **not set**, so `/metrics` 403s for everyone | Railway service variables |
 
+**[Superseded by Phase 6, 2026-08-22]** the last row is now history: the CIDR
+gate is GONE and `METRICS_ALLOWED_CIDR` is read by nothing. Do not set it. It
+could never have worked — `_ip_allowed()` resolved through `_client_ip()`, so
+the allowlist inherited `X-Forwarded-For` forgeability with a two-guess space;
+its unforgeable alternative `request.remote_addr` is Railway's shared edge PoP;
+and the consumer that needed it is a GitHub-hosted runner with no stable
+address. `/metrics` is now gated on a `METRICS_TOKEN` bearer, still deny by
+default. See the `shared/metrics.py` docstring.
+
 **[Note added at landing, 2026-08-20]** the worker-class row above cites
 `nixpacks.toml`. That file is **INERT** — Railway builds this repo with Railpack
 via mise, not Nixpacks, and editing it changes nothing. The row's CONCLUSION
@@ -102,6 +111,32 @@ recorded here; both documents are in `docs/qc/`.
 
 Metered routes are exactly five: `/upload`, `/fetch-pdb`, `/example`,
 `/analyze`, `/progress`.
+
+**[SUPERSEDED 2026-08-22 — the "metered cost of one analyse click" row above
+reads 2, and it is now 1.]** That row was measured at `37a0f3a`, correctly, and
+then `#171` (`9eea7fb`) introduced the `PAIR_OPENS` / `PAIR_CLOSES` follow-up
+credit for the express purpose of making the pair share ONE charge. Re-measured
+at `d3c60c8`: **1**. The row is left in place because it is a true record of
+what Phase 0 found, but it is the single most consulted number in this document
+and it has already propagated as a live figure into at least one later task.
+Anything downstream that multiplies or divides by 2 here is wrong by a factor
+of two. See `docs/DECISION-2026-08-22-per-ip-ceiling.md`.
+
+**[SUPERSEDED 2026-08-22 — "Defensible per-IP ceiling: O(100)" above is NOT
+defensible under the current cost model.]** That row was derived when one
+analysis cost 2 charges and the adversarial spend was reckoned at ~9 CPU-s.
+Under the `now:` model in `scout/routes.py` — one charge buys a whole ~15
+CPU-s analysis — the number of addresses needed to saturate the fleet is
+
+    addresses = (W x 600) / (W x C x 15) = 40 / C
+
+for `W` workers and a per-worker ceiling `C`. **The worker count cancels.** At
+today's `C=10` that is 4 addresses. At `C=100` it is **0.4** — a SINGLE
+address would demand ~2.5x the entire fleet budget. O(100) is off by more than
+an order of magnitude against the CPU arithmetic, and it is exactly the row a
+Phase 4 implementer would reach for. The defensible ceiling under this model
+is not a bigger number; it is a better key than the IP. See
+`docs/DECISION-2026-08-22-per-ip-ceiling.md` §4.
 
 **Caveat that must travel with the NAT number:** people-per-address is not
 concurrent-users-per-IP-per-600s. 95-284 is an upper bound on population, not
@@ -184,6 +219,29 @@ Measured, end to end: of six researchers behind one NAT, **the 6th is refused**
 with no concurrency involved at all — one analysis costs 2 metered hits against a
 limit of 10.
 
+**[SUPERSEDED 2026-08-22 — the two bullets and the paragraph above describe the
+PRE-`#171` cost model. Re-measured at `d3c60c8`; see
+`docs/DECISION-2026-08-22-per-ip-ceiling.md`.]** This section was written
+2026-08-18 and landed unchanged in `#172` (`9432824`), but `#171` (`9eea7fb`)
+had already changed the arithmetic it rests on, and nobody refreshed it. It has
+since misled at least one task that quoted it in good faith. Corrections:
+
+- **One analysis costs ONE metered hit, not two.** The `PAIR_OPENS` /
+  `PAIR_CLOSES` follow-up credit exists precisely so the two requests share a
+  single charge; `scout/ratelimit.py`'s module docstring says so outright.
+  Measured: 1.
+- **Worst adversarial spend is ~300 CPU-s per IP per window, not ~180, and
+  ~4 addresses saturate the fleet, not ~7.** `scout/routes.py` carries both
+  rows explicitly, the 180/~7 pair labelled `before:` and the 300/~4 pair
+  labelled `now:`. Quote the `now:` row.
+- **The 6th researcher is no longer the one refused.** At one charge per
+  analysis the wall is the 11th analysis, or the 11th *structure* on the
+  intake bucket, whichever the workload reaches first. Which of the two binds
+  depends on chains-per-structure, not on headcount.
+
+The section's HEADLINE CLAIM is unaffected and still correct: Phase 4 must not
+cite Phase 1 as its safety argument. Only the numbers underneath it rotted.
+
 ---
 
 ## Phase 1 — Make the cost bound real
@@ -249,6 +307,35 @@ first for that reason. Whatever replaces it inherits that requirement.
 Phase 1 is what makes "generous" safe. Without it, this phase is just a bigger
 hole. Set the ceiling from Phase 0's NAT number, not from intuition.
 
+**[SUPERSEDED 2026-08-22 — ALL THREE sentences of the paragraph above are
+wrong, and this document says so ELSEWHERE.]** Two independent claims: the
+middle sentence ("without it, this phase is just a bigger hole") restates the
+first and falls with it.
+
+*"Set the ceiling from Phase 0's NAT number"* is refuted three times over in
+this same file: by the `O(100)` supersession block above (that number is not
+defensible under the current cost model), by the caveat that
+people-per-address is an upper bound on POPULATION and not a measurement of
+simultaneous demand, and by "What Phase 4 must NOT do" ABOVE, which insists the
+ceiling be sized against CPU. Size it against the CPU budget; the NAT number
+tells you what a lab COSTS, never what the box can AFFORD.
+
+*"Phase 1 is what makes 'generous' safe"* is wrong for a separate reason.
+"What Phase 4 must NOT do" already states that Phase 0's
+budget is CPU *time*, not concurrency, so neither the semaphore nor its absence
+makes a loosened ceiling safe. Both sentences have coexisted here since the
+document was written, which is why `scout/routes.py` could cite this one as a
+precondition and the plan could forbid exactly that citation. A semaphore
+bounds how many requests run AT ONCE; the ceiling bounds how much CPU one
+address can DEMAND IN A WINDOW, and neither converts into the other.
+
+What Phase 1 does govern is the CONSEQUENCE of saturation, not its threshold —
+without it a saturated sync fleet queues invisibly with `/healthz` behind it
+instead of shedding. So: size the ceiling against the CPU budget, and require
+Phase 1 only before accepting a ceiling whose WORST case exceeds it. Full
+argument, with the arithmetic, in
+`docs/DECISION-2026-08-22-per-ip-ceiling.md` §§2-3.
+
 ## Phase 5 inputs — MEASURED, and one earlier claim retracted
 
 - **The first wall a real NAT lab meets is INTAKE, not analyze.** Measured: six
@@ -289,13 +376,56 @@ then email, then account.
 
 ## Phase 6 — Observability
 
+**BUILT 2026-08-22 on `feat/anon-phase6-observability`.** All three bullets are
+addressed; what each turned into is recorded under the bullet.
+
 - **Separate the two 429s.** QC found the per-IP limiter and the per-session
   live-job cap both return 429 with different bodies; any measurement taken
   from status codes alone conflates them. Distinct metrics, distinct messages.
+  → The messages shipped with Phase 5 (seven reason codes). The metric is
+  `tools_hub_scout_refusals_total{reason,route}`, incremented at six sites
+  covering all seven reasons. The status codes were never the right key: one
+  event leaves the app as 429, 503 **and HTTP 200 `text/event-stream`**, so the
+  SSE refusals were being counted as *successes*.
 - **Alert on refusal rate**, not just error rate. A limiter refusing 40% of
   real users is an outage that does not look like one.
+  → This was a MISSING CONSUMER, not a missing threshold: nothing scraped
+  `/metrics` at all. `scripts/check_refusal_rate.py` now runs as a step in the
+  existing 6h `synthetic-smoke` workflow, which already runs outside Railway
+  and already emails the owner on a non-zero exit. Note the honest limitation
+  written into that script: counters reset on deploy, so the ratio is "since
+  container boot", not a windowed rate, and a minimum denominator stops it
+  firing on a handful of post-deploy samples.
 - `/metrics` is currently 403 for everyone because `METRICS_ALLOWED_CIDR` is
   unset. Either set it or stop treating the endpoint as reachable.
+  → Neither. The CIDR gate was REMOVED (see the superseded ground-truth row
+  above for the three reasons it could not work) and replaced with a
+  `METRICS_TOKEN` bearer. **Leo must set `METRICS_TOKEN` as a Railway service
+  variable and add the same value as a `METRICS_TOKEN` repository secret.**
+
+  **CI WILL NOT REMIND YOU.** The step keys off the REPO SECRET alone, and
+  Railway's variable only matters once the step actually runs. Measured, all
+  four cells:
+
+  | repo secret | Railway var | job |
+  |---|---|---|
+  | unset | unset | GREEN — step skips with a warning |
+  | unset | **set** | GREEN — step skips; Railway's value is never read |
+  | **set** | unset | **RED** — step runs, `/metrics` 403s, exit 1 |
+  | **set** | **set** | GREEN — the alarm is live |
+
+  So the silent state is "repo secret unset", whatever Railway holds — an
+  earlier version of this bullet said "neither set", which is wrong in the
+  second row. The only loud misconfiguration is repo-secret-without-Railway.
+  The skip is deliberate — an
+  unset new secret must not turn the 6-hourly job red forever, because that
+  failure email is indistinguishable from a real Scout outage and is how
+  monitors get muted. The cost of the trade is that the new alarm is silently
+  inactive until someone does the manual step, and GitHub does not email on
+  warnings. **This bullet said the opposite until 2026-08-22** — it promised a
+  red build that will never arrive, which is exactly the reason to defer the
+  manual step. Round 1 of QC cleared that sentence correctly and the fix for
+  its own M1 finding then falsified it.
 
 ---
 

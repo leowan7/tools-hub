@@ -1339,12 +1339,58 @@ class TestTwoTiers:
         refused = _analyze(app.test_client(), job)
         body = refused.get_json()
         assert refused.status_code == 429
-        assert body["reason"] == ratelimit.REASON_SESSION_LIMITED
+        # Phase 5: separated by REASON, not only by prose. The front end has
+        # to choose between "sign in to keep going" and "allow cookies", and
+        # it cannot make that choice by pattern-matching a message string.
+        assert body["reason"] == ratelimit.REASON_NO_SESSION
+        assert body["reason"] != ratelimit.REASON_SESSION_LIMITED
         assert "cookies" in body["error"].lower(), body["error"]
         assert body["error"] != ratelimit._SESSION_LIMIT_MESSAGE, (
             "a caller with no session was told to sign in, which cannot fix "
             "their problem — the login session is a cookie too"
         )
+
+        # ...and it must not DENY it either. REASON_NO_SESSION covers two
+        # different callers: cookies genuinely blocked, and cookies fine with
+        # no session minted yet. The server cannot tell them apart from here,
+        # so the page decides, and for the second caller signing in works. The
+        # message used to end "Signing in will not help until cookies are
+        # enabled" and the page rendered a working sign-in link directly below
+        # it — QC round 4 executed the shipped block against the shipped string
+        # and read both back in one breath.
+        assert "will not help" not in body["error"].lower(), (
+            f"the message denies an offer the page may legitimately make: "
+            f"{body['error']!r}"
+        )
+
+        # ...and it must not re-ship either of the two wordings that were
+        # actually wrong. This is a REGRESSION guard, not a property test, and
+        # the distinction is deliberate.
+        #
+        # The property one wants here is "does not state the cause as fact",
+        # and no string test expresses it. Two attempts are on record: a bare
+        # "if" substring, satisfied by "Verify cookies are enabled"; then
+        # " if " with spaces, which QC measured passing "Cookies are blocked,
+        # so allow them ... if you want to continue" while REJECTING the
+        # correctly hedged "Cookies may be blocked, or you may simply not have
+        # uploaded yet". Each tightening bought a false green with a false red.
+        # A guard that fires on correct copy is worse than none: it trains
+        # whoever meets it to edit the test.
+        #
+        # So this pins the two strings that shipped and were wrong, and claims
+        # nothing more. REASON_NO_SESSION covers both a cookies-blocked caller
+        # and one whose cookies are fine with no session yet; the first wording
+        # denied an offer the page legitimately makes to the second, and the
+        # second ordered a fix only the first one needs.
+        lowered = body["error"].lower()
+        for shipped_and_wrong in (
+            "signing in will not help",
+            "allow cookies for this site and reload the page",
+        ):
+            assert shipped_and_wrong not in lowered, (
+                f"this wording was shipped, measured wrong, and removed: "
+                f"{shipped_and_wrong!r} is back in {body['error']!r}"
+            )
 
     def test_the_sse_route_reports_the_session_tier_distinctly(
         self, client, stub_pipeline, reap_jobs

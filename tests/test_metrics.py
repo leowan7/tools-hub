@@ -2,7 +2,7 @@
 
 Stream G.2 (Wave-0 hardening). Runs offline — no Supabase, no Prometheus
 scraper required. Uses a Flask test client plus unittest.mock to stub out
-the readiness probe and IP allowlist.
+the readiness probe, and monkeypatched env vars for the /metrics token gate.
 
 Usage
 -----
@@ -81,23 +81,45 @@ def test_healthz_returns_503_when_supabase_down(app):
 
 
 # ---------------------------------------------------------------------------
-# /metrics IP allowlist
+# /metrics bearer token
 # ---------------------------------------------------------------------------
+#
+# This gate was an IP allowlist until 2026-08-22 and was never configured, so
+# /metrics 403'd for everyone and the endpoint had no consumer at all. The
+# allowlist cannot be made to work here: it resolved through _client_ip(), so
+# it inherited X-Forwarded-For forgeability with a tiny guess space; its
+# unforgeable alternative, request.remote_addr, is Railway's shared edge PoP;
+# and the consumer that needed it is a GitHub-hosted runner with no stable
+# address. See the shared/metrics.py docstring.
 
 
-def test_metrics_is_forbidden_by_default(app):
-    """With no METRICS_ALLOWED_CIDR, every caller is denied."""
-    r = app.test_client().get("/metrics")
-    assert r.status_code == 403
-
-
-def test_metrics_is_accessible_when_allowlisted(monkeypatch):
-    """A caller whose IP falls inside METRICS_ALLOWED_CIDR gets the scrape."""
-    monkeypatch.setenv("METRICS_ALLOWED_CIDR", "127.0.0.0/8")
+def _token_app(monkeypatch, token: str | None) -> Flask:
+    if token is None:
+        monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("METRICS_TOKEN", token)
     flask_app = Flask(__name__)
     register_metrics(flask_app)
+    return flask_app
 
-    r = flask_app.test_client().get("/metrics")
+
+def test_metrics_is_forbidden_by_default(monkeypatch):
+    """With no METRICS_TOKEN, every caller is denied — including one that
+    presents an empty bearer, which must not compare equal to an unset var."""
+    flask_app = _token_app(monkeypatch, None)
+    assert flask_app.test_client().get("/metrics").status_code == 403
+    assert flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer "}
+    ).status_code == 403
+
+
+def test_metrics_is_accessible_with_the_token(monkeypatch):
+    """The right bearer gets the scrape."""
+    flask_app = _token_app(monkeypatch, "s3cret-token")
+
+    r = flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer s3cret-token"}
+    )
     assert r.status_code == 200
     body = r.data.decode("utf-8")
     # Prometheus exposition format always includes HELP + TYPE lines.
@@ -105,15 +127,134 @@ def test_metrics_is_accessible_when_allowlisted(monkeypatch):
     assert "# TYPE " in body
 
 
-def test_metrics_denies_caller_outside_allowlist(monkeypatch):
-    """Allowlist must actually exclude non-matching IPs."""
-    monkeypatch.setenv("METRICS_ALLOWED_CIDR", "10.0.0.0/8")
-    flask_app = Flask(__name__)
-    register_metrics(flask_app)
+def test_metrics_denies_a_wrong_token(monkeypatch):
+    flask_app = _token_app(monkeypatch, "s3cret-token")
 
-    # Test client default remote_addr is 127.0.0.1, outside 10.0.0.0/8.
-    r = flask_app.test_client().get("/metrics")
+    r = flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer not-the-token"}
+    )
     assert r.status_code == 403
+
+
+def test_metrics_denies_a_malformed_authorization_header(monkeypatch):
+    """Missing prefix, wrong scheme, or the raw token: all 403, none 500."""
+    flask_app = _token_app(monkeypatch, "s3cret-token")
+    client = flask_app.test_client()
+
+    for header in (
+        "s3cret-token",              # no scheme at all
+        "Basic s3cret-token",        # wrong scheme
+        "bearer s3cret-token",       # RFC says case-insensitive; we do not
+        "Bearers3cret-token",        # no separating space
+        "Bearer",                    # scheme only
+        "",                          # present but empty
+    ):
+        r = client.get("/metrics", headers={"Authorization": header})
+        assert r.status_code == 403, header
+
+
+def test_metrics_denies_a_non_ascii_token_without_a_500(monkeypatch):
+    """hmac.compare_digest raises TypeError on a non-ASCII str, so the
+    comparison is done on bytes. A token full of emoji must be refused, not
+    turned into a 500 that leaks a traceback."""
+    flask_app = _token_app(monkeypatch, "s3cret-token")
+
+    r = flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer ééé-café"}
+    )
+    assert r.status_code == 403
+
+
+def test_metrics_accepts_a_non_ascii_token_when_it_is_the_configured_one(
+    monkeypatch,
+):
+    """The bytes comparison must still be a real comparison, not a blanket
+    refusal of everything non-ASCII."""
+    flask_app = _token_app(monkeypatch, "café-token")
+
+    r = flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer café-token"}
+    )
+    assert r.status_code == 200
+
+
+def test_metrics_token_is_read_per_request_not_snapshotted(monkeypatch):
+    """The allowlist this replaced was frozen at register_metrics() time, so
+    rotating it needed a deploy. Reading per request is what makes a rotation
+    in Railway take effect on the next request."""
+    flask_app = _token_app(monkeypatch, "first")
+    client = flask_app.test_client()
+    assert client.get(
+        "/metrics", headers={"Authorization": "Bearer first"}
+    ).status_code == 200
+
+    monkeypatch.setenv("METRICS_TOKEN", "second")
+    assert client.get(
+        "/metrics", headers={"Authorization": "Bearer first"}
+    ).status_code == 403
+    assert client.get(
+        "/metrics", headers={"Authorization": "Bearer second"}
+    ).status_code == 200
+
+
+def test_the_token_comparison_is_constant_time(monkeypatch):
+    """The bearer check must DECIDE through ``hmac.compare_digest``, not ``==``.
+
+    Behavioural, not a source grep, and the distinction earned its place: an
+    earlier version of this test asserted ``"hmac.compare_digest("`` appeared
+    in the function's source, which a dead call sitting beside a live ``==``
+    walks straight through. This forces ``compare_digest`` to return True and
+    presents the WRONG token: if the verdict really flows through that call the
+    gate opens, and if the code decided with ``==`` the wrong token is still
+    refused and this test fails.
+
+    No clock is involved on purpose. A wall-clock timing assertion is not
+    reliably testable on a shared CI runner — it would either be so loose it
+    passes for ``==`` too, or so tight it flakes under load. This pins the
+    dataflow instead, which is the part a mutation actually changes.
+
+    /metrics is an authentication control now (deny-by-default, this bearer is
+    the only credential on it), so the comparison being constant-time is part
+    of its contract and not an implementation detail.
+    """
+    flask_app = _token_app(monkeypatch, "the-real-token")
+    wrong = {"Authorization": "Bearer wrong-token"}
+
+    # Both halves matter, and the FIRST is why this is a differential rather
+    # than a bare `== 200`: an endpoint with no gate at all also answers 200,
+    # so the open half alone would pass against a deleted gate. Pinning the
+    # closed half here means one test cannot be satisfied by removing the
+    # thing it is testing.
+    assert flask_app.test_client().get("/metrics", headers=wrong).status_code == 403, (
+        "a wrong token reached /metrics even before compare_digest was "
+        "patched — the gate is not closed at all"
+    )
+
+    monkeypatch.setattr("shared.metrics.hmac.compare_digest", lambda _a, _b: True)
+
+    assert flask_app.test_client().get("/metrics", headers=wrong).status_code == 200, (
+        "forcing hmac.compare_digest to True did not open the gate for a wrong "
+        "token, so _metrics_token_ok is not deciding through it — a plain == "
+        "is a timing oracle on the only credential guarding /metrics"
+    )
+
+    # The REJECT path alone is not enough. A short-circuiting
+    # ``if presented == expected: return True`` placed AHEAD of a live
+    # compare_digest passes both assertions above — every request they send
+    # carries a wrong token, so the fast path never fires — while leaking the
+    # matching-prefix length of a CORRECT-so-far token, which is the only
+    # timing oracle an attacker can actually walk. Forcing compare_digest
+    # FALSE and presenting the RIGHT token is what closes that: the accept
+    # decision must flow through the call too, not just the reject decision.
+    monkeypatch.setattr("shared.metrics.hmac.compare_digest", lambda _a, _b: False)
+
+    assert flask_app.test_client().get(
+        "/metrics", headers={"Authorization": "Bearer the-real-token"}
+    ).status_code == 403, (
+        "forcing hmac.compare_digest to False still admitted the CORRECT "
+        "token, so something upstream of it accepts — an == short-circuit on "
+        "the accept path is a timing oracle even with compare_digest present"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +294,8 @@ def test_observe_idempotency_outcome_increments_counter():
     assert after == before + 1
 
 
-def test_request_latency_recorded(app, monkeypatch):
+def test_request_latency_recorded(app):
     """A round-trip to a real route must bump the request counter."""
-    monkeypatch.setenv("METRICS_ALLOWED_CIDR", "127.0.0.0/8")
     # Hit the route once.
     app.test_client().post("/echo", data=b"x")
     value = _sample(
@@ -288,21 +428,29 @@ def test_client_ip_ignores_a_malformed_hop_count(monkeypatch):
     assert got == "198.51.100.9"
 
 
-def test_metrics_allowlist_cannot_be_defeated_by_a_forged_header(monkeypatch):
-    """The /metrics CIDR gate is the second consumer of the same fix.
+def test_the_metrics_gate_no_longer_reads_the_forwarded_header_at_all(monkeypatch):
+    """REWRITTEN 2026-08-22. This used to assert that the /metrics CIDR gate
+    survived a forged X-Forwarded-For — a test whose whole premise was the
+    worry that eventually killed the CIDR approach. The token gate does not
+    consult the header, so the stronger invariant now holds: the header cannot
+    grant access, and it cannot take it away either.
 
-    A caller outside the allowlist must not be able to talk its way in by
-    prepending an allowlisted address to X-Forwarded-For.
+    _client_ip() itself is NOT retired — scout/ratelimit.py keys its per-IP
+    buckets off it, which is why the tests above it stay.
     """
-    monkeypatch.setenv("METRICS_ALLOWED_CIDR", "10.0.0.0/8")
+    monkeypatch.setenv("METRICS_TOKEN", "s3cret-token")
     monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
     flask_app = Flask(__name__)
     register_metrics(flask_app)
+    client = flask_app.test_client()
 
-    r = flask_app.test_client().get(
-        "/metrics", headers={"X-Forwarded-For": "10.1.2.3, 203.0.113.7"}
-    )
-    assert r.status_code == 403
+    forged = {"X-Forwarded-For": "10.1.2.3, 127.0.0.1, 203.0.113.7"}
+    # No token: no header, however crafted, talks its way in.
+    assert client.get("/metrics", headers=forged).status_code == 403
+    # With the token: the header is irrelevant, not disqualifying.
+    assert client.get(
+        "/metrics", headers={**forged, "Authorization": "Bearer s3cret-token"}
+    ).status_code == 200
 
 
 # ---------------------------------------------------------------------------

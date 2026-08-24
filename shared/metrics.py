@@ -12,18 +12,39 @@ Endpoints
                      uses this. Do not add dependencies.
     /healthz       — readiness. 200 only if Supabase is reachable. Used by
                      schedulers / deploy gates.
-    /metrics       — Prometheus text exposition. IP-allowlisted via the
-                     ``METRICS_ALLOWED_CIDR`` env var (comma-separated
-                     CIDRs). Deny by default.
+    /metrics       — Prometheus text exposition. Gated on a bearer token in
+                     the ``METRICS_TOKEN`` env var, presented as
+                     ``Authorization: Bearer <token>``. Deny by default:
+                     unset or empty means nobody gets in.
 
 Why deny by default
     The Railway service is on the public internet; anyone on the web can
     hit /metrics if the endpoint is open. Prometheus scrape contents can
     leak traffic patterns, user counts, and error rates — low but
     non-zero signal for a motivated attacker. Requiring an explicit
-    allowlist is the right posture; a misconfigured allowlist simply
-    denies the scraper, which is visible in the scraper's own error
-    state.
+    credential is the right posture; a misconfigured one simply denies the
+    scraper, which is visible in the scraper's own error state.
+
+Why a token and NOT an IP allowlist
+    This endpoint was CIDR-gated until 2026-08-22 and the gate was never
+    set, so /metrics 403'd for everyone. Do not bring the CIDR back — it
+    cannot work on this stack, for three independent reasons:
+
+    1. The allowlist resolved through ``_client_ip()``, which honours
+       ``X-Forwarded-For``. That makes the gate inherit the whole
+       forwarded-header trust question, and here the failure mode is auth
+       bypass with a tiny guess space (``10/8``, ``172.16/12``).
+    2. The unforgeable alternative, ``request.remote_addr``, is Railway's
+       edge PoP (measured: Datacamp/CDN77, ``x-railway-edge: jfk1``),
+       shared by every visitor on earth. Allowlisting it allowlists the
+       internet.
+    3. The consumer is a GitHub-hosted runner
+       (``.github/workflows/synthetic-smoke.yml``), which has no stable
+       address to allowlist in the first place.
+
+    The token is read per request rather than snapshotted at
+    ``register_metrics()`` time, so rotating it in Railway takes effect on
+    the next request instead of the next deploy.
 
 Multiprocess mode
     Gunicorn forks workers; the default ``prometheus_client`` backend
@@ -43,13 +64,13 @@ Usage
 
 from __future__ import annotations
 
-import ipaddress
+import hmac
 import logging
 import os
 import time
 from typing import Any
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, has_request_context, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +187,25 @@ SCOUT_UNMETERED_BODIES = Counter(
     ["framing"],  # chunked|other
 )
 
+# ONE logical event — "we refused an anonymous Epitope Scout caller" — leaves
+# the app as THREE different HTTP status codes: 429 (both rate-limit tiers,
+# and the per-session live-job cap), 503 (the fleet live-job cap and the JSON
+# compute shed) and **200 text/event-stream** (the SSE compute shed, because
+# EventSource cannot read a non-2xx body). ``REQUESTS_TOTAL`` labels only
+# ``(route, status_class)``, so without this counter the refusals collapse into
+# status classes and the SSE ones are counted as SUCCESSES. That is why a
+# refusal rate cannot be derived from status codes here, and why this exists.
+#
+# ``reason`` takes the seven fixed values in ``scout.ratelimit`` (five policy
+# refusals plus the two SSE non-refusals ``bad_request`` / ``job_expired``) and
+# ``route`` is a Flask endpoint name — nothing caller-controlled on either
+# label, so the cardinality is bounded and small.
+SCOUT_REFUSALS = Counter(
+    "tools_hub_scout_refusals_total",
+    "Anonymous Epitope Scout requests refused, by reason and route.",
+    ["reason", "route"],
+)
+
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",
@@ -178,21 +218,36 @@ IDEMPOTENCY_OUTCOMES = Counter(
 # ---------------------------------------------------------------------------
 
 
-def _allowlist_cidrs() -> list[ipaddress._BaseNetwork]:
-    """Parse METRICS_ALLOWED_CIDR into a list of network objects."""
-    raw = os.environ.get("METRICS_ALLOWED_CIDR", "").strip()
-    if not raw:
-        return []
-    nets: list[ipaddress._BaseNetwork] = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        try:
-            nets.append(ipaddress.ip_network(entry, strict=False))
-        except ValueError:
-            logger.warning("Ignoring invalid METRICS_ALLOWED_CIDR entry: %s", entry)
-    return nets
+def _metrics_token_ok() -> bool:
+    """Is this request carrying the ``METRICS_TOKEN`` bearer?
+
+    Deny by default: an unset or empty ``METRICS_TOKEN`` refuses everyone,
+    including a caller who presents an empty bearer. ``X-Forwarded-For`` plays
+    no part here at all — see the module docstring for why the address-based
+    gate this replaced could not be made to work.
+    """
+    expected = os.environ.get("METRICS_TOKEN", "").strip()
+    if not expected:
+        return False
+    header = request.headers.get("Authorization", "")
+    # Case-SENSITIVE on purpose, though RFC 7235 says the scheme is not: the
+    # only consumer is our own workflow, and every deviation here fails closed
+    # with a 403 rather than opening anything.
+    if not header.startswith("Bearer "):
+        return False
+    presented = header.removeprefix("Bearer ").strip()
+    try:
+        # BYTES, not str: hmac.compare_digest raises TypeError on a non-ASCII
+        # str, and a malformed token must 403 rather than 500. surrogateescape
+        # round-trips whatever os.environ handed us (POSIX env vars are bytes)
+        # without raising; header values arrive latin-1-decoded, so they always
+        # encode cleanly.
+        return hmac.compare_digest(
+            presented.encode("utf-8", "surrogateescape"),
+            expected.encode("utf-8", "surrogateescape"),
+        )
+    except (TypeError, ValueError, UnicodeError):
+        return False
 
 
 def _trusted_proxy_hops() -> int:
@@ -237,17 +292,6 @@ def _client_ip() -> str:
             # the leftmost entry rather than raising.
             return chain[max(0, len(chain) - hops)]
     return request.remote_addr or ""
-
-
-def _ip_allowed(allowlist: list[ipaddress._BaseNetwork]) -> bool:
-    ip_str = _client_ip()
-    if not ip_str or not allowlist:
-        return False
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    return any(ip in net for net in allowlist)
 
 
 def _readiness_probe() -> tuple[bool, str]:
@@ -303,8 +347,6 @@ def _render_metrics() -> Response:
 def register_metrics(flask_app: Flask) -> None:
     """Attach /metrics + /healthz to the app and install a latency hook."""
 
-    allowlist = _allowlist_cidrs()
-
     @flask_app.before_request
     def _mark_request_start() -> None:
         g._tools_hub_request_start = time.monotonic()
@@ -329,7 +371,7 @@ def register_metrics(flask_app: Flask) -> None:
 
     @flask_app.route("/metrics", methods=["GET"])
     def metrics_endpoint() -> Any:
-        if not _ip_allowed(allowlist):
+        if not _metrics_token_ok():
             return Response("forbidden", status=403, content_type="text/plain")
         return _render_metrics()
 
@@ -359,6 +401,28 @@ def observe_stripe_event(event_type: str, outcome: str) -> None:
         STRIPE_EVENTS.labels(event_type=event_type, outcome=outcome).inc()
     except Exception:  # pragma: no cover
         logger.debug("stripe_events metric increment failed", exc_info=True)
+
+
+def observe_scout_refusal(reason: str) -> None:
+    """Count one anonymous Epitope Scout refusal. See ``SCOUT_REFUSALS``.
+
+    The route label is resolved here, from ``request.endpoint``, the same way
+    ``_observe_request`` does it — so the six call sites stay one-liners.
+
+    Safe to call OUTSIDE a request context, where it degrades to ``unknown``
+    rather than raising and losing the sample. **No current site needs that**:
+    five sit in view bodies and the sixth sits in a generator that IS wrapped
+    in ``stream_with_context``, so all six resolve a real endpoint name. The
+    guard is there for the SEVENTH — an increment dropped into an unwrapped
+    streamed generator runs after Flask has popped the request context, and
+    ``request.endpoint`` raises there. Cheap defence-in-depth for a function
+    that must never raise into a refusal path.
+    """
+    try:
+        route = (request.endpoint or "unknown") if has_request_context() else "unknown"
+        SCOUT_REFUSALS.labels(reason=reason, route=route).inc()
+    except Exception:  # pragma: no cover — metrics must never break app
+        logger.debug("scout_refusals metric increment failed", exc_info=True)
 
 
 def observe_idempotency_outcome(outcome: str) -> None:

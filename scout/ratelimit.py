@@ -103,7 +103,7 @@ from flask import jsonify, request, session
 # RIGHT (TRUSTED_PROXY_HOPS, default 1) precisely so this key cannot be chosen
 # by the caller — a leftmost read would let one header nullify every bucket
 # below. Do not swap it for an inline header parse.
-from shared.metrics import SCOUT_UNMETERED_BODIES, _client_ip
+from shared.metrics import SCOUT_UNMETERED_BODIES, _client_ip, observe_scout_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -649,9 +649,20 @@ def queued_anon_runs() -> int:
         return _WAITING
 
 
+# NO sign-in promise in this one, deliberately. The per-IP tier fires for every
+# caller from the address regardless of cookie state, so this message reaches
+# visitors that signing in CANNOT help — their login session would be a cookie
+# too. The server cannot tell them apart from here; the browser can, and the
+# page appends "Sign in to keep going" only when navigator.cookieEnabled says
+# the offer is real. QC round 2 found the offer surviving here as prose after
+# round 1 removed it as a link.
+#
+# The per-session message below KEEPS its sign-in line, and that is not an
+# inconsistency: a caller only reaches that tier by presenting a session id, so
+# their cookies demonstrably work.
 _OVER_LIMIT_MESSAGE = (
-    "Too many Epitope Scout requests from this network. Wait a minute and "
-    "try again, or sign in for a free account with a higher allowance."
+    "Too many Epitope Scout requests from this network. Wait a few minutes "
+    "and try again."
 )
 
 # The per-session refusal says something different on purpose. "This network"
@@ -672,10 +683,17 @@ _SESSION_LIMIT_MESSAGE = (
 # either: the login session is a cookie too. Name the actual problem instead.
 # Phase 5 turns _SESSION_LIMIT_MESSAGE into a signup funnel and must not point
 # this population at a door that does not open for them.
+# This one used to end "Signing in will not help until cookies are enabled."
+# It cannot say that any more. REASON_NO_SESSION covers two different callers -
+# cookies genuinely blocked, and cookies fine but no session minted yet - and
+# from here the server cannot tell them apart. For the second, signing in works
+# and the sentence was simply false; the page rendered it directly above a
+# working "Sign in to keep going" link. State the fact, name the fix, and let
+# the browser decide whether to offer the link.
 _NO_SESSION_MESSAGE = (
     "Epitope Scout could not start a session, so it cannot keep track of "
-    "your upload. Allow cookies for this site and reload the page. Signing "
-    "in will not help until cookies are enabled."
+    "your upload. Reload the page to try again — and if your browser "
+    "blocks cookies, allow them for this site first."
 )
 
 # Machine-readable refusal reason, carried in every refusal body.
@@ -695,6 +713,16 @@ REASON_RATE_LIMITED = "rate_limited"   # per-IP window, this module
 REASON_SESSION_LIMITED = "session_rate_limited"  # per-session window, here
 REASON_BUSY = "busy"                   # compute slot/queue full, scout.routes
 REASON_AT_CAPACITY = "at_capacity"     # live-job cap, scout.routes
+
+# Added by Phase 5, NOT a rename: the cookies-blocked caller used to share
+# REASON_SESSION_LIMITED with an ordinary over-allowance caller, and the two
+# need OPPOSITE front ends. "Sign in to keep going" is honest for the second
+# and a LIE for the first — ``_session_key`` gives every cookie-less caller
+# the same bucket, so they are refused for someone else's spending and
+# signing in cannot help them until cookies work. The front end cannot tell
+# them apart from the message text without matching prose, so it gets a
+# distinct reason and shows the cookie fix instead of a signup link.
+REASON_NO_SESSION = "no_session"       # cookies blocked, this module
 
 # REASON_SESSION_LIMITED exists because the two tiers mean two very different
 # things and Phase 6 has to alert on them differently. A per-session refusal
@@ -716,6 +744,13 @@ REASON_JOB_EXPIRED = "job_expired"     # job dir reaped or never existed
 
 def _refuse(*, sse: bool, retry_after: int, reason: str, message: str):
     """Build the refusal both tiers share, in the shape the route can carry."""
+    # ONE call site for THREE reasons (rate_limited / session_rate_limited /
+    # no_session), counted here rather than at the two tiers above precisely
+    # because this is where they already converge — and counted BEFORE the
+    # response is built, not inside the SSE generator, since a generator body
+    # does not run until the client iterates the response and the refusal has
+    # already been decided by the time we get here.
+    observe_scout_refusal(reason)
     if sse:
         from flask import current_app  # noqa: PLC0415
 
@@ -833,13 +868,19 @@ def anon_rate_limit(
                     window_seconds=window_seconds,
                 )
                 if not allowed:
+                    # One conditional picks BOTH, so the reason and the message
+                    # cannot drift apart into a body that says "allow cookies"
+                    # while telling the front end to render a signup link.
+                    cookieless = session_key == _NO_SESSION_KEY
                     return _refuse(
                         sse=sse,
                         retry_after=retry_after,
-                        reason=REASON_SESSION_LIMITED,
+                        reason=(
+                            REASON_NO_SESSION if cookieless
+                            else REASON_SESSION_LIMITED
+                        ),
                         message=(
-                            _NO_SESSION_MESSAGE
-                            if session_key == _NO_SESSION_KEY
+                            _NO_SESSION_MESSAGE if cookieless
                             else _SESSION_LIMIT_MESSAGE
                         ),
                     )

@@ -198,6 +198,13 @@ def signup():
             user_agent=user_agent,
         )
 
+    # Honour ?next= / the hidden field instead of pinning every render to "/".
+    # request.values covers the GET render and the POST re-renders in one read,
+    # so a validation failure does not silently drop where the visitor was
+    # heading. safe_next is the SAME allowlist login uses; anything not a
+    # same-origin path falls back to "/", which is the old behaviour.
+    next_url = safe_next(request.values.get("next"))
+
     if request.method == "GET":
         return render_template(
             "login.html",
@@ -207,7 +214,7 @@ def signup():
             signup_purpose=None,
             signup_terms=False,
             signup_token=issue_signup_token(),
-            next="/",
+            next=next_url,
         )
 
     email = request.form.get("email", "").strip()
@@ -235,7 +242,7 @@ def signup():
             signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
-            next="/",
+            next=next_url,
         )
     if password and len(password) < 8:
         _log_signup_failed("password_short", email)
@@ -247,7 +254,7 @@ def signup():
             signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
-            next="/",
+            next=next_url,
         )
     if not terms_accepted:
         _log_signup_failed("terms_not_accepted", email)
@@ -259,7 +266,7 @@ def signup():
             signup_purpose=purpose,
             signup_terms=False,
             signup_token=issue_signup_token(),
-            next="/",
+            next=next_url,
         )
 
     # Send the confirmation email's "click here" link back to tools-hub
@@ -304,7 +311,7 @@ def signup():
             signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
-            next="/",
+            next=next_url,
         )
 
     # The wallet signup credit is granted lazily when the user_wallets
@@ -343,7 +350,7 @@ def signup():
         mode="signin",
         error=None,
         email=email,
-        next="/",
+        next=next_url,
         # Quote the grant, not a retyped figure: this line told every new
         # user "$5" for the whole time the wallet was depositing $15.
         success_msg=(

@@ -416,7 +416,16 @@ class TestRateLimit:
 
     def test_the_session_tier_bites_before_the_per_ip_one(self, client):
         """One session that keeps its cookie meets the tight tier first, and
-        is told something true about it: sign in, not "your network"."""
+        is told something true about it: sign in, not "your network".
+
+        The rotate call is load-bearing and was MISSING until Phase 5. A bare
+        POST to /scout/analyze never completes an intake, so it never gets an
+        id from scout/routes.py, so it landed in the cookie-less bucket — this
+        test asserted the session tier while exercising ``_NO_SESSION_KEY``.
+        One reason covered both cases, so nothing caught it. Splitting
+        REASON_NO_SESSION out made it fail, which is how it was found.
+        """
+        _rotate_anon_session(client, "sticky")
         resp = None
         for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT + 2):
             resp = client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
@@ -425,6 +434,36 @@ class TestRateLimit:
         assert _hits("scout_analyze", "127.0.0.1") == (
             scout_routes.ANON_ANALYZE_SESSION_LIMIT
         ), "a session-tier refusal must not spend the shared per-IP allowance"
+
+    def test_the_per_ip_refusal_does_not_promise_what_it_cannot_know(self, client):
+        """The per-IP tier fires for everyone from the address, cookies or not.
+
+        It therefore reaches visitors that signing in CANNOT help, because the
+        login session is a cookie too. QC round 1 removed the sign-in LINK for
+        them; round 2 found the same promise still sitting in the message text,
+        where the page renders it verbatim. The offer now lives only in the
+        link, which the browser gates on navigator.cookieEnabled.
+
+        The per-SESSION message keeps its sign-in line and must: reaching that
+        tier at all requires presenting a session id, so cookies demonstrably
+        work for that caller.
+        """
+        resp = None
+        for i in range(scout_routes.ANON_ANALYZE_LIMIT + 2):
+            _rotate_anon_session(client, f"ip{i}")
+            resp = client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        assert resp.status_code == 429
+        body = resp.get_json()
+        assert body["reason"] == ratelimit.REASON_RATE_LIMITED, body
+        shown = body["error"]
+        assert "sign in" not in shown.lower(), (
+            "the per-IP refusal promises an account to callers it cannot "
+            f"verify can use one: {shown!r}"
+        )
+        assert "sign in" in ratelimit._SESSION_LIMIT_MESSAGE.lower(), (
+            "the per-session message SHOULD still offer it — that caller has "
+            "a working cookie by construction"
+        )
 
     def test_signed_in_users_are_not_ip_limited(self, client, reap_jobs):
         _login(client)

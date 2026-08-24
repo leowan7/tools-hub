@@ -33,6 +33,7 @@ from flask import (
 )
 
 from shared.auth import login_required
+from shared.metrics import observe_scout_refusal
 
 from scout.errors import ScoutInputError
 from scout.jobs import (
@@ -158,20 +159,74 @@ ANON_INTAKE_LIMIT = 10
 # per-IP worst-case CPU back at ~180 exactly, at the cost of 6 analyses per
 # worker instead of 10.
 #
-# WHY IT IS NOT BEING RAISED, which the plan's Phase 4 asks for. Two
-# preconditions, both unmet:
+# WHY IT IS NOT BEING RAISED, which the plan's Phase 4 asks for. ONE
+# precondition, unmet — and a second consideration that used to be written
+# here as a precondition and is not one. See
+# docs/DECISION-2026-08-22-per-ip-ceiling.md for the full argument.
 #
-#  1. PHASE 2. Nobody has verified whether Railway's edge appends, overwrites
-#     or forwards X-Forwarded-For verbatim. Under the third case the per-IP
-#     key is caller-chosen and this ceiling is decorative, so raising it would
-#     buy an attacker capacity and buy a real lab nothing. Phase 2 is the
-#     precondition; once the peer is trusted rather than the header, Phase 0's
-#     defensible O(100) becomes reachable and this is the one line to change.
-#  2. PHASE 1'S FAIRNESS IS UNDELIVERED. Phase 1 shipped without flipping the
-#     worker class, so its semaphore is inert (see gunicorn.conf.py). The
-#     plan says "Phase 1 is what makes generous safe"; it did not, so the only
-#     thing standing between a saturated box and /healthz is still nothing.
-#     A saturated sync fleet does not shed, it queues invisibly.
+#  1. PHASE 2, AND IT IS THE WHOLE GATE. Nobody has verified whether
+#     Railway's edge appends, overwrites or forwards X-Forwarded-For
+#     verbatim. Under the third case the per-IP key is caller-chosen and this
+#     ceiling is decorative. Measured at d3c60c8, 50 requests to
+#     GET /scout/example from ONE socket peer, one worker, each carrying a
+#     different single-value X-Forwarded-For: 50 admitted, 0 refused. With a
+#     FIXED header, or none at all: 10 admitted, 40 refused.
+#
+#     BUT THAT PROBE ONLY SIMULATES THE THIRD CASE, and saying otherwise is
+#     circular. _client_ip counts hops from the RIGHT, so a forged value wins
+#     only when the app RECEIVES a single-value header. If the edge appends,
+#     the app sees "<forged>, <real client>" and takes the real one; if it
+#     overwrites, the forged value never arrives. Both were run: 10 admitted,
+#     40 refused, same as an honest caller.
+#
+#     So the gate is NOT "the ceiling is provably bypassed" — it is that
+#     nobody knows which of the three holds, so nobody can say whether this
+#     number bounds an attacker at all. A control whose effectiveness is
+#     unknown cannot be sized. That is the precondition.
+#
+#  NOT a precondition, though this comment used to say it was: PHASE 1'S
+#  FAIRNESS. A semaphore bounds how many requests run AT ONCE. This ceiling
+#  bounds how much CPU one address can DEMAND IN A WINDOW. If N addresses
+#  each demand D CPU-s, the fleet must supply N x D however many are in
+#  flight — a concurrency cap changes the queueing discipline, not the
+#  arithmetic. So Phase 1 cannot make a raised ceiling safe and its absence
+#  cannot make one unsafe; the plan's own "What Phase 4 must NOT do" says so
+#  and this comment contradicted it.
+#
+#  What Phase 1 governs is the CONSEQUENCE of saturation, not its threshold:
+#  without it a saturated sync fleet does not shed, it queues invisibly with
+#  /healthz behind it, so going over budget presents as an outage rather than
+#  as some anonymous 503s. Size this number against the CPU budget; require
+#  Phase 1 before accepting any ceiling whose WORST case exceeds it.
+#
+# AND RAISING THIS ALONE WOULD NOT UNBLOCK A LAB. ANON_INTAKE_LIMIT above is
+# also 10, and which one binds depends on the shape of the lab, not its size:
+# many researchers with one structure each hit INTAKE at the 11th structure,
+# before an analysis is ever reached; few researchers with many chains each
+# hit this one at the 11th analysis. Both were measured. Move one without the
+# other and half the users this is meant to serve are refused at exactly the
+# same point as today.
+#
+# UNITS, because this block mixes them and ratelimit.py's house rule is to
+# quote the doubled numbers. The two "11th" counts above are PER WORKER, like
+# the limits themselves. Doubling them is the CAPACITY, not the wall index:
+# measured on a 2-worker fleet, one IP gets 20 admitted and is refused at
+# request 21 — NOT 22, which is what doubling the index would give and what
+# this comment said until it was measured. That matches ratelimit.py's "20 per
+# 10 min per IP across a 2-worker fleet". The same per-worker/fleet-wide split
+# applies to ANON_INTAKE_LIMIT's "ELEVENTH refused here" note above.
+#
+# The CPU rows further up are FLEET-WIDE. The saturation figure is unaffected
+# either way — addresses = (W x 600) / (W x C x 15) = 40 / C, in which the
+# worker count cancels, so raising WEB_CONCURRENCY does NOT lower the number of
+# addresses it takes to saturate the box.
+#
+# It does, however, lift BOTH walls together — intake and analyze multiply by W
+# alike, measured 10/20/30 admitted at W = 1/2/3 — which is the one thing
+# changing either constant alone cannot do (see the paragraph above). It is not
+# free: the attacker's quota multiplies by W too, so it is attacker-NEUTRAL
+# only while vCPU scales with W, and Railway's allocation is an explicit
+# unknown. Stated in full in docs/DECISION-2026-08-22-per-ip-ceiling.md §4.
 ANON_ANALYZE_LIMIT = 10
 
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
@@ -321,6 +376,7 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
         return None
     if count_job_dirs(ANON_OWNER_PREFIX) >= ANON_MAX_LIVE_JOBS:
         logger.warning("Scout anonymous job capacity reached (%d).", ANON_MAX_LIVE_JOBS)
+        observe_scout_refusal(REASON_AT_CAPACITY)
         return {
             "error": (
                 "Epitope Scout is at capacity for anonymous runs right now. "
@@ -330,6 +386,9 @@ def _anon_capacity_error() -> "tuple[dict, int] | None":
         }, 503
     anon = session.get(ANON_SESSION_KEY)
     if anon and count_job_dirs(anon) >= ANON_MAX_LIVE_JOBS_PER_SESSION:
+        # Same reason as the branch above, DIFFERENT status code (429 vs 503).
+        # One refusal, counted once, which a status-code metric could not do.
+        observe_scout_refusal(REASON_AT_CAPACITY)
         return {
             "error": (
                 "You have several Epitope Scout structures still loaded. "
@@ -946,6 +1005,7 @@ def analyze():
     _chain_total = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
+            observe_scout_refusal(REASON_BUSY)
             return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
         try:
             if _results_csv_for_chain(job_dir, chain_id) is None:
@@ -1281,13 +1341,21 @@ def progress():
     pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not _valid_chain(chain_id) or pdb_path is None:
+        # Reason picked HERE rather than inside the generator, so the count and
+        # the frame cannot pick different ones — and so the count happens when
+        # we decide to refuse. A generator body does not run until the response
+        # is iterated, and this one is not wrapped in stream_with_context, so
+        # in-generator counting would fire late, off the request context, and
+        # not at all for a client that hangs up first.
+        if not job_id or not _valid_chain(chain_id):
+            msg = "job_id and a valid chain id are required."
+            reason = REASON_BAD_REQUEST
+        else:
+            msg = "Job not found or expired. Please re-upload your file."
+            reason = REASON_JOB_EXPIRED
+        observe_scout_refusal(reason)
+
         def _error_stream():
-            if not job_id or not _valid_chain(chain_id):
-                msg = "job_id and a valid chain id are required."
-                reason = REASON_BAD_REQUEST
-            else:
-                msg = "Job not found or expired. Please re-upload your file."
-                reason = REASON_JOB_EXPIRED
             yield "data: " + json.dumps({
                 "stage": "error", "msg": msg, "reason": reason,
             }) + "\n\n"
@@ -1378,6 +1446,12 @@ def progress():
                     "msg": _BUSY_MESSAGE,
                     "reason": REASON_BUSY,
                 }
+                # INSIDE the generator, unavoidably: the slot is taken when the
+                # response starts being iterated, so the shed does not even
+                # exist as a decision until this frame runs. Hoisting it would
+                # count refusals that never happened. This body IS inside
+                # stream_with_context, so request.endpoint still resolves.
+                observe_scout_refusal(REASON_BUSY)
                 yield f"data: {json.dumps(busy)}\n\n"
                 return
             yield from _generate()
