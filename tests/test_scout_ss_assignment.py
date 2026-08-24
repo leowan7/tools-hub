@@ -730,3 +730,316 @@ def test_run_pipeline_passes_the_scored_chain_to_assign_dssp(tmp_path, monkeypat
     pipeline.run_pipeline(dest, "A")
 
     assert seen == ["A"], f"run_pipeline must scope SS to the chain it scores, got {seen}"
+
+
+# ---------------------------------------------------------------------------
+# Selenomethionine: a modified residue that must NOT break the backbone.
+#
+# MSE is recorded as HETATM, so every standard-residue test in this package
+# rejected it on the hetflag alone. For pydssp that is not a missing label,
+# it is a CLOSED GAP: the coordinate array welds the residues either side of
+# the MSE together, corrupting the next residue's pseudo-H and sliding the
+# fixed i->i+3/4/5 turn and bridge offsets onto renumbered indices.
+#
+# It was also invisible. MSE appeared in neither the standard-residue count
+# nor the labelled set, so the all-or-nothing guard saw no mismatch and the
+# run still stamped ss_method="pydssp".
+# ---------------------------------------------------------------------------
+
+_EXAMPLE_PDB = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+
+
+def _as_selenomethionine(text: str, record: str = "HETATM") -> str:
+    """Rewrite every MET record as MSE, the way a SeMet deposition reads.
+
+    ``record`` picks the spelling: real depositions use HETATM, while design
+    and refinement pipelines often re-emit the same residue as ATOM.
+    """
+    out = []
+    for line in text.splitlines(True):
+        if line.startswith(("ATOM  ", "HETATM")) and line[17:20] == "MET":
+            line = record.ljust(6) + line[6:17] + "MSE" + line[20:]
+        out.append(line)
+    return "".join(out)
+
+
+def _model_from_text(text: str):
+    import io
+
+    from Bio.PDB import PDBParser
+
+    return PDBParser(QUIET=True).get_structure("x", io.StringIO(text))[0]
+
+
+def _labels_ignoring_hetflag(ss_map: dict) -> dict:
+    """Key labels by (chain, resseq, icode) so MSE matches its MET twin."""
+    return {(cid, rid[1], rid[2]): label for (cid, rid), label in ss_map.items()}
+
+
+@pytest.mark.parametrize("record", ["HETATM", "ATOM"])
+def test_selenomethionine_does_not_break_the_backbone(record):
+    """MET -> MSE is a chemistry-preserving edit, so labels must not move.
+
+    1HEW carries MET at 12 and 105, both interior, so this fixture really
+    does exercise two junctions rather than trivially passing.
+
+    Before the fix this failed twice over: the two MSE residues were absent
+    from the map entirely, AND residues near them changed label because the
+    array had closed over the gap.
+    """
+    text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
+    plain = _model_from_text(text)
+    semet = _model_from_text(_as_selenomethionine(text, record))
+
+    n_mse = sum(
+        1 for r in semet["A"].get_residues() if r.resname.strip() == "MSE"
+    )
+    assert n_mse == 2, f"fixture must contain MSE to be a test at all, got {n_mse}"
+
+    want = _labels_ignoring_hetflag(scoring._assign_ss_by_pydssp(plain, "A"))
+    got = _labels_ignoring_hetflag(scoring._assign_ss_by_pydssp(semet, "A"))
+
+    assert want, "the control arm produced no labels; the fixture is broken"
+    missing = sorted(want.keys() - got.keys())
+    assert not missing, f"MSE residues were dropped from the map: {missing}"
+
+    moved = {k: (want[k], got[k]) for k in want if want[k] != got[k]}
+    assert not moved, (
+        "MET->MSE changed %d labels, so the coordinate array closed over the "
+        "modified residue: %s" % (len(moved), sorted(moved.items())[:8])
+    )
+
+
+def _rewrite_residues(text, targets, resname, record):
+    """Re-record the named chain-A residues under a different name/record."""
+    out = []
+    for line in text.splitlines(True):
+        if line.startswith(("ATOM  ", "HETATM")) and line[21] == "A":
+            if int(line[22:26]) in targets:
+                line = record.ljust(6) + line[6:17] + resname + line[20:]
+        out.append(line)
+    return "".join(out)
+
+
+@pytest.mark.parametrize(
+    ("label", "targets"),
+    [
+        ("first residue", {1}),
+        ("last residue", {129}),
+        ("two consecutive", {50, 51}),
+        ("both termini and middle", {1, 65, 129}),
+    ],
+)
+def test_selenomethionine_at_chain_edges_is_handled_like_any_residue(label, targets):
+    """MSE at a terminus or in a run must behave exactly like the same atoms
+    recorded as MET.
+
+    The control is the SAME COORDINATES written as `ATOM ... MET`, so pydssp --
+    which reads coordinates and nothing else -- must return identical labels.
+    Any difference means residue selection and array construction disagree at
+    the edges.
+
+    Kept because the current selector is a plain filter where an edge bug is
+    unlikely, but a future continuity or peptide-bond check (see the residual
+    risk noted at _PYDSSP_MODIFIED_AA) would land exactly here.
+    """
+    text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
+    variant = _model_from_text(_rewrite_residues(text, targets, "MSE", "HETATM"))
+    control = _model_from_text(_rewrite_residues(text, targets, "MET", "ATOM  "))
+
+    got = _labels_ignoring_hetflag(scoring._assign_ss_by_pydssp(variant, "A"))
+    want = _labels_ignoring_hetflag(scoring._assign_ss_by_pydssp(control, "A"))
+
+    assert want, "control arm produced no labels; fixture is broken"
+    assert want.keys() == got.keys(), (
+        "%s: MSE changed which residues are labelled" % label
+    )
+    assert want == got, "%s: MSE changed %d labels" % (
+        label,
+        sum(1 for k in want if want[k] != got[k]),
+    )
+
+
+def test_selenomethionine_reaches_the_pydssp_branch_not_a_fallback(monkeypatch):
+    """The labels above must come from pydssp, not from phi/psi rescuing it.
+
+    Without this, the equality test would still pass if MSE made the pydssp
+    map empty and assign_dssp quietly fell through -- the labels would agree
+    with each other while ss_method silently changed.
+    """
+    text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
+    semet = _model_from_text(_as_selenomethionine(text))
+
+    def _no_binary(model, pdb_path, dssp="mkdssp"):
+        raise FileNotFoundError("mkdssp")
+
+    monkeypatch.setattr(scoring, "DSSP", _no_binary)
+    # Three-arg stub, matching _try_ss's call signature: a one-arg stub would
+    # hand _try_ss a TypeError to swallow before the body ran, and the branch
+    # would look like it fell through for the wrong reason.
+    monkeypatch.setattr(
+        scoring,
+        "_assign_ss_by_phi_psi",
+        lambda model, chain_id=None: pytest.fail(
+            "SeMet structure fell through to the phi/psi fallback"
+        ),
+    )
+
+    ss_map, method = scoring.assign_dssp(semet, str(_EXAMPLE_PDB), "A")
+
+    assert method == "pydssp", f"SeMet structure fell through to {method!r}"
+    assert ss_map
+
+
+def test_modified_residues_are_counted_by_the_all_or_nothing_guard():
+    """An MSE missing a backbone atom must sink the map, like any residue.
+
+    Admitting MSE to the coordinate array also admits it to the completeness
+    guard. If it were admitted to one but not the other, a broken MSE would
+    be silently skipped and the map would still report itself complete --
+    exactly the partial-map failure the guard exists to stop.
+    """
+    text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
+    semet = _as_selenomethionine(text)
+    stripped = "".join(
+        line for line in semet.splitlines(True)
+        if not (line[17:20] == "MSE" and line[12:16].strip() == "O")
+    )
+    assert stripped != semet, "fixture edit removed nothing"
+
+    ss_map = scoring._assign_ss_by_pydssp(_model_from_text(stripped), "A")
+    assert ss_map == {}, (
+        "an MSE with no carbonyl O must abort the whole map rather than be "
+        "quietly skipped"
+    )
+
+
+def test_the_modified_residue_whitelist_does_not_admit_ligands_or_water():
+    """Only MSE/SEC get in. A het group with backbone atom names must not.
+
+    The rejected alternative was "accept anything carrying N/CA/C/O", which
+    would thread a genuine ligand into the polymer.
+    """
+    def _residue(hetflag, resname):
+        res = Residue((hetflag, 1, " "), resname, "")
+        for name in scoring._PYDSSP_BACKBONE:
+            res.add(Atom(name, np.zeros(3), 0.0, 1.0, " ", name, 1, "C"))
+        return res
+
+    assert scoring._is_pydssp_polymer_residue(_residue(" ", "ALA"))
+    assert scoring._is_pydssp_polymer_residue(_residue("H_MSE", "MSE"))
+    assert scoring._is_pydssp_polymer_residue(_residue("H_SEC", "SEC"))
+    # An ATOM-spelled MSE is the same chemistry and must also be accepted.
+    assert scoring._is_pydssp_polymer_residue(_residue(" ", "MSE"))
+
+    assert not scoring._is_pydssp_polymer_residue(_residue("W", "HOH"))
+    assert not scoring._is_pydssp_polymer_residue(_residue("H_NAG", "NAG"))
+    assert not scoring._is_pydssp_polymer_residue(_residue("H_LIG", "LIG"))
+    # A HETATM amino acid that is NOT whitelisted stays out: it may be
+    # chemically odd enough that welding it into the chain is wrong.
+    assert not scoring._is_pydssp_polymer_residue(_residue("H_SEP", "SEP"))
+
+    # A HETATM carrying a CANONICAL amino-acid name also stays out: a free
+    # alanine in the solvent is a ligand, not a link in the chain. This is the
+    # case that pins the hetflag gate on the canonical branch. Mutation testing
+    # found that without these two lines the gate can be deleted outright --
+    # `return resname in STANDARD_AA` -- and all 29 tests still pass, because
+    # every other negative case here uses a non-canonical resname and is
+    # rejected by the resname check alone.
+    assert not scoring._is_pydssp_polymer_residue(_residue("H_ALA", "ALA"))
+    assert not scoring._is_pydssp_polymer_residue(_residue("H_GLY", "GLY"))
+
+
+def _chain_b_of_three(resname: str, record: str) -> str:
+    """1HEW chain A, plus a 3-residue chain B of the given residue type."""
+    text = _EXAMPLE_PDB.read_text(encoding="utf-8", errors="replace")
+    keep = [
+        line for line in text.splitlines(True)
+        if line.startswith("ATOM") and line[21] == "A"
+    ]
+    out, serial = [], 1
+    for i in range(3):
+        for name, element in (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")):
+            x = 40.0 + i * 3.5 + (0.0 if name == "N" else 1.2 if name == "CA" else 2.4)
+            out.append(
+                f"{record:<6}{serial:5d}  {name:<3} {resname} B{i + 1:4d}    "
+                f"{x:8.3f}{20.0:8.3f}{20.0:8.3f}  1.00 20.00          {element:>2}\n"
+            )
+            serial += 1
+    return "".join(keep) + "".join(out) + "END\n"
+
+
+def test_a_short_mse_only_chain_behaves_like_a_short_ordinary_chain():
+    """Admitting MSE means an MSE-only chain COUNTS. That must be consistent.
+
+    A 3-residue chain trips _PYDSSP_MIN_RESIDUES, and the all-or-nothing rule
+    then empties the whole map. That is what a 3-residue ALA-only chain has
+    always done. Before MSE was admitted, a 3-residue MSE-only chain was
+    instead INVISIBLE -- it had no standard residues, so it was skipped and the
+    map survived. The asymmetry was the bug; this test pins the symmetry so
+    nobody "fixes" it back by special-casing MSE out of the residue count.
+
+    Only reachable via chain_id=None. run_pipeline always passes a chain, and
+    the scoped call is asserted below to be unaffected.
+    """
+    ala = _model_from_text(_chain_b_of_three("ALA", "ATOM"))
+    mse = _model_from_text(_chain_b_of_three("MSE", "HETATM"))
+
+    assert scoring._assign_ss_by_pydssp(ala, None) == {}, (
+        "a 3-residue canonical chain should sink the whole-model map"
+    )
+    assert scoring._assign_ss_by_pydssp(mse, None) == {}, (
+        "a 3-residue MSE-only chain must sink it the same way, not be skipped"
+    )
+
+    # Scoped to the chain actually being scored, the short neighbour is never
+    # looked at -- which is why production is unaffected either way.
+    assert len(scoring._assign_ss_by_pydssp(ala, "A")) == 129
+    assert len(scoring._assign_ss_by_pydssp(mse, "A")) == 129
+
+
+def test_modified_residues_count_toward_the_max_residue_cap(monkeypatch):
+    """MSE counts toward _PYDSSP_MAX_RESIDUES, so the change is NOT monotone.
+
+    Admitting MSE/SEC inflates ``len(standard)``, which is what the O(L^2)
+    cap is checked against. A chain whose canonical count falls in
+    ``(cap - n_MSE, cap]`` therefore crosses the cap once MSE is admitted and
+    loses its ENTIRE map -- a real downgrade, on the SCOPED path that
+    production uses.
+
+    That is deliberate, not a bug to fix here: the cap bounds the allocation
+    pydssp actually makes, and ``len(standard)`` is now the honest size where
+    before it under-counted. What such a chain loses is a map that was
+    junction-corrupted at every MSE anyway, so the trade is "corrupted pydssp"
+    for "phi/psi", with ss_method still telling the truth.
+
+    Pinned so that the non-monotone band is an executable fact rather than a
+    comment, and so that anyone re-deriving the cap against a different count
+    has to do it on purpose. The 178-chain regression sweep could not see this
+    -- no chain in it came near 2000 residues.
+    """
+    path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
+    text = path.read_text()
+
+    semet = _model_from_text(_as_selenomethionine(text))
+    chain = semet["A"]
+
+    # 1HEW chain A is 129 residues, two of them MET -> MSE here. The old
+    # selector counted only the 127 canonical ones; this one counts all 129.
+    accepted = [r for r in chain.get_residues() if scoring._is_pydssp_polymer_residue(r)]
+    canonical_only = [
+        r
+        for r in chain.get_residues()
+        if r.get_id()[0] == " " and r.resname.strip() in STANDARD_AA
+    ]
+    assert len(accepted) == 129
+    assert len(canonical_only) == 127
+
+    # Pinned at the count the OLD selector would have reported, the chain no
+    # longer fits -- the two MSE are what push it over, and the whole map goes.
+    monkeypatch.setattr(scoring, "_PYDSSP_MAX_RESIDUES", 127)
+    assert scoring._assign_ss_by_pydssp(semet, "A") == {}
+
+    # Room for the MSE too, and it comes straight back in full.
+    monkeypatch.setattr(scoring, "_PYDSSP_MAX_RESIDUES", 129)
+    assert len(scoring._assign_ss_by_pydssp(semet, "A")) == 129
