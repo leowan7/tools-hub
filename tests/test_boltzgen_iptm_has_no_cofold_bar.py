@@ -12,13 +12,19 @@ seven of its numeric ``designfolding-*iptm`` columns read 0.0 and its
 sentinel. What reaches this legend is instead the generator's own confidence
 head reading its own output. THAT is the objection: the wrong ruler.
 
-THE REACH ARGUMENT IS SEPARATE AND MUST BE SCOPED. It is true that
+THE REACH ARGUMENT IS SEPARATE, AND MUST BE SCOPED AND TAKEN OFF THE RIGHT
+COLUMN. On the audited 100-design replicate:
 
-    460 self-hosted designs, 2 targets, protein-anything + nanobody-anything
-        ->  max 0.650, nothing over 0.70
+    design_to_target_iptm  (what this legend describes)  0.084-0.583, 0/100
+    bare iptm              (what "460 designs, max 0.650" is)  0.450-0.649
 
-but that is a property of those runs, not of the metric, and the unscoped
-version ("it can never reach 0.7") is false twice over:
+The second is an interface-pTM averaged over EVERY chain pair, so on a
+homodimer target it carries the target's own crystal interface. Cite the
+first. Quoting the 460 figure to justify this legend would reproduce, inside
+the justification, the wrong-quantity error the legend exists to fix.
+
+Even on the right column that is a property of those runs, not of the metric,
+and the unscoped version ("it can never reach 0.7") is false twice over:
 
   * the same self-hosted pipeline on peptide-anything reaches 0.777, with
     16/36 over 0.70  (boltzgen-workspace/mdm2-peptide)
@@ -31,9 +37,12 @@ Pooling those populations is how a reviewer talks themselves into either
 off because 0.70 is calibrated on a cofold and this is not one.
 
 For contrast, the same campaign's designs re-scored on a real Boltz-2 cofold
-span 0.263-0.852 (feld1/results/cofold_results.json, 29 rows) — a different
-distribution from the in-run number, which is the whole point. Do not join
-the two by spec id; they are separate stochastic runs.
+span 0.166-0.806 (29 rows, 1 over 0.70) on `binder_to_target` — the
+per-chain-pair column feld1/13_boltz_cofold.py exists to read, precisely
+because it cannot pick up target-internal contacts. Its complex-wide sibling
+`cofold_iptm` reads 0.263-0.852 and is the wrong column here for the same
+reason the 460 figure is. Do not join either to the audit by spec id; they
+are separate stochastic runs.
 
 Pinned here because ``good``/``excellent`` are inert today (only
 ``explanation`` and ``caveat`` render), which is exactly what lets a wrong

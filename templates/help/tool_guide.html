@@ -176,8 +176,10 @@
                shared scale -- boltzgen's ipTM comes from the generator's own
                confidence head, not a cofold, so "> 0.65 acceptable" is a band
                from a different measurement, not a band this one sits "a little
-               either side" of. Scope any reach claim: 0.650 is the ceiling on
-               the protocols measured, and peptide-anything reaches 0.777. The
+               either side" of. Scope any reach claim, and take it off the
+               right column: the audited run gives 0.084-0.583 here, while
+               peptide-anything reaches 0.777. (The familiar "max 0.650" is
+               the all-chain-pair column -- see shared/score_legends.py.) The
                objection is the ruler, not the size of the number, on the page
                that teaches people how to read the score. #}
             {% set _ipl = score_legend_for(adapter.slug, "ipTM") if score_legend_for else none %}

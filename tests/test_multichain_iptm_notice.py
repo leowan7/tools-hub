@@ -1445,13 +1445,26 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     # THE THRESHOLDS ARE GONE, AND THE COMMENT THAT JUSTIFIED THEM WAS WRONG.
     # It read: "calibrated on single-chain runs where the two keys nearly
     # coincide, so they remain the best available anchor". The two keys do
-    # coincide on a single-chain target — and the coincident value still never
-    # reaches 0.7. Six single-chain production runs, 65 candidates, max 0.659,
-    # nothing passing; 460 self-hosted designs over two targets, max 0.650.
+    # coincide on a single-chain target, and on the audited replicate of that
+    # protocol the coincident value spans 0.084-0.583, 0/100 over 0.70.
+    # (Six single-chain production runs, 65 candidates, max 0.659 — but read
+    # the column note below before pooling those two figures.)
     # 0.7/0.8 were not calibrated on anything, they were copied from the
     # ("boltz2", "ipTM") entry directly below, which IS the calibrated cofold
     # and is a different measurement. The same designs re-scored on a real
-    # Boltz-2 cofold span 0.363-0.852.
+    # Boltz-2 cofold, read on the CLEAN per-chain-pair column, span
+    # 0.166-0.806 with 1/29 over 0.70.
+    #
+    # QUOTE THE RIGHT COLUMN. The widely-cited "460 designs, max 0.650" is
+    # BoltzGen's bare `iptm`, an interface-pTM averaged over EVERY chain pair,
+    # so on the Fel d 1 homodimer it carries the target's own A:B crystal
+    # interface — the very contamination this banner exists to warn about.
+    # boltzgen-workspace/aglyco-fc-vhh/modal_design.py records that it "read
+    # ~2x high" and that all 460 were concluded on it; 13_boltz_cofold.py adds
+    # that the binder-interface column was dropped inside the container for
+    # those runs and is unrecoverable. On the audited n100 the two sit side by
+    # side: bare `iptm` 0.450-0.649, `design_to_target_iptm` 0.084-0.583. The
+    # legend describes the SECOND one, so cite that.
     #
     # So the anchor is absent rather than corrected: nothing pairs the in-run
     # number against a cofold on the same designs, so there is no bar to state.
@@ -1461,7 +1474,7 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     assert "good" not in legend and "excellent" not in legend, (
         f"boltzgen ipTM claims good={legend.get('good')} / "
         f"excellent={legend.get('excellent')} again — 0.7 is the Boltz-2 "
-        f"cofold bar and this number has never reached 0.65"
+        f"cofold bar, measured on a fold this run does not perform"
     )
     assert "0.7 does not apply" in explanation, (
         "the legend dropped the bar from its data but no longer tells the "

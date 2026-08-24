@@ -29,16 +29,23 @@ class Legend(TypedDict):
     #
     # boltzgen's ipTM omits them. It carried 0.7/0.8, which are the Boltz-2
     # COFOLD bars, against a number a generator confidence head produces from
-    # its own output. On the protocols we have measured — 460 self-hosted
-    # designs over two unrelated targets, protein-anything and
-    # nanobody-anything — it tops out at 0.650 and never crosses 0.70.
+    # its own output. On the audited 100-design replicate — the one run where
+    # this legend's own column was captured — `design_to_target_iptm` spans
+    # 0.084-0.583, 0/100 over 0.70.
     #
-    # SCOPE THAT CLAIM, do not universalise it. The same self-hosted pipeline
-    # on peptide-anything reaches 0.777, with 16 of 36 designs over 0.70
-    # (boltzgen-workspace/mdm2-peptide). And the HOSTED Boltz API — a
-    # different product with a different schema — clears 0.70 routinely, up
-    # to 0.983. Those are separate populations and pooling them is how you
-    # arrive at a confident wrong answer in either direction.
+    # CITE THAT, NOT THE FAMILIAR "460 designs, max 0.650". The 460 figure is
+    # BoltzGen's bare `iptm`, averaged over EVERY chain pair, so on a
+    # homodimer target it carries the target's own crystal interface;
+    # boltzgen-workspace/aglyco-fc-vhh/modal_design.py records it as reading
+    # "~2x high". Quoting it here would repeat, in the justification, the
+    # exact wrong-quantity error this entry exists to correct.
+    #
+    # AND SCOPE THE CLAIM, do not universalise it. The same self-hosted
+    # pipeline on peptide-anything reaches 0.777, with 16 of 36 designs over
+    # 0.70 (boltzgen-workspace/mdm2-peptide). The HOSTED Boltz API clears 0.70
+    # routinely, up to 0.983 — a different service, and the workspace does not
+    # claim to know whether its `iptm` is the same quantity, so treat it as a
+    # separate population rather than as a refutation.
     #
     # The bar comes off on the SCALE argument, which holds regardless of
     # reach: 0.70 is calibrated on a cofold, and the audited run's refold has
@@ -335,17 +342,22 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # audited run's refold folds the binder alone, so it has no interface
         # to score. That is the argument, and it does not depend on reach.
         #
-        # On reach, scoped: 460 self-hosted designs over two targets on
-        # protein-anything and nanobody-anything top out at 0.650. NOT a
+        # On reach, scoped and on THIS column: the audited n100 gives
+        # `design_to_target_iptm` 0.084-0.583, 0/100 over 0.70. NOT a
         # property of the metric — peptide-anything reaches 0.777 on the same
-        # pipeline, and the hosted Boltz API (different product, different
-        # schema) reaches 0.983. Do not pool them.
+        # pipeline, and the hosted Boltz API reaches 0.983. Do not pool them,
+        # and do not reach for the older "460 designs, max 0.650": that is
+        # the bare all-chain-pair `iptm`, contaminated by the target's own
+        # interface (see the Legend TypedDict).
         #
         # For scale, the same campaign's designs re-scored on a real Boltz-2
-        # cofold span 0.263-0.852 (feld1/results/cofold_results.json, 29
-        # rows) — a different distribution from the in-run number, which is
-        # the point. llm-proteinDesigner fix/boltzgen-unreachable-gate
-        # removes the matching container-side gate leg for the same reason.
+        # cofold span 0.166-0.806 on `binder_to_target`, the per-chain-pair
+        # column feld1/13_boltz_cofold.py exists to read precisely because it
+        # cannot pick up target-internal contacts (29 rows, 1 over 0.70). Its
+        # complex-wide `cofold_iptm` sibling reads 0.263-0.852 and is the
+        # wrong column for the same reason the 460 figure is.
+        # llm-proteinDesigner fix/boltzgen-unreachable-gate removes the
+        # matching container-side gate leg for the same reason.
         "direction": "higher_is_better",
         # llm-proteinDesigner#18 (squash-merged as 311c29f; the Modal deploy
         # for that SHA is green) puts `design_to_target_iptm` first in
@@ -645,8 +657,9 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # THIS repo, and citing it unqualified sent readers looking for one.
 #
 # This matters more than a mis-rendered number because ipTM is also the
-# RANKING key (shared/result_columns.py) and the threshold that labels
-# filter_status.
+# RANKING key (shared/result_columns.py). It no longer labels filter_status:
+# llm-proteinDesigner fix/boltzgen-unreachable-gate drops that leg, so the
+# label is pLDDT and refolding RMSD only.
 #
 # BOLTZGEN IS OUT, AND THE RUNS THAT PREDATE THE FIX ARE WHY IT TOOK AN
 # ARGUMENT. llm-proteinDesigner#18 (squash-merged as 311c29f, Modal deploy
