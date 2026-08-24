@@ -85,5 +85,18 @@ jobs:
           curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-For: 192.0.2.111, 192.0.2.222" "${URL}" || echo "(request failed)"
           echo
 
+          echo "=== 4. Forged X-Real-Ip. Is the edge's own header client-settable?"
+          echo "=== If X-Real-Ip comes back as 198.51.100.7, it is NOT trustworthy."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 5. Forged X-Real-Ip AND X-Forwarded-For together."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" -H "X-Forwarded-For: 198.51.100.8, 198.51.100.9" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 6. Forged X-Forwarded-Host / -Proto, checked for the same reason."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-Host: evil.example" -H "X-Forwarded-Proto: http" "${URL}" || echo "(request failed)"
+          echo
+
           echo "=== Never fails on purpose; read the JSON above."
           exit 0
