@@ -237,14 +237,24 @@ def test_it_reads_the_real_exposition_this_app_renders(monkeypatch):
         client = flask_app.test_client()
         # One real refusal on a real metered route, driven the way a browser
         # would: a /scout/progress call with no job_id.
-        client.get("/scout/progress?chain=A").close()
+        client.get(
+            "/scout/progress?chain=A", headers={"X-Real-Ip": "198.51.100.9"}
+        ).close()
 
         scrape = client.get(
             "/metrics", headers={"Authorization": "Bearer scrape-me"}
         )
         assert scrape.status_code == 200
-        requests, refusals = totals(
-            parse_exposition(scrape.data.decode("utf-8"))
+        samples = parse_exposition(scrape.data.decode("utf-8"))
+        requests, refusals = totals(samples)
+
+        # Same gap, second producer/consumer pair: a rename on either end of
+        # tools_hub_client_ip_source_total leaves ip_sources() returning {},
+        # which makes the whole source block VANISH from the report with no
+        # message. A detector that disappears looks like a healthy one.
+        assert check_refusal_rate.ip_sources(samples).get("x_real_ip", 0.0) >= 1, (
+            "the app renders no x_real_ip sample the consumer can read - the "
+            "two ends of tools_hub_client_ip_source_total have drifted"
         )
     finally:
         ratelimit.reset()
@@ -257,3 +267,123 @@ def test_it_reads_the_real_exposition_this_app_renders(monkeypatch):
         "the refusal counter rendered nothing this script can read — the "
         "metric name or the reason label has drifted"
     )
+
+
+# ---------------------------------------------------------------------------
+# The rate-limit key's source: reported, never alerted on
+# ---------------------------------------------------------------------------
+
+
+def test_ip_sources_sums_the_family():
+    samples = check_refusal_rate.parse_exposition(
+        'tools_hub_client_ip_source_total{source="x_real_ip"} 90.0\n'
+        'tools_hub_client_ip_source_total{source="forwarded_chain"} 8.0\n'
+        'tools_hub_client_ip_source_total{source="peer"} 2.0\n'
+        'tools_hub_requests_total{route="scout.upload"} 100.0\n'
+    )
+    assert check_refusal_rate.ip_sources(samples) == {
+        "x_real_ip": 90.0,
+        "forwarded_chain": 8.0,
+        "peer": 2.0,
+    }
+
+
+def test_the_source_block_never_changes_the_exit_code():
+    """THE invariant. This is reported-only by design.
+
+    A new way for the 6-hourly smoke to fail reddens main's check suite, which
+    blocks same-commit Railway deploys (ALERTING.md, "A variable change is not
+    deploying"). Whatever the sources say, the exit code must come from the
+    refusal ratio alone.
+    """
+    scenarios = (
+        ("passing", 200.0, {"rate_limited": 1.0}),
+        # The direction the first version of this test could not see. A block
+        # returning early on a healthy-looking split would SWALLOW a real
+        # refusal-rate failure and present as green - silently disabling the
+        # alarm this whole script exists for.
+        ("failing", 200.0, {"rate_limited": 100.0}),
+        ("below the sample floor", 5.0, {"rate_limited": 4.0}),
+        ("zero requests", 0.0, {}),
+    )
+    for label, requests, refusals in scenarios:
+        baseline, _ = check_refusal_rate.evaluate(requests, refusals)
+        for sources in (
+            None,
+            {},
+            {"x_real_ip": 200.0},
+            {"peer": 200.0},                              # mass-refusal mode
+            {"forwarded_chain": 199.0, "x_real_ip": 1.0},  # inert mode
+            {"x_real_ip_rejected": 200.0},
+            {"totally_unknown": 200.0},
+            # Sums to ZERO. Without the guard the share arithmetic raises
+            # ZeroDivisionError, and an exception fails the job just as
+            # surely as a non-zero exit code does.
+            {"x_real_ip": 0.0},
+            {"x_real_ip": 0.0, "peer": 0.0},
+        ):
+            code, _ = check_refusal_rate.evaluate(
+                requests, refusals, sources=sources
+            )
+            assert code == baseline, (
+                f"{label}: sources={sources} moved the exit code "
+                f"{baseline} -> {code}"
+            )
+    # And the failing scenario must really fail, or the loop proves nothing in
+    # the dangerous direction.
+    assert check_refusal_rate.evaluate(200.0, {"rate_limited": 100.0})[0] == 1
+
+
+def test_a_healthy_source_split_reports_without_the_warning():
+    _, lines = check_refusal_rate.evaluate(
+        200.0, {}, sources={"x_real_ip": 200.0}
+    )
+    body = "\n".join(lines)
+    assert "rate-limit key RESOLUTIONS" in body
+    # These are resolutions, not requests: a paired route resolves twice and
+    # signed-in traffic resolves zero times, so the header must not let a
+    # reader divide these counts against the metered-request line above.
+    assert "not request counts" in body
+    assert "x_real_ip" in body
+    assert "NOTE:" not in body
+
+
+def test_the_note_distinguishes_inert_from_mass_refusal():
+    """One threshold, two OPPOSITE failures. The note must not conflate them.
+
+    forwarded_chain -> the key is a rotating internal hop, so the limiter
+    bounds NOBODY: symptom is no refusals. peer -> the key is Railway's shared
+    edge address, so every visitor collapses onto one bucket: symptom is mass
+    refusals of legitimate users. An operator told the first during the second
+    goes hunting an open limiter in the middle of a lockout.
+    """
+    _, inert = check_refusal_rate.evaluate(
+        200.0, {}, sources={"forwarded_chain": 180.0, "x_real_ip": 20.0}
+    )
+    inert_body = str(inert)
+    assert "INERT" in inert_body and "refusing nobody" in inert_body
+    assert "mass refusals" not in inert_body
+
+    _, lockout = check_refusal_rate.evaluate(
+        200.0, {}, sources={"peer": 180.0, "x_real_ip": 20.0}
+    )
+    assert "mass refusals" in str(lockout)
+
+    _, mangled = check_refusal_rate.evaluate(
+        200.0, {}, sources={"x_real_ip_rejected": 180.0, "x_real_ip": 20.0}
+    )
+    assert "mangling it" in str(mangled)
+
+
+def test_losing_x_real_ip_is_called_out_in_words():
+    """A bare percentage would not tell the reader what it means.
+
+    The whole point is that this failure is invisible: the limiter still
+    answers 200s while bounding nobody. The report has to say so.
+    """
+    _, lines = check_refusal_rate.evaluate(
+        200.0, {}, sources={"forwarded_chain": 180.0, "x_real_ip": 20.0}
+    )
+    body = "\n".join(lines)
+    assert "NOTE:" in body
+    assert "INERT" in body

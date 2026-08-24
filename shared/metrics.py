@@ -207,6 +207,26 @@ SCOUT_REFUSALS = Counter(
     ["reason", "route"],
 )
 
+CLIENT_IP_SOURCE = Counter(
+    "tools_hub_client_ip_source_total",
+    "Which input produced the anonymous rate-limit key, per resolution.",
+    ["source"],  # x_real_ip | x_real_ip_rejected | forwarded_chain | peer
+)
+# Exists because the failure it detects is SILENT and total. The limiter keys
+# on _client_ip(); on Railway that resolves from X-Real-Ip. If that header ever
+# stops arriving -- an edge config change, a Railway rewrite -- resolution falls
+# through to the X-Forwarded-For hop arithmetic, which on this topology keys on
+# a ROTATING internal hop, and the per-IP tier goes inert exactly as it was
+# before #189. Nothing about that is visible from outside: no error, no refusal,
+# no latency change, just a control that quietly stops controlling.
+#
+# Deliberately a COUNTER and not an alarm. In production "x_real_ip" should be
+# essentially 100%; "forwarded_chain" or "peer" climbing is the signal. It is
+# printed by scripts/check_refusal_rate.py as reported-only, so the 6-hourly
+# smoke surfaces it without being able to fail on it -- a new alarm here could
+# redden main's suite and block deploys (see ALERTING.md, "A variable change is
+# not deploying").
+
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",
@@ -249,6 +269,22 @@ def _metrics_token_ok() -> bool:
         )
     except (TypeError, ValueError, UnicodeError):
         return False
+
+
+def _note_ip_source(source: str) -> None:
+    """Count one key resolution. MUST NOT raise -- see the callers.
+
+    Every other counter in this file is wrapped this way ("metrics must never
+    break app"), and this one needs it more than most: it fires inside
+    ``_client_ip()``, which decides whether an anonymous caller is refused. An
+    unguarded increment turns a full metrics disk into a 500 on every anonymous
+    Scout route. Measured: OSError(28) out of ``labels()`` propagated straight
+    through ``_client_ip`` before this wrapper existed.
+    """
+    try:
+        CLIENT_IP_SOURCE.labels(source=source).inc()
+    except Exception:  # pragma: no cover - metrics must never break app
+        logger.debug("client_ip_source increment failed", exc_info=True)
 
 
 def _trusted_proxy_hops() -> int:
@@ -357,15 +393,21 @@ def _client_ip() -> str:
             try:
                 ipaddress.ip_address(real_ip)
             except ValueError:
-                pass
+                # Present but unusable. Distinct from "absent" because an
+                # operator acts on it differently: the edge is still
+                # setting the header, something is mangling its value.
+                _note_ip_source("x_real_ip_rejected")
             else:
+                _note_ip_source("x_real_ip")
                 return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:
             # Clamped so a chain SHORTER than the configured hop count yields
             # the leftmost entry rather than raising.
+            _note_ip_source("forwarded_chain")
             return chain[max(0, len(chain) - hops)]
+    _note_ip_source("peer")
     return request.remote_addr or ""
 
 
