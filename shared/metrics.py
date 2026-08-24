@@ -263,6 +263,27 @@ def _trusted_proxy_hops() -> int:
         return 1
 
 
+# Exactly the headers /debug/client-ip may echo. An ALLOWLIST, deliberately,
+# not a prefix match. "x-forwarded" as a prefix also matches
+# X-Forwarded-Client-Cert (Envoy/Istio: the full client PEM plus a SPIFFE
+# identity URI) and oauth2-proxy's X-Forwarded-Access-Token / -User / -Email /
+# -Groups, which carry live credentials and identity assertions. Railway emits
+# none of those today, so the prefix form was latent rather than leaking -- but
+# it becomes live the moment an ingress, service mesh or oauth2-proxy lands in
+# front, and the endpoint's own response is printed into a PUBLIC Actions log.
+# An allowlist fails safe as the topology changes; a prefix match fails open.
+ECHOABLE_FORWARDING_HEADERS = frozenset({
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+    "true-client-ip",
+})
+
+
 def _client_ip() -> str:
     """Best-effort resolution of the caller's IP, safe to use as a gate key.
 
@@ -391,17 +412,18 @@ def register_metrics(flask_app: Flask) -> None:
         and handing an anonymous caller the exact shape of the header the
         limiter trusts is a gift to anyone trying to forge it.
 
-        Only forwarding-related headers are echoed. Never widen this to all
-        headers: ``Authorization`` (which carries this endpoint's own token)
-        and ``Cookie`` (which carries the session) both live there.
+        Echoes only ``ECHOABLE_FORWARDING_HEADERS``, an exact allowlist. See
+        that constant for why this is not a prefix match, and note that the
+        response is republished into a PUBLIC GitHub Actions log by
+        .github/workflows/client-ip-probe.yml, so the token gate is not the
+        last line of defence here -- the allowlist is.
         """
         if not _metrics_token_ok():
             return Response("forbidden", status=403, content_type="text/plain")
-        prefixes = ("x-forwarded", "x-real-ip", "forwarded", "cf-connecting", "true-client-ip")
         forwarding = {
             name: value
             for name, value in request.headers.items()
-            if name.lower().startswith(prefixes)
+            if name.lower() in ECHOABLE_FORWARDING_HEADERS
         }
         return jsonify({
             "client_ip": _client_ip(),

@@ -13,18 +13,36 @@ name: Client IP probe (diagnostic)
 #     suite -- which blocks same-commit Railway deploys. See "A variable change
 #     is not deploying" in ALERTING.md. A diagnostic must not be able to do that.
 #
-#   * EVERY path exits 0, including an unreachable site or a missing token. Same
-#     reason: this job must never be capable of reddening main's check suite. It
-#     is read by a human opening the run, not by an alert. If you ever make it
-#     assert something, give it its own branch, not main.
+#   * NO PATH IN THIS SCRIPT EXITS NON-ZERO, including an unreachable site or a
+#     missing token. Verified under GitHub's default `bash -e {0}` for an unset
+#     token, connection refused, DNS failure and an unset URL. That is a claim
+#     about the script, NOT a guarantee about the job: a timeout-minutes
+#     cancellation or a runner infrastructure error can still conclude
+#     `failure`. Headroom is deliberate (12 curls x --max-time 20 against a
+#     600 s budget, no checkout step). It is read by a human opening the run, not by
+#     an alert. If you ever make it assert something, give it its own branch.
 #
 # The token never leaves Actions: the runner holds the METRICS_TOKEN secret and
-# prints only the endpoint's JSON, which deliberately excludes Authorization and
-# Cookie (guarded by tests/test_metrics.py).
+# prints only the endpoint's JSON. That JSON is limited to an exact allowlist of
+# forwarding headers (shared.metrics.ECHOABLE_FORWARDING_HEADERS, guarded by
+# tests/test_metrics.py) -- which matters because THIS REPO IS PUBLIC, so an
+# Actions log is world-readable and the endpoint's token gate protects nothing
+# once the response is printed here.
 #
 # Run this only AFTER the endpoint is live in production -- it ships with the
 # deploy that adds /debug/client-ip, so a run before that deploy just prints
 # 404s.
+#
+# WHAT THIS CANNOT DISTINGUISH, and it matters for how you read a "stable"
+# result. These requests come from ONE GitHub runner, whose network path to the
+# edge is nothing like a real anonymous visitor's, and the app runs 2 gunicorn
+# workers. If the key varies PER WORKER rather than per request, a short burst
+# down one path can land on one worker and report a stable client_ip -- which
+# would look like a refutation of the measurement doc when it is only a
+# sampling artifact. A stable result here is therefore NOT evidence the per-IP
+# key is stable; only a VARYING result is conclusive on its own. To settle a
+# stable-looking result, log _client_ip() at the limiter call site and read
+# real traffic instead.
 
 on:
   workflow_dispatch: {}
@@ -36,7 +54,7 @@ jobs:
   probe:
     name: What does Railway's edge actually send us
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
       URL: https://tools.ranomics.com/debug/client-ip
@@ -49,10 +67,10 @@ jobs:
           fi
           AUTH="Authorization: Bearer ${METRICS_TOKEN}"
 
-          echo "=== 1. No forwarding header from us, three times."
+          echo "=== 1. No forwarding header from us, ten times."
           echo "=== If client_ip differs between these, the edge value itself varies,"
           echo "=== which is the finding that made the per-IP tier inert."
-          for i in 1 2 3; do
+          for i in 1 2 3 4 5 6 7 8 9 10; do
             curl -s --max-time 20 -H "${AUTH}" "${URL}" || echo "(request failed)"
             echo
           done

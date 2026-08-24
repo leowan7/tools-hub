@@ -21,6 +21,7 @@ import pytest
 from flask import Flask, jsonify
 
 from shared.metrics import (
+    ECHOABLE_FORWARDING_HEADERS,
     observe_credits_granted,
     observe_credits_spent,
     observe_idempotency_outcome,
@@ -604,13 +605,19 @@ def test_client_ip_echo_reports_what_the_app_resolved(monkeypatch):
     assert payload["forwarding_headers"]["X-Forwarded-For"] == "192.0.2.111, 192.0.2.222"
 
 
-def test_client_ip_echo_never_returns_credentials(monkeypatch):
-    """The echo must not hand back the bearer that opened it, or the session.
+def test_client_ip_echo_echoes_only_the_allowlist(monkeypatch):
+    """The echo must return allowlisted headers and NOTHING else.
 
-    A naive "echo every header" version leaks its own token straight into the
-    response body and into whatever log or CI transcript captures it. Guard the
-    invariant rather than the current prefix list, so widening the filter later
-    fails here instead of in production.
+    This asserts the CLASS, not two literal names, and that distinction is the
+    whole point. An earlier version of this test checked only that
+    ``Authorization`` and ``Cookie`` were absent -- which "echo every header
+    except those two" passes, and so does a prefix match on ``x-`` . Both were
+    caught only by mutation, never by the assertion.
+
+    ``X-Forwarded-Access-Token`` (oauth2-proxy) and ``X-Forwarded-Client-Cert``
+    (Envoy/Istio, carrying a full client PEM and a SPIFFE identity) are the
+    concrete reason: they start with ``x-forwarded`` but are credentials, and
+    the endpoint's response is republished into a PUBLIC Actions log.
     """
     flask_app = _token_app(monkeypatch, "leaky-token")
 
@@ -620,12 +627,51 @@ def test_client_ip_echo_never_returns_credentials(monkeypatch):
             "Authorization": "Bearer leaky-token",
             "Cookie": "session=super-secret-session-value",
             "X-Forwarded-For": "192.0.2.9",
+            "X-Forwarded-Access-Token": "ya29.a-live-oauth-access-token",
+            "X-Forwarded-Client-Cert": "By=spiffe://cluster/ns/default;Cert=-----BEGIN%20CERT",
+            "X-Forwarded-Email": "someone@example.com",
         },
     )
     assert r.status_code == 200
     body = r.data.decode("utf-8")
-    assert "leaky-token" not in body
-    assert "super-secret-session-value" not in body
+
+    # Nothing secret reaches the body, whatever the filter happens to be.
+    for secret in (
+        "leaky-token",
+        "super-secret-session-value",
+        "ya29.a-live-oauth-access-token",
+        "spiffe://cluster",
+        "someone@example.com",
+    ):
+        assert secret not in body, f"{secret!r} was echoed"
+
+    # And the filter itself is a subset of the allowlist, so widening the
+    # allowlist is the only way to echo anything new -- which lands here.
     echoed = {name.lower() for name in r.get_json()["forwarding_headers"]}
-    assert "authorization" not in echoed
-    assert "cookie" not in echoed
+    assert echoed <= ECHOABLE_FORWARDING_HEADERS, (
+        f"echoed outside the allowlist: {echoed - ECHOABLE_FORWARDING_HEADERS}"
+    )
+    assert "x-forwarded-for" in echoed, "the one header the diagnostic exists for"
+
+
+def test_client_ip_echo_reports_non_default_hops(monkeypatch):
+    """The hop count must reflect the real config, not a constant.
+
+    Hardcoding ``"trusted_proxy_hops": 1`` survived every other test in this
+    file. On a diagnostic whose job is to report the configuration, a field
+    that stops tracking it is the failure that matters most.
+    """
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "2")
+    flask_app = _token_app(monkeypatch, "tok")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer tok",
+            "X-Forwarded-For": "192.0.2.111, 192.0.2.222",
+        },
+    )
+    payload = r.get_json()
+    assert payload["trusted_proxy_hops"] == 2
+    # Two trusted hops means the entry one further LEFT is ours.
+    assert payload["client_ip"] == "192.0.2.111"
