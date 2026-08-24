@@ -549,3 +549,83 @@ def test_the_boot_guard_stays_quiet_when_prometheus_client_is_absent():
         "With prometheus_client blocked there is no exposition to measure; "
         "the probe must report the stub path rather than a body size."
     )
+
+
+# ---------------------------------------------------------------------------
+# /debug/client-ip — the echo that makes the limiter's key observable
+# ---------------------------------------------------------------------------
+#
+# Added after production measurement showed _client_ip() varying between
+# identical requests, with no way to see what it resolved to. See
+# docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+
+
+def test_client_ip_echo_is_forbidden_by_default(monkeypatch):
+    """Same deny-by-default as /metrics: an unset token refuses everyone.
+
+    This endpoint describes the exact header the per-IP limiter trusts, so an
+    open version of it is a forging aid.
+    """
+    flask_app = _token_app(monkeypatch, None)
+    assert flask_app.test_client().get("/debug/client-ip").status_code == 403
+    assert flask_app.test_client().get(
+        "/debug/client-ip", headers={"Authorization": "Bearer "}
+    ).status_code == 403
+
+
+def test_client_ip_echo_denies_a_wrong_token(monkeypatch):
+    flask_app = _token_app(monkeypatch, "right-token")
+    assert flask_app.test_client().get(
+        "/debug/client-ip", headers={"Authorization": "Bearer wrong-token"}
+    ).status_code == 403
+
+
+def test_client_ip_echo_reports_what_the_app_resolved(monkeypatch):
+    """The whole point: it must report the RESOLVED key, not just the header.
+
+    With one trusted hop, _client_ip() takes the RIGHTMOST entry, so a
+    multi-value header must resolve to the last one. If this ever reports the
+    leftmost, the limiter is keyed on a caller-chosen value.
+    """
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    flask_app = _token_app(monkeypatch, "tok")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer tok",
+            "X-Forwarded-For": "192.0.2.111, 192.0.2.222",
+        },
+    )
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["client_ip"] == "192.0.2.222"
+    assert payload["trusted_proxy_hops"] == 1
+    assert payload["forwarding_headers"]["X-Forwarded-For"] == "192.0.2.111, 192.0.2.222"
+
+
+def test_client_ip_echo_never_returns_credentials(monkeypatch):
+    """The echo must not hand back the bearer that opened it, or the session.
+
+    A naive "echo every header" version leaks its own token straight into the
+    response body and into whatever log or CI transcript captures it. Guard the
+    invariant rather than the current prefix list, so widening the filter later
+    fails here instead of in production.
+    """
+    flask_app = _token_app(monkeypatch, "leaky-token")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer leaky-token",
+            "Cookie": "session=super-secret-session-value",
+            "X-Forwarded-For": "192.0.2.9",
+        },
+    )
+    assert r.status_code == 200
+    body = r.data.decode("utf-8")
+    assert "leaky-token" not in body
+    assert "super-secret-session-value" not in body
+    echoed = {name.lower() for name in r.get_json()["forwarding_headers"]}
+    assert "authorization" not in echoed
+    assert "cookie" not in echoed

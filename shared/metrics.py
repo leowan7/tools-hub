@@ -375,6 +375,41 @@ def register_metrics(flask_app: Flask) -> None:
             return Response("forbidden", status=403, content_type="text/plain")
         return _render_metrics()
 
+    @flask_app.route("/debug/client-ip", methods=["GET"])
+    def client_ip_echo() -> Any:
+        """Echo what this process actually receives about the caller's address.
+
+        The anonymous per-IP limiter keys on ``_client_ip()``. Production
+        measurement on 2026-08-24 showed that key VARYING between identical
+        requests, so the tier never refuses anyone -- but nothing in the app
+        could say what it was resolving to or why, because the resolution is
+        pure inference from headers we never logged. See
+        docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+
+        Token-gated with the same bearer as ``/metrics``, deliberately. The
+        forwarding chain and the edge's own address are infrastructure detail,
+        and handing an anonymous caller the exact shape of the header the
+        limiter trusts is a gift to anyone trying to forge it.
+
+        Only forwarding-related headers are echoed. Never widen this to all
+        headers: ``Authorization`` (which carries this endpoint's own token)
+        and ``Cookie`` (which carries the session) both live there.
+        """
+        if not _metrics_token_ok():
+            return Response("forbidden", status=403, content_type="text/plain")
+        prefixes = ("x-forwarded", "x-real-ip", "forwarded", "cf-connecting", "true-client-ip")
+        forwarding = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower().startswith(prefixes)
+        }
+        return jsonify({
+            "client_ip": _client_ip(),
+            "remote_addr": request.remote_addr or "",
+            "trusted_proxy_hops": _trusted_proxy_hops(),
+            "forwarding_headers": forwarding,
+        })
+
 
 # ---------------------------------------------------------------------------
 # Decorator helpers for external modules

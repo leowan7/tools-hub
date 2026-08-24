@@ -80,6 +80,15 @@ inferred from the absence of a wall where a control demonstrated one. Confirming
 it needs the app to log or echo `_client_ip()`, which is a small code change and
 the obvious next step.
 
+**That step now exists.** `GET /debug/client-ip` reports `client_ip`,
+`remote_addr`, `trusted_proxy_hops` and the forwarding headers as this process
+actually received them, behind the same `METRICS_TOKEN` bearer as `/metrics`.
+Run it with `gh workflow run client-ip-probe.yml --ref main`, which reads it
+under three header shapes from a runner and prints the JSON, so nobody has to
+handle the token. Read the *first* block: if `client_ip` differs across three
+identical requests, that is this document's headline confirmed directly rather
+than inferred.
+
 ## What this changes
 
 **The three-case table in `DECISION-2026-08-22-per-ip-ceiling.md` needs a fourth
