@@ -174,10 +174,12 @@
                METRIC and global; ``score_legend_for`` knows the tool. A legend
                that omits ``good`` is that tool saying its number is not on the
                shared scale -- boltzgen's ipTM comes from the generator's own
-               confidence head, not a cofold, and has never reached 0.65 in 460
-               designs, so printing "> 0.65 acceptable" here as a band it sits
-               "a little either side" of is the unreachable bar again, on the
-               page that teaches people how to read the score. #}
+               confidence head, not a cofold, so "> 0.65 acceptable" is a band
+               from a different measurement, not a band this one sits "a little
+               either side" of. Scope any reach claim: 0.650 is the ceiling on
+               the protocols measured, and peptide-anything reaches 0.777. The
+               objection is the ruler, not the size of the number, on the page
+               that teaches people how to read the score. #}
             {% set _ipl = score_legend_for(adapter.slug, "ipTM") if score_legend_for else none %}
             Predicted confidence in the contact between two chains, on a 0 to
             1 scale. Higher is better

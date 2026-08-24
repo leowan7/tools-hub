@@ -1,23 +1,39 @@
-"""BoltzGen's ipTM legend may not carry a bar its own metric cannot reach.
+"""BoltzGen's ipTM legend may not carry a bar from a different measurement.
 
 BoltzGen scores with Boltz-2 weights, so the boltz2 legend sitting directly
 below it in shared/score_legends.py looks like the obvious thing to copy —
 and that is what happened: ``good`` 0.7 / ``excellent`` 0.8, plus an
 explanation asserting "Above 0.7 is a credible binder".
 
-Those are CO-FOLD bars, and BoltzGen never cofolds. Its one refold folds the
-binder on its own, so it has no interface to score (all five of its
-``designfolding-*_iptm`` columns read 0.0 and its ``min_interaction_pae`` is
-the 100000.25 "no interaction" sentinel). What reaches this legend is instead
-the generator's own confidence head reading its own output:
+Those are CO-FOLD bars. On the audited run BoltzGen does not cofold: its one
+refold folds the binder on its own, so it has no interface to score — all
+seven of its numeric ``designfolding-*iptm`` columns read 0.0 and its
+``designfolding-min_interaction_pae`` is the 100000.25 "no interaction"
+sentinel. What reaches this legend is instead the generator's own confidence
+head reading its own output. THAT is the objection: the wrong ruler.
 
-    460 self-hosted designs, 2 unrelated targets, 3 modalities  ->  max 0.650
-    the same designs re-scored on a real Boltz-2 cofold        ->  0.363-0.852
+THE REACH ARGUMENT IS SEPARATE AND MUST BE SCOPED. It is true that
 
-So the bar was not demanding, it was unreachable — every finished run read as
-a failure to the user who paid for it, and 6 production runs / 65 candidates
-came back uniformly "below threshold". The container-side half of this is
-llm-proteinDesigner fix/boltzgen-unreachable-gate.
+    460 self-hosted designs, 2 targets, protein-anything + nanobody-anything
+        ->  max 0.650, nothing over 0.70
+
+but that is a property of those runs, not of the metric, and the unscoped
+version ("it can never reach 0.7") is false twice over:
+
+  * the same self-hosted pipeline on peptide-anything reaches 0.777, with
+    16/36 over 0.70  (boltzgen-workspace/mdm2-peptide)
+  * the HOSTED Boltz API — different product, different schema, fields named
+    binding_confidence / structure_confidence — clears 0.70 routinely, max
+    0.983. feld1/11_engine_audit.py measured that deliberately AS A CONTROL.
+
+Pooling those populations is how a reviewer talks themselves into either
+"the bar was fine" or "the premise collapsed". Neither follows. The bar comes
+off because 0.70 is calibrated on a cofold and this is not one.
+
+For contrast, the same campaign's designs re-scored on a real Boltz-2 cofold
+span 0.263-0.852 (feld1/results/cofold_results.json, 29 rows) — a different
+distribution from the in-run number, which is the whole point. Do not join
+the two by spec id; they are separate stochastic runs.
 
 Pinned here because ``good``/``excellent`` are inert today (only
 ``explanation`` and ``caveat`` render), which is exactly what lets a wrong
@@ -66,7 +82,7 @@ def test_boltzgen_iptm_does_not_inherit_the_boltz2_cofold_scale():
             rf"above\s+{re.escape(str(value))}", text, re.I
         ), (
             f"boltzgen ipTM text promises a value above {value}, the Boltz-2 "
-            f"cofold bar, for a number that has never reached 0.65"
+            f"cofold bar, for a number measured on a different kind of fold"
         )
 
 
@@ -205,7 +221,8 @@ def test_boltzgen_is_the_only_legend_without_a_bar():
 
 def test_the_form_page_does_not_quote_the_band_to_a_boltzgen_user(_app_client):
     """about_panel, on the page where the user decides whether to pay. It said
-    tools sit "a little either side" of > 0.65 — boltzgen cannot reach it."""
+    tools sit "a little either side" of > 0.65 — a band from a cofold, which
+    is not the measurement boltzgen's number comes from."""
     resp = _app_client.get("/tools/boltzgen")
     assert resp.status_code == 200, resp.status_code
     body = unescape(resp.get_data(as_text=True))

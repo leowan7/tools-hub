@@ -28,13 +28,25 @@ class Legend(TypedDict):
     # mean, and a wrong one sits inert until someone wires it up.
     #
     # boltzgen's ipTM omits them. It carried 0.7/0.8, which are the Boltz-2
-    # COFOLD bars, against a number produced by a generator confidence head
-    # that has never reached 0.7 in 460 designs across two targets. A field
-    # named ``good`` holding a value the metric cannot attain is not a
-    # harmless copy: it is the same claim the explanation was making, kept in
-    # data. Omit rather than invent a replacement — no run here pairs that
-    # number against a cofold on the same designs, so there is nothing to
-    # calibrate a bar from.
+    # COFOLD bars, against a number a generator confidence head produces from
+    # its own output. On the protocols we have measured — 460 self-hosted
+    # designs over two unrelated targets, protein-anything and
+    # nanobody-anything — it tops out at 0.650 and never crosses 0.70.
+    #
+    # SCOPE THAT CLAIM, do not universalise it. The same self-hosted pipeline
+    # on peptide-anything reaches 0.777, with 16 of 36 designs over 0.70
+    # (boltzgen-workspace/mdm2-peptide). And the HOSTED Boltz API — a
+    # different product with a different schema — clears 0.70 routinely, up
+    # to 0.983. Those are separate populations and pooling them is how you
+    # arrive at a confident wrong answer in either direction.
+    #
+    # The bar comes off on the SCALE argument, which holds regardless of
+    # reach: 0.70 is calibrated on a cofold, and the audited run's refold has
+    # no target in it. A field named ``good`` holding a bar from a different
+    # measurement is not a harmless copy, it is the same claim the
+    # explanation was making, kept in data. Omit rather than invent a
+    # replacement — no run here pairs this number against a cofold on the
+    # same designs, so there is nothing to calibrate a bar from.
     good: NotRequired[float]
     excellent: NotRequired[float]
     direction: str  # "higher_is_better" or "lower_is_better"
@@ -319,13 +331,21 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     ("boltzgen", "ipTM"): {
         # NO ``good``/``excellent`` — see the Legend TypedDict. They were 0.7
         # and 0.8, copied from the boltz2 cofold legend directly below, and
-        # this number is not on that scale. 460 self-hosted designs over two
-        # unrelated targets top out at 0.650; the same designs re-scored on a
-        # real Boltz-2 cofold span 0.363-0.852. So the bar was not a stretch
-        # goal, it was unreachable, and the explanation asserting it is what
-        # made every finished run read as a failure to the person who paid
-        # for it. llm-proteinDesigner fix/boltzgen-unreachable-gate removes
-        # the matching container-side gate leg for the same reason.
+        # this number is not on that scale: 0.70 is a COFOLD bar and the
+        # audited run's refold folds the binder alone, so it has no interface
+        # to score. That is the argument, and it does not depend on reach.
+        #
+        # On reach, scoped: 460 self-hosted designs over two targets on
+        # protein-anything and nanobody-anything top out at 0.650. NOT a
+        # property of the metric — peptide-anything reaches 0.777 on the same
+        # pipeline, and the hosted Boltz API (different product, different
+        # schema) reaches 0.983. Do not pool them.
+        #
+        # For scale, the same campaign's designs re-scored on a real Boltz-2
+        # cofold span 0.263-0.852 (feld1/results/cofold_results.json, 29
+        # rows) — a different distribution from the in-run number, which is
+        # the point. llm-proteinDesigner fix/boltzgen-unreachable-gate
+        # removes the matching container-side gate leg for the same reason.
         "direction": "higher_is_better",
         # llm-proteinDesigner#18 (squash-merged as 311c29f; the Modal deploy
         # for that SHA is green) puts `design_to_target_iptm` first in
