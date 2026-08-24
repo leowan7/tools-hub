@@ -326,10 +326,17 @@ def _client_ip() -> str:
         # nearly every request and the tier never refused anyone. See
         # docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
         #
-        # Preferred over raising TRUSTED_PROXY_HOPS to 2, deliberately: a hop
-        # INDEX is only safe while the caller cannot lengthen the chain, so it
-        # would silently become forgeable if the edge ever appended instead of
-        # overwriting. A single edge-written header has no index to shift.
+        # Preferred over raising TRUSTED_PROXY_HOPS to 2, and the honest
+        # reason is NARROW: X-Real-Ip survives a change in the NUMBER of
+        # internal hops, which a hop index does not -- add a second internal
+        # hop and hops=2 silently starts reading the wrong entry.
+        #
+        # It is NOT that this "cannot fail open". Both options depend on the
+        # header they read continuing to arrive. If X-Real-Ip stops being set,
+        # control falls through to the hop arithmetic below, keys on the
+        # rotating hop again, and the tier goes silently inert exactly as it
+        # was before this fix. NOTHING ALARMS ON THAT. An earlier version of
+        # this comment claimed the asymmetry ran the other way; it does not.
         # Gated on hops because TRUSTED_PROXY_HOPS=0 means "no proxy in front,
         # trust only the socket peer", and then no header is trustworthy.
         # hops == 1 ONLY. Any other value means the operator is telling us the

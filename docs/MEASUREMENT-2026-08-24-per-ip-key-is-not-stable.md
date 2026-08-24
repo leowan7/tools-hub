@@ -1,76 +1,47 @@
-# Measurement: the anonymous per-IP limiter does not bound anything in production
+# The anonymous per-IP limiter keyed on a rotating edge hop — measured, fixed, verified
 
-Measured against production on 2026-08-24, app at `547d622`. This answers the
-question [`DECISION-2026-08-22-per-ip-ceiling.md`](DECISION-2026-08-22-per-ip-ceiling.md)
-named as the hard gate on Phase 2. The answer is that decision's OVERWRITE
-case, but with a wrinkle its table did not anticipate: the edge adds a rotating
-internal hop of its own after overwriting. See the correction immediately
-below, which was written after the probe ran and supersedes several statements
-further down.
+**2026-08-24.** Rewritten the same day, deliberately. Earlier versions carried
+the findings as a body plus three layers of struck-through retraction; every
+false claim this document has ever contained lived in that retraction prose,
+never in a measurement. The corrections are now collected in one appendix at the
+bottom, and `git log -p` on this file holds every earlier version.
 
-## CORRECTION, same day, after the probe ran
+Line numbers below are as of **`547d622`**, when the measurements were taken.
+`#189` shifted several of them.
 
-**The headline below is confirmed. One conclusion in "What this changes" was
-WRONG and is struck through there.** The probe landed hours after this document
-merged and established the mechanism directly:
+## Status
 
-Railway's edge **OVERWRITES** the whole `X-Forwarded-*` family and rewrites the
-header as `<real client>, <internal proxy>`. Forged `X-Forwarded-For`,
-`X-Real-Ip`, `X-Forwarded-Host` and `X-Forwarded-Proto` were every one of them
-discarded. The trailing internal hop **rotates** across a pool
-(`152.233.30.101/.102/.104` in one run, `84.17.44.225/.226/.229` from a second
-runner) and `remote_addr` tracks it.
-
-**Stated precisely, because the first version of this overstated it:** the key
-is drawn from a small rotating POOL, not freshly generated per request. Three
-addresses were observed in one run. Three keys — 2 workers — limit 10 puts the
-effective wall near 60, and the probe that saw no refusal sent 46, so the
-measurement is fully explained without "a different value every request". **The
-pool's true size was never measured** (a second runner saw a different /24, so
-it may be much larger). Either way the effect is the same in kind: the ceiling
-is multiplied by the pool size instead of bounding one client.
-
-So the forged-header bypass this document worried about **does not exist in
-production** — the edge was discarding those headers all along. The tier is
-inert for a different reason: the key it reads is edge-internal and rotating.
-
-**And there IS a fix, which this document said there was not.** `X-Real-Ip`
-carries the real client address, is set by the edge on every request, and was
-measured unforgeable. Keying on it makes the per-IP tier work.
-
----
-
-## Headline
-
-`shared.metrics._client_ip()` resolves to a value that **varies from request to
-request** in production. Since it is the key of the per-IP tier, every request
-lands in a fresh bucket and the tier never refuses anyone. The tier
-`scout/ratelimit.py:21` calls "the TRUE bound, because a cookie is free to
-rotate" **bounds nothing at all as deployed**.
-
-The per-session tier works correctly. It is the only anonymous limiter that
-does. It is also the one an attacker skips by rotating a cookie, which is the
-precise reason the per-IP tier exists.
+- **Mechanism.** Railway's edge OVERWRITES the whole `X-Forwarded-*` family and
+  rewrites the header as `<real client>, <internal proxy>`. That trailing
+  internal hop ROTATES across a pool.
+- **Defect.** `_client_ip()` resolved one hop from the right, so it keyed on the
+  rotating hop. The per-IP tier never refused anyone.
+- **Fix.** Prefer `X-Real-Ip`, which the edge sets from the socket it saw.
+  `#189`, main `237fbf3`.
+- **Verified in production.** 46 admitted / 0 refused before; 20 admitted and
+  refused at 21 with `reason="rate_limited"` after.
+- **Still open.** The NAT case; the wall is `limit x workers` = 20, not 10; the
+  counters reset on every deploy and worker recycle, so plan criterion 5 is NOT
+  met; and nothing alarms if `X-Real-Ip` stops arriving.
 
 ## What was measured
 
-Three facts, in the order they were established.
+Three facts, in the order they were established, against prod at `547d622`.
 
 ### 1. The fleet runs 2 worker processes
 
 `hit()` (`scout/ratelimit.py:138`) is an in-process dict guarded by a thread
 lock, with no shared store — Phase 3 was never built. So the fleet-wide wall for
-any key is `limit × worker processes`, and worker count is measurable from
+any key is `limit x worker processes`, and worker count is measurable from
 outside by finding a wall.
 
 The cookieless session bucket is keyed on the **constant** string
 `_NO_SESSION_KEY = "anon:no-session"` (`scout/ratelimit.py:180`) with
-`ANON_ANALYZE_SESSION_LIMIT = 8`. Driving it cookieless:
+`ANON_ANALYZE_SESSION_LIMIT = 8`. Driving it cookieless, 48 x
+`POST /scout/analyze` with no cookie and a bogus `job_id`: exactly **16
+allowed**, then every subsequent request refused (`no_session`).
 
-- 48 × `POST /scout/analyze`, no cookie, bogus `job_id`
-- → exactly **16 allowed**, then every subsequent request refused (`no_session`)
-
-16 = 8 × 2. **`WEB_CONCURRENCY` is 2**, measured rather than read off a
+16 = 8 x 2. **`WEB_CONCURRENCY` is 2**, measured rather than read off a
 dashboard. The refusals interleaved with allowances (10, 11, 12 refused; 13, 14,
 15 allowed; 16 refused) before saturating — the signature of two independent
 in-memory counters with requests distributed unevenly across them.
@@ -78,7 +49,7 @@ in-memory counters with requests distributed unevenly across them.
 This is also the control for what follows: **a constant key does produce a wall,
 on this fleet, in these minutes.**
 
-### 2. A constant forged `X-Forwarded-For` produces no wall
+### 2. A constant forged `X-Forwarded-For` produced no wall
 
 `scout_intake` (`/upload`, `/fetch-pdb`, `/example`) passes no `session_limit`,
 so `anon_rate_limit` skips the session tier entirely (`scout/ratelimit.py:863`)
@@ -87,153 +58,140 @@ With 2 workers a constant key must wall at 20.
 
 | probe | header | result |
 | --- | --- | --- |
-| 26 × `GET /scout/example` | `X-Forwarded-For: 203.0.113.11` (constant) | 26 allowed, **0 refused** |
-| (2 earlier shape probes on `/example` carried no header, making 28 there) | | |
-| 46 × `POST /scout/upload` | `X-Forwarded-For: 203.0.113.55` (constant) | 46 allowed, **0 refused** |
+| 26 x `GET /scout/example` | `X-Forwarded-For: 203.0.113.11` (constant) | 26 allowed, **0 refused** |
+| 46 x `POST /scout/upload` | `X-Forwarded-For: 203.0.113.55` (constant) | 46 allowed, **0 refused** |
 
-Both headers were constant within their run. Both runs completed inside one
-600 s window. Neither produced a single refusal, at more than twice the wall.
+Two earlier shape probes on `/example` carried no header, making 28 there. Both
+runs completed inside one 600 s window.
 
 The requests were genuinely metered, not skipped: the `/metrics` denominator
 read **exactly 122**, matching the probe's own total of 28 + 46 + 48, with
-`rate_limited` at 0.
+`rate_limited` at 0. Eviction is excluded — `_MAX_KEYS = 20_000`
+(`scout/ratelimit.py:128`).
 
-### 3. Eviction is not the explanation
+### 3. The mechanism, read directly rather than inferred
 
-`_MAX_KEYS = 20_000` (`scout/ratelimit.py:128`). Nothing in this probe, and no
-organic traffic (see below), comes near it.
+`GET /debug/client-ip` (added in `#188`) reports what the process actually
+received. Ten identical requests plus four forged-header shapes, from two GitHub
+runners:
 
-## The conclusion, and its limit
+| sent | received |
+| --- | --- |
+| nothing | `X-Forwarded-For: 4.236.158.49, 152.233.30.104` |
+| `X-Forwarded-For: 192.0.2.111, 192.0.2.222` | `X-Forwarded-For: 4.236.158.49, 152.233.30.102` |
+| `X-Real-Ip: 198.51.100.7` | `X-Real-Ip: 20.57.133.114` |
+| `X-Forwarded-Host: evil.example` | `X-Forwarded-Host: tools.ranomics.com` |
 
-**Established:** the key the per-IP tier uses is not stable across requests that
-carry an identical header from one client. A constant key walls (16, measured);
-the per-IP key does not wall (46, measured) on the same fleet minutes apart.
+Every forged header discarded. The trailing hop rotated across
+`152.233.30.101/.102/.104` in one run and `84.17.44.225/.226/.229` from a second
+runner, and `remote_addr` tracked it.
 
-**Not established at the time of writing:** *what* varies, or why. **Now
-established** — see the correction at the top. The guess recorded here was half
-right: the edge does add its own rotating address, but it OVERWRITES rather than
-appends, and that difference is what makes a fix possible.
+**Stated precisely:** the key came from a small rotating POOL, not a fresh value
+per request. Three addresses x 2 workers x limit 10 puts the effective wall near
+60, and the run that saw no refusal sent 46 — so the missing wall is fully
+explained without "a different value every request". The pool's true size was
+never measured.
 
-**That step now exists.** `GET /debug/client-ip` reports `client_ip`,
-`remote_addr`, `trusted_proxy_hops` and the forwarding headers as this process
-actually received them, behind the same `METRICS_TOKEN` bearer as `/metrics`.
-Run it with `gh workflow run client-ip-probe.yml --ref main`, which reads it
-under six header shapes from a runner and prints the JSON, so nobody has to
-handle the token. The first block sends ten identical requests; a `client_ip`
-that differs across them is this document's headline confirmed directly rather
-than inferred, which is what happened.
+## Verified in production
 
-## What this changes
+Fix deployed as `#189`, main `237fbf3`; `/health` returned
+`{"build":"237fbf3...","status":"ok"}` before the probe ran.
 
-**The three-case table in `DECISION-2026-08-22-per-ip-ceiling.md` needs a fourth
-row.** It anticipated append / overwrite / verbatim. The edge OVERWRITES — its
-second row — but the table assumed overwriting leaves a one-entry header. It
-does not: the edge adds its own rotating internal hop afterwards, so the
-resolved value is neither the client nor anything stable.
+```bash
+for i in $(seq 1 26); do curl -s -o /dev/null -w "%{http_code} " -X POST https://tools.ranomics.com/scout/upload; done
+```
 
-~~no `TRUSTED_PROXY_HOPS` setting rescues it: at `hops=1` the app reads the
-varying edge value, and at `hops=2` it reads the client's own last entry, which
-is attacker-chosen. There is no hop count that yields a stable, unforgeable
-key.~~ **WRONG, struck 2026-08-24.** That assumed the edge APPENDS to a
-caller-supplied header. It overwrites, so the caller has no entry in the chain
-at all and `hops=2` would in fact reach the client. The fix shipped keys on
-`X-Real-Ip` instead. ~~preferred over a hop index because an index is only safe
-while the caller cannot lengthen the chain, and a single edge-written header has
-no index to shift.~~ **That second clause was WRONG too, struck after QC:**
-duplicate `X-Real-Ip` headers MERGE into one comma-joined WSGI value, so it has
-an index after all. The shipped code rejects any value that is not a bare IP
-(`ipaddress.ip_address`), which closes that and the wider junk class. The real
-reason to prefer it over `hops=2` is the failure asymmetry: `hops=2` fails OPEN
-and silently if Railway ever adds a second internal hop, whereas this fails to a
-wrong-but-stable key.
+**Sent 26, admitted 20, refused 6, first refusal at request 21**, body
+`{"error":"Too many Epitope Scout requests from this network.","reason":"rate_limited","retry_after":591}`.
 
-**Verification criterion 2 of the anonymous rate-limiting plan fails in
-production.** "One IP rotating cookies stays bounded" is false as deployed: the
-session tier is skipped by rotating the cookie, and the per-IP tier never fires.
+20 is exactly `ANON_INTAKE_LIMIT` (10) x 2 workers. The `rate_limited` label is
+not the load-bearing part: `/scout/upload` passes no `session_limit`, so the
+session tier is unreachable there by construction and a limiter refusal on that
+route can only be the per-IP tier.
 
-**`DECISION-2026-08-22`'s conclusion survives; part of its reasoning does not.**
-That decision said do not raise the ceiling, on three independent grounds. It is
-still right, but the CPU-budget ground was reasoning about a control that does
-not operate. The ceiling is not a ceiling. Do not cite it as one.
+**This command carries no `X-Forwarded-For`,** unlike the "before" probes above.
+It relies on the edge supplying the headers, which is the production path. It
+therefore does NOT re-demonstrate that a constant forged header is ignored; that
+half rests on section 3.
 
-**Phase 2 is no longer an improvement to a working control.** It is the only
-thing that would make a per-IP bound exist at all. **RESOLVED by the correction
-at the top:** the mechanism is confirmed, and because the edge overwrites rather
-than forwards, a usable key does exist. `X-Real-Ip` is edge-written, constant
-per client and measured unforgeable. The fallback position this paragraph
-originally reached for — lean on the per-session tier plus sign-in and stop
-claiming a per-IP bound — is NOT needed and should not be quoted as the
-outcome.
+## What this does NOT establish
 
-## VERIFIED IN PRODUCTION, 2026-08-24
-
-The fix shipped as #189 (main `237fbf3`, deploy confirmed by `/health`). The
-same zero-disk probe that established the defect was re-run against it:
-
-| | before (`547d622`) | after (`237fbf3`) |
-| --- | --- | --- |
-| `POST /scout/upload`, one client | **46 admitted, 0 refused** | **20 admitted, refused at 21** |
-| refusal reason | — | `rate_limited` |
-
-20 is exactly `ANON_INTAKE_LIMIT` (10) x 2 workers, and the reason label is the
-decisive part: `rate_limited` is the PER-IP tier, not `session_rate_limited`.
-The anonymous per-IP limiter bounds a single client for the first time.
-
-**What this does NOT establish.** Only that one real client is bounded. The NAT
-question — whether several researchers behind one address can still work — is
-now live rather than theoretical, because the ceiling binds at all for the first
-time. See `DECISION-2026-08-22-per-ip-ceiling.md`, which declined to raise that
-ceiling while reasoning about a control that did not operate.
+- **Only that ONE client is bounded.** The NAT case — several researchers behind
+  one address — is now *live rather than theoretical*, because the ceiling binds
+  at all for the first time. `DECISION-2026-08-22-per-ip-ceiling.md` declined to
+  raise that ceiling while reasoning about a control that did not operate, and
+  its own text says to re-read it once a fix lands. **That trigger has fired.**
+- **The wall is 20, not the configured 10.** `WEB_CONCURRENCY = 2`
+  (`gunicorn.conf.py:42`) and the limiter is per-process. Anyone sizing the NAT
+  trade-off from `ANON_INTAKE_LIMIT = 10` alone will be off by 2x, and raising
+  `WEB_CONCURRENCY` silently raises the wall.
+- **The counters reset on every deploy and worker recycle**, because `_WINDOWS`
+  is an in-process dict with no shared store. Plan **criterion 5** — "a deploy
+  mid-window does not reset an attacker's quota" — remains **NOT met**. Phase 3
+  is what fixes it.
+- **Nothing alarms if `X-Real-Ip` stops arriving.** If the header disappears —
+  an edge config change, a future Railway rewrite — `_client_ip()` falls through
+  to the hop arithmetic, keys on the rotating hop again, and the tier goes
+  silently inert exactly as before. Nothing detects that today.
 
 ## Two side findings
 
 **Organic anonymous Scout traffic is zero.** The `/metrics` denominator read 122
 at 06:20 and still read 122 at 12:20 — every metered anonymous Scout request
-against this container was the probe's. Across two earlier container lifetimes it
-read 3 and 28, also entirely ours. Consequences for Phase 6: the refusal-rate
-alarm has a 50-sample floor and its counters reset on every deploy, so at this
-traffic level and this deploy cadence it can rarely evaluate at all. That is a
-real gap, though not the one this document is about.
+against that container was the probe's. Across two earlier container lifetimes
+it read 3 and 28, also entirely ours. So the Phase 6 refusal-rate alarm, with a
+50-sample floor and counters that reset every deploy, can rarely evaluate at all.
 
-**The alarm itself works, and this probe proved it end to end.** The synthetic
-refusals pushed the ratio to 26.2% (32/122), and the 06:31 and 12:20 scheduled
-runs both failed correctly, naming `no_session` as the reason. That is the first
-time the Phase 6 alarm has fired on anything.
-
-It also walked straight into the deadlock recorded in `ALERTING.md` under
-"A variable change is not deploying" on the same day that was written: the
-failing runs redden `main`'s check suite, which blocks same-commit Railway
-service-variable deploys. Clearing it means resetting the counters, and the
-refusals being synthetic is what makes that legitimate here — there is nothing to
-fix. Merging any PR does it, since the deploy restarts the container.
+**The Phase 6 alarm works, proven by accident.** The probe's synthetic refusals
+took the ratio to 26.2% (32/122) and the 06:31 and 12:20 scheduled runs both
+failed correctly, naming `no_session`. First time it had fired on anything. It
+also walked into the deadlock recorded in `ALERTING.md` under "A variable change
+is not deploying": the failing runs redden main's suite, which blocks
+same-commit Railway variable deploys.
 
 ## Reproducing this
 
-Cheap and non-destructive, but it does spend real anonymous budget. Two routes
-matter because neither allocates disk: `POST /scout/upload` with no file is
-charged by the limiter and then 400s at `scout/routes.py:768`, and
-`POST /scout/analyze` with a bogus `job_id` is charged and then 404s. Use
-`/scout/example` only sparingly — it allocates a job dir per call against a
-global `ANON_MAX_LIVE_JOBS` of 60, and filling that refuses real visitors.
+Spends real anonymous budget. Two routes matter because neither allocates disk:
+`POST /scout/upload` with no file is charged by the limiter and then 400s
+(`scout/routes.py:768`), and `POST /scout/analyze` with a bogus `job_id` is
+charged and then 404s. Use `/scout/example` sparingly — it allocates a job dir
+per call against a GLOBAL `ANON_MAX_LIVE_JOBS` of 60, and filling that refuses
+real visitors. The cookieless analyze probe fills the shared `anon:no-session`
+bucket for up to 600 s, refusing real visitors whose cookies are blocked; that
+was acceptable only because organic traffic measured zero.
 
-Worker count — expect exactly 8 × W allowed, then saturation:
+Read the counters without handling the token by dispatching
+`gh workflow run synthetic-smoke.yml --ref main` and reading the log — but a
+probe that pushes the refusal share over 20% makes that run FAIL, with the
+check-suite consequence above. `gh workflow run client-ip-probe.yml --ref main`
+reads `/debug/client-ip` under six header shapes.
 
-```bash
-for i in $(seq 1 48); do curl -s -o /dev/null -w "%{http_code} " -X POST -H "Content-Type: application/json" -d '{"job_id":"00000000-0000-0000-0000-000000000000","chain":"A"}' https://tools.ranomics.com/scout/analyze; done
-```
+## Corrections
 
-Per-IP wall — expect a refusal at 10 × W, observe none:
+Four claims this document asserted and later retracted. Recorded because the
+pattern matters: each lived in correction prose, none in a measurement.
 
-```bash
-for i in $(seq 1 46); do curl -s -o /dev/null -w "%{http_code} " -X POST -H "X-Forwarded-For: 203.0.113.55" https://tools.ranomics.com/scout/upload; done
-```
+1. **"A varying appended value is not on that list."** The edge OVERWRITES —
+   `DECISION-2026-08-22`'s second case — it does not append. The wrinkle that
+   table lacks is that it then adds its own rotating internal hop.
+2. **"No `TRUSTED_PROXY_HOPS` setting rescues it… at `hops=2` it reads the
+   client's own last entry, which is attacker-chosen."** Wrong: the edge
+   overwrites, so the caller has no entry in the chain at all, and `hops=2`
+   would in fact reach the client. `X-Real-Ip` was preferred for other reasons.
+3. **"A single edge-written header has no index to shift."** Wrong: duplicate
+   `X-Real-Ip` headers MERGE into one comma-joined WSGI value. The shipped code
+   rejects any value that is not a bare IP (`ipaddress.ip_address`).
+4. **"`hops=2` fails OPEN silently, whereas `X-Real-Ip` fails to a
+   wrong-but-stable key."** Wrong in both halves. If `X-Real-Ip` stops arriving,
+   `_client_ip()` falls through to the rotating hop and the tier goes silently
+   inert — the same fail-open. And under that clause's own antecedent (Railway
+   adds a second internal hop) `X-Real-Ip` still carries the real client, so the
+   key would be correct, not wrong-but-stable. The honest reason to prefer
+   `X-Real-Ip` is narrower: it survives a change in the NUMBER of internal hops,
+   which `hops=2` does not. Both depend on the header they read continuing to
+   arrive, and neither is alarmed on.
 
-Read the counters afterwards without handling the token by dispatching
-`gh workflow run synthetic-smoke.yml --ref main` and reading the run log — but
-note that a probe which pushes the refusal share over 20% makes that run FAIL,
-with the check-suite consequence described above.
-
-The cookieless probe fills the shared `anon:no-session` bucket for up to 600 s,
-which refuses real visitors who have cookies blocked. Measured organic traffic is
-zero, which is what made that acceptable here; re-check before assuming it still
-is.
+Also retracted, from an earlier draft of the fix's own PR: **"rollback is
+`TRUSTED_PROXY_HOPS=0`."** At zero hops the key becomes `remote_addr`, which IS
+the shared rotating edge address — that would bucket the whole anonymous
+internet together. Rollback is a revert.
