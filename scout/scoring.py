@@ -30,6 +30,7 @@ import logging
 
 import numpy as np
 from Bio.PDB.DSSP import DSSP
+from Bio.PDB.Polypeptide import PPBuilder, is_aa
 
 from scout.patches import get_cb_coord
 from scout.pydssp_numpy import assign as pydssp_assign
@@ -332,6 +333,61 @@ def compute_bfactor_scores(chain_residues: list, plddt_mode: bool = False) -> di
 # DSSP secondary structure — STRUCT-05
 # ---------------------------------------------------------------------------
 
+class _ScoutPPBuilder(PPBuilder):
+    """PPBuilder that also treats _MODIFIED_AA residues as amino acids.
+
+    build_peptides asks two questions about each consecutive pair: _accept
+    ("is this residue an amino acid") and _is_connected ("do these two share
+    a real C->N peptide bond"). Only the first needs changing. _is_connected
+    is the load-bearing half and is left exactly as Biopython wrote it.
+
+    STRICTLY MORE PERMISSIVE THAN THE STOCK RULE, and that is deliberate.
+    Stock _accept(residue, 1) is is_aa(residue, standard=True), which reads
+    the RESNAME ONLY and ignores the hetflag. This ORs a term onto it rather
+    than replacing it, so every residue Biopython accepted is still accepted
+    and the peptide can only grow.
+
+    An earlier version of this class reused _is_pydssp_polymer_residue
+    instead, and that was a BUG, not a tidier spelling. That predicate also
+    demands `hetflag == " "` for the canonical 20, which stock _accept does
+    not -- so it was not a superset but INCOMPARABLE, and it cut the peptide
+    at any in-polymer canonical residue recorded as HETATM. Measured on
+    1HEW chain A with residues 60-62 re-recorded as HETATM (resnames
+    unchanged): 129 labels -> 126, and residues 59 and 63 fell to "loop".
+    That is verbatim the bug this change exists to remove, reintroduced
+    somewhere else. Pinned by
+    test_phi_psi_does_not_cut_at_hetatm_spelled_canonical_residues.
+
+    The hetflag gate is right for pydssp and wrong here, because the two
+    branches have different protection. pydssp has NO connectivity test, so
+    a free ALA in the solvent would be welded straight into its coordinate
+    array and only the hetflag keeps it out. This branch has _is_connected:
+    a free residue is bonded to nothing, so it is cut out on the geometry
+    regardless of how it is spelled. Importing pydssp's gate here buys
+    nothing and costs real in-polymer residues.
+
+    NOT build_peptides(aa_only=0), the obvious one-liner. That accepts every
+    one of the 1032 entries in Biopython's protein_letters_3to1_extended,
+    then ANY residue at all carrying an atom named CA. Measured: it takes
+    NAG, LIG, HEM and ATP with a warning, and SEP and FME with NO warning
+    (both are in the extended table). The silent pair is the problem --
+    scout treats neither as an amino acid anywhere else. SEC is the mirror
+    image: absent from the extended table, so aa_only=0 would reach it only
+    through the atom-name branch.
+
+    _accept is PRIVATE Biopython API and requirements.txt pins a RANGE
+    (>=1.81,<2.0). If an upgrade renames it, the override stops being called
+    and MSE splits the peptide again -- today's bug, restored in the safe
+    direction but SILENTLY, which is why
+    test_phi_psi_keeps_modified_residues_in_the_peptide pins it. If
+    Biopython ever drops _accept, replicate build_peptides' loop here.
+    """
+
+    def _accept(self, residue, standard_aa_only):
+        return (residue.resname.strip() in _MODIFIED_AA
+                or is_aa(residue, standard=True))
+
+
 def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
     """Fallback SS assignment using backbone phi/psi angles (Ramachandran).
 
@@ -346,6 +402,27 @@ def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
     regular secondary structure. The classification is less accurate than
     DSSP (no hydrogen bond analysis) but sufficient for scoring purposes.
 
+    Covers what _ScoutPPBuilder accepts AND that _is_connected joins to an
+    accepted neighbour. That is NOT the same set _assign_ss_by_pydssp
+    covers, and the difference is not incidental: pydssp additionally bails
+    on chains outside _PYDSSP_MIN_RESIDUES.._PYDSSP_MAX_RESIDUES or with a
+    residue missing a backbone atom, while this branch drops any residue
+    peptide-bonded to nothing -- an isolated residue between two unresolved
+    stretches gets no key here and pydssp labels it. ss_method records which
+    branch ran, so the covered set does legitimately depend on the branch.
+
+    MODIFIED RESIDUES USED TO SPLIT THE PEPTIDE HERE. PPBuilder's default
+    aa_only=1 rejects MSE, and build_peptides ENDS the current peptide at
+    any rejected residue. The failure is milder than the pydssp one -- the
+    chain is cut, not welded, so no coordinates are corrupted -- but it
+    still loses labels three ways: the MSE itself is in no peptide, the
+    residue BEFORE it loses its psi (no following N), and the residue AFTER
+    it loses its phi (no preceding C). Measured on a SeMet-ized 1HEW: one
+    129-residue peptide became three (11/92/24), residues 12 and 105 lost
+    their labels outright, and 11, 13 and 106 fell helix -> loop. Five
+    residues wrong out of 129, all of them silently, since a partial
+    phi/psi map is a normal result here.
+
     Args:
         model: Biopython Model object (structure[0]).
         chain_id: Restrict to this chain. None labels every chain.
@@ -354,10 +431,8 @@ def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
         Dict mapping (chain_id, residue.get_id()) to one of
         "helix", "strand", or "loop".
     """
-    from Bio.PDB.Polypeptide import PPBuilder  # noqa: PLC0415
-
     ss_map = {}
-    ppb = PPBuilder()
+    ppb = _ScoutPPBuilder()
 
     for chain in model.get_chains():
         cid = chain.get_id()
@@ -522,21 +597,21 @@ _PYDSSP_MAX_RESIDUES = 2000
 # pydssp" for "phi/psi", not "correct" for "nothing". Narrow band, honest
 # failure, ss_method still truthful. Recorded so the next reader does not
 # rediscover it as a bug.
-_PYDSSP_MODIFIED_AA = frozenset({"MSE", "SEC"})
+_MODIFIED_AA = frozenset({"MSE", "SEC"})
 
 
 def _is_pydssp_polymer_residue(residue) -> bool:
     """True when this residue is part of the backbone pydssp should read.
 
     Accepts ordinary amino acids and the modified amino acids in
-    _PYDSSP_MODIFIED_AA. The modified ones are matched on resname ALONE,
+    _MODIFIED_AA. The modified ones are matched on resname ALONE,
     without consulting the hetflag: they are normally HETATM, but structures
     that have been through a design or refinement pipeline often re-emit them
     as ATOM, and both spellings mean the same chemistry. Water and every
     other heteroatom stay out.
     """
     resname = residue.resname.strip()
-    if resname in _PYDSSP_MODIFIED_AA:
+    if resname in _MODIFIED_AA:
         return True
     return residue.get_id()[0] == " " and resname in STANDARD_AA
 
@@ -581,7 +656,7 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
 
     Gaps survive that rule, because a gap is not a skip. A residue the file
     never resolved, or one excluded as non-standard (any HETATM outside
-    _PYDSSP_MODIFIED_AA), never enters the standard-residue count either, so
+    _MODIFIED_AA), never enters the standard-residue count either, so
     the guard above sees no mismatch and the coordinate array simply closes
     over it -- leaving two sequence-distant residues adjacent. Two
     consequences, neither clean:
@@ -610,7 +685,7 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
     the entire gap sample on its own.
 
     SELENOMETHIONINE USED TO BE ONE OF THESE JUNCTIONS and is not any more --
-    see _PYDSSP_MODIFIED_AA. It was the common case rather than an exotic one,
+    see _MODIFIED_AA. It was the common case rather than an exotic one,
     because SeMet phasing is routine, and it was invisible: MSE was in neither
     the standard-residue count nor the labelled set, so the all-or-nothing
     guard saw no mismatch and the run still reported ss_method="pydssp".
@@ -622,7 +697,7 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
         Dict mapping (chain_id, residue.get_id()) to one of "helix", "strand",
         or "loop" -- covering EVERY residue of the chains it was asked for
         that _is_pydssp_polymer_residue accepts (the canonical 20, plus
-        _PYDSSP_MODIFIED_AA), or else empty. It is deliberately all-or-nothing:
+        _MODIFIED_AA), or else empty. It is deliberately all-or-nothing:
         assign_dssp falls through only on an empty map, so a partial result
         would be reported as ss_method="pydssp" while the unlabelled residues
         silently read as "loop". Returns {} if a chain IN SCOPE has one of
