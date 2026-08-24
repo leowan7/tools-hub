@@ -734,3 +734,63 @@ def test_a_blank_x_real_ip_does_not_shadow_the_chain(monkeypatch):
             monkeypatch=monkeypatch,
         )
         assert got == "198.51.100.9", f"blank X-Real-Ip {blank!r} shadowed the chain"
+
+
+def test_a_deeper_hop_count_selects_the_chain_not_x_real_ip(monkeypatch):
+    """TRUSTED_PROXY_HOPS must keep meaning what its docstring says.
+
+    Its stated purpose is "another proxy in front makes it 2". If X-Real-Ip
+    short-circuited at every non-zero hop count, that knob would be silently
+    dead -- and in the Cloudflare-in-front case it names, X-Real-Ip is
+    Cloudflare's egress address, which collapses every visitor behind it onto
+    one limiter key. Exactly the "rate-limit the whole internet as one user"
+    failure the blank-value test guards, reached through a supported config.
+    """
+    got = _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.5.5.5, 6.6.6.6, 7.7.7.7"},
+        hops=2,
+        monkeypatch=monkeypatch,
+    )
+    assert got == "6.6.6.6", "X-Real-Ip overrode an explicitly configured hop count"
+
+
+def test_duplicate_x_real_ip_headers_do_not_become_the_key(monkeypatch):
+    """Two X-Real-Ip headers MERGE into one comma-joined WSGI value.
+
+    So "a single edge-written header has no index to shift" is only true once
+    a comma-joined value is rejected. Without this the caller supplies half of
+    a two-element list and the claim is false as written.
+    """
+    got = _ip_under(
+        [
+            ("X-Real-Ip", "198.51.100.7"),
+            ("X-Real-Ip", "4.4.4.4"),
+            ("X-Forwarded-For", "1.1.1.1, 2.2.2.2"),
+        ],
+        monkeypatch=monkeypatch,
+    )
+    assert got == "2.2.2.2", "a merged X-Real-Ip pair became the limiter key"
+
+
+def test_a_non_address_x_real_ip_falls_through_to_the_chain(monkeypatch):
+    """Anything that is not a bare IP is not a limiter key.
+
+    Measured before the guard: 'evil.example:8080' was returned verbatim, as
+    were hostnames, empty-ish values and 2000-character strings. Each of those
+    is a key an upstream could choose.
+    """
+    for junk in ("evil.example:8080", "not-an-ip", "1.2.3.4, 5.6.7.8", "x" * 2000, "\t"):
+        got = _ip_under(
+            {"X-Real-Ip": junk, "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+            monkeypatch=monkeypatch,
+        )
+        assert got == "2.2.2.2", f"junk X-Real-Ip {junk[:30]!r} became the key"
+
+
+def test_ipv6_x_real_ip_is_still_accepted(monkeypatch):
+    """The guard rejects junk, not legitimate v6."""
+    got = _ip_under(
+        {"X-Real-Ip": "2001:db8::1", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    assert got == "2001:db8::1"

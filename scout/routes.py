@@ -164,7 +164,16 @@ ANON_INTAKE_LIMIT = 10
 # here as a precondition and is not one. See
 # docs/DECISION-2026-08-22-per-ip-ceiling.md for the full argument.
 #
-#  1. PHASE 2, AND IT IS THE WHOLE GATE. Nobody has verified whether
+#  1. PHASE 2 -- ANSWERED 2026-08-24, this is no longer the gate. Railway's
+#     edge OVERWRITES the whole X-Forwarded-* family and then appends its own
+#     internal hop, and that hop ROTATES across a pool. So the per-IP key was
+#     edge-internal noise and this ceiling never bound anyone; it now keys on
+#     X-Real-Ip and binds for the first time. Re-read the ceiling decision in
+#     that light. See docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+#     The original text follows, kept because its reasoning is still the
+#     reason the answer mattered.
+#
+#     Nobody has verified whether
 #     Railway's edge appends, overwrites or forwards X-Forwarded-For
 #     verbatim. Under the third case the per-IP key is caller-chosen and this
 #     ceiling is decorative. Measured at d3c60c8, 50 requests to

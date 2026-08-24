@@ -18,7 +18,10 @@ The two tiers
   signed session cookie. TIGHT. This is the only limit an ordinary visitor
   should ever meet, and it catches a runaway tab or a hand-rolled script
   before it spends its whole institution's share.
-- **Per IP** (``limit``), keyed on ``shared.metrics._client_ip``. The TRUE
+- **Per IP** (``limit``), keyed on ``shared.metrics._client_ip``, which since
+  2026-08-24 prefers ``X-Real-Ip`` because Railway's edge overwrites it while
+  the X-Forwarded-For chain it writes ends in a ROTATING internal hop. Keying
+  off that hop is why this tier never refused anyone in production. The TRUE
   bound, because a cookie is free to rotate and a session key therefore
   bounds nothing an attacker cares about.
 

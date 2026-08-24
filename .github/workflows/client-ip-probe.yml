@@ -18,7 +18,7 @@ name: Client IP probe (diagnostic)
 #     token, connection refused, DNS failure and an unset URL. That is a claim
 #     about the script, NOT a guarantee about the job: a timeout-minutes
 #     cancellation or a runner infrastructure error can still conclude
-#     `failure`. Headroom is deliberate (12 curls x --max-time 20 against a
+#     `failure`. Headroom is deliberate (15 curls x --max-time 20 against a
 #     600 s budget, no checkout step). It is read by a human opening the run, not by
 #     an alert. If you ever make it assert something, give it its own branch.
 #

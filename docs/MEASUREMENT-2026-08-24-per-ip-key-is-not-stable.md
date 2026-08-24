@@ -19,8 +19,16 @@ header as `<real client>, <internal proxy>`. Forged `X-Forwarded-For`,
 `X-Real-Ip`, `X-Forwarded-Host` and `X-Forwarded-Proto` were every one of them
 discarded. The trailing internal hop **rotates** across a pool
 (`152.233.30.101/.102/.104` in one run, `84.17.44.225/.226/.229` from a second
-runner) and `remote_addr` tracks it. That is why one-hop resolution keyed on a
-different value nearly every request.
+runner) and `remote_addr` tracks it.
+
+**Stated precisely, because the first version of this overstated it:** the key
+is drawn from a small rotating POOL, not freshly generated per request. Three
+addresses were observed in one run. Three keys — 2 workers — limit 10 puts the
+effective wall near 60, and the probe that saw no refusal sent 46, so the
+measurement is fully explained without "a different value every request". **The
+pool's true size was never measured** (a second runner saw a different /24, so
+it may be much larger). Either way the effect is the same in kind: the ceiling
+is multiplied by the pool size instead of bounding one client.
 
 So the forged-header bypass this document worried about **does not exist in
 production** — the edge was discarding those headers all along. The tier is
@@ -80,6 +88,7 @@ With 2 workers a constant key must wall at 20.
 | probe | header | result |
 | --- | --- | --- |
 | 26 × `GET /scout/example` | `X-Forwarded-For: 203.0.113.11` (constant) | 26 allowed, **0 refused** |
+| (2 earlier shape probes on `/example` carried no header, making 28 there) | | |
 | 46 × `POST /scout/upload` | `X-Forwarded-For: 203.0.113.55` (constant) | 46 allowed, **0 refused** |
 
 Both headers were constant within their run. Both runs completed inside one
