@@ -650,10 +650,10 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # DO NOT state the reduction more precisely than this repo can support. This
 # comment used to open "a MAX over residues, not a mean", and four pipeline
 # files here say the opposite in as many words — interface-pTM "averaged over
-# EVERY chain pair" (tools/af2/run_pipeline.py:202,
-# tools/colabfold/run_pipeline.py:149, tools/esmfold2_design/run_pipeline.py:440,
-# tools/proteina/run_pipeline.py:1787), all of them describing the incident
-# where 460 boltzgen designs were scored on it. The conclusion above survives
+# EVERY chain pair" (tools/af2, tools/colabfold, tools/esmfold2_design and
+# tools/proteina run_pipeline.py — named without line numbers on purpose; the
+# proteina one was cited as :1787 and is now at :3688), all of them describing
+# the incident where 460 boltzgen designs were scored on it. The conclusion above survives
 # either reduction. The "~0.9 for a real crystal dimer" figure that travelled
 # with the max does not, so it is gone from here and from the banner. The
 # sibling repo states the mechanism in
