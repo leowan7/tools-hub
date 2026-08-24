@@ -296,16 +296,42 @@ def _client_ip() -> str:
     its own identity by sending ``X-Forwarded-For: <anything>``, which
     nullifies every per-IP control keyed off this function.
 
-    With the default one trusted hop, a single-value header returns that
-    value whether the edge *appends* to the header or *overwrites* it, so
-    this is correct under both semantics without needing to know which
-    Railway does. Assumes no untrusted hop sits between the client and the
-    edge; ``TRUSTED_PROXY_HOPS`` is the knob if that stops being true.
+    Prefers ``X-Real-Ip``, which Railway's edge sets from the socket it
+    actually saw and rewrites on every request — measured, not assumed.
+    The ``X-Forwarded-For`` hop arithmetic below remains the fallback for
+    deployments that do not get that header, and is unchanged.
+
+    With one trusted hop, a single-value header returns that value whether
+    the edge *appends* or *overwrites*, so the fallback is correct under
+    both semantics. ``TRUSTED_PROXY_HOPS`` is the knob if an untrusted hop
+    ever sits between the client and the edge.
 
     Falls back to the socket peer when the header is absent or unusable.
     """
     hops = _trusted_proxy_hops()
     if hops:
+        # X-Real-Ip FIRST, because it is the only value here measured to be
+        # both edge-written and unforgeable. On 2026-08-24 a live probe sent
+        # forged X-Real-Ip, X-Forwarded-For, X-Forwarded-Host and
+        # X-Forwarded-Proto: Railway's edge discarded every one and rewrote
+        # X-Forwarded-For as `<real client>, <internal proxy>` with
+        # X-Real-Ip set to the same real client.
+        #
+        # This is what makes the per-IP limiter work at all. The trailing
+        # internal hop ROTATES across a pool (.101/.102/.104 within one probe
+        # run), so counting one hop from the right keyed on a different value
+        # nearly every request and the tier never refused anyone. See
+        # docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+        #
+        # Preferred over raising TRUSTED_PROXY_HOPS to 2, deliberately: a hop
+        # INDEX is only safe while the caller cannot lengthen the chain, so it
+        # would silently become forgeable if the edge ever appended instead of
+        # overwriting. A single edge-written header has no index to shift.
+        # Gated on hops because TRUSTED_PROXY_HOPS=0 means "no proxy in front,
+        # trust only the socket peer", and then no header is trustworthy.
+        real_ip = request.headers.get("X-Real-Ip", "").strip()
+        if real_ip:
+            return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:

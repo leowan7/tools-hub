@@ -5,6 +5,30 @@ question [`DECISION-2026-08-22-per-ip-ceiling.md`](DECISION-2026-08-22-per-ip-ce
 named as the hard gate on Phase 2, and the answer is not one of the three cases
 that decision anticipated.
 
+## CORRECTION, same day, after the probe ran
+
+**The headline below is confirmed. One conclusion in "What this changes" was
+WRONG and is struck through there.** The probe landed hours after this document
+merged and established the mechanism directly:
+
+Railway's edge **OVERWRITES** the whole `X-Forwarded-*` family and rewrites the
+header as `<real client>, <internal proxy>`. Forged `X-Forwarded-For`,
+`X-Real-Ip`, `X-Forwarded-Host` and `X-Forwarded-Proto` were every one of them
+discarded. The trailing internal hop **rotates** across a pool
+(`152.233.30.101/.102/.104` in one run, `84.17.44.225/.226/.229` from a second
+runner) and `remote_addr` tracks it. That is why one-hop resolution keyed on a
+different value nearly every request.
+
+So the forged-header bypass this document worried about **does not exist in
+production** — the edge was discarding those headers all along. The tier is
+inert for a different reason: the key it reads is edge-internal and rotating.
+
+**And there IS a fix, which this document said there was not.** `X-Real-Ip`
+carries the real client address, is set by the edge on every request, and was
+measured unforgeable. Keying on it makes the per-IP tier work.
+
+---
+
 ## Headline
 
 `shared.metrics._client_ip()` resolves to a value that **varies from request to
@@ -73,30 +97,37 @@ organic traffic (see below), comes near it.
 carry an identical header from one client. A constant key walls (16, measured);
 the per-IP key does not wall (46, measured) on the same fleet minutes apart.
 
-**Not established:** *what* varies, or why. The likeliest mechanism is that
-Railway's edge appends its own address and that address differs per request
-across edge instances — but the resolved value was never observed directly, only
-inferred from the absence of a wall where a control demonstrated one. Confirming
-it needs the app to log or echo `_client_ip()`, which is a small code change and
-the obvious next step.
+**Not established at the time of writing:** *what* varies, or why. **Now
+established** — see the correction at the top. The guess recorded here was half
+right: the edge does add its own rotating address, but it OVERWRITES rather than
+appends, and that difference is what makes a fix possible.
 
 **That step now exists.** `GET /debug/client-ip` reports `client_ip`,
 `remote_addr`, `trusted_proxy_hops` and the forwarding headers as this process
 actually received them, behind the same `METRICS_TOKEN` bearer as `/metrics`.
 Run it with `gh workflow run client-ip-probe.yml --ref main`, which reads it
-under three header shapes from a runner and prints the JSON, so nobody has to
-handle the token. Read the *first* block: if `client_ip` differs across three
-identical requests, that is this document's headline confirmed directly rather
-than inferred.
+under six header shapes from a runner and prints the JSON, so nobody has to
+handle the token. The first block sends ten identical requests; a `client_ip`
+that differs across them is this document's headline confirmed directly rather
+than inferred, which is what happened.
 
 ## What this changes
 
 **The three-case table in `DECISION-2026-08-22-per-ip-ceiling.md` needs a fourth
-row.** It anticipated append / overwrite / verbatim, each yielding a *stable* key
-that a hop count could reach. A varying appended value is not on that list, and
-no `TRUSTED_PROXY_HOPS` setting rescues it: at `hops=1` the app reads the varying
-edge value, and at `hops=2` it reads the client's own last entry, which is
-attacker-chosen. There is no hop count that yields a stable, unforgeable key.
+row.** It anticipated append / overwrite / verbatim. The edge OVERWRITES — its
+second row {D} but the table assumed overwriting leaves a one-entry header. It
+does not: the edge adds its own rotating internal hop afterwards, so the
+resolved value is neither the client nor anything stable.
+
+~~no `TRUSTED_PROXY_HOPS` setting rescues it: at `hops=1` the app reads the
+varying edge value, and at `hops=2` it reads the client's own last entry, which
+is attacker-chosen. There is no hop count that yields a stable, unforgeable
+key.~~ **WRONG, struck 2026-08-24.** That assumed the edge APPENDS to a
+caller-supplied header. It overwrites, so the caller has no entry in the chain
+at all and `hops=2` would in fact reach the client. The fix shipped keys on
+`X-Real-Ip` instead — preferred over a hop index because an index is only safe
+while the caller cannot lengthen the chain, and a single edge-written header has
+no index to shift.
 
 **Verification criterion 2 of the anonymous rate-limiting plan fails in
 production.** "One IP rotating cookies stays bounded" is false as deployed: the

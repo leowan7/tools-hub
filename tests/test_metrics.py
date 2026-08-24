@@ -675,3 +675,62 @@ def test_client_ip_echo_reports_non_default_hops(monkeypatch):
     assert payload["trusted_proxy_hops"] == 2
     # Two trusted hops means the entry one further LEFT is ours.
     assert payload["client_ip"] == "192.0.2.111"
+
+
+# ---------------------------------------------------------------------------
+# X-Real-Ip is preferred, because it is the measured-unforgeable one
+# ---------------------------------------------------------------------------
+
+
+def test_client_ip_prefers_x_real_ip_over_the_forwarded_chain(monkeypatch):
+    """The production shape, copied from a live probe on 2026-08-24.
+
+    Railway sends ``X-Forwarded-For: <client>, <internal>`` with a ROTATING
+    internal hop, plus ``X-Real-Ip: <client>``. Reading one hop from the right
+    keyed on the rotating value, which is why the per-IP limiter never refused
+    anyone. X-Real-Ip is constant across the same requests.
+    """
+    for internal in ("152.233.30.101", "152.233.30.102", "152.233.30.104"):
+        got = _ip_under(
+            {
+                "X-Forwarded-For": f"4.236.158.49, {internal}",
+                "X-Real-Ip": "4.236.158.49",
+            },
+            monkeypatch=monkeypatch,
+        )
+        assert got == "4.236.158.49", f"rotating hop {internal} leaked into the key"
+
+
+def test_client_ip_falls_back_to_the_chain_without_x_real_ip(monkeypatch):
+    """The fallback is unchanged, so every other deployment behaves as before."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4, 198.51.100.9"}, monkeypatch=monkeypatch
+    )
+    assert got == "198.51.100.9"
+
+
+def test_zero_hops_ignores_x_real_ip_too(monkeypatch):
+    """TRUSTED_PROXY_HOPS=0 means no proxy in front, so NO header is trusted.
+
+    If X-Real-Ip were honoured here, a direct-origin deployment would let any
+    caller choose the limiter key by sending one -- the exact hole the hop
+    count exists to close.
+    """
+    got = _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"},
+        hops=0,
+        monkeypatch=monkeypatch,
+    )
+    assert got == "203.0.113.7"
+
+
+def test_a_blank_x_real_ip_does_not_shadow_the_chain(monkeypatch):
+    """An empty or whitespace header must not resolve to "" and bucket
+    every caller together -- that would rate-limit the whole internet as one
+    user while looking like it worked."""
+    for blank in ("", "   "):
+        got = _ip_under(
+            {"X-Real-Ip": blank, "X-Forwarded-For": "1.2.3.4, 198.51.100.9"},
+            monkeypatch=monkeypatch,
+        )
+        assert got == "198.51.100.9", f"blank X-Real-Ip {blank!r} shadowed the chain"
