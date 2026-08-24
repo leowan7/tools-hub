@@ -137,9 +137,15 @@ is attacker-chosen. There is no hop count that yields a stable, unforgeable
 key.~~ **WRONG, struck 2026-08-24.** That assumed the edge APPENDS to a
 caller-supplied header. It overwrites, so the caller has no entry in the chain
 at all and `hops=2` would in fact reach the client. The fix shipped keys on
-`X-Real-Ip` instead — preferred over a hop index because an index is only safe
+`X-Real-Ip` instead. ~~preferred over a hop index because an index is only safe
 while the caller cannot lengthen the chain, and a single edge-written header has
-no index to shift.
+no index to shift.~~ **That second clause was WRONG too, struck after QC:**
+duplicate `X-Real-Ip` headers MERGE into one comma-joined WSGI value, so it has
+an index after all. The shipped code rejects any value that is not a bare IP
+(`ipaddress.ip_address`), which closes that and the wider junk class. The real
+reason to prefer it over `hops=2` is the failure asymmetry: `hops=2` fails OPEN
+and silently if Railway ever adds a second internal hop, whereas this fails to a
+wrong-but-stable key.
 
 **Verification criterion 2 of the anonymous rate-limiting plan fails in
 production.** "One IP rotating cookies stays bounded" is false as deployed: the
@@ -158,6 +164,26 @@ per client and measured unforgeable. The fallback position this paragraph
 originally reached for — lean on the per-session tier plus sign-in and stop
 claiming a per-IP bound — is NOT needed and should not be quoted as the
 outcome.
+
+## VERIFIED IN PRODUCTION, 2026-08-24
+
+The fix shipped as #189 (main `237fbf3`, deploy confirmed by `/health`). The
+same zero-disk probe that established the defect was re-run against it:
+
+| | before (`547d622`) | after (`237fbf3`) |
+| --- | --- | --- |
+| `POST /scout/upload`, one client | **46 admitted, 0 refused** | **20 admitted, refused at 21** |
+| refusal reason | — | `rate_limited` |
+
+20 is exactly `ANON_INTAKE_LIMIT` (10) x 2 workers, and the reason label is the
+decisive part: `rate_limited` is the PER-IP tier, not `session_rate_limited`.
+The anonymous per-IP limiter bounds a single client for the first time.
+
+**What this does NOT establish.** Only that one real client is bounded. The NAT
+question — whether several researchers behind one address can still work — is
+now live rather than theoretical, because the ceiling binds at all for the first
+time. See `DECISION-2026-08-22-per-ip-ceiling.md`, which declined to raise that
+ceiling while reasoning about a control that did not operate.
 
 ## Two side findings
 
