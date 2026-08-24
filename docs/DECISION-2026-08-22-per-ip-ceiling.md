@@ -300,6 +300,12 @@ argument in miniature: a refusal count without a reason label is not evidence.
 2. **Whether Railway's edge appends, overwrites, or forwards
    `X-Forwarded-For` verbatim.** Phase 2. Unchanged, still unverified, still
    the hard gate. See the next section — this one is actionable now.
+   **ANSWERED 2026-08-24, and by none of the three cases below:** the resolved
+   key *varies per request*, so the per-IP tier never refuses anyone and the
+   ceiling this document is about does not operate at all. The conclusion here
+   stands; the CPU-budget ground does not, because it was protecting a control
+   that does not run. See
+   [`MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md`](MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md).
 3. **Real refusal-by-reason rates in production.** That is Phase 6, and it is
    why Phase 6 goes first. Every number above is a simulation.
 
