@@ -26,8 +26,15 @@ value sit unnoticed until someone wires the field up to a colour.
 from __future__ import annotations
 
 import re
+from html import unescape
+from pathlib import Path
 
-from shared.score_legends import SCORE_LEGENDS, legend_text
+from shared.score_legends import (
+    SCORE_LEGENDS,
+    get_legend,
+    legend_text,
+    score_legends_for,
+)
 
 BOLTZGEN_IPTM = ("boltzgen", "ipTM")
 BOLTZ2_IPTM = ("boltz2", "ipTM")
@@ -82,3 +89,146 @@ def test_the_legends_measured_on_the_refold_keep_their_bars():
         legend = SCORE_LEGENDS[("boltzgen", column)]
         assert legend.get("good") is not None, column
         assert legend.get("excellent") is not None, column
+
+
+# ---------------------------------------------------------------------------
+# The bar also has a GLOBAL home, and three tool-scoped surfaces render it
+# ---------------------------------------------------------------------------
+# Clearing ``good`` off the legend is not enough on its own. The same bar lives
+# a second time in shared/metric_glossary.py as GLOSSARY["ipTM"]["good_range"]
+# = "> 0.75 strong; > 0.65 acceptable", which is keyed by METRIC and is global,
+# and three templates that DO know which tool they are rendering print it:
+#
+#   components/candidate_table.html  stacks it onto the per-tool legend, in one
+#                                    tooltip, on the results table itself
+#   components/about_panel.html      the form page, before the user pays
+#   help/tool_guide.html             the page that teaches how to read the score
+#
+# So before this, a boltzgen user read "so 0.7 does not apply" and then, four
+# words later in the same tooltip, "Range: > 0.75 strong; > 0.65 acceptable".
+# The glossary entry is correct for every other tool and stays; the three
+# tool-scoped surfaces suppress it when the tool's own legend declines a bar.
+#
+# The global bar is READ here, never retyped, so recalibrating the glossary
+# cannot leave these passing against a number the product no longer uses.
+
+import pytest  # noqa: E402
+from jinja2 import Environment, FileSystemLoader  # noqa: E402
+
+import app as _app  # noqa: E402,F401  (populates tools.base._REGISTRY)
+from shared import metric_glossary, ranking  # noqa: E402
+from tools import base as tool_base  # noqa: E402
+
+_TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
+_GLOBAL_IPTM_RANGE = metric_glossary.GLOSSARY["ipTM"]["good_range"]
+
+
+@pytest.fixture
+def _app_client(monkeypatch):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    for adapter in tool_base.all_adapters():
+        monkeypatch.setenv(
+            "FLAG_TOOL_" + adapter.slug.upper().replace("-", "_"), "on"
+        )
+    flask_app = _app.create_app()
+    flask_app.config["TESTING"] = True
+    return flask_app.test_client()
+
+
+def _column_tooltip(tool_slug: str) -> str:
+    """The assembled ipTM header tooltip for one tool, as the page emits it."""
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    env.globals.update(
+        metric_glossary=metric_glossary.GLOSSARY,
+        score_legends_for=score_legends_for,
+        format_metric_value=metric_glossary.format_value,
+        score_legend_for=get_legend,
+        legend_text=legend_text,
+        ordinal=ranking.ordinal,
+        csrf_input=lambda: "",
+        url_for=lambda _endpoint, **kw: "/static/" + kw.get("filename", ""),
+    )
+    tmpl = env.from_string(
+        '{% from "components/candidate_table.html" import candidate_table %}'
+        "{{ candidate_table(candidates, columns, job_id, tool_slug, clone_url,"
+        "  campaign_id, target_id, multi_tool, sort_mode, split_tools, per_tool) }}"
+    )
+    html = tmpl.render(
+        candidates=[], columns=["ipTM"], job_id="j1", tool_slug=tool_slug,
+        clone_url="", campaign_id="", target_id="", multi_tool=False,
+        sort_mode="", split_tools=(), per_tool={},
+    )
+    match = re.search(r'data-tooltip="([^"]*)"', html)
+    assert match, f"no ipTM tooltip rendered for {tool_slug}"
+    return unescape(match.group(1))
+
+
+def test_the_results_tooltip_does_not_re_add_the_bar_from_the_glossary():
+    """The flat contradiction: one tooltip saying 0.7 does not apply and then
+    quoting a 0.65-0.75 band. This is the surface that shows the numbers the
+    bar judges, so it is the one that turned an ordinary run into a failure."""
+    tooltip = _column_tooltip("boltzgen")
+    assert _GLOBAL_IPTM_RANGE not in tooltip, (
+        f"the global ipTM range {_GLOBAL_IPTM_RANGE!r} is stacked onto "
+        f"boltzgen's own legend, which has just finished saying that scale "
+        f"does not apply:\n\n{tooltip}"
+    )
+
+
+def test_the_tooltip_keeps_the_definition_and_the_citation():
+    """Suppressing the BAR is not suppressing the glossary. The definition and
+    the AlphaFold-Multimer citation are true of ipTM wherever it appears, and
+    dropping the whole entry would be the over-correction."""
+    tooltip = _column_tooltip("boltzgen")
+    glossary = metric_glossary.GLOSSARY["ipTM"]
+    assert glossary["definition"] in tooltip, tooltip
+    assert glossary["citation"] in tooltip, tooltip
+    # ...and the seam where the range was removed is not left ".." or " ."
+    assert ".." not in tooltip and " ." not in tooltip, tooltip
+
+
+def test_a_tool_that_states_a_bar_still_gets_the_global_range():
+    """The control. boltz2 IS the calibrated cofold, so the band is true for
+    it — a fix that stripped the range from every tool would pass the test
+    above and quietly cost every other tool its answer to "what is good?"."""
+    tooltip = _column_tooltip("boltz2")
+    assert _GLOBAL_IPTM_RANGE in tooltip, tooltip
+
+
+def test_boltzgen_is_the_only_legend_without_a_bar():
+    """Pins the blast radius of the three template conditions. If a second
+    legend ever drops its bar, that tool's surfaces change too — which may be
+    right, but it should be a decision, not a surprise."""
+    barless = {k for k, v in SCORE_LEGENDS.items() if "good" not in v}
+    assert barless == {BOLTZGEN_IPTM}, barless
+
+
+def test_the_form_page_does_not_quote_the_band_to_a_boltzgen_user(_app_client):
+    """about_panel, on the page where the user decides whether to pay. It said
+    tools sit "a little either side" of > 0.65 — boltzgen cannot reach it."""
+    resp = _app_client.get("/tools/boltzgen")
+    assert resp.status_code == 200, resp.status_code
+    body = unescape(resp.get_data(as_text=True))
+    assert _GLOBAL_IPTM_RANGE not in body, (
+        f"the boltzgen form page quotes the global ipTM band "
+        f"{_GLOBAL_IPTM_RANGE!r} as if boltzgen sat near it"
+    )
+
+
+def test_the_tool_guide_does_not_quote_the_band_to_a_boltzgen_user(_app_client):
+    """help/tool_guide, the page that teaches people how to read the score."""
+    resp = _app_client.get("/help/tools/boltzgen")
+    assert resp.status_code == 200, resp.status_code
+    body = unescape(resp.get_data(as_text=True))
+    assert _GLOBAL_IPTM_RANGE not in body, (
+        f"the boltzgen guide quotes the global ipTM band "
+        f"{_GLOBAL_IPTM_RANGE!r} as this tool's acceptable range"
+    )
+
+
+def test_another_tool_s_guide_still_quotes_the_band(_app_client):
+    """Control for the two above, for the same reason as the tooltip control:
+    these pages are shared by every tool and must keep working for them."""
+    resp = _app_client.get("/help/tools/boltz2")
+    assert resp.status_code == 200, resp.status_code
+    assert _GLOBAL_IPTM_RANGE in unescape(resp.get_data(as_text=True))

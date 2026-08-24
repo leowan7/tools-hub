@@ -170,12 +170,27 @@
                output_summary above, which for rfdiffusion states ipTM
                >= 0.65. Third and last home of that literal, after
                components/about_panel.html and help/faq.html. #}
+            {# AND A TOOL IS ALLOWED TO HAVE NO BAR. ``good_range`` is per
+               METRIC and global; ``score_legend_for`` knows the tool. A legend
+               that omits ``good`` is that tool saying its number is not on the
+               shared scale -- boltzgen's ipTM comes from the generator's own
+               confidence head, not a cofold, and has never reached 0.65 in 460
+               designs, so printing "> 0.65 acceptable" here as a band it sits
+               "a little either side" of is the unreachable bar again, on the
+               page that teaches people how to read the score. #}
+            {% set _ipl = score_legend_for(adapter.slug, "ipTM") if score_legend_for else none %}
             Predicted confidence in the contact between two chains, on a 0 to
-            1 scale. Higher is better:
+            1 scale. Higher is better
+            {%- if _ipl and 'good' not in _ipl %}, but {{ _short_name }}'s
+            number is not on the shared scale the other tools are read against,
+            so there is no cross-tool band to compare it to &mdash; rank on it,
+            then re-fold a shortlist to confirm.
+            {%- else %}:
             {{ metric_glossary.get("ipTM", {}).get("good_range", "") }}.
             Individual tools set their own pass bar a little either side of
             that &mdash; this guide's own results summary above states this
-            tool's. On a multi-chain target the
+            tool's.
+            {%- endif %} On a multi-chain target the
             number may cover the target's own chain&ndash;chain interface as
             well as the binder's, so read the per-tool note on the results
             table before comparing designs on it.
