@@ -143,12 +143,29 @@ def totals(
     return requests, refusals
 
 
+def ip_sources(
+    samples: list[tuple[str, dict[str, str], float]],
+) -> dict[str, float]:
+    """Return ``{source: resolutions}`` for the rate-limit key's origin.
+
+    Separate from ``totals`` so that function's signature and tests are
+    untouched, and because this is REPORTED, never alerted on.
+    """
+    out: dict[str, float] = {}
+    for name, labels, value in samples:
+        if name == "tools_hub_client_ip_source_total":
+            source = labels.get("source", "unknown")
+            out[source] = out.get(source, 0.0) + value
+    return out
+
+
 def evaluate(
     requests: float,
     refusals: dict[str, float],
     *,
     threshold: float = DEFAULT_THRESHOLD,
     min_samples: float = DEFAULT_MIN_SAMPLES,
+    sources: dict[str, float] | None = None,
 ) -> tuple[int, list[str]]:
     """Return ``(exit_code, report_lines)`` for one scrape.
 
@@ -163,6 +180,27 @@ def evaluate(
         share = count / requests if requests else 0.0
         note = "  (reported only)" if reason in INFO_REASONS else ""
         lines.append(f"  {reason:<22} {count:>8.0f}  {share:>6.1%}{note}")
+
+    # Where the limiter key came from. REPORTED ONLY, and never part of the
+    # exit code: this must not be able to fail the job (a red run blocks
+    # same-commit Railway deploys -- ALERTING.md, "A variable change is not
+    # deploying"). On Railway x_real_ip should be essentially 100%; anything
+    # else climbing means the header stopped arriving and the per-IP tier has
+    # silently gone back to keying on a rotating internal hop.
+    if sources:
+        total_res = sum(sources.values())
+        lines.append("rate-limit key source (reported only):")
+        for source in sorted(sources, key=lambda k: -sources[k]):
+            count = sources[source]
+            share = count / total_res if total_res else 0.0
+            lines.append(f"  {source:<22} {count:>8.0f}  {share:>6.1%}")
+        if total_res and sources.get("x_real_ip", 0.0) / total_res < 0.5:
+            lines.append(
+                "  NOTE: most keys did NOT come from X-Real-Ip. On Railway that "
+                "means the header stopped arriving and the per-IP limiter is "
+                "keying on a rotating internal hop again -- i.e. inert. See "
+                "docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md."
+            )
 
     # Everything that is not one of the two non-refusals counts, so a reason
     # added later lands in the alert by default rather than silently outside it.
@@ -265,7 +303,11 @@ def main(argv: list[str] | None = None) -> int:
 
     requests, refusals = totals(samples)
     code, lines = evaluate(
-        requests, refusals, threshold=threshold, min_samples=min_samples
+        requests,
+        refusals,
+        threshold=threshold,
+        min_samples=min_samples,
+        sources=ip_sources(samples),
     )
     print("\n".join(lines))
     return code

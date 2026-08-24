@@ -794,3 +794,58 @@ def test_ipv6_x_real_ip_is_still_accepted(monkeypatch):
         monkeypatch=monkeypatch,
     )
     assert got == "2001:db8::1"
+
+
+# ---------------------------------------------------------------------------
+# The limiter key's source is counted, because losing it fails SILENTLY
+# ---------------------------------------------------------------------------
+
+
+def _source_counts():
+    """Read tools_hub_client_ip_source_total out of the live registry."""
+    from shared.metrics import CLIENT_IP_SOURCE
+
+    out = {}
+    for metric in CLIENT_IP_SOURCE.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_total"):
+                out[sample.labels["source"]] = sample.value
+    return out
+
+
+def test_each_resolution_path_is_counted_by_source(monkeypatch):
+    """x_real_ip / forwarded_chain / peer must each be distinguishable.
+
+    If X-Real-Ip ever stops arriving, _client_ip() silently falls back to the
+    chain and keys on Railway's ROTATING internal hop -- the per-IP limiter
+    goes inert exactly as it was before #189, with no error, no refusal and no
+    latency change. This counter is the only way that becomes visible.
+    """
+    before = _source_counts()
+
+    _ip_under({"X-Real-Ip": "4.236.158.49"}, monkeypatch=monkeypatch)
+    _ip_under({"X-Forwarded-For": "1.1.1.1, 2.2.2.2"}, monkeypatch=monkeypatch)
+    _ip_under({}, monkeypatch=monkeypatch)
+
+    after = _source_counts()
+    for source in ("x_real_ip", "forwarded_chain", "peer"):
+        delta = after.get(source, 0.0) - before.get(source, 0.0)
+        assert delta == 1, f"{source} moved by {delta}, expected 1"
+
+
+def test_a_rejected_x_real_ip_counts_as_the_chain_not_as_x_real_ip(monkeypatch):
+    """The counter must reflect what was USED, not what was present.
+
+    A junk X-Real-Ip falls through to the chain. Counting it as x_real_ip
+    would make the detector report health while the limiter keys on the
+    rotating hop -- the exact failure this counter exists to catch.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "evil.example:8080", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1

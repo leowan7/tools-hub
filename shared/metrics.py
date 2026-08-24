@@ -207,6 +207,26 @@ SCOUT_REFUSALS = Counter(
     ["reason", "route"],
 )
 
+CLIENT_IP_SOURCE = Counter(
+    "tools_hub_client_ip_source_total",
+    "Which input produced the anonymous rate-limit key, per resolution.",
+    ["source"],
+)
+# Exists because the failure it detects is SILENT and total. The limiter keys
+# on _client_ip(); on Railway that resolves from X-Real-Ip. If that header ever
+# stops arriving -- an edge config change, a Railway rewrite -- resolution falls
+# through to the X-Forwarded-For hop arithmetic, which on this topology keys on
+# a ROTATING internal hop, and the per-IP tier goes inert exactly as it was
+# before #189. Nothing about that is visible from outside: no error, no refusal,
+# no latency change, just a control that quietly stops controlling.
+#
+# Deliberately a COUNTER and not an alarm. In production "x_real_ip" should be
+# essentially 100%; "forwarded_chain" or "peer" climbing is the signal. It is
+# printed by scripts/check_refusal_rate.py as reported-only, so the 6-hourly
+# smoke surfaces it without being able to fail on it -- a new alarm here could
+# redden main's suite and block deploys (see ALERTING.md, "A variable change is
+# not deploying").
+
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",
@@ -359,13 +379,16 @@ def _client_ip() -> str:
             except ValueError:
                 pass
             else:
+                CLIENT_IP_SOURCE.labels(source="x_real_ip").inc()
                 return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:
             # Clamped so a chain SHORTER than the configured hop count yields
             # the leftmost entry rather than raising.
+            CLIENT_IP_SOURCE.labels(source="forwarded_chain").inc()
             return chain[max(0, len(chain) - hops)]
+    CLIENT_IP_SOURCE.labels(source="peer").inc()
     return request.remote_addr or ""
 
 

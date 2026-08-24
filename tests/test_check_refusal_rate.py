@@ -257,3 +257,68 @@ def test_it_reads_the_real_exposition_this_app_renders(monkeypatch):
         "the refusal counter rendered nothing this script can read — the "
         "metric name or the reason label has drifted"
     )
+
+
+# ---------------------------------------------------------------------------
+# The rate-limit key's source: reported, never alerted on
+# ---------------------------------------------------------------------------
+
+
+def test_ip_sources_sums_the_family():
+    samples = check_refusal_rate.parse_exposition(
+        'tools_hub_client_ip_source_total{source="x_real_ip"} 90.0\n'
+        'tools_hub_client_ip_source_total{source="forwarded_chain"} 8.0\n'
+        'tools_hub_client_ip_source_total{source="peer"} 2.0\n'
+        'tools_hub_requests_total{route="scout.upload"} 100.0\n'
+    )
+    assert check_refusal_rate.ip_sources(samples) == {
+        "x_real_ip": 90.0,
+        "forwarded_chain": 8.0,
+        "peer": 2.0,
+    }
+
+
+def test_the_source_block_never_changes_the_exit_code():
+    """THE invariant. This is reported-only by design.
+
+    A new way for the 6-hourly smoke to fail reddens main's check suite, which
+    blocks same-commit Railway deploys (ALERTING.md, "A variable change is not
+    deploying"). Whatever the sources say, the exit code must come from the
+    refusal ratio alone.
+    """
+    refusals = {"rate_limited": 1.0}
+    baseline, _ = check_refusal_rate.evaluate(200.0, refusals)
+
+    for sources in (
+        None,
+        {},
+        {"x_real_ip": 200.0},
+        {"peer": 200.0},                      # the alarming case
+        {"forwarded_chain": 199.0, "x_real_ip": 1.0},
+    ):
+        code, _ = check_refusal_rate.evaluate(200.0, refusals, sources=sources)
+        assert code == baseline, f"sources={sources} changed the exit code"
+
+
+def test_a_healthy_source_split_reports_without_the_warning():
+    _, lines = check_refusal_rate.evaluate(
+        200.0, {}, sources={"x_real_ip": 200.0}
+    )
+    body = "\n".join(lines)
+    assert "rate-limit key source (reported only):" in body
+    assert "x_real_ip" in body
+    assert "NOTE:" not in body
+
+
+def test_losing_x_real_ip_is_called_out_in_words():
+    """A bare percentage would not tell the reader what it means.
+
+    The whole point is that this failure is invisible: the limiter still
+    answers 200s while bounding nobody. The report has to say so.
+    """
+    _, lines = check_refusal_rate.evaluate(
+        200.0, {}, sources={"forwarded_chain": 180.0, "x_real_ip": 20.0}
+    )
+    body = "\n".join(lines)
+    assert "NOTE:" in body
+    assert "inert" in body
