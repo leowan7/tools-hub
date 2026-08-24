@@ -263,6 +263,27 @@ def _trusted_proxy_hops() -> int:
         return 1
 
 
+# Exactly the headers /debug/client-ip may echo. An ALLOWLIST, deliberately,
+# not a prefix match. "x-forwarded" as a prefix also matches
+# X-Forwarded-Client-Cert (Envoy/Istio: the full client PEM plus a SPIFFE
+# identity URI) and oauth2-proxy's X-Forwarded-Access-Token / -User / -Email /
+# -Groups, which carry live credentials and identity assertions. Railway emits
+# none of those today, so the prefix form was latent rather than leaking -- but
+# it becomes live the moment an ingress, service mesh or oauth2-proxy lands in
+# front, and the endpoint's own response is printed into a PUBLIC Actions log.
+# An allowlist fails safe as the topology changes; a prefix match fails open.
+ECHOABLE_FORWARDING_HEADERS = frozenset({
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+    "true-client-ip",
+})
+
+
 def _client_ip() -> str:
     """Best-effort resolution of the caller's IP, safe to use as a gate key.
 
@@ -374,6 +395,42 @@ def register_metrics(flask_app: Flask) -> None:
         if not _metrics_token_ok():
             return Response("forbidden", status=403, content_type="text/plain")
         return _render_metrics()
+
+    @flask_app.route("/debug/client-ip", methods=["GET"])
+    def client_ip_echo() -> Any:
+        """Echo what this process actually receives about the caller's address.
+
+        The anonymous per-IP limiter keys on ``_client_ip()``. Production
+        measurement on 2026-08-24 showed that key VARYING between identical
+        requests, so the tier never refuses anyone -- but nothing in the app
+        could say what it was resolving to or why, because the resolution is
+        pure inference from headers we never logged. See
+        docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+
+        Token-gated with the same bearer as ``/metrics``, deliberately. The
+        forwarding chain and the edge's own address are infrastructure detail,
+        and handing an anonymous caller the exact shape of the header the
+        limiter trusts is a gift to anyone trying to forge it.
+
+        Echoes only ``ECHOABLE_FORWARDING_HEADERS``, an exact allowlist. See
+        that constant for why this is not a prefix match, and note that the
+        response is republished into a PUBLIC GitHub Actions log by
+        .github/workflows/client-ip-probe.yml, so the token gate is not the
+        last line of defence here -- the allowlist is.
+        """
+        if not _metrics_token_ok():
+            return Response("forbidden", status=403, content_type="text/plain")
+        forwarding = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() in ECHOABLE_FORWARDING_HEADERS
+        }
+        return jsonify({
+            "client_ip": _client_ip(),
+            "remote_addr": request.remote_addr or "",
+            "trusted_proxy_hops": _trusted_proxy_hops(),
+            "forwarding_headers": forwarding,
+        })
 
 
 # ---------------------------------------------------------------------------
