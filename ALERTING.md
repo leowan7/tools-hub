@@ -565,7 +565,9 @@ container boot*. Consequences, both directions:
 
 - A refusal spike that ended hours ago still shows, diluted, until the next
   deploy. **Redeploying resets the counters** — which clears the alert without
-  fixing anything, so do not use it as the remedy.
+  fixing anything, so do not use it as the remedy. Note the escape hatch in
+  "A variable change is not deploying" below is itself a redeploy and carries
+  this same side effect.
 - Just after a deploy the denominator is tiny and one request swings the ratio;
   `REFUSAL_RATE_MIN_SAMPLES` (default 50) is the floor that makes the check
   report and `SKIP` rather than fire on that.
@@ -576,6 +578,9 @@ Other ways this step fails, none of which are a Scout incident:
 
 - **`ERROR: ... answered HTTP 403`** — `METRICS_TOKEN` does not match. The repo
   secret and the Railway service variable must be the same value; keep it ASCII.
+  Correcting the Railway side is a *variable* change, which is the one kind of
+  deploy this very failure blocks — read "A variable change is not deploying"
+  below first.
 - **`answered 200 with no parseable samples (0 bytes)`** — `/metrics` is up but
   rendering nothing. This has shipped here before (`PROMETHEUS_MULTIPROC_DIR`
   set after gunicorn's `--preload`); see the `/metrics` notes in `shared/metrics.py`.
@@ -588,6 +593,104 @@ Other ways this step fails, none of which are a Scout incident:
 Reproduce by hand: `METRICS_TOKEN=... python scripts/check_refusal_rate.py`.
 Tune without a code change via `REFUSAL_RATE_THRESHOLD` (default 0.20) and
 `REFUSAL_RATE_MIN_SAMPLES` (default 50) in the workflow step.
+
+**Rotating `METRICS_TOKEN`.** Both sides must carry the same value, so every
+order opens a window in which the scrape 403s and the job fails. Go
+Railway-first and close the window by hand:
+
+1. Set the new value on the Railway `web` service.
+2. Deployments → ⋮ → **Redeploy**, or the variable may never apply (below).
+3. Check it by hand:
+   `curl -sI -H "Authorization: Bearer <new>" https://tools.ranomics.com/metrics`
+   should answer 200.
+4. Set the same value as the `METRICS_TOKEN` repository secret.
+5. `gh workflow run synthetic-smoke.yml --ref main` to confirm the swap took.
+
+Between steps 2 and 4 the runner still holds the old token, so a scheduled run
+landing in that gap fails on a 403. The cron is 6-hourly — do not leave the gap
+open, and if one does fail there, re-run it after step 4 (see below).
+
+Never open Railway's "Apply N changes → **Details**" diff for a secret: that
+panel renders variable values in **plaintext**, so a screenshot of it captures
+the token. The Variables list itself masks correctly.
+
+### A variable change is not deploying (Railway "Wait for CI")
+
+The `web` service has **Wait for CI** on — Settings → Source, "Trigger
+deployments after all GitHub actions have completed successfully" (toggle read
+2026-08-24, not inferred). A red GitHub Actions check suite on `main`'s HEAD
+therefore makes Railway **skip** deploys of that same commit. The deployment
+card reads `SKIPPED` / "CI check suite failed": it does not error, it silently
+does nothing, and the previously active deployment keeps serving. An absent
+deployment entry is a *different* fault — a dropped deploy event — so check the
+history for a `SKIPPED` row before concluding either.
+
+**This closes a circle around the alarm above.** `synthetic-smoke` attaches its
+check run to `main`'s HEAD, so a failing refusal-rate step turns the suite red,
+and a red suite blocks exactly the Railway service-variable changes an operator
+reaches for during an incident. Landing `METRICS_TOKEN` for the first time hit
+the complete circle: the check was red because production lacked the token, and
+production could not receive the token because the check was red.
+
+What is and is not blocked:
+
+| Path | Blocked while the suite is red? | Evidence |
+| --- | --- | --- |
+| Push to `main` (auto-deploy) | No — the new commit gets its own fresh suite | Observed 2026-08-24; see the durability note below |
+| Service-variable change (same commit) | **Yes** | Observed 2026-08-24 |
+| Deployment ⋮ → **Redeploy** | **No — this is the escape hatch** | Observed once, 2026-08-24 |
+| Rollback to an earlier deployment | **UNKNOWN — never tested** | — |
+
+**The rollback row is the gap that matters most.** Both outage runbooks above
+("`/health` or `/` is DOWN", "`/readyz` is DOWN but `/health` is UP") tell you to
+roll back, and nobody has established whether Wait for CI gates that. Establish
+it on a calm day, not during an outage.
+
+**Row 1 is true at the moment of the push, not durably.** The smoke's cron
+attaches a run to whatever is `main`'s HEAD every six hours, so a commit that
+deployed cleanly can go red afterwards — which is precisely how you arrive at
+the blocked row beneath it.
+
+**One rule nobody has established: latest suite, or any suite?** `main` at
+`395c523` carries six completed Actions suites, one of them a `failure` from
+2026-08-24T00:47Z that five later successes did not clear. If Railway reads *any*
+failed suite, that commit is permanently un-deployable by variable change. It
+also carries four suites parked at `queued` indefinitely (`render`, `vercel`,
+`railway-app`, `claude`) which evidently block nothing, so Railway plainly is not
+requiring literally every suite. Treat this as open until someone tests it.
+
+So the response is: set the variable, then Deployments → the active deployment's
+⋮ menu → **Redeploy**. It does pick up service variables changed since — a
+single observation on 2026-08-24, and the claim this whole section rests on, so
+re-read the toggle and the deployment result if it ever appears not to work. Its
+"rebuild and deploy your code with the exact same configuration" wording is
+about the source commit and build settings, not the variables. **`Restart` sits
+directly above it and is not the same thing; `Remove` sits directly below it —
+click the menu item by name, deliberately.**
+
+**That redeploy also resets the refusal counters.** The escape hatch *is* a
+redeploy, so it zeroes the ratio (see the caveat above) and the next run reads
+clean whether or not Scout is still refusing anyone. Do not read that green tick
+as "resolved" — re-check once the container has served real traffic again.
+
+**One blocked lever is the one you would actually reach for.**
+`WEB_CONCURRENCY` is a service variable (`gunicorn.conf.py:42`), and because the
+anon limits are per worker (`scout/routes.py:210-217`) worker count is the only
+knob that lifts the intake and analyze walls *together*. It sits squarely inside
+this deadlock. The two limits themselves do not: `ANON_INTAKE_LIMIT` and
+`ANON_ANALYZE_LIMIT` are literal constants in `scout/routes.py` (`:131`, `:230`),
+so changing one is a push, and a push carries its own fresh suite.
+
+**To clear a red suite, re-run the failed run in place** —
+`gh run rerun <run-id>` — which can flip that suite's own conclusion. A fresh
+`gh workflow run` dispatch does **not** clear it: that creates a NEW suite and
+leaves the old one red (confirmed on `395c523`, where three later dispatch
+successes sit beside the 00:47Z failure). And do not clear it by redeploying to
+reset the counters — that hides the refusal rate rather than fixing it.
+
+**Corollary for anything that probes production:** never dispatch such a
+workflow on `main` before the thing it probes is live. The failed run poisons
+`main`'s check suite and gates the deploy behind itself.
 
 ### Railway emailed a deploy failure / crash / OOM
 
