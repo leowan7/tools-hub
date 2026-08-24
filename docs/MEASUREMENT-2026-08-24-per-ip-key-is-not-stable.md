@@ -2,8 +2,11 @@
 
 Measured against production on 2026-08-24, app at `547d622`. This answers the
 question [`DECISION-2026-08-22-per-ip-ceiling.md`](DECISION-2026-08-22-per-ip-ceiling.md)
-named as the hard gate on Phase 2, and the answer is not one of the three cases
-that decision anticipated.
+named as the hard gate on Phase 2. The answer is that decision's OVERWRITE
+case, but with a wrinkle its table did not anticipate: the edge adds a rotating
+internal hop of its own after overwriting. See the correction immediately
+below, which was written after the probe ran and supersedes several statements
+further down.
 
 ## CORRECTION, same day, after the probe ran
 
@@ -115,7 +118,7 @@ than inferred, which is what happened.
 
 **The three-case table in `DECISION-2026-08-22-per-ip-ceiling.md` needs a fourth
 row.** It anticipated append / overwrite / verbatim. The edge OVERWRITES — its
-second row {D} but the table assumed overwriting leaves a one-entry header. It
+second row — but the table assumed overwriting leaves a one-entry header. It
 does not: the edge adds its own rotating internal hop afterwards, so the
 resolved value is neither the client nor anything stable.
 
@@ -139,10 +142,13 @@ still right, but the CPU-budget ground was reasoning about a control that does
 not operate. The ceiling is not a ceiling. Do not cite it as one.
 
 **Phase 2 is no longer an improvement to a working control.** It is the only
-thing that would make a per-IP bound exist. If the mechanism above is confirmed,
-the honest options are the ones that decision already named for its third case:
-lean on the per-session tier plus sign-in, and stop describing a per-IP bound
-that is not there.
+thing that would make a per-IP bound exist at all. **RESOLVED by the correction
+at the top:** the mechanism is confirmed, and because the edge overwrites rather
+than forwards, a usable key does exist. `X-Real-Ip` is edge-written, constant
+per client and measured unforgeable. The fallback position this paragraph
+originally reached for — lean on the per-session tier plus sign-in and stop
+claiming a per-IP bound — is NOT needed and should not be quoted as the
+outcome.
 
 ## Two side findings
 
