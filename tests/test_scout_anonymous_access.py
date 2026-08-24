@@ -1106,19 +1106,28 @@ class TestAnalyzeParsesInsideTheBound:
         assert from_parse == index["A"]
 
 
+
 def test_the_two_anon_ceilings_must_move_together() -> None:
-    """Tripwire, not a law: moving one anon ceiling alone helps half a lab.
+    """Tripwire on the INTAKE/ANALYZE pair only. It does NOT guard the Phase 3 coupling.
 
-    `docs/DECISION-2026-08-22-per-ip-ceiling.md` §5 measured that which
-    ceiling binds depends on the SHAPE of a lab, not its size -- many
-    researchers with one structure each hit intake, few researchers with many
-    chains each hit analyze. So raising one and not the other leaves half the
-    users it was meant to serve refused at exactly the same point as before.
+    What it guards: `docs/DECISION-2026-08-22-per-ip-ceiling.md` §5 argues that
+    which ceiling binds depends on the SHAPE of a lab, not its size -- many
+    researchers with one structure each meet intake; few researchers with many
+    chains each meet analyze. So moving one and not the other leaves half the
+    users it was meant to serve refused exactly where they are today.
 
-    `routes.py` says the `10 == 10` balance is ACCIDENTAL and that nothing
-    asserts it. This asserts it, deliberately as a tripwire rather than as a
-    claim that they must be equal forever: if you intend them to diverge, the
-    decision doc is what has to change first, and then this test.
+    Equality is a CONSERVATIVE PROXY for that, not the principle. `routes.py`
+    calls the `10 == 10` balance ACCIDENTAL, and the honest coupled change might
+    well be unequal constants -- this test would block that, deliberately, so
+    that the decision doc has to be updated first and this test with it.
+
+    What it does NOT guard, so nobody mistakes a green run for cover: the
+    re-take's headline finding is that raising the constants and building
+    Phase 3 are each undesirable alone. **Raising BOTH constants to 20 without
+    Phase 3 -- the case `routes.py` now shouts DO NOT about, and the one that
+    drops the saturation threshold to two addresses -- passes this test
+    cleanly.** Phase 3 landing alone passes too. Nothing executable guards the
+    coupling; it is a comment and a doc section, and that is a known gap.
     """
     assert scout_routes.ANON_INTAKE_LIMIT == scout_routes.ANON_ANALYZE_LIMIT, (
         "The anonymous intake and analyze ceilings have diverged "

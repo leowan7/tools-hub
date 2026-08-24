@@ -128,6 +128,9 @@ ANON_RATE_WINDOW_SECONDS = 600
 # Neither number moved; what moved was the cost of an analysis, which lifted
 # the effective analyze ceiling from 5 to 10 and landed on this 10 by
 # coincidence. Change either one and the wall moves to the other, silently.
+# COUPLED: read the DO-NOT-CHANGE block on ANON_ANALYZE_LIMIT below before
+# moving this. The ceiling decision's recommendation moves BOTH constants or
+# neither -- which one binds depends on the shape of the lab, not its size.
 ANON_INTAKE_LIMIT = 10
 
 # ---------------------------------------------------------------------------
@@ -239,24 +242,32 @@ ANON_INTAKE_LIMIT = 10
 #
 # DO NOT CHANGE THIS NUMBER WITHOUT PHASE 3, AND DO NOT DO PHASE 3 WITHOUT
 # CHANGING THIS NUMBER. The ceiling decision was re-taken 2026-08-24 once the
-# per-IP key was fixed, and the coupling is the finding that matters here:
-# the wall a real address meets is limit x workers, so
+# per-IP key was fixed; see its "Re-taken" section, R5. Each change alone is
+# UNDESIRABLE, and for OPPOSITE reasons -- "unsafe" is the wrong word for half
+# of it:
 #
-#   Phase 3 alone (shared counters, this constant left at 10) HALVES the
-#   anonymous wall from ~20 to 10 and refuses lab shapes that fit today. It
-#   is filed as an attacker-quota fix; it is also a 2x tightening on real
-#   users, and nothing says so at the point it would be built.
+#   Phase 3 alone (shared counters, this constant left at 10) is strictly
+#   SAFER -- per-address adversarial demand falls to 150 CPU-s and the
+#   saturation threshold RISES from 4 addresses to 8. What it costs is
+#   legitimate users: the fleet wall halves from 20 charges to 10. Phase 3 is
+#   filed purely as an attacker-quota fix, so whoever picks it up will not
+#   learn from its ticket that it is also a 2x tightening on real users.
 #
-#   Raising this alone, with counters still per-process, DOUBLES the wall to
-#   ~40 and drops the saturation threshold from four addresses to two, which
-#   is the objection §4 already makes.
+#   Raising this alone, with counters still per-process, is the actual
+#   regression: the wall doubles to 40 and saturation drops from four
+#   addresses to two, which is the objection §4 already makes.
 #
 # Landed together -- shared counters plus BOTH constants at 20 -- the pair is
-# attacker-neutral inside a window, strictly tighter across windows (a deploy
-# stops resetting the quota), and strictly better for a lab, because the wall
-# becomes exact instead of depending on how a burst happened to land across
-# two independent counters. See the "Re-taken 2026-08-24" section of the
-# decision doc.
+# attacker-neutral inside a window (40W/C = 4 addresses either way), strictly
+# tighter across windows (a deploy stops resetting the quota), and strictly
+# better for a lab.
+#
+# UNITS: the wall is 20 CHARGES, which is 10-20 ANALYSES. _FOLLOWUP is
+# per-process like the counters, so a paired analysis costs 1 charge when
+# /progress and /analyze land on the same worker and 2 when they split -- and
+# only honest users hold that credit, since an attacker driving /analyze
+# directly never opens a pair. Phase 3 must move _FOLLOWUP too; the module
+# docstring in ratelimit.py already requires it.
 ANON_ANALYZE_LIMIT = 10
 
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
