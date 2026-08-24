@@ -1104,3 +1104,26 @@ class TestAnalyzeParsesInsideTheBound:
         index_path.unlink()
         from_parse = scout_routes._chain_residue_count(job_dir, pdb_path, "A")
         assert from_parse == index["A"]
+
+
+def test_the_two_anon_ceilings_must_move_together() -> None:
+    """Tripwire, not a law: moving one anon ceiling alone helps half a lab.
+
+    `docs/DECISION-2026-08-22-per-ip-ceiling.md` §5 measured that which
+    ceiling binds depends on the SHAPE of a lab, not its size -- many
+    researchers with one structure each hit intake, few researchers with many
+    chains each hit analyze. So raising one and not the other leaves half the
+    users it was meant to serve refused at exactly the same point as before.
+
+    `routes.py` says the `10 == 10` balance is ACCIDENTAL and that nothing
+    asserts it. This asserts it, deliberately as a tripwire rather than as a
+    claim that they must be equal forever: if you intend them to diverge, the
+    decision doc is what has to change first, and then this test.
+    """
+    assert scout_routes.ANON_INTAKE_LIMIT == scout_routes.ANON_ANALYZE_LIMIT, (
+        "The anonymous intake and analyze ceilings have diverged "
+        f"({scout_routes.ANON_INTAKE_LIMIT} vs {scout_routes.ANON_ANALYZE_LIMIT}). "
+        "Which one binds depends on the shape of the lab, so moving one alone "
+        "buys nothing for half of them -- see the ceiling decision doc §5. "
+        "If the divergence is intended, update that doc and this test together."
+    )

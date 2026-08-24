@@ -236,6 +236,27 @@ ANON_INTAKE_LIMIT = 10
 # free: the attacker's quota multiplies by W too, so it is attacker-NEUTRAL
 # only while vCPU scales with W, and Railway's allocation is an explicit
 # unknown. Stated in full in docs/DECISION-2026-08-22-per-ip-ceiling.md §4.
+#
+# DO NOT CHANGE THIS NUMBER WITHOUT PHASE 3, AND DO NOT DO PHASE 3 WITHOUT
+# CHANGING THIS NUMBER. The ceiling decision was re-taken 2026-08-24 once the
+# per-IP key was fixed, and the coupling is the finding that matters here:
+# the wall a real address meets is limit x workers, so
+#
+#   Phase 3 alone (shared counters, this constant left at 10) HALVES the
+#   anonymous wall from ~20 to 10 and refuses lab shapes that fit today. It
+#   is filed as an attacker-quota fix; it is also a 2x tightening on real
+#   users, and nothing says so at the point it would be built.
+#
+#   Raising this alone, with counters still per-process, DOUBLES the wall to
+#   ~40 and drops the saturation threshold from four addresses to two, which
+#   is the objection §4 already makes.
+#
+# Landed together -- shared counters plus BOTH constants at 20 -- the pair is
+# attacker-neutral inside a window, strictly tighter across windows (a deploy
+# stops resetting the quota), and strictly better for a lab, because the wall
+# becomes exact instead of depending on how a burst happened to land across
+# two independent counters. See the "Re-taken 2026-08-24" section of the
+# decision doc.
 ANON_ANALYZE_LIMIT = 10
 
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
