@@ -460,6 +460,48 @@ class TestTheChargeCannotBeEvaded:
             _analyze(client, job_id)
         assert _ip_charges() == 3
 
+    def test_analyze_alone_buys_a_WHOLE_pipeline_run_per_charge(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """The attacker's rate is 1 charge = 1 FULL pipeline run. Pinned here
+        because the ceiling decision's CPU arithmetic rests on it and the claim
+        flipped twice under review.
+
+        ``test_analyze_on_its_own_is_charged`` above reuses ONE chain, so the
+        ``results.csv`` short-circuit at ``routes.py`` fires and three charges
+        buy one pipeline run. That is the honest-user shape, and reading it as
+        the adversarial one understates the attack by up to 2x.
+
+        Alternating the chain defeats the short-circuit: every call misses the
+        cache, runs ``run_pipeline`` itself, and is charged exactly once,
+        without ever opening a pair. So an attacker never needs the follow-up
+        credit, and the per-charge CPU cost is the SAME whether or not the
+        credit is available. Two consequences the decision doc depends on:
+
+          * the adversarial saturation figure is INDEPENDENT of how paired
+            requests land across workers, while the lab figure is not;
+          * ONE intake charge funds the whole window -- the intake bucket does
+            not constrain this at all.
+        """
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        before = len(stub_pipeline)
+
+        chains = ["A", "B", "A", "B"]
+        for chain in chains:
+            _analyze(client, job_id, chain=chain)
+
+        runs = len(stub_pipeline) - before
+        assert runs == len(chains), (
+            f"{len(chains)} alternating-chain /analyze calls ran the pipeline "
+            f"{runs} times, expected {len(chains)}. If this drops, /analyze has "
+            "gained a cache the adversarial CPU model does not know about and "
+            "docs/DECISION-2026-08-22-per-ip-ceiling.md needs re-deriving."
+        )
+        assert _ip_charges() == len(chains), (
+            "one charge per call is what makes the attacker's rate equal to a "
+            "whole analysis; if this changes the saturation figure moves."
+        )
+
     def test_a_refused_request_grants_no_credit(
         self, app, stub_pipeline, reap_jobs
     ):
