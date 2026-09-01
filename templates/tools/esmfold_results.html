@@ -190,7 +190,7 @@
            pae_matrix_b64 is often empty for ESMFold - only render the
            PAE link when it actually has content. #}
         {% if pdb_b64 %}
-          <a href="data:chemical/x-pdb;base64,{{ pdb_b64 }}"
+          <a href="data:chemical/x-pdb;base64,{{ pdb_b64_on_100(pdb_b64) }}"
              download="esmfold_{{ job.id }}.pdb"
              class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
         {% endif %}

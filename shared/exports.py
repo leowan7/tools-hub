@@ -28,6 +28,7 @@ import zipfile
 from typing import Callable, Optional
 
 from shared import metric_glossary as _metric_glossary
+from shared import pdb_bfactors as _pdb_bfactors
 
 
 def _dict_candidates(candidates) -> list:
@@ -322,6 +323,11 @@ def candidates_to_zip(
                 data = fetch_bytes(job_id, key["pdb_key"])
             if data is None:
                 continue
+            # One conversion covers the job, campaign and target ZIP
+            # routes, which all come through here. Same whole-file gate
+            # as every other download: a structure that is not a
+            # fractional confidence is archived untouched.
+            data = _pdb_bfactors.bfactors_on_100_bytes(data)
             prefix = ""
             if namespace:
                 tool = key.get("tool")

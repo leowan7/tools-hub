@@ -191,7 +191,7 @@
            The PDB is text (base64-decoded PDB ATOM records); the PAE
            is a compressed npz. #}
         {% if pdb_b64 %}
-          <a href="data:chemical/x-pdb;base64,{{ pdb_b64 }}"
+          <a href="data:chemical/x-pdb;base64,{{ pdb_b64_on_100(pdb_b64) }}"
              download="colabfold_{{ job.id }}.pdb"
              class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
         {% endif %}
