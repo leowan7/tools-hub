@@ -36,9 +36,13 @@
 {# Summary stats computed in Jinja — avoids a second round-trip on the
    pLDDT array just to show a mean. #}
 {% set plddt_count = plddt | length %}
-{% set plddt_mean  = (plddt | sum / plddt_count) if plddt_count else 0 %}
-{% set plddt_min   = plddt | min if plddt else 0 %}
-{% set plddt_max   = plddt | max if plddt else 0 %}
+{# Normalised for the same reason the other predictors are: this mean
+   is read against a 70/50 threshold written for the 0-100 scale.
+   af2 already stores 0-100, so plddt_on_100 is a no-op here -- it is
+   applied so the three predictor panels cannot drift apart. #}
+{% set plddt_mean  = plddt_on_100((plddt | sum / plddt_count) if plddt_count else 0) %}
+{% set plddt_min   = plddt_on_100(plddt | min) if plddt else 0 %}
+{% set plddt_max   = plddt_on_100(plddt | max) if plddt else 0 %}
 
 {# ----- Batch path ----- #}
 {% if raw_designs %}

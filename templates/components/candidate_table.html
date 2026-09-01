@@ -637,8 +637,27 @@
                 {% endif %}
               </td>
             {% else %}
-              {% set fval = raw | float %}
-              {% if col in ('ipTM', 'pTM', 'shape_complementarity') %}
+              {# pLDDT arrives on either scale depending on the tool, and
+                 for opendde on either scale from the SAME tool. Normalise
+                 before formatting AND before writing data-val, so the sort
+                 key and the displayed number stay the same quantity.
+                 PRECISION IS DELIBERATELY UNTOUCHED: widening the format
+                 branch below to every pLDDT column moved mean_pLDDT from
+                 two decimals to one, which silently rewrote af2's table
+                 (75.93 -> 75.9) and broke the sentence on that page
+                 quoting a 1.77 spread. This is a scale fix; it does not
+                 get to change precision as a side effect. #}
+              {% set fval = plddt_on_100(raw) if col in PLDDT_COLUMNS
+                            else raw | float %}
+              {% if fval is none %}
+                {# plddt_on_100 returns None for an unparseable value.
+                   ``raw is none`` above catches nulls but not "" or "n/a",
+                   and formatting None raises -- a 500 where the old
+                   ``raw | float`` quietly showed 0.00, which was a fake
+                   number rather than an honest gap. #}
+                {% set disp = '—' %}
+                {% set fval = '' %}
+              {% elif col in ('ipTM', 'pTM', 'shape_complementarity') %}
                 {% set disp = '%.3f' | format(fval) %}
               {% elif col == 'pLDDT' %}
                 {% set disp = '%.1f' | format(fval) %}

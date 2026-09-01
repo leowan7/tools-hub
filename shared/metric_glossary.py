@@ -140,7 +140,7 @@ GLOSSARY: dict[str, dict] = {
             "score distribution, not for advancing to validation. 'stub' "
             "marks smoke-test stubs whose scores are placeholders. "
             "'strict_pass' / 'soft_pass' are Boltz-2 cofold tiers: "
-            "strict_pass = complex_pLDDT >= 0.85 AND ipTM >= 0.7 AND at "
+            "strict_pass = complex_pLDDT >= 85 AND ipTM >= 0.7 AND at "
             "least 4 hotspot contacts."
         ),
         "good_range": "pass / strict_pass",
@@ -267,3 +267,72 @@ def format_value(metric_key: str, raw) -> str:
         return format(float(raw), fmt)
     except (TypeError, ValueError):
         return str(raw) if raw is not None else "—"
+
+
+# ── pLDDT lives on two scales in this codebase ───────────────────────
+#
+# Every column key under which a pLDDT is stored. Used by
+# components/candidate_table.html to decide which cells to normalise.
+# ``iplddt`` variants are here too: they are the same quantity measured
+# at an interface, on the same scale as their sibling.
+PLDDT_COLUMNS = frozenset({
+    "pLDDT", "plddt",
+    "mean_pLDDT", "mean_plddt",
+    "af2_plddt",
+    "complex_pLDDT", "complex_plddt",
+    "iplddt", "complex_iplddt",
+})
+
+
+def plddt_on_100(raw):
+    """Return a pLDDT on the 0-100 scale this site renders everything on.
+
+    The scale is NOT knowable from the tool. esmfold and proteina store
+    0-1; af2, colabfold and pxdesign store 0-100; boltz2 stores 0-1 and
+    its template scaled it inline; and opendde stores whichever of four
+    upstream keys its scorer happened to write, so the SAME adapter
+    yields either. A per-tool table would be wrong for opendde on its
+    first run.
+
+    It IS knowable from the value. pLDDT is a confidence, and on the
+    0-100 scale even a fully disordered residue lands around 20-40 --
+    the disordered example on this site bottoms out at 21. A value at or
+    below 1.0 is therefore the 0-1 form, not a structure with
+    essentially no confidence anywhere.
+
+    APPLY IT EXACTLY ONCE. It is NOT idempotent, and an earlier version
+    of this docstring claimed it was. The claim holds for the values it
+    was tested on and fails below 0.01, where scaling lands back inside
+    the 0-1 window: 0.005 -> 0.5 -> 50.0. boltz2's template used to
+    normalise and then hand the result to candidate_table, which
+    normalised the ``pLDDT`` key again; that was harmless only because
+    boltz2's real range is 0.91-0.97.
+
+    What IS guaranteed is the property the callers actually need: one
+    application to a value on EITHER scale yields 0-100. So a later
+    pipeline fix that starts emitting 0-100 is safe, because that value
+    passes through untouched.
+
+    Negatives pass through untouched rather than being invented into
+    something plausible -- they mean the payload is broken and that
+    should stay visible. Anything unparseable, NaN included, returns
+    None, and the CALLER must render that as a missing value: it is not
+    a number and formatting it as one raises.
+    """
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val != val:  # NaN
+        return None
+    if 0.0 <= val <= 1.0:
+        return val * 100.0
+    # Already on 0-100: hand back the ORIGINAL object, not the float()
+    # copy. Callers that format ints and floats differently -- the
+    # completion email and the share card's og:title both do
+    # ``f"{v:.3f}" if isinstance(v, float) else f"{v}"`` -- turned a
+    # stored int 88 into "88.000" purely because this coerced. Scale is
+    # what this function changes; nothing else.
+    return raw if isinstance(raw, (int, float)) else val

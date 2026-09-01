@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.metric_glossary import plddt_on_100
 from shared.tool_meta import meta_for
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -649,7 +650,11 @@ class TestExampleNumbersComeFromThePayload:
         odd = [c for c in band if c["scores"]["af2_plddt"] < 0.70]
         assert [c["rank"] for c in odd] == [55]
         assert round(odd[0]["scores"]["af2_plddt"], 2) == 0.58
-        assert "rank 55" in reading and "0.58" in reading
+        # The PROSE quotes what the page renders (58.38 on the 0-100
+        # scale); the PAYLOAD stores 0.5838. Both are asserted, because
+        # normalising the column without rescaling this sentence is what
+        # made the page contradict its own table.
+        assert "rank 55" in reading and "58.38" in reading
         copies = [c for c in band if c not in odd]
         assert len(copies) == 12
 
@@ -658,7 +663,10 @@ class TestExampleNumbersComeFromThePayload:
         # the paragraph would be arguing for a check nobody needs.
         cp = col("af2_plddt", copies)
         assert 0.70 <= min(cp) and max(cp) < 0.77
-        assert "0.71 to 0.76" in reading
+        # Payload 0-1, prose on the 0-100 scale the table renders.
+        assert (round(plddt_on_100(min(cp)), 2),
+                round(plddt_on_100(max(cp)), 2)) == (70.79, 75.65)
+        assert "70.79 to 75.65" in reading
         cs = col("binder_scrmsd", copies)
         assert 32.0 <= min(cs) and max(cs) <= 44.5
         assert "32 to 44 &Aring;" in reading
@@ -814,39 +822,49 @@ class TestExampleNumbersComeFromThePayload:
         assert result["mean_plddt"] == 0.39
         assert round(result["ptm"], 3) == 0.119
 
-        # Assert on the RAW payload, which is what the page renders.
-        # Normalising to 0-100 first -- as this test used to -- certifies
-        # the prose against the data while the reader is shown something
-        # else entirely, which is exactly the defect that shipped here.
+        # TWO scales, asserted as two halves that must agree.
+        #
+        # The PAYLOAD stores 0-1, because that is what ESMFold's head
+        # returns and the stored job is not rewritten. The PAGE renders
+        # 0-100, because plddt_on_100 normalises at display time. The
+        # prose describes the PAGE. Asserting only one half is how the
+        # original defect shipped: the old version of this test
+        # normalised the payload to whatever scale the prose used, so it
+        # certified the prose against the data while the reader was shown
+        # something else.
+        from shared.metric_glossary import plddt_on_100
+
         raw = result["plddt_per_residue"]
         assert len(raw) == 304
-        assert max(raw) <= 1.0, "ESMFold reports pLDDT on 0 to 1"
-        assert sum(1 for v in raw if v >= 0.70) == 0, (
-            "the example's central claim is that NOTHING reaches 0.70"
+        assert max(raw) <= 1.0, "the stored payload is on 0-1"
+
+        shown = [plddt_on_100(v) for v in raw]
+        assert max(shown) > 1.0, "the displayed value is on 0-100"
+        assert sum(1 for v in shown if v >= 70) == 0, (
+            "the example's central claim is that NOTHING reaches 70"
         )
-        assert round(max(raw), 2) == 0.66
+        assert round(max(shown), 1) == 65.9
         # The strip's own colour buckets, because "the whole strip is red"
         # was the claim before this and 26 residues are not red.
-        assert sum(1 for v in raw if v < 0.50) == 278
-        assert sum(1 for v in raw if 0.50 <= v < 0.70) == 26
-        assert sum(1 for v in raw if v >= 0.90) == 0
+        assert sum(1 for v in shown if v < 50) == 278
+        assert sum(1 for v in shown if 50 <= v < 70) == 26
+        assert sum(1 for v in shown if v >= 90) == 0
 
         longest = run = 0
-        for v in raw:
-            run = run + 1 if v >= 0.50 else 0
+        for v in shown:
+            run = run + 1 if v >= 50 else 0
             longest = max(longest, run)
         assert longest == 10
 
         came = example["what_came_back"]
-        assert "0.39" in came and "0.119" in came
-        assert "0.66" in came and "278 of 304" in came
+        assert "39.00" in came and "0.119" in came
+        assert "65.9" in came and "278 of 304" in came
         assert "26 are amber" in came
         assert "10 residues" in came
-        assert "<strong>Not one residue reaches 0.70</strong>" in came
-        # The units convention has to be NAMED. The strip's legend is
-        # written for the 0-100 scale the other predictors use, so a
-        # reader who is not told cannot reconcile 0.39 with "red <= 50".
-        assert "0-to-1 scale" in came
+        assert "<strong>Not one residue reaches 70</strong>" in came
+        # The page no longer needs a units caveat, and must not carry a
+        # stale one. Both were true of this page at different times.
+        assert "0-to-1 scale" not in came
         # The reading, not just the numbers.
         assert "correct answer, not a failed run" in example["how_to_read_it"]
 
@@ -919,12 +937,12 @@ class TestExampleNumbersComeFromThePayload:
 
         read = example["how_to_read_it"]
         assert "sort order, not a" in read
-        # A cross-tool pLDDT comparison has to name the scale it is
-        # crossing. AF2 reports 0-100 and ESMFold 0-1, and this passage
-        # sends the reader from one page to the other holding a
-        # threshold in mind -- unqualified, it reads as a contradiction.
-        assert "0-to-100" in read and "0 to 1" in read
-        assert "0.70" in read, "the esmfold threshold must be on esmfold's scale"
+        # This passage sends the reader to the ESMFold example holding a
+        # threshold in mind. Both pages render 0-100 now, so it states one
+        # number -- and must not reacquire a scale caveat that would only
+        # be true if the normaliser were removed.
+        assert "70" in read
+        assert "0.70" not in read and "0 to 1" not in read
 
         # NOT derivable from the payload: the ten submitted sequences are
         # designs and are not published, so the identity range is a

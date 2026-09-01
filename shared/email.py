@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 import requests
 
+from shared import metric_glossary as _metric_glossary
 from shared.wallet import SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,15 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         scores = flat or {}
     if not scores:
         return ("", "", "", "")
+
+    # The caption underneath quotes the 80/90 band, so the number beside
+    # it has to be on that scale. This mailed "pLDDT 0.830" directly above
+    # "Above 80 is confidently folded".
+    scores = {
+        k: (_metric_glossary.plddt_on_100(v)
+            if k in _metric_glossary.PLDDT_COLUMNS else v)
+        for k, v in scores.items()
+    }
 
     try:
         from shared.score_legends import (  # noqa: PLC0415
@@ -1253,7 +1263,11 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     # Structure-prediction tools (D2 AF2, D3 ColabFold, D4 ESMFold):
     # 'pdb_b64' + 'mean_plddt' (and optionally 'iptm'/'ptm').
     if result.get("pdb_b64"):
-        plddt = result.get("mean_plddt")
+        # Normalised for the same reason the job page is: esmfold stores
+        # this on 0-1, af2 and colabfold on 0-100, and an email reading
+        # "mean pLDDT 0.4" is unreadable against the 70/50 thresholds
+        # every other surface uses. See metric_glossary.plddt_on_100.
+        plddt = _metric_glossary.plddt_on_100(result.get("mean_plddt"))
         if isinstance(plddt, (int, float)):
             return (
                 f"Structure prediction complete (mean pLDDT {plddt:.1f}). "

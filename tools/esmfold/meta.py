@@ -120,10 +120,14 @@ PILOT: dict | None = None
 # pAE panel, which this partial already renders conditionally.
 # plddt_per_residue is kept, because it IS this example.
 #
-# UNITS. ESMFold reports pLDDT on 0-1 and this partial prints mean_plddt raw
-# ("%.2f" straight from the payload), so the page shows 0.39 and the prose
-# says 0.39. ColabFold and AF2 report the same metric on 0-100. Quote what
-# THIS page renders, not the sibling tool's scale.
+# UNITS. This payload stores pLDDT on 0-1 (mean 0.39, max 0.659) because
+# that is what ESMFold's HuggingFace head returns. The PAGE renders 0-100,
+# because shared/metric_glossary.plddt_on_100 normalises at display time --
+# every threshold, legend and tooltip on this site is written for 0-100.
+# So the prose below quotes 39.00 / 65.9 / 50 / 70 and the JSON beside it
+# holds 0.39 / 0.659. That is not a contradiction, it is the normaliser.
+# Quote what the PAGE renders; tests/test_worked_examples.py asserts both
+# halves so neither can drift.
 #
 # COST is compute_charge_usd(32, "A100-40GB") - what a reader would be
 # charged, not the raw Modal cost. tests/test_worked_examples.py recomputes it
@@ -160,17 +164,13 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "A complete structure, a mean pLDDT of <strong>0.39</strong> and a "
-        "pTM of 0.119. <strong>ESMFold reports pLDDT on a 0-to-1 scale</strong>, "
-        "so read the strip's <em>90 / 70 / 50</em> legend as 0.90 / 0.70 / "
-        "0.50 &mdash; the same thresholds, a hundredth of the size. (AlphaFold2 "
-        "and ColabFold report the same quantity on 0 to 100, which is why the "
-        "legend is written that way.) Open <em>Per-residue pLDDT</em> under "
-        "the result and the 304-residue strip is red almost end to end: "
-        "<strong>278 of 304 residues sit below 0.50</strong>, 26 are amber "
-        "above it, and nothing reaches green or blue anywhere. <strong>Not "
-        "one residue reaches 0.70</strong>; the highest in the chain is 0.66. "
-        "The longest unbroken stretch that even reaches 0.50 is 10 residues."
+        "A complete structure, a mean pLDDT of <strong>39.00</strong> and a "
+        "pTM of 0.119. Open <em>Per-residue pLDDT</em> under the result and "
+        "the 304-residue strip is red almost end to end: <strong>278 of 304 "
+        "residues sit below 50</strong>, 26 are amber above it, and nothing "
+        "reaches green or blue anywhere. <strong>Not one residue reaches "
+        "70</strong>; the highest in the chain is 65.9. The longest unbroken "
+        "stretch that even reaches 50 is 10 residues."
     ),
     "how_to_read_it": (
         "<strong>That is the correct answer, not a failed run.</strong> The "

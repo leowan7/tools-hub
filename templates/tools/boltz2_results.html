@@ -3,7 +3,7 @@
    Reshapes the Boltz-2 ``smoke_result`` schema into the candidate_table
    contract: each design becomes one row with scores keyed by the
    metric_glossary tokens (ipTM, pTM, pLDDT, n_hotspot_contacts,
-   filter_status). complex_pLDDT is multiplied by 100 to match the
+   filter_status). complex_pLDDT is handed over RAW; candidate_table normalises it to the
    AF2-convention 0–100 scale that pLDDT renders with. #}
 
 {% from "components/results_shell.html" import results_panel %}
@@ -31,7 +31,12 @@
 {% set candidates = [] %}
 {% for d in raw_designs %}
   {% set _plddt = d.get('complex_plddt') %}
-  {% set _plddt_pct = (_plddt * 100) if _plddt is not none else none %}
+  {# Was an unconditional (_plddt * 100), which is wrong the moment a
+     payload arrives already on 0-100 -- it would render 9609. Now this
+     hands the RAW value to candidate_table, which normalises the
+     'pLDDT' key itself. Normalising here as well was applying the rule
+     twice, and it is not idempotent below 0.01. #}
+  {% set _plddt_raw = _plddt %}
   {% set _ = candidates.append({
       '_source_index': loop.index0,
       'rank': d.get('rank'),
@@ -40,7 +45,7 @@
       'scores': {
         'ipTM': d.get('iptm'),
         'pTM': d.get('ptm'),
-        'pLDDT': _plddt_pct,
+        'pLDDT': _plddt_raw,
         'n_hotspot_contacts': d.get('n_hotspot_contacts'),
         'filter_status': d.get('filter_status'),
       },

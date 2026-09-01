@@ -393,6 +393,20 @@ def create_app() -> Flask:
     flask_app.jinja_env.globals["format_metric_value"] = (
         _metric_glossary.format_value
     )
+    # pLDDT reaches the templates on TWO scales -- 0-1 from esmfold,
+    # proteina and boltz2, 0-100 from af2, colabfold and pxdesign, and
+    # either one from opendde depending on which upstream key its scorer
+    # wrote. Every legend, threshold and tooltip on this site is written
+    # for 0-100, so the value is normalised at the point of DISPLAY
+    # rather than in a pipeline: the jobs table already holds years of
+    # 0-1 results that a pipeline fix could not reach, and normalising
+    # here fixes those too. See shared/metric_glossary.plddt_on_100.
+    flask_app.jinja_env.globals["plddt_on_100"] = (
+        _metric_glossary.plddt_on_100
+    )
+    flask_app.jinja_env.globals["PLDDT_COLUMNS"] = (
+        _metric_glossary.PLDDT_COLUMNS
+    )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
     # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:
     # explanation plus the optional ``caveat``, the half that is about what an
