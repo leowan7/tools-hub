@@ -80,6 +80,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, ranking, score_legends
+from shared import pdb_bfactors
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -154,6 +155,7 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
