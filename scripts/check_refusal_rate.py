@@ -27,6 +27,17 @@ WHAT THE RATIO IS, AND IS NOT
     is a SUSTAINED refusal rate, which is exactly the condition the plan
     describes.
 
+WHEN IT CANNOT EVALUATE AT ALL
+    Organic anonymous Scout traffic has measured ZERO (the denominator read 3,
+    28, then 122 across three container lifetimes, every request our own
+    probes). Below ``REFUSAL_RATE_MIN_SAMPLES`` this check SKIPs and exits 0,
+    which renders identically to a healthy run -- so on a quiet fleet the alarm
+    reports green without ever having evaluated. That is tolerable while
+    nothing is being refused and misleading the moment something is, so a skip
+    that had refusals in it emits an ``UNRATED REFUSALS`` line, which the
+    workflow raises to a run annotation. It is reported, never alerted on: see
+    the comment at that branch for why this must not gain a fail path.
+
 Stdlib only, deliberately — the workflow installs nothing.
 
 Run by hand::
@@ -242,6 +253,27 @@ def evaluate(
             f"(floor is {min_samples:.0f}). Counters reset on deploy, so this "
             f"ratio is not yet a rate."
         )
+        # A SKIP exits 0, so it presents on GitHub exactly like a healthy run.
+        # That is fine when nothing was refused and actively misleading when
+        # something was: the refusals happened, and the only thing missing is a
+        # denominator big enough to say whether they are a spike. Since #189 the
+        # per-IP tier actually binds, so this is the shape a NAT lab hitting the
+        # shared ceiling takes at low traffic -- refused for real, reported as
+        # SKIP, rendered green.
+        #
+        # This line is the marker the workflow turns into a ::warning:: run
+        # annotation. It stays REPORTED-ONLY and the exit code is unchanged:
+        # a new fail path here would redden main's check suite, and a red suite
+        # on main's HEAD makes Railway skip same-commit deploys (ALERTING.md,
+        # "A variable change is not deploying"). An alarm that can block the
+        # deploy that fixes it is worse than one that is merely quiet.
+        if refused:
+            lines.append(
+                f"UNRATED REFUSALS: {refused:.0f} refusal(s) landed below the "
+                f"{min_samples:.0f}-sample floor, so this run could NOT say "
+                f"whether that is a spike. Read the per-reason split above; "
+                f"rate_limited here means the per-IP ceiling walled somebody."
+            )
         return 0, lines
 
     share = refused / requests

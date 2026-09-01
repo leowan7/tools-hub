@@ -10,6 +10,8 @@ discovered on a Sunday.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from scripts import check_refusal_rate
@@ -110,6 +112,83 @@ def test_a_tiny_denominator_skips_instead_of_firing():
 def test_the_floor_stops_applying_at_the_floor():
     code, _ = evaluate(DEFAULT_MIN_SAMPLES, {"rate_limited": DEFAULT_MIN_SAMPLES})
     assert code == 1, "at the floor the threshold must apply, not skip"
+
+
+def test_a_skip_that_swallowed_refusals_says_so():
+    """A SKIP exits 0 and renders exactly like a healthy run.
+
+    That is fine on a quiet fleet and misleading the moment something was
+    actually refused: the refusals are real, only the denominator is missing.
+    Since #189 the per-IP tier binds, so this is the shape a NAT lab hitting
+    the shared ceiling takes at low traffic -- refused for real, reported as
+    SKIP, rendered green. The marker is what the workflow raises to a run
+    annotation.
+    """
+    code, lines = evaluate(4.0, {"rate_limited": 3.0})
+    assert code == 0, "still reported-only; a fail path here can block deploys"
+    assert any("UNRATED REFUSALS:" in line for line in lines)
+    assert any("3 refusal(s)" in line for line in lines)
+
+
+def test_a_quiet_skip_stays_quiet():
+    """No refusals below the floor is the ordinary quiet fleet. Not worth an
+    annotation every six hours -- a warning that always fires is decoration,
+    and this repo has enough detectors that certify nothing."""
+    code, lines = evaluate(4.0, {})
+    assert code == 0
+    assert any("SKIP" in line for line in lines)
+    assert not any("UNRATED REFUSALS:" in line for line in lines)
+
+
+def test_the_marker_is_only_for_the_unratable_case():
+    """Above the floor the ratio speaks for itself, so the marker must not
+    appear -- otherwise the workflow annotates runs that DID evaluate."""
+    for requests, refusals in (
+        (DEFAULT_MIN_SAMPLES, {"rate_limited": 1.0}),          # rated, passes
+        (DEFAULT_MIN_SAMPLES, {"rate_limited": DEFAULT_MIN_SAMPLES}),  # rated, fails
+    ):
+        _, lines = evaluate(requests, refusals)
+        assert not any("UNRATED REFUSALS:" in line for line in lines), (
+            f"marker leaked into a rated run ({requests}, {refusals})"
+        )
+
+
+def test_info_only_reasons_do_not_trigger_the_marker():
+    """bad_request and job_expired are not the limiter saying no. They are
+    excluded from `refused`, so a skip full of them is still a quiet skip --
+    the same rule the alert itself already follows."""
+    code, lines = evaluate(4.0, {"bad_request": 3.0, "job_expired": 1.0})
+    assert code == 0
+    assert not any("UNRATED REFUSALS:" in line for line in lines)
+
+
+def test_the_unrated_marker_never_changes_the_exit_code():
+    """The invariant, tested in BOTH directions.
+
+    A one-directional check from an exit-0 baseline can see a pass turn into a
+    fail but is structurally blind to the reverse -- the marker swallowing a
+    real threshold breach and presenting green.
+    """
+    scenarios = (
+        # (requests, refusals, expected_code, why)
+        (4.0, {"rate_limited": 3.0}, 0, "below floor with refusals: still skips"),
+        (4.0, {}, 0, "below floor, quiet"),
+        (
+            DEFAULT_MIN_SAMPLES,
+            {"rate_limited": DEFAULT_MIN_SAMPLES},
+            1,
+            "above floor and over threshold: must STILL fail",
+        ),
+        (
+            1000.0,
+            {"rate_limited": 1.0},
+            0,
+            "above floor and under threshold: must STILL pass",
+        ),
+    )
+    for requests, refusals, expected, why in scenarios:
+        code, _ = evaluate(requests, refusals)
+        assert code == expected, why
 
 
 def test_the_two_non_refusals_never_fire_the_alert():
@@ -387,3 +466,41 @@ def test_losing_x_real_ip_is_called_out_in_words():
     body = "\n".join(lines)
     assert "NOTE:" in body
     assert "INERT" in body
+
+
+def test_the_workflow_greps_for_markers_this_script_actually_emits():
+    """Producer/consumer agreement. Reword a marker and the annotation VANISHES.
+
+    ``synthetic-smoke.yml`` decides whether to raise a run annotation by
+    grepping this script's stdout. A grep that stops matching does not fail --
+    it prints nothing, and a run with no annotation looks exactly like a run
+    with nothing to say. Silence reading as all-clear is the failure mode this
+    repo keeps producing, so the two sides are pinned to EACH OTHER here rather
+    than each to itself.
+
+    Both directions matter: the workflow must still grep for the marker, and
+    this script must still emit it in the scenario that warrants it.
+    """
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "synthetic-smoke.yml"
+    ).read_text(encoding="utf-8")
+
+    # marker -> a scrape that must produce it
+    _, unrated = evaluate(4.0, {"rate_limited": 3.0})
+    _, noted = evaluate(
+        1000.0, {"rate_limited": 1.0}, sources={"peer": 10.0}
+    )
+
+    for marker, produced in (("UNRATED REFUSALS:", unrated), ("NOTE:", noted)):
+        assert marker in workflow, (
+            f"synthetic-smoke.yml no longer greps for {marker!r}, so the "
+            "annotation it drives can never fire again."
+        )
+        assert any(marker in line for line in produced), (
+            f"{marker!r} is grepped by synthetic-smoke.yml but this script no "
+            "longer emits it in the scenario that warrants it -- the grep will "
+            "silently match nothing."
+        )

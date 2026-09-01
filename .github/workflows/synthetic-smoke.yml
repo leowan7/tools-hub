@@ -161,6 +161,24 @@ jobs:
           rc=$?
           set -e
           echo "${out}"
+          # A SKIP exits 0 and so looks exactly like a healthy run. When the
+          # skip swallowed real refusals, say so on the run PAGE -- a warning
+          # annotation is visible in the Actions list without failing the job,
+          # which matters because a red suite on main blocks Railway deploys.
+          if printf '%s' "${out}" | grep -q "UNRATED REFUSALS:"; then
+            unrated="$(printf '%s' "${out}" | grep "UNRATED REFUSALS:" | head -1)"
+            echo "::warning title=Refusal-rate alarm could not evaluate::${unrated}"
+            {
+              echo "### Refusal-rate alarm could not evaluate"
+              echo ""
+              echo "Anonymous refusals happened, but too few metered requests to rate them."
+              echo "The alarm passed because it had nothing to compare against, **not** because traffic is healthy."
+              echo ""
+              echo '```'
+              printf '%s' "${out}" | grep -E "UNRATED REFUSALS:|^SKIP:|^  (rate_limited|session_rate_limited|no_session|busy|at_capacity) "
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
           if printf '%s' "${out}" | grep -q "NOTE:"; then
             {
               echo "### Epitope Scout rate-limit key source changed"
