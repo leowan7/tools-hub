@@ -27,39 +27,82 @@ no business touching. A file whose MAXIMUM B-factor is at or below 1 is
 not a refined crystal structure; it is a confidence written as a
 fraction. So the decision is made once for the whole file, and a file
 that fails the test is returned byte-for-byte unchanged.
+
+WHY ONE PREDICATE DECIDES WHAT A COORDINATE RECORD IS. The first
+version had the reader use ``splitlines()`` and the writer
+``splitlines(keepends=True)``, both testing length against 66. A
+65-character record plus its newline measures 66, so the writer
+rewrote a line the reader had never inspected -- and since
+``line[66:]`` was then the empty string, it ate the terminator and
+welded two ATOM records into one. Reader and writer now share
+``_coordinate_bfactor``, and neither can see a line the other cannot.
+
+WHY THE CHECK IS THE WHOLE COLUMN LAYOUT AND NOT THE RECORD NAME.
+``ATOM  `` also prefixes an mmCIF ``_atom_site`` row, which is
+whitespace-DELIMITED: rewriting fixed offsets in one eats a separator
+and yields a row with a field missing. A PDB coordinate record is a
+fixed-column format, so the predicate reads it as one -- x, y, z,
+occupancy and B all have to parse at their own offsets before this
+module will touch the line.
 """
 
 from __future__ import annotations
 
 import base64
 
-# Columns 61-66 in the PDB spec, zero-indexed. Fixed-width; a PDB is a
-# column format, not a delimited one, so the slice is the parse.
+# Zero-indexed slices of the PDB coordinate record. A PDB is a column
+# format, not a delimited one, so the slice IS the parse.
+_X = (30, 38)
+_Y = (38, 46)
+_Z = (46, 54)
+_OCCUPANCY = (54, 60)
 _B_START = 60
 _B_END = 66
+
 _COORD_RECORDS = ("ATOM  ", "HETATM")
 
 
-def _bfactors(pdb_text: str) -> list[float]:
-    """Every parseable B-factor in the file, in order."""
+def _coordinate_bfactor(content: str) -> float | None:
+    """The B-factor of ``content``, or None if it is not a PDB record.
+
+    ``content`` must already have its line terminator stripped -- that
+    is the whole point of routing every caller through here.
+    """
+    if not content.startswith(_COORD_RECORDS) or len(content) < _B_END:
+        return None
+    try:
+        for start, end in (_X, _Y, _Z, _OCCUPANCY):
+            float(content[start:end])
+        return float(content[_B_START:_B_END])
+    except ValueError:
+        return None
+
+
+def _lines(pdb_text: str):
+    """``(content, terminator)`` per line, terminator preserved."""
+    for raw in pdb_text.splitlines(keepends=True):
+        content = raw.rstrip("\r\n")
+        yield content, raw[len(content):]
+
+
+def bfactors(pdb_text: str) -> list[float]:
+    """Every B-factor this module considers in scope, in order."""
     out = []
-    for line in pdb_text.splitlines():
-        if line.startswith(_COORD_RECORDS) and len(line) >= _B_END:
-            try:
-                out.append(float(line[_B_START:_B_END]))
-            except ValueError:
-                continue
+    for content, _term in _lines(pdb_text):
+        value = _coordinate_bfactor(content)
+        if value is not None:
+            out.append(value)
     return out
 
 
 def is_fractional(pdb_text: str) -> bool:
     """True when this file's B-factors are a 0-1 confidence.
 
-    Whole-file: every B-factor must be within 0-1. One atom above it and
-    the file is left alone, because a refined structure is what that
-    looks like.
+    Whole-file: every B-factor must be within 0-1. One atom above it
+    and the file is left alone, because a refined structure is what
+    that looks like.
     """
-    values = _bfactors(pdb_text)
+    values = bfactors(pdb_text)
     if not values:
         return False
     return all(0.0 <= v <= 1.0 for v in values)
@@ -68,34 +111,33 @@ def is_fractional(pdb_text: str) -> bool:
 def bfactors_on_100(pdb_text: str) -> str:
     """``pdb_text`` with a 0-1 B-factor column scaled to 0-100.
 
-    Returned unchanged when the file is not fractional, when it has no
-    coordinate records, or when it is empty.
+    Returns the SAME object when the file is not fractional, has no
+    coordinate records, or is empty. Callers rely on that identity to
+    avoid re-encoding bytes they did not change.
 
-    NOT idempotent, for the same reason
-    ``metric_glossary.plddt_on_100`` is not: a file whose B-factors are
-    all at or below 0.01 scales into a range that is still fractional,
-    so a second pass would scale it again. Apply exactly once. Real
-    predicted structures do not live there -- the disordered example on
-    this site bottoms out at 0.10 -- but the property is not guaranteed
-    and must not be claimed.
+    NOT idempotent, and the column's own precision fixes where that
+    bites: a B-factor is written to two decimals, so the smallest
+    non-zero value a file can hold is 0.01, and 0.01 scales to exactly
+    1.00 -- still inside the fractional window, so a second pass takes
+    it to 100. Apply exactly once. Real predictions do not live there
+    (the disordered example on this site bottoms out at 0.10) but the
+    property is not guaranteed and must not be claimed.
     """
     if not pdb_text or not is_fractional(pdb_text):
         return pdb_text
 
     out = []
-    for line in pdb_text.splitlines(keepends=True):
-        if not line.startswith(_COORD_RECORDS) or len(line) < _B_END:
-            out.append(line)
+    for content, term in _lines(pdb_text):
+        value = _coordinate_bfactor(content)
+        if value is None:
+            out.append(content + term)
             continue
-        try:
-            value = float(line[_B_START:_B_END])
-        except ValueError:
-            out.append(line)
-            continue
-        # "%6.2f" is the column's own width and precision. A value of
-        # 100.00 fills it exactly; nothing here can exceed that, since
-        # the gate proved every value is at or below 1.
-        out.append(f"{line[:_B_START]}{value * 100:6.2f}{line[_B_END:]}")
+        # "%6.2f" is the column's own width and precision. The gate
+        # proved every value is at or below 1, so the largest this can
+        # produce is 100.00, which fills the field exactly.
+        out.append(
+            f"{content[:_B_START]}{value * 100:6.2f}{content[_B_END:]}{term}"
+        )
     return "".join(out)
 
 
@@ -116,3 +158,24 @@ def bfactors_on_100_b64(pdb_b64: str) -> str:
     if converted is text:
         return pdb_b64
     return base64.b64encode(converted.encode("utf-8")).decode("ascii")
+
+
+def bfactors_on_100_bytes(pdb_bytes: bytes) -> bytes:
+    """The same for raw bytes, as a download route holds them.
+
+    Returns the SAME object unless the text actually changed. The first
+    version decoded and re-encoded unconditionally, which destroyed
+    every non-UTF-8 byte in a file the gate had already declined --
+    breaking the byte-for-byte promise on exactly the files it exists
+    to protect.
+    """
+    if not pdb_bytes:
+        return pdb_bytes
+    try:
+        text = pdb_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return pdb_bytes
+    converted = bfactors_on_100(text)
+    if converted is text:
+        return pdb_bytes
+    return converted.encode("utf-8")

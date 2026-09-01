@@ -815,6 +815,12 @@ def job_candidate_pdb(job_id: str, filename: str):
                 job_id=job_id,
                 filename=filename,
             )
+            # Storage is the PRIMARY structure path: for any
+            # designs/ key _slim_result_for_persist drops the inline
+            # copy, so every modern job resolves here and the
+            # template's converted value is never reached.
+            # Converting only there left this on the old scale.
+            data = _pdb_bfactors.bfactors_on_100_bytes(data)
             return Response(
                 data,
                 mimetype="chemical/x-pdb",
@@ -853,6 +859,8 @@ def job_candidate_pdb(job_id: str, filename: str):
                 mimetype="text/plain",
                 status=500,
             )
+        # Same route, legacy inline payload.
+        data = _pdb_bfactors.bfactors_on_100_bytes(data)
         return Response(
             data,
             mimetype="chemical/x-pdb",
@@ -906,9 +914,7 @@ def af2_download_pdb(job_id: str):
     # numbers are, and gated whole-file so a structure that is not a
     # fractional confidence is streamed untouched. See
     # shared/pdb_bfactors.
-    pdb_bytes = _pdb_bfactors.bfactors_on_100(
-        pdb_bytes.decode("utf-8", "replace")
-    ).encode("utf-8")
+    pdb_bytes = _pdb_bfactors.bfactors_on_100_bytes(pdb_bytes)
     return Response(
         pdb_bytes,
         mimetype="chemical/x-pdb",

@@ -24,8 +24,10 @@ import re
 import pytest
 
 from shared.pdb_bfactors import (
+    bfactors,
     bfactors_on_100,
     bfactors_on_100_b64,
+    bfactors_on_100_bytes,
     is_fractional,
 )
 
@@ -223,3 +225,139 @@ class TestTheEsmfoldDownloadAgreesWithItsPage:
         # RESIDUE -- but they must land in the same order of magnitude.
         assert max(tooltips) / max(values) < 2.0
         assert max(values) / max(tooltips) < 2.0
+
+
+class TestTheDefectsQCFound:
+    """Each of these shipped in the first draft and was caught in review."""
+
+    def test_a_short_record_is_not_welded_to_the_next_one(self):
+        """The reader used splitlines() and the writer
+        splitlines(keepends=True), both testing length against 66. A
+        65-character record plus its newline measures 66, so the writer
+        rewrote a line the reader had never inspected -- and
+        ``line[66:]`` was then "", which ate the terminator and welded
+        two ATOM records into one. Three records in, two out."""
+        full = _atom(1, 0.21).rstrip("\n")
+        short = full[:65]
+        pdb = full + "\n" + short + "\n" + full + "\n"
+        out = bfactors_on_100(pdb)
+        assert len(out.splitlines()) == 3, out
+        assert short in out.splitlines()[1], (
+            "the short record was rewritten by a writer the gate never "
+            "let inspect it"
+        )
+
+    def test_crlf_terminators_survive(self):
+        pdb = _atom(1, 0.21).rstrip("\n") + "\r\n"
+        out = bfactors_on_100(pdb)
+        assert out.endswith("\r\n")
+        assert bfactors(out) == [21.0]
+
+    def test_an_mmcif_atom_site_row_is_not_touched(self):
+        """``ATOM  `` also prefixes an mmCIF row, which is
+        whitespace-DELIMITED. Rewriting fixed offsets in one eats a
+        separator and yields a row with a field missing. The predicate
+        requires the whole fixed-column layout to parse, which a CIF
+        row does not."""
+        cif = (
+            "ATOM   1    N N   . MET A 1 1   ? 12.345 -3.210  8.765  "
+            "1.00 0.85 ? 1   MET A N   1\n"
+            "ATOM   2    C CA  . MET A 1 1   ? 13.000 -3.000  9.000  "
+            "1.00 0.90 ? 1   MET A CA  1\n"
+        )
+        assert bfactors(cif) == [], "a CIF row was read as a PDB record"
+        assert not is_fractional(cif)
+        assert bfactors_on_100(cif) is cif
+
+    def test_non_utf8_bytes_in_a_declined_file_are_preserved(self):
+        """The byte path decoded and re-encoded unconditionally, which
+        destroyed every non-UTF-8 byte in a file the gate had already
+        declined -- breaking the byte-for-byte promise on exactly the
+        files it exists to protect."""
+        raw = (
+            b"REMARK   1 AUTHOR  Jos\xe9 Garc\xeda\n"
+            + _atom(1, 30.48).encode()
+        )
+        assert bfactors_on_100_bytes(raw) is raw
+
+    def test_a_declined_utf8_file_comes_back_as_the_SAME_object(self):
+        """Two different properties, and the non-UTF-8 test above only
+        covers one. That input fails the decode and returns early, so it
+        never reaches the re-encode; a perfectly valid UTF-8 crystal
+        structure does. Without the identity check every declined file
+        is decoded and re-encoded on every download for nothing."""
+        crystal = (REPO / "static" / "example" / "1HEW.pdb").read_bytes()
+        assert bfactors_on_100_bytes(crystal) is crystal
+
+    def test_the_byte_path_still_converts_a_fractional_file(self):
+        raw = _atom(1, 0.21).encode()
+        assert bfactors(bfactors_on_100_bytes(raw).decode()) == [21.0]
+
+
+class TestEveryDownloadPathConverts:
+    """The first draft converted the paths a user rarely takes.
+
+    ``candidate_table`` sets ``use_url = raw_pdb_key and not is_example``
+    and ``_slim_result_for_persist`` drops the inline copy for any
+    ``designs/`` key -- so every modern job resolves through Storage and
+    the template's converted value is never reached. Converting only
+    there was, in practice, an ESMFold-worked-example-only fix.
+    """
+
+    def test_the_zip_export_converts(self):
+        """One helper behind the job, campaign and target ZIP routes."""
+        import io
+        import zipfile
+
+        from shared.exports import candidates_to_zip
+
+        blob = base64.b64encode(_atom(1, 0.21).encode()).decode()
+        archive = candidates_to_zip(
+            [{"rank": 1, "pdb_key": "d.pdb", "pdb_content_b64": blob}],
+            lambda _job, _key: None,
+        )
+        inner = zipfile.ZipFile(io.BytesIO(archive)).read("d.pdb").decode()
+        assert bfactors(inner) == [21.0], inner
+
+    def test_the_zip_export_leaves_a_crystal_structure_alone(self):
+        import io
+        import zipfile
+
+        from shared.exports import candidates_to_zip
+
+        crystal = (REPO / "static" / "example" / "1HEW.pdb").read_bytes()
+        blob = base64.b64encode(crystal).decode()
+        archive = candidates_to_zip(
+            [{"rank": 1, "pdb_key": "x.pdb", "pdb_content_b64": blob}],
+            lambda _job, _key: None,
+        )
+        assert zipfile.ZipFile(io.BytesIO(archive)).read("x.pdb") == crystal
+
+    def test_every_structure_route_in_jobs_converts(self):
+        """Storage path, its inline fallback, and af2.pdb. A per-site
+        needle would be satisfied by any one of them, so this counts."""
+        body = (REPO / "blueprints" / "jobs.py").read_text(encoding="utf-8")
+        calls = body.count("_pdb_bfactors.bfactors_on_100_bytes(")
+        assert calls == 3, (
+            f"expected 3 converting structure routes in blueprints/jobs.py, "
+            f"found {calls}"
+        )
+
+    def test_each_template_download_site_converts(self):
+        """Counted, not merely present: colabfold and the candidate
+        table were both deletable with the suite green."""
+        expected = {
+            "templates/tools/esmfold_results.html": 1,
+            "templates/tools/colabfold_results.html": 1,
+            "templates/components/candidate_table.html": 1,
+        }
+        wrong = {}
+        for path, count in expected.items():
+            body = re.sub(
+                r"\{#.*?#\}", "",
+                (REPO / path).read_text(encoding="utf-8"), flags=re.S,
+            )
+            seen = body.count("pdb_b64_on_100(")
+            if seen != count:
+                wrong[path] = f"{seen}x, expected {count}"
+        assert not wrong, wrong
