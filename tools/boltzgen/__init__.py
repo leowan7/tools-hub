@@ -187,12 +187,16 @@ adapter = ToolAdapter(
             slug="pilot",
             label="Your target, ~30 min start to first results",
             description=(
+                # No "start small, then scale up": the estimate is flat
+                # at every budget from 1 to 50, so a smaller first batch
+                # returns fewer designs for the same money. Matches the
+                # wording in templates/tools/boltzgen_form.html.
                 "Real BoltzGen run against your uploaded target. Pick "
                 "1 to 50 final candidates with refolding RMSD and ipTM "
-                "scores. Start with 4 designs (~15 to 30 min) to confirm "
-                "your target and binder length, then scale up once the "
-                "small batch looks reasonable. Results emailed when "
-                "complete; A100-40GB."
+                "scores. 4 is enough to read through while you confirm "
+                "your target and binder length, and raising it on a later "
+                "run returns more candidates against the same estimate. "
+                "Results emailed when complete; A100-40GB."
             ),
             requires_pdb=True,
             long_running=True,
