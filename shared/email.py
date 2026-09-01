@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 import requests
 
+from shared import metric_glossary as _metric_glossary
 from shared.wallet import SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
@@ -1253,7 +1254,11 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     # Structure-prediction tools (D2 AF2, D3 ColabFold, D4 ESMFold):
     # 'pdb_b64' + 'mean_plddt' (and optionally 'iptm'/'ptm').
     if result.get("pdb_b64"):
-        plddt = result.get("mean_plddt")
+        # Normalised for the same reason the job page is: esmfold stores
+        # this on 0-1, af2 and colabfold on 0-100, and an email reading
+        # "mean pLDDT 0.4" is unreadable against the 70/50 thresholds
+        # every other surface uses. See metric_glossary.plddt_on_100.
+        plddt = _metric_glossary.plddt_on_100(result.get("mean_plddt"))
         if isinstance(plddt, (int, float)):
             return (
                 f"Structure prediction complete (mean pLDDT {plddt:.1f}). "

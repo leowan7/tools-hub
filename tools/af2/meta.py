@@ -259,12 +259,9 @@ EXAMPLE: dict | None = {
         "which is a genuine finding about the design round, and the opposite "
         "of what you would conclude by reading row one. "
         "For scale: 70 is the usual line for a confidently folded structure, "
-        "and all ten clear it &mdash; AlphaFold2 reports pLDDT on a 0-to-100 "
-        "scale. Compare with the ESMFold example on this site, which reports "
-        "the same quantity on 0 to 1: there a genuinely disordered protein "
-        "has no residue reaching 0.70 anywhere in the chain. Same threshold, "
-        "different scale, so check which one you are reading before comparing "
-        "two numbers."
+        "and all ten clear it. Compare with the ESMFold example on this "
+        "site, where a genuinely disordered protein has no residue reaching "
+        "70 anywhere in the chain."
     ),
     "what_we_did_next": (
         "A batch this tight does not narrow itself, so the choice has to come "

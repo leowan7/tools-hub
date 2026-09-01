@@ -120,7 +120,9 @@
         <div>
           <div style="color:var(--text-tertiary); font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;">mean pLDDT</div>
           <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem; margin-top:0.25rem;">
-            {% if mean_plddt is not none %}{{ '%.2f' % mean_plddt }}{% else %}—{% endif %}
+            {# Normalised: esmfold stores this on 0-1 and every threshold
+               on this page is written for 0-100. #}
+            {% if mean_plddt is not none %}{{ '%.2f' % plddt_on_100(mean_plddt) }}{% else %}—{% endif %}
           </div>
         </div>
         {% if ptm is not none %}
@@ -166,9 +168,9 @@
           </summary>
           <div style="display:flex; flex-wrap:wrap; gap:1px; margin-top:0.6rem; max-width:640px;">
             {% for value in plddt %}
-              {% set pct = (value if value <= 1 else value / 100) %}
+              {% set pct = plddt_on_100(value) / 100 %}
               {% set bar_color = ('#60a5fa' if pct >= 0.9 else '#34d399' if pct >= 0.7 else '#fbbf24' if pct >= 0.5 else '#f87171') %}
-              <span title="residue {{ loop.index }}: pLDDT={{ '%.1f' % value }}"
+              <span title="residue {{ loop.index }}: pLDDT={{ '%.1f' % plddt_on_100(value) }}"
                     style="display:inline-block; width:3px; height:28px; background:{{ bar_color }};"></span>
             {% endfor %}
           </div>

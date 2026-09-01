@@ -637,10 +637,17 @@
                 {% endif %}
               </td>
             {% else %}
-              {% set fval = raw | float %}
+              {# pLDDT arrives on either scale depending on the tool, and
+                 for opendde on either scale from the SAME tool. Normalise
+                 to 0-100 before formatting AND before writing data-val, so
+                 the column sorts on one scale instead of putting every 0-1
+                 row below every 0-100 row. plddt_on_100 is idempotent, so a
+                 column already on 0-100 is untouched. #}
+              {% set fval = plddt_on_100(raw) if col in PLDDT_COLUMNS
+                            else raw | float %}
               {% if col in ('ipTM', 'pTM', 'shape_complementarity') %}
                 {% set disp = '%.3f' | format(fval) %}
-              {% elif col == 'pLDDT' %}
+              {% elif col in PLDDT_COLUMNS %}
                 {% set disp = '%.1f' | format(fval) %}
               {% elif col in ('seed', 'cluster_id') %}
                 {# seed / cluster_id are discrete integer IDs, not measurements —

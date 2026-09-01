@@ -31,7 +31,11 @@
 {% set candidates = [] %}
 {% for d in raw_designs %}
   {% set _plddt = d.get('complex_plddt') %}
-  {% set _plddt_pct = (_plddt * 100) if _plddt is not none else none %}
+  {# Was an unconditional (_plddt * 100). That is right for every
+     payload seen so far and wrong the moment one arrives already on
+     0-100 -- it would render 9609. plddt_on_100 is idempotent, so it
+     scales the 0-1 form and leaves the other alone. #}
+  {% set _plddt_pct = plddt_on_100(_plddt) %}
   {% set _ = candidates.append({
       '_source_index': loop.index0,
       'rank': d.get('rank'),

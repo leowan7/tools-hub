@@ -267,3 +267,53 @@ def format_value(metric_key: str, raw) -> str:
         return format(float(raw), fmt)
     except (TypeError, ValueError):
         return str(raw) if raw is not None else "—"
+
+
+# ── pLDDT lives on two scales in this codebase ───────────────────────
+#
+# Every column key under which a pLDDT is stored. Used by
+# components/candidate_table.html to decide which cells to normalise.
+# ``iplddt`` variants are here too: they are the same quantity measured
+# at an interface, on the same scale as their sibling.
+PLDDT_COLUMNS = frozenset({
+    "pLDDT", "plddt",
+    "mean_pLDDT", "mean_plddt",
+    "af2_plddt",
+    "complex_pLDDT", "complex_plddt",
+    "iplddt", "complex_iplddt",
+})
+
+
+def plddt_on_100(raw):
+    """Return a pLDDT on the 0-100 scale this site renders everything on.
+
+    The scale is NOT knowable from the tool. esmfold and proteina store
+    0-1; af2, colabfold and pxdesign store 0-100; boltz2 stores 0-1 and
+    its template scaled it inline; and opendde stores whichever of four
+    upstream keys its scorer happened to write, so the SAME adapter
+    yields either. A per-tool table would be wrong for opendde on its
+    first run.
+
+    It IS knowable from the value. pLDDT is a confidence, and on the
+    0-100 scale even a fully disordered residue lands around 20-40 --
+    the disordered example on this site bottoms out at 21. A value at or
+    below 1.0 is therefore the 0-1 form, not a structure with
+    essentially no confidence anywhere.
+
+    Idempotent by construction: a 0-1 value becomes >1 after scaling, so
+    applying this twice is the same as applying it once, and fixing a
+    pipeline to emit 0-100 later cannot make this double-scale.
+
+    Negatives and non-numbers pass through untouched rather than being
+    invented into something plausible -- they mean the payload is broken
+    and that should stay visible.
+    """
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val != val:  # NaN
+        return None
+    return val * 100.0 if 0.0 <= val <= 1.0 else val

@@ -77,7 +77,11 @@
                         {% if iptm is number %}{{ '%.2f'|format(iptm) }}{% else %}—{% endif %}
                       </td>
                       <td style="padding: 0.25rem 0.3rem;">
-                        {% set plddt = scores.get('pLDDT') or scores.get('plddt') %}
+                        {# This table puts DIFFERENT TOOLS side by side, so it
+                           is the one place a 0-1 row and a 0-100 row are read
+                           against each other directly. Normalise or the
+                           comparison is meaningless. #}
+                        {% set plddt = plddt_on_100(scores.get('pLDDT') or scores.get('plddt')) %}
                         {% if plddt is number %}{{ '%.1f'|format(plddt) }}{% else %}—{% endif %}
                       </td>
                     </tr>

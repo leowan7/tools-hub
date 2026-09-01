@@ -516,6 +516,18 @@
           return n.toFixed(digits);
         }
 
+        // Mirror of shared/metric_glossary.plddt_on_100, which is the
+        // canonical rule. Duplicated deliberately: this table is built in
+        // the browser from a live poll, so the jinja global cannot reach
+        // it. Same contract -- 0-1 scales to 0-100, anything else passes
+        // through, and it is idempotent.
+        function plddtOn100(v) {
+          if (v === null || v === undefined || v === '') return v;
+          var n = Number(v);
+          if (isNaN(n)) return v;
+          return (n >= 0 && n <= 1) ? n * 100 : n;
+        }
+
         function filterCell(status) {
           if (!status) return '<span>—</span>';
           var cls = String(status).toLowerCase() === 'pass'
@@ -546,7 +558,7 @@
             var dataCells =
               '<td>' + rank + '</td>' +
               '<td>' + fmt(c.iptm, 3) + '</td>' +
-              '<td>' + fmt(c.plddt, 1) + '</td>' +
+              '<td>' + fmt(plddtOn100(c.plddt), 1) + '</td>' +
               '<td>' + fmt(c.i_pae, 2) + '</td>' +
               '<td>' + filterCell(c.filter_status) + '</td>';
 
