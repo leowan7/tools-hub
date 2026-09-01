@@ -497,11 +497,17 @@ _PYDSSP_MAX_RESIDUES = 2000
 # holds only the 20 canonical resnames, so the resname check never even ran.
 #
 # That is NOT uniform across the package, which matters to anyone tempted to
-# "tidy" this by reusing another module's set. scout/parser.py's STANDARD_AA
-# (parser.py:44) already CONTAINS MSE and SEC, so there the resname check
-# passes and only the hetflag gate at parser.py:287 rejects them;
-# scout/epitope_db.py's _THREE_TO_ONE maps both with no hetflag test at all.
-# Three modules, three different answers to "is this residue standard".
+# "tidy" this by reusing another module's set. scout/parser.py used to reject
+# the HETATM spelling on the hetflag despite listing both in its STANDARD_AA
+# (the ATOM spelling always passed, e.g. 1CC1 chain L SEC 492); it no
+# longer does -- see parser.py::_is_polymer_residue, which now gives the same
+# answer this function does on every input, by the same rule, deliberately
+# duplicated rather than shared. scout/epitope_db.py's _THREE_TO_ONE still
+# maps both while a hetflag gate drops them, so its two entries are
+# unreachable for the HETATM spelling; scout/glycan.py excludes them outright
+# and then indexes the survivors POSITIONALLY, which welds sequence-distant
+# residues together. Several modules, several different answers to "is this
+# residue standard", and the divergence is not all deliberate.
 #
 # Rejecting them is correct for scout/sasa.py (freesasa has no radii for MSE)
 # and for patch construction (an epitope centred on a selenomethionine is not
