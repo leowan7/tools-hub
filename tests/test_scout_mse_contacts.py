@@ -36,6 +36,8 @@ _EXAMPLES = pathlib.Path(__file__).resolve().parents[1] / "static" / "example"
 _FC_AB = _EXAMPLES / "3s7g_fc_ab.pdb"
 _FC_DIMER = _EXAMPLES / "3ave_igg1_fc_dimer.pdb"
 
+NEWLINE = chr(10)  # heredoc-safe; literal escapes get mangled in this repo's tooling
+
 
 def _respell_as(text: str, chain: str, resnum: int, resname: str = "MSE") -> str:
     """Rewrite one residue's ATOM records as HETATM/MSE, leaving geometry alone.
@@ -485,3 +487,219 @@ def test_insertion_coded_residues_are_distinct_positions(tmp_path):
 
     assert len(kept) == 5, f"insertion codes collapsed: {positions}"
     assert positions == [(99, " "), (100, " "), (100, "A"), (100, "B"), (101, " ")]
+
+
+@pytest.mark.parametrize("modelled,label", [
+    (("CA",), "CA only"),
+    (("CA", "C"), "CA and C, no N"),
+    (("N", "CA"), "N and CA, no C"),
+    (("N", "CA", "C"), "full backbone"),
+])
+def test_admission_is_monotone_in_backbone_completeness(modelled, label):
+    """Adding a backbone atom must never turn an admitted residue into a drop.
+
+    _bond_length once returned the first finite C->N measurement it found. For
+    a CA-only MSE both directions raised and the CA fallback admitted it; ADDING
+    the C atom let the reverse direction measure -- C(i+1)...N(i), ~6.2 A even
+    for a genuinely bonded pair -- which is finite, so the short-circuit
+    returned that and the residue was dropped. More information, worse answer.
+    Partial backbones occur in deposited data and in user uploads.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    lines, serial = [], 1
+    for atom_name, dx in (("N", 0.0), ("CA", 1.4), ("C", 2.5), ("O", 2.6)):
+        lines.append(_pdb_atom(serial, atom_name, "ALA", "A", 1, dx, 0.0, 0.0))
+        serial += 1
+    for atom_name in modelled:
+        dx = {"N": 3.83, "CA": 5.2, "C": 6.3}[atom_name]
+        lines.append(
+            _pdb_atom(serial, atom_name, "MSE", "A", 2, dx, 0.0, 0.0, het=True)
+        )
+        serial += 1
+
+    chain = PDBParser(QUIET=True).get_structure(
+        "mono", io.StringIO("\n".join(lines) + "\nEND\n")
+    )[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert 2 in kept, (
+        f"a peptide-bonded MSE modelled with {label} was dropped: kept {kept}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Round-three guards. Independent mutation testing found 41 survivors, and one
+# structural cause behind most of them: every assertion in the interface tests
+# above compares `after` to `native` with BOTH sides computed by the same code.
+# A relative comparison cannot see a uniform shift, so deleting the target-chain
+# gate entirely -- publishing 15 water molecules as interface contacts on a
+# checked-in fixture -- passed the whole module. The assertions below are
+# ABSOLUTE: they pin what the output must never contain, independent of what
+# the same run produced elsewhere.
+# ---------------------------------------------------------------------------
+
+def test_no_interface_contact_is_ever_a_heteroatom():
+    """Absolute guard: contact_residues must contain no water, ion or ligand.
+
+    Biopython puts a chain's waters and ions in the SAME Chain object as its
+    polymer, so they are one unguarded `list()` away from the published list.
+    Chain A of this fixture carries 140 HOH and a ZN. With the target-chain
+    gate removed, contact_count went 28 -> 43 and every addition was a water,
+    while every relative assertion in this module still passed.
+    """
+    from Bio.PDB import PDBParser
+
+    chain = PDBParser(QUIET=True).get_structure("f", str(_FC_DIMER))[0]["A"]
+    heteroatom_resnums = {r.get_id()[1] for r in chain if r.get_id()[0] != " "}
+    assert heteroatom_resnums, "fixture must carry heteroatoms for this to test anything"
+
+    interfaces_found = interfaces.detect_interfaces(str(_FC_DIMER), "A")
+    assert interfaces_found, "fixture must yield an interface"
+
+    reported = set(interfaces_found[0]["contact_residues"])
+    leaked = sorted(reported & heteroatom_resnums)
+    assert not leaked, f"heteroatoms reported as interface contacts: {leaked}"
+
+    # Every reported number must belong to a residue the gate actually admits.
+    admitted = {r.get_id()[1] for r in polymer_residues_of(chain)}
+    assert reported <= admitted, (
+        f"contacts not admitted by the polymer gate: {sorted(reported - admitted)}"
+    )
+
+
+def polymer_residues_of(chain):
+    from scout import polymer
+
+    return polymer.polymer_residues(chain)
+
+
+def test_a_c_terminal_modified_residue_survives_the_forward_sweep(tmp_path):
+    """A chain-final MSE followed by a ligand needs the FORWARD sweep.
+
+    Admission propagates in two passes. Removing the BACKWARD sweep was pinned;
+    removing the FORWARD one was not, and it is the one a C-terminal SeMet
+    depends on: its right-hand neighbour in the Biopython chain is the ZN or
+    HOH tail that a normal PDB chain ends with, so only the left-to-right pass
+    can reach it. C-terminal selenomethionine is common.
+    """
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    lines, serial = [], 1
+    for k in range(4):                       # canonical run, seeds admission
+        for atom_name, dx in (("N", 0.0), ("CA", 1.4), ("C", 2.5)):
+            lines.append(_pdb_atom(serial, atom_name, "ALA", "A", k + 1,
+                                   3.8 * k + dx, 0.0, 0.0))
+            serial += 1
+    for atom_name, dx in (("N", 0.0), ("CA", 1.4), ("C", 2.5)):   # C-terminal MSE
+        lines.append(_pdb_atom(serial, atom_name, "MSE", "A", 5,
+                               3.8 * 4 + dx, 0.0, 0.0, het=True))
+        serial += 1
+    lines.append(_pdb_atom(serial, "ZN", " ZN", "A", 900, 40.0, 0.0, 0.0, het=True))
+
+    path = tmp_path / "cterm.pdb"
+    path.write_text("\n".join(lines) + "\nEND\n", encoding="utf-8")
+    chain = PDBParser(QUIET=True).get_structure("c", str(path))[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert 5 in kept, f"C-terminal MSE dropped; only the forward sweep reaches it: {kept}"
+    assert 900 not in kept, f"the ZN tail was admitted: {kept}"
+
+
+def test_the_ca_trace_scale_has_an_upper_bound(tmp_path):
+    """A CA-only free ligand far from the chain must still be rejected.
+
+    _CA_TRACE_SCALE was pinned only from below: 1.9, 3.0 and 100.0 all passed,
+    and at 100 a free MSE sitting 12 A from a CA-only chain is admitted --
+    the phantom-interface defect this module exists to prevent, restored on the
+    CA-only path. The constant appeared in no test in the repo.
+    """
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    lines, serial = [], 1
+    for k in range(5):                              # CA-only trace, 3.8 A apart
+        lines.append(_pdb_atom(serial, "CA", "ALA", "A", k + 1, 3.8 * k, 0.0, 0.0))
+        serial += 1
+    # Free MSE, CA only, 12 A past the end of the chain: no bond, at any scale
+    # a sane threshold admits.
+    lines.append(_pdb_atom(serial, "CA", "MSE", "A", 600,
+                           3.8 * 4 + 12.0, 0.0, 0.0, het=True))
+
+    path = tmp_path / "ca_ligand.pdb"
+    path.write_text("\n".join(lines) + "\nEND\n", encoding="utf-8")
+    chain = PDBParser(QUIET=True).get_structure("l", str(path))[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert kept == [1, 2, 3, 4, 5], (
+        f"a free CA-only MSE 12 A from the chain was admitted: {kept}"
+    )
+
+
+def test_the_two_contact_implementations_agree_exactly():
+    """Cross-check that pins residue IDENTITY, not membership.
+
+    scout/interfaces.py and scout/epitope_db.py compute contacts over the same
+    geometry by separate code. On this fixture they agree residue for residue,
+    so a shift in either -- an off-by-one on the emitted number, a CA-only
+    contact sphere, publishing the partner's list instead of the target's --
+    breaks the equality. A subset or "unchanged since last run" assertion
+    cannot see any of those: shifting every number by one keeps it inside the
+    admitted set, which is how an off-by-one survived the whole module.
+
+    Chain A of this fixture carries 448 HETATM records, so a missing gate on
+    EITHER side shows up here too.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+
+    by_epitope_db = sorted(epitope_db._compute_contacts(text, "A", ["B"]))
+    detected = interfaces.detect_interfaces(str(_FC_DIMER), "A")
+    assert detected, "fixture must yield an interface"
+    by_interfaces = sorted(detected[0]["contact_residues"])
+
+    assert by_epitope_db, "fixture must yield contacts"
+    assert by_epitope_db == by_interfaces, (
+        "the two contact implementations disagree:\n"
+        f"  epitope_db:  {by_epitope_db}\n"
+        f"  interfaces:  {by_interfaces}"
+    )
+
+
+def test_antibody_chain_heteroatoms_do_not_widen_the_contact_sphere():
+    """Absolute guard on the ANTIBODY-side gate, without magic numbers.
+
+    That gate builds the atom cloud defining the contact sphere, so dropping it
+    admits the partner chain's waters and ions and mints spurious antigen
+    contacts. It had no coverage at all: the only fixture exercising it carries
+    ZERO HETATM records, so deleting the gate there is a no-op.
+
+    The check is that the antigen contacts are unchanged when the partner
+    chain's heteroatoms are physically removed from the input. If the gate is
+    doing its job they are already excluded and stripping them changes nothing;
+    if it is not, the full file reports more contacts than the stripped one.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+
+    stripped = NEWLINE.join(
+        line for line in text.splitlines()
+        if not (line.startswith("HETATM") and len(line) > 21 and line[21] == "B")
+    ) + NEWLINE
+    assert stripped != text, "fixture must carry heteroatoms on the partner chain"
+
+    with_het = sorted(epitope_db._compute_contacts(text, "A", ["B"]))
+    without_het = sorted(epitope_db._compute_contacts(stripped, "A", ["B"]))
+
+    assert with_het, "fixture must yield contacts"
+    assert with_het == without_het, (
+        "the partner chain's heteroatoms changed the antigen contact list, so "
+        "they are entering the contact sphere: "
+        f"with {with_het} / without {without_het} "
+        f"  extra:   {sorted(set(with_het) - set(without_het))}"
+    )

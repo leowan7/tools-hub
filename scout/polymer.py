@@ -67,10 +67,11 @@ MODIFIED_AA: frozenset[str] = frozenset({"MSE", "SEC"})
 
 # C(i)->N(i+1) in a real peptide bond is ~1.33 A. Biopython's PPBuilder
 # defaults to 1.8 A; 2.0 is 11% looser, to tolerate modest refinement error.
-# The UPPER bound is load-bearing, not merely conservative: intra-residue N...C
-# measures 2.27-2.57 A on 1B24 chain A, so a cutoff above ~2.26 would let a
-# MET/MSE altloc pair certify ITSELF as bonded, reintroducing the double count
-# this module exists to prevent.
+# The upper bound is a real constraint but it is NOT what stops the double
+# count: the (resseq, icode) dedupe collapses a MET/MSE altloc pair whatever
+# the threshold is, verified at 2.0, 3.0 and 10.0 A. What the bound does buy is
+# margin against a self-certifying junction -- intra-residue N...C measures
+# 2.27-2.57 A on 1B24 chain A, so 2.0 clears the closest case by 0.27 A.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
 # CA--CA in consecutive residues is ~3.8 A, versus ~1.33 A for the C->N bond.
@@ -89,18 +90,36 @@ def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
     distinguishable, because consecutive CA atoms sit ~3.8 A apart.
     """
     best = float("inf")
+    incomplete = False
     a, b = residues[idx_a], residues[idx_b]
     for upstream, downstream in ((a, b), (b, a)):
         try:
             best = min(best, upstream["C"] - downstream["N"])
         except KeyError:
-            continue
-    if best < float("inf"):
-        return best
-    try:
-        return (a["CA"] - b["CA"]) / _CA_TRACE_SCALE
-    except KeyError:
-        return float("inf")
+            incomplete = True
+
+    # CA--CA SUBSTITUTES for a measurement that could not be taken; it does not
+    # compete with one that could. The distinction is the whole subtlety here:
+    #
+    #   * Guarding the fallback on "BOTH directions raised" is non-monotone.
+    #     For a CA-only MSE both raise and the fallback admits it, but ADDING
+    #     its C atom lets the reverse direction measure -- C(i+1)...N(i), about
+    #     6.2 A even for a genuinely bonded pair -- which is finite, so the
+    #     residue is dropped. More information, worse answer.
+    #
+    #   * Consulting CA unconditionally is too permissive. A residue whose two
+    #     C->N distances BOTH measure and both exceed the threshold is not
+    #     bonded, and its CA can still sit at chain-like spacing: translating
+    #     one 3 A off its bond leaves CA--CA at 2.5 A, which the scaled test
+    #     would wave through.
+    #
+    # So: fall back only when something was genuinely unmeasurable.
+    if incomplete:
+        try:
+            best = min(best, (a["CA"] - b["CA"]) / _CA_TRACE_SCALE)
+        except KeyError:
+            pass
+    return best
 
 
 def polymer_residues(chain) -> list:
