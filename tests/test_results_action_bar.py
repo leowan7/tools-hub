@@ -35,6 +35,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, ranking, score_legends
+from shared import pdb_bfactors
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -44,6 +45,7 @@ _TEMPLATES = _ROOT / "templates"
 
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["metric_glossary"] = metric_glossary.GLOSSARY
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value

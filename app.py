@@ -135,6 +135,7 @@ from shared.storage import (
 from shared import category_glyphs as _category_glyphs
 from shared import compute_campaigns as _compute_campaigns
 from shared import metric_glossary as _metric_glossary
+from shared import pdb_bfactors as _pdb_bfactors
 from shared import ranking as _ranking
 from shared import resample as _resample
 from shared import score_legends as _score_legends
@@ -406,6 +407,14 @@ def create_app() -> Flask:
     )
     flask_app.jinja_env.globals["PLDDT_COLUMNS"] = (
         _metric_glossary.PLDDT_COLUMNS
+    )
+    # The same conversion for the structure a user downloads. A
+    # predicted PDB carries pLDDT in its B-factor column, and every
+    # colouring recipe in the field assumes 0-100; ESMFold writes 0-1.
+    # See shared/pdb_bfactors -- the gate is whole-file, so a real
+    # crystal structure is never touched.
+    flask_app.jinja_env.globals["pdb_b64_on_100"] = (
+        _pdb_bfactors.bfactors_on_100_b64
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
     # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:

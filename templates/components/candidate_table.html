@@ -526,6 +526,18 @@
         {% set use_url     = raw_pdb_key and not is_example %}
         {% set pdb_url     = '/api/jobs/' ~ src_job ~ '/pdb/' ~ (pdb_key | urlencode) %}
         {% set has_pdb     = use_url or has_b64 %}
+        {# Converted once and used by BOTH the viewer and the download,
+           so the bytes a user looks at and the bytes they save cannot
+           disagree. A non-fractional file comes back unchanged.
+
+           GATED ON use_url, not just has_b64. A smoke-tier row can carry
+           a pdb_key AND an inline copy, and then neither the viewer nor
+           the download reads this -- both take the URL. Converting
+           anyway cost ~150 ms of render on a 50-row table and every byte
+           of it was discarded. When use_url is set, the conversion that
+           matters is the one on /api/jobs/<id>/pdb/<file>. #}
+        {% set b64_on_100  = pdb_b64_on_100(cand.pdb_content_b64)
+                             if (has_b64 and not use_url) else '' %}
 
         {# Candidates arrive pre-ranked from the pipeline. Visually
            anchor the first row so the eye lands on the top design.
@@ -680,7 +692,7 @@
               <button class="view3d-btn btn-secondary"
                       style="padding:.2rem .5rem;font-size:.8rem;"
                       data-idx="{{ idx }}"
-                      {% if use_url %}data-pdb-url="{{ pdb_url }}"{% else %}data-pdb64="{{ cand.pdb_content_b64 }}"{% endif %}>View 3D</button>
+                      {% if use_url %}data-pdb-url="{{ pdb_url }}"{% else %}data-pdb64="{{ b64_on_100 }}"{% endif %}>View 3D</button>
             {% else %}
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
@@ -693,7 +705,7 @@
                  class="btn-secondary"
                  style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
               {% else %}
-              <a href="data:chemical/x-pdb;base64,{{ cand.pdb_content_b64 }}"
+              <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
                  style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
