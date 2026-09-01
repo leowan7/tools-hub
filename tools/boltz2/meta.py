@@ -224,7 +224,7 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Antigen structure",
+            "Antigen PDB",
             "1YCR, chain A",
             "MDM2's p53-binding domain. Chain B in that file is the p53 "
             "peptide itself and was removed &mdash; leaving it in would "
@@ -238,7 +238,7 @@ EXAMPLE: dict | None = {
             "interface, so a batch is just twelve independent verdicts.",
         ),
         (
-            "Hotspot residues",
+            "Hotspot residues (optional)",
             "54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100",
             "The 14 residues lining the cleft &mdash; L54, L57, G58, "
             "I61, M62, Y67, Q72, V75, F86, F91, V93, H96, I99, Y100 "

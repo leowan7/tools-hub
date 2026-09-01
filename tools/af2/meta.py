@@ -157,11 +157,125 @@ PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# The one archived payload (.deploy-logs/af2-smoke-bug8-attempt3-run1
-# .log) is a deliberately degraded smoke fixture: 58-residue BPTI, MSA
-# off, one recycle, mean pLDDT 54. Real, but it measures the fixture
-# rather than the tool, and AF2's whole case is MSA-backed accuracy.
+# EXAMPLE - one real past run, narrated, rendered by
+# templates/components/worked_example.html. The output beside it is
+# tools/af2/example/result.json replayed through this tool's OWN results
+# partial, so the demo can never drift from the real job page.
+#
+# PROVENANCE. One `batch` run on the same Modal app this form submits to,
+# pulled from the jobs table by scripts/capture_example_result.py (job
+# dd44f46f, 388 GPU-seconds). Re-run that script against the same job to
+# re-derive every figure below.
+#
+# This supersedes the note that stood here refusing an example: the only
+# payload on disk then was a deliberately degraded smoke fixture (58-residue
+# BPTI, MSA off, one recycle) that measured the fixture rather than the tool.
+# This is a real MSA-backed batch.
+#
+# The ten folded sequences were DESIGNS and are not published. They live in
+# job.inputs, which a worked example never renders - the payload here is
+# job.result, which for a batch carries scores only and no sequence at all.
+# Nothing had to be stripped.
+#
+# The "72% to 79% identical" range in `target` was computed at CAPTURE time
+# from the ten submitted FASTA records. Those sequences are designs, so they
+# are not in the payload below and the figure cannot be re-derived from it -
+# do not go looking for it in result.json and do not "correct" it to
+# something the payload does support. tests/test_worked_examples.py pins the
+# wording instead, the way proteina's non-derivable figures are pinned.
+#
+# The per-design `runtime_seconds` in this payload are CUMULATIVE elapsed
+# time, not per-design durations: they climb 101 -> 358 and sum to far more
+# than the job's own 388. Do not quote them as "this design took N seconds".
+#
+# COST is compute_charge_usd(388, "A100-80GB") - the charge, not the raw
+# Modal cost. tests/test_worked_examples.py recomputes it from the rate card.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+EXAMPLE: dict | None = {
+    "target": (
+        "Ten designed variants of a microbial rhodopsin &mdash; the "
+        "seven-transmembrane-helix light-driven channel family &mdash; at 333 "
+        "residues each, folded in one submission. They came off a generative "
+        "model as ten samples from one design round, each 72% to 79% "
+        "identical to the first."
+    ),
+    "why_this_target": (
+        "A membrane protein is a hard case for a structure predictor, and ten "
+        "near-siblings is the shape a real design round actually arrives in. "
+        "The interesting part is not whether they fold &mdash; it is what you "
+        "are entitled to conclude from a table of ten scores, which is less "
+        "than the table's own layout suggests."
+    ),
+    "inputs_used": [
+        (
+            "Preset",
+            "Batch for many fold targets",
+            "Ten sequences in one submission rather than ten submissions. "
+            "Same cost per sequence, one job to watch.",
+        ),
+        (
+            "Fold targets (FASTA or one per line)",
+            "10 records, one chain each",
+            "Whether a record folds as a monomer or a multimer is not a "
+            "setting &mdash; it follows from the record itself, and joining "
+            "chains with a colon is what makes one a multimer. These are "
+            "single chains, so all ten folded as monomers, which is why the "
+            "ipTM column stays blank throughout: there is no second chain, so "
+            "there is no interface to score. Blank is not a low score.",
+        ),
+        (
+            "Number of recycles",
+            "3",
+            "The default. Each pass lets the model refine its own answer; "
+            "three is the standard setting behind published AF2 numbers.",
+        ),
+        (
+            "Use PDB templates",
+            "on",
+            "Known structures are allowed as scaffolding. The rhodopsin fold "
+            "is well represented in the PDB, so there is real signal to use.",
+        ),
+    ],
+    "what_came_back": (
+        "All ten folded, no failures. Mean pLDDT runs from "
+        "<strong>74.16 to 75.93</strong> and pTM from 0.71 to 0.73. "
+        "The table sorts by mean pLDDT and highlights the top row &mdash; but "
+        "the top row beats the bottom row by <strong>1.77 pLDDT points, and "
+        "the whole pTM column spans 0.02</strong>. "
+        "Every one of the ten landed in the same place."
+    ),
+    "how_to_read_it": (
+        "<strong>The highlight on the top row is a sort order, not a "
+        "verdict.</strong> A ranked table implies the first row is better "
+        "than the last, and across a spread this narrow it simply is not: "
+        "re-run the same ten sequences with a different seed and the order "
+        "would reshuffle. Nothing here distinguishes these designs, and "
+        "picking the top one to carry forward is picking at random while "
+        "feeling informed. "
+        "The result that <em>is</em> real is the agreement. Ten variants "
+        "differing at a fifth to a little over a quarter of their residues "
+        "all folding to the same "
+        "confidence says the scaffold tolerates that much variation &mdash; "
+        "which is a genuine finding about the design round, and the opposite "
+        "of what you would conclude by reading row one. "
+        "For scale: 70 is the usual line for a confidently folded structure, "
+        "and all ten clear it &mdash; AlphaFold2 reports pLDDT on a 0-to-100 "
+        "scale. Compare with the ESMFold example on this site, which reports "
+        "the same quantity on 0 to 1: there a genuinely disordered protein "
+        "has no residue reaching 0.70 anywhere in the chain. Same threshold, "
+        "different scale, so check which one you are reading before comparing "
+        "two numbers."
+    ),
+    "what_we_did_next": (
+        "A batch this tight does not narrow itself, so the choice has to come "
+        "from somewhere other than these scores &mdash; a property the table "
+        "does not carry, or an experiment. The runs worth doing next are the "
+        "ones that can separate the ten: fold them against the partner or "
+        "ligand that matters if there is one, which turns a blank ipTM column "
+        "into a real interface number, or take several forward together "
+        "rather than betting on row one. When a screen comes back this "
+        "uniform, that is the screen telling you it has finished its job."
+    ),
+    "cost_usd": "0.68",
+    "runtime": "6 minutes",
+}

@@ -913,7 +913,7 @@ def _example_context(adapter, meta) -> dict | None:
     payload would render a description of results above an empty
     results panel, and a payload with no narration is an unlabelled
     table of numbers — either is worse than the tool simply not having
-    an example yet, which is the state of thirteen of the fourteen.
+    an example yet, which is the state of six of the fourteen.
     """
     example = getattr(meta, "EXAMPLE", None)
     if not example:

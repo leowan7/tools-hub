@@ -214,7 +214,7 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Target structure",
+            "Target PDB",
             "the two-chain crystal structure",
             "Both chains staged together. Handing over one chain would let "
             "the model design against half a site that does not exist on "
@@ -227,7 +227,7 @@ EXAMPLE: dict | None = {
             "chain reads as the whole target.",
         ),
         (
-            "Binder length",
+            "Binder length (residues)",
             "63",
             "One of four calls we made at 50, 57, 63 and 70. The pilot "
             "tier draws a fresh seed per call, so fanning out over lengths "

@@ -80,11 +80,21 @@ Usage:
 
     <aside class="panel about-panel">
       <div class="panel-body">
-        <h3>How to read that</h3>
-        <p>{{ ex.how_to_read_it|safe }}</p>
+        {# Both are optional and BOTH headings move with them. Rendering
+           the heading unconditionally leaves a dangling <h3> over an
+           empty paragraph when a field is missing, and an unguarded
+           |safe prints the literal string "None" onto a public page
+           when a field is present but null. Every example ships both
+           today, so tool nine is what trips this. #}
+        {% if ex.how_to_read_it %}
+          <h3>How to read that</h3>
+          <p>{{ ex.how_to_read_it|safe }}</p>
+        {% endif %}
 
-        <h3>What happened next</h3>
-        <p>{{ ex.what_we_did_next|safe }}</p>
+        {% if ex.what_we_did_next %}
+          <h3>What happened next</h3>
+          <p>{{ ex.what_we_did_next|safe }}</p>
+        {% endif %}
 
         <p style="color: var(--text-tertiary); font-size: 0.8rem;">
           Recorded from that one run

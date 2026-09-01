@@ -432,7 +432,7 @@ EXAMPLE: dict | None = {
             "symmetric.",
         ),
         (
-            "Binder length",
+            "Binder length (residues)",
             "60 to 69",
             "A window, not a number &mdash; the generator draws a length "
             "per design. Leaving the field empty gives you 60 to 120; this "
@@ -446,11 +446,15 @@ EXAMPLE: dict | None = {
             "is one container, so all 64 came back from a single call.",
         ),
         (
-            "RF3 rescoring",
-            "off",
-            "Why the <code>rf3_score</code> column below is empty on every "
-            "row. It is a second scoring stack for ligand and motif work; "
-            "a protein binder run does not need it and it is not free.",
+            "Design variant",
+            "Protein binder (de novo, vs a protein target)",
+            "The only variant that designs against a structure you upload; "
+            "the others run curated ligand and motif benchmarks. It also "
+            "settles the <code>rf3_score</code> column below, which is empty "
+            "on every row: RF3 is a second scoring stack those other "
+            "variants need, a protein binder run does not, and it is not "
+            "free. That is a consequence of this choice rather than a switch "
+            "of its own &mdash; there is no RF3 control on the form.",
         ),
     ],
     "what_came_back": (

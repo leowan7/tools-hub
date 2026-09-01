@@ -233,20 +233,20 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Backbone",
+            "Backbone PDB",
             "1HEW.pdb",
             "The crystal structure, downloadable below. Only the backbone "
             "atoms are read &mdash; the sequence in the file is discarded "
             "before design.",
         ),
         (
-            "Chain(s) to design",
+            "Chains to design",
             "A",
             "The single protein chain. 1HEW's other chain is a sugar "
             "ligand, not protein.",
         ),
         (
-            "Sequences to sample",
+            "Number of sequences",
             "2",
             "Deliberately tiny. This run existed to prove the pipeline "
             "worked end to end, not to produce a design set.",
