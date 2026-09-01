@@ -126,11 +126,26 @@ def detect_glycosylation_sequons(chain) -> list[dict]:
             cb_coord -- np.ndarray (3,) or None if Cb/Ca missing
             motif    -- str, e.g. "N-K-T" showing the tripeptide
     """
-    standard_residues = [
-        r for r in chain.get_residues()
-        if r.resname.strip() in _MODIFIED_AA
-        or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)
-    ]
+    # Deduplicated on (resseq, icode). Partial Se incorporation deposits MET and
+    # MSE at ONE residue number as two altlocs whose hetflags differ (" " vs
+    # "H_MSE"), so Biopython yields two Residue objects and both pass the test
+    # above. This list is then indexed POSITIONALLY at i, i+1, i+2, so the twin
+    # shifts the window and a real sequon is missed: an N-[MET/MSE]-T chain
+    # reads N-M-M-T and reports nothing. Admitting MSE without this dedupe made
+    # that case WORSE than the gate it replaced, which dropped the HETATM twin
+    # and found the sequon. scout/parser.py and scout/polymer.py carry the same
+    # guard for the same reason.
+    standard_residues = []
+    _seen_positions = set()
+    for r in chain.get_residues():
+        if not (r.resname.strip() in _MODIFIED_AA
+                or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)):
+            continue
+        _position = r.get_id()[1:]  # (resseq, icode)
+        if _position in _seen_positions:
+            continue
+        _seen_positions.add(_position)
+        standard_residues.append(r)
 
     sequons = []
     for i in range(len(standard_residues) - 2):

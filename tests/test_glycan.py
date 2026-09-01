@@ -276,3 +276,66 @@ def test_unmodified_fixtures_are_untouched(name):
         assert not {r.resname.strip() for r in chain.get_residues()} & _MODIFIED
         got = {(d["resnum"], d["motif"]) for d in detect_glycosylation_sequons(chain)}
         assert got == _pre_fix_detect(chain)
+
+
+def _pdb_line(serial, atom_name, resname, chain, resnum, x, hetatm=False):
+    """One PDB ATOM/HETATM record at exact column positions."""
+    line = list(" " * 80)
+
+    def put(text, start):  # 1-indexed PDB columns
+        for offset, char in enumerate(str(text)):
+            line[start - 1 + offset] = char
+
+    put("HETATM" if hetatm else "ATOM  ", 1)
+    put(f"{serial:5d}", 7)
+    put(f" {atom_name:<3s}", 13)
+    put(f"{resname:>3s}", 18)
+    put(chain, 22)
+    put(f"{resnum:4d}", 23)
+    put(f"{x:8.3f}", 31)
+    put(f"{0.0:8.3f}", 39)
+    put(f"{0.0:8.3f}", 47)
+    put("  1.00 20.00", 55)
+    put("C", 77)
+    return "".join(line).rstrip()
+
+
+def test_a_selenomethionine_altloc_twin_does_not_hide_a_sequon():
+    """ASN-[MET/MSE at one resnum]-THR is a real N-x-S/T sequon.
+
+    Partial Se incorporation deposits MET and MSE at the SAME residue number as
+    two altlocs whose hetflags differ (" " vs "H_MSE"), so Biopython yields two
+    Residue objects and both satisfy the residue filter. The filtered list is
+    then indexed POSITIONALLY at i, i+1, i+2, so the twin shifts the window:
+    the chain reads N-M-M-T and no sequon is reported.
+
+    Admitting MSE without deduplicating made this case WORSE than the hetflag
+    gate it replaced, which dropped the HETATM twin and found the sequon. That
+    is a regression in the direction the fix exists to prevent, so it is pinned
+    here rather than left to the sibling modules' guards.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    lines, serial = [], 1
+    for resname, resnum, x, hetatm in (
+        ("ASN", 1, 3.8, False),
+        ("MET", 2, 7.6, False),   # the ATOM half of the altloc pair
+        ("MSE", 2, 7.6, True),    # the HETATM half, same residue number
+        ("THR", 3, 11.4, False),
+    ):
+        for atom_name in ("N", "CA", "C", "O", "CB"):
+            lines.append(
+                _pdb_line(serial, atom_name, resname, "A", resnum, x, hetatm)
+            )
+            serial += 1
+
+    structure = PDBParser(QUIET=True).get_structure(
+        "twin", io.StringIO("\n".join(lines) + "\nEND\n")
+    )
+    found = detect_glycosylation_sequons(structure[0]["A"])
+
+    assert [(f["resnum"], f["motif"]) for f in found] == [(1, "N-M-T")], (
+        f"the MET/MSE altloc twin hid a real N-M-T sequon: {found}"
+    )
