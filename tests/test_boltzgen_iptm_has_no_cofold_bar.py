@@ -148,6 +148,7 @@ from jinja2 import Environment, FileSystemLoader  # noqa: E402
 import app as _app  # noqa: E402,F401  (populates tools.base._REGISTRY)
 from shared import metric_glossary, ranking  # noqa: E402
 from tools import base as tool_base  # noqa: E402
+from tools.boltzgen import meta as _bg_meta  # noqa: E402
 
 _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 _GLOBAL_IPTM_RANGE = metric_glossary.GLOSSARY["ipTM"]["good_range"]
@@ -263,3 +264,365 @@ def test_another_tool_s_guide_still_quotes_the_band(_app_client):
     resp = _app_client.get("/help/tools/boltz2")
     assert resp.status_code == 200, resp.status_code
     assert _GLOBAL_IPTM_RANGE in unescape(resp.get_data(as_text=True))
+
+
+# ---------------------------------------------------------------------------
+# The two guard holes an independent mutation pass found in this file
+# ---------------------------------------------------------------------------
+# 1. The tools/ copy fix had NO test. Reverting tools/boltzgen/__init__.py and
+#    meta.py to their pre-fix state left the entire suite green (5852 passed,
+#    identical to the branch), so the claim that candidates arrive "already
+#    checked against the site you aimed at" could walk back in unnoticed.
+# 2. The prose guards below pin PHRASES, not the claim. A mutation reading
+#    "so 0.7 does not apply; treat 0.5 as a credible binder here" satisfied
+#    every assertion in this file while inventing exactly the replacement bar
+#    the legend's own comment forbids ("Omit rather than invent a
+#    replacement"). Nothing asserted the ABSENCE of a bar.
+
+# ---------------------------------------------------------------------------
+# POLARITY. Both patterns below recognise the SHAPE of a claim, and the shape
+# of "0.6 is credible" is identical to that of "there is no evidence that 0.6
+# is credible". An independent mutation pass measured what that cost: writing
+# "The refold does not demonstrate binding." into the live output_summary
+# turned this file RED, while "The refold proves it binds." shipped GREEN. A
+# guard that reddens the honest sentence and passes the false one is not weak,
+# it is inverted -- it pushes the copy away from the truth.
+#
+# So a match only counts as a claim when the sentence around it neither negates
+# nor RECOMMENDS a new fold. The recommendation case used to be protected by
+# accident: "re-fold a shortlist against your target" -- the sentence the page
+# is supposed to end on -- survived only because ``refold\w*`` cannot match the
+# hyphen. Written without it, the sanctioned advice failed the suite. It is
+# pinned in ``must_not_fire`` now rather than left to punctuation.
+def _norm(s: str) -> str:
+    return " ".join(s.split())
+
+
+# THE ONLY EXEMPT SENTENCES, MATCHED EXACTLY (whitespace-normalised). Not a
+# heuristic, and the reason is measured. The first attempt at this vetoed any
+# match sitting inside a negated or advice-shaped sentence, which reads
+# sensible and is catastrophic: an independent review found 26 real claims
+# went silently green, among them the ONE mutation this file's header names as
+# the reason _BAR_CLAIM exists ("so 0.7 does not apply; treat 0.5 as a credible
+# binder here" -- it contains "not"), and the live output_summary turned into a
+# shelter where NO overclaim could be seen, because its closing sentence
+# carries both a negation and a recommendation.
+#
+# A heuristic that recognises the shape of honesty is a shape an overclaim can
+# wear. So: honest sentences are ENUMERATED. Adding one is a deliberate act,
+# and rewording one goes red until someone updates it here -- which is the
+# point, because that is a human reading the sentence again.
+_SANCTIONED = frozenset(
+    _norm(s)
+    for s in (
+        # The next step the page is meant to end on, in both spellings. The
+        # hyphenated form passed before only because ``refold\w*`` cannot match
+        # "re-fold" -- an accident of punctuation, not a guard.
+        "re-fold a shortlist against your target to check that.",
+        "Refold a shortlist against your target to check that.",
+        # Sentences that REFUSE a bar. The pattern cannot tell these from the
+        # claim they deny, and they are the correct thing to say.
+        "Other tools treat 0.7 as the bar; this one has none.",
+        "There is no evidence that 0.6 is credible here.",
+        "Nothing here tells you whether 0.5 is good.",
+        # ...and the same for the refold pattern.
+        "The refold does not demonstrate binding.",
+        "Refolding RMSD under 1.5 &Aring; does not confirm binding.",
+    )
+)
+# Sentence, not clause: "Other tools treat 0.7 as the bar; this one has none."
+# carries its negation past a semicolon, so splitting there would re-open the
+# hole. Splitting on [.!?] followed by SPACE leaves "1.5 A" intact -- a decimal
+# point has no space after it. Same decimal problem the ``(?:[^.]|\.\d)`` span
+# further down exists to solve. An abbreviation period ("vs. ") does split, and
+# that is a known miss.
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+
+
+def _sentence_around(text: str, index: int) -> str:
+    start, end = 0, len(text)
+    for m in _SENTENCE_BOUNDARY.finditer(text):
+        if m.end() <= index:
+            start = m.end()
+        else:
+            end = m.start()
+            break
+    return text[start:end]
+
+
+def _asserted(pattern, text: str):
+    """First match the copy actually ASSERTS, or None.
+
+    A match is a claim unless the sentence holding it is one of the handful
+    enumerated in ``_SANCTIONED``. Exact match, so any edit to a sanctioned
+    sentence -- including appending an overclaim to it -- is a claim again.
+    """
+    for m in pattern.finditer(text):
+        if _norm(_sentence_around(text, m.start())) in _SANCTIONED:
+            continue
+        return m
+    return None
+
+
+# ponytail: A PHRASE LIST WITH A MEASURED CEILING, not a claim detector. An
+# independent mutation pass ran 66 adversarial bar statements past it and 51
+# escaped. The gaps are whole classes, not a tail: negative polarity ("below
+# 0.5 is weak"), percentages ("55% or better"), ranges ("0.5-0.7 is the
+# credible band"), comparison symbols (">= 0.6" -- coverage here is zero; the
+# few that looked caught were matching an unrelated clause), word-numbers
+# ("point six"), leading dot (".55 or better"), and numbers split by markup
+# ("<b>0.6</b>"). Those rates were measured on this pattern as ``_asserted``
+# applies it -- the only exemption is the enumerated ``_SANCTIONED`` list, so
+# they describe the guard as it actually runs.
+#
+# Kept because it does pin the phrasings that were actually wrong, and because
+# widening it again is how this repo reached 37 guards that certify false. Read
+# a pass as "the known-bad shapes are absent", NEVER as "no bar is stated". The
+# durable fix is the one the legend's own comment names: do not restate
+# thresholds in copy at all.
+_BAR_CLAIM = re.compile(
+    # "above 0.6", "aim for 0.55+", "0.5 or better", "treat 0.5 as"
+    r"(above|over|aim\s+for|at\s+least|better\s+than|treat|from)\s+0\.\d+"
+    r"|0\.\d+\s*\+"
+    r"|0\.\d+\s+(or\s+better|or\s+higher|and\s+up(wards?)?|and\s+above"
+    r"|upwards?|is\s+(good|strong|credible|acceptable))",
+    re.I,
+)
+
+
+def test_the_explanation_states_no_bar_of_its_own():
+    """The claim, not the phrasing. Dropping ``good`` from the data and then
+    writing a bar into the sentence is the same false promise in a place no
+    field name marks — and it is what the legend's own comment forbids.
+
+    The one number allowed is the 0.7 being disclaimed, which is why this
+    matches bar-SHAPED assertions rather than any digit.
+    """
+    text = legend_text(SCORE_LEGENDS[BOLTZGEN_IPTM])
+    hit = _asserted(_BAR_CLAIM, text)
+    assert hit is None, (
+        f"boltzgen's ipTM explanation states a bar of its own: "
+        f"{hit.group(0)!r} in {text!r}. There is nothing "
+        f"pairing this number against a cofold on the same designs, so there "
+        f"is no bar to state — omit rather than invent one."
+    )
+
+
+def test_a_tool_with_a_real_bar_is_still_allowed_to_say_so():
+    """ANTI-VACUITY, despite what this docstring used to claim it was.
+
+    It said "the regex must not be so broad that it forbids legends that
+    legitimately carry a bar" — a breadth control — while the assertion is
+    that the pattern DOES match. That is the opposite test. The real breadth
+    control is the one below, which did not exist, and a review found three
+    honest disclaimers going red with nothing to catch it.
+    """
+    text = legend_text(SCORE_LEGENDS[BOLTZ2_IPTM])
+    assert _asserted(_BAR_CLAIM, text), (
+        "the bar-claim pattern no longer matches boltz2's 'Above 0.7 is a "
+        "credible binder', so the test above is asserting over nothing"
+    )
+
+
+def test_the_bar_pattern_does_not_fire_on_honest_disclaimers():
+    """The breadth control ``_BAR_CLAIM`` never had.
+
+    Every sentence here is a correct thing to say, and each one matched the
+    unvetoed pattern — while four of five invented bars shipped green. If this
+    list goes red the guard has started forcing the page to stop explaining
+    itself, which is the failure that matters: the copy is what this whole
+    change exists to keep true.
+    """
+    for text in (
+        "Other tools treat 0.7 as the bar; this one has none.",
+        "There is no evidence that 0.6 is credible here.",
+        "Nothing here tells you whether 0.5 is good.",
+    ):
+        hit = _asserted(_BAR_CLAIM, text)
+        assert hit is None, (
+            f"the bar guard fires on an honest disclaimer "
+            f"({hit.group(0)!r} in {text!r}), pushing the copy away from the "
+            f"truth rather than toward it"
+        )
+
+    # ...and the exemption is EXACT. This is the half that matters: the first
+    # attempt at this exempted a SHAPE (negated, or advice-worded), and an
+    # overclaim appended to an honest sentence inherited its immunity. A
+    # review demonstrated it on the live output_summary. Enumerating is what
+    # makes appending visible again.
+    for text in (
+        "Other tools treat 0.7 as the bar; this one has none, so treat 0.5 "
+        "as the bar instead.",
+        "There is no evidence that 0.6 is credible here, but above 0.5 is a "
+        "credible binder.",
+    ):
+        assert _asserted(_BAR_CLAIM, text), (
+            f"a bar smuggled onto the end of a sanctioned disclaimer is "
+            f"invisible: {text!r}. The exemption must be the exact sentence, "
+            f"never its shape."
+        )
+
+
+# WHAT THE REFOLD MAY NOT BE CREDITED WITH. Two shapes, because the claim has
+# now been found in three places wearing two different disguises:
+#
+#   (a) the refold joined to the target by a verb of verification --
+#       "refolded and scored against that target", "already checked against
+#       the site you aimed at".
+#   (b) the refold or its RMSD used to infer BINDING -- "signals
+#       self-consistent binding". This one names no target at all, which is
+#       why a guard written for (a) walked straight past it.
+#
+# Saying "re-fold a shortlist against your target" is NOT either of these: it
+# recommends a new cofold rather than crediting this one, and the must_not_fire
+# cases below pin that distinction so the pattern cannot be widened until the
+# page can no longer explain itself.
+_REFOLD_OVERCLAIM = re.compile(
+    r"refold\w*[^.]{0,80}?(against|checked|validated)[^.]{0,40}?"
+    r"(target|site|epitope)"
+    r"|(checked|validated|verified)[^.]{0,40}?against[^.]{0,30}?"
+    r"(target|site you aimed)"
+    r"|(refold\w*|rmsd)(?:[^.]|\.\d){0,60}?"
+    r"(signals?|confirms?|shows?|demonstrates?|means|indicates?|establishes?)"
+    r"(?:[^.]|\.\d){0,40}?(bind|engages?)",
+    re.I,
+)
+# ``(?:[^.]|\.\d)`` NOT ``[^.]``: the span is a stand-in for "same sentence",
+# and a DECIMAL POINT is a full stop to a character class. The sentence this
+# guards is full of them, so "Refolding RMSD under 1.5 A confirms binding"
+# slipped through while the identical sentence written "under two A" was
+# caught. Allowing a dot that is followed by a digit keeps 1.5 inside the
+# span and still stops at a real sentence end.
+#
+# ponytail: MEASURED CEILING. An independent mutation pass ran 49 ways of
+# crediting the refold with binding past this pattern; 35 escaped. The holes
+# are structural, not a tail of phrasings:
+#   - the SUBJECT side is a two-word list (refold*|rmsd), so "the
+#     self-consistency check confirms binding" walks straight past;
+#   - the verb list omits verifies, validates, proves, tells you, is evidence
+#     that -- and is inconsistent between legs (leg 2 has "verified", leg 3
+#     does not);
+#   - passive voice is uncovered ("binding is confirmed by the refold");
+#   - the 60/40-char spans are a budget that a long clause exceeds;
+#   - the span stops at a sentence end, so "It refolds the binder alone. It
+#     confirms binding." is invisible.
+# Kept because it pins the three sentences that actually shipped wrong. Read a
+# pass as "those shapes are absent", never as "the copy is honest".
+
+
+def test_the_adapter_copy_does_not_claim_the_refold_checks_the_target():
+    """The tools/ half, which had no test at all.
+
+    BoltzGen runs one refold and it folds the BINDER ALONE — every
+    ``designfolding-*`` interface column reads 0.0 and its
+    ``min_interaction_pae`` is the 100000.25 "no interaction" sentinel. So no
+    surface may say the returned candidates have been checked, scored or
+    validated AGAINST THE TARGET by that refold. Ranking on the generator's
+    own interface number is a different claim and is fine.
+    """
+    from tools.boltzgen import adapter
+    from tools.boltzgen import meta as bg_meta
+
+    surfaces = {
+        "blurb": adapter.blurb,
+        "about.what_it_is": bg_meta.about.get("what_it_is", ""),
+        "about.output_summary": bg_meta.about.get("output_summary", ""),
+        # when_to_use is a LIST, and it renders on the same page as the three
+        # above. It was never scanned: a review placed the loudest overclaim it
+        # could write into it and the entire suite stayed green.
+        "about.when_to_use": " ".join(bg_meta.about.get("when_to_use", ())),
+    }
+    for name, text in surfaces.items():
+        # Non-empty FIRST: renaming the key or blanking the string would
+        # otherwise satisfy every assertion below over "".
+        assert text, (
+            f"boltzgen {name} is missing or empty, so this guard is "
+            f"asserting over nothing"
+        )
+        hit = _asserted(_REFOLD_OVERCLAIM, text)
+        assert not hit, (
+            f"boltzgen {name} credits the refold with something it cannot "
+            f"show. It folds the binder alone, so it checks the design "
+            f"against ITSELF: {hit.group(0)!r} in {text!r}"
+        )
+
+
+def test_that_refold_claim_check_can_actually_fire():
+    """Anti-vacuity for the test above: the pattern must match the exact
+    sentence that shipped, or it is guarding nothing."""
+    must_fire = (
+        # blurb, before #193
+        "get back candidates each refolded and scored against that target",
+        # about.what_it_is, before #193
+        "refolds it inside the same model, so every candidate arrives already "
+        "checked against the site you aimed at",
+        # about.output_summary, which BOTH of those fixes walked past — and
+        # which the first version of this guard also missed, because it looked
+        # for the word "target" and this sentence never says it.
+        "Refolding RMSD &lt; 2 &Aring; on the top design typically signals "
+        "self-consistent binding.",
+    )
+    for text in must_fire:
+        assert _asserted(_REFOLD_OVERCLAIM, text), (
+            f"the guard does not fire on copy that actually shipped: {text!r}"
+        )
+
+    must_not_fire = (
+        # The LIVE string, so a rewrite cannot drift out from under the guard.
+        _bg_meta.about["output_summary"],
+        # ...and a FROZEN exemplar beside it, because the live string alone is
+        # not a pin: the test above already asserts over that same value, so
+        # the two moved together on every edit and this entry asserted nothing
+        # new. A review caught exactly that.
+        "Refolding RMSD is the design against its own refold: at or under "
+        "2 &Aring; it clears the RMSD leg of the pass bar. That says the "
+        "binder folds as designed, not that it binds &mdash; re-fold a "
+        "shortlist against your target to check that.",
+        # The same sanctioned recommendation WITHOUT the hyphen. It passed
+        # before only because ``refold\w*`` cannot match "re-fold"; the
+        # recommendation veto is what allows it now, and this pins that rather
+        # than trusting punctuation.
+        "Refold a shortlist against your target to check that.",
+        # Negated claims -- the correct things to say. The unvetoed pattern
+        # turned every one of these red while passing "the refold proves it
+        # binds".
+        "The refold does not demonstrate binding.",
+        "Refolding RMSD under 1.5 &Aring; does not confirm binding.",
+        # when_to_use, which was correct all along and must stay allowed.
+        "each design refolded on its own, so you can see whether it folds "
+        "back to the shape it was designed as",
+    )
+    for text in must_not_fire:
+        hit = _asserted(_REFOLD_OVERCLAIM, text)
+        assert not hit, (
+            f"the guard fires on honest copy ({hit.group(0)!r} in {text!r}), "
+            f"which would force the page to stop explaining the metric"
+        )
+
+
+def test_the_refold_predicate_is_registered_and_is_the_real_set():
+    """``is_refold_source`` gates the Second-opinion panel AND the all-failed
+    banner's advice. Both fail QUIETLY if the global is missing from a jinja
+    environment — ``x in Undefined`` renders False with no error, which is why
+    the template calls it instead. This pins that the app registers it and that
+    it is shared.refold.SOURCE_TOOLS rather than a copy that can drift.
+    """
+    from shared.refold import SOURCE_TOOLS
+
+    flask_app = _app.create_app()
+    pred = flask_app.jinja_env.globals.get("is_refold_source")
+    assert pred is not None, (
+        "is_refold_source is not registered, so every template that gates on "
+        "it renders the gated block away silently"
+    )
+    for slug in SOURCE_TOOLS:
+        assert pred(slug), slug
+    assert not pred("definitely-not-a-tool")
+    # ...and it is the module's set BY IDENTITY, not a second collection
+    # someone must remember to update. The template used to carry five slugs
+    # under a comment asking the next reader to keep them in lockstep, which
+    # is the arrangement this replaced.
+    assert pred.__self__ is SOURCE_TOOLS, (
+        "is_refold_source is bound to something other than "
+        "shared.refold.SOURCE_TOOLS, so the two can drift apart again"
+    )

@@ -95,9 +95,18 @@ GLOSSARY: dict[str, dict] = {
     },
     "refolding_rmsd": {
         "label": "Refolding RMSD (Å)",
+        # DO NOT NAME AN ENGINE HERE. This entry is global and is stacked after
+        # the per-tool legend into ONE tooltip (components/candidate_table.html),
+        # and WHICH predictor does the refold is a per-tool fact. It said
+        # "refolded independently by AlphaFold2"; boltzgen — today the only tool
+        # that emits this column (shared/result_columns.py) — refolds with its
+        # own model, so the assembled tooltip read "BoltzGen's refold ... refolded
+        # independently by AlphaFold2", four words apart. Same shape as the ipTM
+        # entry below: the glossary says what the metric IS, the per-tool legend
+        # says who computed it and against what.
         "definition": (
-            "Cα RMSD between the designed binder and the same sequence refolded "
-            "independently by AlphaFold2. Low values confirm the binder is "
+            "Backbone RMSD between the designed binder and the same sequence "
+            "refolded from scratch. Low values confirm the binder is "
             "self-consistent — it will fold to the intended backbone."
         ),
         "good_range": "< 1.5 Å; < 1.0 Å excellent",
