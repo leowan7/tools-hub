@@ -31,6 +31,7 @@ otherwise the scan has gone blind and everything above it is vacuous.
 
 from __future__ import annotations
 
+import base64
 import json
 import statistics
 import re
@@ -807,3 +808,163 @@ class TestCaptureScrubsBeforeItPublishes:
         result = {"candidates": [{"pdb_key": "d.pdb", "pdb_content_b64": "X"}]}
         assert trim_structures(result, 0) == 0
         assert "pdb_content_b64" not in result["candidates"][0]
+
+
+# ── The publishing rule ──────────────────────────────────────────────
+#
+# Written down here because a test enforcing an unwritten rule drifts
+# the moment two people read it differently:
+#
+#   No CUSTOMER or CAMPAIGN designed sequence may reach a public page.
+#
+# Scores are always fine. So is the sequence of a PUBLISHED reference
+# protein — that is what lets a reader check the example against the
+# literature instead of taking our word for it. So is one of our own
+# demo designs on a published reference backbone: there is no customer
+# target behind it. Everything else is somebody's IP on an index,follow
+# URL.
+#
+# Every sequence allowed to ship is named below with the reason it is
+# allowed. A new one fails until someone writes its reason down, and
+# that is the point: the question is not "does this look like a design"
+# — the detector already answers that — it is "whose design is it",
+# which only a human knows.
+MIN_PUBLISHED_SEQUENCE = 25
+
+PUBLISHABLE_SEQUENCES = {
+    ("mpnn", "sequences[0].seq"): (
+        "our own ProteinMPNN demo redesign of hen egg-white lysozyme, "
+        "PDB 1HEW chain A: a published backbone, no customer target"
+    ),
+    ("mpnn", "sequences[1].seq"): (
+        "second sample from the same 1HEW demo run"
+    ),
+}
+
+_AA1 = set("ACDEFGHIKLMNPQRSTVWY")
+_AA3 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "MSE": "M",
+}
+
+
+def _ca_sequence(pdb_text: str) -> str:
+    """The one-letter sequence a reader can recover from CA records."""
+    return "".join(
+        _AA3.get(line[17:20].strip(), "X")
+        for line in pdb_text.splitlines()
+        if line.startswith("ATOM") and line[12:16].strip() == "CA"
+    )
+
+
+def _sequence_in(value):
+    """``(kind, sequence)`` if ``value`` publishes a protein sequence.
+
+    TWO ways, because guarding only the first is how the earlier
+    version of this check passed while a design shipped. A bare string
+    is the obvious one. A base64 structure is the one that got through:
+    dropping the ``sequence`` KEY and keeping ``pdb_b64`` leaves the
+    whole sequence on the page, recoverable from the CA records by
+    anyone who clicks Download PDB.
+    """
+    if not isinstance(value, str) or len(value) < MIN_PUBLISHED_SEQUENCE:
+        return None
+    if set(value.upper()) <= _AA1:
+        return ("bare sequence", value)
+    if len(value) >= 200:
+        try:
+            text = base64.b64decode(value, validate=True).decode(
+                "utf-8", "replace"
+            )
+        except Exception:
+            return None
+        if "ATOM" in text:
+            seq = _ca_sequence(text)
+            if len(seq) >= MIN_PUBLISHED_SEQUENCE:
+                return ("structure", seq)
+    return None
+
+
+def _published_sequences(obj, path=""):
+    """Every publishable sequence in ``obj``, at any depth."""
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            child = f"{path}.{key}" if path else str(key)
+            yield from _published_sequences(val, child)
+    elif isinstance(obj, list):
+        for i, val in enumerate(obj):
+            yield from _published_sequences(val, f"{path}[{i}]")
+    else:
+        found = _sequence_in(obj)
+        if found:
+            yield (path, *found)
+
+
+def _example_payloads(slugs):
+    """``{slug: payload}`` for every tool that actually ships one."""
+    out = {}
+    for slug, example in _examples(slugs).items():
+        if not example:
+            continue
+        path = REPO / "tools" / slug.replace("-", "_") / "example"
+        out[slug] = json.loads((path / "result.json").read_text("utf-8"))
+    return out
+
+
+class TestNoUnclearedSequenceReachesAPublicPage:
+    """The publishing rule, enforced on VALUES rather than key names.
+
+    The obvious shape for this guard is a list of the key names a
+    designed sequence has been seen under. That is a proxy for the
+    rule, not the rule: it cannot see a design stored under a key
+    nobody thought of, and it cannot see one encoded inside a
+    structure blob at all.
+    """
+
+    def test_every_published_sequence_has_been_cleared(self, tools_app):
+        _app, slugs = tools_app
+        uncleared = []
+        for slug, payload in _example_payloads(slugs).items():
+            for where, kind, seq in _published_sequences(payload):
+                if (slug, where) not in PUBLISHABLE_SEQUENCES:
+                    uncleared.append(
+                        f"{slug}: {len(seq)} residues as a {kind} at "
+                        f"{where} -> {seq[:40]}..."
+                    )
+        assert not uncleared, (
+            "a sequence reaches a public page with no recorded reason.\n"
+            + "\n".join(uncleared)
+            + "\n\nIf it is a published reference or one of our own demo "
+            "designs on a published backbone, add it to "
+            "PUBLISHABLE_SEQUENCES with the reason. If it belongs to a "
+            "customer or a campaign it must not ship: drop the key, and "
+            "drop any structure blob that encodes it."
+        )
+
+    def test_the_detector_is_not_blind(self, tools_app):
+        """Positive control. Every cleared entry must still be FOUND,
+        otherwise the test above passes by detecting nothing at all —
+        which is the failure mode it exists to replace."""
+        _app, slugs = tools_app
+        seen = set()
+        for slug, payload in _example_payloads(slugs).items():
+            for where, _kind, _seq in _published_sequences(payload):
+                seen.add((slug, where))
+        assert seen >= set(PUBLISHABLE_SEQUENCES), (
+            "the detector no longer finds sequences it has cleared, so "
+            "it would not find an uncleared one either. Missing: "
+            f"{sorted(set(PUBLISHABLE_SEQUENCES) - seen)}"
+        )
+
+    def test_a_structure_blob_cannot_smuggle_a_sequence(self):
+        """The leak a key-name check cannot see, in isolation."""
+        pdb = "\n".join(
+            f"ATOM  {i:5d}  CA  LEU A{i:4d}      0.000   0.000   0.000"
+            for i in range(1, 41)
+        )
+        blob = base64.b64encode(pdb.encode()).decode()
+        found = list(_published_sequences({"pdb_b64": blob}))
+        assert found == [("pdb_b64", "structure", "L" * 40)]
