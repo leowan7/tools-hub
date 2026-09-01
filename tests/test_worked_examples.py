@@ -31,6 +31,7 @@ otherwise the scan has gone blind and everything above it is vacuous.
 
 from __future__ import annotations
 
+import base64
 import json
 import statistics
 import re
@@ -94,6 +95,20 @@ def _dead_urls(html: str) -> list[str]:
     urls = re.findall(r'\b(?:href|action)\s*=\s*"([^"]*)"', html)
     return [u for u in urls if any(p in u for p in DEAD_URL_PATTERNS)]
 
+
+
+def _form_labels(html: str) -> set[str]:
+    """Every <label> on a rendered form page, whitespace-normalised.
+
+    The set the reader can actually see. Anything ``inputs_used`` names
+    has to be in here verbatim.
+    """
+    out = set()
+    for raw in re.findall(r"<label[^>]*>(.*?)</label>", html, re.S | re.I):
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()
+        if text:
+            out.add(text)
+    return out
 
 def _stub_job(slug: str, result: dict, job_id: str = "example") -> dict:
     """The same mapping worked_example.html builds. A dict, not a model:
@@ -799,25 +814,39 @@ class TestExampleNumbersComeFromThePayload:
         assert result["mean_plddt"] == 0.39
         assert round(result["ptm"], 3) == 0.119
 
-        pct = self._plddt_pct(result)
-        assert len(pct) == 304
-        assert sum(1 for v in pct if v >= 70) == 0, (
-            "the example's central claim is that NOTHING reaches 70"
+        # Assert on the RAW payload, which is what the page renders.
+        # Normalising to 0-100 first -- as this test used to -- certifies
+        # the prose against the data while the reader is shown something
+        # else entirely, which is exactly the defect that shipped here.
+        raw = result["plddt_per_residue"]
+        assert len(raw) == 304
+        assert max(raw) <= 1.0, "ESMFold reports pLDDT on 0 to 1"
+        assert sum(1 for v in raw if v >= 0.70) == 0, (
+            "the example's central claim is that NOTHING reaches 0.70"
         )
-        assert round(max(pct), 1) == 65.9
-        assert round(100 * sum(1 for v in pct if v < 50) / len(pct)) == 91
+        assert round(max(raw), 2) == 0.66
+        # The strip's own colour buckets, because "the whole strip is red"
+        # was the claim before this and 26 residues are not red.
+        assert sum(1 for v in raw if v < 0.50) == 278
+        assert sum(1 for v in raw if 0.50 <= v < 0.70) == 26
+        assert sum(1 for v in raw if v >= 0.90) == 0
 
         longest = run = 0
-        for v in pct:
-            run = run + 1 if v >= 50 else 0
+        for v in raw:
+            run = run + 1 if v >= 0.50 else 0
             longest = max(longest, run)
         assert longest == 10
 
         came = example["what_came_back"]
         assert "0.39" in came and "0.119" in came
-        assert "65.9" in came and "91%" in came
+        assert "0.66" in came and "278 of 304" in came
+        assert "26 are amber" in came
         assert "10 residues" in came
-        assert "<strong>Not one residue of the 304 reaches 70</strong>" in came
+        assert "<strong>Not one residue reaches 0.70</strong>" in came
+        # The units convention has to be NAMED. The strip's legend is
+        # written for the 0-100 scale the other predictors use, so a
+        # reader who is not told cannot reconcile 0.39 with "red <= 50".
+        assert "0-to-1 scale" in came
         # The reading, not just the numbers.
         assert "correct answer, not a failed run" in example["how_to_read_it"]
 
@@ -887,7 +916,30 @@ class TestExampleNumbersComeFromThePayload:
         assert "74.16 to 75.93" in came
         assert "0.71 to 0.73" in came
         assert "1.77 pLDDT points" in came and "spans 0.02" in came
-        assert "sort order, not a" in example["how_to_read_it"]
+
+        read = example["how_to_read_it"]
+        assert "sort order, not a" in read
+        # A cross-tool pLDDT comparison has to name the scale it is
+        # crossing. AF2 reports 0-100 and ESMFold 0-1, and this passage
+        # sends the reader from one page to the other holding a
+        # threshold in mind -- unqualified, it reads as a contradiction.
+        assert "0-to-100" in read and "0 to 1" in read
+        assert "0.70" in read, "the esmfold threshold must be on esmfold's scale"
+
+        # NOT derivable from the payload: the ten submitted sequences are
+        # designs and are not published, so the identity range is a
+        # capture-time fact. Pinned as PROSE, the way proteina's
+        # non-derivable figures are, so a copy edit cannot drift it and
+        # nobody goes looking for it in result.json.
+        assert not list(_published_sequences(result)), (
+            "af2's payload must stay sequence-free; if that changes, the "
+            "identity range below should be derived rather than pinned"
+        )
+        assert "72% to 79%" in example["target"]
+        assert "a fifth to a little over a quarter" in read, (
+            "72-79% identity is 21-28% divergence; 28% is more than a "
+            "quarter, so 'a fifth to a quarter' understates it"
+        )
 
     def test_esmfold2_design_narration_matches_its_result_json(
         self, tools_app,
@@ -930,60 +982,65 @@ class TestExampleNumbersComeFromThePayload:
         assert "The higher score is the one you must not order." in read
         assert "0.02 difference in ipTM is noise" in read
 
-    def test_no_example_publishes_a_designed_sequence(self, tools_app):
-        """The publishing rule for these pages is scores and published
-        references only. Two of the predictor payloads arrived carrying
-        model-written sequences -- colabfold's folded input was an MPNN
-        design, and esmfold2-design's payload held nine sequence fields
-        including a top-level ``best_sequence`` -- and capture strips
-        them. This is the check that they stay stripped, because the
-        page is public and a re-capture is one flag away from putting
-        them back.
+    def test_every_published_sequence_has_been_cleared(self, tools_app):
+        """The publishing rule: no CUSTOMER or CAMPAIGN designed sequence
+        may reach one of these pages.
 
-        esmfold is the deliberate exception and is asserted, not
-        skipped: its ``sequence`` is a published reference protein,
-        which is what lets a reader check the example at all.
+        Enforced on VALUES, not key names. A key-name blacklist is a
+        proxy for the rule rather than the rule: it cannot see a design
+        under a key nobody listed, and it cannot see one encoded inside
+        a structure blob at all. Both are live classes of leak -- every
+        residue of a design is recoverable from the CA records of a
+        ``pdb_b64``, so dropping the ``sequence`` key while keeping the
+        structure publishes it just as completely.
+
+        Anything the detector finds must be named in
+        PUBLISHABLE_SEQUENCES with the reason it may ship.
         """
-        _, slugs = tools_app
-        designed = {"best_sequence", "designed_sequence", "binder_sequence"}
-
-        def walk(node, path=""):
-            if isinstance(node, dict):
-                for key, val in node.items():
-                    here = f"{path}.{key}" if path else key
-                    assert key not in designed, f"{here} is a designed sequence"
-                    yield from walk(val, here)
-            elif isinstance(node, list):
-                for i, val in enumerate(node):
-                    yield from walk(val, f"{path}[{i}]")
-            else:
-                yield path, node
-
-        for slug, example in _examples(slugs).items():
-            if not example:
-                continue
-            path = (
-                REPO / "tools" / slug.replace("-", "_")
-                / "example" / "result.json"
-            )
-            result = json.loads(path.read_text(encoding="utf-8"))
-            for where, _ in walk(result):
-                pass
-            if slug in ("colabfold", "esmfold2-design"):
-                assert "sequence" not in result, (
-                    f"{slug} folded a design; its sequence must not ship"
-                )
-                for row in result.get("designs", []):
-                    assert "sequence" not in row
-
-        esmfold = json.loads(
-            (REPO / "tools" / "esmfold" / "example" / "result.json")
-            .read_text(encoding="utf-8"),
+        _app, slugs = tools_app
+        uncleared = []
+        for slug, payload in _example_payloads(slugs).items():
+            for where, kind, seq in _published_sequences(payload):
+                if (slug, where) not in PUBLISHABLE_SEQUENCES:
+                    uncleared.append(
+                        f"{slug}: {len(seq)} residues as a {kind} at "
+                        f"{where} -> {seq[:40]}..."
+                    )
+        assert not uncleared, (
+            "a sequence reaches a public page with no recorded reason.\n"
+            + "\n".join(uncleared)
+            + "\n\nIf it is a published reference or one of our own demo "
+            "designs on a published backbone, add it to "
+            "PUBLISHABLE_SEQUENCES with the reason. If it belongs to a "
+            "customer or a campaign it must not ship: drop the key, and "
+            "drop any structure blob that encodes it."
         )
-        assert len(esmfold["sequence"]) == 304, (
-            "esmfold's input is a published reference and is kept on "
-            "purpose -- it is what makes the example checkable"
+
+    def test_the_sequence_detector_is_not_blind(self, tools_app):
+        """Positive control. Every cleared entry must still be FOUND,
+        otherwise the test above passes by detecting nothing at all --
+        which is the failure mode it exists to replace."""
+        _app, slugs = tools_app
+        seen = set()
+        for slug, payload in _example_payloads(slugs).items():
+            for where, _kind, _seq in _published_sequences(payload):
+                seen.add((slug, where))
+        assert seen >= set(PUBLISHABLE_SEQUENCES), (
+            "the detector no longer finds sequences it has cleared, so "
+            "it would not find an uncleared one either. Missing: "
+            f"{sorted(set(PUBLISHABLE_SEQUENCES) - seen)}"
         )
+
+    def test_a_structure_blob_cannot_smuggle_a_sequence(self):
+        """The leak a key-name check cannot see, in isolation."""
+        pdb = "\n".join(
+            f"ATOM  {i:5d}  CA  LEU A{i:4d}      0.000   0.000   0.000"
+            for i in range(1, 41)
+        )
+        blob = base64.b64encode(pdb.encode()).decode()
+        found = list(_published_sequences({"pdb_b64": blob}))
+        assert found == [("pdb_b64", "structure", "L" * 40)]
+
 
 
     def test_input_field_names_exist_on_the_form(self, tools_app):
@@ -999,23 +1056,34 @@ class TestExampleNumbersComeFromThePayload:
         multimer from the record rather than asking. Prose is the surface
         with no compiler, so it gets this instead.
         """
-        _, slugs = tools_app
-        from tools import base as tool_base
+        app, slugs = tools_app
 
-        missing = {}
-        for slug, example in _examples(slugs).items():
-            if not example:
-                continue
-            form = (
-                REPO / "templates"
-                / tool_base.get(slug).form_template
-            ).read_text(encoding="utf-8")
-            for field, _value, _why in example["inputs_used"]:
-                if field not in form:
-                    missing.setdefault(slug, []).append(field)
-        assert not missing, (
-            "worked-example input names that appear on no form label: "
-            f"{missing}"
+        # Match against the RENDERED <label> text, exactly. Scanning the
+        # template SOURCE for a substring is the obvious version and it
+        # is hollow three ways over: it matches Jinja comments, which are
+        # stripped before anyone sees them; it matches CSS inside a
+        # <style> block, so "grid-template-columns" passes; and being a
+        # substring it accepts a truncation of a real label, which sends
+        # the reader hunting for a control whose name does not quite
+        # match. Four of those were live here.
+        wrong = {}
+        with app.test_client() as client:
+            for slug, example in _examples(slugs).items():
+                if not example:
+                    continue
+                html = client.get(f"/tools/{slug}").get_data(as_text=True)
+                labels = _form_labels(html)
+                assert labels, f"{slug}: no form labels rendered at all"
+                for field, _value, _why in example["inputs_used"]:
+                    if field not in labels:
+                        near = [l for l in labels if l.startswith(field)]
+                        wrong.setdefault(slug, []).append(
+                            f"{field!r}" + (f" (label is {near[0]!r})"
+                                            if near else " (no such label)")
+                        )
+        assert not wrong, (
+            "worked-example input names that are not a form label, "
+            f"exactly as rendered: {wrong}"
         )
 
 
@@ -1073,3 +1141,115 @@ class TestCaptureScrubsBeforeItPublishes:
         result = {"candidates": [{"pdb_key": "d.pdb", "pdb_content_b64": "X"}]}
         assert trim_structures(result, 0) == 0
         assert "pdb_content_b64" not in result["candidates"][0]
+
+
+# ── The publishing rule ──────────────────────────────────────────────
+#
+# Written down here because a test enforcing an unwritten rule drifts
+# the moment two people read it differently:
+#
+#   No CUSTOMER or CAMPAIGN designed sequence may reach a public page.
+#
+# Scores are always fine. So is the sequence of a PUBLISHED reference
+# protein — that is what lets a reader check the example against the
+# literature instead of taking our word for it. So is one of our own
+# demo designs on a published reference backbone: there is no customer
+# target behind it. Everything else is somebody's IP on an index,follow
+# URL.
+#
+# Every sequence allowed to ship is named below with the reason it is
+# allowed. A new one fails until someone writes its reason down, and
+# that is the point: the question is not "does this look like a design"
+# — the detector already answers that — it is "whose design is it",
+# which only a human knows.
+MIN_PUBLISHED_SEQUENCE = 25
+
+PUBLISHABLE_SEQUENCES = {
+    ("mpnn", "sequences[0].seq"): (
+        "our own ProteinMPNN demo redesign of hen egg-white lysozyme, "
+        "PDB 1HEW chain A: a published backbone, no customer target"
+    ),
+    ("mpnn", "sequences[1].seq"): (
+        "second sample from the same 1HEW demo run"
+    ),
+    ("esmfold", "sequence"): (
+        "human myelin basic protein, a published reference sequence -- it "
+        "is what lets a reader check this example against the literature"
+    ),
+    ("esmfold", "pdb_b64"): (
+        "the folded structure OF that published reference; the sequence it "
+        "encodes is the cleared one above"
+    ),
+}
+
+_AA1 = set("ACDEFGHIKLMNPQRSTVWY")
+_AA3 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "MSE": "M",
+}
+
+
+def _ca_sequence(pdb_text: str) -> str:
+    """The one-letter sequence a reader can recover from CA records."""
+    return "".join(
+        _AA3.get(line[17:20].strip(), "X")
+        for line in pdb_text.splitlines()
+        if line.startswith("ATOM") and line[12:16].strip() == "CA"
+    )
+
+
+def _sequence_in(value):
+    """``(kind, sequence)`` if ``value`` publishes a protein sequence.
+
+    TWO ways, because guarding only the first is how the earlier
+    version of this check passed while a design shipped. A bare string
+    is the obvious one. A base64 structure is the one that got through:
+    dropping the ``sequence`` KEY and keeping ``pdb_b64`` leaves the
+    whole sequence on the page, recoverable from the CA records by
+    anyone who clicks Download PDB.
+    """
+    if not isinstance(value, str) or len(value) < MIN_PUBLISHED_SEQUENCE:
+        return None
+    if set(value.upper()) <= _AA1:
+        return ("bare sequence", value)
+    if len(value) >= 200:
+        try:
+            text = base64.b64decode(value, validate=True).decode(
+                "utf-8", "replace"
+            )
+        except Exception:
+            return None
+        if "ATOM" in text:
+            seq = _ca_sequence(text)
+            if len(seq) >= MIN_PUBLISHED_SEQUENCE:
+                return ("structure", seq)
+    return None
+
+
+def _published_sequences(obj, path=""):
+    """Every publishable sequence in ``obj``, at any depth."""
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            child = f"{path}.{key}" if path else str(key)
+            yield from _published_sequences(val, child)
+    elif isinstance(obj, list):
+        for i, val in enumerate(obj):
+            yield from _published_sequences(val, f"{path}[{i}]")
+    else:
+        found = _sequence_in(obj)
+        if found:
+            yield (path, *found)
+
+
+def _example_payloads(slugs):
+    """``{slug: payload}`` for every tool that actually ships one."""
+    out = {}
+    for slug, example in _examples(slugs).items():
+        if not example:
+            continue
+        path = REPO / "tools" / slug.replace("-", "_") / "example"
+        out[slug] = json.loads((path / "result.json").read_text("utf-8"))
+    return out

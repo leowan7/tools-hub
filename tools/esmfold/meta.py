@@ -161,11 +161,16 @@ EXAMPLE: dict | None = {
     ],
     "what_came_back": (
         "A complete structure, a mean pLDDT of <strong>0.39</strong> and a "
-        "pTM of 0.119. Open <em>Per-residue pLDDT</em> under the result and "
-        "the whole 304-residue strip is red. <strong>Not one residue of the "
-        "304 reaches 70</strong>; the highest anywhere in the chain is 65.9, "
-        "and 91% sit below 50. The longest unbroken stretch that even "
-        "reaches 50 is 10 residues long."
+        "pTM of 0.119. <strong>ESMFold reports pLDDT on a 0-to-1 scale</strong>, "
+        "so read the strip's <em>90 / 70 / 50</em> legend as 0.90 / 0.70 / "
+        "0.50 &mdash; the same thresholds, a hundredth of the size. (AlphaFold2 "
+        "and ColabFold report the same quantity on 0 to 100, which is why the "
+        "legend is written that way.) Open <em>Per-residue pLDDT</em> under "
+        "the result and the 304-residue strip is red almost end to end: "
+        "<strong>278 of 304 residues sit below 0.50</strong>, 26 are amber "
+        "above it, and nothing reaches green or blue anywhere. <strong>Not "
+        "one residue reaches 0.70</strong>; the highest in the chain is 0.66. "
+        "The longest unbroken stretch that even reaches 0.50 is 10 residues."
     ),
     "how_to_read_it": (
         "<strong>That is the correct answer, not a failed run.</strong> The "

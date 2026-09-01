@@ -129,13 +129,22 @@ PILOT: dict | None = None
 # raw, so the page shows 61.05. The sibling ESMFold page reports the same
 # metric on 0-1. Quote what THIS page renders.
 #
+# NO `pdb_b64`. It was captured and then removed: the folded sequence is a
+# DESIGN, and a PDB blob publishes it just as completely as a sequence field
+# does - every residue is recoverable from the CA records by anyone who
+# clicks Download PDB. Dropping the `sequence` key while keeping the
+# structure was the leak, not the fix. The cost is this example's 3D viewer
+# and PDB download; the lesson it teaches lives in the per-residue pLDDT
+# strip, which is still here. esmfold keeps its blob because that sequence
+# is a published reference protein, not a design.
+#
 # COST is compute_charge_usd(55, "A100-40GB") - the charge, not the raw Modal
 # cost. tests/test_worked_examples.py recomputes it from the rate card.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Not a natural protein &mdash; a 101-residue sequence ProteinMPNN had "
-        "just written for a backbone, brought straight here to be checked."
+        "Not a natural protein &mdash; a 101-residue sequence ProteinMPNN "
+        "wrote for a backbone, folded here as an independent check."
     ),
     "why_this_target": (
         "This is the step that catches design failures before they cost "
@@ -156,7 +165,7 @@ EXAMPLE: dict | None = {
         (
             "FASTA",
             "101 aa, one chain",
-            "The top-ranked MPNN sequence for that backbone, pasted as FASTA.",
+            "One MPNN sequence for that backbone, pasted as FASTA.",
         ),
         (
             "Number of recycles",

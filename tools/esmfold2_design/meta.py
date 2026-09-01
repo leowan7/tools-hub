@@ -308,7 +308,8 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "Two designs, both scoring far above the interface-confidence bar. "
+        "Two designs, both scoring far above the ipTM band that would have "
+        "decided them if ipTM had been the deciding column. "
         "Seed 0 came back at <strong>ipTM 0.956</strong>, the better of the "
         "two. Seed 1 came back at 0.935. "
         "<strong>The tool passed seed 1 and dropped seed 0.</strong> "
@@ -316,16 +317,19 @@ EXAMPLE: dict | None = {
         "point of 5.67, and seed 0 has one of <strong>11.95</strong>."
     ),
     "how_to_read_it": (
-        "The filter is <code>ipTM &gt; 0.75</code> <em>and</em> "
-        "<code>pI &lt; 6</code>, and the second half is the one doing work "
-        "here. A pI near 12 means a strongly positively charged peptide at "
+        "<code>pI</code> is a hard gate and it is checked <em>first</em>: a "
+        "design with pI 6 or above is dropped whatever its ipTM. Only for "
+        "the designs that clear it do the ipTM bands apply &mdash; "
+        "<code>&ge; 0.75</code> passes strictly, <code>&ge; 0.70</code> comes "
+        "back <code>borderline</code>, and below that it drops. So seed 0 was "
+        "not out-scored by seed 1. It was disqualified before its 0.956 "
+        "counted for anything. "
+        "A pI near 12 means a strongly positively charged peptide at "
         "the pH of every buffer you own. Those stick to things &mdash; "
         "membranes, columns, the wrong protein &mdash; and they read as "
         "binders in an assay for reasons that have nothing to do with the "
-        "site you aimed at. Seed 0's sequence is a third leucine by "
-        "composition, with alanine and arginine making up most of the rest "
-        "and a run of seven glycines through the middle &mdash; which is the "
-        "shape of thing that pI is describing. "
+        "site you aimed at. You do not need to see the sequence to act on "
+        "that; the <code>pI</code> column has already told you. "
         "<strong>The higher score is the one you must not order.</strong> "
         "A 0.02 difference in ipTM is noise; the gap between pI 5.67 and 11.95 "
         "is the entire decision. "

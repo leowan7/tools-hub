@@ -177,6 +177,13 @@ PILOT: dict | None = None
 # job.result, which for a batch carries scores only and no sequence at all.
 # Nothing had to be stripped.
 #
+# The "72% to 79% identical" range in `target` was computed at CAPTURE time
+# from the ten submitted FASTA records. Those sequences are designs, so they
+# are not in the payload below and the figure cannot be re-derived from it -
+# do not go looking for it in result.json and do not "correct" it to
+# something the payload does support. tests/test_worked_examples.py pins the
+# wording instead, the way proteina's non-derivable figures are pinned.
+#
 # The per-design `runtime_seconds` in this payload are CUMULATIVE elapsed
 # time, not per-design durations: they climb 101 -> 358 and sum to far more
 # than the job's own 388. Do not quote them as "this design took N seconds".
@@ -189,7 +196,7 @@ EXAMPLE: dict | None = {
         "Ten designed variants of a microbial rhodopsin &mdash; the "
         "seven-transmembrane-helix light-driven channel family &mdash; at 333 "
         "residues each, folded in one submission. They came off a generative "
-        "model as ten samples on one scaffold, and each is 72% to 79% "
+        "model as ten samples from one design round, each 72% to 79% "
         "identical to the first."
     ),
     "why_this_target": (
@@ -246,15 +253,18 @@ EXAMPLE: dict | None = {
         "picking the top one to carry forward is picking at random while "
         "feeling informed. "
         "The result that <em>is</em> real is the agreement. Ten variants "
-        "differing at a fifth to a quarter of their residues all folding to "
-        "the same "
+        "differing at a fifth to a little over a quarter of their residues "
+        "all folding to the same "
         "confidence says the scaffold tolerates that much variation &mdash; "
         "which is a genuine finding about the design round, and the opposite "
         "of what you would conclude by reading row one. "
         "For scale: 70 is the usual line for a confidently folded structure, "
-        "and all ten clear it. Compare with the ESMFold example on this site, "
-        "where a genuinely disordered protein has no residue reaching 70 "
-        "anywhere in the chain."
+        "and all ten clear it &mdash; AlphaFold2 reports pLDDT on a 0-to-100 "
+        "scale. Compare with the ESMFold example on this site, which reports "
+        "the same quantity on 0 to 1: there a genuinely disordered protein "
+        "has no residue reaching 0.70 anywhere in the chain. Same threshold, "
+        "different scale, so check which one you are reading before comparing "
+        "two numbers."
     ),
     "what_we_did_next": (
         "A batch this tight does not narrow itself, so the choice has to come "

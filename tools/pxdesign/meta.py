@@ -227,7 +227,7 @@ EXAMPLE: dict | None = {
             "chain reads as the whole target.",
         ),
         (
-            "Binder length",
+            "Binder length (residues)",
             "63",
             "One of four calls we made at 50, 57, 63 and 70. The pilot "
             "tier draws a fresh seed per call, so fanning out over lengths "

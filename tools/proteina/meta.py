@@ -432,7 +432,7 @@ EXAMPLE: dict | None = {
             "symmetric.",
         ),
         (
-            "Binder length",
+            "Binder length (residues)",
             "60 to 69",
             "A window, not a number &mdash; the generator draws a length "
             "per design. Leaving the field empty gives you 60 to 120; this "

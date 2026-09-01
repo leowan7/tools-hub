@@ -233,7 +233,7 @@ EXAMPLE: dict | None = {
     ),
     "inputs_used": [
         (
-            "Backbone",
+            "Backbone PDB",
             "1HEW.pdb",
             "The crystal structure, downloadable below. Only the backbone "
             "atoms are read &mdash; the sequence in the file is discarded "
