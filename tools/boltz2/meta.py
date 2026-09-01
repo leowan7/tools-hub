@@ -130,7 +130,7 @@ about: dict = {
     "output_summary": (
         "Per-design folded complex PDB + ipTM, pTM, complex_pLDDT, "
         "complex_iplddt, and hotspot contact count. Strict-pass "
-        "classification (<code>complex_pLDDT &gt; 0.85</code>, "
+        "classification (<code>complex_pLDDT &gt; 85</code>, "
         "<code>ipTM &gt; 0.7</code>, "
         "<code>n_hotspot_contacts &gt; 4</code>) surfaces which designs "
         "are worth ordering."

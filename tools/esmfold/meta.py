@@ -120,10 +120,6 @@ PILOT: dict | None = None
 # pAE panel, which this partial already renders conditionally.
 # plddt_per_residue is kept, because it IS this example.
 #
-# UNITS. ESMFold reports pLDDT on 0-1 and this partial prints mean_plddt raw
-# ("%.2f" straight from the payload), so the page shows 0.39 and the prose
-# says 0.39. ColabFold and AF2 report the same metric on 0-100. Quote what
-# THIS page renders, not the sibling tool's scale.
 #
 # UNITS. This payload stores pLDDT on 0-1 (mean 0.39, max 0.659) because
 # that is what ESMFold's HuggingFace head returns. The PAGE renders 0-100,

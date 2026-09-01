@@ -212,6 +212,15 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
     if not scores:
         return ("", "", "", "")
 
+    # The caption underneath quotes the 80/90 band, so the number beside
+    # it has to be on that scale. This mailed "pLDDT 0.830" directly above
+    # "Above 80 is confidently folded".
+    scores = {
+        k: (_metric_glossary.plddt_on_100(v)
+            if k in _metric_glossary.PLDDT_COLUMNS else v)
+        for k, v in scores.items()
+    }
+
     try:
         from shared.score_legends import (  # noqa: PLC0415
             score_legends_for,

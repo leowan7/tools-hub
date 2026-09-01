@@ -377,7 +377,8 @@ PILOT: dict | None = {
 # smoke_result.json for pre-dating the pLDDT polarity fix (#129, 9fbe547,
 # 2026-08-09). This shard ran 2026-08-10, after it, and the polarity is
 # checked rather than assumed: af2_plddt correlates +0.63 with af2_iptm and
-# +0.62 with total_reward across the 64, and the top-12 median pLDDT (0.840)
+# +0.62 with total_reward across the 64, and the top-12 median RAW af2_plddt
+# (0.840 as stored; the page renders it 84.00)
 # is above the bottom-12 (0.733). Under the inversion every one of those
 # signs would flip.
 #
@@ -462,7 +463,7 @@ EXAMPLE: dict | None = {
         "above 0.80 with the re-folded complex landing within 5 &Aring;. "
         "They are ranks 1 to 11 and 13, so on this shard the ranking and the "
         "filter agree: the top of the table is the answer. The best scored "
-        "ipTM 0.89 at pLDDT 0.89, re-folding 1.32 &Aring; from where the "
+        "ipTM 0.89 at pLDDT 88.50, re-folding 1.32 &Aring; from where the "
         "generator put it. "
         "Of the 52 that did not pass, 30 failed on the re-fold. "
         "<strong>Twelve of those 30 are the model handing the target's own "
@@ -472,7 +473,7 @@ EXAMPLE: dict | None = {
     "how_to_read_it": (
         "<strong>Read <code>binder_scrmsd</code> before you trust "
         "<code>af2_plddt</code>.</strong> The twelve copies score pLDDT "
-        "0.71 to 0.76 &mdash; unremarkable, nothing that reads as broken "
+        "70.79 to 75.65 &mdash; unremarkable, nothing that reads as broken "
         "&mdash; while their <code>binder_scrmsd</code> is 32 to 44 &Aring; "
         "against a median of 2.0 &Aring; for everything else. That column "
         "is the generator's backbone compared against an independent re-fold "
@@ -487,7 +488,7 @@ EXAMPLE: dict | None = {
         "&Aring; at ipTM under 0.10 &mdash; and twelve of them are copies. "
         "The thirteenth, at rank 55, is an ordinary de-novo sequence that "
         "shares 4% of itself with the target and simply failed to re-fold. "
-        "Its pLDDT is 0.58, below the band the twelve sit in, but that gap "
+        "Its pLDDT is 58.38, below the band the twelve sit in, but that gap "
         "is one shard's worth of evidence and not a rule. We know which "
         "twelve because we compared each sequence against the target's, "
         "which takes a substring search and no GPU. If a row of yours looks "

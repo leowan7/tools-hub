@@ -26,6 +26,7 @@ from flask import (
     url_for,
 )
 
+from shared import metric_glossary as _metric_glossary
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
@@ -118,6 +119,10 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
         scores = flat or {}
     for col in scores:
         val = scores.get(col)
+        if col in _metric_glossary.PLDDT_COLUMNS:
+            # This string goes into og:title on a PUBLIC share card, so it
+            # is read with no page around it to give the scale.
+            val = _metric_glossary.plddt_on_100(val)
         if isinstance(val, (int, float)):
             return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
     return None

@@ -140,7 +140,7 @@ GLOSSARY: dict[str, dict] = {
             "score distribution, not for advancing to validation. 'stub' "
             "marks smoke-test stubs whose scores are placeholders. "
             "'strict_pass' / 'soft_pass' are Boltz-2 cofold tiers: "
-            "strict_pass = complex_pLDDT >= 0.85 AND ipTM >= 0.7 AND at "
+            "strict_pass = complex_pLDDT >= 85 AND ipTM >= 0.7 AND at "
             "least 4 hotspot contacts."
         ),
         "good_range": "pass / strict_pass",
@@ -300,13 +300,24 @@ def plddt_on_100(raw):
     below 1.0 is therefore the 0-1 form, not a structure with
     essentially no confidence anywhere.
 
-    Idempotent by construction: a 0-1 value becomes >1 after scaling, so
-    applying this twice is the same as applying it once, and fixing a
-    pipeline to emit 0-100 later cannot make this double-scale.
+    APPLY IT EXACTLY ONCE. It is NOT idempotent, and an earlier version
+    of this docstring claimed it was. The claim holds for the values it
+    was tested on and fails below 0.01, where scaling lands back inside
+    the 0-1 window: 0.005 -> 0.5 -> 50.0. boltz2's template used to
+    normalise and then hand the result to candidate_table, which
+    normalised the ``pLDDT`` key again; that was harmless only because
+    boltz2's real range is 0.91-0.97.
 
-    Negatives and non-numbers pass through untouched rather than being
-    invented into something plausible -- they mean the payload is broken
-    and that should stay visible.
+    What IS guaranteed is the property the callers actually need: one
+    application to a value on EITHER scale yields 0-100. So a later
+    pipeline fix that starts emitting 0-100 is safe, because that value
+    passes through untouched.
+
+    Negatives pass through untouched rather than being invented into
+    something plausible -- they mean the payload is broken and that
+    should stay visible. Anything unparseable, NaN included, returns
+    None, and the CALLER must render that as a missing value: it is not
+    a number and formatting it as one raises.
     """
     if raw is None:
         return None

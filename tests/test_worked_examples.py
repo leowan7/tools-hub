@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.metric_glossary import plddt_on_100
 from shared.tool_meta import meta_for
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -649,7 +650,11 @@ class TestExampleNumbersComeFromThePayload:
         odd = [c for c in band if c["scores"]["af2_plddt"] < 0.70]
         assert [c["rank"] for c in odd] == [55]
         assert round(odd[0]["scores"]["af2_plddt"], 2) == 0.58
-        assert "rank 55" in reading and "0.58" in reading
+        # The PROSE quotes what the page renders (58.38 on the 0-100
+        # scale); the PAYLOAD stores 0.5838. Both are asserted, because
+        # normalising the column without rescaling this sentence is what
+        # made the page contradict its own table.
+        assert "rank 55" in reading and "58.38" in reading
         copies = [c for c in band if c not in odd]
         assert len(copies) == 12
 
@@ -658,7 +663,10 @@ class TestExampleNumbersComeFromThePayload:
         # the paragraph would be arguing for a check nobody needs.
         cp = col("af2_plddt", copies)
         assert 0.70 <= min(cp) and max(cp) < 0.77
-        assert "0.71 to 0.76" in reading
+        # Payload 0-1, prose on the 0-100 scale the table renders.
+        assert (round(plddt_on_100(min(cp)), 2),
+                round(plddt_on_100(max(cp)), 2)) == (70.79, 75.65)
+        assert "70.79 to 75.65" in reading
         cs = col("binder_scrmsd", copies)
         assert 32.0 <= min(cs) and max(cs) <= 44.5
         assert "32 to 44 &Aring;" in reading

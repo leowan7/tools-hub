@@ -24,6 +24,8 @@ from __future__ import annotations
 import base64
 import csv
 import io
+
+from shared import metric_glossary as _metric_glossary
 import zipfile
 from typing import Callable, Optional
 
@@ -220,6 +222,12 @@ def candidates_to_csv(candidates) -> str:
         }
         row.update(cand.get("scores") or {})
         row.update(key)
+        # Same scale as the page this was downloaded from. Without this
+        # the workflow "read the table, export the CSV, filter > 70"
+        # returns an empty file for every tool that stores 0-1, with no
+        # hint why -- the page says 88.5 and the CSV says 0.885.
+        for col in _metric_glossary.PLDDT_COLUMNS & row.keys():
+            row[col] = _metric_glossary.plddt_on_100(row[col])
         writer.writerow(row)
     return buf.getvalue()
 

@@ -17,6 +17,15 @@ Normalising happens at DISPLAY, not in a pipeline, because the jobs
 table already holds completed 0-1 runs that no pipeline change can
 reach, and because a pipeline fix would then make those historical rows
 render as catastrophic.
+
+WHY THIS FILE IS SHAPED THE WAY IT IS. Its first version asserted
+``"39.00" in html`` for the esmfold page. That string also occurs in the
+page's own NARRATION, so restoring the exact original defect in the
+summary panel left every test green while the panel showed 0.39 again.
+A guard that a defect's own prose can satisfy is not a guard. Every
+assertion below therefore anchors on the RENDERED ELEMENT, and the
+negative form (``"0.39" not in html``) carries as much weight as the
+positive one.
 """
 
 from __future__ import annotations
@@ -30,6 +39,57 @@ import pytest
 from shared.metric_glossary import PLDDT_COLUMNS, plddt_on_100
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
+# Tools whose stored payload is on 0-1, so their pages are the ones that
+# would REGRESS. A scan that never reaches one of these is vacuous no
+# matter how many values it counted on the tools that were always fine.
+STORES_ZERO_TO_ONE = {"esmfold", "proteina", "boltz2"}
+
+
+def _without_jinja_comments(body: str) -> str:
+    """Template source with ``{# ... #}`` removed.
+
+    A guard that reads raw source matches the comment describing the
+    thing it forbids, which is how the first version of the boltz2 check
+    failed on the sentence explaining why the code was removed.
+    """
+    return re.sub(r"\{#.*?#\}", "", body, flags=re.S)
+
+
+def _stub_job(tool: str, scores: dict):
+    """A real ToolJob, because these consumers read one -- not a mapping.
+
+    ``_top_candidate_summary`` takes the first scored column that has a
+    registered legend, so the scores dict here holds exactly the metric
+    under test.
+    """
+    import uuid
+
+    from shared.jobs import ToolJob
+
+    return ToolJob.from_row({
+        "id": str(uuid.uuid4()),
+        "user_id": str(uuid.uuid4()),
+        "tool": tool,
+        "preset": "pilot",
+        "status": "succeeded",
+        "inputs": {"target_chain": "A"},
+        "result": {
+            "tier": "pilot",
+            "candidates": [
+                {"design_name": "d0", "pdb_key": "d.pdb", "scores": scores},
+            ],
+        },
+        "error": None,
+        "modal_function_call_id": "fc-stub",
+        "job_token": "t" * 64,
+        "gpu_seconds_used": 10,
+        "created_at": "2026-08-08T12:00:00Z",
+        "started_at": "2026-08-08T12:00:01Z",
+        "completed_at": "2026-08-08T12:30:00Z",
+    })
 
 
 @pytest.fixture(scope="module")
@@ -56,6 +116,23 @@ def tools_app():
             os.environ[key] = val
 
 
+@pytest.fixture(scope="module")
+def example_pages(tools_app):
+    from shared.tool_meta import meta_for
+
+    flask_app, slugs = tools_app
+    pages = {}
+    with flask_app.test_client() as client:
+        for slug in slugs:
+            if not getattr(meta_for(slug), "EXAMPLE", None):
+                continue
+            resp = client.get("/tools/" + slug)
+            assert resp.status_code == 200, slug
+            pages[slug] = resp.get_data(as_text=True)
+    assert pages, "no example pages rendered; every scan here would be vacuous"
+    return pages
+
+
 class TestTheNormaliser:
     def test_zero_to_one_is_scaled(self):
         assert plddt_on_100(0.39) == pytest.approx(39.0)
@@ -68,17 +145,31 @@ class TestTheNormaliser:
         assert plddt_on_100(75.93) == pytest.approx(75.93)
         assert plddt_on_100(100.0) == pytest.approx(100.0)
 
-    def test_it_is_idempotent(self):
-        """The property that lets a pipeline be fixed later without this
-        double-scaling. An unconditional ``* 100`` -- which is what
-        boltz2's template used to do -- does not have it."""
-        for value in (0.39, 0.659, 1.0, 0.0, 75.93, 100.0):
-            once = plddt_on_100(value)
-            assert plddt_on_100(once) == pytest.approx(once)
+    def test_one_application_to_either_scale_lands_on_0_100(self):
+        """The property the callers actually need, and the only one
+        claimed. A later pipeline fix that starts emitting 0-100 is safe
+        because that value passes through."""
+        for stored_0_1, stored_0_100 in ((0.39, 39.0), (0.659, 65.9)):
+            assert plddt_on_100(stored_0_1) == pytest.approx(
+                plddt_on_100(stored_0_100)
+            )
 
-    def test_junk_is_not_invented_into_a_number(self):
+    def test_it_is_NOT_idempotent_below_a_hundredth(self):
+        """Pinned so nobody claims idempotency again -- an earlier
+        docstring did, and boltz2's template was applying the rule twice
+        on the strength of it. Harmless there only because boltz2's real
+        range is 0.91-0.97; below 0.01 the second application scales a
+        value that is already on 0-100."""
+        assert plddt_on_100(0.005) == pytest.approx(0.5)
+        assert plddt_on_100(plddt_on_100(0.005)) == pytest.approx(50.0)
+        # ...and above that boundary a second application is a no-op,
+        # which is why the bug hid.
+        assert plddt_on_100(plddt_on_100(0.39)) == pytest.approx(39.0)
+
+    def test_junk_returns_none_for_the_caller_to_render_as_missing(self):
         assert plddt_on_100(None) is None
         assert plddt_on_100("nonsense") is None
+        assert plddt_on_100("") is None
         assert plddt_on_100(float("nan")) is None
         # Negative is broken data. It stays visibly broken rather than
         # being scaled into something that looks deliberate.
@@ -92,75 +183,171 @@ class TestTheNormaliser:
 class TestEveryRenderedPLDDTIsOnOneScale:
     """The regression itself, asserted on rendered HTML."""
 
-    def _pages(self, flask_app, slugs):
-        from shared.tool_meta import meta_for
-
-        out = {}
-        with flask_app.test_client() as client:
-            for slug in slugs:
-                if not getattr(meta_for(slug), "EXAMPLE", None):
-                    continue
-                resp = client.get("/tools/" + slug)
-                assert resp.status_code == 200, slug
-                out[slug] = resp.get_data(as_text=True)
-        return out
-
-    def test_no_tooltip_shows_a_zero_to_one_plddt(self, tools_app):
-        flask_app, slugs = tools_app
-        pages = self._pages(flask_app, slugs)
-        assert pages, "no example pages rendered; this test would be vacuous"
-        seen = 0
-        for slug, html in pages.items():
+    def test_no_tooltip_shows_a_zero_to_one_plddt(self, example_pages):
+        scanned = {}
+        for slug, html in example_pages.items():
             values = [float(v) for v in re.findall(r"pLDDT=([\d.]+)", html)]
-            seen += len(values)
+            scanned[slug] = len(values)
             low = [v for v in values if 0 < v <= 1]
             assert not low, (
                 slug + " renders " + str(len(low)) + " per-residue pLDDT "
                 "tooltips at or below 1.0 (e.g. " + str(low[:5]) + ") under "
                 "a legend written for 0-100"
             )
-        assert seen > 300, (
-            "only " + str(seen) + " tooltips scanned; the esmfold example "
-            "alone has 304, so the scan has gone blind"
+        # Non-vacuity, keyed on the page that would actually regress
+        # rather than on a total that colabfold's 101 always-fine values
+        # could satisfy on their own.
+        assert scanned.get("esmfold", 0) == 304, (
+            "the esmfold strip is the only 0-1 tooltip source on the site; "
+            "scanned " + str(scanned.get("esmfold", 0)) + " of 304"
         )
 
-    def test_no_table_cell_shows_a_zero_to_one_plddt(self, tools_app):
-        flask_app, slugs = tools_app
-        pages = self._pages(flask_app, slugs)
+    def test_no_table_cell_shows_a_zero_to_one_plddt(self, example_pages):
         cols = "|".join(sorted(PLDDT_COLUMNS))
         pattern = 'data-col="(' + cols + ')"[^>]*data-val="([^"]+)"'
-        seen = 0
-        for slug, html in pages.items():
+        per_tool = {}
+        for slug, html in example_pages.items():
             for col, val in re.findall(pattern, html):
                 try:
                     num = float(val)
                 except ValueError:
                     continue
-                seen += 1
+                per_tool[slug] = per_tool.get(slug, 0) + 1
                 assert not 0 < num <= 1, (
                     slug + " renders " + col + "=" + val + ", a 0-1 pLDDT "
                     "in a column the legend reads on 0-100"
                 )
-        assert seen >= 20, "only " + str(seen) + " pLDDT cells scanned"
+        # The floor must be met by a tool that STORES 0-1. pxdesign alone
+        # satisfied the old ``>= 20`` while contributing nothing that
+        # could ever fail.
+        regressable = {s: n for s, n in per_tool.items()
+                       if s in STORES_ZERO_TO_ONE}
+        assert regressable, (
+            "no pLDDT cells scanned on any tool that stores 0-1 "
+            "(saw: " + str(per_tool) + "); this scan cannot fail"
+        )
+        assert sum(regressable.values()) >= 60, regressable
 
-    def test_the_esmfold_example_shows_the_numbers_its_prose_quotes(
-        self, tools_app,
+
+class TestTheEsmfoldPanelSpecifically:
+    """The page the defect was found on, asserted on the ELEMENT.
+
+    ``"39.00" in html`` was the original assertion and it is satisfied by
+    the narration alone, so the defect could be restored with the suite
+    green. These anchor on the rendered panel and on the absence of the
+    old value.
+    """
+
+    def test_the_summary_panel_renders_the_normalised_mean(
+        self, example_pages,
     ):
-        """The page the defect was found on. Its narration quotes 39.00
-        and 65.9; without the normaliser the page says 0.39 and 0.7 while
-        the prose keeps its figures."""
-        flask_app, slugs = tools_app
-        html = self._pages(flask_app, slugs)["esmfold"]
-        values = [float(v) for v in re.findall(r"pLDDT=([\d.]+)", html)]
+        html = example_pages["esmfold"]
+        panel = re.search(
+            r"mean pLDDT</div>\s*<div[^>]*>\s*([0-9.]+)", html
+        )
+        assert panel, "esmfold's mean pLDDT panel did not render at all"
+        assert panel.group(1) == "39.00", (
+            "the panel shows " + panel.group(1) + "; the payload stores "
+            "0.39 and the page must show it on the 0-100 scale its own "
+            "legend uses"
+        )
+
+    def test_the_raw_zero_to_one_mean_appears_nowhere_on_the_page(
+        self, example_pages,
+    ):
+        """The negative form, which is what actually catches a revert."""
+        html = example_pages["esmfold"]
+        assert "0.39" not in html, (
+            "the 0-1 mean is still rendered somewhere on the page"
+        )
+
+    def test_the_tooltips_span_the_normalised_range(self, example_pages):
+        values = [
+            float(v)
+            for v in re.findall(r"pLDDT=([\d.]+)", example_pages["esmfold"])
+        ]
         assert len(values) == 304
         assert round(max(values), 1) == 65.9
         assert round(min(values), 1) == 21.5
-        assert "39.00" in html
+
+
+class TestPrecisionDidNotChange:
+    """A scale fix does not get to change precision as a side effect.
+
+    Widening the table's FORMAT branch to every pLDDT column moved
+    ``mean_pLDDT`` from two decimals to one, which rewrote af2's table
+    (75.93 -> 75.9) and falsified the sentence on that page quoting a
+    1.77 spread between top and bottom row.
+    """
+
+    def test_af2_batch_table_keeps_two_decimals(self, example_pages):
+        cells = re.findall(
+            r'data-col="mean_pLDDT"[^>]*>([0-9.]+)<',
+            example_pages["af2"],
+        )
+        assert cells, "af2's mean_pLDDT column did not render"
+        assert "75.93" in cells, cells[:5]
+
+    def test_the_af2_narration_still_matches_its_table(self, example_pages):
+        html = example_pages["af2"]
+        assert "74.16 to 75.93" in html
+        assert "1.77 pLDDT points" in html
+
+
+class TestNoSiteAppliesTheRuleTwice:
+    def test_boltz2_renders_exactly_one_application(self, example_pages):
+        """boltz2's template normalised and then handed the result to
+        candidate_table, which normalised the 'pLDDT' key again."""
+        import json
+
+        payload = json.loads(
+            (REPO / "tools" / "boltz2" / "example" / "result.json")
+            .read_text(encoding="utf-8")
+        )
+        raw = [
+            d["complex_plddt"] for d in payload["designs"]
+            if d.get("complex_plddt") is not None
+        ]
+        assert raw, "boltz2's example carries no complex_plddt"
+        expected = {round(plddt_on_100(v), 2) for v in raw}
+        rendered = {
+            round(float(v), 2)
+            for _c, v in re.findall(
+                r'data-col="(pLDDT)"[^>]*data-val="([^"]+)"',
+                example_pages["boltz2"],
+            )
+        }
+        assert rendered <= expected, (
+            "boltz2 renders values that are not one application of the "
+            "rule to its payload: " + str(sorted(rendered - expected))
+        )
+
+    def test_boltz2_leaves_the_scaling_to_the_table(self):
+        """The assertion above CANNOT catch a re-added double
+        application: boltz2's payload runs 0.91-0.97, one application
+        lands on 91-97, and a second is a no-op above 1.0. The hazard is
+        real but invisible in this data, so it is guarded structurally --
+        candidate_table normalises the 'pLDDT' key, therefore the
+        template must hand it the raw value and not pre-scale it."""
+        # Strip {# ... #} first. Matching raw source made this fail on
+        # the COMMENT explaining the fix, which is the same defect shape
+        # as guarding template source instead of rendered output.
+        body = _without_jinja_comments(
+            (REPO / "templates/tools/boltz2_results.html")
+            .read_text(encoding="utf-8")
+        )
+        assert "plddt_on_100" not in body, (
+            "boltz2_results.html normalises complex_plddt AND stores it "
+            "under 'pLDDT', which candidate_table normalises again"
+        )
+        assert "_plddt * 100" not in body, (
+            "the old unconditional scaling is back; it renders 9609 for a "
+            "payload that already arrives on 0-100"
+        )
 
 
 class TestTheDetectorCanFail:
-    """Positive control. The scans above must be able to SEE a 0-1
-    value, or their passing means nothing."""
+    """Positive controls. The scans must be able to SEE a 0-1 value."""
 
     def test_a_zero_to_one_tooltip_would_be_caught(self):
         page = '<span title="residue 1: pLDDT=0.7"></span>'
@@ -175,55 +362,137 @@ class TestTheDetectorCanFail:
         assert found == [("af2_plddt", "0.885")]
         assert 0 < float(found[0][1]) <= 1
 
-
-def test_every_plddt_column_a_results_template_uses_is_registered():
-    """PLDDT_COLUMNS drives the table's normalisation, so a column key a
-    template renders but this set omits is silently unnormalised."""
-    repo = pathlib.Path(__file__).resolve().parent.parent
-    used = set()
-    for path in (repo / "templates" / "tools").glob("*_results.html"):
-        body = path.read_text(encoding="utf-8")
-        for block in re.findall(r"columns\s*=\s*\[([^\]]*)\]", body):
-            for token in re.findall(r"'([^']+)'", block):
-                if "plddt" in token.lower():
-                    used.add(token)
-    assert used, "no pLDDT columns found in any results template"
-    missing = used - set(PLDDT_COLUMNS)
-    assert not missing, (
-        "results templates render " + str(sorted(missing)) + " but "
-        "PLDDT_COLUMNS does not list them, so those cells are never "
-        "normalised"
-    )
+    def test_the_panel_regex_would_see_an_un_normalised_mean(self):
+        page = '<div>mean pLDDT</div>\n<div class="x">  0.39\n</div>'
+        found = re.search(r"mean pLDDT</div>\s*<div[^>]*>\s*([0-9.]+)", page)
+        assert found and found.group(1) == "0.39"
 
 
-class TestTheCompletionEmailUsesTheSameScale:
-    """The surface a template sweep misses.
+class TestTheOtherSurfaces:
+    """Everything that shows a pLDDT and is not a tool results page.
 
-    ``shared/email._result_summary`` quotes the mean into the job-
-    completion email. It read ``mean_plddt`` raw, so an esmfold run
-    mailed "mean pLDDT 0.4" while every threshold the reader has been
-    given is on 0-100. Nothing on the page could correct it, because the
-    email is the only thing some users read.
+    These were found one at a time, each after the previous sweep was
+    called complete: the completion email, then the second caption in the
+    same file, then the CSV export, then the public share card.
     """
 
-    @staticmethod
-    def _summary(mean_plddt):
+    def test_the_completion_email_uses_the_shared_scale(self):
         import types
 
         from shared.email import _result_summary
 
         job = types.SimpleNamespace()
-        job.result = {"pdb_b64": "x", "mean_plddt": mean_plddt}
+        job.result = {"pdb_b64": "x", "mean_plddt": 0.39}
         job.status = "succeeded"
         job.tool = "esmfold"
-        return _result_summary(job, tone="ok")
+        summary = _result_summary(job, tone="ok")
+        assert "mean pLDDT 39.0" in summary
+        assert "0.4)" not in summary
 
-    def test_a_zero_to_one_mean_is_mailed_on_the_shared_scale(self):
-        assert "mean pLDDT 39.0" in self._summary(0.39)
+    def test_the_top_candidate_email_caption_uses_the_shared_scale(self):
+        """This one quotes the 80/90 band in the very next sentence, so
+        it mailed 'pLDDT 0.830' directly above 'Above 80 is confidently
+        folded'."""
+        from shared.email import _top_candidate_summary
 
-    def test_a_zero_to_one_hundred_mean_is_unchanged(self):
-        assert "mean pLDDT 61.0" in self._summary(61.05)
+        label, value, caption, _pdb = _top_candidate_summary(
+            job=_stub_job("boltzgen", {"pLDDT": 0.83}), tone="success",
+        )
+        assert label == "pLDDT"
+        assert value == "83.000", value
+        # The caption underneath is the reason this matters: it quotes the
+        # band, so the number above it has to be on the same scale.
+        assert "Above 80" in caption, caption
 
-    def test_the_old_wording_is_gone(self):
-        """0.4 was what an esmfold run actually mailed."""
-        assert "0.4)" not in self._summary(0.39)
+    def test_the_csv_export_matches_the_page(self):
+        """Read the table, download the CSV, filter > 70 -- that returned
+        an empty file for every tool storing 0-1, with no hint why."""
+        from shared.exports import candidates_to_csv
+
+        csv_text = candidates_to_csv(
+            [{"rank": 1, "scores": {"af2_plddt": 0.885, "ipTM": 0.89}}]
+        )
+        assert "88.5" in csv_text, csv_text
+        assert "0.885" not in csv_text, csv_text
+        # a metric that is NOT a pLDDT must be untouched
+        assert "0.89" in csv_text, csv_text
+
+    def test_the_public_share_card_uses_the_shared_scale(self):
+        from blueprints.jobs import _top_score_for_share
+
+        assert _top_score_for_share(
+            _stub_job("esmfold", {"pLDDT": 0.39})
+        ) == "pLDDT 39.000"
+
+
+class TestEveryKnownDisplaySiteStillCallsTheRule:
+    """A text-level deletion guard.
+
+    Three sites cannot be reached by the rendered-page scans above -- the
+    cross-tool compare table and job_detail's live table both need job
+    fixtures, and job_detail's is built in the browser. Un-normalising
+    any of them left the whole suite green. This is a weaker guard than a
+    render, and it is here because a weak guard on a real site beats a
+    strong guard on a site that cannot regress.
+    """
+
+    SITES = {
+        "templates/jobs_compare.html": "plddt_on_100(scores.get(",
+        "templates/job_detail.html": "plddtOn100(c.plddt)",
+        "templates/components/candidate_table.html": "plddt_on_100(raw)",
+        "templates/tools/esmfold_results.html": "plddt_on_100(value)",
+        "templates/tools/colabfold_results.html": "plddt_on_100(value)",
+        "templates/tools/af2_results.html": "plddt_on_100(",
+    }
+
+    def test_each_site_applies_it(self):
+        missing = []
+        for path, needle in self.SITES.items():
+            # Comments stripped: a note *about* the call would satisfy
+            # a raw-source match while the call itself was gone.
+            body = _without_jinja_comments(
+                (REPO / path).read_text(encoding="utf-8")
+            )
+            if needle not in body:
+                missing.append(path + " (looked for " + needle + ")")
+        assert not missing, "pLDDT display sites no longer normalising: " + str(missing)
+
+    def test_the_js_mirror_still_defines_the_rule(self):
+        """job_detail builds its live table in the browser, so the jinja
+        global cannot reach it and the rule is hand-copied there."""
+        body = (REPO / "templates/job_detail.html").read_text(encoding="utf-8")
+        assert "function plddtOn100" in body
+        assert "n <= 1" in body and "n * 100" in body
+
+
+def test_every_plddt_column_any_registry_uses_is_registered():
+    """PLDDT_COLUMNS drives normalisation, so a column key rendered
+    somewhere but missing from the set is silently unnormalised.
+
+    Scans BOTH registries. The first version globbed only
+    templates/tools/*_results.html with a regex that stopped at the first
+    ``]``, so it saw nothing at all in opendde_results.html -- which
+    builds its columns by concatenation, and which is the one tool the
+    whole value-keyed design rests on.
+    """
+    used = set()
+
+    for path in (REPO / "templates" / "tools").glob("*_results.html"):
+        body = path.read_text(encoding="utf-8")
+        for block in re.findall(r"columns\s*=\s*(.+?)%\}", body, re.S):
+            for token in re.findall(r"'([^']+)'", block):
+                if "plddt" in token.lower():
+                    used.add(token)
+
+    columns_py = (REPO / "shared" / "result_columns.py").read_text("utf-8")
+    for token in re.findall(r"'([^']+)'|\"([^\"]+)\"", columns_py):
+        name = token[0] or token[1]
+        if "plddt" in name.lower():
+            used.add(name)
+
+    assert "pLDDT" in used and "af2_plddt" in used, sorted(used)
+    missing = used - set(PLDDT_COLUMNS)
+    assert not missing, (
+        "these pLDDT column keys are rendered but not in PLDDT_COLUMNS, "
+        "so those cells are never normalised: " + str(sorted(missing))
+    )
