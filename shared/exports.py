@@ -24,10 +24,10 @@ from __future__ import annotations
 import base64
 import csv
 import io
-
-from shared import metric_glossary as _metric_glossary
 import zipfile
 from typing import Callable, Optional
+
+from shared import metric_glossary as _metric_glossary
 
 
 def _dict_candidates(candidates) -> list:
@@ -227,7 +227,11 @@ def candidates_to_csv(candidates) -> str:
         # returns an empty file for every tool that stores 0-1, with no
         # hint why -- the page says 88.5 and the CSV says 0.885.
         for col in _metric_glossary.PLDDT_COLUMNS & row.keys():
-            row[col] = _metric_glossary.plddt_on_100(row[col])
+            scaled = _metric_glossary.plddt_on_100(row[col])
+            # Rounded, because 0.8728 * 100 is 86.24000000000001 and the
+            # page shows 86.24. Fixing a 100x disagreement and opening a
+            # 1e-14 one is not fixing it.
+            row[col] = scaled if scaled is None else round(scaled, 2)
         writer.writerow(row)
     return buf.getvalue()
 

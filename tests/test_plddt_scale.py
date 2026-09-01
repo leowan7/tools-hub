@@ -30,6 +30,7 @@ positive one.
 
 from __future__ import annotations
 
+import ast
 import os
 import pathlib
 import re
@@ -174,6 +175,14 @@ class TestTheNormaliser:
         # Negative is broken data. It stays visibly broken rather than
         # being scaled into something that looks deliberate.
         assert plddt_on_100(-3.0) == pytest.approx(-3.0)
+
+    def test_an_already_scaled_int_stays_an_int(self):
+        """The email and the share card format ints and floats
+        differently, so coercing here turned a stored ``88`` into
+        "pLDDT 88.000". Scale is the only thing this changes."""
+        assert plddt_on_100(88) == 88
+        assert isinstance(plddt_on_100(88), int)
+        assert isinstance(plddt_on_100(0.88), float)
 
     def test_a_string_number_still_works(self):
         """Scores arrive from JSON and have been strings before now."""
@@ -346,6 +355,85 @@ class TestNoSiteAppliesTheRuleTwice:
         )
 
 
+class TestAnUnparseablePLDDTDoesNotCrashThePage:
+    """``plddt_on_100`` returns None for junk and formatting None raises.
+
+    The ``raw is none`` guard above the branch catches nulls but not ""
+    or "n/a", so a scorer placeholder in a pLDDT-keyed score was a 500
+    where the old ``raw | float`` quietly showed 0.00 -- a fake number,
+    but not an outage. This is the regression the round-1 fix closed and
+    the one thing that went in without a test.
+    """
+
+    @staticmethod
+    def _render(flask_app, value):
+        tmpl = flask_app.jinja_env.from_string(
+            "{% from 'components/candidate_table.html' import"
+            " candidate_table %}"
+            "{{ candidate_table(cands, ['pLDDT'], 'example', 'esmfold') }}"
+        )
+        # A request context: the macro builds URLs with url_for.
+        with flask_app.test_request_context("/"):
+            return tmpl.render(
+                cands=[{"rank": 1, "scores": {"pLDDT": value}}]
+            )
+
+    @pytest.mark.parametrize("junk", ["", "n/a", "TBD", [], {}])
+    def test_junk_renders_as_missing_rather_than_raising(
+        self, tools_app, junk,
+    ):
+        flask_app, _slugs = tools_app
+        html = self._render(flask_app, junk)
+        assert 'data-col="pLDDT"' in html
+        assert "—" in html, html[:400]
+
+    def test_a_real_value_still_renders_beside_it(self, tools_app):
+        """Non-vacuity: the harness must be able to show a number, or
+        the test above passes on a macro that renders nothing."""
+        flask_app, _slugs = tools_app
+        html = self._render(flask_app, 0.88)
+        assert "88.0" in html, html[:400]
+
+
+def test_every_plddt_key_the_exporter_can_meet_is_registered():
+    """PLDDT_COLUMNS has TWO jobs and the registry guard only checks one.
+
+    ``shared/exports.candidates_to_csv`` matches the set against raw
+    PAYLOAD keys, while the registry guard checks DISPLAY column keys.
+    ``complex_plddt`` is never a display column -- boltz2 remaps it to
+    'pLDDT' -- so deleting it from the set left every test green while
+    silently reverting the boltz2 CSV to two scales in one row.
+    """
+    import json
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, val in node.items():
+                yield key, val
+                yield from walk(val)
+        elif isinstance(node, list):
+            for val in node:
+                yield from walk(val)
+
+    scalar_keys = set()
+    for path in (REPO / "tools").glob("*/example/result.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for key, val in walk(payload):
+            # Scalars only. ``plddt_per_residue`` is an array and never
+            # becomes a CSV column (``_is_metric_value`` drops lists), so
+            # registering it would be wrong.
+            if "plddt" in key.lower() and isinstance(val, (int, float)):
+                scalar_keys.add(key)
+
+    assert scalar_keys, "no example payload carries a scalar pLDDT"
+    missing = scalar_keys - set(PLDDT_COLUMNS)
+    assert not missing, (
+        "these pLDDT keys exist in a real payload but are not in "
+        "PLDDT_COLUMNS, so the CSV export leaves them on the stored "
+        "scale while the page shows 0-100: " + str(sorted(missing))
+    )
+
+
 class TestTheDetectorCanFail:
     """Positive controls. The scans must be able to SEE a 0-1 value."""
 
@@ -417,6 +505,19 @@ class TestTheOtherSurfaces:
         # a metric that is NOT a pLDDT must be untouched
         assert "0.89" in csv_text, csv_text
 
+    def test_the_csv_export_uses_the_pages_precision(self):
+        """0.885 multiplies cleanly and hides the defect. 0.8624 does
+        not: unrounded it exports 86.24000000000001 for a cell the page
+        shows as 86.24, so the fix for a 100x disagreement opened a
+        1e-14 one and a ragged column in Excel."""
+        from shared.exports import candidates_to_csv
+
+        csv_text = candidates_to_csv(
+            [{"rank": 1, "scores": {"af2_plddt": 0.8624}}]
+        )
+        assert "86.24" in csv_text, csv_text
+        assert "86.24000000000001" not in csv_text, csv_text
+
     def test_the_public_share_card_uses_the_shared_scale(self):
         from blueprints.jobs import _top_score_for_share
 
@@ -436,26 +537,36 @@ class TestEveryKnownDisplaySiteStillCallsTheRule:
     strong guard on a site that cannot regress.
     """
 
+    # (needle, how many times it must appear). COUNTS, because a bare
+    # presence check is satisfied by a decoy in the same file: af2 calls
+    # the rule three times and colabfold twice, so removing one call
+    # left the needle matching and the guard green.
     SITES = {
-        "templates/jobs_compare.html": "plddt_on_100(scores.get(",
-        "templates/job_detail.html": "plddtOn100(c.plddt)",
-        "templates/components/candidate_table.html": "plddt_on_100(raw)",
-        "templates/tools/esmfold_results.html": "plddt_on_100(value)",
-        "templates/tools/colabfold_results.html": "plddt_on_100(value)",
-        "templates/tools/af2_results.html": "plddt_on_100(",
+        "templates/jobs_compare.html": ("plddt_on_100(scores.get(", 1),
+        "templates/job_detail.html": ("plddtOn100(c.plddt)", 1),
+        "templates/components/candidate_table.html": ("plddt_on_100(raw)", 1),
+        "templates/tools/esmfold_results.html": ("plddt_on_100(", 3),
+        "templates/tools/colabfold_results.html": ("plddt_on_100(", 3),
+        # mean, min and max, none of which any render scan reaches:
+        # af2's example is batch-shaped and carries no plddt_per_residue.
+        "templates/tools/af2_results.html": ("plddt_on_100(", 3),
     }
 
     def test_each_site_applies_it(self):
         missing = []
-        for path, needle in self.SITES.items():
+        for path, (needle, expected) in self.SITES.items():
             # Comments stripped: a note *about* the call would satisfy
             # a raw-source match while the call itself was gone.
             body = _without_jinja_comments(
                 (REPO / path).read_text(encoding="utf-8")
             )
-            if needle not in body:
-                missing.append(path + " (looked for " + needle + ")")
-        assert not missing, "pLDDT display sites no longer normalising: " + str(missing)
+            seen = body.count(needle)
+            if seen != expected:
+                missing.append(
+                    path + ": " + needle + " appears " + str(seen)
+                    + "x, expected " + str(expected)
+                )
+        assert not missing, "pLDDT display sites drifted: " + str(missing)
 
     def test_the_js_mirror_still_defines_the_rule(self):
         """job_detail builds its live table in the browser, so the jinja
@@ -476,21 +587,36 @@ def test_every_plddt_column_any_registry_uses_is_registered():
     whole value-keyed design rests on.
     """
     used = set()
+    from_templates = set()
 
     for path in (REPO / "templates" / "tools").glob("*_results.html"):
         body = path.read_text(encoding="utf-8")
         for block in re.findall(r"columns\s*=\s*(.+?)%\}", body, re.S):
             for token in re.findall(r"'([^']+)'", block):
                 if "plddt" in token.lower():
-                    used.add(token)
+                    from_templates.add(token)
+    used |= from_templates
 
-    columns_py = (REPO / "shared" / "result_columns.py").read_text("utf-8")
-    for token in re.findall(r"'([^']+)'|\"([^\"]+)\"", columns_py):
-        name = token[0] or token[1]
-        if "plddt" in name.lower():
-            used.add(name)
+    # ast, not a regex. The regex here was
+    # r"'([^']+)'|\"([^\"]+)\"" and it found NOTHING in this file: the
+    # module opens with a triple-quoted docstring, so the first \" of
+    # \"\"\" starts a match that swallows the docstring body and
+    # desynchronises quote pairing for everything after it. What it
+    # actually captured were the separators -- "': ['" and "', '".
+    from_columns_py = set()
+    tree = ast.parse((REPO / "shared" / "result_columns.py").read_text("utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if "plddt" in node.value.lower():
+                from_columns_py.add(node.value)
+    used |= from_columns_py
 
-    assert "pLDDT" in used and "af2_plddt" in used, sorted(used)
+    # PER-SOURCE floors. A single combined assertion was satisfied by the
+    # template half alone, so the Python half sat inert while the
+    # docstring claimed both -- the same shape as the defect this guard
+    # was widened to close.
+    assert from_templates, "the results-template scan found no pLDDT column"
+    assert from_columns_py, "the result_columns.py scan found no pLDDT column"
     missing = used - set(PLDDT_COLUMNS)
     assert not missing, (
         "these pLDDT column keys are rendered but not in PLDDT_COLUMNS, "

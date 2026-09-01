@@ -120,12 +120,11 @@ PILOT: dict | None = None
 # pAE panel, which this partial already renders conditionally.
 # plddt_per_residue is kept, because it IS this example.
 #
-#
 # UNITS. This payload stores pLDDT on 0-1 (mean 0.39, max 0.659) because
 # that is what ESMFold's HuggingFace head returns. The PAGE renders 0-100,
 # because shared/metric_glossary.plddt_on_100 normalises at display time --
 # every threshold, legend and tooltip on this site is written for 0-100.
-# So the prose above quotes 39.00 / 65.9 / 50 / 70 and the JSON beside it
+# So the prose below quotes 39.00 / 65.9 / 50 / 70 and the JSON beside it
 # holds 0.39 / 0.659. That is not a contradiction, it is the normaliser.
 # Quote what the PAGE renders; tests/test_worked_examples.py asserts both
 # halves so neither can drift.

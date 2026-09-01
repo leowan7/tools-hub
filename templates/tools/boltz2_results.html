@@ -36,7 +36,7 @@
      hands the RAW value to candidate_table, which normalises the
      'pLDDT' key itself. Normalising here as well was applying the rule
      twice, and it is not idempotent below 0.01. #}
-  {% set _plddt_pct = _plddt %}
+  {% set _plddt_raw = _plddt %}
   {% set _ = candidates.append({
       '_source_index': loop.index0,
       'rank': d.get('rank'),
@@ -45,7 +45,7 @@
       'scores': {
         'ipTM': d.get('iptm'),
         'pTM': d.get('ptm'),
-        'pLDDT': _plddt_pct,
+        'pLDDT': _plddt_raw,
         'n_hotspot_contacts': d.get('n_hotspot_contacts'),
         'filter_status': d.get('filter_status'),
       },

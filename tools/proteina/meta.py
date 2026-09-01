@@ -377,10 +377,12 @@ PILOT: dict | None = {
 # smoke_result.json for pre-dating the pLDDT polarity fix (#129, 9fbe547,
 # 2026-08-09). This shard ran 2026-08-10, after it, and the polarity is
 # checked rather than assumed: af2_plddt correlates +0.63 with af2_iptm and
-# +0.62 with total_reward across the 64, and the top-12 median RAW af2_plddt
-# (0.840 as stored; the page renders it 84.00)
-# is above the bottom-12 (0.733). Under the inversion every one of those
-# signs would flip.
+# +0.62 with total_reward across the 64, and the top-12 median af2_plddt
+# (0.8395) is above the bottom-12 (0.7329). Under the inversion every one
+# of those signs would flip. EVERY FIGURE IN THIS NOTE IS THE RAW STORED
+# VALUE; the page renders af2_plddt x100. Do not gloss them individually
+# with "the page shows N" -- an earlier attempt did, and picked 84.00,
+# which is a median over 64 rows and not a cell anyone can find.
 #
 # It also called that payload degenerate - "af2_iptm 0.09 to 0.10 across all
 # 8, binder_scrmsd 34 to 41 A" - without naming the cause. That signature is

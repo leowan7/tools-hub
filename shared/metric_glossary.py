@@ -327,4 +327,12 @@ def plddt_on_100(raw):
         return None
     if val != val:  # NaN
         return None
-    return val * 100.0 if 0.0 <= val <= 1.0 else val
+    if 0.0 <= val <= 1.0:
+        return val * 100.0
+    # Already on 0-100: hand back the ORIGINAL object, not the float()
+    # copy. Callers that format ints and floats differently -- the
+    # completion email and the share card's og:title both do
+    # ``f"{v:.3f}" if isinstance(v, float) else f"{v}"`` -- turned a
+    # stored int 88 into "88.000" purely because this coerced. Scale is
+    # what this function changes; nothing else.
+    return raw if isinstance(raw, (int, float)) else val
