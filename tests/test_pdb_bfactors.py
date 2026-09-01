@@ -24,6 +24,7 @@ import re
 import pytest
 
 from shared.pdb_bfactors import (
+    _coordinate_bfactor,
     bfactors,
     bfactors_on_100,
     bfactors_on_100_b64,
@@ -34,6 +35,31 @@ from shared.pdb_bfactors import (
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    """The real app, so the macro and the routes run with the globals
+    and the blueprints they actually ship with."""
+    import app as app_module
+    from shared.feature_flags import flag_name
+    from tools import base as tool_base
+
+    slugs = sorted(a.slug for a in tool_base.all_adapters())
+    prior = {}
+    for slug in slugs:
+        prior[flag_name(slug)] = os.environ.get(flag_name(slug))
+        os.environ[flag_name(slug)] = "on"
+    prior["SESSION_SECRET_KEY"] = os.environ.get("SESSION_SECRET_KEY")
+    os.environ["SESSION_SECRET_KEY"] = "test-secret"
+    flask_app = app_module.create_app()
+    flask_app.config["TESTING"] = True
+    yield flask_app, slugs
+    for key, val in prior.items():
+        if val is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = val
 
 
 def _atom(serial: int, bfactor: float) -> str:
@@ -333,31 +359,215 @@ class TestEveryDownloadPathConverts:
         )
         assert zipfile.ZipFile(io.BytesIO(archive)).read("x.pdb") == crystal
 
-    def test_every_structure_route_in_jobs_converts(self):
-        """Storage path, its inline fallback, and af2.pdb. A per-site
-        needle would be satisfied by any one of them, so this counts."""
-        body = (REPO / "blueprints" / "jobs.py").read_text(encoding="utf-8")
-        calls = body.count("_pdb_bfactors.bfactors_on_100_bytes(")
-        assert calls == 3, (
-            f"expected 3 converting structure routes in blueprints/jobs.py, "
-            f"found {calls}"
+    def test_every_structure_route_in_jobs_converts(self, tools_app):
+        """Behavioural, not counted.
+
+        The counted version asserted three occurrences of the call in
+        blueprints/jobs.py. A count is satisfied by any three
+        occurrences anywhere: deleting the Storage-path call -- the
+        primary download and the headline of this change -- and
+        duplicating the af2 one kept the count at 3 and the whole file
+        green. This drives the routes instead.
+        """
+        import types
+
+        flask_app, _slugs = tools_app
+        fractional = _atom(1, 0.21) + _atom(2, 0.66)
+
+        job = types.SimpleNamespace()
+        job.id = "job-1"
+        job.tool = "af2"
+        job.status = "succeeded"
+        job.result = {
+            "pdb_b64": base64.b64encode(fractional.encode()).decode(),
+            "candidates": [{
+                "rank": 1,
+                "pdb_key": "designs/d.pdb",
+                "pdb_content_b64": base64.b64encode(
+                    fractional.encode()
+                ).decode(),
+            }],
+        }
+        ctx = types.SimpleNamespace(user_id="u-1", email="u@example.com")
+
+        import blueprints.jobs as jobs_bp
+
+        served = {}
+
+        def _fake_ctx():
+            return ctx
+
+        def _fake_job(job_id, user_id=None, **_kw):
+            return job
+
+        originals = (
+            jobs_bp.load_user_context, jobs_bp.get_job,
+            jobs_bp.output_exists, jobs_bp.download_output,
+        )
+        jobs_bp.load_user_context = _fake_ctx
+        jobs_bp.get_job = _fake_job
+        try:
+            with flask_app.test_client() as client:
+                # @login_required reads the SESSION, not the patched
+                # context loader, and redirects before the route runs.
+                with client.session_transaction() as sess:
+                    sess["user_email"] = "u@example.com"
+                # 1) Storage path -- what every modern job takes.
+                jobs_bp.output_exists = lambda **_kw: True
+                jobs_bp.download_output = (
+                    lambda **_kw: fractional.encode()
+                )
+                served["storage"] = client.get(
+                    "/api/jobs/job-1/pdb/designs%2Fd.pdb"
+                ).get_data(as_text=True)
+
+                # 2) Same route, inline fallback.
+                jobs_bp.output_exists = lambda **_kw: False
+                served["inline"] = client.get(
+                    "/api/jobs/job-1/pdb/designs%2Fd.pdb"
+                ).get_data(as_text=True)
+
+                # 3) The af2 download.
+                served["af2"] = client.get(
+                    "/jobs/job-1/af2.pdb"
+                ).get_data(as_text=True)
+        finally:
+            (jobs_bp.load_user_context, jobs_bp.get_job,
+             jobs_bp.output_exists, jobs_bp.download_output) = originals
+
+        for name, body in served.items():
+            values = _bfactors(body)
+            assert values == [21.0, 66.0], (
+                f"{name} route served {values}; the payload is 0.21/0.66 "
+                "and every page reads B-factors on 0-100"
+            )
+
+    def test_each_template_download_site_converts(self, tools_app):
+        """Behavioural, not counted.
+
+        The counted version asserted the call text appeared once per
+        template. Rewriting the candidate table's condition to
+        ``has_b64 and use_url and not use_url`` left the text present,
+        the count at 1, and the legacy row serving raw 0-1 -- green.
+        This renders the macro and reads what it emits.
+        """
+        flask_app, _slugs = tools_app
+        fractional = _atom(1, 0.50) + _atom(2, 0.50)
+        blob = base64.b64encode(fractional.encode()).decode()
+
+        tmpl = flask_app.jinja_env.from_string(
+            "{% from 'components/candidate_table.html' import"
+            " candidate_table %}"
+            "{{ candidate_table(cands, ['pLDDT'], 'job-1', 'esmfold') }}"
+        )
+        # A LEGACY row: inline b64 and NO pdb_key, so use_url is false
+        # and both the viewer and the download read the converted value.
+        with flask_app.test_request_context("/"):
+            html = tmpl.render(cands=[{
+                "rank": 1,
+                "pdb_content_b64": blob,
+                "scores": {"pLDDT": 0.5},
+            }])
+
+        found = re.findall(
+            r"data:chemical/x-pdb;base64,([A-Za-z0-9+/=]+)", html
+        )
+        assert found, "the legacy row emitted no PDB download"
+        served = base64.b64decode(found[0]).decode()
+        assert _bfactors(served) == [50.0, 50.0], (
+            f"the candidate table served {_bfactors(served)} for a 0.50 "
+            "payload"
         )
 
-    def test_each_template_download_site_converts(self):
-        """Counted, not merely present: colabfold and the candidate
-        table were both deletable with the suite green."""
-        expected = {
-            "templates/tools/esmfold_results.html": 1,
-            "templates/tools/colabfold_results.html": 1,
-            "templates/components/candidate_table.html": 1,
-        }
-        wrong = {}
-        for path, count in expected.items():
-            body = re.sub(
-                r"\{#.*?#\}", "",
-                (REPO / path).read_text(encoding="utf-8"), flags=re.S,
-            )
-            seen = body.count("pdb_b64_on_100(")
-            if seen != count:
-                wrong[path] = f"{seen}x, expected {count}"
-        assert not wrong, wrong
+    def test_the_colabfold_download_converts(self, tools_app):
+        """colabfold's call was deletable with the suite green."""
+        flask_app, _slugs = tools_app
+        body = (
+            REPO / "templates" / "tools" / "colabfold_results.html"
+        ).read_text(encoding="utf-8")
+        assert "pdb_b64_on_100(pdb_b64)" in body, (
+            "colabfold's download link no longer converts"
+        )
+        # ...and prove the shared rule it calls actually converts, so
+        # this is not resting on the text alone.
+        blob = base64.b64encode(_atom(1, 0.21).encode()).decode()
+        converted = base64.b64decode(
+            flask_app.jinja_env.globals["pdb_b64_on_100"](blob)
+        ).decode()
+        assert _bfactors(converted) == [21.0]
+
+
+class TestAmbiguityFailsClosed:
+    """The hole the STRICTER predicate opened.
+
+    Requiring the whole column layout made the reader refuse lines the
+    old one accepted -- and ``is_fractional`` then SKIPPED them rather
+    than counting them. Skipping is not disqualifying: a B-factor of 49
+    on such a line could no longer veto the conversion, so a stitched
+    complex came out with two scales in one file. If this module cannot
+    read a line it can see, it does not get to judge the file.
+    """
+
+    # A target chain carried over from a deposition, blank occupancy.
+    _UNPARSEABLE = (
+        "ATOM      2  CA  LEU B   2       0.000   0.000   0.000"
+        "        49.00           C\n"
+    )
+
+    def test_a_line_it_cannot_read_disqualifies_the_file(self):
+        pdb = _atom(1, 0.11) + self._UNPARSEABLE
+        assert not is_fractional(pdb), (
+            "a 49.00 the reader cannot parse must still veto; skipping "
+            "it converts the binder and leaves the target alone"
+        )
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_the_old_behaviour_would_have_corrupted_this_file(self):
+        """Documents what fail-open produced, so the fix is not
+        mistaken for belt-and-braces: 11.00 on one chain, 49.0 on the
+        other, in one downloaded structure."""
+        pdb = _atom(1, 0.11) + self._UNPARSEABLE
+        readable = bfactors(pdb)
+        assert readable == [0.11], readable
+        assert all(0.0 <= v <= 1.0 for v in readable), (
+            "the readable subset looks fractional on its own, which is "
+            "exactly why deciding from it alone was unsafe"
+        )
+
+    def test_a_clean_file_is_still_converted(self):
+        """Non-vacuity: fail-closed must not refuse everything."""
+        assert is_fractional(_atom(1, 0.11) + _atom(2, 0.66))
+
+
+class TestMmcifIsRefusedByFormatToo:
+    def test_a_cif_header_declines_before_any_column_guessing(self):
+        """The layout check refused every real CIF writer I could find,
+        but it is a heuristic over offsets and a hand-rolled row can
+        align by chance. opendde stores a .cif under ``pdb_key`` when
+        its CIF-to-PDB conversion fails, so one genuinely reaches these
+        routes."""
+        # The row is deliberately COLUMN-ALIGNED, so the layout
+        # check accepts it and only the header marker can decline
+        # the file. A CIF whose rows do NOT align is refused by the
+        # layout check anyway, and a test built on one proves
+        # nothing about this guard -- the first version of this
+        # test was exactly that, and deleting the marker check left
+        # it green.
+        aligned = (
+            "ATOM      1  CA  LEU A   1       1.000   2.000   3.000"
+            "  1.00  0.62           C\n"
+        )
+        assert _coordinate_bfactor(aligned.rstrip("\n")) == 0.62, (
+            "the fixture must parse as a PDB record or this test is "
+            "back to proving nothing"
+        )
+        cif = "data_XYZ\nloop_\n_atom_site.group_PDB\n" + aligned
+        assert not is_fractional(cif)
+        assert bfactors_on_100(cif) is cif
+
+    def test_a_pdb_that_merely_mentions_loop_is_still_converted(self):
+        """The marker check is line-anchored, so a REMARK containing the
+        word does not disqualify a real structure."""
+        pdb = "REMARK   1 REFINED IN A loop_ OF FOUR CYCLES\n" + _atom(1, 0.21)
+        assert is_fractional(pdb)
+        assert bfactors(bfactors_on_100(pdb)) == [21.0]

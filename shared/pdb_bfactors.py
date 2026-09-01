@@ -61,6 +61,10 @@ _B_END = 66
 
 _COORD_RECORDS = ("ATOM  ", "HETATM")
 
+# How far into a file an mmCIF marker can hide. A CIF header is a
+# handful of lines; 200 is slack, not a guess at pathological input.
+_CIF_HEADER_LINES = 200
+
 
 def _coordinate_bfactor(content: str) -> float | None:
     """The B-factor of ``content``, or None if it is not a PDB record.
@@ -95,17 +99,65 @@ def bfactors(pdb_text: str) -> list[float]:
     return out
 
 
+def _looks_like_cif(pdb_text: str) -> bool:
+    """A line-anchored mmCIF marker, the way the viewer sniffs format.
+
+    The column-layout check already refuses every real CIF writer I
+    could find, but it is a heuristic over offsets and a hand-rolled
+    row can align by chance. opendde stores a ``.cif`` under
+    ``pdb_key`` when its CIF-to-PDB conversion fails
+    (tools/opendde/run_pipeline.py:456), so a CIF genuinely reaches
+    the download routes. Cheap insurance; mirrors detectFormat in
+    static/js/mol_viewer.js.
+    """
+    # Bounded: a CIF declares itself in its header. ``data_`` is the
+    # first non-blank line and the ``_atom_site.`` loop precedes the
+    # rows. Scanning the whole file put an O(n) pass in front of the
+    # short-circuit below and halved its benefit on a 671 KB archive
+    # member -- the check has to be cheaper than the thing it guards.
+    for line in pdb_text.splitlines()[:_CIF_HEADER_LINES]:
+        if line.lstrip().startswith(("data_", "_atom_site.", "loop_")):
+            return True
+    return False
+
+
 def is_fractional(pdb_text: str) -> bool:
     """True when this file's B-factors are a 0-1 confidence.
 
     Whole-file: every B-factor must be within 0-1. One atom above it
     and the file is left alone, because a refined structure is what
     that looks like.
+
+    FAILS CLOSED ON AMBIGUITY, which the first version of this
+    predicate did not. It read B-factors through the same layout check
+    the writer uses, so a line that LOOKS like a coordinate record but
+    does not parse -- a target chain carried over from a deposition
+    with a blank occupancy field, say -- was silently skipped rather
+    than counted. Skipping is not disqualifying: a B-factor of 49 on
+    such a line could no longer veto the conversion, and a stitched
+    binder-plus-target complex came out with 11.00 on one chain and
+    49.0 on the other. If this module cannot read a line it can see,
+    it does not get to make a whole-file judgement about the file.
+
+    Short-circuits on the first disqualifying value. That is what keeps
+    the cost off af2, colabfold and pxdesign, which already store
+    0-100: they bail on their first ATOM record instead of scanning a
+    2944-design archive to reach a conclusion available on line one.
     """
-    values = bfactors(pdb_text)
-    if not values:
+    if _looks_like_cif(pdb_text):
         return False
-    return all(0.0 <= v <= 1.0 for v in values)
+    seen = False
+    for content, _term in _lines(pdb_text):
+        if not content.startswith(_COORD_RECORDS) or len(content) < _B_END:
+            continue
+        value = _coordinate_bfactor(content)
+        if value is None:
+            # Looks like a coordinate record, does not parse as one.
+            return False
+        if not 0.0 <= value <= 1.0:
+            return False
+        seen = True
+    return seen
 
 
 def bfactors_on_100(pdb_text: str) -> str:
