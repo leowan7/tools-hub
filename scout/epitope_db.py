@@ -31,6 +31,8 @@ from typing import Optional
 
 import requests
 
+from scout import polymer
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -174,6 +176,7 @@ _THREE_TO_ONE = {
     "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
     "MSE": "M", "SEC": "C",
 }
+
 
 
 # ---------------------------------------------------------------------------
@@ -573,9 +576,7 @@ def _compute_contacts(
         ab_atom_coords = []
         for ab_chain_id in ab_chains:
             if ab_chain_id in chain_map:
-                for residue in chain_map[ab_chain_id]:
-                    if residue.id[0] != " ":
-                        continue  # Skip HETATM and water
+                for residue in polymer.polymer_residues(chain_map[ab_chain_id]):
                     for atom in residue.get_atoms():
                         ab_atom_coords.append(atom.coord)
 
@@ -587,9 +588,7 @@ def _compute_contacts(
         # For each standard antigen residue, find the minimum distance to
         # any antibody atom. Flag residues within the cutoff.
         contact_residues = []
-        for residue in chain_map[antigen_chain]:
-            if residue.id[0] != " ":
-                continue  # Skip HETATM and water
+        for residue in polymer.polymer_residues(chain_map[antigen_chain]):
             res_coords = np.array(
                 [atom.coord for atom in residue.get_atoms()], dtype=np.float32
             )
@@ -1038,9 +1037,16 @@ def _sequence_identity(seq_a: str, seq_b: str) -> float:
     """Compute approximate sequence identity between two protein sequences.
 
     Uses difflib.SequenceMatcher to count matching characters in the best
-    common subsequence, divided by the length of the longer sequence. This
-    is suitable for a threshold check (e.g. 80%) but is not a rigorous
+    common subsequence, divided by the length of the SHORTER sequence -- see
+    the comment on `denom` below for why min and not max. This is suitable for
+    the _MIN_VALIDATION_IDENTITY threshold check (0.70) but is not a rigorous
     pairwise alignment — use BLAST or biopython.Align for publication results.
+
+    Because the denominator is the shorter length, dropping residues from one
+    input shrinks numerator and denominator together and barely moves the
+    result. That is why the MSE gate in _extract_chain_sequence, which yields
+    a 170-residue sequence for 1B24's 173-residue chain A, scores 100% either
+    way and cannot flip this threshold.
 
     Args:
         seq_a: First amino acid sequence (one-letter code).

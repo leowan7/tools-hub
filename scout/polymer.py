@@ -1,0 +1,154 @@
+"""Shared polymer-residue selection for the geometric scout paths.
+
+WHY THIS MODULE EXISTS
+----------------------
+Selenomethionine (MSE) and selenocysteine (SEC) are ordinary polymer residues
+that the PDB deposits as HETATM. A filter that gates on the Biopython hetflag
+alone drops them, so an MSE sitting in an epitope is invisible to contact and
+interface detection. Fixing that by simply admitting the two names introduces
+two NEW defects, both of which cost more than the bug being fixed:
+
+1. DOUBLE COUNTING. Partial Se incorporation deposits MET and MSE at one
+   residue number as two altlocs. Their hetflags differ (" " vs "H_MSE"), so
+   Biopython yields two separate Residue objects and a naive fix reports that
+   position twice. ``scout/interfaces.py`` thresholds and publishes a LIST
+   length, so a duplicate can push an interface past _MIN_CONTACT_RESIDUES --
+   the filter whose stated job is rejecting crystal contacts and incidental
+   chain proximity.
+
+   (Note the list was never fully unique: insertion codes 100/100A already
+   collapse to the same reported number, because only ``id[1]`` is emitted.
+   Admitting MSE widens that pre-existing weakness rather than creating it.)
+
+2. FREE LIGANDS. A lone MSE or SEC in its own chain is chemically identical to
+   a chain link at the residue level. Admitted blind, it fabricates a
+   protein-protein interface out of nothing -- eight phantom contact residues
+   on a synthetic probe, five on one lifted out of 1BJ1 -- which then propagates into competition_score and prints a
+   confident false claim that the epitope sits in a natural PPI interface.
+
+``scout/parser.py`` solved (1) for chain lengths and explicitly documented that
+it CANNOT solve (2), because it has no connectivity test. This module has the
+coordinates, so it does both, and lives in one place because a guard that
+exists in only one of four call sites is exactly how (1) got reintroduced.
+
+WHAT THIS IS NOT
+----------------
+Not a replacement for ``scout/parser.py::_is_polymer_residue`` or
+``scout/scoring.py::_is_pydssp_polymer_residue``. Those answer "is this residue
+an amino acid" for subsystems with different needs, and parser.py's docstring
+argues -- correctly -- against collapsing them into one predicate. This module
+answers a narrower question that only the geometric paths ask: "which residues
+of this chain should contribute atoms, counted once each".
+
+Nor is it for the patch-construction path. ``scout/pipeline.py`` gates on
+``scout/sasa.py``'s 20-name set, and ``scout/scoring.py`` gives two distinct
+reasons for rejecting MSE that are easy to conflate: freesasa has no radii for
+MSE (that one is about ``scout/sasa.py``), and an epitope centred on a
+selenomethionine is not something the scoring model was built for (that one is
+about these gates). The second is a real design choice; do not route patch
+construction through here on the strength of the first.
+
+Those gates are NOT neutral, though, and this module does not fix them: the
+same loop builds the atom set used for burial counting, so an MSE-adjacent
+patch loses exactly the 8 heavy atoms of each MSE dropped. Two independent
+reviews measured the shift on 1B24 and reported different absolute pairs
+(76/84, and 73/81 with 93/101) under different SASA backends; the delta of 8
+atoms per MSE is what both agree on and what follows from the code. Ranking
+normalisation is min-max across patches, so it is not a uniform offset. That is a separate, unfixed bias of the
+same family as ``scout/accessibility.py``'s two gates.
+"""
+
+from __future__ import annotations
+
+# The two names, and only these two. shared/pdb_inspect.py::MODRES_EQUIV
+# carries nine for the campaign path; two is a deliberately narrower choice for
+# scout, pinned by the whitelist tests.
+MODIFIED_AA: frozenset[str] = frozenset({"MSE", "SEC"})
+
+# C(i)->N(i+1) in a real peptide bond is ~1.33 A. Biopython's PPBuilder
+# defaults to 1.8 A; 2.0 is 11% looser, to tolerate modest refinement error.
+# The UPPER bound is load-bearing, not merely conservative: intra-residue N...C
+# measures 2.27-2.57 A on 1B24 chain A, so a cutoff above ~2.26 would let a
+# MET/MSE altloc pair certify ITSELF as bonded, reintroducing the double count
+# this module exists to prevent.
+_PEPTIDE_BOND_MAX_ANGSTROM = 2.0
+
+# CA--CA in consecutive residues is ~3.8 A, versus ~1.33 A for the C->N bond.
+# Dividing the CA distance by this factor lets one threshold serve both tests
+# without a second constant to keep in sync.
+_CA_TRACE_SCALE = 2.1
+
+
+def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
+    """Shortest plausible backbone link between two residues, or infinity.
+
+    Measures C->N in BOTH directions and takes the smaller, so admission does
+    not depend on the order records happen to appear in the file. Falls back to
+    CA--CA when a backbone C or N is absent: in a CA-only trace (low-resolution
+    X-ray, EM) a chain link and a free ligand are still perfectly
+    distinguishable, because consecutive CA atoms sit ~3.8 A apart.
+    """
+    best = float("inf")
+    a, b = residues[idx_a], residues[idx_b]
+    for upstream, downstream in ((a, b), (b, a)):
+        try:
+            best = min(best, upstream["C"] - downstream["N"])
+        except KeyError:
+            continue
+    if best < float("inf"):
+        return best
+    try:
+        return (a["CA"] - b["CA"]) / _CA_TRACE_SCALE
+    except KeyError:
+        return float("inf")
+
+
+def polymer_residues(chain) -> list:
+    """Residues of ``chain`` that should contribute atoms, deduped by position.
+
+    Admits every blank-hetflag residue, plus MSE/SEC that are peptide-linked
+    back to one of them -- transitively, so a fully substituted stretch inside a
+    real chain still counts, while a free SeMet peptide never seeds itself.
+
+    DEDUPLICATION IS ON ``(resseq, icode)``, which is what makes a MET/MSE
+    altloc pair count once. It does NOT make the callers' reported lists unique:
+    they emit the sequence number alone, so residues 100 and 100A still appear
+    as two entries spelled "100". That predates this module -- see the header.
+
+    Args:
+        chain: A Biopython Chain.
+
+    Returns:
+        List of Residue objects in chain order.
+    """
+    residues = list(chain)
+    # A blank hetflag IS the definition of a polymer residue here; those seed
+    # everything else. Note this admits blank-hetflag nucleotides too, exactly
+    # as the gate it replaced did.
+    admitted = [residue.id[0] == " " for residue in residues]
+    candidate = [
+        not admitted[i] and residue.resname.strip() in MODIFIED_AA
+        for i, residue in enumerate(residues)
+    ]
+
+    # Two linear sweeps reach the same fixpoint as iterating to convergence,
+    # because admission only ever propagates along the residue order: a run
+    # anchored on its left is caught going forward, on its right going back.
+    for i in range(len(residues)):
+        if candidate[i] and i and admitted[i - 1]                 and _bond_length(residues, i - 1, i) < _PEPTIDE_BOND_MAX_ANGSTROM:
+            admitted[i] = True
+    for i in range(len(residues) - 2, -1, -1):
+        if candidate[i] and admitted[i + 1]                 and _bond_length(residues, i, i + 1) < _PEPTIDE_BOND_MAX_ANGSTROM:
+            admitted[i] = True
+
+    seen_positions = set()
+    kept = []
+    for i, residue in enumerate(residues):
+        if not admitted[i]:
+            continue
+        position = residue.get_id()[1:]  # (resseq, icode)
+        if position in seen_positions:
+            continue
+        seen_positions.add(position)
+        kept.append(residue)
+    return kept
