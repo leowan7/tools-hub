@@ -19,6 +19,7 @@ import logging
 import numpy as np
 from scipy.spatial import KDTree
 
+from scout import polymer
 from scout.patches import get_cb_coord
 
 logger = logging.getLogger(__name__)
@@ -106,11 +107,15 @@ def score_approach_cone(
 
     centroid = np.mean(cb_coords, axis=0)
 
+    # polymer_residues, not a bare hetflag gate: MSE and SEC are ordinary
+    # polymer residues the PDB deposits as HETATM, and this mean is taken over
+    # the WHOLE chain. Dropping their atoms moved the centre of mass a median
+    # 0.16 A (max 0.66) across 223 MSE-bearing chains -- and because
+    # _fibonacci_hemisphere is ORIENTED by this point, that tilts the sampled
+    # directions for every epitope in the chain, not just those near an MSE.
     if chain is not None:
         com_coords = []
-        for r in chain.get_residues():
-            if r.id[0] != " ":
-                continue
+        for r in polymer.polymer_residues(chain):
             for a in r.get_atoms():
                 com_coords.append(a.get_vector().get_array())
         if com_coords:
@@ -123,10 +128,13 @@ def score_approach_cone(
     if patch_resnums is None:
         patch_resnums = {r.id[1] for r in patch_residues}
 
+    # Same gate, and here it is the occluders themselves: a dropped residue
+    # cannot block a ray, so the cone reads too OPEN. MSE atoms are 2.4% of the
+    # chain at the median (max 7.1%), which is small but strictly one-directional.
     non_patch_atoms = []
     if chain is not None:
-        for r in chain.get_residues():
-            if r.id[0] != " " or r.id[1] in patch_resnums:
+        for r in polymer.polymer_residues(chain):
+            if r.id[1] in patch_resnums:
                 continue
             for a in r.get_atoms():
                 non_patch_atoms.append(a.get_vector().get_array())
