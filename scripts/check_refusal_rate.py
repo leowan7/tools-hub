@@ -267,12 +267,19 @@ def evaluate(
         # on main's HEAD makes Railway skip same-commit deploys (ALERTING.md,
         # "A variable change is not deploying"). An alarm that can block the
         # deploy that fixes it is worse than one that is merely quiet.
-        if refused:
+        # >= 1, not truthiness: a fractional or negative counter would
+        # otherwise raise an annotation that announces "0 refusal(s)".
+        if refused >= 1:
+            # No cause is named here. The same skip can carry rate_limited
+            # (the per-IP ceiling), busy/at_capacity (compute pressure) or
+            # no_session (one SHARED cookieless bucket, which any scanner
+            # fills), and an unconditional sentence naming one of them points
+            # the operator at the wrong subsystem in the other cases.
             lines.append(
                 f"UNRATED REFUSALS: {refused:.0f} refusal(s) landed below the "
                 f"{min_samples:.0f}-sample floor, so this run could NOT say "
-                f"whether that is a spike. Read the per-reason split above; "
-                f"rate_limited here means the per-IP ceiling walled somebody."
+                f"whether that is a spike. The per-reason split above names "
+                f"which subsystem refused."
             )
         return 0, lines
 

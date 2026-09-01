@@ -162,9 +162,14 @@ jobs:
           set -e
           echo "${out}"
           # A SKIP exits 0 and so looks exactly like a healthy run. When the
-          # skip swallowed real refusals, say so on the run PAGE -- a warning
-          # annotation is visible in the Actions list without failing the job,
-          # which matters because a red suite on main blocks Railway deploys.
+          # skip swallowed real refusals, say so on the run PAGE. This is a
+          # PASSIVE signal: the job stays green, so GitHub sends no email and
+          # somebody has to open the run. That is a deliberate trade -- a fail
+          # path here reddens main's suite and a red suite blocks Railway
+          # deploys (ALERTING.md) -- but do not mistake it for a page. If this
+          # ever needs to reach someone unprompted, the runner has `gh` and
+          # GITHUB_TOKEN: create-or-comment on a dedupe-titled issue notifies
+          # and persists without touching the check suite.
           if printf '%s' "${out}" | grep -q "UNRATED REFUSALS:"; then
             unrated="$(printf '%s' "${out}" | grep "UNRATED REFUSALS:" | head -1)"
             echo "::warning title=Refusal-rate alarm could not evaluate::${unrated}"
@@ -175,7 +180,13 @@ jobs:
               echo "The alarm passed because it had nothing to compare against, **not** because traffic is healthy."
               echo ""
               echo '```'
-              printf '%s' "${out}" | grep -E "UNRATED REFUSALS:|^SKIP:|^  (rate_limited|session_rate_limited|no_session|busy|at_capacity) "
+              # The WHOLE report, deliberately -- it is ~12 lines. An earlier
+              # version grepped for the five policy reasons, which silently
+              # dropped any reason added later: the count landed in the total
+              # while its row vanished, rendering "3 refusal(s)" above five
+              # zeros. A pattern that has to be kept in sync with the producer
+              # is the same drift this block exists to make visible.
+              printf '%s\n' "${out}"
               echo '```'
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi

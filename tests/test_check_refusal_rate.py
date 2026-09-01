@@ -488,6 +488,16 @@ def test_the_workflow_greps_for_markers_this_script_actually_emits():
         / "synthetic-smoke.yml"
     ).read_text(encoding="utf-8")
 
+    # Comment lines are stripped before matching, and the assertion below is on
+    # the GREP COMMAND rather than on the marker appearing anywhere in the file.
+    # An earlier version of this test checked `marker in workflow`: QC broke all
+    # three greps, left the string alive in a single YAML comment, and the test
+    # stayed green. "NOTE:" is the dangerous one -- it is a word that lands in
+    # comments by accident, which would anchor this assertion to nothing.
+    code = "\n".join(
+        line for line in workflow.splitlines() if not line.strip().startswith("#")
+    )
+
     # marker -> a scrape that must produce it
     _, unrated = evaluate(4.0, {"rate_limited": 3.0})
     _, noted = evaluate(
@@ -495,9 +505,10 @@ def test_the_workflow_greps_for_markers_this_script_actually_emits():
     )
 
     for marker, produced in (("UNRATED REFUSALS:", unrated), ("NOTE:", noted)):
-        assert marker in workflow, (
-            f"synthetic-smoke.yml no longer greps for {marker!r}, so the "
-            "annotation it drives can never fire again."
+        assert f'grep -q "{marker}"' in code, (
+            f"synthetic-smoke.yml no longer greps for {marker!r} in an actual "
+            "command, so the annotation it drives can never fire again. (A "
+            "mention in a comment does not count -- that was the hole.)"
         )
         assert any(marker in line for line in produced), (
             f"{marker!r} is grepped by synthetic-smoke.yml but this script no "
