@@ -62,8 +62,12 @@ _B_END = 66
 _COORD_RECORDS = ("ATOM  ", "HETATM")
 
 # How far into a file an mmCIF marker can hide. A CIF header is a
-# handful of lines; 200 is slack, not a guess at pathological input.
-_CIF_HEADER_LINES = 200
+# handful of lines; 16 KB is slack, not a guess at pathological
+# input. Sliced off the STRING, because splitlines()[:200] built the
+# whole line list before taking 200 of it -- bounding the loop and
+# not the split, which left an O(n) pass in front of the
+# short-circuit it was meant to stop competing with.
+_CIF_HEADER_BYTES = 16384
 
 
 def _coordinate_bfactor(content: str) -> float | None:
@@ -115,7 +119,7 @@ def _looks_like_cif(pdb_text: str) -> bool:
     # rows. Scanning the whole file put an O(n) pass in front of the
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
-    for line in pdb_text.splitlines()[:_CIF_HEADER_LINES]:
+    for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
         if line.lstrip().startswith(("data_", "_atom_site.", "loop_")):
             return True
     return False
@@ -148,13 +152,22 @@ def is_fractional(pdb_text: str) -> bool:
         return False
     seen = False
     for content, _term in _lines(pdb_text):
-        if not content.startswith(_COORD_RECORDS) or len(content) < _B_END:
+        if not content.startswith(_COORD_RECORDS):
             continue
+        # ONE RULE. If a line claims to be a coordinate record and this
+        # module cannot read its B-factor -- blank occupancy, a field
+        # truncated at 63 characters, coordinates run together by an
+        # overflow -- the file does not get judged. An earlier version
+        # skipped those instead, and a 49.00 the reader could not parse
+        # therefore could not veto: a stitched complex converted the
+        # binder and left the target, 11.00 beside 49.0 in one file.
+        #
+        # The length special-cases that used to sit here were
+        # redundant. _coordinate_bfactor already returns None for a
+        # record too short to hold a B field, and the rule is easier to
+        # trust with nothing in front of it.
         value = _coordinate_bfactor(content)
-        if value is None:
-            # Looks like a coordinate record, does not parse as one.
-            return False
-        if not 0.0 <= value <= 1.0:
+        if value is None or not 0.0 <= value <= 1.0:
             return False
         seen = True
     return seen

@@ -480,21 +480,45 @@ class TestEveryDownloadPathConverts:
         )
 
     def test_the_colabfold_download_converts(self, tools_app):
-        """colabfold's call was deletable with the suite green."""
+        """Renders the partial, because the substring version of this
+        was hollow: moving the call text into a Jinja comment and
+        pointing the live link at the raw payload left it green. It did
+        not even strip comments, so it was WEAKER than the counted
+        guard it replaced. colabfold's own example carries no pdb_b64
+        (it was dropped when a designed sequence turned out to be
+        recoverable from it), so the payload is stubbed here.
+        """
+        import types
+
         flask_app, _slugs = tools_app
-        body = (
-            REPO / "templates" / "tools" / "colabfold_results.html"
-        ).read_text(encoding="utf-8")
-        assert "pdb_b64_on_100(pdb_b64)" in body, (
-            "colabfold's download link no longer converts"
-        )
-        # ...and prove the shared rule it calls actually converts, so
-        # this is not resting on the text alone.
-        blob = base64.b64encode(_atom(1, 0.21).encode()).decode()
-        converted = base64.b64decode(
-            flask_app.jinja_env.globals["pdb_b64_on_100"](blob)
+        blob = base64.b64encode(
+            (_atom(1, 0.21) + _atom(2, 0.66)).encode()
         ).decode()
-        assert _bfactors(converted) == [21.0]
+        job = types.SimpleNamespace()
+        job.id = "example"
+        job.status = "succeeded"
+        job.tool = "colabfold"
+        job.inputs = {}
+        job.result = {
+            "pdb_b64": blob,
+            "mean_plddt": 61.05,
+            "plddt_per_residue": [61.0, 62.0],
+            "total_length": 2,
+        }
+        tmpl = flask_app.jinja_env.get_template(
+            "tools/colabfold_results.html"
+        )
+        with flask_app.test_request_context("/"):
+            html = tmpl.render(job=job, example=True)
+
+        found = re.findall(
+            r"data:chemical/x-pdb;base64,([A-Za-z0-9+/=]+)", html
+        )
+        assert found, "colabfold rendered no PDB download link"
+        served = base64.b64decode(found[0]).decode()
+        assert _bfactors(served) == [21.0, 66.0], (
+            f"colabfold served {_bfactors(served)} for a 0.21/0.66 payload"
+        )
 
 
 class TestAmbiguityFailsClosed:
@@ -571,3 +595,42 @@ class TestMmcifIsRefusedByFormatToo:
         pdb = "REMARK   1 REFINED IN A loop_ OF FOUR CYCLES\n" + _atom(1, 0.21)
         assert is_fractional(pdb)
         assert bfactors(bfactors_on_100(pdb)) == [21.0]
+
+
+class TestAPartialBFieldAlsoDisqualifies:
+    """The same hole as the blank-occupancy one, a column narrower.
+
+    A prefix-matching record truncated inside the B field (61-65 chars)
+    was skipped by both reader and writer, so a 31.0 sitting in a
+    narrow field could not veto a conversion either. A record shorter
+    than column 61 has no B field at all and is correctly ignored --
+    that is a TER, or a genuinely truncated line, not a disagreement.
+    """
+
+    def test_a_truncated_b_field_vetoes_the_file(self):
+        narrow = (
+            "ATOM      2  CA  LEU B   2       0.000   0.000   0.000"
+            "  1.00 31.0"
+        )
+        assert 60 <= len(narrow) < 66, len(narrow)
+        pdb = _atom(1, 0.11) + narrow + "\n"
+        assert bfactors(pdb) == [0.11], (
+            "the readable subset looks fractional, which is why "
+            "deciding from it alone was unsafe"
+        )
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_a_non_coordinate_record_is_still_ignored(self):
+        """Non-vacuity in the other direction. TER, REMARK and the rest
+        do not start with a coordinate prefix, so they never reach the
+        rule at all -- refusing every file that has a TER record would
+        refuse almost every file."""
+        pdb = (
+            "REMARK   1 ANYTHING\n"
+            + _atom(1, 0.11)
+            + "TER    1234      LEU A   1\n"
+            + "END\n"
+        )
+        assert is_fractional(pdb)
+        assert bfactors(bfactors_on_100(pdb)) == [11.0]
