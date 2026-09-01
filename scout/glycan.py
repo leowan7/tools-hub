@@ -135,17 +135,27 @@ def detect_glycosylation_sequons(chain) -> list[dict]:
     # that case WORSE than the gate it replaced, which dropped the HETATM twin
     # and found the sequon. scout/parser.py and scout/polymer.py carry the same
     # guard for the same reason.
-    standard_residues = []
-    _seen_positions = set()
+    # A blank-hetflag residue WINS a position collision, whatever the file
+    # order. Keeping simply the first one seen let a free MSE/SEC ligand whose
+    # (resseq, icode) collides with a real residue evict it when its HETATM
+    # records happen to be written first -- legal PDB, and the whole sequon is
+    # then lost. scout/polymer.py does not have this problem because it dedupes
+    # AFTER its connectivity test, so a free ligand is never a candidate; this
+    # module has no coordinates to run such a test, so it resolves by hetflag.
+    _by_position = {}
+    _order = []
     for r in chain.get_residues():
         if not (r.resname.strip() in _MODIFIED_AA
                 or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)):
             continue
         _position = r.get_id()[1:]  # (resseq, icode)
-        if _position in _seen_positions:
-            continue
-        _seen_positions.add(_position)
-        standard_residues.append(r)
+        _previous = _by_position.get(_position)
+        if _previous is None:
+            _by_position[_position] = r
+            _order.append(_position)
+        elif _previous.id[0] != " " and r.id[0] == " ":
+            _by_position[_position] = r   # the real polymer residue displaces it
+    standard_residues = [_by_position[_p] for _p in _order]
 
     sequons = []
     for i in range(len(standard_residues) - 2):

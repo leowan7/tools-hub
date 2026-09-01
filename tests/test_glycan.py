@@ -339,3 +339,47 @@ def test_a_selenomethionine_altloc_twin_does_not_hide_a_sequon():
     assert [(f["resnum"], f["motif"]) for f in found] == [(1, "N-M-T")], (
         f"the MET/MSE altloc twin hid a real N-M-T sequon: {found}"
     )
+
+
+def test_a_free_ligand_cannot_evict_a_real_residue_at_its_position():
+    """A blank-hetflag residue wins a position collision, whatever the file order.
+
+    The dedupe added for the altloc twin originally kept whichever residue came
+    first in the file. A free MSE/SEC ligand whose (resseq, icode) collides with
+    a real residue then evicted it when its HETATM records were written first --
+    legal PDB, and the whole sequon is lost. That is the same optimistic
+    direction as the bug the dedupe exists to fix.
+
+    scout/polymer.py cannot hit this because it dedupes AFTER a connectivity
+    test, so a free ligand is never a candidate. This module has no coordinates
+    for such a test, so it resolves the collision by hetflag instead.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    ligand = (
+        "HETATM  900  N   MSE A   1      50.000   0.000   0.000  1.00 0.00           N\n"
+        "HETATM  901  CA  MSE A   1      51.400   0.000   0.000  1.00 0.00           C\n"
+    )
+    body = (
+        "ATOM      1  N   ASN A   1       0.000   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      2  CA  ASN A   1       1.458   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      3  C   ASN A   1       2.009   1.420   0.000  1.00 0.00           C\n"
+        "ATOM      4  N   LYS A   2       2.530   2.850   0.000  1.00 0.00           N\n"
+        "ATOM      5  CA  LYS A   2       3.988   2.850   0.000  1.00 0.00           C\n"
+        "ATOM      6  C   LYS A   2       4.539   4.270   0.000  1.00 0.00           C\n"
+        "ATOM      7  N   THR A   3       5.060   5.700   0.000  1.00 0.00           N\n"
+        "ATOM      8  CA  THR A   3       6.518   5.700   0.000  1.00 0.00           C\n"
+        "ATOM      9  C   THR A   3       7.069   7.120   0.000  1.00 0.00           C\n"
+    )
+
+    for label, text in (("hetatm first", ligand + body), ("atom first", body + ligand)):
+        chain = PDBParser(QUIET=True).get_structure(
+            label, io.StringIO(text + "END\n")
+        )[0]["A"]
+        found = detect_glycosylation_sequons(chain)
+        assert [(f["resnum"], f["motif"]) for f in found] == [(1, "N-K-T")], (
+            f"with records ordered {label}, a free MSE ligand at resseq 1 "
+            f"displaced the real ASN and the sequon was lost: {found}"
+        )

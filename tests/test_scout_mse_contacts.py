@@ -500,9 +500,9 @@ def test_admission_is_monotone_in_backbone_completeness(modelled, label):
 
     _bond_length once returned the first finite C->N measurement it found. For
     a CA-only MSE both directions raised and the CA fallback admitted it; ADDING
-    the C atom let the reverse direction measure -- C(i+1)...N(i), ~6.2 A even
-    for a genuinely bonded pair -- which is finite, so the short-circuit
-    returned that and the residue was dropped. More information, worse answer.
+    the C atom let the reverse direction measure -- C(i+1)...N(i), which runs
+    4.1-6.1 A on real bonded pairs -- and that is finite, so the short-circuit
+    returned it and the residue was dropped. More information, worse answer.
     Partial backbones occur in deposited data and in user uploads.
     """
     import io
@@ -649,13 +649,17 @@ def test_the_two_contact_implementations_agree_exactly():
     scout/interfaces.py and scout/epitope_db.py compute contacts over the same
     geometry by separate code. On this fixture they agree residue for residue,
     so a shift in either -- an off-by-one on the emitted number, a CA-only
-    contact sphere, publishing the partner's list instead of the target's --
-    breaks the equality. A subset or "unchanged since last run" assertion
+    contact sphere -- breaks the equality.
+
+    It does NOT catch publishing the partner's list instead of the target's:
+    this fixture is a symmetric homodimer with shared numbering, so those two
+    lists are byte-identical and the swap is unobservable here. The sibling
+    test below covers that on renumbered chains. A subset or "unchanged since last run" assertion
     cannot see any of those: shifting every number by one keeps it inside the
     admitted set, which is how an off-by-one survived the whole module.
 
-    Chain A of this fixture carries 448 HETATM records, so a missing gate on
-    EITHER side shows up here too.
+    Chain A of this fixture carries 141 HETATM records (448 across all four
+    chains), so a missing gate on EITHER side shows up here too.
     """
     text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
 
@@ -702,4 +706,73 @@ def test_antibody_chain_heteroatoms_do_not_widen_the_contact_sphere():
         "they are entering the contact sphere: "
         f"with {with_het} / without {without_het} "
         f"  extra:   {sorted(set(with_het) - set(without_het))}"
+    )
+
+
+def test_the_target_and_partner_contact_lists_are_not_interchangeable(tmp_path):
+    """Publishing the partner's residue numbers as the target's must be caught.
+
+    The cross-check above cannot see this: 3ave is a symmetric homodimer whose
+    two chains share numbering, so the target and partner lists are identical
+    and swapping them changes nothing. Renumbering chain B by +1000 -- geometry
+    untouched -- separates them, and the swap becomes observable.
+
+    contact_residues is rendered and unioned into the scored contact set, so on
+    any hetero-complex (the real use case: antigen plus antibody) the swap
+    publishes the wrong chain's numbers to the user and into a score.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+    renumbered = []
+    for line in text.splitlines():
+        if line.startswith(("ATOM", "HETATM")) and len(line) > 26 and line[21] == "B":
+            line = line[:22] + "%4d" % (int(line[22:26]) + 1000) + line[26:]
+        renumbered.append(line)
+
+    path = tmp_path / "renumbered.pdb"
+    path.write_text(NEWLINE.join(renumbered) + NEWLINE, encoding="utf-8")
+
+    detected = interfaces.detect_interfaces(str(path), "A")
+    assert detected, "renumbering must not destroy the interface"
+    reported = sorted(detected[0]["contact_residues"])
+
+    assert reported, "fixture must yield contacts"
+    assert max(reported) < 1000, (
+        "contact_residues carries chain B's renumbered residues, so the "
+        "partner list is being published as the target's: %r" % (reported,)
+    )
+
+
+def test_glycan_insertion_codes_are_distinct_positions():
+    """The glycan dedupe must key on (resseq, icode), not resseq alone.
+
+    Keying on the sequence number collapses a Kabat-numbered CDR run -- 100,
+    100A, 100B -- into one residue, which both drops residues and shifts the
+    positional i, i+1, i+2 window the sequon scan depends on. The equivalent
+    guard exists for scout/polymer.py; this one did not, and the mutation
+    survived green.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    from scout.glycan import detect_glycosylation_sequons
+
+    lines, serial = [], 1
+    for resname, resnum, icode in (
+        ("ALA", 100, " "), ("ASN", 100, "A"), ("GLY", 100, "B"), ("THR", 101, " ")
+    ):
+        for atom_name in ("N", "CA", "C", "O", "CB"):
+            line = _pdb_atom(serial, atom_name, resname, "A", resnum,
+                             3.8 * serial / 5.0, 0.0, 0.0)
+            line = line[:26] + icode + line[27:]
+            lines.append(line)
+            serial += 1
+
+    chain = PDBParser(QUIET=True).get_structure(
+        "kabat", io.StringIO(NEWLINE.join(lines) + NEWLINE + "END" + NEWLINE)
+    )[0]["A"]
+    found = detect_glycosylation_sequons(chain)
+
+    assert [(f["resnum"], f["motif"]) for f in found] == [(100, "N-G-T")], (
+        "insertion-coded residues collapsed, losing the sequon: %r" % (found,)
     )

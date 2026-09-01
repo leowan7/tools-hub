@@ -90,21 +90,20 @@ def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
     distinguishable, because consecutive CA atoms sit ~3.8 A apart.
     """
     best = float("inf")
-    incomplete = False
     a, b = residues[idx_a], residues[idx_b]
     for upstream, downstream in ((a, b), (b, a)):
         try:
             best = min(best, upstream["C"] - downstream["N"])
         except KeyError:
-            incomplete = True
+            continue
 
     # CA--CA SUBSTITUTES for a measurement that could not be taken; it does not
     # compete with one that could. The distinction is the whole subtlety here:
     #
     #   * Guarding the fallback on "BOTH directions raised" is non-monotone.
     #     For a CA-only MSE both raise and the fallback admits it, but ADDING
-    #     its C atom lets the reverse direction measure -- C(i+1)...N(i), about
-    #     6.2 A even for a genuinely bonded pair -- which is finite, so the
+    #     its C atom lets the reverse direction measure -- C(i+1)...N(i), which
+    #     runs 4.1-6.1 A on real bonded pairs -- and that is finite, so the
     #     residue is dropped. More information, worse answer.
     #
     #   * Consulting CA unconditionally is too permissive. A residue whose two
@@ -113,8 +112,19 @@ def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
     #     one 3 A off its bond leaves CA--CA at 2.5 A, which the scaled test
     #     would wave through.
     #
-    # So: fall back only when something was genuinely unmeasurable.
-    if incomplete:
+    # So: fall back only when the FORWARD measurement could not be taken.
+    #
+    # Gating on "either direction raised" was the same error a third time. The
+    # reverse distance C(i+1)...N(i) runs 4.1-6.1 A on genuinely bonded pairs
+    # (measured over 210 of them in the 3ave fixture, median 5.6), so it is
+    # never evidence about a peptide bond -- but its ABSENCE was being read as
+    # "we could not measure", which let the CA proxy override a forward
+    # measurement that had already answered conclusively. Measured: a free MSE
+    # ligand 5.11 A from the chain (not bonded, forward, unambiguous) with no C
+    # atom of its own was admitted at CA/scale = 1.905, reopening the phantom
+    # interface. Callers always pass (upstream, downstream), so a["C"]/b["N"]
+    # is the peptide-relevant pair.
+    if "C" not in a or "N" not in b:
         try:
             best = min(best, (a["CA"] - b["CA"]) / _CA_TRACE_SCALE)
         except KeyError:
