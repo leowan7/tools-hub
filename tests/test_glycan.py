@@ -1,0 +1,278 @@
+"""Glycosylation sequon detection guards for Epitope Scout.
+
+scout/glycan.py shipped with no test coverage at all, which is how MSE and SEC
+came to be dropped from the residue list that detect_glycosylation_sequons
+indexes POSITIONALLY at i, i+1, i+2. A dropped in-polymer residue does not
+leave a hole there -- it CLOSES the gap and welds two sequence-distant residues
+adjacent, so the detector both misses real sequons and invents ones that do not
+exist. Same root cause as the pydssp backbone and the phi/psi peptide in
+scout/scoring.py; this is the only site in that family that moves a SCORE
+rather than a label, since sequons feed score_glycan_proximity and glycan_risk
+carries 0.15 of the composite (scout/feasibility.py).
+
+Every arm below is a MET/CYS control pair. MSE is chemically MET and SEC is
+chemically CYS, so the control must agree exactly; a disagreement is the bug.
+
+The repo fixtures are HOLLOW for this defect when SeMet-ized wholesale -- 1HEW
+has no sequons at all, and both Fc fixtures carry their MET too far from N297
+to matter, so all three pass on the broken code. The arms here therefore place
+the modified residue at a position that provably discriminates, and
+_assert_discriminating pins that: if a fixture ever stops being able to fail,
+the test says so instead of quietly passing.
+"""
+
+import io
+from pathlib import Path
+
+import pytest
+from Bio.PDB import PDBParser
+
+from scout.glycan import _THREE_TO_ONE, detect_glycosylation_sequons
+
+# The test names the two residues itself rather than importing the module
+# constant. Depending on scout.glycan._MODIFIED_AA here would make the whole
+# file fail to COLLECT against the pre-fix code, which is a much weaker proof
+# than watching the assertions below go red.
+_MODIFIED = frozenset({"MSE", "SEC"})
+
+_EXAMPLES = Path(__file__).resolve().parents[1] / "static" / "example"
+_FC = _EXAMPLES / "3ave_igg1_fc_dimer.pdb"
+
+# Real IgG1 Fc N-glycosylation site: ASN297-SER298-THR299. SER298 is the x
+# position, so a modified residue there is exactly the "welds the sequon shut"
+# case -- and N297 is the single most consequential sequon in antibody work.
+_SEQUON_ASN, _X_POS = 297, 298
+
+# ASN286-ALA287-LYS288-THR289 is NOT a sequon (x=A, third residue K).
+# Dropping ALA287 closes the gap to N286-LYS288-THR289, a fabricated "N-K-T".
+_FAKE_ASN, _FAKE_DROP = 286, 287
+
+
+def _pre_fix_detect(chain):
+    """Verbatim pre-fix logic (scout/glycan.py at 3b3802b).
+
+    Kept in the test rather than described in prose so every arm can assert it
+    is still capable of failing.
+    """
+    canon = {k: v for k, v in _THREE_TO_ONE.items() if k not in _MODIFIED}
+    std = [r for r in chain.get_residues() if r.id[0] == " " and r.resname in canon]
+    found = set()
+    for i in range(len(std) - 2):
+        aa = [canon.get(std[i + k].resname, "?") for k in (0, 1, 2)]
+        if aa[0] == "N" and aa[1] != "P" and aa[2] in ("S", "T"):
+            found.add((std[i].id[1], "-".join(aa)))
+    return found
+
+
+def _substitute(text, resnum, resname, record="HETATM", chain="A"):
+    """Rewrite one residue of a PDB, leaving every coordinate untouched."""
+    out = []
+    for line in text.splitlines(True):
+        if (line.startswith(("ATOM  ", "HETATM"))
+                and line[21] == chain
+                and line[22:26].strip() == str(resnum)):
+            line = record.ljust(6) + line[6:17] + resname.ljust(3) + line[20:]
+        out.append(line)
+    return "".join(out)
+
+
+def _inject_het_residue(text, before_resnum, resname, new_resnum=900, chain="A"):
+    """Splice a het-recorded residue into the MIDDLE of the polymer.
+
+    Rewriting an existing residue cannot test this: the point is a residue the
+    polymer does not contain. It is cloned from the coordinates of
+    ``before_resnum`` so the atoms are real, re-recorded as HETATM under a
+    CANONICAL resname, and inserted directly ahead of that residue -- which is
+    where a positional window can actually see it.
+    """
+    lines, out, donor = text.splitlines(True), [], []
+    for line in lines:
+        if (line.startswith(("ATOM  ", "HETATM"))
+                and line[21] == chain
+                and line[22:26].strip() == str(before_resnum)):
+            donor.append("HETATM" + line[6:17] + resname.ljust(3) + line[20:22]
+                         + str(new_resnum).rjust(4) + line[26:])
+    assert donor, f"no donor atoms at residue {before_resnum}"
+    for line in lines:
+        if (donor and line.startswith(("ATOM  ", "HETATM"))
+                and line[21] == chain
+                and line[22:26].strip() == str(before_resnum)):
+            out.extend(donor)
+            donor = []
+        out.append(line)
+    return "".join(out)
+
+
+def _model(text):
+    return PDBParser(QUIET=True).get_structure("x", io.StringIO(text))[0]
+
+
+def _sequons(text, chain="A"):
+    found = detect_glycosylation_sequons(_model(text)[chain])
+    return {(d["resnum"], d["motif"]) for d in found}
+
+
+def _assert_discriminating(text, expected, chain="A"):
+    """The fixture must be able to FAIL on the pre-fix code, or the arm proves
+    nothing. Without this, a later fixture edit turns the guard hollow in
+    silence -- it would still pass, just against a detector that cannot be
+    wrong here any more.
+    """
+    stale = _pre_fix_detect(_model(text)[chain])
+    assert stale != expected, (
+        "fixture no longer discriminates: the pre-fix detector already agrees "
+        f"with the control ({stale}), so this arm would pass on the broken code"
+    )
+
+
+@pytest.fixture(scope="module")
+def fc_text():
+    return _FC.read_text(encoding="utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# 1. A modified residue at the x position must not erase a real sequon.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("record", ["HETATM", "ATOM"])
+@pytest.mark.parametrize(
+    "modified,control",
+    [("MSE", "MET"), ("SEC", "CYS")],
+    ids=["selenomethionine", "selenocysteine"],
+)
+def test_modified_residue_at_x_keeps_the_sequon(fc_text, modified, control, record):
+    """N297-x-T299 survives when x is MSE/SEC, exactly as when x is MET/CYS.
+
+    ``record`` covers both spellings: real depositions write HETATM, while
+    design and refinement pipelines often re-emit the same residue as ATOM.
+    The fix matches on resname alone, so the two must behave identically.
+    """
+    want = _sequons(_substitute(fc_text, _X_POS, control, "ATOM  "))
+    assert (_SEQUON_ASN, f"N-{_THREE_TO_ONE[control]}-T") in want, (
+        "control lost the sequon, so the fixture is not testing what it claims"
+    )
+
+    text = _substitute(fc_text, _X_POS, modified, record)
+    _assert_discriminating(text, want)
+    assert _sequons(text) == want
+
+
+# ---------------------------------------------------------------------------
+# 2. A modified residue must not close a gap and invent a sequon.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "modified,control",
+    [("MSE", "MET"), ("SEC", "CYS")],
+    ids=["selenomethionine", "selenocysteine"],
+)
+def test_modified_residue_does_not_fabricate_a_sequon(fc_text, modified, control):
+    """N286-A287-K288-T289 is not a sequon and must not become one.
+
+    Dropping A287 welds N286 onto K288-T289 and reports a glycan site that does
+    not exist. That is the direction which silently DEPRESSES glycan_risk, and
+    the more common of the two: 64 fabricated against 40 missed over 1542
+    MSE-bearing chains from 597 real SeMet depositions.
+    """
+    want = _sequons(_substitute(fc_text, _FAKE_DROP, control, "ATOM  "))
+    assert not any(num == _FAKE_ASN for num, _ in want), (
+        "control already fabricates, so the fixture cannot show the defect"
+    )
+
+    text = _substitute(fc_text, _FAKE_DROP, modified)
+    _assert_discriminating(text, want)
+    assert _sequons(text) == want
+    assert not any(num == _FAKE_ASN for num, _ in _sequons(text))
+
+
+# ---------------------------------------------------------------------------
+# 3. Cross-module agreement on the one-letter spelling.
+# ---------------------------------------------------------------------------
+
+def test_modified_residue_letters_match_epitope_db():
+    """scout/epitope_db.py maps the same two residues, and the motif string is
+    user-visible, so the two modules must not drift apart on the spelling.
+    """
+    from scout.epitope_db import _THREE_TO_ONE as DB_MAP
+    from scout.glycan import _MODIFIED_AA
+
+    assert _MODIFIED_AA == _MODIFIED, "glycan changed which residues it treats as modified"
+    for resname in _MODIFIED:
+        assert _THREE_TO_ONE[resname] == DB_MAP[resname], resname
+
+
+def test_modified_residues_never_read_as_asn_ser_thr_or_pro():
+    """Whatever letter they carry, MSE/SEC must not themselves look like a
+    sequon position -- only like a legal x.
+    """
+    for resname in _MODIFIED:
+        assert _THREE_TO_ONE[resname] not in ("N", "S", "T", "P")
+
+
+# ---------------------------------------------------------------------------
+# 4. The hetflag gate still holds for everything that is NOT MSE/SEC.
+# ---------------------------------------------------------------------------
+
+def test_a_ligand_cannot_enter_the_polymer_sequence(fc_text):
+    """The relaxation is a WHITELIST, not "any HETATM".
+
+    There is no peptide-bond continuity test in this function, so a ligand
+    admitted to the list would weld the residues either side of it together --
+    the same defect pointing the other way, and this time it FABRICATES at
+    N297, the site the whole fixture exists for.
+
+    The obvious version of this test is hollow. 3ave carries only ZN and HOH,
+    neither of which is in _THREE_TO_ONE, so dropping the hetflag gate admits
+    nothing; and every one of its heteroatoms sits after the last polymer ATOM
+    line, where no positional window can reach it. Both facts are asserted
+    below so the arm cannot quietly revert to that weaker form.
+    """
+    chain = _model(fc_text)["A"]
+    het = [r for r in chain.get_residues() if r.id[0] != " "]
+    assert {r.resname.strip() for r in het} == {"ZN", "HOH"}, (
+        "fixture heteroatoms changed; re-check that this arm still needs the splice"
+    )
+    assert not {r.resname.strip() for r in het} & set(_THREE_TO_ONE), (
+        "a fixture heteroatom is now a canonical resname, which would make the "
+        "no-op assertion below meaningful on its own -- rewrite this arm"
+    )
+
+    # GLY is canonical, so only the hetflag can keep it out, and it lands
+    # between N297 and S298: admitting it reports N-G-S at the same resnum.
+    spiked = _sequons(_inject_het_residue(fc_text, _X_POS, "GLY"))
+    assert (_SEQUON_ASN, "N-G-S") not in spiked, (
+        "a het-recorded ligand entered the polymer and fabricated a sequon"
+    )
+    assert spiked == _sequons(fc_text)
+
+def test_proline_at_x_still_blocks_the_sequon(fc_text):
+    """Pins the predicate the fix reaches through but does not own.
+
+    N-P-S/T is not glycosylated, and this file is the only coverage
+    scout/glycan.py has, so removing that clause would otherwise go unnoticed:
+    every other arm here holds x fixed at a non-proline residue.
+    """
+    assert (_SEQUON_ASN, "N-S-T") in _sequons(fc_text), "fixture lost N297"
+    blocked = _sequons(_substitute(fc_text, _X_POS, "PRO", "ATOM  "))
+    assert not any(num == _SEQUON_ASN for num, _ in blocked)
+
+
+# ---------------------------------------------------------------------------
+# 5. Inert on structures that carry no modified residue.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "name", ["1HEW.pdb", "3ave_igg1_fc_dimer.pdb", "3s7g_fc_ab.pdb"]
+)
+def test_unmodified_fixtures_are_untouched(name):
+    """What the fix must NOT do.
+
+    These carry no MSE/SEC, so the pre-fix and fixed detectors have to agree
+    exactly. That is what makes the arms above attributable to the modified
+    residues rather than to the rewrite.
+    """
+    text = (_EXAMPLES / name).read_text(encoding="utf-8", errors="replace")
+    for chain in _model(text):
+        assert not {r.resname.strip() for r in chain.get_residues()} & _MODIFIED
+        got = {(d["resnum"], d["motif"]) for d in detect_glycosylation_sequons(chain)}
+        assert got == _pre_fix_detect(chain)

@@ -21,6 +21,8 @@ Each returned dict has:
 import logging
 import re
 
+from scout import polymer
+
 logger = logging.getLogger(__name__)
 
 # Distance cutoff for defining inter-chain contacts. 4.5 Å captures
@@ -30,6 +32,7 @@ _CONTACT_CUTOFF = 4.5
 # Minimum number of contact residues to report an interface.
 # Filters out crystal contacts and incidental chain proximity.
 _MIN_CONTACT_RESIDUES = 5
+
 
 
 def _extract_chain_names(pdb_path: str) -> dict:
@@ -195,9 +198,7 @@ def detect_interfaces(pdb_path, target_chain_id: str) -> list:
     target_atoms = []
     target_atom_residx = []  # maps atom index → residue index
 
-    for residue in target_chain:
-        if residue.id[0] != " ":
-            continue  # Skip HETATM and water
+    for residue in polymer.polymer_residues(target_chain):
         res_idx = len(target_residues)
         target_residues.append(residue)
         for atom in residue.get_atoms():
@@ -220,9 +221,7 @@ def detect_interfaces(pdb_path, target_chain_id: str) -> list:
         partner_atoms = []
         partner_atom_residx = []
 
-        for residue in partner_chain:
-            if residue.id[0] != " ":
-                continue
+        for residue in polymer.polymer_residues(partner_chain):
             res_idx = len(partner_residues)
             partner_residues.append(residue)
             for atom in residue.get_atoms():
