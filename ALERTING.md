@@ -589,6 +589,23 @@ Other ways this step fails, none of which are a Scout incident:
 - **`Refusal-rate check SKIPPED`** (a warning annotation, job still green) —
   `METRICS_TOKEN` is not set on the runner, so this alarm is *not running*. The
   Platform API smoke still is. Set the secret to turn it on.
+- **`Refusal-rate alarm could not evaluate`** (a warning annotation, job still
+  green) — anonymous requests were refused, but too few metered requests came in
+  to say whether that is a spike, so the alarm could not rate them. **The green
+  tick here means "nothing to compare against", NOT "traffic is healthy."** The
+  step summary on that run carries the full report; read the per-reason split to
+  see which subsystem refused — `rate_limited` is the per-IP ceiling,
+  `busy`/`at_capacity` are compute pressure, `no_session` is the one shared
+  cookieless bucket that any scanner can fill.
+
+  It should be RARE: organic anonymous Scout traffic has measured zero refusals
+  in every scrape taken so far, so treat it as a real event rather than noise.
+  It is deliberately PASSIVE — the job stays green, so no email is sent and
+  somebody has to open the run. A fail path here would redden main's check suite
+  and block Railway deploys (see the Wait-for-CI section above), which is the
+  worse trade. If it ever needs to reach someone unprompted, the runner has `gh`
+  and `GITHUB_TOKEN`: create-or-comment on a dedupe-titled issue notifies and
+  persists without touching the check suite.
 
 Reproduce by hand: `METRICS_TOKEN=... python scripts/check_refusal_rate.py`.
 Tune without a code change via `REFUSAL_RATE_THRESHOLD` (default 0.20) and
