@@ -208,13 +208,161 @@ phasing is routine in the PDB. The same QC pass measured `3fhk:A` falling
 99.3% → 89.9% with its 9 MSE residues, and `2i39:A` 100% → 90.9% with 7.
 
 Two things follow. This is a real cost of adopting an algorithm that reads
-fixed sequence offsets, where the phi/psi branch it replaces computes each
-dihedral locally and is barely affected by a junction. And `ss_method` still
-reads `"pydssp"` throughout: the run carries no signal that its labels were
-degraded. **Not fixed here** — mapping `MSE` to `MET` would close most of it,
-but residue selection is shared with `compute_rsa` and patch construction, so
-changing it late in this branch risks misaligning keys across modules. It is
-the strongest follow-up candidate.
+fixed sequence offsets. And `ss_method` still reads `"pydssp"` throughout: the
+run carries no signal that its labels were degraded.
+
+> **CLOSED by a later change — MSE and SEC now enter the pydssp backbone.**
+> See `_MODIFIED_AA` and `_is_polymer_residue` in
+> `scout/scoring.py`. The blocker recorded here — "residue selection is shared
+> with `compute_rsa` and patch construction, so changing it late risks
+> misaligning keys across modules" — was avoided rather than accepted: the new
+> selector is LOCAL to the pydssp branch, and `scout/sasa.py::STANDARD_AA` is
+> left untouched, so `compute_rsa` and patch construction see exactly what they
+> saw before. The extra `('H_MSE', n, ' ')` keys the map gains are never read,
+> because both consumers (`_majority_ss`, `_continuous_ss_score`) do
+> `ss_map.get(key, "loop")` over patch residues and nothing iterates the map.
+>
+> Independently measured on ten SeMet structures (nine measurable): 25 MSE,
+> 1222 residues shared with a MET-ized junction-free control, 31 differing
+> → 97.46%, worst case `13CT` 89.66%. After the change: 0 differing, 1.0000,
+> shared count up by exactly 25. Nine no-MSE controls score exactly 1.0000
+> both before and after, which is what makes the attribution causal. Those
+> figures corroborate the `3fhk:A` and `2i39:A` numbers above on a third
+> corpus.
+>
+> **Read those two numbers with their caveats — an independent re-derivation
+> reproduced all of them exactly, and then found both framings flattering in
+> opposite directions.**
+>
+> The post-change **1.0000 is true by construction and is not evidence of DSSP
+> accuracy.** MET-izing rewrites only the record name and the resname;
+> coordinates and residue order are untouched. Once the selector accepts
+> `MSE`, both arms hand pydssp a byte-identical coordinate array, so the fix
+> arm *must* return 1.0000. What it demonstrates is that the selector is wired
+> in and nothing reorders — the published 97.9% mkdssp headline was NOT
+> re-measured, and cannot be here (no `mkdssp` in this environment).
+>
+> The pre-change **97.46% flatters the OLD behaviour, so the defect is worse
+> than that figure suggests.** "Shared" excludes the 25 MSE the old selector
+> never labelled at all. In production those do not vanish; they fall to the
+> loop floor via `ss_map.get(key, "loop")`, and 13 of the 25 are non-loop in
+> the control. Scored the way `run_pipeline` actually consumes the map — the
+> control's 1247 residues as denominator, missing keys read as `"loop"` — the
+> old behaviour is **44 wrong / 1247 = 96.47%**, not 97.46%. The bias runs
+> against the fix's own case, which is why the smaller figure was the one
+> originally quoted.
+>
+> **The change is NOT monotone**, despite a 178-chain sweep recording zero
+> deleted keys. `_PYDSSP_MAX_RESIDUES` is checked against `len(standard)`,
+> which MSE/SEC now inflate, so a chain whose canonical count falls in
+> `(2000 - n_MSE, 2000]` crosses the cap and loses its entire map — on the
+> SCOPED path production uses. Measured on a SeMet-ized `1HEW` with the cap
+> pinned at the old count: 127 labels → 0. No chain in the sweep came near
+> 2000, so "monotone" was a sweep observation stated as a universal. The cap
+> is deliberately left alone — it bounds the allocation pydssp actually makes,
+> and `len(standard)` is now the honest size where before it under-counted;
+> the affected chain trades a junction-corrupted map for phi/psi, with
+> `ss_method` still truthful. Pinned by
+> `test_modified_residues_count_toward_the_max_residue_cap`.
+
+**One claim in this section was wrong and is retracted.** It said the phi/psi
+branch "computes each dihedral locally and is barely affected by a junction".
+Measured directly against the same MET-ized control, phi/psi loses 2 labels on
+`13CT` (3 MSE), 6 on `1BKB` (4), 5 on `1AT0` (3) and 7 on `1ASW` (4) — roughly
+1.5 residues per junction, comparable to pydssp's 1.24, and it labels **none**
+of the MSE residues. PPBuilder splits the polypeptide at each MSE, so the
+residues at every new terminus lose a dihedral and fall to "loop".
+
+> **CLOSED by a later change — modified residues no longer split the peptide.**
+> See `_ScoutPPBuilder` in `scout/scoring.py`. `build_peptides(aa_only=0)` was
+> rejected as predicted, and now with a measurement behind it: it accepts all
+> **1032** entries of Biopython's `protein_letters_3to1_extended` and then any
+> residue at all carrying an atom named `CA`. `SEP` and `FME` are taken with
+> **no warning**; `SEC` is not in the extended table at all.
+>
+> Instead the builder overrides `PPBuilder._accept` — the one question
+> `build_peptides` asks about residue identity — leaving `_is_connected`, the
+> real C→N peptide-bond test, untouched. It **ORs onto** the stock rule
+> (`is_aa(residue, standard=True)`) rather than replacing it, so it is a
+> strict superset and the peptide can only grow.
+>
+> **That superset property is the whole correctness argument, and the first
+> version of this change did not have it.** It reused
+> `_is_pydssp_polymer_residue`, which additionally demands `hetflag == " "`
+> for the canonical 20 — something stock `_accept` never checks, since
+> `is_aa` reads the resname only. The two accept-sets were therefore
+> **incomparable, not nested**, and the builder cut the peptide at any
+> in-polymer canonical residue recorded as `HETATM`: on `1HEW` chain A with
+> residues 60–62 re-spelled, 129 labels → 126 with residues 59 and 63 falling
+> to `"loop"`. That is the very defect being fixed, reintroduced under a
+> different trigger, equally silent. **Two independent reviews found it; the
+> author's own 69-structure corpus could not**, because in-polymer
+> HETATM-spelled canonical residues are rare (a reviewer found 2 in 88
+> structures, both free ligands `_is_connected` already excluded). Pinned by
+> `test_phi_psi_accept_is_a_strict_superset_of_biopythons` and
+> `test_phi_psi_does_not_cut_at_hetatm_spelled_canonical_residues`.
+>
+> The hetflag gate is right for pydssp and wrong here: pydssp has no
+> connectivity test, so only the hetflag keeps a free solvent amino acid out
+> of its coordinate array, whereas here `_is_connected` excludes it on
+> geometry regardless of spelling.
+>
+> `_accept` is **private** Biopython API and `requirements.txt` pins a range
+> (`>=1.81,<2.0`). It fails safe but **silently**, so
+> `test_phi_psi_keeps_modified_residues_in_the_peptide` pins it.
+>
+> **FOUR loss modes, not three.** The MSE itself; psi of the residue before;
+> phi of the residue after; and — the one the first write-up missed — in an
+> `MSE-X-MSE` motif, `X` is isolated between two rejected residues, forms no
+> connected pair, and gets **no key at all**. Found by review, which measured
+> 39 such keys over its own 70-structure corpus.
+>
+> **Measured, 69 structures / 30650 control labels.** Read the split, not the
+> total: of 744 missing keys, **721 are the MSE residues themselves** — which
+> `pipeline.py:356` filters out of patches under *either* spelling, so
+> production never reads them — and only **23 are canonical residues
+> stranded** by the motif above (14 non-loop). Adding those to the 1164
+> mislabelled canonical residues gives **1178 wrong AND consumed = 3.84%** of
+> the labels. An earlier draft quoted 1787 by counting MSE keys production
+> discards; that overstated it by ~50%. After the change: 0.
+>
+> A 169-chain sweep adds **744 keys and deletes 0**, 0 exceptions, 0 chains
+> newly empty, 36 byte-identical.
+
+**Do not over-read those numbers.** Four caveats, three raised by review:
+
+1. **The post-fix `1.0000` is true by construction and carries no information
+   about label accuracy.** MET-izing changes only the record name and resname;
+   once the selector accepts `MSE`, both arms hand identical coordinates to
+   identical peptide decomposition, so the fixed arm *cannot* return anything
+   else. Critically, this control is **blind to any error symmetric under
+   MSE→MET** — which is exactly why it never saw the HETATM regression above.
+   A perfect score on a metric that cannot fail is not evidence of
+   correctness. Never quote it beside the 97.9%/70.2% mkdssp headlines.
+2. **`94.17%` is an agreement rate; the error rate is 5.83%** (3.84% after
+   restricting to consumed labels). Writing "1787 wrong = 94.17%" invites
+   reading it as "94% wrong".
+3. **phi/psi is the third fallback and rarely runs at all.** It won 3 of 169
+   chains here (1.8%); an independent reviewer's 178-chain corpus gave 1
+   (0.6%). It is corpus-specific — do not quote either as a property of the
+   code. And a chain in a corpus is not a production run: `assign_dssp` is
+   called once per run on the user's chosen chain.
+4. **The corpus is MSE-selected, i.e. the maximum-impact population.** RCSB
+   holds ~10278 MSE entries against ~253370 protein entries, a **4.06%** base
+   rate. Every figure above is conditional on the structure containing MSE.
+
+Where phi/psi *did* win, the error was severe: `1AQC:B` 15/122 (12.3% of the
+chain), `1B89:A` 21/321 (6.5%), `1B24:A` 9/173 (5.2%) — all certified
+`ss_method="phi_psi"`. `1B24:A` is instructive: the pydssp measurement had to
+exclude it because residue 179 is missing backbone atoms, and that is exactly
+why phi/psi wins there. **The chains where pydssp bails are this branch's
+population, so the two defects were never redundant.**
+
+The rename is narrower than first written: `_PYDSSP_MODIFIED_AA` →
+`_MODIFIED_AA`, because that set genuinely is shared. The *predicate* keeps its
+`_is_pydssp_polymer_residue` name — the two branches deliberately do **not**
+share it, which was the whole bug. `_assign_ss_by_pydssp` output is
+byte-identical across 169 chains either side of the rename.
 
 ---
 
@@ -575,8 +723,22 @@ Stated as plainly as the rest:
   assignment, per the all-or-nothing rule in section 4.)
 - **Chain gaps: the per-residue cost is now measured (section 2), the
   patch-level cost is not.** Only **2 of the 30** accuracy chains are gapped
-  — `1ema:A` (5 gaps) and `1igy:B` (26 gaps) — so the headline figure
-  contains the cost but samples it thinly. (The 31-chain / 4552-residue figure quoted in section 3 is
+  — `1ema:A` and `1igy:B` — so the headline figure
+  contains the cost but samples it thinly. **Correction:** `1ema:A` was
+  recorded here as having 5 gaps. Four of those five were the excluded MSE at
+  78, 88, 153 and 218, which the `_MODIFIED_AA` change removes; only
+  the break between 64 and 68 is genuine unresolved density. `1igy:B`'s 26 are
+  all real (that chain contains no MSE, checked). So the gap sample is
+  **1 real gap plus 26**, thinner than stated, and it rests almost entirely on
+  one chain. The 97.9% headline was therefore measured WITH the MSE junctions
+  present, so its direction of travel is upward — but **the magnitude is
+  unknown and may be small**, and re-measuring needs mkdssp, which is not
+  installed in this environment. Note an unresolved discrepancy before anyone
+  quotes a revised figure: `scout-dssp-fallback-measurement.md` reports "1
+  residue in 4487" HETATM-flagged standard residues over these same 30 chains,
+  which cannot be reconciled with `1ema:A` alone holding 4 MSE. That count was
+  most likely taken against a residue set that excludes MSE, in which case it
+  does not measure MSE at all and the corpus MSE content is still unknown. (The 31-chain / 4552-residue figure quoted in section 3 is
   the *vendoring-equality* corpus, which adds a 3s7g chain that mkdssp
   refuses and so cannot contribute to accuracy.) `1igy:B`, the worst case
   available, still labelled 34 of its 35 patches (97.1%) correctly. A structure with many short gaps could do worse

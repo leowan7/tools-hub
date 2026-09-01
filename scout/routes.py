@@ -124,10 +124,19 @@ ANON_RATE_WINDOW_SECONDS = 600
 # instruments the refusal a visitor actually sees, so it has to instrument this
 # one too, not only the analyze bucket.
 #
-# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL and nothing asserts it.
+# The 10 == ANON_ANALYZE_LIMIT balance is ACCIDENTAL. It was unasserted until
+# 2026-08-24; tests/test_scout_anonymous_access.py::
+# test_the_two_anon_ceilings_must_move_together now pins it as a conservative
+# proxy for the decision doc's §5 coupling.
 # Neither number moved; what moved was the cost of an analysis, which lifted
 # the effective analyze ceiling from 5 to 10 and landed on this 10 by
 # coincidence. Change either one and the wall moves to the other, silently.
+# COUPLED: read the DO-NOT-CHANGE block on ANON_ANALYZE_LIMIT below before
+# moving this -- which one binds depends on the shape of the lab, not its
+# size, so moving one alone serves only half of them. But do NOT import that
+# block's charge arithmetic: intake has no session tier and no pairing
+# (ratelimit.py:863, no session_limit), so here 1 request = 1 charge exactly
+# and the fleet wall is exactly 20.
 ANON_INTAKE_LIMIT = 10
 
 # ---------------------------------------------------------------------------
@@ -164,7 +173,16 @@ ANON_INTAKE_LIMIT = 10
 # here as a precondition and is not one. See
 # docs/DECISION-2026-08-22-per-ip-ceiling.md for the full argument.
 #
-#  1. PHASE 2, AND IT IS THE WHOLE GATE. Nobody has verified whether
+#  1. PHASE 2 -- ANSWERED 2026-08-24, this is no longer the gate. Railway's
+#     edge OVERWRITES the whole X-Forwarded-* family and then appends its own
+#     internal hop, and that hop ROTATES across a pool. So the per-IP key was
+#     edge-internal noise and this ceiling never bound anyone; it now keys on
+#     X-Real-Ip and binds for the first time. Re-read the ceiling decision in
+#     that light. See docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+#     The original text follows, kept because its reasoning is still the
+#     reason the answer mattered.
+#
+#     Nobody has verified whether
 #     Railway's edge appends, overwrites or forwards X-Forwarded-For
 #     verbatim. Under the third case the per-IP key is caller-chosen and this
 #     ceiling is decorative. Measured at d3c60c8, 50 requests to
@@ -227,6 +245,42 @@ ANON_INTAKE_LIMIT = 10
 # free: the attacker's quota multiplies by W too, so it is attacker-NEUTRAL
 # only while vCPU scales with W, and Railway's allocation is an explicit
 # unknown. Stated in full in docs/DECISION-2026-08-22-per-ip-ceiling.md §4.
+#
+# DO NOT RAISE THIS NUMBER ON ITS OWN -- but if Phase 3 is ever built, raise it
+# to 20 IN THE SAME CHANGE. The ceiling decision was re-taken 2026-08-24 once
+# the per-IP key was fixed; see its "Re-taken" section, R3/R4.
+#
+#   Alone, raising it takes the fleet wall to 40 charges and saturation from 4
+#   addresses down to 2. That is §4's standing objection.
+#
+#   Phase 3 alone takes the wall to 10 charges: saturation rises 4 -> 8, but a
+#   lab drops from 10-20 analyses to exactly 10 (a LONE researcher 8-16 to 8,
+#   bound by ANON_ANALYZE_SESSION_LIMIT below, which is charged FIRST). That is
+#   a tightening, not a free win.
+#
+#   Together -- shared counters plus BOTH constants at 20 -- saturation is 4
+#   before and after (attacker-NEUTRAL), a lab gets exactly 20 instead of
+#   10-20, and criterion 5 is met. Do it in one change: Phase 3 removes
+#   WEB_CONCURRENCY as the knob that lifts both walls together (§4 called it
+#   the only such knob), so afterwards these constants are the ONLY lever left
+#   for a lab.
+#
+# UNITS: the wall is 20 CHARGES. For a LAB that is 10-20 ANALYSES, because
+# _FOLLOWUP is process-local like the counters, so a paired /progress +
+# /analyze costs 1 charge on one worker and 2 when it splits. The split ratio
+# is UNMEASURED -- do not infer one from the SSE stream; the client closes it
+# BEFORE issuing /analyze (templates/scout/index.html:319).
+#
+# FOR AN ATTACKER IT IS 20 ANALYSES REGARDLESS, and the CPU rows above assume
+# exactly that. POST /scout/analyze runs run_pipeline ITSELF when the chain has
+# no results.csv (see this file, in scout_analyze), so one intake charge buys a
+# job and /analyze alternating chains yields one FULL pipeline run per charge
+# with no pair opened and no credit needed. The adversarial figure is therefore
+# independent of the charge model; the lab figure is not. This claim flipped
+# twice under review and is now pinned by
+# tests/test_scout_anon_charge_pairing.py::TestTheChargeCannotBeEvaded::
+# test_analyze_alone_buys_a_WHOLE_pipeline_run_per_charge -- if /analyze ever
+# gains a cache, that test fails and these numbers need re-deriving.
 ANON_ANALYZE_LIMIT = 10
 
 # ...and PER SESSION, keyed on the anonymous id in the signed session cookie.
@@ -260,6 +314,12 @@ ANON_ANALYZE_LIMIT = 10
 # little room between the tiers, so this one is thin. It becomes the real
 # workhorse when Phase 2 lets the per-IP number rise; the structure is what
 # makes that a number change rather than a redesign.
+# PHASE 3 HALVES THIS TOO: the fleet wall is 8 x workers = 16 today and would
+# become exactly 8 under shared counters. This tier is charged FIRST
+# (ratelimit.py) and returns without touching the per-IP bucket, so it is
+# what a LONE researcher meets -- 8-16 analyses today, 8 after Phase 3 --
+# while the per-IP ceiling binds a multi-researcher lab. Any Phase 3 change
+# must size this deliberately, not inherit it.
 ANON_ANALYZE_SESSION_LIMIT = 8
 
 # How many anonymous scoring pipelines may run at once in one worker process.

@@ -21,6 +21,7 @@ import pytest
 from flask import Flask, jsonify
 
 from shared.metrics import (
+    ECHOABLE_FORWARDING_HEADERS,
     observe_credits_granted,
     observe_credits_spent,
     observe_idempotency_outcome,
@@ -549,3 +550,388 @@ def test_the_boot_guard_stays_quiet_when_prometheus_client_is_absent():
         "With prometheus_client blocked there is no exposition to measure; "
         "the probe must report the stub path rather than a body size."
     )
+
+
+# ---------------------------------------------------------------------------
+# /debug/client-ip — the echo that makes the limiter's key observable
+# ---------------------------------------------------------------------------
+#
+# Added after production measurement showed _client_ip() varying between
+# identical requests, with no way to see what it resolved to. See
+# docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+
+
+def test_client_ip_echo_is_forbidden_by_default(monkeypatch):
+    """Same deny-by-default as /metrics: an unset token refuses everyone.
+
+    This endpoint describes the exact header the per-IP limiter trusts, so an
+    open version of it is a forging aid.
+    """
+    flask_app = _token_app(monkeypatch, None)
+    assert flask_app.test_client().get("/debug/client-ip").status_code == 403
+    assert flask_app.test_client().get(
+        "/debug/client-ip", headers={"Authorization": "Bearer "}
+    ).status_code == 403
+
+
+def test_client_ip_echo_denies_a_wrong_token(monkeypatch):
+    flask_app = _token_app(monkeypatch, "right-token")
+    assert flask_app.test_client().get(
+        "/debug/client-ip", headers={"Authorization": "Bearer wrong-token"}
+    ).status_code == 403
+
+
+def test_client_ip_echo_reports_what_the_app_resolved(monkeypatch):
+    """The whole point: it must report the RESOLVED key, not just the header.
+
+    With one trusted hop, _client_ip() takes the RIGHTMOST entry, so a
+    multi-value header must resolve to the last one. If this ever reports the
+    leftmost, the limiter is keyed on a caller-chosen value.
+    """
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    flask_app = _token_app(monkeypatch, "tok")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer tok",
+            "X-Forwarded-For": "192.0.2.111, 192.0.2.222",
+        },
+    )
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["client_ip"] == "192.0.2.222"
+    assert payload["trusted_proxy_hops"] == 1
+    assert payload["forwarding_headers"]["X-Forwarded-For"] == "192.0.2.111, 192.0.2.222"
+
+
+def test_client_ip_echo_echoes_only_the_allowlist(monkeypatch):
+    """The echo must return allowlisted headers and NOTHING else.
+
+    This asserts the CLASS, not two literal names, and that distinction is the
+    whole point. An earlier version of this test checked only that
+    ``Authorization`` and ``Cookie`` were absent -- which "echo every header
+    except those two" passes, and so does a prefix match on ``x-`` . Both were
+    caught only by mutation, never by the assertion.
+
+    ``X-Forwarded-Access-Token`` (oauth2-proxy) and ``X-Forwarded-Client-Cert``
+    (Envoy/Istio, carrying a full client PEM and a SPIFFE identity) are the
+    concrete reason: they start with ``x-forwarded`` but are credentials, and
+    the endpoint's response is republished into a PUBLIC Actions log.
+    """
+    flask_app = _token_app(monkeypatch, "leaky-token")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer leaky-token",
+            "Cookie": "session=super-secret-session-value",
+            "X-Forwarded-For": "192.0.2.9",
+            "X-Forwarded-Access-Token": "ya29.a-live-oauth-access-token",
+            "X-Forwarded-Client-Cert": "By=spiffe://cluster/ns/default;Cert=-----BEGIN%20CERT",
+            "X-Forwarded-Email": "someone@example.com",
+        },
+    )
+    assert r.status_code == 200
+    body = r.data.decode("utf-8")
+
+    # Nothing secret reaches the body, whatever the filter happens to be.
+    for secret in (
+        "leaky-token",
+        "super-secret-session-value",
+        "ya29.a-live-oauth-access-token",
+        "spiffe://cluster",
+        "someone@example.com",
+    ):
+        assert secret not in body, f"{secret!r} was echoed"
+
+    # And the filter itself is a subset of the allowlist, so widening the
+    # allowlist is the only way to echo anything new -- which lands here.
+    echoed = {name.lower() for name in r.get_json()["forwarding_headers"]}
+    assert echoed <= ECHOABLE_FORWARDING_HEADERS, (
+        f"echoed outside the allowlist: {echoed - ECHOABLE_FORWARDING_HEADERS}"
+    )
+    assert "x-forwarded-for" in echoed, "the one header the diagnostic exists for"
+
+
+def test_client_ip_echo_reports_non_default_hops(monkeypatch):
+    """The hop count must reflect the real config, not a constant.
+
+    Hardcoding ``"trusted_proxy_hops": 1`` survived every other test in this
+    file. On a diagnostic whose job is to report the configuration, a field
+    that stops tracking it is the failure that matters most.
+    """
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "2")
+    flask_app = _token_app(monkeypatch, "tok")
+
+    r = flask_app.test_client().get(
+        "/debug/client-ip",
+        headers={
+            "Authorization": "Bearer tok",
+            "X-Forwarded-For": "192.0.2.111, 192.0.2.222",
+        },
+    )
+    payload = r.get_json()
+    assert payload["trusted_proxy_hops"] == 2
+    # Two trusted hops means the entry one further LEFT is ours.
+    assert payload["client_ip"] == "192.0.2.111"
+
+
+# ---------------------------------------------------------------------------
+# X-Real-Ip is preferred, because it is the measured-unforgeable one
+# ---------------------------------------------------------------------------
+
+
+def test_client_ip_prefers_x_real_ip_over_the_forwarded_chain(monkeypatch):
+    """The production shape, copied from a live probe on 2026-08-24.
+
+    Railway sends ``X-Forwarded-For: <client>, <internal>`` with a ROTATING
+    internal hop, plus ``X-Real-Ip: <client>``. Reading one hop from the right
+    keyed on the rotating value, which is why the per-IP limiter never refused
+    anyone. X-Real-Ip is constant across the same requests.
+    """
+    for internal in ("152.233.30.101", "152.233.30.102", "152.233.30.104"):
+        got = _ip_under(
+            {
+                "X-Forwarded-For": f"4.236.158.49, {internal}",
+                "X-Real-Ip": "4.236.158.49",
+            },
+            monkeypatch=monkeypatch,
+        )
+        assert got == "4.236.158.49", f"rotating hop {internal} leaked into the key"
+
+
+def test_client_ip_falls_back_to_the_chain_without_x_real_ip(monkeypatch):
+    """The fallback is unchanged, so every other deployment behaves as before."""
+    got = _ip_under(
+        {"X-Forwarded-For": "1.2.3.4, 198.51.100.9"}, monkeypatch=monkeypatch
+    )
+    assert got == "198.51.100.9"
+
+
+def test_zero_hops_ignores_x_real_ip_too(monkeypatch):
+    """TRUSTED_PROXY_HOPS=0 means no proxy in front, so NO header is trusted.
+
+    If X-Real-Ip were honoured here, a direct-origin deployment would let any
+    caller choose the limiter key by sending one -- the exact hole the hop
+    count exists to close.
+    """
+    got = _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"},
+        hops=0,
+        monkeypatch=monkeypatch,
+    )
+    assert got == "203.0.113.7"
+
+
+def test_a_blank_x_real_ip_does_not_shadow_the_chain(monkeypatch):
+    """An empty or whitespace header must not resolve to "" and bucket
+    every caller together -- that would rate-limit the whole internet as one
+    user while looking like it worked."""
+    for blank in ("", "   "):
+        got = _ip_under(
+            {"X-Real-Ip": blank, "X-Forwarded-For": "1.2.3.4, 198.51.100.9"},
+            monkeypatch=monkeypatch,
+        )
+        assert got == "198.51.100.9", f"blank X-Real-Ip {blank!r} shadowed the chain"
+
+
+def test_a_deeper_hop_count_selects_the_chain_not_x_real_ip(monkeypatch):
+    """TRUSTED_PROXY_HOPS must keep meaning what its docstring says.
+
+    Its stated purpose is "another proxy in front makes it 2". If X-Real-Ip
+    short-circuited at every non-zero hop count, that knob would be silently
+    dead -- and in the Cloudflare-in-front case it names, X-Real-Ip is
+    Cloudflare's egress address, which collapses every visitor behind it onto
+    one limiter key. Exactly the "rate-limit the whole internet as one user"
+    failure the blank-value test guards, reached through a supported config.
+    """
+    got = _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.5.5.5, 6.6.6.6, 7.7.7.7"},
+        hops=2,
+        monkeypatch=monkeypatch,
+    )
+    assert got == "6.6.6.6", "X-Real-Ip overrode an explicitly configured hop count"
+
+
+def test_duplicate_x_real_ip_headers_do_not_become_the_key(monkeypatch):
+    """Two X-Real-Ip headers MERGE into one comma-joined WSGI value.
+
+    So "a single edge-written header has no index to shift" is only true once
+    a comma-joined value is rejected. Without this the caller supplies half of
+    a two-element list and the claim is false as written.
+    """
+    got = _ip_under(
+        [
+            ("X-Real-Ip", "198.51.100.7"),
+            ("X-Real-Ip", "4.4.4.4"),
+            ("X-Forwarded-For", "1.1.1.1, 2.2.2.2"),
+        ],
+        monkeypatch=monkeypatch,
+    )
+    assert got == "2.2.2.2", "a merged X-Real-Ip pair became the limiter key"
+
+
+def test_a_non_address_x_real_ip_falls_through_to_the_chain(monkeypatch):
+    """Anything that is not a bare IP is not a limiter key.
+
+    Measured before the guard: 'evil.example:8080' was returned verbatim, as
+    were hostnames, empty-ish values and 2000-character strings. Each of those
+    is a key an upstream could choose.
+    """
+    for junk in ("evil.example:8080", "not-an-ip", "1.2.3.4, 5.6.7.8", "x" * 2000, "\t"):
+        got = _ip_under(
+            {"X-Real-Ip": junk, "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+            monkeypatch=monkeypatch,
+        )
+        assert got == "2.2.2.2", f"junk X-Real-Ip {junk[:30]!r} became the key"
+
+
+def test_ipv6_x_real_ip_is_still_accepted(monkeypatch):
+    """The guard rejects junk, not legitimate v6."""
+    got = _ip_under(
+        {"X-Real-Ip": "2001:db8::1", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    assert got == "2001:db8::1"
+
+
+# ---------------------------------------------------------------------------
+# The limiter key's source is counted, because losing it fails SILENTLY
+# ---------------------------------------------------------------------------
+
+
+def _source_counts():
+    """Read tools_hub_client_ip_source_total out of the live registry."""
+    from shared.metrics import CLIENT_IP_SOURCE
+
+    out = {}
+    for metric in CLIENT_IP_SOURCE.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_total"):
+                out[sample.labels["source"]] = sample.value
+    return out
+
+
+def test_each_resolution_path_is_counted_by_source(monkeypatch):
+    """x_real_ip / forwarded_chain / peer must each be distinguishable.
+
+    If X-Real-Ip ever stops arriving, _client_ip() silently falls back to the
+    chain and keys on Railway's ROTATING internal hop -- the per-IP limiter
+    goes inert exactly as it was before #189, with no error, no refusal and no
+    latency change. This counter is the only way that becomes visible.
+    """
+    before = _source_counts()
+
+    _ip_under({"X-Real-Ip": "4.236.158.49"}, monkeypatch=monkeypatch)
+    _ip_under({"X-Forwarded-For": "1.1.1.1, 2.2.2.2"}, monkeypatch=monkeypatch)
+    _ip_under({}, monkeypatch=monkeypatch)
+
+    after = _source_counts()
+    for source in ("x_real_ip", "forwarded_chain", "peer"):
+        delta = after.get(source, 0.0) - before.get(source, 0.0)
+        assert delta == 1, f"{source} moved by {delta}, expected 1"
+
+
+def test_a_rejected_x_real_ip_counts_as_the_chain_not_as_x_real_ip(monkeypatch):
+    """The counter must reflect what was USED, not what was present.
+
+    A junk X-Real-Ip falls through to the chain. Counting it as x_real_ip
+    would make the detector report health while the limiter keys on the
+    rotating hop -- the exact failure this counter exists to catch.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "evil.example:8080", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_rejected_x_real_ip_gets_its_own_label(monkeypatch):
+    """Present-but-unusable is NOT the same as absent, and an operator acts on
+    them differently: a rejected value means the edge is still setting the
+    header and something between it and the app is mangling the value.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "evil.example:8080", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip_rejected", 0.0) - before.get("x_real_ip_rejected", 0.0) == 1
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+
+
+def test_zero_hops_counts_as_peer(monkeypatch):
+    """TRUSTED_PROXY_HOPS=0 skips every header, so the key is the socket peer.
+
+    Uncovered until 2026-08-24: a mutation moving the peer increment inside
+    `if hops:` left this path counting NOTHING, so a deployment that had turned
+    headers off would show a silently shrinking denominator.
+    """
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"},
+        hops=0,
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("peer", 0.0) - before.get("peer", 0.0) == 1
+
+
+def test_a_blank_x_real_ip_counts_as_the_chain(monkeypatch):
+    """Blank means unused, so it must not be counted as x_real_ip -- that would
+    report the detector healthy while the chain supplied the key."""
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "   ", "X-Forwarded-For": "1.1.1.1, 2.2.2.2"},
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_valid_x_real_ip_at_another_hop_count_is_not_counted_as_used(monkeypatch):
+    """TRUSTED_PROXY_HOPS != 1 selects the chain, so X-Real-Ip is present and
+    valid but NOT used. Counting it as used would hide the very config change
+    that turned the preference off."""
+    before = _source_counts()
+    _ip_under(
+        {"X-Real-Ip": "1.2.3.4", "X-Forwarded-For": "5.5.5.5, 6.6.6.6, 7.7.7.7"},
+        hops=2,
+        monkeypatch=monkeypatch,
+    )
+    after = _source_counts()
+    assert after.get("x_real_ip", 0.0) == before.get("x_real_ip", 0.0)
+    assert after.get("forwarded_chain", 0.0) - before.get("forwarded_chain", 0.0) == 1
+
+
+def test_a_failing_counter_cannot_break_the_rate_limit_gate(monkeypatch):
+    """THE safety property. _client_ip() decides whether a caller is refused.
+
+    Measured before the guard existed: OSError(28) out of `labels()` propagated
+    straight through _client_ip(), which turns a full metrics disk into a 500
+    on every anonymous Scout route. PROMETHEUS_MULTIPROC_DIR lives on Railway's
+    ephemeral filesystem and this repo has a prior incident of a reaper
+    deleting a shared tmp/, so it is not hypothetical.
+
+    Every other counter in shared/metrics.py is wrapped the same way; this one
+    needs it most, because it is the only one on a gate.
+    """
+    import shared.metrics as metrics_module
+    from unittest import mock  # noqa: PLC0415
+
+    exploding = mock.MagicMock()
+    exploding.labels.side_effect = OSError(28, "No space left on device")
+    monkeypatch.setattr(metrics_module, "CLIENT_IP_SOURCE", exploding)
+
+    # Each of the three resolution paths, all of which increment.
+    assert _ip_under({"X-Real-Ip": "4.236.158.49"}, monkeypatch=monkeypatch) == "4.236.158.49"
+    assert _ip_under({"X-Forwarded-For": "1.1.1.1, 2.2.2.2"}, monkeypatch=monkeypatch) == "2.2.2.2"
+    assert _ip_under({}, monkeypatch=monkeypatch) == "203.0.113.7"
+    assert exploding.labels.called, "the mutation-proof needs the counter to be reached"

@@ -982,67 +982,6 @@ class TestExampleNumbersComeFromThePayload:
         assert "The higher score is the one you must not order." in read
         assert "0.02 difference in ipTM is noise" in read
 
-    def test_every_published_sequence_has_been_cleared(self, tools_app):
-        """The publishing rule: no CUSTOMER or CAMPAIGN designed sequence
-        may reach one of these pages.
-
-        Enforced on VALUES, not key names. A key-name blacklist is a
-        proxy for the rule rather than the rule: it cannot see a design
-        under a key nobody listed, and it cannot see one encoded inside
-        a structure blob at all. Both are live classes of leak -- every
-        residue of a design is recoverable from the CA records of a
-        ``pdb_b64``, so dropping the ``sequence`` key while keeping the
-        structure publishes it just as completely.
-
-        Anything the detector finds must be named in
-        PUBLISHABLE_SEQUENCES with the reason it may ship.
-        """
-        _app, slugs = tools_app
-        uncleared = []
-        for slug, payload in _example_payloads(slugs).items():
-            for where, kind, seq in _published_sequences(payload):
-                if (slug, where) not in PUBLISHABLE_SEQUENCES:
-                    uncleared.append(
-                        f"{slug}: {len(seq)} residues as a {kind} at "
-                        f"{where} -> {seq[:40]}..."
-                    )
-        assert not uncleared, (
-            "a sequence reaches a public page with no recorded reason.\n"
-            + "\n".join(uncleared)
-            + "\n\nIf it is a published reference or one of our own demo "
-            "designs on a published backbone, add it to "
-            "PUBLISHABLE_SEQUENCES with the reason. If it belongs to a "
-            "customer or a campaign it must not ship: drop the key, and "
-            "drop any structure blob that encodes it."
-        )
-
-    def test_the_sequence_detector_is_not_blind(self, tools_app):
-        """Positive control. Every cleared entry must still be FOUND,
-        otherwise the test above passes by detecting nothing at all --
-        which is the failure mode it exists to replace."""
-        _app, slugs = tools_app
-        seen = set()
-        for slug, payload in _example_payloads(slugs).items():
-            for where, _kind, _seq in _published_sequences(payload):
-                seen.add((slug, where))
-        assert seen >= set(PUBLISHABLE_SEQUENCES), (
-            "the detector no longer finds sequences it has cleared, so "
-            "it would not find an uncleared one either. Missing: "
-            f"{sorted(set(PUBLISHABLE_SEQUENCES) - seen)}"
-        )
-
-    def test_a_structure_blob_cannot_smuggle_a_sequence(self):
-        """The leak a key-name check cannot see, in isolation."""
-        pdb = "\n".join(
-            f"ATOM  {i:5d}  CA  LEU A{i:4d}      0.000   0.000   0.000"
-            for i in range(1, 41)
-        )
-        blob = base64.b64encode(pdb.encode()).decode()
-        found = list(_published_sequences({"pdb_b64": blob}))
-        assert found == [("pdb_b64", "structure", "L" * 40)]
-
-
-
     def test_input_field_names_exist_on_the_form(self, tools_app):
         """``inputs_used`` names a form field and the value put in it, and
         it renders directly below that form. A name the form does not use
@@ -1253,3 +1192,59 @@ def _example_payloads(slugs):
         path = REPO / "tools" / slug.replace("-", "_") / "example"
         out[slug] = json.loads((path / "result.json").read_text("utf-8"))
     return out
+
+
+class TestNoUnclearedSequenceReachesAPublicPage:
+    """The publishing rule, enforced on VALUES rather than key names.
+
+    The obvious shape for this guard is a list of the key names a
+    designed sequence has been seen under. That is a proxy for the
+    rule, not the rule: it cannot see a design stored under a key
+    nobody thought of, and it cannot see one encoded inside a
+    structure blob at all.
+    """
+
+    def test_every_published_sequence_has_been_cleared(self, tools_app):
+        _app, slugs = tools_app
+        uncleared = []
+        for slug, payload in _example_payloads(slugs).items():
+            for where, kind, seq in _published_sequences(payload):
+                if (slug, where) not in PUBLISHABLE_SEQUENCES:
+                    uncleared.append(
+                        f"{slug}: {len(seq)} residues as a {kind} at "
+                        f"{where} -> {seq[:40]}..."
+                    )
+        assert not uncleared, (
+            "a sequence reaches a public page with no recorded reason.\n"
+            + "\n".join(uncleared)
+            + "\n\nIf it is a published reference or one of our own demo "
+            "designs on a published backbone, add it to "
+            "PUBLISHABLE_SEQUENCES with the reason. If it belongs to a "
+            "customer or a campaign it must not ship: drop the key, and "
+            "drop any structure blob that encodes it."
+        )
+
+    def test_the_detector_is_not_blind(self, tools_app):
+        """Positive control. Every cleared entry must still be FOUND,
+        otherwise the test above passes by detecting nothing at all —
+        which is the failure mode it exists to replace."""
+        _app, slugs = tools_app
+        seen = set()
+        for slug, payload in _example_payloads(slugs).items():
+            for where, _kind, _seq in _published_sequences(payload):
+                seen.add((slug, where))
+        assert seen >= set(PUBLISHABLE_SEQUENCES), (
+            "the detector no longer finds sequences it has cleared, so "
+            "it would not find an uncleared one either. Missing: "
+            f"{sorted(set(PUBLISHABLE_SEQUENCES) - seen)}"
+        )
+
+    def test_a_structure_blob_cannot_smuggle_a_sequence(self):
+        """The leak a key-name check cannot see, in isolation."""
+        pdb = "\n".join(
+            f"ATOM  {i:5d}  CA  LEU A{i:4d}      0.000   0.000   0.000"
+            for i in range(1, 41)
+        )
+        blob = base64.b64encode(pdb.encode()).decode()
+        found = list(_published_sequences({"pdb_b64": blob}))
+        assert found == [("pdb_b64", "structure", "L" * 40)]

@@ -30,6 +30,7 @@ import logging
 
 import numpy as np
 from Bio.PDB.DSSP import DSSP
+from Bio.PDB.Polypeptide import PPBuilder, is_aa
 
 from scout.patches import get_cb_coord
 from scout.pydssp_numpy import assign as pydssp_assign
@@ -332,6 +333,61 @@ def compute_bfactor_scores(chain_residues: list, plddt_mode: bool = False) -> di
 # DSSP secondary structure — STRUCT-05
 # ---------------------------------------------------------------------------
 
+class _ScoutPPBuilder(PPBuilder):
+    """PPBuilder that also treats _MODIFIED_AA residues as amino acids.
+
+    build_peptides asks two questions about each consecutive pair: _accept
+    ("is this residue an amino acid") and _is_connected ("do these two share
+    a real C->N peptide bond"). Only the first needs changing. _is_connected
+    is the load-bearing half and is left exactly as Biopython wrote it.
+
+    STRICTLY MORE PERMISSIVE THAN THE STOCK RULE, and that is deliberate.
+    Stock _accept(residue, 1) is is_aa(residue, standard=True), which reads
+    the RESNAME ONLY and ignores the hetflag. This ORs a term onto it rather
+    than replacing it, so every residue Biopython accepted is still accepted
+    and the peptide can only grow.
+
+    An earlier version of this class reused _is_pydssp_polymer_residue
+    instead, and that was a BUG, not a tidier spelling. That predicate also
+    demands `hetflag == " "` for the canonical 20, which stock _accept does
+    not -- so it was not a superset but INCOMPARABLE, and it cut the peptide
+    at any in-polymer canonical residue recorded as HETATM. Measured on
+    1HEW chain A with residues 60-62 re-recorded as HETATM (resnames
+    unchanged): 129 labels -> 126, and residues 59 and 63 fell to "loop".
+    That is verbatim the bug this change exists to remove, reintroduced
+    somewhere else. Pinned by
+    test_phi_psi_does_not_cut_at_hetatm_spelled_canonical_residues.
+
+    The hetflag gate is right for pydssp and wrong here, because the two
+    branches have different protection. pydssp has NO connectivity test, so
+    a free ALA in the solvent would be welded straight into its coordinate
+    array and only the hetflag keeps it out. This branch has _is_connected:
+    a free residue is bonded to nothing, so it is cut out on the geometry
+    regardless of how it is spelled. Importing pydssp's gate here buys
+    nothing and costs real in-polymer residues.
+
+    NOT build_peptides(aa_only=0), the obvious one-liner. That accepts every
+    one of the 1032 entries in Biopython's protein_letters_3to1_extended,
+    then ANY residue at all carrying an atom named CA. Measured: it takes
+    NAG, LIG, HEM and ATP with a warning, and SEP and FME with NO warning
+    (both are in the extended table). The silent pair is the problem --
+    scout treats neither as an amino acid anywhere else. SEC is the mirror
+    image: absent from the extended table, so aa_only=0 would reach it only
+    through the atom-name branch.
+
+    _accept is PRIVATE Biopython API and requirements.txt pins a RANGE
+    (>=1.81,<2.0). If an upgrade renames it, the override stops being called
+    and MSE splits the peptide again -- today's bug, restored in the safe
+    direction but SILENTLY, which is why
+    test_phi_psi_keeps_modified_residues_in_the_peptide pins it. If
+    Biopython ever drops _accept, replicate build_peptides' loop here.
+    """
+
+    def _accept(self, residue, standard_aa_only):
+        return (residue.resname.strip() in _MODIFIED_AA
+                or is_aa(residue, standard=True))
+
+
 def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
     """Fallback SS assignment using backbone phi/psi angles (Ramachandran).
 
@@ -346,6 +402,27 @@ def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
     regular secondary structure. The classification is less accurate than
     DSSP (no hydrogen bond analysis) but sufficient for scoring purposes.
 
+    Covers what _ScoutPPBuilder accepts AND that _is_connected joins to an
+    accepted neighbour. That is NOT the same set _assign_ss_by_pydssp
+    covers, and the difference is not incidental: pydssp additionally bails
+    on chains outside _PYDSSP_MIN_RESIDUES.._PYDSSP_MAX_RESIDUES or with a
+    residue missing a backbone atom, while this branch drops any residue
+    peptide-bonded to nothing -- an isolated residue between two unresolved
+    stretches gets no key here and pydssp labels it. ss_method records which
+    branch ran, so the covered set does legitimately depend on the branch.
+
+    MODIFIED RESIDUES USED TO SPLIT THE PEPTIDE HERE. PPBuilder's default
+    aa_only=1 rejects MSE, and build_peptides ENDS the current peptide at
+    any rejected residue. The failure is milder than the pydssp one -- the
+    chain is cut, not welded, so no coordinates are corrupted -- but it
+    still loses labels three ways: the MSE itself is in no peptide, the
+    residue BEFORE it loses its psi (no following N), and the residue AFTER
+    it loses its phi (no preceding C). Measured on a SeMet-ized 1HEW: one
+    129-residue peptide became three (11/92/24), residues 12 and 105 lost
+    their labels outright, and 11, 13 and 106 fell helix -> loop. Five
+    residues wrong out of 129, all of them silently, since a partial
+    phi/psi map is a normal result here.
+
     Args:
         model: Biopython Model object (structure[0]).
         chain_id: Restrict to this chain. None labels every chain.
@@ -354,10 +431,8 @@ def _assign_ss_by_phi_psi(model, chain_id=None) -> dict:
         Dict mapping (chain_id, residue.get_id()) to one of
         "helix", "strand", or "loop".
     """
-    from Bio.PDB.Polypeptide import PPBuilder  # noqa: PLC0415
-
     ss_map = {}
-    ppb = PPBuilder()
+    ppb = _ScoutPPBuilder()
 
     for chain in model.get_chains():
         cid = chain.get_id()
@@ -415,6 +490,137 @@ _PYDSSP_MIN_RESIDUES = 6
 # because ss_method then says "phi_psi".
 _PYDSSP_MAX_RESIDUES = 2000
 
+# Modified residues that are ordinary polymer amino acids carrying a normal
+# N/CA/C/O backbone. The PDB records these as HETATM, so Biopython stamps them
+# with a "H_<resname>" hetflag, and the selector THIS function used to share
+# with scout/sasa.py rejected them on that flag alone -- sasa's STANDARD_AA
+# holds only the 20 canonical resnames, so the resname check never even ran.
+#
+# That is NOT uniform across the package, which matters to anyone tempted to
+# "tidy" this by reusing another module's set. scout/parser.py used to reject
+# the HETATM spelling on the hetflag despite listing both in its STANDARD_AA
+# (the ATOM spelling always passed, e.g. 1CC1 chain L SEC 492); it no
+# longer does -- see parser.py::_is_polymer_residue, which now gives the same
+# answer this function does on every input, by the same rule, deliberately
+# duplicated rather than shared. scout/epitope_db.py's _THREE_TO_ONE still
+# maps both while a hetflag gate drops them, so its two entries are
+# unreachable for the HETATM spelling; scout/glycan.py excludes them outright
+# and then indexes the survivors POSITIONALLY, which welds sequence-distant
+# residues together. Several modules, several different answers to "is this
+# residue standard", and the divergence is not all deliberate.
+#
+# Rejecting them is correct for scout/sasa.py (freesasa has no radii for MSE)
+# and for patch construction (an epitope centred on a selenomethionine is not
+# something the scoring model was built for). It is WRONG here, because pydssp
+# reads coordinates and nothing else: dropping a residue that is chemically
+# part of the chain does not leave a hole, it CLOSES the gap and welds two
+# sequence-distant residues together. That corrupts the pseudo-H of the
+# following residue and slides the fixed i->i+3/4/5 turn and bridge offsets
+# onto renumbered indices.
+#
+# Measured against a MET-ized copy of each structure, which is junction-free by
+# construction because MSE is chemically MET -- so the control needs no mkdssp.
+# Ten SeMet structures were chosen from an RCSB query; NINE could be measured.
+# 1B24 is excluded for a reason that predates this change: chain A residue 179
+# is a standard residue missing a backbone atom, so the all-or-nothing guard
+# returns {} on both arms.
+#
+# Across those nine: 25 MSE residues, 1222 residues shared with the control,
+# 31 taking a different label -- 97.46% agreement against the control's 100%,
+# worst case 13CT at 89.66%, roughly 1.2 residues corrupted per junction. With
+# this change all nine agree at 1.0000 and the shared count rises to 1247,
+# exactly the 25 MSE residues now being labelled instead of skipped.
+#
+# The control that makes it causal rather than correlational: NINE structures
+# containing no MSE, through the same comparison, agree at exactly 1.0000 both
+# before and after -- 2012 shared residues, zero differences, byte-identical
+# either side of the change. So the loss is attributable to MSE and not to the
+# comparison method, and the change is inert on structures without it.
+#
+# Whether this also raises the published 97.9% headline (measured against real
+# mkdssp on 30 chains) is NOT measured here: mkdssp is not installed in this
+# environment. The DIRECTION can only be upward, since MSE-bearing chains in
+# that corpus were scored with these junctions present -- but do not assume the
+# MAGNITUDE is large. How much MSE that corpus actually contains is unclear:
+# docs/qc/scout-dssp-fallback-measurement.md reports "1 residue in 4487"
+# HETATM-flagged standard residues over the same 30 chains, yet 1ema:A alone
+# holds 4 MSE, so that count appears to have been taken with a residue set
+# that excludes MSE and therefore does not measure MSE at all. Settle the
+# corpus composition before quoting any revised headline.
+#
+# Deliberately a whitelist, not "anything carrying a full backbone": the
+# latter would weld genuine HETATM ligands that happen to use those atom names
+# into the polymer. MSE and SEC are the two the rest of the package already
+# treats as amino acids (scout/parser.py STANDARD_AA, scout/epitope_db.py
+# _THREE_TO_ONE), so this adds no new notion of "standard" to the codebase.
+#
+# Residual risk, accepted knowingly: a FREE selenomethionine sitting in the
+# solvent of the same chain would now be threaded into the backbone. It cannot
+# be told apart by hetflag (a free MSE is "H_MSE" too) or by atom content (it
+# carries N/CA/C/O as well). Distinguishing it needs a peptide-bond continuity
+# test, which would be a far larger change to a branch whose gap behaviour is
+# deliberate and measured. Free MSE as a ligand is rare; MSE in the polymer is
+# routine, and the measurement above is what that trade is priced on.
+#
+# Price that risk at its REAL cost, which is not one bad residue. The 534-MSE
+# backbone-completeness sweep behind this whitelist sampled POLYMER MSE in real
+# depositions; a free MSE in solvent is exactly the population most likely to
+# be PARTIALLY modelled, and a missing carbonyl O is common for one. Such a
+# residue now enters `standard`, so it trips `len(residues) != len(standard)`
+# below and empties the map for the ENTIRE chain -- where before the hetflag
+# gate made it invisible and it cost nothing. Landing in phi/psi with
+# ss_method truthful is why this is acceptable, but it is a whole-chain
+# downgrade, not a single wrong label.
+#
+# TWO BEHAVIOUR CHANGES COME FROM MSE/SEC JOINING `standard`, and only the
+# first is a consistency fix.
+#
+# (1) WHOLE-MODEL PATH ONLY. A chain made only of MSE now COUNTS, where before
+# it had no standard residues and was skipped by `if not standard: continue`.
+# So a 3-residue MSE-only chain trips _PYDSSP_MIN_RESIDUES and, per the
+# all-or-nothing rule, empties the whole map -- measured: 129 labels -> 0 with
+# chain_id=None. That is exactly what a 3-residue ALA-only chain ALREADY did on
+# the old code (also measured), so the old asymmetry was the anomaly: a short
+# canonical chain was fatal while a short MSE chain was invisible.
+# run_pipeline always passes a chain_id (scout/pipeline.py:416), and with a
+# chain_id set the short neighbour is never looked at, so production is
+# unaffected -- 129 labels either way. Only a caller using the chain_id=None
+# default can see this.
+#
+# (2) SCOPED PATH TOO, AND THIS ONE IS A DOWNGRADE -- IT IS WHY THE CHANGE IS
+# NOT MONOTONE. _PYDSSP_MAX_RESIDUES is checked against len(standard), which
+# MSE/SEC now inflate. A chain whose canonical count falls in
+# (2000 - n_MSE, 2000] crosses the cap and loses its ENTIRE map -- measured on
+# the SeMet-ized 1HEW fixture with the cap pinned at the old count: 127 labels
+# -> 0. The 178-chain sweep that recorded no deleted keys could not see this;
+# no chain in it came near 2000. "Monotone" is therefore a sweep observation,
+# not a universal, and this is the counter-example.
+#
+# The cap is NOT wrong and is deliberately left alone: it bounds an O(L^2)
+# allocation, and len(standard) is now what pydssp actually allocates for,
+# where before it UNDER-counted. What a chain in that band loses is a map that
+# was junction-corrupted at every MSE anyway, so the trade is "corrupted
+# pydssp" for "phi/psi", not "correct" for "nothing". Narrow band, honest
+# failure, ss_method still truthful. Recorded so the next reader does not
+# rediscover it as a bug.
+_MODIFIED_AA = frozenset({"MSE", "SEC"})
+
+
+def _is_pydssp_polymer_residue(residue) -> bool:
+    """True when this residue is part of the backbone pydssp should read.
+
+    Accepts ordinary amino acids and the modified amino acids in
+    _MODIFIED_AA. The modified ones are matched on resname ALONE,
+    without consulting the hetflag: they are normally HETATM, but structures
+    that have been through a design or refinement pipeline often re-emit them
+    as ATOM, and both spellings mean the same chemistry. Water and every
+    other heteroatom stay out.
+    """
+    resname = residue.resname.strip()
+    if resname in _MODIFIED_AA:
+        return True
+    return residue.get_id()[0] == " " and resname in STANDARD_AA
+
 
 def _try_ss(assign_fn, model, name: str, chain_id=None) -> dict:
     """Run one SS assigner, returning {} instead of raising.
@@ -455,10 +661,11 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
     name a branch that never labelled those residues.
 
     Gaps survive that rule, because a gap is not a skip. A residue the file
-    never resolved, or one excluded as non-standard (MSE, any HETATM), never
-    enters the standard-residue count either, so the guard above sees no
-    mismatch and the coordinate array simply closes over it -- leaving two
-    sequence-distant residues adjacent. Two consequences, neither clean:
+    never resolved, or one excluded as non-standard (any HETATM outside
+    _MODIFIED_AA), never enters the standard-residue count either, so
+    the guard above sees no mismatch and the coordinate array simply closes
+    over it -- leaving two sequence-distant residues adjacent. Two
+    consequences, neither clean:
 
       * the pseudo-H is derived from the C(i)->N(i+1) vector, so it is wrong
         for the single residue following each gap;
@@ -471,23 +678,37 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
     That is not an argument: the H-bond energy is computed from real
     coordinates and can be satisfied across a closed gap.
 
-    Two of the 30 accuracy chains are gapped -- 1ema:A with 5 and 1igy:B with
-    26 -- so the measured 97.9% agreement does include this cost, and the
-    worst case still labelled 34 of its 35 patches correctly. But 2 chains is
-    a thin sample; a structure with many short gaps could do worse.
+    Two of the 30 accuracy chains are gapped -- 1ema:A and 1igy:B -- so the
+    measured 97.9% agreement does include this cost, and the worst case still
+    labelled 34 of its 35 patches correctly. But 2 chains is a thin sample; a
+    structure with many short gaps could do worse.
+
+    THAT SAMPLE IS THINNER THAN IT WAS ONCE RECORDED. This docstring used to
+    say "1ema:A with 5" gaps. Four of those five were the excluded MSE at 78,
+    88, 153 and 218; only the break between 64 and 68 is genuine unresolved
+    density. So 1ema:A contributes ONE real gap, not five, and 1igy:B's 26
+    (checked: that chain contains no MSE, so all 26 are real) carries almost
+    the entire gap sample on its own.
+
+    SELENOMETHIONINE USED TO BE ONE OF THESE JUNCTIONS and is not any more --
+    see _MODIFIED_AA. It was the common case rather than an exotic one,
+    because SeMet phasing is routine, and it was invisible: MSE was in neither
+    the standard-residue count nor the labelled set, so the all-or-nothing
+    guard saw no mismatch and the run still reported ss_method="pydssp".
 
     Args:
         model: Biopython Model object (structure[0]).
 
     Returns:
         Dict mapping (chain_id, residue.get_id()) to one of "helix", "strand",
-        or "loop" -- covering EVERY standard residue of the chains it was
-        asked for, or else empty. It is deliberately all-or-nothing:
+        or "loop" -- covering EVERY residue of the chains it was asked for
+        that _is_pydssp_polymer_residue accepts (the canonical 20, plus
+        _MODIFIED_AA), or else empty. It is deliberately all-or-nothing:
         assign_dssp falls through only on an empty map, so a partial result
         would be reported as ss_method="pydssp" while the unlabelled residues
-        silently read as "loop". Returns {} if a chain IN SCOPE has a standard
-        residue missing a backbone atom, is shorter than _PYDSSP_MIN_RESIDUES,
-        or is longer than _PYDSSP_MAX_RESIDUES.
+        silently read as "loop". Returns {} if a chain IN SCOPE has one of
+        those residues missing a backbone atom, is shorter than
+        _PYDSSP_MIN_RESIDUES, or is longer than _PYDSSP_MAX_RESIDUES.
 
         Scope is the point. With chain_id set, an unreadable NEIGHBOUR chain
         is irrelevant -- it is never looked at, so it can neither sink the
@@ -500,7 +721,7 @@ def _assign_ss_by_pydssp(model, chain_id=None) -> dict:
             continue
         standard, residues, coords = [], [], []
         for residue in chain.get_residues():
-            if residue.get_id()[0] != " " or residue.resname not in STANDARD_AA:
+            if not _is_pydssp_polymer_residue(residue):
                 continue
             standard.append(residue)
             if not all(atom in residue for atom in _PYDSSP_BACKBONE):

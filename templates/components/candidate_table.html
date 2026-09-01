@@ -441,10 +441,23 @@
              concrete "what counts as good?" answer; the metric_glossary
              entry remains the academic citation. Stack both into one
              tooltip so the user gets the actionable line first. #}
+          {# ...but NOT the glossary's Range when THIS tool's legend
+             deliberately carries no bar. metric_glossary is keyed by METRIC
+             and is global; a legend that omits ``good`` is a tool saying its
+             number is not on that shared scale. Stacking both unconditionally
+             put "so 0.7 does not apply" and "Range: > 0.75 strong; > 0.65
+             acceptable" in ONE boltzgen tooltip -- the exact false bar the
+             legend had just been cleaned of, walking back in four words later
+             from the global entry, on the surface that shows the numbers it
+             judges. Definition and citation still stack: those are true of the
+             metric wherever it appears. #}
+          {% set _tool_states_a_bar = (not leg) or ('good' in leg) %}
           {% set leg_text = legend_text(leg) if leg else '' %}
           {% set tooltip_text = leg_text %}
           {% if g.get('definition') %}
-            {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ ' Range: ' ~ g.good_range ~ ('. ' ~ g.citation if g.citation else '') %}
+            {% set _range = (' Range: ' ~ g.good_range) if (_tool_states_a_bar and g.good_range) else '' %}
+            {% set _cite = (('. ' if _range else ' ') ~ g.citation) if g.citation else '' %}
+            {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ _range ~ _cite %}
           {% endif %}
           <th data-col="{{ col }}" class="sortable-col"
               {% if leg %}title="{{ leg_text }}"{% endif %}>

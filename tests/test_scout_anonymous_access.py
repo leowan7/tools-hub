@@ -694,8 +694,89 @@ class TestRateLimitKeyCannotBeChosenByTheCaller:
             statuses.append(self._intake(client, f"{pad}, {self.REAL}").status_code)
         assert 429 in statuses, f"padded XFF defeated the limiter: {statuses}"
 
+    def test_the_production_header_shape_is_bounded(self, client):
+        """END TO END on the shape production actually sends.
+
+        The four unit tests on _client_ip() all passed while the limiter was
+        inert in production, which is the whole lesson of this incident: the
+        unit-level reasoning was right and the deployed behaviour differed.
+        This drives the real thing through the real route.
+
+        Railway sends ``X-Real-Ip: <client>`` plus
+        ``X-Forwarded-For: <client>, <internal>`` where the INTERNAL hop
+        rotates. Before the fix the limiter keyed on that rotating hop and
+        never refused; it must now key on the constant client address and wall
+        at the limit.
+        """
+        statuses = []
+        for i in range(scout_routes.ANON_INTAKE_LIMIT + 5):
+            statuses.append(
+                client.post(
+                    "/scout/upload",
+                    data={},
+                    content_type="multipart/form-data",
+                    headers={
+                        "X-Real-Ip": self.REAL,
+                        # The rotating internal hop, as measured 2026-08-24.
+                        "X-Forwarded-For": f"{self.REAL}, 152.233.30.{100 + i % 3}",
+                    },
+                ).status_code
+            )
+        assert 429 in statuses, f"the production shape defeated the limiter: {statuses}"
+        assert statuses.index(429) >= scout_routes.ANON_INTAKE_LIMIT
+
+    def test_a_rotating_x_real_ip_DOES_dodge_the_limit_and_that_is_the_tradeoff(
+        self, client
+    ):
+        """The cost of preferring X-Real-Ip, pinned so it is never a surprise.
+
+        Trusting an edge-written header means trusting WHOEVER writes it. On
+        Railway that is safe and measured: the edge overwrites X-Real-Ip, so a
+        caller cannot set it (probe, 2026-08-24, forged value discarded). Reach
+        this app WITHOUT traversing that edge -- direct origin, or behind a
+        proxy that normalizes X-Forwarded-For but does not set X-Real-Ip, which
+        is nginx's default -- and a caller picks its own limiter key.
+
+        The old hop arithmetic did not have this property, so this is a real
+        narrowing and not a free win. It is accepted because the alternative
+        (TRUSTED_PROXY_HOPS=2) has the same dependency on the edge overwriting
+        AND fails open silently if the edge ever adds a second internal hop,
+        whereas this fails to a wrong-but-stable key.
+
+        TRUSTED_PROXY_HOPS != 1 turns the preference off entirely, which is the
+        lever for any deployment where the edge is not Railway's.
+        """
+        statuses = []
+        for i in range(scout_routes.ANON_INTAKE_LIMIT + 5):
+            statuses.append(
+                client.post(
+                    "/scout/upload",
+                    data={},
+                    content_type="multipart/form-data",
+                    headers={
+                        "X-Real-Ip": f"10.9.9.{i}",
+                        "X-Forwarded-For": f"10.9.9.{i}, {self.REAL}",
+                    },
+                ).status_code
+            )
+        assert 429 not in statuses, (
+            "a rotating X-Real-Ip was expected to dodge the limiter here; if it "
+            "no longer does, the preference changed and this trade-off note is stale"
+        )
+
     def test_analyze_bucket_resists_the_same_attack(self, client):
-        """QC broke /analyze the same way, so pin it too."""
+        """QC broke /analyze the same way, so pin it too.
+
+        SCOPE, measured 2026-08-24: this asserts only that SOME tier refuses.
+        It cannot reach the per-IP tier, because /analyze carries
+        ANON_ANALYZE_SESSION_LIMIT=8 which is BELOW ANON_ANALYZE_LIMIT=10 and
+        every request here shares one session, so the session tier always bites
+        first. Proved hollow for the per-IP tier by mutation: with _client_ip()
+        returning a fresh UUID per call -- the per-IP limiter maximally
+        defeated -- this test still passes. The per-IP proof for the shared
+        limiter lives in test_the_production_header_shape_is_bounded above,
+        on /scout/upload, which has no session tier to mask it.
+        """
         statuses = [
             client.post(
                 "/scout/analyze",
@@ -1023,3 +1104,30 @@ class TestAnalyzeParsesInsideTheBound:
         index_path.unlink()
         from_parse = scout_routes._chain_residue_count(job_dir, pdb_path, "A")
         assert from_parse == index["A"]
+
+
+
+def test_the_two_anon_ceilings_must_move_together() -> None:
+    """Tripwire on the INTAKE/ANALYZE pair only. It does NOT guard the Phase 3 coupling.
+
+    What it guards: the ceiling decision's section 5 argues that which ceiling
+    binds depends on the SHAPE of a lab, not its size -- many researchers with
+    one structure each meet intake; few researchers with many chains each meet
+    analyze. Moving one and not the other leaves half of them refused exactly
+    where they are today. Equality is a conservative proxy for that, not the
+    principle; if a coupled change wants unequal constants, the doc changes
+    first and this test with it.
+
+    What it does NOT guard, so a green run is not mistaken for cover: raising
+    BOTH constants to 20 passes cleanly, and so does Phase 3 landing alone.
+    Nothing executable can see "Phase 3 landed", so the coupling lives in a
+    comment on ANON_ANALYZE_LIMIT and in the doc. That is a known gap.
+    """
+    assert scout_routes.ANON_INTAKE_LIMIT == scout_routes.ANON_ANALYZE_LIMIT, (
+        "The anonymous intake and analyze ceilings have diverged "
+        f"({scout_routes.ANON_INTAKE_LIMIT} vs {scout_routes.ANON_ANALYZE_LIMIT}). "
+        "Which one binds depends on the shape of the lab, so moving one alone "
+        "buys nothing for half of them -- see section 5 of "
+        "docs/DECISION-2026-08-22-per-ip-ceiling.md. If the divergence is "
+        "intended, update that doc and this test together."
+    )

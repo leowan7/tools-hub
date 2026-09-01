@@ -171,10 +171,15 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 adapter = ToolAdapter(
     slug="boltzgen",
     label="BoltzGen",
+    # NOT "each refolded and scored against that target": the refold folds the
+    # binder on its own, so it scores the design against ITSELF, and the
+    # against-the-target number comes from the generator instead. Saying both
+    # in one clause is what made a run of ordinary scores read as a failure.
     blurb=(
         "Upload your target, choose the format you want — mini-protein, "
-        "nanobody, antibody or peptide — and get back candidates each "
-        "refolded and scored against that target. Handles sugars and "
+        "nanobody, antibody or peptide — and get back candidates, each "
+        "refolded from its sequence to check the fold holds and ranked on "
+        "its predicted interface with your target. Handles sugars and "
         "modified residues on the target natively."
     ),
     presets=(

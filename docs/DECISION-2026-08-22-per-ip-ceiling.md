@@ -3,9 +3,17 @@
 **Reviewed at:** `d3c60c8` (= origin/main at the time of writing).
 **Measured first-hand**, not quoted: see "Evidence" below.
 
-Two documents disagree about what must be true before `ANON_ANALYZE_LIMIT`
-can be raised. This resolves the disagreement, and then reports a third
-finding that makes the disagreement largely moot.
+> **RE-TAKEN 2026-08-24 — read ["Re-taken"](#re-taken-2026-08-24) at the bottom
+> before acting on anything here.** Unknown 2 is ANSWERED and the per-IP key is
+> FIXED, so this ceiling binds for the first time.
+>
+> **§4's "do not raise the ceiling ALONE" stands.** What the re-take adds is
+> that raising both constants *together with Phase 3* is attacker-neutral and
+> removes a lab regression — so if Phase 3 is built, they should move with it.
+>
+> **Retracted below, marked inline:** all of §4a's reason 2, and the second half
+> of §4a's premise. **Model-dependent:** §4's strike of lever 1
+> (`WEB_CONCURRENCY`) holds only while counters are per-worker.
 
 ---
 
@@ -206,6 +214,10 @@ hearing rather than a footnote:
 > hundred percent of the pain. Raising it costs nothing that is not already
 > lost, and helps every lab immediately.
 
+**Half of that premise is RETRACTED 2026-08-24.** "Zero protection" was
+right. "One hundred percent of the pain" was wrong: the tier refused
+nobody, honest users included, so it delivered no pain either. See R5.
+
 **Its premise holds in at most one of three cases** — see the correction under
 the measurement above. If Railway's edge appends or overwrites, the rotating
 attacker is bounded at 10 like everyone else and this argument has no factual
@@ -213,14 +225,17 @@ basis at all. It is worth stating anyway, because if the edge *does* forward
 verbatim then it is correct and section 4's CPU arithmetic is conditional on a
 ceiling that does not bind.
 
-Even granting its premise, it is rejected, for three reasons:
+Even granting its premise, it is rejected, for three reasons — **of which
+only 1 and 3 still stand; reason 2 is retracted below (2026-08-24)**:
 
 1. **The same reasoning removes the limiter entirely**, which is plainly
    wrong. Any argument whose logic extends to "so delete it" has proved too
    much.
-2. **Not every attacker forges the header.** The naive ones do not, and the
-   ceiling stops them. "Zero protection" is measured against the competent
-   attacker only.
+2. ~~**Not every attacker forges the header.** The naive ones do not, and
+   the ceiling stops them. "Zero protection" is measured against the
+   competent attacker only.~~ **RETRACTED 2026-08-24, all three sentences.**
+   The tier bucketed nobody, so it stopped neither the naive nor the
+   competent. See R5.
 3. **Timing.** Phase 2 makes the ceiling real. Raising the number *before*
    Phase 2 and landing Phase 2 *after* means shipping a genuine hole and then
    switching it on. Do not loosen a control in the same window in which you
@@ -246,8 +261,9 @@ which one binds depends on the shape of the lab, not on its size:
 So raising only `ANON_ANALYZE_LIMIT` serves the second lab and leaves the
 first refused at exactly the same point as today. The two constants have to
 move together, or the change buys nothing for half the users it targets. The
-`10 == 10` balance is documented in `scout/routes.py` as ACCIDENTAL and
-nothing asserts it.
+`10 == 10` balance is documented in `scout/routes.py` as ACCIDENTAL. It
+was unasserted until 2026-08-24; `test_the_two_anon_ceilings_must_move_together`
+now pins it as a conservative proxy for this section.
 
 ---
 
@@ -300,6 +316,20 @@ argument in miniature: a refusal count without a reason label is not evidence.
 2. **Whether Railway's edge appends, overwrites, or forwards
    `X-Forwarded-For` verbatim.** Phase 2. Unchanged, still unverified, still
    the hard gate. See the next section — this one is actionable now.
+   **ANSWERED 2026-08-24. It is the OVERWRITE case below** — the edge discards
+   everything the caller sends — **with a wrinkle the table does not have: it
+   then appends its own internal hop, and that hop rotates.** So one-hop
+   resolution keyed on a rotating edge address and the per-IP tier never
+   refused anyone. The ceiling this document is about did not operate at all.
+   The conclusion here stands; the CPU-budget ground does not, because it was
+   protecting a control that does not run. **A fix exists and is landing** —
+   keying on `X-Real-Ip` — after which this ceiling binds for the FIRST time
+   and the "six researchers behind one NAT" case becomes reachable rather than
+   theoretical. Re-read this decision then. See
+   [`MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md`](MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md).
+   **SUPERSEDED 2026-08-24, after the text above was written: the fix LANDED
+   (`#189`, `237fbf3`) and was production-verified, so the CPU-budget ground
+   now stands and this is no longer the gate. See R1.**
 3. **Real refusal-by-reason rates in production.** That is Phase 6, and it is
    why Phase 6 goes first. Every number above is a simulation.
 
@@ -348,3 +378,143 @@ does, the forged value is the key and the edge is not overwriting it. If it
 does not, the edge is replacing the header and the ceiling is real.
 
 Run that before writing a line of Phase 2.
+
+---
+
+## Re-taken 2026-08-24
+
+Fourth version. Three independent QC rounds returned DO NOT SHIP on the first
+three, and **the adversarial figure below flipped twice** — so the fact it rests
+on is now pinned by a test rather than argued again
+(`tests/test_scout_anon_charge_pairing.py::TestTheChargeCannotBeEvaded::`
+`test_analyze_alone_buys_a_WHOLE_pipeline_run_per_charge`). Sub-sections are
+**R1-R6**; a bare "§4" means the original.
+
+### R1. The fix is real
+
+`#189`, main `237fbf3`. Two instruments: the wall (26 anonymous
+`POST /scout/upload`, 20 admitted, refused at 21 with `reason="rate_limited"`)
+and the key's own source (`tools_hub_client_ip_source_total` read `x_real_ip`
+100% against prod at `05bce72`, **n = 3**).
+
+**Not a controlled A/B:** the pre-fix probe carried a constant forged
+`X-Forwarded-For`; the post-fix one carried none.
+
+### R2. The wall is 20 CHARGES; a LAB gets 10-20 analyses, an ATTACKER gets 20
+
+`_FOLLOWUP` — the credit making a paired `/scout/progress` + `/scout/analyze`
+cost one charge instead of two — is a process-local dict like the counters, so
+a paired analysis costs **1 charge on one worker, 2 when it splits.** The split
+ratio is **UNMEASURED** and no mechanism is claimed for it. (An earlier draft
+argued the SSE stream pins a worker and biases the split; that is false —
+`templates/scout/index.html:319` closes the stream before `/analyze` is issued.)
+
+**An attacker is not exposed to that, and this is the load-bearing fact.**
+`POST /scout/analyze` runs `run_pipeline` ITSELF when the chain has no
+`results.csv` (`scout/routes.py:1064`). So one intake charge buys a job, and
+`/analyze` alternating chains yields **one full pipeline run per charge, with no
+pair ever opened and no credit needed.** Same ~15 CPU-s per charge as the
+credit-working case. Pinned by the test named above, which fails if `/analyze`
+ever gains a cache: same-chain calls short-circuit to 1 run, alternating give 4.
+
+So the **adversarial** figure is independent of how paired requests land; the
+**lab** figure is not. Two prior drafts got this backwards in opposite
+directions.
+
+### R3. The numbers
+
+Budget 1,200 CPU-s per window (2 workers x 600 s); adversarial analysis ~15
+CPU-s. Both from §4, both inheriting unknown 1.
+
+| | wall (charges) | lab analyses, >=2 researchers | adversarial addresses |
+|---|---|---|---|
+| **today** (per-worker counters, `C = 10`) | 20 | 10 - 20 | **4** |
+| **Phase 3 alone** (shared, `C = 10`) | 10 | exactly 10 | **8** |
+| **Phase 3 + both constants at 20** | 20 | exactly 20 | **4** |
+| constants at 20 alone | 40 | 20 - 40 | **2** |
+
+The adversarial column is §4's own `40/C` (per-worker) and `40W/C` (shared) —
+`1200 / (wall x 15)` either way.
+
+**A LONE researcher is bound by the SESSION tier, not this one**, and the column
+above does not describe them: `ANON_ANALYZE_SESSION_LIMIT = 8` is charged FIRST
+and returns without touching the per-IP bucket, so one researcher gets **8-16
+analyses today and exactly 8 after Phase 3.**
+
+### R4. Recommendation
+
+**§4 stands: do not raise the constants on their own.** That is the 40-charge
+row, and it drops saturation to two addresses.
+
+**If Phase 3 is built, raise both constants to 20 in the same change.** Against
+today that is:
+
+- **attacker-neutral** — 4 addresses before and after;
+- **no lab regression** — 10-20 analyses becomes exactly 20;
+- **criterion 5 met** — *"A deploy mid-window does not reset an attacker's
+  quota"*, which today it does.
+
+**Phase 3 alone is the tightening option**, not a free win: it takes a lab from
+10-20 analyses to exactly 10 (a lone researcher 8-16 to 8) to buy saturation
+4 -> 8 against an attacker nobody has observed. It is defensible if the goal is
+maximum safety; it is not what this document's stated goal — *"a per-IP ceiling
+that does not lock out a lab"* — asks for.
+
+**Two costs that are NOT in the table**, so "strictly better" is not claimed:
+
+1. **A shared store sits on the request path** of every anonymous metered
+   request — a network round-trip, plus a new dependency whose failure mode
+   must be chosen deliberately (fail-open = no limiting; fail-closed =
+   anonymous Scout is down). `_MAX_KEYS` / `_EVICT_BATCH` also become a
+   fleet-shared sprayable resource rather than a per-process one.
+2. **Phase 3 destroys §4's consolation lever.** §4 calls `WEB_CONCURRENCY` *"the
+   only single knob that lifts the intake and analyze walls TOGETHER"*. Under
+   shared counters `W` no longer multiplies the walls, so that knob is gone and
+   the constants become the only remaining lever for a lab — which is why they
+   must move in the same change rather than later.
+
+**Nothing here is urgent.** Organic anonymous Scout traffic measured **zero**:
+the denominator read 122 at 06:20 and still 122 at 12:20 six hours later, and
+two earlier readings (3, then 28) were separate container lifetimes. Every one
+was our own probes. No lab has hit this wall because no lab has arrived, and
+the same fact means no attacker has been observed either — the zero cuts both
+ways and is not evidence for acting in either direction.
+
+**Still not evaluated**, named so silence is not read as rejection: LOWERING the
+constant (§4 calls dropping it to 6 a one-line lever restoring ~180 CPU-s), and
+raising `WEB_CONCURRENCY` under today's per-worker counters.
+
+### R5. Retractions
+
+From §§1-5, marked inline where they sit:
+
+- **§4a reason 2, all three sentences.** The ceiling stopped nobody, naive or
+  competent.
+- **§4a's premise, second half.** "One hundred percent of the pain" — the tier
+  refused nobody, so there was no pain either. "Zero protection" stands.
+- **§4's lever-1 strike is model-dependent**, not wrong: it holds only while
+  counters are per-worker. Flagged in the top block; §4 itself is unmarked.
+- **§4a reason 3 stands, but its mechanism was misattributed** — it named a
+  forged-header bypass; the cause was a rotating internal hop.
+
+From this re-take's own earlier drafts: the ceiling was **not** unbounded before
+`#189` (the key rotated over a pool of ~3 observed addresses, so ~60 charges
+rather than none; pool size never measured); there is **no** ragged-refusal band
+starting near request 12; the SSE split-bias mechanism is false; and the
+adversarial figure is **not** a `4 - 6.7` band — that draft assumed an attacker
+falls back to `/progress`-only at ~9 CPU-s per charge, which R2 disproves.
+
+### R6. Unknowns
+
+1. **Unknown 1 is the binding gate.** The ~15 CPU-s figure has not been
+   re-measured since `#180`. Every number in R3 inherits it and is **pessimistic
+   by an unknown margin — in the direction that would permit a raise.** Measure
+   in the container; `freesasa` is absent on the Windows box.
+2. **The charge/analysis split ratio**, which R3's lab column hangs on. There is
+   no charge counter to read it from. Drive paired analyses from one address
+   until `refusals_total{reason="rate_limited"}` moves and count completed
+   analyses: 10 means always-split, 20 always-paired. ~300 CPU-s of real
+   production compute.
+3. **Unknown 3 shipped but still cannot be read.** Zero organic traffic and a
+   50-sample floor mean the Phase 6 alarm normally SKIPs. **This decision is
+   still taken on simulation**, as the original was.

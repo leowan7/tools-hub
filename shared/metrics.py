@@ -65,6 +65,7 @@ Usage
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
 import time
@@ -206,6 +207,26 @@ SCOUT_REFUSALS = Counter(
     ["reason", "route"],
 )
 
+CLIENT_IP_SOURCE = Counter(
+    "tools_hub_client_ip_source_total",
+    "Which input produced the anonymous rate-limit key, per resolution.",
+    ["source"],  # x_real_ip | x_real_ip_rejected | forwarded_chain | peer
+)
+# Exists because the failure it detects is SILENT and total. The limiter keys
+# on _client_ip(); on Railway that resolves from X-Real-Ip. If that header ever
+# stops arriving -- an edge config change, a Railway rewrite -- resolution falls
+# through to the X-Forwarded-For hop arithmetic, which on this topology keys on
+# a ROTATING internal hop, and the per-IP tier goes inert exactly as it was
+# before #189. Nothing about that is visible from outside: no error, no refusal,
+# no latency change, just a control that quietly stops controlling.
+#
+# Deliberately a COUNTER and not an alarm. In production "x_real_ip" should be
+# essentially 100%; "forwarded_chain" or "peer" climbing is the signal. It is
+# printed by scripts/check_refusal_rate.py as reported-only, so the 6-hourly
+# smoke surfaces it without being able to fail on it -- a new alarm here could
+# redden main's suite and block deploys (see ALERTING.md, "A variable change is
+# not deploying").
+
 IDEMPOTENCY_OUTCOMES = Counter(
     "tools_hub_idempotency_outcomes_total",
     "Outcome of the idempotency middleware per request.",
@@ -250,6 +271,22 @@ def _metrics_token_ok() -> bool:
         return False
 
 
+def _note_ip_source(source: str) -> None:
+    """Count one key resolution. MUST NOT raise -- see the callers.
+
+    Every other counter in this file is wrapped this way ("metrics must never
+    break app"), and this one needs it more than most: it fires inside
+    ``_client_ip()``, which decides whether an anonymous caller is refused. An
+    unguarded increment turns a full metrics disk into a 500 on every anonymous
+    Scout route. Measured: OSError(28) out of ``labels()`` propagated straight
+    through ``_client_ip`` before this wrapper existed.
+    """
+    try:
+        CLIENT_IP_SOURCE.labels(source=source).inc()
+    except Exception:  # pragma: no cover - metrics must never break app
+        logger.debug("client_ip_source increment failed", exc_info=True)
+
+
 def _trusted_proxy_hops() -> int:
     """How many trailing X-Forwarded-For entries were written by OUR proxies.
 
@@ -261,6 +298,27 @@ def _trusted_proxy_hops() -> int:
         return max(0, int(os.environ.get("TRUSTED_PROXY_HOPS", "") or 1))
     except (TypeError, ValueError):
         return 1
+
+
+# Exactly the headers /debug/client-ip may echo. An ALLOWLIST, deliberately,
+# not a prefix match. "x-forwarded" as a prefix also matches
+# X-Forwarded-Client-Cert (Envoy/Istio: the full client PEM plus a SPIFFE
+# identity URI) and oauth2-proxy's X-Forwarded-Access-Token / -User / -Email /
+# -Groups, which carry live credentials and identity assertions. Railway emits
+# none of those today, so the prefix form was latent rather than leaking -- but
+# it becomes live the moment an ingress, service mesh or oauth2-proxy lands in
+# front, and the endpoint's own response is printed into a PUBLIC Actions log.
+# An allowlist fails safe as the topology changes; a prefix match fails open.
+ECHOABLE_FORWARDING_HEADERS = frozenset({
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-port",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+    "true-client-ip",
+})
 
 
 def _client_ip() -> str:
@@ -275,22 +333,81 @@ def _client_ip() -> str:
     its own identity by sending ``X-Forwarded-For: <anything>``, which
     nullifies every per-IP control keyed off this function.
 
-    With the default one trusted hop, a single-value header returns that
-    value whether the edge *appends* to the header or *overwrites* it, so
-    this is correct under both semantics without needing to know which
-    Railway does. Assumes no untrusted hop sits between the client and the
-    edge; ``TRUSTED_PROXY_HOPS`` is the knob if that stops being true.
+    At the default one hop, prefers ``X-Real-Ip``, which Railway's edge sets
+    from the socket it actually saw and rewrites on every request — measured,
+    not assumed. The ``X-Forwarded-For`` hop arithmetic below is the fallback
+    whenever that header is absent or is not a bare IP address, and is
+    unchanged. Setting ``TRUSTED_PROXY_HOPS`` to anything but 1 selects the
+    hop arithmetic outright, so the knob still means what its docstring says.
+
+    With one trusted hop, a single-value header returns that value whether
+    the edge *appends* or *overwrites*, so the fallback is correct under
+    both semantics. ``TRUSTED_PROXY_HOPS`` is the knob if an untrusted hop
+    ever sits between the client and the edge.
 
     Falls back to the socket peer when the header is absent or unusable.
     """
     hops = _trusted_proxy_hops()
     if hops:
+        # X-Real-Ip FIRST, because it is the only value here measured to be
+        # both edge-written and unforgeable. On 2026-08-24 a live probe sent
+        # forged X-Real-Ip, X-Forwarded-For, X-Forwarded-Host and
+        # X-Forwarded-Proto: Railway's edge discarded every one and rewrote
+        # X-Forwarded-For as `<real client>, <internal proxy>` with
+        # X-Real-Ip set to the same real client.
+        #
+        # This is what makes the per-IP limiter work at all. The trailing
+        # internal hop ROTATES across a pool (.101/.102/.104 within one probe
+        # run), so counting one hop from the right keyed on a different value
+        # nearly every request and the tier never refused anyone. See
+        # docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+        #
+        # Preferred over raising TRUSTED_PROXY_HOPS to 2, and the honest
+        # reason is NARROW: X-Real-Ip survives a change in the NUMBER of
+        # internal hops, which a hop index does not -- add a second internal
+        # hop and hops=2 silently starts reading the wrong entry.
+        #
+        # It is NOT that this "cannot fail open". Both options depend on the
+        # header they read continuing to arrive. If X-Real-Ip stops being set,
+        # control falls through to the hop arithmetic below, keys on the
+        # rotating hop again, and the tier goes silently inert exactly as it
+        # was before this fix. NOTHING ALARMS ON THAT. An earlier version of
+        # this comment claimed the asymmetry ran the other way; it does not.
+        # Gated on hops because TRUSTED_PROXY_HOPS=0 means "no proxy in front,
+        # trust only the socket peer", and then no header is trustworthy.
+        # hops == 1 ONLY. Any other value means the operator is telling us the
+        # topology is not the measured one -- another proxy in front, per
+        # _trusted_proxy_hops' own docstring -- and then X-Real-Ip is whatever
+        # THAT proxy's egress looked like to Railway, which would collapse
+        # every visitor behind it onto one key. The knob has to keep working.
+        #
+        # Validated as a bare IP, not merely non-blank. Duplicate X-Real-Ip
+        # headers MERGE into one comma-joined WSGI value, so "a single header
+        # has no index to shift" is only true once a comma-joined value is
+        # rejected. ip_address() rejects that and the rest of the junk class
+        # in one line: hostnames, host:port, empty, whitespace, 2000-char
+        # strings. Anything it rejects falls through to the chain below rather
+        # than becoming a limiter key verbatim.
+        real_ip = request.headers.get("X-Real-Ip", "").strip()
+        if real_ip and hops == 1:
+            try:
+                ipaddress.ip_address(real_ip)
+            except ValueError:
+                # Present but unusable. Distinct from "absent" because an
+                # operator acts on it differently: the edge is still
+                # setting the header, something is mangling its value.
+                _note_ip_source("x_real_ip_rejected")
+            else:
+                _note_ip_source("x_real_ip")
+                return real_ip
         chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",")]
         chain = [p for p in chain if p]
         if chain:
             # Clamped so a chain SHORTER than the configured hop count yields
             # the leftmost entry rather than raising.
+            _note_ip_source("forwarded_chain")
             return chain[max(0, len(chain) - hops)]
+    _note_ip_source("peer")
     return request.remote_addr or ""
 
 
@@ -374,6 +491,43 @@ def register_metrics(flask_app: Flask) -> None:
         if not _metrics_token_ok():
             return Response("forbidden", status=403, content_type="text/plain")
         return _render_metrics()
+
+    @flask_app.route("/debug/client-ip", methods=["GET"])
+    def client_ip_echo() -> Any:
+        """Echo what this process actually receives about the caller's address.
+
+        The anonymous per-IP limiter keys on ``_client_ip()``. Production
+        measurement on 2026-08-24 showed that key varying between identical
+        requests, so the tier never refused anyone (FIXED the same day by
+        preferring ``X-Real-Ip``; this endpoint is what established why) -- but nothing in the app
+        could say what it was resolving to or why, because the resolution is
+        pure inference from headers we never logged. See
+        docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md.
+
+        Token-gated with the same bearer as ``/metrics``, deliberately. The
+        forwarding chain and the edge's own address are infrastructure detail,
+        and handing an anonymous caller the exact shape of the header the
+        limiter trusts is a gift to anyone trying to forge it.
+
+        Echoes only ``ECHOABLE_FORWARDING_HEADERS``, an exact allowlist. See
+        that constant for why this is not a prefix match, and note that the
+        response is republished into a PUBLIC GitHub Actions log by
+        .github/workflows/client-ip-probe.yml, so the token gate is not the
+        last line of defence here -- the allowlist is.
+        """
+        if not _metrics_token_ok():
+            return Response("forbidden", status=403, content_type="text/plain")
+        forwarding = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() in ECHOABLE_FORWARDING_HEADERS
+        }
+        return jsonify({
+            "client_ip": _client_ip(),
+            "remote_addr": request.remote_addr or "",
+            "trusted_proxy_hops": _trusted_proxy_hops(),
+            "forwarding_headers": forwarding,
+        })
 
 
 # ---------------------------------------------------------------------------

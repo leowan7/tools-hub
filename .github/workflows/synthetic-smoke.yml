@@ -150,4 +150,27 @@ jobs:
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 0
           fi
-          python scripts/check_refusal_rate.py
+          # Run it, keep its exit code, and surface the key-source NOTE on the
+          # run PAGE rather than only in this log. A passing job's log is not
+          # read, which is how /metrics sat with no consumer for months; the
+          # step summary is the same trick the token-skip above uses. The exit
+          # code is preserved exactly, so this cannot turn a pass into a fail
+          # or the reverse.
+          set +e
+          out="$(python scripts/check_refusal_rate.py)"
+          rc=$?
+          set -e
+          echo "${out}"
+          if printf '%s' "${out}" | grep -q "NOTE:"; then
+            {
+              echo "### Epitope Scout rate-limit key source changed"
+              echo ""
+              echo "The per-IP limiter is no longer keying on X-Real-Ip. Read the"
+              echo "arrows below for which failure this is -- they are opposites."
+              echo ""
+              echo '```'
+              printf '%s' "${out}" | grep -A6 "NOTE:"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+          exit $rc

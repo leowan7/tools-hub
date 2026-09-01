@@ -1,0 +1,102 @@
+name: Client IP probe (diagnostic)
+
+# A one-shot diagnostic, NOT a monitor. It answers the question left open by
+# docs/MEASUREMENT-2026-08-24-per-ip-key-is-not-stable.md: the anonymous per-IP
+# limiter keys on _client_ip(), production showed that key VARYING between
+# identical requests, and nothing in the app could say what it was resolving to.
+# This reads /debug/client-ip, which reports exactly that.
+#
+# Two deliberate design choices:
+#
+#   * workflow_dispatch ONLY, no cron. A scheduled production probe attaches a
+#     check run to main's HEAD every time it runs, and a failing one reddens the
+#     suite -- which blocks same-commit Railway deploys. See "A variable change
+#     is not deploying" in ALERTING.md. A diagnostic must not be able to do that.
+#
+#   * NO PATH IN THIS SCRIPT EXITS NON-ZERO, including an unreachable site or a
+#     missing token. Verified under GitHub's default `bash -e {0}` for an unset
+#     token, connection refused, DNS failure and an unset URL. That is a claim
+#     about the script, NOT a guarantee about the job: a timeout-minutes
+#     cancellation or a runner infrastructure error can still conclude
+#     `failure`. Headroom is deliberate (15 curls x --max-time 20 against a
+#     600 s budget, no checkout step). It is read by a human opening the run, not by
+#     an alert. If you ever make it assert something, give it its own branch.
+#
+# The token never leaves Actions: the runner holds the METRICS_TOKEN secret and
+# prints only the endpoint's JSON. That JSON is limited to an exact allowlist of
+# forwarding headers (shared.metrics.ECHOABLE_FORWARDING_HEADERS, guarded by
+# tests/test_metrics.py) -- which matters because THIS REPO IS PUBLIC, so an
+# Actions log is world-readable and the endpoint's token gate protects nothing
+# once the response is printed here.
+#
+# Run this only AFTER the endpoint is live in production -- it ships with the
+# deploy that adds /debug/client-ip, so a run before that deploy just prints
+# 404s.
+#
+# WHAT THIS CANNOT DISTINGUISH, and it matters for how you read a "stable"
+# result. These requests come from ONE GitHub runner, whose network path to the
+# edge is nothing like a real anonymous visitor's, and the app runs 2 gunicorn
+# workers. If the key varies PER WORKER rather than per request, a short burst
+# down one path can land on one worker and report a stable client_ip -- which
+# would look like a refutation of the measurement doc when it is only a
+# sampling artifact. A stable result here is therefore NOT evidence the per-IP
+# key is stable; only a VARYING result is conclusive on its own. To settle a
+# stable-looking result, log _client_ip() at the limiter call site and read
+# real traffic instead.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: What does Railway's edge actually send us
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
+      URL: https://tools.ranomics.com/debug/client-ip
+    steps:
+      - name: Read /debug/client-ip under several forwarding headers
+        run: |
+          if [ -z "${METRICS_TOKEN}" ]; then
+            echo "::warning title=Probe skipped::METRICS_TOKEN repo secret is not set."
+            exit 0
+          fi
+          AUTH="Authorization: Bearer ${METRICS_TOKEN}"
+
+          echo "=== 1. No forwarding header from us, ten times."
+          echo "=== If client_ip differs between these, the edge value itself varies,"
+          echo "=== which is the finding that made the per-IP tier inert."
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            curl -s --max-time 20 -H "${AUTH}" "${URL}" || echo "(request failed)"
+            echo
+          done
+
+          echo "=== 2. Single forged value."
+          echo "=== client_ip == 192.0.2.111 means the edge forwards ours verbatim."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-For: 192.0.2.111" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 3. Multi-value forged, distinguishable entries."
+          echo "=== Read forwarding_headers to see what the edge appended, if anything."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-For: 192.0.2.111, 192.0.2.222" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 4. Forged X-Real-Ip. Is the edge's own header client-settable?"
+          echo "=== If X-Real-Ip comes back as 198.51.100.7, it is NOT trustworthy."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 5. Forged X-Real-Ip AND X-Forwarded-For together."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Real-Ip: 198.51.100.7" -H "X-Forwarded-For: 198.51.100.8, 198.51.100.9" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== 6. Forged X-Forwarded-Host / -Proto, checked for the same reason."
+          curl -s --max-time 20 -H "${AUTH}" -H "X-Forwarded-Host: evil.example" -H "X-Forwarded-Proto: http" "${URL}" || echo "(request failed)"
+          echo
+
+          echo "=== Never fails on purpose; read the JSON above."
+          exit 0
