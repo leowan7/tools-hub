@@ -156,12 +156,20 @@ def _pipeline_bar(where, tool, const, scale):
         path = REPO / "tools" / tool / "run_pipeline.py"
     if not path.is_file():
         return None
-    found = re.search(
-        rf"^{const}\s*=\s*([0-9.]+)",
+    # The WHOLE right-hand side must be a plain number, and the constant must
+    # be assigned exactly once. A loose `([0-9.]+)` reads `1e-3` as 1.0 and
+    # `2.0 * SCALE` as 2.0, and takes the first of two assignments -- a guard
+    # whose premise is that it cannot be fooled has to refuse what it cannot
+    # read rather than guess at it. Anything unreadable returns None and the
+    # caller fails on it by name.
+    found = re.findall(
+        rf"^{const}\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:#.*)?$",
         path.read_text(encoding="utf-8", errors="replace"),
         re.M,
     )
-    return float(found.group(1)) * scale if found else None
+    if len(found) != 1:
+        return None
+    return float(found[0]) * scale
 
 
 def test_every_gate_leg_is_mapped_to_its_pipeline_constant():
@@ -171,37 +179,73 @@ def test_every_gate_leg_is_mapped_to_its_pipeline_constant():
     assert legs == set(CONTAINER_GATES), sorted(legs ^ set(CONTAINER_GATES))
 
 
-def test_the_documented_divergences_are_the_actual_divergences():
-    """Every leg where this site's bar differs from its pipeline's is listed.
-
-    A reader is entitled to treat the list above GATE_COLUMNS as exhaustive: a
-    leg missing from it moves delivered work with nothing saying why, which is
-    what happened to pxdesign's ipTM. This computes the set rather than
-    checking the ones already known, so a bar edited here or a threshold edited
-    there both fail it.
-
-    Skips the container legs when the sibling repo is not checked out beside
-    this one. It is a real cross-repo claim, and there is no honest way to
-    verify it without the other repo -- asserting it from memory is what put a
-    wrong number in that comment.
-    """
-    if not _CONTAINER_REPO.is_dir():
-        pytest.skip(f"container repo not present at {_CONTAINER_REPO}")
-
-    actual = set()
-    unread = []
-    for (tool, column), (where, mod, const, scale) in CONTAINER_GATES.items():
-        pipeline = _pipeline_bar(where, mod, const, scale)
+def _divergences(where):
+    """``({diverging legs}, [legs whose constant could not be read])``."""
+    actual, unread = set(), []
+    for (tool, column), (repo, mod, const, scale) in CONTAINER_GATES.items():
+        if repo != where:
+            continue
+        pipeline = _pipeline_bar(repo, mod, const, scale)
         if pipeline is None:
             unread.append(f"{tool}/{column} ({const})")
             continue
         if float(get_legend(tool, column)["good"]) != pipeline:
             actual.add((tool, column))
+    return actual, unread
+
+
+def test_the_documented_divergences_are_the_actual_divergences_locally():
+    """The legs whose pipeline lives in THIS repo, checked unconditionally.
+
+    SPLIT FROM THE CROSS-REPO HALF ON PURPOSE. Folding boltz2 into a test that
+    skips when the sibling checkout is absent made the whole guard a permanent
+    skip on the merge gate, which checks out this repo alone -- so erasing a
+    documented divergence whose constant sits in tools/boltz2/run_pipeline.py
+    became invisible in CI, where an earlier version had caught it. A guard
+    that only runs on a developer's machine is not a guard.
+    """
+    actual, unread = _divergences("local")
     assert not unread, f"could not read a pipeline constant for: {unread}"
-    assert actual == DOCUMENTED_DIVERGENCES, (
+    local_documented = {
+        leg for leg in DOCUMENTED_DIVERGENCES
+        if CONTAINER_GATES[leg][0] == "local"
+    }
+    assert actual == local_documented, (
+        "the divergence list above GATE_COLUMNS is stale for a pipeline in "
+        "this repo.\n"
+        f"  undocumented: {sorted(actual - local_documented)}\n"
+        f"  no longer diverging: {sorted(local_documented - actual)}"
+    )
+
+
+def test_the_documented_divergences_are_the_actual_divergences():
+    """Every leg where this site's bar differs from its pipeline's is listed.
+
+    A reader is entitled to treat the list above GATE_COLUMNS as exhaustive: a
+    leg missing from it moves delivered work with nothing saying why, which is
+    what happened to pxdesign's ipTM. This COMPUTES the set rather than
+    iterating the ones already known -- the version that iterated four known
+    divergences could not see a fifth, which is the defect it existed for, and
+    a mutation moving rfantibody's ipAE bar left the whole suite green.
+
+    Skips when the sibling container repo is not checked out beside this one.
+    There is no honest way to verify a cross-repo claim without the other
+    repo, and asserting it from memory is what put a wrong number in that
+    comment. The local half above runs regardless.
+    """
+    if not _CONTAINER_REPO.is_dir():
+        pytest.skip(f"container repo not present at {_CONTAINER_REPO}")
+
+    actual, unread = _divergences("container")
+    assert not unread, f"could not read a pipeline constant for: {unread}"
+    container_documented = {
+        leg for leg in DOCUMENTED_DIVERGENCES
+        if CONTAINER_GATES[leg][0] == "container"
+    }
+    assert actual == container_documented, (
         "the divergence list above GATE_COLUMNS is stale.\n"
-        f"  undocumented: {sorted(actual - DOCUMENTED_DIVERGENCES)}\n"
-        f"  no longer diverging: {sorted(DOCUMENTED_DIVERGENCES - actual)}"
+        f"  undocumented: {sorted(actual - container_documented)}\n"
+        f"  no longer diverging: {sorted(container_documented - actual)}"
     )
 
 
@@ -214,30 +258,51 @@ def test_every_gate_leg_with_a_parse_default_declares_it(monkeypatch):
     rfantibody, the second added rfdiffusion, and boltzgen -- the tool the
     IMPLAUSIBLE_VALUES comment is written about -- was last.
     """
+    # THE VALUES, not just the legs. Pinning only the keys let a value be
+    # added to an existing entry unseen -- ("boltzgen", "pLDDT") gaining 99.0
+    # would make a genuine pLDDT of 99 read "Not usable", and that mutation
+    # passed. Each number here is a parser's own fallback; the two exceptions
+    # are named beside them.
     expected = {
-        ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
-        ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),
-        ("rfdiffusion", "i_pAE"),
-        ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"),
-        ("rfantibody", "pLDDT"), ("rfantibody", "ipAE"), ("rfantibody", "pAE"),
+        # boltzgen's metrics-CSV reader: _safe_float(raw, 99.0) for the RMSD,
+        # 0.0 for pLDDT. 0.0 RMSD is not a parser default -- it is the stored
+        # anomaly this whole change started from, two candidates carrying a
+        # perfect self-consistency no refold produces.
+        ("boltzgen", "pLDDT"): frozenset({0.0}),
+        ("boltzgen", "refolding_rmsd"): frozenset({0.0, 99.0}),
+        # rfdiffusion's AF2 score reader, when the JSON has no such key.
+        ("rfdiffusion", "ipTM"): frozenset({0.0}),
+        ("rfdiffusion", "pLDDT"): frozenset({0.0}),
+        ("rfdiffusion", "i_pAE"): frozenset({99.0}),
+        # pxdesign's parse_summary_csv: _safe_float(v, 0.0) for every metric
+        # but pAE.
+        ("pxdesign", "ipTM"): frozenset({0.0}),
+        ("pxdesign", "pLDDT"): frozenset({0.0}),
+        # rfantibody's (metric, keys, default) triples.
+        ("rfantibody", "pLDDT"): frozenset({0.0}),
+        ("rfantibody", "ipAE"): frozenset({99.0}),
+        ("rfantibody", "pAE"): frozenset({99.0}),
     }
-    assert expected <= set(IMPLAUSIBLE_VALUES), sorted(
-        expected - set(IMPLAUSIBLE_VALUES)
-    )
-    # And every declaration CHANGES something. A stale one -- a container that
-    # stopped using that default, or a value copied from the wrong tool -- is
-    # dead weight that reads as protection, and this is a file about not
-    # trusting a claim because it is written down.
+    # DROPPING one fails this; ADDING a bad one does not, and saying so is the
+    # point. The first attempt asserted that removing a declaration changes the
+    # answer, and called that "adding one that guards nothing fails it too".
+    # It does not: brute-forced over all thirteen legs, the only values that
+    # can fail that assertion are NaN, the infinities and a negative pLDDT, so
+    # any realistic bad declaration sails through -- including
+    # ("boltzgen", "pLDDT"): {99.0}, which would make a genuine pLDDT of 99
+    # read "Not usable".
     #
-    # Deliberately not "the value fails its bar": BoltzGen's refolding RMSD of
-    # 0.00 is the defect that started all of this and sits on the PASSING side,
-    # which is why it had to be declared at all. A placeholder can land either
-    # side of a threshold; what it can never do is deserve a verdict.
+    # Whether a number is a plausible reading or a stand-in is a judgement
+    # about a pipeline, not a property of the value, so no assertion here can
+    # decide it. What this file can do is force the judgement to be made: the
+    # set is pinned, so adding a declaration means editing this list, and the
+    # comment beside each entry in IMPLAUSIBLE_VALUES has to name the parser
+    # that produces it. A tripwire, described as one.
+    assert dict(IMPLAUSIBLE_VALUES) == expected, (
+        "IMPLAUSIBLE_VALUES changed. Every entry has to name the parser whose "
+        "fallback it is, so adding one means justifying it here too."
+    )
     for (tool, column), values in IMPLAUSIBLE_VALUES.items():
-        # Every OTHER leg exactly on its bar, so the column under test is the
-        # only thing that can decide the answer. A record carrying one metric
-        # is unjudged whatever the declaration says, which would make the
-        # comparison below vacuous.
         meeting = {
             col: float(get_legend(tool, col)["good"])
             for col in GATE_COLUMNS[tool]
@@ -254,13 +319,6 @@ def test_every_gate_leg_with_a_parse_default_declares_it(monkeypatch):
             without = judge(tool, record)
             monkeypatch.undo()
             assert without.unusable == (), (tool, column, value)
-            # Undeclared, this leg is read as a reading: either a confident
-            # shortfall over a number nothing measured, or -- worse -- a design
-            # counted as meeting the bar on a stand-in.
-            assert without.shortfalls or without.verdict == "meets", (
-                f"{tool}/{column}={value} produces the same answer declared or "
-                "not, so the declaration guards nothing"
-            )
 
 
 def test_the_bar_is_unanswerable_for_a_tool_that_has_none():

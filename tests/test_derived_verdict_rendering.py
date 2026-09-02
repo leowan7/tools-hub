@@ -332,3 +332,48 @@ def test_every_gating_tool_renders_a_meeting_cell(env, tool):
 # every test above renders through the app's REAL environment, so a macro
 # calling a name create_app does not register fails them outright. That is how
 # the raw_metric global was caught.
+
+
+# ---------------------------------------------------------------------------
+# The column's own explanation has to know every state the column can show
+# ---------------------------------------------------------------------------
+
+def test_the_glossary_explains_every_state_the_column_can_render(env):
+    """A THIRD SURFACE, and it was the one that did not learn `unusable`.
+
+    Two renderers were merged into score_legends.verdict_text so a new state
+    could not reach one and not the other. That fixed the two SENTENCES and
+    left the column's glossary entry -- the tooltip explaining the column to a
+    customer -- still describing only "falls short" and "Not measured", while
+    a container parse-failure row on a real results page reads "Not usable".
+
+    So the entry is checked against the wordings the cell can actually
+    produce, rather than against a list somebody remembered to update.
+    """
+    from shared.metric_glossary import get
+    from shared.score_legends import Judgement, verdict_text
+
+    # The two states that announce THEMSELVES with a phrase, taken from
+    # verdict_text's own output so the test cannot quote a wording the cell
+    # stopped using. The other two states -- meets, and a shortfall -- render
+    # a measurement rather than a phrase, so the entry is checked for the
+    # words it uses to describe them instead.
+    announced = [
+        Judgement("unjudged", (), ("Refolding RMSD",)),
+        Judgement("unjudged", (), (), (), ("Refolding RMSD",)),
+    ]
+    definition = get("against_bar")["definition"].lower()
+    for state in announced:
+        text = verdict_text("boltzgen", state)
+        phrase = text.split(":")[0]
+        assert phrase, state
+        assert phrase.lower() in definition, (
+            f"the against_bar glossary entry never mentions {phrase!r}, which "
+            f"the cell renders as {text!r}"
+        )
+
+    assert verdict_text("boltzgen", Judgement("meets", (), ())).startswith(
+        "Meets",
+    )
+    assert "meeting it" in definition or "meets" in definition
+    assert "falls short" in definition

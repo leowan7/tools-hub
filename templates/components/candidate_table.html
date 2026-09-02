@@ -672,11 +672,25 @@
                    column. The title still differs per state, because a tooltip
                    answers a different question from the cell. #}
                 {% if verdict.verdict == 'below' %}
+                  {# The tooltip quotes the WHOLE bar while the cell names only
+                     what fell short, and that split is deliberate: the cell
+                     answers "what is wrong with this design", the tooltip
+                     answers "what was it compared against". The cell carries
+                     any gaps alongside the shortfall, so nothing here implies
+                     a leg was measured when it was not. #}
                   <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ text }}</span>
                 {% elif verdict.verdict == 'meets' %}
                   <span title="Every leg measured and met.">{{ text }}</span>
+                {% elif verdict.unusable %}
+                  {# ABSENT AND BROKEN GET DIFFERENT TOOLTIPS, because they are
+                     different facts and the whole reason `unusable` exists is
+                     that collapsing them was wrong. One tooltip reading "a leg
+                     is missing, OR the pipeline wrote a placeholder" said
+                     neither, and on a smoke stub neither disjunct was even
+                     true. #}
+                  <span title="The pipeline wrote a stand-in here rather than a reading, so there is nothing to compare against {{ gate_bar_text(row_tool) }}.">{{ text }}</span>
                 {% elif text %}
-                  <span title="This design cannot be compared against {{ gate_bar_text(row_tool) }}: a leg is missing, or the pipeline wrote a placeholder rather than a reading.">{{ text }}</span>
+                  <span title="A leg of {{ gate_bar_text(row_tool) }} was never recorded for this design, so it cannot be compared. That is not a failure.">{{ text }}</span>
                 {% else %}
                   {# The tool declares no bar, so there is nothing to compare
                      against and nothing to name. An empty list rendered as the
