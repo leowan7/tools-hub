@@ -26,6 +26,7 @@ import pytest
 from shared.pdb_bfactors import (
     _coordinate_bfactor,
     _looks_like_cif,
+    _visible_start,
     bfactors,
     bfactors_on_100,
     bfactors_on_100_b64,
@@ -366,8 +367,7 @@ class TestEveryDownloadPathConverts:
     # ``bfactors_on_100`` is documented as not idempotent -- 0.01 scales
     # to 1.00, which is still inside the fractional window, so a second
     # pass takes it to 100.00 -- and wrapping the route's call in itself
-    # passed 403 of 403 tests across every file that touches these
-    # routes. The staging path had an exactly-once test; the primary
+    # passed every test in every file that touches these routes. The staging path had an exactly-once test; the primary
     # download, which serves far more people, had none.
     @pytest.mark.parametrize(
         "payload, expected",
@@ -836,14 +836,20 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         WHAT THIS DOES AND DOES NOT PROVE. An earlier docstring called
         that universe "a different authority", implying the test could
         discover an incompleteness in the rule. It cannot: the universe
-        is a strict SUBSET of the rule's own predicate (0 codepoints in
-        it are uncovered; 824,718 covered codepoints are outside it, all
-        Cn), so ``leaks == []`` holds by construction for the rule as
-        written. What it is is a strong guard on the SHAPE of the rule:
-        every historical attempt fails it loudly -- a BOM-only strip by
-        33 tests, a four-character list by 21, a Cc-only class by 26,
-        dropping the space clause by 9, and a single-character check by
-        4. That is worth having under an honest name.
+        is a strict subset of the rule's own predicate -- no codepoint
+        in it is uncovered -- so ``leaks == []`` holds by construction
+        for the rule as written. What it IS is a strong guard on the
+        SHAPE of the rule: every historical attempt fails it loudly,
+        the BOM-only strip and the four-character list and the Cc-only
+        class and the single-character check alike, and so does
+        dropping the space clause.
+
+        No mutant tallies here on purpose. A previous revision listed
+        one per attempt; adding two parameters to this test moved every
+        one of them by two and nobody noticed until a reviewer
+        re-measured. Numbers in a docstring are claims that have to
+        survive edits to the thing they describe, and in this file they
+        have not.
         """
         import unicodedata
 
@@ -868,9 +874,11 @@ class TestLeadingNoiseCannotSlipPastTheGate:
             "fractional on its other records and half converted"
         )
 
-    # Three of 268, named because they are the ones a person could
-    # plausibly produce. U+FE0F rides along on pasted text constantly;
-    # an earlier version of this list omitted the variation selectors
+    # Four, named because they are the ones a person could plausibly
+    # produce, and chosen to span BOTH families the module note
+    # describes: three blank-rendering codepoints and one zero-advance
+    # combining mark. U+FE0F rides along on pasted text constantly; an
+    # earlier version of this list omitted the variation selectors
     # entirely and pinned only the exotic ones.
     @pytest.mark.parametrize(
         "ch, name",
@@ -887,9 +895,9 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         These render blank or take no width, but Python calls them
         printable and they are not whitespace, so the rule does not
         strip them and a record behind one is still hidden. That is a
-        judgement about GLYPHS rather than about encoding, no structure
-        writer emits one, and closing it would mean a fourth list --
-        which is the mistake this module made three times already.
+judgement about GLYPHS rather than about encoding, and closing
+        it would mean one more list of the kind this module has
+        repeatedly been wrong with.
 
         Pinned so the ceiling cannot be quietly forgotten, and so that
         anyone who does close it has to delete this test on purpose
@@ -959,13 +967,83 @@ class TestLeadingNoiseCannotSlipPastTheGate:
     def test_the_cif_sniffer_reads_a_line_the_same_way_the_gate_does(self):
         """The sniffer shares ``_visible_start``, which makes it WIDER
         than the ``lstrip()`` it replaced. That widening is behaviour
-        and went unpinned for two commits: an invisible byte in front
+        and went unpinned when it landed: an invisible byte in front
         of a CIF marker now declines the file where it once converted.
         Fail-closed and intended -- but it should fail a test if
         somebody narrows it back, not surface as a surprise."""
         pdb = "HEADER    X\n" + "\x00loop_\n" + _atom(1, 0.21)
 
         assert _looks_like_cif(pdb)
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_the_prefix_strip_is_unbounded_by_construction(self):
+        """The POSTCONDITION, not a length.
+
+        Round 4 found the fixtures bounded at two characters, so a strip
+        capped at three passed everything. The fix added an eight-NUL
+        case -- and round 5 found the bound had simply moved to nine. A
+        cap of 9, 10, 16 or 64 passed the whole suite. Every fixture
+        that names a length is a cap waiting to be written at length+1;
+        listing longer ones is the same list, further along.
+
+        So assert what ``_visible_start`` is FOR: whatever it returns
+        starts with a visible character, or is empty. A capped
+        implementation returns a string still wearing its prefix and
+        fails this for any run longer than the cap, at every cap, with
+        no fixture to keep ahead of.
+        """
+        invisible = "\ufeff \t\x00\u200b\u2060\xa0"
+
+        for run in (1, 2, 3, 8, 9, 17, 65, 1000):
+            for filler in ("\x00", " ", invisible):
+                noisy = (filler * run) + "ATOM  rest"
+                out = _visible_start(noisy)
+                assert out == "ATOM  rest", (
+                    f"{run} x {filler!r} left {out[:12]!r} -- the strip "
+                    "is capped, and a record behind a longer run is "
+                    "invisible to the gate"
+                )
+                assert out[:1].isprintable() and out[:1] != " "
+
+        # And the empty cases, which the loop must not fall over on.
+        assert _visible_start("") == ""
+        assert _visible_start(invisible * 4) == ""
+
+    def test_a_realistic_pdb_is_not_mistaken_for_a_cif(self):
+        """The CIF sniffer's UPPER width, which nothing pinned.
+
+        Narrowing it is caught three ways. WIDENING it was free: adding
+        ``"_"`` and ``"#"`` to the marker tuple passed the whole suite
+        while making any PDB carrying a ``#`` comment -- a Rosetta
+        energy table, a script annotation -- sniff as mmCIF and decline
+        silently back onto the 0-1 scale. ``#`` is a plausible addition
+        precisely because a real CIF usually has one after ``data_``.
+        """
+        pdb = (
+            "REMARK   1 ANYTHING\n"
+            "# BEGIN_POSE_ENERGIES_TABLE\n"
+            "_underscore_leading_line\n"
+            + _atom(1, 0.21) + _atom(2, 0.66)
+        )
+
+        assert not _looks_like_cif(pdb), (
+            "a PDB with a # comment or an underscore line is not a CIF"
+        )
+        assert _bfactors(bfactors_on_100(pdb)) == [21.0, 66.0]
+
+    @pytest.mark.parametrize("b", [1.01, 1.5, 2.0])
+    def test_just_above_one_is_not_fractional(self, b):
+        """The window's upper bound, one-sided until now.
+
+        ``< 1.0`` is pinned by the column-width and non-idempotence
+        tests, but nothing sat between 1.0 and the next fixture value
+        (31.0), so widening the window to ``<= 1.5`` passed everything
+        and would have scaled a 1.20 B-factor to 120.00 -- past the end
+        of a six-wide field on anything larger.
+        """
+        pdb = _atom(1, 0.50) + _atom(2, b)
+
         assert not is_fractional(pdb)
         assert bfactors_on_100(pdb) is pdb
 

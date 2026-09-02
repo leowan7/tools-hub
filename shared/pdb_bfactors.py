@@ -129,22 +129,29 @@ _CIF_HEADER_BYTES = 16384
 # applied over the WHOLE prefix rather than its first character.
 #
 # That covers every control, format, surrogate, private-use, unassigned
-# and separator codepoint. It does NOT cover the assigned, printable
-# characters that render blank or take no width: measured, exactly
-# **268** of them still hide a record -- the Default_Ignorable set
-# (variation selectors U+FE00..U+FE0F and U+E0100..U+E01EF, the Hangul
-# fillers, the Mongolian free variation selectors, U+034F COMBINING
-# GRAPHEME JOINER) plus U+2800 BRAILLE PATTERN BLANK.
+# and separator codepoint. It does NOT cover characters that are
+# ASSIGNED and printable but render blank or take no width. Two
+# families: the Default_Ignorable set -- variation selectors, the
+# Hangul fillers, the Mongolian free variation selectors, U+034F
+# COMBINING GRAPHEME JOINER -- together with U+2800 BRAILLE PATTERN
+# BLANK, and separately every zero-advance combining mark, which is
+# the larger of the two by an order of magnitude.
 #
 # BE PRECISE ABOUT WHAT THAT COSTS. It is not "a line is skipped": the
 # file comes out HALF CONVERTED, 10.00 beside 88.50, on the live
-# customer download path. It is accepted anyway because deciding which
+# customer download path. Accepted anyway, because deciding which
 # glyphs look blank is a judgement about typography rather than about
-# encoding, it would be a sixth list, and no structure writer emits
-# one -- no tools/*/run_pipeline.py writes a B-factor field at all,
-# they hand through whatever the model wrote. The realistic way in is
-# a human pasting text that carries a variation selector. Pinned by a
-# test naming that case, so closing it is a deliberate act.
+# encoding, and it would be one more list of the kind this module has
+# already been wrong with. The realistic way in is a human pasting
+# text carrying a variation selector. Pinned by tests naming both
+# families, so closing it is a deliberate act.
+#
+# (A previous revision put "exactly 268" here. That is the right count
+# for Default_Ignorable plus U+2800 and the wrong count for the class
+# the sentence describes, because it silently dropped a combining-mark
+# clause the revision before it had. A number in a comment is a claim
+# somebody has to keep true through every later edit, and the numbers
+# in this file have now been wrong more often than the code has.)
 
 
 def _visible_start(content: str) -> str:
@@ -152,6 +159,20 @@ def _visible_start(content: str) -> str:
 
     Recognition only -- nothing this returns is ever written. The file
     it came from is either declined or untouched.
+
+    UNBOUNDED ON PURPOSE, and that costs something. It walks the whole
+    invisible prefix, so it is O(prefix) per non-coordinate line: a
+    header-heavy file roughly doubles the gate's cost, and a single
+    pathological all-NUL line of half a megabyte takes tens of
+    milliseconds where the old first-character check took under one.
+    Linear, so nothing can hang, and the request is already capped by
+    MAX_CONTENT_LENGTH -- but a maximally-invisible payload at that cap
+    is on the order of a second of worker CPU. Capping the loop is the
+    obvious saving and it is exactly wrong: a cap is a length, and a
+    record behind a longer run walks straight past the gate. Two
+    reviewers found a cap surviving the suite, at three and then at
+    nine. If this ever needs to be cheaper, bound the number of LINES
+    inspected, never the prefix.
     """
     index = 0
     while index < len(content) and (
@@ -265,9 +286,10 @@ def is_fractional(pdb_text: str) -> bool:
     it does not get to make a whole-file judgement about the file.
 
     NOT ABSOLUTE, and the exception is documented rather than implied.
-    The 268 blank-rendering codepoints named by ``_COORD_RECORDS``
-    above still hide a record from this predicate, and a file behind
-    one comes out half converted. Everything else this module says
+    The blank-rendering and zero-width codepoints described in the note
+    above ``_visible_start`` still hide a record from this predicate,
+    and a file behind one comes out half converted. Everything else
+    this module says
     about the shape being impossible should be read as "impossible
     except there", which is the whole reason that ceiling is pinned by
     a test.
@@ -291,19 +313,24 @@ def is_fractional(pdb_text: str) -> bool:
     confidence, which is worse than the flat colouring the module
     exists to fix. Declining "every B-factor identical" would catch it,
     but that is a guess about INTENT bolted onto a rule that is
-    otherwise a fact about FORMAT. Nothing here is known to emit such a
-    column: the design paths hand through whatever the model wrote, and
-    the one PDB WRITER in the tree -- ``sdf_to_pdb`` in
-    ``tools/proteina/run_pipeline.py``, which calls RDKit's
-    ``MolToPDBFile`` and would emit exactly this uniform column -- has
-    no call site, and stages a ligand input rather than a design.
-    (Two earlier versions of this sentence were wrong in opposite
-    directions: one argued about WRITERS from the distinct-value counts
-    of three DOWNLOADED depositions, the other claimed no
-    ``run_pipeline`` writes a B-factor field at all. Both were caught
-    by reviewers. The conclusion survived twice, which is exactly why
-    the reasoning needed fixing rather than the verdict.) Left as one
-    rule until something real produces the input. Uniform ``0.00`` is
+    otherwise a fact about FORMAT. The design paths hand through
+    whatever the model wrote rather than composing a B-factor column
+    themselves. The one place in the tree that writes a PDB from
+    scratch is ``sdf_to_pdb`` in ``tools/proteina/run_pipeline.py``,
+    via RDKit's ``MolToPDBFile``; it has no call site, and it stages a
+    ligand input rather than a design. What column RDKit would put
+    there is NOT asserted here -- rdkit is not installed in this
+    repo's venv and no test exercises that function, so it is not
+    something a reader can check.
+
+    That hedge is the point. This is the third reasoning offered for
+    the same verdict: the first argued about WRITERS from the
+    distinct-value counts of three DOWNLOADED depositions, the second
+    claimed no ``run_pipeline`` writes a B-factor field at all, and
+    both were wrong and both were caught by reviewers. A verdict that
+    survives two bad arguments is one to state carefully, not one to
+    keep re-justifying. Left as one rule until something real produces
+    the input. Uniform ``0.00`` is
     already a no-op.
     """
     if _looks_like_cif(pdb_text):
