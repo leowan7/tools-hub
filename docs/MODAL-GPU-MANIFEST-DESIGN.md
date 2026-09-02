@@ -10,11 +10,24 @@ llm-proteinDesigner redeploys a Modal app to a different GPU SKU,
 the hardcoded value goes stale silently and the preflight panel
 displays the wrong hardware.
 
-Blast radius is informational only. The label does not gate billing
-or routing logic. Week 2 calibration verified all four GPU labels
-(rfantibody, rfdiffusion, bindcraft on A100 80GB; boltzgen on
-A100 40GB) against actual Modal logs, so as of PR #17 the labels
-are correct. The goal is making future drift loud instead of silent.
+Blast radius WAS believed to be informational only -- "the label does
+not gate billing or routing logic". That was wrong in a way this doc
+did not anticipate: shared/wallet_estimates.py kept its OWN copy of the
+same GPU class as ToolSpec.gpu_class, and that one does price the job.
+On 2026-09-01 four of those had drifted (mpnn, bindcraft, pxdesign,
+boltzgen) and were mispricing real runs by -30% to +44%. The two are now
+cross-checked by tests/test_gpu_class_drift.py, so a manifest built to
+this design would fix the billing rate too, not just the panel label.
+
+This paragraph used to close by saying Week 2 calibration had verified
+all four labels "against actual Modal logs" and that they were
+therefore correct. It had not. Of the five Week 2 jobs, one succeeded
+(rfantibody), two failed in under 90 s, and two were cancelled, so only
+one GPU reading was ever taken -- and the 2026-06-10 correction in
+docs/CALIBRATION-WEEK2.md calls that reading a misattribution and
+derives the right answer from source instead. The labels it listed
+(rfantibody and rfdiffusion on A100 80GB) were wrong; both run on
+A100-40GB. The goal is making future drift loud instead of silent.
 
 The hook is already in place: `shared/modal_gpu_metadata.py` has
 `fetch_modal_gpu_for_tool(slug)` returning `None` (no live source
@@ -80,8 +93,8 @@ exact problem we are trying to solve. Rejected.
   "schema_version": 1,
   "generated_at": "2026-06-09T00:00:00Z",
   "tools": {
-    "rfantibody": {"gpu_class": "A100-80GB", "modal_app": "ranomics-rfantibody-prod"},
-    "rfdiffusion": {"gpu_class": "A100-80GB", "modal_app": "ranomics-rfdiffusion-prod"},
+    "rfantibody": {"gpu_class": "A100-40GB", "modal_app": "ranomics-rfantibody-prod"},
+    "rfdiffusion": {"gpu_class": "A100-40GB", "modal_app": "ranomics-rfdiffusion-prod"},
     "bindcraft": {"gpu_class": "A100-80GB", "modal_app": "ranomics-bindcraft-prod"},
     "boltzgen": {"gpu_class": "A100-40GB", "modal_app": "ranomics-boltzgen-prod"},
     "boltz2": {"gpu_class": "A100-40GB", "modal_app": "ranomics-boltz2-prod"}

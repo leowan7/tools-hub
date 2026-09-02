@@ -23,15 +23,34 @@ exists so a future enhancement can plug in:
     values into a Supabase config table.
 
 Until one of the above is wired, the hardcoded GPU values in
-TOOL_RULES are the source of truth. Week 2 calibration verified all
-four (rfantibody / rfdiffusion / bindcraft on A100-80GB, boltzgen on
-A100-40GB) against actual Modal logs, so the labels are correct as of
-the tier-collapse PR.
+TOOL_RULES are the source of truth. They are currently right --
+rfantibody, rfdiffusion and boltzgen on A100-40GB, bindcraft and
+pxdesign on A100-80GB, each matching _GPU in that repo's Modal app --
+but NOT because Week 2 measured them. This docstring used to say Week 2
+had "verified all four against actual Modal logs"; it had not. One of
+the five jobs succeeded, two failed in under 90 s, two were cancelled,
+and the single GPU reading taken is called a misattribution by the
+2026-06-10 correction in docs/CALIBRATION-WEEK2.md, which derives the
+right answer from source. The labels that sentence listed were also
+wrong for rfantibody and rfdiffusion.
+
+tests/test_gpu_class_drift.py now pins these labels against
+shared.wallet_estimates.TOOL_SPECS, and against tools/<dir>/modal_app.py
+:_GPU wherever the container lives in this repo.
 
 Risk: any Modal-side GPU change without a parallel TOOL_RULES update
-will surface as a wrong-but-not-broken label in the preflight panel.
-The blast radius is informational only -- the label does not gate
-logic. The deploy checklist (DEPLOY.md) covers this in the meantime.
+will surface as a wrong label in the preflight panel. The blast radius
+is NOT informational only, which this docstring asserted until
+2026-09-01: shared/wallet_estimates.py holds a second copy of the same
+GPU class as ToolSpec.gpu_class, and that one prices the job. Four of
+those had drifted and were mispricing real runs by -30% to +44%. The
+two copies are now cross-checked, so a wrong label here fails a test
+rather than merely looking odd on a panel. The deploy checklist
+(DEPLOY.md) covers the Modal side in the meantime.
+
+Note for whoever wires the planned OBSERVED_GPU overlay: the drift test
+reads the static tree, so an overlay that mutates TOOL_RULES at runtime
+would move it away from TOOL_SPECS without the test noticing.
 """
 from __future__ import annotations
 
