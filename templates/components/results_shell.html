@@ -54,19 +54,31 @@
          counted as falling short, and its presence keeps the banner silent,
          because "none of these reaches the bar" would then be a claim the
          measurements do not support. #}
-      {% set ns = namespace(below=0, total=candidates|length) %}
+      {% set ns = namespace(below=0, total=candidates|length, legs=[]) %}
       {% for c in candidates %}
-        {% if judge_design(tool_slug, c).verdict == 'below' %}
+        {% set v = judge_design(tool_slug, c) %}
+        {% if v.verdict == 'below' %}
           {% set ns.below = ns.below + 1 %}
+          {% set ns.legs = ns.legs + v.shortfall_columns | list %}
         {% endif %}
       {% endfor %}
       {% if ns.below > 0 and ns.below == ns.total %}
         <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
           <p class="subtitle" style="margin:0;">
-            <strong>No design here reaches {{ gate_bar_text(tool_slug) }}.</strong>
+            {# NAMES ONLY THE LEGS THAT ACTUALLY FELL SHORT, not the whole bar.
+               A design is judged "below" as soon as ONE leg falls short, even
+               when another was never measured -- which is the ordinary shape
+               of a job rebuilt from mid-run records, since the metrics a run
+               produces at the end are simply absent. Quoting the whole bar
+               there put half a sentence about a number this page does not
+               have into a banner whose entire purpose is to say only what was
+               measured. shortfall_bar_text takes the union of the rows' own
+               shortfall_columns, so every leg named is one some design here
+               was measured against and missed. #}
+            <strong>No design here reaches {{ shortfall_bar_text(tool_slug, ns.legs) }}.</strong>
             The pipeline ran cleanly. All {{ ns.total }} designs are shown so you
-            can see the score distribution; each row's Against bar cell names the
-            measurement that fell short.
+            can see the score distribution; each row names the measurement that
+            fell short.
             {%- if is_refold_source(tool_slug) %}
             The fastest next step is the second-opinion fold below: it
             re-scores a shortlist with an independent predictor. Boltz-2

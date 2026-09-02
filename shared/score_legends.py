@@ -327,6 +327,17 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "is confidently folded; above 90 is high confidence."
         ),
     },
+    # NOT a gate leg, and the reason is worth the space. What pxdesign stores
+    # under "pAE" is the INTERFACE PAE, not a global one: the container takes
+    # the first key present from unscaled_i_pae, unscaled_ipae, unscaled_pae,
+    # af2_unscaled_ipae, af2_unscaled_i_pae, af2_ipae, af2_pae, ipae, pae,
+    # i_pae, mean_pae (docker/pxdesign/run_pipeline.py, parse_summary_csv), and
+    # its own comment there says the af2_* forms are the [0,1] NORMALISED
+    # shape. So one column arrives on two scales, and a 0-1 reading clears an
+    # Angstrom bar unconditionally -- 0.42 would read as better than excellent.
+    # A column that can be either scale cannot answer a single bar, and unlike
+    # pLDDT no value-range test separates them: a 0.42 A interface PAE and a
+    # 0.42 normalised one are both plausible readings.
     ("pxdesign", "pAE"): {
         "good": 5.0,
         "excellent": 3.0,
@@ -527,11 +538,20 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         ),
     },
     # ── ESMFold2-design (gradient design + critic re-score) ──────────
-    # The bar the pipeline's own classifier uses, STRICT_IPTM in
-    # tools/esmfold2_design/run_pipeline.py. Raised there from 0.55 on
-    # 2026-06-03 after three runs returned 0.83 / 0.83 / 0.95 — the old bar
-    # was admitting noise. Paper-ordered binders sit near 0.7.
-    ("esmfold2_design", "ipTM"): {
+    # HYPHEN, NOT UNDERSCORE. The registered slug is "esmfold2-design"
+    # (tools/esmfold2_design/__init__.py:240) even though the package
+    # directory is esmfold2_design, and this entry shipped keyed on the
+    # directory name. Nothing raised: an unknown tool simply has no legend and
+    # no bar, so the feature was inert for this tool while its own test passed
+    # over the dead key. shared/tool_meta.py:4 records the same trap costing a
+    # PILOT card that silently did not render. tests/test_derived_verdicts.py
+    # now asserts every tool key here is in tools.base._REGISTRY.
+    #
+    # This is a TOOLTIP ONLY. esmfold2-design declares no gate columns; see the
+    # note in GATE_COLUMNS for why its bar cannot be a uniform conjunction.
+    # The number is the pipeline's own STRICT_IPTM, raised there from 0.55 on
+    # 2026-06-03 after three runs returned 0.83 / 0.83 / 0.95.
+    ("esmfold2-design", "ipTM"): {
         "good": 0.75,
         "excellent": 0.85,
         "direction": "higher_is_better",
@@ -830,8 +850,15 @@ def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
 # is read as absent.
 #
 # Nothing in shared/, blueprints/ or templates/ may read ``filter_status``
-# again; tests/test_derived_verdicts.py greps for it and fails if it comes
-# back.
+# for a VERDICT again; tests/test_derived_verdicts.py greps all three. The one
+# carve-out is ``is_fabricated`` below, which reads the "stub (smoke)"
+# PROVENANCE half of that same field.
+#
+# WHERE THE COUNTS COME FROM. 65, 50 and 2 are the figures in the change
+# request that commissioned this work, not queries run from here; no code or
+# test depends on them, and the mechanism argument stands without any of
+# them. Treat them as reported, and re-derive before quoting them anywhere
+# a reader would take them as measured.
 
 
 # Columns whose conjunction decides whether one design meets this tool's bar.
@@ -854,21 +881,35 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
     # note in llm-proteinDesigner/docker/boltzgen/run_pipeline.py.
     "boltzgen": ("pLDDT", "refolding_rmsd"),
     "rfdiffusion": ("ipTM", "pLDDT", "i_pAE"),
-    "pxdesign": ("ipTM", "pLDDT", "pAE"),
+    # pAE is deliberately absent, even though the container gates on it. The
+    # column arrives on two scales (see the pxdesign pAE legend above) and a
+    # 0-1 reading clears an Angstrom bar unconditionally. A leg that can
+    # silently pass everything is worse than no leg.
+    "pxdesign": ("ipTM", "pLDDT"),
     "rfantibody": ("pLDDT", "ipAE", "pAE"),
     "boltz2": ("ipTM", "pLDDT", "n_hotspot_contacts"),
-    # ponytail: ipTM only, and this gives something up. The pipeline's own
-    # classifier splits on mode — an scFv is judged on the CDR distogram
-    # proxy, a minibinder on ipTM AND pI < 6 (an undisplayable scaffold is a
-    # drop however well it folds). Neither leg can join a uniform conjunction:
-    # pI is null by construction in scFv mode, so gating on it would leave
-    # every antibody design permanently unjudged, and the proxy column carries
-    # a different quantity in each mode with a defensible bar in only one.
-    # Deciding from which columns happen to be populated is exactly defect 3.
-    # ipTM is measured in both modes and has one bar. The upgrade path is to
-    # stamp the mode onto each record, then declare a gate set per mode; pI
-    # and the proxy stay visible columns with their own legends meanwhile.
-    "esmfold2_design": ("ipTM",),
+    # esmfold2-design is ABSENT, and that is a decision rather than the
+    # oversight it looks like. Its bar is genuinely mode-dependent: the
+    # pipeline's own classifier judges an scFv on the CDR distogram proxy
+    # alone, and a minibinder on ipTM AND pI < 6, since an undisplayable
+    # scaffold is a drop however well it folds. Neither can join a uniform
+    # conjunction. pI is null by construction in scFv mode, so a pI leg leaves
+    # every antibody design permanently unjudged; the proxy column holds a
+    # DIFFERENT quantity in each mode and has a defensible bar in only one; and
+    # picking between them from whichever columns happen to be populated is
+    # defect 3 wearing a new name.
+    #
+    # An ipTM-only bar was tried and is worse than nothing here. This tool's
+    # worked example exists to teach that its HIGHEST-ipTM design (0.956) was
+    # rejected on pI 11.95, so an ipTM-only bar prints "meets" on the one
+    # design the copy beside it tells you not to order. Saying nothing is the
+    # honest answer until a record carries its own mode.
+    #
+    # THE UPGRADE PATH: stamp the mode onto each record in
+    # tools/esmfold2_design/run_pipeline.py -- a mode is a FACT about the run,
+    # so storing it is what this change endorses, not what it forbids -- then
+    # declare a gate set per mode. That edit rebuilds the GPU images, which is
+    # why it is not bundled here.
 }
 
 
@@ -877,7 +918,24 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 # a perfect self-consistency no refold produces and which clears the bar. Read
 # as absent, so the record goes unjudged instead of passing on a stand-in.
 IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
+    # Two stored BoltzGen candidates carry exactly 0.00 -- a perfect
+    # self-consistency no refold produces, and it clears a "<= 1.5" bar.
     ("boltzgen", "refolding_rmsd"): frozenset({0.0}),
+
+    # The container parsers' own fallbacks, read off their metric key lists.
+    # pxdesign's parse_summary_csv calls _safe_float(..., 0.0) for every metric
+    # but pAE, and 99.0 for pAE; rfantibody's declares (metric, keys, default)
+    # triples with 0.0 for pLDDT/ipTM/pTM and 99.0 for pAE/ipAE. Those numbers
+    # mean "the column was there and would not parse", and every one of them
+    # falls on the FAILING side of its bar, so without this the page reports a
+    # parse failure as a confident measured shortfall. Unmeasured is the true
+    # answer. A real reading never lands on them: an ipTM or pLDDT of exactly
+    # 0.0, or a PAE of exactly 99.0 Angstrom, is not a thing a model emits.
+    ("pxdesign", "ipTM"): frozenset({0.0}),
+    ("pxdesign", "pLDDT"): frozenset({0.0}),
+    ("rfantibody", "pLDDT"): frozenset({0.0}),
+    ("rfantibody", "ipAE"): frozenset({99.0}),
+    ("rfantibody", "pAE"): frozenset({99.0}),
 }
 
 
@@ -899,7 +957,13 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "pLDDT": ("pLDDT", "plddt", "complex_pLDDT", "complex_plddt"),
     "pAE": ("pAE", "pae"),
     "i_pAE": ("i_pAE", "i_pae"),
-    "ipAE": ("ipAE", "ipae"),
+    # "i_pae" included: the webhook's streamed-partial schema
+    # (webhooks/modal.py::_sanitize_candidate) carries ONE interface-PAE field
+    # and every container maps its own onto it, so a live rfantibody row holds
+    # its ipAE under that name. Interface PAE is one quantity under three
+    # spellings. "pAE" below is NOT aliased to it: a global PAE is a different
+    # measurement and must not answer the interface bar.
+    "ipAE": ("ipAE", "ipae", "i_pae"),
 }
 
 
@@ -929,10 +993,75 @@ class Judgement(NamedTuple):
     shortfalls: tuple[str, ...]
     unmeasured: tuple[str, ...]
 
+    # The gate columns behind ``shortfalls``, as column KEYS rather than
+    # rendered text. A results banner speaks about a whole table, and
+    # "no design here reaches pLDDT 80 and Refolding RMSD 1.5" is FALSE when
+    # every row fell short on pLDDT and not one of them ever measured the
+    # RMSD: half that sentence is then a claim about a number the page does
+    # not have. With the keys, a banner names only the legs it actually saw
+    # fall short. See :func:`shortfall_bar_text`.
+    shortfall_columns: tuple[str, ...] = ()
+
 
 def _fmt(value: float) -> str:
     """Trim a bar or a reading to what it actually carries: 80.0 -> 80."""
     return f"{value:g}"
+
+
+def _label_and_unit(column: str) -> tuple[str, str]:
+    """Split a glossary label into its name and its trailing unit.
+
+    The glossary labels a column for a TABLE HEADER, where the unit belongs in
+    a parenthetical: "Refolding RMSD (A)". Dropped into a sentence that reading
+    comes out as "Refolding RMSD (A) 1.5", with the unit stranded before the
+    number it belongs to. Split here and the sentence reads
+    "Refolding RMSD 1.5 A", which is how anyone would say it out loud.
+
+    A label with no parenthetical returns an empty unit and is unchanged.
+    """
+    label = str(_metric_glossary.get(column).get("label") or column)
+    if label.endswith(")") and " (" in label:
+        name, _, unit = label.rpartition(" (")
+        return name, " " + unit[:-1]
+    return label, ""
+
+
+def _reading(column: str, value: float) -> str:
+    """A MEASUREMENT as a sentence fragment: "Refolding RMSD 1.80 A".
+
+    Formatted at the metric's own declared precision (the same
+    ``shared.metric_glossary`` format the table cell uses), not at %g. %g
+    gives six significant figures and then trims, so an ipTM of 0.7499999
+    printed "0.75" and the cell read "ipTM 0.75, below 0.75" -- a sentence
+    that refutes itself and leaves a reader nothing to check.
+    """
+    label, unit = _label_and_unit(column)
+    return f"{label} {_metric_glossary.format_value(column, value)}{unit}"
+
+
+def _bar_reading(column: str, good: float) -> str:
+    """A THRESHOLD as a sentence fragment: "Refolding RMSD 1.5 A".
+
+    %g here, deliberately, where :func:`_reading` uses display precision: a
+    bar is an exact chosen number and 1.5 is how it was chosen. Rendering it
+    "1.50" would dress a decision up as a measurement.
+    """
+    label, unit = _label_and_unit(column)
+    return f"{label} {_fmt(good)}{unit}"
+
+
+def _join_bar(tool: str, columns) -> str:
+    """``columns`` of ``tool``'s bar as an English list, in bar order."""
+    parts = [
+        _bar_reading(col, float(get_legend(tool, col)["good"]))
+        for col in columns
+        if get_legend(tool, col) is not None
+    ]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
 def gate_columns(tool: str) -> tuple[str, ...]:
@@ -952,22 +1081,25 @@ def tool_has_bar(tool: str) -> bool:
 
 
 def gate_bar_text(tool: str) -> str:
-    """The tool's bar as a sentence fragment: "pLDDT 80 and refolding RMSD 1.5".
+    """The tool's WHOLE bar as a sentence fragment.
 
-    Feeds the results banner, which has to state a fact ("no design here
-    reaches ...") rather than assert a verdict about quality.
+    Every leg, which is right for a tooltip explaining what the bar is. It is
+    NOT right for a sentence asserting something about designs -- use
+    :func:`shortfall_bar_text` there.
     """
-    parts = []
-    for col in gate_columns(tool):
-        legend = get_legend(tool, col)
-        if legend is None:
-            continue
-        parts.append(f"{_metric_glossary.get(col)["label"]} {_fmt(legend['good'])}")
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0]
-    return ", ".join(parts[:-1]) + " and " + parts[-1]
+    return _join_bar(tool, gate_columns(tool))
+
+
+def shortfall_bar_text(tool: str, columns) -> str:
+    """The bar restricted to ``columns``: what a banner may safely assert.
+
+    A leg nobody measured cannot be a leg anything failed to reach. Pass the
+    union of the rows' ``Judgement.shortfall_columns`` and the sentence names
+    only legs the page has evidence about. Bar order is preserved, so the
+    banner reads the same way the tooltip does.
+    """
+    wanted = set(columns or ())
+    return _join_bar(tool, [c for c in gate_columns(tool) if c in wanted])
 
 
 def _resolve(record: object, tool: str, column: str):
@@ -996,17 +1128,65 @@ def _resolve(record: object, tool: str, column: str):
             break
     if raw is None:
         return None
-    if column in _metric_glossary.PLDDT_COLUMNS:
-        return _metric_glossary.plddt_on_100(raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
         return None
     if value != value:  # NaN
         return None
+
+    # ORDER MATTERS, AND GETTING IT WRONG MADE THE PLACEHOLDER GUARD INERT.
+    # This block used to return the rescaled pLDDT before either check below
+    # ran, so IMPLAUSIBLE_VALUES could not be declared on any pLDDT column at
+    # all -- the one family most likely to carry a stand-in, since rfantibody
+    # and pxdesign both default pLDDT to 0.0 on a parse failure. Declared
+    # values are compared in the STORED scale, which is why the check sits
+    # ahead of the rescale; 0.0 is 0.0 on either scale, so nothing is lost.
     if value in IMPLAUSIBLE_VALUES.get((tool, column), frozenset()):
         return None
+
+    if column in _metric_glossary.PLDDT_COLUMNS:
+        # A negative pLDDT is a broken payload, not a confidence. plddt_on_100
+        # passes it through on purpose so a reader SEES it in the table; a bar
+        # must not turn it into a confident "pLDDT -5, below 80", which reads
+        # as a measured shortfall. Unmeasured is the true answer.
+        if value < 0:
+            return None
+        # Applied exactly once (plddt_on_100 is not idempotent below 0.01),
+        # because every legend on this site is written for the 0-100 scale
+        # while boltz2 and others store 0-1.
+        return _metric_glossary.plddt_on_100(value)
+
     return value
+
+
+# The one string a pipeline stamps that this module still reads, and it is
+# not a verdict. The smoke tier fabricates deterministic scores when no real
+# model output exists (``_stub_scores`` / ``_stub_af2_scores`` in the container
+# repo) and marks them "stub (smoke)". That is PROVENANCE -- a fact about where
+# a number came from, which is exactly the kind of thing this design says to
+# store. Applying a bar to invented numbers would print "Meets pLDDT 80" over
+# values no model produced: at rank 20 the rfdiffusion stub is ipTM 0.65 /
+# pLDDT 90.0 / i_pAE 10.0, which clears its own tool's bar outright.
+_FABRICATED_MARKERS = ("stub",)
+
+
+def is_fabricated(record: object) -> bool:
+    """True when a pipeline marked this record's scores as fabricated.
+
+    Reads the provenance marker only. Nothing here consults, or may consult,
+    the pass/fail half of that field -- see the block comment at the top of
+    this section for the difference and why it matters.
+    """
+    if not isinstance(record, dict):
+        return False
+    scores = record.get("scores")
+    scores = scores if isinstance(scores, dict) else {}
+    marker = scores.get("filter_status")
+    if marker is None:
+        marker = record.get("filter_status")
+    text = str(marker or "").lower()
+    return any(m in text for m in _FABRICATED_MARKERS)
 
 
 def judge(tool: str, record: object) -> Judgement:
@@ -1019,10 +1199,17 @@ def judge(tool: str, record: object) -> Judgement:
     if not columns:
         return Judgement("unjudged", (), ())
 
+    if is_fabricated(record):
+        return Judgement("unjudged", (), ("smoke-test stub, scores fabricated",))
+
     shortfalls: list[str] = []
+    shortfall_cols: list[str] = []
     unmeasured: list[str] = []
     for col in columns:
-        label = _metric_glossary.get(col)["label"]
+        # The bare name. A unit on a column nobody measured is noise: "Not
+        # measured: Refolding RMSD" is the fact, and "(A)" adds nothing when
+        # there is no number for it to qualify.
+        label, _unit = _label_and_unit(col)
         legend = get_legend(tool, col)
         if legend is None:
             # A gate column with no legend has no bar to be compared against.
@@ -1039,10 +1226,19 @@ def judge(tool: str, record: object) -> Judgement:
         meets = value <= good if lower_is_better else value >= good
         if not meets:
             side = "above" if lower_is_better else "below"
-            shortfalls.append(f"{label} {_fmt(value)}, {side} {_fmt(good)}")
+            _, unit = _label_and_unit(col)
+            shortfalls.append(
+                f"{_reading(col, value)}, {side} {_fmt(good)}{unit}"
+            )
+            shortfall_cols.append(col)
 
     if shortfalls:
-        return Judgement("below", tuple(shortfalls), tuple(unmeasured))
+        return Judgement(
+            "below",
+            tuple(shortfalls),
+            tuple(unmeasured),
+            tuple(shortfall_cols),
+        )
     if unmeasured:
         return Judgement("unjudged", (), tuple(unmeasured))
     return Judgement("meets", (), ())

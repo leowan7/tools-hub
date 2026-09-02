@@ -35,7 +35,6 @@ from shared.idempotency import idempotent
 from shared import score_legends
 from shared.jobs import (
     cancel_job,
-    candidate_meets_bar,
     candidate_records,
     complete_job,
     create_job,
@@ -343,14 +342,32 @@ def job_status(job_id: str):
     # Live count, derived from each partial's own measurements. This used to
     # read the streamed ``filter_status`` and match it against the single
     # string "pass", which undercounted every tool with a different vocabulary
-    # ("strict_pass") on top of being a stored verdict. A partial that has not
-    # yet reported every gate column is unjudged and does not count — the
-    # number rises as the run measures more, which is what a live counter
-    # should do.
-    passed = sum(
-        1 for cand in partials
-        if isinstance(cand, dict) and candidate_meets_bar(job.tool, cand)
-    )
+    # ("strict_pass") on top of being a stored verdict.
+    #
+    # None MEANS "CANNOT SAY YET", AND IT IS NOT THE SAME AS ZERO. A streamed
+    # partial is not a finished candidate: webhooks/modal._sanitize_candidate
+    # fixes the schema at rank / name / pdb_key / iptm / ptm / plddt /
+    # complex_plddt / complex_iplddt / i_pae / n_hotspot_contacts, so a
+    # boltzgen partial cannot carry the refolding RMSD its bar needs (the
+    # refold runs at the end) and an rfantibody one cannot carry a global pAE.
+    # Reporting 0 there asserts that nothing met the bar, which is a claim the
+    # run has not made; the template omits the clause entirely on None.
+    #
+    # A tool with no bar counts every delivered partial, matching what
+    # count_candidates_meeting_bar will say when the job finishes -- otherwise
+    # a bindcraft run reads "0 passed" all the way through and then N at the
+    # end, which looks like a bug in the run rather than in the counter.
+    rows = [c for c in partials if isinstance(c, dict)]
+    if not score_legends.tool_has_bar(job.tool):
+        passed = len(rows)
+    else:
+        judged = [score_legends.judge(job.tool, c) for c in rows]
+        passed = (
+            sum(1 for v in judged if v.verdict == "meets")
+            if any(v.verdict != "unjudged" for v in judged)
+            else None
+        )
+
     # The live table's quality cell is derived HERE and not in the browser, so
     # there is exactly one implementation of the bar. Shallow copies: the
     # partials belong to job.inputs and this is a read path.
@@ -361,8 +378,8 @@ def job_status(job_id: str):
             continue
         verdict = score_legends.judge(job.tool, cand)
         row = dict(cand)
-        row["quality_verdict"] = verdict.verdict
-        row["quality"] = (
+        row["bar_verdict"] = verdict.verdict
+        row["bar_text"] = (
             "; ".join(verdict.shortfalls) if verdict.verdict == "below"
             else "Meets " + score_legends.gate_bar_text(job.tool)
             if verdict.verdict == "meets"

@@ -425,6 +425,9 @@ def create_app() -> Flask:
     # comment in shared/score_legends.py.
     flask_app.jinja_env.globals["judge_design"] = _score_legends.judge
     flask_app.jinja_env.globals["gate_bar_text"] = _score_legends.gate_bar_text
+    flask_app.jinja_env.globals["shortfall_bar_text"] = (
+        _score_legends.shortfall_bar_text
+    )
     flask_app.jinja_env.globals["tool_has_bar"] = _score_legends.tool_has_bar
     # A CALLABLE, NOT THE SET, and the difference is the whole point. This
     # replaced five slugs typed into components/results_shell.html under a

@@ -1162,7 +1162,7 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
     columns = set()
     for html in banner_surfaces.values():
         columns |= _column_labels(html)
-    assert {"pLDDT", "Against bar"} <= columns, (
+    assert {"pLDDT", "vs. quality bar"} <= columns, (
         f"the header extractor stopped seeing known columns, so this check "
         f"is guarding nothing: {sorted(columns)!r}"
     )

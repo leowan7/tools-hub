@@ -49,12 +49,13 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
-    # The Quality cell and the all-designs-fell-short banner apply the bar
+    # The vs.-quality-bar cell and the all-designs-fell-short banner apply the bar
     # when the page renders, so this env needs the same globals app.py
     # registers or the table cannot be rendered at all.
     env.globals["judge_design"] = score_legends.judge
     env.globals["gate_bar_text"] = score_legends.gate_bar_text
     env.globals["tool_has_bar"] = score_legends.tool_has_bar
+    env.globals["shortfall_bar_text"] = score_legends.shortfall_bar_text
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""

@@ -636,7 +636,7 @@
             </td>
           {% else %}
           {% for col in columns %}
-            {# The Against bar cell is COMPUTED, never read. It used to render the
+            {# The vs.-quality-bar cell is COMPUTED, never read. It used to render the
                ``filter_status`` word the pipeline stamped at the end of its
                run, which is only true against the threshold that was live
                when it was written — 65 BoltzGen designs still carry "below
@@ -651,19 +651,33 @@
                `raw is none` branch below because there is no ``scores`` entry
                to read — that is the point. #}
             {% if col == 'against_bar' %}
-              {% set verdict = judge_design(tool_slug, cand) %}
+              {# The ROW's tool, falling back to the table's. In single-tool
+                 mode they are the same; in a pooled table they are not, and
+                 the Score cell above already resolves per row for exactly this
+                 reason (what counts as good for ipTM differs between tools).
+                 The pooled branch does not render `columns` today, so this is
+                 belt and braces -- and it is one column-list change away from
+                 being the difference between a right answer and judging every
+                 tool's designs against one tool's bar. #}
+              {% set row_tool = cand.get('_source_tool') or tool_slug %}
+              {% set verdict = judge_design(row_tool, cand) %}
               <td data-col="against_bar" data-val="{{ verdict.verdict }}">
                 {% if verdict.verdict == 'below' %}
-                  <span title="Measured against {{ gate_bar_text(tool_slug) }}.">{{ verdict.shortfalls | join('; ') }}</span>
+                  {# The gaps are shown ALONGSIDE the shortfall, never swallowed
+                     by it. One leg failing settles the verdict, but a tooltip
+                     reading "measured against pLDDT 80 and Refolding RMSD 1.5"
+                     over a row whose RMSD was never recorded asserts a
+                     measurement that does not exist. #}
+                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ verdict.shortfalls | join('; ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}</span>
                 {% elif verdict.verdict == 'meets' %}
-                  <span title="Every leg measured and met: {{ gate_bar_text(tool_slug) }}.">Meets {{ gate_bar_text(tool_slug) }}</span>
+                  <span title="Every leg measured and met.">Meets {{ gate_bar_text(row_tool) }}</span>
                 {% else %}
                   {# Unjudged is NOT a failure, and the cell must not read like
                      one. The refold that produces BoltzGen's RMSD runs at the
                      end, so a job rebuilt from mid-run records has genuinely
                      not measured it; saying so beats inventing a verdict, and
                      inventing one is what this whole change removes. #}
-                  <span title="Not enough was measured to compare this design against {{ gate_bar_text(tool_slug) }}.">Not measured: {{ verdict.unmeasured | join(', ') }}</span>
+                  <span title="Not enough was measured to compare this design against {{ gate_bar_text(row_tool) }}.">Not measured: {{ verdict.unmeasured | join(', ') }}</span>
                 {% endif %}
               </td>
             {% else %}

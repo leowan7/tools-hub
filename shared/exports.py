@@ -149,6 +149,18 @@ def _basename(pdb_key: str, fallback: str) -> str:
 
 # Root-level keys that are never metrics: identity, provenance, bulk payloads.
 # Everything else scalar at the root IS exported (see _metric_columns).
+# The verdict a pipeline stamped, which is NOT a metric and is no longer true
+# of anything. Excluded from BOTH loops in _metric_columns -- a CSV is the one
+# copy of a result that leaves this site, and shipping "below threshold" beside
+# the measurements would hand a customer a file that contradicts the page they
+# downloaded it from (65 BoltzGen designs carry that word against a bar their
+# container has since dropped). The measurements are exported unchanged and are
+# what the derived verdict is computed from, so nothing checkable is lost.
+#
+# ``passed`` goes with it: no pipeline writes it today and it was the other
+# stored-verdict shape shared/jobs used to honour.
+_STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
+
 _NON_METRIC_ROOT_KEYS = frozenset({
     "pdb_key", "name", "rank", "scores",
     "sequence", "binder_sequence", "designed_sequence",
@@ -173,10 +185,12 @@ def _metric_columns(cands: list, leading: list[str]) -> list[str]:
     out: list[str] = []
     for cand in cands:
         for k in (cand.get("scores") or {}):
-            if k not in out and k not in leading:
+            if k not in out and k not in leading and k not in _STALE_VERDICT_KEYS:
                 out.append(k)
     for cand in cands:
         for k, v in cand.items():
+            if k in _STALE_VERDICT_KEYS:
+                continue
             if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
                 continue
             if k.startswith("_"):          # provenance tags

@@ -19,9 +19,11 @@ from shared.jobs import candidate_meets_bar, count_candidates_meeting_bar
 from shared.score_legends import (
     GATE_COLUMNS,
     IMPLAUSIBLE_VALUES,
+    SCORE_LEGENDS,
     gate_bar_text,
     get_legend,
     judge,
+    shortfall_bar_text,
     tool_has_bar,
 )
 
@@ -47,6 +49,36 @@ def test_every_gate_column_has_a_legend(tool):
         assert isinstance(legend["good"], (int, float))
 
 
+def test_every_tool_key_is_a_registered_slug():
+    """THE GUARD THAT WAS NOT HERE, AND IT COST THE WHOLE FEATURE FOR ONE TOOL.
+
+    GATE_COLUMNS and the legends shipped keyed on "esmfold2_design", the
+    PACKAGE DIRECTORY. The registered slug is "esmfold2-design" with a hyphen,
+    which is what the template passes and what job.tool holds. Nothing raised:
+    an unknown tool simply has no bar, so every cell on that tool's page
+    rendered the bare string "Not measured:" with nothing after it, and the
+    test file agreed with the typo because its own fixture used the same key.
+    shared/tool_meta.py records the same trap silently dropping a PILOT card
+    on this same tool.
+
+    A key here that no tool answers to is dead weight at best and a silently
+    disabled bar at worst, so it is an error rather than a shrug.
+    """
+    import app  # noqa: F401  -- populates the registry; empty without it
+    from tools.base import _REGISTRY
+
+    assert _REGISTRY, "the adapter registry is empty, so this checks nothing"
+    slugs = set(_REGISTRY)
+    keyed = {t for t, _c in SCORE_LEGENDS} | set(GATE_COLUMNS)
+    # af2 / colabfold / esmfold / mpnn are predictors with legends and no bar;
+    # all four are registered tools, so nothing here is exempt.
+    unknown = sorted(keyed - slugs)
+    assert not unknown, (
+        f"legend/gate keys that are not registered tool slugs: {unknown}. "
+        f"Registered: {sorted(slugs)}"
+    )
+
+
 @pytest.mark.parametrize("key", sorted(IMPLAUSIBLE_VALUES))
 def test_implausible_values_are_declared_on_a_gate_column(key):
     tool, column = key
@@ -54,6 +86,20 @@ def test_implausible_values_are_declared_on_a_gate_column(key):
         f"{tool}/{column} declares placeholder values but is not gated on, "
         "so the declaration does nothing"
     )
+
+
+def test_pxdesign_is_not_gated_on_pae():
+    """The second column with a legend that must not become a gate leg, and
+    for a different reason than boltzgen's ipTM. pxdesign's pAE arrives on two
+    scales: the container prefers the Angstrom form but falls back to
+    PXDesign's [0,1] normalised af2_ipae / af2_pae, and a 0-1 reading clears
+    an Angstrom bar of 5 unconditionally. A leg that can silently pass
+    everything is worse than no leg."""
+    assert get_legend("pxdesign", "pAE") is not None
+    assert "pAE" not in GATE_COLUMNS["pxdesign"]
+    assert judge(
+        "pxdesign", {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "pAE": 0.42}},
+    ).verdict == "meets"
 
 
 def test_boltzgen_is_not_gated_on_iptm():
@@ -68,7 +114,12 @@ def test_boltzgen_is_not_gated_on_iptm():
 
 
 def test_tools_without_a_bar_are_unjudged_not_failed():
-    for tool in ("bindcraft", "proteina", "iggm", "opendde", "mpnn", ""):
+    # esmfold2-design is in this list on purpose. Its bar is mode-dependent
+    # (scFv on a CDR proxy, minibinder on ipTM AND pI) and cannot be written
+    # as one conjunction over its columns; an ipTM-only bar printed "meets" on
+    # the high-ipTM design its own worked example exists to warn you off.
+    for tool in ("bindcraft", "proteina", "iggm", "opendde", "mpnn",
+                 "esmfold2-design", "esmfold2_design", ""):
         assert not tool_has_bar(tool)
         assert judge(tool, {"scores": {"ipTM": 0.01}}).verdict == "unjudged"
 
@@ -83,10 +134,9 @@ def test_tools_without_a_bar_are_unjudged_not_failed():
 MEETING = {
     "boltzgen": {"scores": {"pLDDT": 88.0, "refolding_rmsd": 1.1}},
     "rfdiffusion": {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "i_pAE": 6.0}},
-    "pxdesign": {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "pAE": 3.0}},
+    "pxdesign": {"scores": {"ipTM": 0.9, "pLDDT": 88.0}},
     "rfantibody": {"scores": {"pLDDT": 88.0, "ipAE": 6.0, "pAE": 3.0}},
     "boltz2": {"iptm": 0.9, "complex_plddt": 0.93, "n_hotspot_contacts": 6},
-    "esmfold2_design": {"scores": {"ipTM": 0.9}},
 }
 
 
@@ -216,6 +266,64 @@ def test_a_measured_shortfall_beats_an_unmeasured_leg():
     assert verdict.verdict == "below"
 
 
+def test_a_smoke_stub_is_never_judged():
+    """Fabricated scores get no verdict. The smoke tier invents deterministic
+    numbers when no model output exists and marks them "stub (smoke)"; that
+    marker is PROVENANCE, a fact about where a number came from, and it is the
+    one thing this module still reads out of that field. Applying a bar to
+    invented values printed "Meets pLDDT 80" over numbers no model produced --
+    the boltzgen stub at rank 10 is pLDDT 80.0 and RMSD 1.5, clearing its own
+    tool's bar exactly."""
+    from shared.score_legends import is_fabricated
+
+    stub = {"scores": {"pLDDT": 80.0, "refolding_rmsd": 1.5,
+                       "filter_status": "stub (smoke)"}}
+    assert is_fabricated(stub)
+    verdict = judge("boltzgen", stub)
+    assert verdict.verdict == "unjudged"
+    assert verdict.unmeasured == ("smoke-test stub, scores fabricated",)
+    # The same numbers without the marker DO meet the bar, which is what makes
+    # the marker load-bearing rather than decorative.
+    assert judge(
+        "boltzgen", {"scores": {"pLDDT": 80.0, "refolding_rmsd": 1.5}},
+    ).verdict == "meets"
+
+
+def test_a_container_parse_failure_is_unmeasured_not_a_shortfall():
+    """Every container parser substitutes a default when a column is present
+    but will not parse: 0.0 for pLDDT / ipTM, 99.0 for the PAE family. Each
+    lands on the FAILING side of its own bar, so without a placeholder
+    declaration the page reports a parse failure as a confident measured
+    shortfall."""
+    assert judge(
+        "rfantibody",
+        {"scores": {"pLDDT": 0.0, "ipAE": 99.0, "pAE": 99.0}},
+    ).verdict == "unjudged"
+    assert judge(
+        "pxdesign", {"scores": {"ipTM": 0.0, "pLDDT": 0.0}},
+    ).verdict == "unjudged"
+
+
+def test_a_negative_plddt_is_unmeasured_not_a_shortfall():
+    """A negative confidence is a broken payload. plddt_on_100 passes it
+    through so a reader SEES it in the table; a bar must not turn it into
+    "pLDDT -5, below 80", which reads as something that was measured."""
+    assert judge(
+        "boltzgen", {"scores": {"pLDDT": -5, "refolding_rmsd": 1.0}},
+    ).verdict == "unjudged"
+
+
+def test_a_reading_never_contradicts_itself():
+    """%g gave six significant figures and then trimmed, so an ipTM of
+    0.7499999 printed "0.75" and the cell read "ipTM 0.75, below 0.75". The
+    reading carries the metric's own display precision; the bar keeps %g,
+    because a threshold is an exact chosen number."""
+    (short,) = judge(
+        "pxdesign", {"scores": {"ipTM": 0.7499999, "pLDDT": 88.0}},
+    ).shortfalls
+    assert short == "ipTM 0.750, below 0.75"
+
+
 def test_a_shortfall_names_the_reading_and_the_bar():
     """The cell has to carry a checkable fact, not a word. "below threshold"
     told a reader nothing they could act on."""
@@ -287,12 +395,16 @@ _JINJA = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 _JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.S)
 
 
+# The ONE function allowed to read that field, and only for its provenance
+# half. Named rather than pattern-matched, so a second reader cannot slip in
+# beside it by looking similar.
+_PROVENANCE_CARVE_OUT = ("shared/score_legends.py", "is_fabricated")
+
+
 def test_no_template_expression_reads_filter_status():
-    """A grep, and it is the WEAKEST check in this file on purpose -- it only
-    catches the word coming back to a template. It is scoped to Jinja
-    expressions so a comment explaining the history does not trip it, and the
-    behavioural tests above are what actually pin the mechanism.
-    """
+    """A grep, and the WEAKEST check in this file -- the behavioural tests
+    above are what pin the mechanism. Scoped to Jinja expressions so a comment
+    explaining the history does not trip it."""
     offenders = []
     for path in (REPO / "templates").rglob("*.html"):
         for expr in _JINJA.findall(path.read_text(encoding="utf-8")):
@@ -305,6 +417,82 @@ def test_no_template_expression_reads_filter_status():
     )
 
 
+def _verdict_reads(source: str):
+    """Line numbers where ``source`` READS the ``filter_status`` key.
+
+    An AST walk, not a grep, and the difference is the whole usefulness of the
+    check. Every module in the change explains this field at length in prose,
+    and a substring match flags all of that; a docstring is not a read. It
+    also flags ``_STALE_VERDICT_KEYS = frozenset({"filter_status"})``, which
+    names the key in order to EXCLUDE it from every CSV -- the opposite of
+    reading it.
+
+    So: subscripts (``d["filter_status"]``) and ``.get("filter_status")``
+    calls, which is what a read of a JSON-ish record looks like in this repo.
+    """
+    import ast
+
+    hits = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == "filter_status"
+        ):
+            hits.append(node.lineno)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "filter_status"
+        ):
+            hits.append(node.lineno)
+    return sorted(set(hits))
+
+
+def test_no_python_module_reads_filter_status_for_a_verdict():
+    """The other two thirds of the claim the comments make.
+
+    shared/jobs.py and shared/score_legends.py both tell a reader this grep
+    keeps the word out of shared/, blueprints/ AND templates/. It walked
+    templates only, so two thirds of that sentence was decoration. It walks all
+    three now, with one named carve-out: score_legends.is_fabricated reads the
+    "stub (smoke)" provenance marker stored in the same field, which is a fact
+    about where a number came from rather than a judgement about a design.
+    """
+    offenders = []
+    for folder in ("shared", "blueprints"):
+        for path in (REPO / folder).rglob("*.py"):
+            rel = path.relative_to(REPO).as_posix()
+            if rel == _PROVENANCE_CARVE_OUT[0]:
+                continue
+            for lineno in _verdict_reads(path.read_text(encoding="utf-8")):
+                offenders.append(f"{rel}:{lineno}")
+    assert not offenders, (
+        "a module reads the stored verdict again: " + ", ".join(offenders)
+    )
+
+
+def test_the_provenance_carve_out_is_exactly_one_function():
+    """The carve-out above exempts a whole FILE, so this bounds what may live
+    in it: the marker may be read inside is_fabricated and nowhere else."""
+    import ast
+
+    source = (REPO / _PROVENANCE_CARVE_OUT[0]).read_text(encoding="utf-8")
+    reading_lines = set(_verdict_reads(source))
+    assert reading_lines, "nothing reads the marker; this check is hollow"
+
+    owners = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef):
+            span = range(node.lineno, (node.end_lineno or node.lineno) + 1)
+            if reading_lines & set(span):
+                owners.add(node.name)
+    assert owners == {_PROVENANCE_CARVE_OUT[1]}, sorted(owners)
+
+
 def test_the_banner_states_a_measurable_fact():
     """The all-designs-fell-short banner has to name the bar it is talking
     about. "All designs fell below quality thresholds" is a verdict whose
@@ -313,13 +501,22 @@ def test_the_banner_states_a_measurable_fact():
     shell = (REPO / "templates/components/results_shell.html").read_text(
         encoding="utf-8",
     )
-    assert "No design here reaches {{ gate_bar_text(tool_slug) }}" in shell
+    assert (
+        "No design here reaches "
+        "{{ shortfall_bar_text(tool_slug, ns.legs) }}"
+    ) in shell
     # Jinja comments stripped: the block above the banner quotes the old
     # wording to say why it went, and a check that cannot tell an explanation
     # from the thing it explains would forbid ever writing one down.
     rendered = _JINJA_COMMENT.sub("", shell)
     assert "fell below quality thresholds" not in rendered
 
-    assert gate_bar_text("boltzgen").startswith("pLDDT 80")
-    assert "1.5" in gate_bar_text("boltzgen")
+    # The WHOLE string, not a prefix. Two earlier assertions here stopped one
+    # character before the unit and so could not see it rendering in the wrong
+    # place ("Refolding RMSD (A) 1.5", with the unit stranded ahead of the
+    # number it belongs to).
+    assert gate_bar_text("boltzgen") == "pLDDT 80 and Refolding RMSD 1.5 \u00c5"
     assert gate_bar_text("bindcraft") == ""
+    # A banner may name only the legs it saw fall short.
+    assert shortfall_bar_text("boltzgen", ("pLDDT",)) == "pLDDT 80"
+    assert shortfall_bar_text("boltzgen", ()) == ""

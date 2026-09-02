@@ -157,18 +157,20 @@ GLOSSARY: dict[str, dict] = {
     # stamped. No word is stored now; this column is computed when the page
     # renders. See the block comment in shared/score_legends.py.
     "against_bar": {
-        "label": "Against bar",
+        "label": "vs. quality bar",
         "definition": (
             "How this design's own measurements compare to the bar for its "
             "tool, computed when this page loaded rather than when the run "
             "finished. A design that falls short names the measurement and "
             "the bar it fell short of. 'Not measured' means at least one leg "
-            "of the bar was never recorded for this design — that is not a "
-            "failure, and the commonest cause is a job rebuilt from records "
+            "of the bar was never recorded for this design, which is not a "
+            "failure; the commonest cause is a job rebuilt from records "
             "streamed mid-run, which cannot contain a metric the run produces "
-            "at the end. The bars are the per-column 'good' values in "
-            "shared/score_legends.py, so this column and the column tooltips "
-            "can never disagree."
+            "at the end. Smoke-test rows say so too: their scores are "
+            "fabricated, so no bar is applied to them. The bars are the "
+            "per-column 'good' values in shared/score_legends.py, the same "
+            "numbers the column tooltips quote, and a value exactly ON a bar "
+            "counts as meeting it."
         ),
         "good_range": "meets the bar on every leg",
         "citation": "",

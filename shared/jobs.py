@@ -90,7 +90,12 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
 # shared.score_legends.GATE_COLUMNS. See the block comment there for the four
 # production defects this makes impossible rather than merely fixed, and
 # tests/test_derived_verdicts.py for the grep that keeps ``filter_status``
-# out of shared/, blueprints/ and templates/.
+# out of shared/, blueprints/ and templates/. The single carve-out is
+# ``shared.score_legends.is_fabricated``, which reads the "stub (smoke)"
+# PROVENANCE marker stored in that same field -- a fact about where a number
+# came from, not a judgement about the design. The test names that one
+# function explicitly rather than matching a pattern, so a second reader
+# cannot slip in beside it.
 
 
 def candidate_records(result: Optional[dict]) -> list:

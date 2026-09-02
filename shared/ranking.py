@@ -336,16 +336,25 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     only on evidence that it fell short. Both halves are load bearing.
 
     Tool scope for the REGIME, and this is the half that used to be guessed.
-    It was ``any(record_has_filter_signal(c) for c in cohort_rows)`` — read
+    It was ``any(record_has_filter_signal(c) for c in cohort_rows)`` -- read
     off whether some row in the cohort happened to carry a stored
     ``filter_status``, which made the regime depend on which container version
     ran and on whether job recovery had rebuilt the row. It is now a
-    declaration, ``shared.score_legends.GATE_COLUMNS``. The docstring that
-    stood here claimed only rfdiffusion and pxdesign emit a filter at all;
-    that was false against the deployed containers, where bindcraft stamps an
-    unconditional "pass" and rfantibody stamps a real verdict. Deciding the
-    regime per record would still be wrong for the original reason: it
-    partitions the table on tool identity rather than on design quality.
+    declaration, ``shared.score_legends.GATE_COLUMNS``.
+
+    THE TEXT THAT STOOD HERE WAS RIGHT AND AN EARLIER VERSION OF THIS
+    PARAGRAPH SAID IT WAS WRONG. It claimed only rfdiffusion and pxdesign
+    "register a ``filter_status`` COLUMN at all", cited
+    shared/result_columns.py for it, and went on to note in as many words that
+    "shared/jobs.py names a different and wider set, and the two have not been
+    reconciled". Both halves were true: only those two tools carried the
+    column, and the wider set was exactly the gap that mattered. Rewriting it
+    as a claim about which tools EMIT a filter, and then calling that false
+    because bindcraft and rfantibody do stamp one, attacked a sentence nobody
+    wrote. (The shared/jobs.py docstring, separately, really did say those two
+    tools "omit the field", and really was false.) Deciding the regime per
+    record would still be wrong for the original reason: it partitions the
+    table on tool identity rather than on design quality.
 
     Record scope for the VERDICT, because the rows of one cohort are not all
     measured alike. A recovered chunk arrives without the metrics the run

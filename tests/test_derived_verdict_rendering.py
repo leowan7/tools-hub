@@ -1,0 +1,222 @@
+"""The RENDERED cell and banner, not just the function behind them.
+
+WHY THIS FILE EXISTS. tests/test_derived_verdicts.py pins ``judge`` well:
+mutating the placeholder set, reinstating boltzgen's ipTM leg, turning
+unmeasured into failed, re-carrying a verdict through job recovery, or
+dropping the pLDDT rescale all fail it loudly. None of that reached the
+templates. An independent reviewer mutated the rendering layer three ways --
+made the cell render empty in every branch, disabled the banner outright, and
+replaced the cell text with the bare words PASS / FAIL that this change exists
+to delete -- and all 355 tests touching these templates stayed green. The old
+banner test only grepped the template SOURCE for a string; it never rendered
+it.
+
+So every test here renders through the app's real Jinja environment and reads
+the output. A template that produces nothing, or produces a word instead of a
+measurement, fails here.
+"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from shared.score_legends import GATE_COLUMNS, gate_bar_text
+
+
+@pytest.fixture(scope="module")
+def env():
+    """The app's REAL Jinja environment, inside a request context.
+
+    Not a hand-built Environment with a few globals bolted on: the point of
+    this file is that what ships renders, and a fixture that registers its own
+    globals could not have caught a missing one.
+    """
+    from app import create_app
+
+    app = create_app()
+    with app.test_request_context("/"):
+        yield app.jinja_env
+
+
+def _render_table(env, tool, columns, candidates):
+    tmpl = env.from_string(
+        "{% from 'components/candidate_table.html' import candidate_table %}"
+        "{{ candidate_table(candidates, columns, 'job-1', tool) }}"
+    )
+    return tmpl.render(candidates=candidates, columns=columns, tool=tool)
+
+
+def _render_panel(env, tool, columns, candidates):
+    tmpl = env.from_string(
+        "{% from 'components/results_shell.html' import results_panel %}"
+        "{{ results_panel(candidates, columns, tool, 'job-1') }}"
+    )
+    return tmpl.render(candidates=candidates, columns=columns, tool=tool)
+
+
+def _cells(html):
+    """The rendered text of every vs.-quality-bar cell, in order."""
+    return [
+        re.sub(r"<[^>]+>", "", c).strip()
+        for c in re.findall(
+            r'<td data-col="against_bar".*?</td>', html, re.S,
+        )
+    ]
+
+
+BOLTZGEN_COLUMNS = ["ipTM", "pLDDT", "refolding_rmsd", "against_bar"]
+
+
+# ---------------------------------------------------------------------------
+# The cell says the measurement, never a word
+# ---------------------------------------------------------------------------
+
+def test_a_short_design_renders_the_reading_and_the_bar(env):
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"ipTM": 0.9, "pLDDT": 72.4, "refolding_rmsd": 1.0}},
+    ])
+    assert _cells(html) == ["pLDDT 72.4, below 80"]
+
+
+def test_a_meeting_design_renders_the_bar_it_met(env):
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "refolding_rmsd": 1.0}},
+    ])
+    assert _cells(html) == [f"Meets {gate_bar_text('boltzgen')}"]
+
+
+def test_an_unmeasured_design_says_which_leg_is_missing(env):
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"ipTM": 0.9, "pLDDT": 88.0}},
+    ])
+    assert _cells(html) == ["Not measured: Refolding RMSD"]
+
+
+def test_a_short_design_with_a_gap_reports_the_gap_too(env):
+    """One leg failing settles the verdict, but the cell may not then imply the
+    other was measured. This is the ordinary shape of a job rebuilt from
+    mid-run records, so it is not a corner case."""
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"ipTM": 0.9, "pLDDT": 60.0}},
+    ])
+    assert _cells(html) == ["pLDDT 60.0, below 80; Refolding RMSD not measured"]
+
+
+def test_the_cell_never_renders_a_bare_verdict_word(env):
+    """The whole point. A cell reading "pass", "fail" or "below threshold"
+    tells a reader nothing they can check, and every one of those words came
+    from a threshold that has since moved."""
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "refolding_rmsd": 1.0}},
+        {"scores": {"ipTM": 0.9, "pLDDT": 60.0, "refolding_rmsd": 3.0}},
+        {"scores": {"ipTM": 0.9}},
+    ])
+    cells = _cells(html)
+    assert len(cells) == 3
+    for text in cells:
+        assert text, "the cell rendered empty"
+        assert text.lower() not in ("pass", "fail", "below threshold", "-")
+        # Every branch carries either a number or the name of a missing leg.
+        assert re.search(r"\d", text) or "not measured" in text.lower()
+
+
+def test_a_smoke_stub_is_never_judged(env):
+    """Fabricated scores, so no bar is applied. The stub row that used to carry
+    a red badge is at rank 10 of a boltzgen smoke run: pLDDT 80.0 and
+    refolding RMSD 1.5, which clears its own tool's bar exactly."""
+    html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 80.0, "refolding_rmsd": 1.5,
+                    "filter_status": "stub (smoke)"}},
+    ])
+    assert _cells(html) == ["Not measured: smoke-test stub, scores fabricated"]
+
+
+# ---------------------------------------------------------------------------
+# The banner
+# ---------------------------------------------------------------------------
+
+def test_the_banner_fires_when_every_design_falls_short(env):
+    html = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 60.0, "refolding_rmsd": 1.0}},
+        {"scores": {"pLDDT": 55.0, "refolding_rmsd": 1.2}},
+    ])
+    assert "No design here reaches pLDDT 80." in html
+
+
+def test_the_banner_names_only_legs_it_saw_fall_short(env):
+    """Every row is short on pLDDT and NOT ONE ever measured the refold. Naming
+    the whole bar would put half a sentence about a number this page does not
+    have into the one banner whose job is to say only what was measured."""
+    html = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 60.0}},
+        {"scores": {"pLDDT": 55.0}},
+    ])
+    assert "No design here reaches pLDDT 80." in html
+    assert "Refolding RMSD 1.5" not in html.split("</strong>")[0]
+
+
+def test_the_banner_stays_silent_when_one_design_meets_the_bar(env):
+    html = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
+        {"scores": {"pLDDT": 55.0, "refolding_rmsd": 1.2}},
+    ])
+    assert "No design here reaches" not in html
+
+
+def test_the_banner_stays_silent_when_a_design_cannot_be_judged(env):
+    """"None of these reaches the bar" is a claim the measurements do not
+    support when one of them was never compared to it."""
+    html = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 60.0, "refolding_rmsd": 3.0}},
+        {"scores": {"ipTM": 0.9}},
+    ])
+    assert "No design here reaches" not in html
+
+
+def test_the_banner_never_asserts_an_unfalsifiable_judgement(env):
+    html = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 60.0, "refolding_rmsd": 3.0}},
+    ])
+    assert "fell below quality thresholds" not in html
+    assert "No design here reaches" in html
+
+
+def test_a_tool_with_no_bar_renders_no_banner_and_no_column(env):
+    """opendde has no pass/fail concept at all. Nothing may imply it does."""
+    html = _render_panel(env, "opendde", ["ipTM", "pLDDT"], [
+        {"scores": {"ipTM": 0.01, "pLDDT": 20.0}},
+    ])
+    assert "No design here reaches" not in html
+    assert "against_bar" not in html
+
+
+# ---------------------------------------------------------------------------
+# Every gating tool renders, on the shape it really stores
+# ---------------------------------------------------------------------------
+
+REAL_SHAPES = {
+    "boltzgen": {"scores": {"ipTM": 0.5, "pLDDT": 88.0, "refolding_rmsd": 1.0}},
+    "rfdiffusion": {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "i_pAE": 6.0}},
+    "pxdesign": {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "pAE": 3.0}},
+    "rfantibody": {"scores": {"pLDDT": 88.0, "ipAE": 6.0, "pAE": 3.0}},
+    # boltz2 persists a flat designs[] row, lowercase, pLDDT on 0-1.
+    "boltz2": {"iptm": 0.9, "complex_plddt": 0.93, "n_hotspot_contacts": 6},
+}
+
+
+def test_every_gating_tool_has_a_render_fixture():
+    assert set(REAL_SHAPES) == set(GATE_COLUMNS)
+
+
+@pytest.mark.parametrize("tool", sorted(REAL_SHAPES))
+def test_every_gating_tool_renders_a_meeting_cell(env, tool):
+    """On the shape that tool actually persists, not a tidied one. This is the
+    check that would have caught a bar keyed on a slug no tool uses: the cell
+    came out as the bare string "Not measured:" with nothing after it."""
+    html = _render_table(env, tool, ["against_bar"], [REAL_SHAPES[tool]])
+    cells = _cells(html)
+    assert cells == [f"Meets {gate_bar_text(tool)}"]
+    assert cells[0] != "Meets "
+    assert not cells[0].endswith(":")

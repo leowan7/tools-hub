@@ -75,6 +75,16 @@ def _candidate_from_partial(part: dict) -> dict:
         scores["ipTM"] = part["iptm"]
     if part.get("plddt") is not None:
         scores["pLDDT"] = part["plddt"]
+    if part.get("i_pae") is not None:
+        # Kept under the streamed name. It is one quantity -- interface PAE --
+        # that three containers spell three ways, and the partial schema has a
+        # single field for it (webhooks/modal._sanitize_candidate), so the
+        # partial cannot say which spelling its tool uses.
+        # shared.score_legends resolves "i_pae" for both the rfdiffusion
+        # (i_pAE) and rfantibody (ipAE) bars, so writing the raw name is what
+        # keeps a recovered job judgeable. Dropping it made every recovered
+        # rfdiffusion job unjudged forever on a leg it had measured.
+        scores["i_pae"] = part["i_pae"]
     return {
         "rank": part.get("rank"),
         "pdb_key": f"designs/{basename}",

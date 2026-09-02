@@ -232,7 +232,7 @@
                     <th>ipTM</th>
                     <th>pLDDT</th>
                     <th>i_pAE</th>
-                    <th>Against bar</th>
+                    <th>vs. quality bar</th>
                     <th style="width:4.5rem;">3D</th>
                   </tr>
                 </thead>
@@ -532,7 +532,7 @@
         // bar in this file on purpose: a second copy of the thresholds here
         // would drift from shared/score_legends.py, and the streamed record
         // carries no verdict of its own to fall back on any more.
-        function qualityCell(verdict, text) {
+        function barCell(verdict, text) {
           if (!text) return '<span>—</span>';
           var cls = verdict === 'meets' ? 'jobdetail-pass'
                   : verdict === 'below' ? 'jobdetail-fail' : '';
@@ -564,7 +564,7 @@
               '<td>' + fmt(c.iptm, 3) + '</td>' +
               '<td>' + fmt(plddtOn100(c.plddt), 1) + '</td>' +
               '<td>' + fmt(c.i_pae, 2) + '</td>' +
-              '<td>' + qualityCell(c.quality_verdict, c.quality) + '</td>';
+              '<td>' + barCell(c.bar_verdict, c.bar_text) + '</td>';
 
             var pdbKey = c.pdb_key;
             var btnCell;
@@ -644,7 +644,7 @@
           if (total > 0) {
             var line = done + ' of ' + total + ' designs complete';
             if (passed !== null && !isNaN(passed)) {
-              line += ', ' + passed + ' passed filter so far';
+              line += ', ' + passed + ' meeting the quality bar so far';
             }
             liveSummary.textContent = line;
           } else if (done > 0) {

@@ -7,10 +7,15 @@
    AF2-convention 0–100 scale that pLDDT renders with.
 
    The pipeline's strict_pass / soft_pass / fail word is NOT carried over. The
-   Against bar column is derived from these same three metrics when the page
-   renders (shared/score_legends.GATE_COLUMNS), against the same bars the
-   pipeline used — ipTM 0.7, pLDDT 80, 4 hotspot contacts — so the row says
-   which leg fell short instead of naming a tier. #}
+   vs.-quality-bar column is derived from these same three metrics when the page
+   renders, against shared/score_legends.GATE_COLUMNS: ipTM 0.7, pLDDT 80 and
+   4 hotspot contacts. Two of those are the pipeline's own numbers; the pLDDT
+   one is NOT. tools/boltz2/run_pipeline.py sets STRICT_PLDDT = 0.85, i.e. 85
+   on the 0-100 scale this site renders, so the derived bar is looser there
+   and a design the pipeline called soft_pass can read as meeting it. The
+   legend value is the single bar by decision, so that this column and the
+   tooltip beside it can never disagree. The row now says which leg fell
+   short instead of naming a tier. #}
 
 {% from "components/results_shell.html" import results_panel %}
 

@@ -539,7 +539,20 @@ class TestExampleNumbersComeFromThePayload:
         plddt = [s["pLDDT"] for s in scores]
 
         assert len(cands) == 25 == result["total_designs"]
+        # TWO COUNTS, AND THE NARRATION MUST QUOTE THE RIGHT ONE. The stored
+        # ``filter_status`` is what the CONTAINER decided when this round ran,
+        # kept in the fixture as a historical record; the page renders a
+        # verdict derived from the measurements every time it loads. They
+        # differ here, and that is the whole point of the change: the second
+        # design the pipeline passed sits at pLDDT 78, under the 80 bar, and
+        # cleared only because PXDesign's own summary said so.
+        from shared.score_legends import judge
+
         assert sum(1 for s in scores if s["filter_status"] == "pass") == 2
+        derived = sum(
+            1 for c in cands if judge("pxdesign", c).verdict == "meets"
+        )
+        assert derived == 1
         assert max(iptm) == 0.88
         assert statistics.median(iptm) == 0.14
         assert statistics.median(plddt) == 91
@@ -551,8 +564,12 @@ class TestExampleNumbersComeFromThePayload:
         assert scores[0]["ipTM"] == 0.88 and scores[0]["pLDDT"] == 88.0
 
         blurb = example["what_came_back"]
-        for figure in ("25 designs", "2 passed", "0.88", "88", "91",
-                       "0.14", "21 of the 25"):
+        # "one" is the DERIVED count asserted above, not the stored one. If a
+        # bar moves, this fails and the copy has to be rewritten with it --
+        # which is the guard: a worked example that narrates a number the page
+        # no longer shows is exactly the contradiction this change removes.
+        for figure in ("25 designs", "<strong>one</strong> reaches the bar",
+                       "0.88", "88", "91", "0.14", "21 of the 25"):
             assert figure in blurb, f"{figure} missing from what_came_back"
 
         # Only ipTM / pLDDT / pAE / filter_status: the four keys the live
