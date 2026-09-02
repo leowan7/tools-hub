@@ -256,3 +256,77 @@ class TestSelfCopyDetection:
         assert prov["target"]["sha256"] == ec.sha256(target)
         assert prov["target"]["chains"] == {"A": 16}
         assert prov["target"]["self_copies"] == 1
+
+
+class TestThePlddtScaleIsStated:
+    """The export prints a column called ``af2_plddt`` on 0-1. So does
+    ``/jobs/<id>/export.csv`` -- on 0-100, since #200. Same design, same
+    header, two numbers. The fix is to SAY which, not to rewrite one:
+    manifest.csv sits in the parent directory on the same 0-1 scale, and
+    a rescaled designs.csv would put two scales under one header inside
+    one campaign directory.
+    """
+
+    def test_the_fasta_header_carries_both_readings(self, campaign):
+        ec.write_export(campaign, campaign / "export")
+        fasta = (campaign / "export" / "all_designs.fasta").read_text(
+            encoding="utf-8")
+
+        assert "plddt=0.88 (AF2 scale: 88.0/100)" in fasta, (
+            "a reader seeing plddt=0.88 beside the field's usual "
+            "'>80 is confidently folded' rule reads a catastrophic "
+            "design, which is the opposite of what it says"
+        )
+        assert "plddt=0.7 (AF2 scale: 70.0/100)" in fasta
+
+    def test_the_csv_value_is_NOT_rewritten(self, campaign):
+        """The archival guarantee. Annotating is the whole change;
+        rescaling would desync designs.csv from the manifest.csv beside
+        it, which is the trap this is meant to prevent, not cause."""
+        ec.write_export(campaign, campaign / "export")
+        with (campaign / "export" / "designs.csv").open(
+                encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+
+        assert [r["af2_plddt"] for r in rows] == ["0.88", "0.7"]
+        # ...and it still agrees with the manifest it was read from.
+        with (campaign / "manifest.csv").open(
+                encoding="utf-8", newline="") as fh:
+            src = list(csv.DictReader(fh))
+        assert [r["af2_plddt"] for r in rows] == [
+            r["af2_plddt"] for r in src
+        ]
+
+    def test_provenance_records_the_scales_machine_readably(self, campaign):
+        ec.write_export(campaign, campaign / "export")
+        prov = json.loads(
+            (campaign / "export" / "provenance.json").read_text(
+                encoding="utf-8"))
+
+        assert prov["scales"]["af2_plddt"] == "0-1"
+        assert prov["scales"]["pdb_b_factor"] == "0-1"
+        assert "0-100" in prov["scales"]["note"]
+
+    def test_the_readme_names_the_scale(self, campaign):
+        ec.write_export(campaign, campaign / "export")
+        readme = (campaign / "export" / "README.md").read_text(
+            encoding="utf-8")
+
+        assert "## Scales" in readme
+        assert "0-1 here, not 0-100" in readme
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [("0.88", "0.88 (AF2 scale: 88.0/100)"),
+         ("88.0", "88.0"),
+         ("", ""),
+         ("n/a", "n/a"),
+         (None, "None")],
+    )
+    def test_only_a_fractional_number_is_annotated(self, raw, expected):
+        """A value already on 0-100 must NOT be annotated -- some CSVs
+        write a plain ``plddt`` column that way, and labelling it would
+        manufacture the confusion this exists to remove. Unparseable
+        text comes back untouched rather than crashing an export whose
+        entire point is that it either completes or refuses loudly."""
+        assert ec.plddt_label(raw) == expected

@@ -44,6 +44,14 @@ AA3 = {
     "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W",
     "TYR": "Y", "VAL": "V",
 }
+# Reused rather than re-implemented: this is the one place in the repo
+# that already knows how to print proteina's af2_plddt without inviting
+# the wrong reading, and shard_driver already imports across these
+# scripts the same way. direct_call_fc's module-level imports are all
+# stdlib -- modal is loaded lazily inside its commands -- so this costs
+# nothing at import time.
+from tools.proteina.direct_call_fc import _plddt_text  # noqa: E402
+
 BINDER_CHAIN = "C"
 SCORE_COLUMNS = ("total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd",
                  "cluster_id", "rf3_score")
@@ -67,6 +75,32 @@ FASTA_WRAP = 60
 # the same test is flat (p = 0.115). The length signal WAS this artefact, and
 # a campaign that only kept the summary would have concluded the opposite.
 SELF_COPY_FRACTION = 0.50
+
+
+def plddt_label(raw) -> str:
+    """``af2_plddt`` with both readings, for a line a human reads.
+
+    THE VALUE IS NEVER RESCALED. manifest.csv sits beside these exports
+    carrying the same column on the same 0-1 scale, and a rewritten
+    number here would put two scales under one header in one directory
+    -- a worse trap than the one this fixes. What the export owes the
+    reader is which scale it is on, not a different number.
+
+    It matters because ``/jobs/<id>/export.csv`` prints a column also
+    called ``af2_plddt``, normalised to 0-100 since #200. Same design,
+    same header, two numbers, and until now nothing in either file said
+    which. A campaign is read months later by someone comparing the two.
+
+    manifest.csv's value arrives as a string, and ``_plddt_text`` only
+    annotates a real number -- deliberately, since some CSVs write a
+    plain ``plddt`` column on 0-100 already and annotating THAT would
+    manufacture the error it prevents. So coerce here, and hand back
+    the original text unchanged when it will not coerce.
+    """
+    try:
+        return _plddt_text(float(raw))
+    except (TypeError, ValueError):
+        return str(raw)
 
 
 class ExportError(RuntimeError):
@@ -270,7 +304,8 @@ def write_export(campaign: Path, dest: Path,
             for r in subset:
                 fh.write(fasta_record(
                     f"{design_id(r)} len={r['binder_length']} "
-                    f"iptm={r['af2_iptm']} plddt={r['af2_plddt']} "
+                    f"iptm={r['af2_iptm']} "
+                    f"plddt={plddt_label(r['af2_plddt'])} "
                     f"scrmsd={r['binder_scrmsd']} bin={r['bin_lo']}-{r['bin_hi']}",
                     r["sequence"]))
 
@@ -284,6 +319,19 @@ def write_export(campaign: Path, dest: Path,
         "distinct_sequences": len({r["sequence"] for r in rows}),
         "duplicate_sequences": len(dupes),
         "filters": {"refold_scrmsd_lt_A": REFOLD_CUT_A, "iptm_gte": IPTM_CUT},
+        # Machine-readable, so a later reader does not have to infer it
+        # from the magnitudes -- which is exactly how a 0-1 pLDDT gets
+        # mistaken for a catastrophic one.
+        "scales": {
+            "af2_plddt": "0-1",
+            "af2_iptm": "0-1",
+            "pdb_b_factor": "0-1",
+            "note": (
+                "The website reports af2_plddt on 0-100 and converts the "
+                "PDB B-factor column to 0-100 on download. These files "
+                "keep proteina's stored scale."
+            ),
+        },
         "target": None if not target else {
             "path": str(target),
             "sha256": sha256(target),
@@ -324,6 +372,25 @@ Re-running it reproduces this directory; it never writes outside `export/`.
 | `passing.fasta` | only designs meeting both filters, {prov['passing']} records |
 | `provenance.json` | per-shard job/call ids, runtimes, target checksum |
 | `CHECKSUMS.sha256` | over the source PDBs *and* these exports |
+
+## Scales
+
+`af2_iptm` is on 0-1, as ipTM is everywhere.
+
+**`af2_plddt` is on 0-1 here, not 0-100.** proteina stores it that way
+and this export is a faithful record, so the number is not rewritten --
+`manifest.csv` in the parent directory carries the same column on the
+same scale. The FASTA headers print both readings for that reason.
+
+The website reports the same quantity on **0-100**: a design showing
+`af2_plddt` 0.8624 in `designs.csv` appears as 86.24 in
+`/jobs/<id>/export.csv` and on the results page. Same design, same
+column name, two scales, and the field's usual "pLDDT > 80 is
+confidently folded" rule of thumb only applies to the second.
+
+The B-factor column of the delivered PDBs is on 0-1 as well; anything
+downloaded from the website has been converted to 0-100 on the way
+out.
 
 ## Filters
 
