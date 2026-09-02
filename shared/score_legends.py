@@ -201,8 +201,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 0.75,
         "direction": "higher_is_better",
         "explanation": (
-            "Interface pTM from the AF2 multimer re-score. Above 0.65 "
-            "is a credible binder; above 0.75 is strong."
+            "Interface pTM from the AF2 multimer re-score. 0.65 or more "
+            "is a credible binder; 0.75 or more is strong."
         ),
     },
     ("rfdiffusion", "pLDDT"): {
@@ -210,8 +210,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 90,
         "direction": "higher_is_better",
         "explanation": (
-            "pLDDT is AF2 confidence on the designed binder. Above 80 "
-            "is confidently folded; above 90 is high confidence."
+            "pLDDT is AF2 confidence on the designed binder. 80 or more "
+            "is confidently folded; 90 or more is high confidence."
         ),
     },
     ("rfdiffusion", "i_pAE"): {
@@ -220,8 +220,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "lower_is_better",
         "explanation": (
             "Interface pAE is AF2's expected positional error across "
-            "the binder-target interface. Below 10 angstroms passes; "
-            "below 6 is strong."
+            "the binder-target interface. 10 angstroms or less passes; "
+            "6 or less is strong."
         ),
     },
     ("rfdiffusion", "RMSD"): {
@@ -287,8 +287,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 6.0,
         "direction": "lower_is_better",
         "explanation": (
-            "Interaction pAE (binder-target). Below 10 angstroms is "
-            "the RFantibody pass bar; below 6 is strong."
+            "Interaction pAE (binder-target). 10 angstroms or less is "
+            "the RFantibody pass bar; 6 or less is strong."
         ),
     },
     ("rfantibody", "pLDDT"): {
@@ -297,7 +297,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "higher_is_better",
         "explanation": (
             "Predicted local confidence on the designed antibody. "
-            "Above 80 is confidently folded; above 90 is high confidence."
+            "80 or more is confidently folded; 90 or more is high confidence."
         ),
     },
     ("rfantibody", "pAE"): {
@@ -305,8 +305,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 3.0,
         "direction": "lower_is_better",
         "explanation": (
-            "Global predicted aligned error. Below 5 angstroms is good "
-            "complex geometry; below 3 is excellent."
+            "Global predicted aligned error. 5 angstroms or less is "
+            "good complex geometry; 3 or less is excellent."
         ),
     },
 
@@ -316,8 +316,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 0.85,
         "direction": "higher_is_better",
         "explanation": (
-            "Interface pTM from AF2-IG re-scoring. Above 0.75 is a "
-            "credible binder; above 0.85 is strong."
+            "Interface pTM from AF2-IG re-scoring. 0.75 or more is a "
+            "credible binder; 0.85 or more is strong."
         ),
     },
     ("pxdesign", "pLDDT"): {
@@ -325,8 +325,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 90,
         "direction": "higher_is_better",
         "explanation": (
-            "pLDDT is AF2 confidence on the designed binder. Above 80 "
-            "is confidently folded; above 90 is high confidence."
+            "pLDDT is AF2 confidence on the designed binder. 80 or more "
+            "is confidently folded; 90 or more is high confidence."
         ),
     },
     # NOT a gate leg, and the reason is worth the space. What pxdesign stores
@@ -487,8 +487,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "higher_is_better",
         "explanation": (
             "pLDDT of the binder, refolded on its own from its designed "
-            "sequence. Above 80 is confidently folded; above 90 is high "
-            "confidence."
+            "sequence. 80 or more is confidently folded; 90 or more is "
+            "high confidence."
         ),
     },
     ("boltzgen", "refolding_rmsd"): {
@@ -497,8 +497,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "lower_is_better",
         "explanation": (
             "Backbone RMSD between the designed binder and BoltzGen's "
-            "refold of its sequence. Below 1.5 angstroms is "
-            "self-consistent; below 1.0 is excellent."
+            "refold of its sequence. 1.5 angstroms or less is "
+            "self-consistent; 1.0 or less is excellent."
         ),
     },
 
@@ -509,7 +509,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "higher_is_better",
         "explanation": (
             "Interface pTM from Boltz-2's calibrated confidence head. "
-            "Above 0.7 is a credible binder; above 0.8 is strong."
+            "0.7 or more is a credible binder; 0.8 or more is strong."
         ),
     },
     ("boltz2", "pTM"): {
@@ -526,8 +526,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 90,
         "direction": "higher_is_better",
         "explanation": (
-            "Complex pLDDT (rescaled to the AF2 0-100 range). Above 80 "
-            "is confidently folded; above 90 is high confidence."
+            "Complex pLDDT (rescaled to the AF2 0-100 range). 80 or "
+            "more is confidently folded; 90 or more is high confidence."
         ),
     },
     ("boltz2", "n_hotspot_contacts"): {
@@ -536,7 +536,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "direction": "higher_is_better",
         "explanation": (
             "Number of user-requested hotspots contacted by the binder. "
-            "Above 4 of 7 is the strict-pass bar; 5 or more is strong."
+            "4 or more of 7 is the strict-pass bar; 5 or more is strong."
         ),
     },
     # ── ESMFold2-design (gradient design + critic re-score) ──────────

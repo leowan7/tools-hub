@@ -377,3 +377,80 @@ def test_the_glossary_explains_every_state_the_column_can_render(env):
     )
     assert "meeting it" in definition or "meets" in definition
     assert "falls short" in definition
+
+
+# ---------------------------------------------------------------------------
+# The hand-built test environments track the app's
+# ---------------------------------------------------------------------------
+
+def _macro_globals(env):
+    """Globals the SHARED MACROS CALL that are this project's own helpers.
+
+    Computed on both sides, so neither can rot.
+
+    NOT ``jinja2.meta.find_undeclared_variables``, and the difference is the
+    whole test. That function reports only what a template needs at TOP LEVEL,
+    and candidate_table.html is one big ``{% macro %}`` -- so it reports
+    neither ``judge_design`` nor ``verdict_text`` nor ``raw_metric``, and a
+    guard built on it passed while the very defect it was written for sat in
+    front of it. Verified before relying on this: dropping ``verdict_text``
+    from a hand-built env left that version green.
+
+    So: walk the AST for names CALLED as functions, in macro bodies included,
+    and intersect with the app's ``shared.*`` globals. The intersection is what
+    removes template locals -- a local is never a registered global -- which is
+    the job the first attempt did with a hardcoded list of 20 exceptions.
+    """
+    from pathlib import Path
+
+    from jinja2 import nodes
+
+    repo = Path(__file__).resolve().parents[1]
+    called = set()
+    for name in ("components/candidate_table.html",
+                 "components/results_shell.html"):
+        source = (repo / "templates" / name).read_text(encoding="utf-8")
+        for call in env.parse(source).find_all(nodes.Call):
+            if isinstance(call.node, nodes.Name):
+                called.add(call.node.name)
+    ours = {
+        name for name, value in env.globals.items()
+        if str(getattr(value, "__module__", "") or "").startswith("shared.")
+    }
+    found = called & ours
+    assert found, "no shared helper found in the macros; this checks nothing"
+    return found
+
+
+@pytest.mark.parametrize("module_name", [
+    "tests.test_candidate_table_js_contract",
+    "tests.test_results_action_bar",
+    "tests.test_target_table_render",
+])
+def test_a_hand_built_env_registers_what_the_app_does(env, module_name):
+    """Four test files build their own Jinja environment and render the shared
+    macros through it. Each new global has to be copied into all of them.
+
+    THE ARGUMENT FOR NOT CHECKING THIS HAS NOW FAILED TWICE. It was written,
+    deleted, and replaced with the reasoning that the real-app renders in this
+    file cover it -- they cover app.py's environment only. One commit then
+    left three envs unwired behind `raw_metric`, and the next left the same
+    three unwired behind `verdict_text`. Both survived because no fixture
+    happened to pass the column; both were one candidate away from an
+    UndefinedError.
+
+    LIMIT, stated rather than implied: this covers the three files that expose
+    an importable ``_env()``. tests/test_boltzgen_iptm_has_no_cofold_bar.py
+    builds its environment inside a test body, so it is reachable only by
+    rendering -- and it renders an empty candidate list, so its globals are
+    never exercised at all.
+    """
+    import importlib
+
+    module = importlib.import_module(module_name)
+    missing = sorted(_macro_globals(env) - set(module._env().globals))
+    assert not missing, (
+        f"{module_name} builds a Jinja env missing {missing}, which the "
+        "shared macros need; it renders green only while no fixture passes a "
+        "column that calls them"
+    )

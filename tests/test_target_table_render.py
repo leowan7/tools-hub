@@ -46,6 +46,7 @@ def _env() -> Environment:
     env.globals["score_legend_for"] = score_legends.get_legend
     env.globals["judge_design"] = score_legends.judge
     env.globals["verdict_text"] = score_legends.verdict_text
+    env.globals["plddt_on_100"] = metric_glossary.plddt_on_100
     env.globals["gate_bar_text"] = score_legends.gate_bar_text
     env.globals["shortfall_bar_text"] = score_legends.shortfall_bar_text
     env.globals["tool_has_bar"] = score_legends.tool_has_bar

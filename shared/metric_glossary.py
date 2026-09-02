@@ -40,7 +40,7 @@ GLOSSARY: dict[str, dict] = {
             "chains that interface spans depends on the tool that produced "
             "the number, and for some tools on when the run happened."
         ),
-        "good_range": "> 0.75 strong; > 0.65 acceptable",
+        "good_range": "0.65 to 0.75 depending on the tool; the bar that applies is quoted above",
         "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
     },
     "pLDDT": {

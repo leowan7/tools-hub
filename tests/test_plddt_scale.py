@@ -508,8 +508,11 @@ class TestTheOtherSurfaces:
         assert label == "pLDDT"
         assert value == "83.000", value
         # The caption underneath is the reason this matters: it quotes the
-        # band, so the number above it has to be on the same scale.
-        assert "Above 80" in caption, caption
+        # band, so the number above it has to be on the same scale. The NUMBER
+        # is what this test is about -- it asserted the phrase "Above 80" and
+        # went red when the legends were reworded to "80 or more", which is
+        # the same band said the way `judge` actually compares it.
+        assert "80" in caption and "0.8" not in caption, caption
 
     def test_the_csv_export_matches_the_page(self):
         """Read the table, download the CSV, filter > 70 -- that returned

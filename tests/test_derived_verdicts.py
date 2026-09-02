@@ -177,6 +177,14 @@ def test_every_gate_leg_is_mapped_to_its_pipeline_constant():
     by simply not knowing about it."""
     legs = {(t, c) for t, cols in GATE_COLUMNS.items() for c in cols}
     assert legs == set(CONTAINER_GATES), sorted(legs ^ set(CONTAINER_GATES))
+    # AND EVERY LEG IS TAGGED FOR ONE OF THE TWO HALVES. The divergence check
+    # was split so the local legs run in CI, and each half filters on this tag;
+    # a leg tagged anything else is checked by NEITHER, and drops out of the
+    # computed and the documented set symmetrically, so nothing notices.
+    # Probed: one typo'd tag left the branch's headline divergence entirely
+    # unverified with the file green.
+    tags = {where for where, _mod, _const, _scale in CONTAINER_GATES.values()}
+    assert tags <= {"local", "container"}, sorted(tags)
 
 
 def _divergences(where):
@@ -892,3 +900,38 @@ def test_the_banner_states_a_measurable_fact():
     # A banner may name only the legs it saw fall short.
     assert shortfall_bar_text("boltzgen", ("pLDDT",)) == "pLDDT 80"
     assert shortfall_bar_text("boltzgen", ()) == ""
+
+
+# ---------------------------------------------------------------------------
+# The prose beside a verdict has to use the operator the verdict uses
+# ---------------------------------------------------------------------------
+
+_STRICT_WORDS = ("above ", "below ", "greater than ", "less than ",
+                 "more than ")
+
+
+@pytest.mark.parametrize("leg", sorted(
+    (t, c) for t, cols in GATE_COLUMNS.items() for c in cols
+))
+def test_a_gate_legs_prose_is_inclusive_like_its_comparison(leg):
+    """``judge`` compares >= and <=; the legends said "Above 80" and
+    "Below 1.5".
+
+    A design at exactly the bar therefore read "Meets ... Hotspot hits 4"
+    under a tooltip saying "Above 4 of 7 is the strict-pass bar", on one
+    screen. Hotspot hits is an integer, so 4 is routine rather than a boundary
+    curiosity, and since the comparison uses the DISPLAYED value a pLDDT of
+    79.96 renders 80.0 and meets an "Above 80" bar too. The containers use
+    >= and <= as well, so the comparison was right and the prose was wrong on
+    all thirteen legs.
+
+    Only the gate legs. A legend with no verdict rendered beside it asserts
+    nothing the page then answers, and rewording those would be churn.
+    """
+    tool, column = leg
+    explanation = get_legend(tool, column)["explanation"].lower()
+    offenders = [w.strip() for w in _STRICT_WORDS if w in explanation]
+    assert not offenders, (
+        f"{tool}/{column} describes its bar with {offenders}, but judge() "
+        "counts a value exactly on the bar as meeting it"
+    )
