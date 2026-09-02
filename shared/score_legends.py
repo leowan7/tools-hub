@@ -477,6 +477,14 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         ),
     },
     ("boltzgen", "refolding_rmsd"): {
+        # THESE TWO NUMBERS ARE OURS, not BoltzGen's -- its paper filters at
+        # 2.5 A and its CLI example uses 3.0. The reasoning lives in
+        # shared/metric_glossary.py under "refolding_rmsd"; this is the copy
+        # that actually decides the pass/excellent verdict, so a maintainer
+        # "correcting" them to the paper's number would never see that comment
+        # from here. The two are stacked into ONE tooltip: change one without
+        # the other and it reads "below 2.5 is self-consistent ... Range:
+        # < 1.5 A" in a single sentence.
         "good": 1.5,
         "excellent": 1.0,
         "direction": "lower_is_better",
