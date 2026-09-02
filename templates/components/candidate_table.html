@@ -636,18 +636,40 @@
             </td>
           {% else %}
           {% for col in columns %}
+            {# The Against bar cell is COMPUTED, never read. It used to render the
+               ``filter_status`` word the pipeline stamped at the end of its
+               run, which is only true against the threshold that was live
+               when it was written — 65 BoltzGen designs still carry "below
+               threshold" from a bar their container has since dropped, and no
+               edit to this table could have corrected them. judge_design
+               compares this row's own measurements against
+               shared/score_legends.GATE_COLUMNS on every render.
+
+               It shows the FACT, not the word: the measurement that fell
+               short and the bar it fell short of. "below threshold" told a
+               reader nothing they could act on or check. Handled ahead of the
+               `raw is none` branch below because there is no ``scores`` entry
+               to read — that is the point. #}
+            {% if col == 'against_bar' %}
+              {% set verdict = judge_design(tool_slug, cand) %}
+              <td data-col="against_bar" data-val="{{ verdict.verdict }}">
+                {% if verdict.verdict == 'below' %}
+                  <span title="Measured against {{ gate_bar_text(tool_slug) }}.">{{ verdict.shortfalls | join('; ') }}</span>
+                {% elif verdict.verdict == 'meets' %}
+                  <span title="Every leg measured and met: {{ gate_bar_text(tool_slug) }}.">Meets {{ gate_bar_text(tool_slug) }}</span>
+                {% else %}
+                  {# Unjudged is NOT a failure, and the cell must not read like
+                     one. The refold that produces BoltzGen's RMSD runs at the
+                     end, so a job rebuilt from mid-run records has genuinely
+                     not measured it; saying so beats inventing a verdict, and
+                     inventing one is what this whole change removes. #}
+                  <span title="Not enough was measured to compare this design against {{ gate_bar_text(tool_slug) }}.">Not measured: {{ verdict.unmeasured | join(', ') }}</span>
+                {% endif %}
+              </td>
+            {% else %}
             {% set raw = scores.get(col) %}
             {% if raw is none %}
               <td data-col="{{ col }}" data-val="">—</td>
-            {% elif col == 'filter_status' %}
-              {% set is_stub = (raw is string) and ('stub' in raw) %}
-              <td data-col="{{ col }}" data-val="{{ raw }}">
-                {% if is_stub %}
-                  <span class="panel-badge" style="background:rgba(248,113,113,.18);color:#fca5a5;border-color:rgba(248,113,113,.4);">{{ raw }}</span>
-                {% else %}
-                  {{ raw or '—' }}
-                {% endif %}
-              </td>
             {% else %}
               {# pLDDT arrives on either scale depending on the tool, and
                  for opendde on either scale from the SAME tool. Normalise
@@ -683,6 +705,7 @@
                 {% set disp = '%.2f' | format(fval) %}
               {% endif %}
               <td data-col="{{ col }}" data-val="{{ fval }}">{{ disp }}</td>
+            {% endif %}
             {% endif %}
           {% endfor %}
           {% endif %}

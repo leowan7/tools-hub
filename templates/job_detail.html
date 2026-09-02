@@ -232,7 +232,7 @@
                     <th>ipTM</th>
                     <th>pLDDT</th>
                     <th>i_pAE</th>
-                    <th>Filter</th>
+                    <th>Against bar</th>
                     <th style="width:4.5rem;">3D</th>
                   </tr>
                 </thead>
@@ -528,13 +528,17 @@
           return (n >= 0 && n <= 1) ? n * 100 : n;
         }
 
-        function filterCell(status) {
-          if (!status) return '<span>—</span>';
-          var cls = String(status).toLowerCase() === 'pass'
-            ? 'jobdetail-pass' : 'jobdetail-fail';
-          // textContent-equivalent: status comes from our own backend,
-          // but escape defensively since it lands in innerHTML.
-          var safe = String(status).replace(/[&<>"']/g, function (c) {
+        // Renders the quality the SERVER derived for this partial. There is no
+        // bar in this file on purpose: a second copy of the thresholds here
+        // would drift from shared/score_legends.py, and the streamed record
+        // carries no verdict of its own to fall back on any more.
+        function qualityCell(verdict, text) {
+          if (!text) return '<span>—</span>';
+          var cls = verdict === 'meets' ? 'jobdetail-pass'
+                  : verdict === 'below' ? 'jobdetail-fail' : '';
+          // textContent-equivalent: text comes from our own backend, but
+          // escape defensively since it lands in innerHTML.
+          var safe = String(text).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
                      '"': '&quot;', "'": '&#39;' }[c];
           });
@@ -560,7 +564,7 @@
               '<td>' + fmt(c.iptm, 3) + '</td>' +
               '<td>' + fmt(plddtOn100(c.plddt), 1) + '</td>' +
               '<td>' + fmt(c.i_pae, 2) + '</td>' +
-              '<td>' + filterCell(c.filter_status) + '</td>';
+              '<td>' + qualityCell(c.quality_verdict, c.quality) + '</td>';
 
             var pdbKey = c.pdb_key;
             var btnCell;

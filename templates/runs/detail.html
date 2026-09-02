@@ -132,7 +132,20 @@
     <div class="rd-card"><div class="n" id="rd-pending">{{ counts.pending }}</div><div class="l">Queued</div></div>
     <div class="rd-card"><div class="n" id="rd-succeeded">{{ counts.succeeded }}</div><div class="l">Done</div></div>
     <div class="rd-card"><div class="n" id="rd-failed">{{ counts.failed }}</div><div class="l">Failed</div></div>
-    <div class="rd-card"><div class="n" id="rd-hits">0</div><div class="l">Passed filters</div></div>
+    {# The card NAMES the bar it counted against, because the count moves when
+       the bar does. It read "Passed filters" over a number derived from a word
+       each pipeline stamped at the end of its run, so a threshold correction
+       could never reach it — 65 BoltzGen designs are still labelled against a
+       bar their container dropped. The count is now computed from the stored
+       MEASUREMENTS on every request (blueprints/campaigns._campaign_candidates_meeting_bar),
+       and a reader who can see the bar can check the number.
+
+       A tool that declares no bar (bindcraft ships only its own accepted
+       designs; proteina, iggm and opendde have no gate) counts every delivered
+       design, so calling that "meets" would be a claim nothing measured. The
+       card says what it is counting instead. #}
+    {% set campaign_bar = gate_bar_text(campaign.tool) %}
+    <div class="rd-card"><div class="n" id="rd-hits">0</div><div class="l">{% if campaign_bar %}Meet {{ campaign_bar }}{% else %}Designs returned{% endif %}</div></div>
   </div>
 
   {# Merged designs across every sub-job — the campaign results. Ranked
@@ -239,7 +252,8 @@
     document.getElementById('rd-subjobs-total').textContent = total;
     var pct = total > 0 ? Math.min(100, Math.round(100 * terminalSub / total)) : 0;
     document.getElementById('rd-bar').style.width = pct + '%';
-    // Hits = candidates that passed the quality filter. Never labeled delivered.
+    // Hits = designs meeting the tool's bar, derived server-side from their
+    // measurements on each poll. Never labeled delivered when a bar exists.
     var hits = (d.hits != null ? d.hits : d.designs_delivered) || 0;
     var hitsEl = document.getElementById('rd-hits');
     if (hitsEl) hitsEl.textContent = hits;

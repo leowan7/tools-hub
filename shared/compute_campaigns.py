@@ -1407,14 +1407,19 @@ def aggregate_campaign_candidates(
     metadata columns (``result`` already stores PDBs as Storage refs, so no
     structure bytes are transferred here).
 
-    Ordering: passing designs first (per :func:`shared.jobs.candidate_passed_filter`),
-    then by the tool's primary metric in its configured direction, missing
-    metric last. Because passing designs sort ahead of failing ones, the top-N
-    cap never drops a passing design in favour of a higher-raw-score failing one.
+    Ordering: designs not shown to fall short of the tool's bar first (per
+    :func:`shared.score_legends.judge`, derived from the measurements at call
+    time rather than from any stored verdict), then by the tool's primary
+    metric in its configured direction, missing metric last. Because those
+    designs sort ahead of the ones that fell short, the top-N cap never drops
+    a good design in favour of a higher-raw-score failing one. THIS IS THE
+    ORDERING PREDICATE, so an unjudged design keeps its place: sinking a row
+    needs evidence it failed, not absence of evidence that it passed.
     Retry siblings are de-duplicated by keeping the highest ``attempt`` per
     ``chunk_index``.
     """
-    from shared.jobs import candidate_records, candidate_passed_filter
+    from shared.jobs import candidate_records
+    from shared.score_legends import judge
     from shared.result_columns import (
         columns_for,
         primary_metric_for,
@@ -1476,7 +1481,7 @@ def aggregate_campaign_candidates(
     total = len(merged)
 
     def _sort_key(c: dict):
-        passed = 0 if candidate_passed_filter(c) else 1
+        passed = 0 if judge(tool, c).verdict != "below" else 1
         val = candidate_metric(c, metric_key)
         missing = 1 if val is None else 0
         ordv = 0.0 if val is None else (-val if direction == "desc" else val)

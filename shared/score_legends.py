@@ -18,7 +18,9 @@ registered in ``app.py``; templates do not import this module directly.
 
 from __future__ import annotations
 
-from typing import NotRequired, Optional, TypedDict
+from typing import NamedTuple, NotRequired, Optional, TypedDict
+
+from shared import metric_glossary as _metric_glossary
 
 
 class Legend(TypedDict):
@@ -524,6 +526,21 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "Above 4 of 7 is the strict-pass bar; 5 or more is strong."
         ),
     },
+    # ── ESMFold2-design (gradient design + critic re-score) ──────────
+    # The bar the pipeline's own classifier uses, STRICT_IPTM in
+    # tools/esmfold2_design/run_pipeline.py. Raised there from 0.55 on
+    # 2026-06-03 after three runs returned 0.83 / 0.83 / 0.95 — the old bar
+    # was admitting noise. Paper-ordered binders sit near 0.7.
+    ("esmfold2_design", "ipTM"): {
+        "good": 0.75,
+        "excellent": 0.85,
+        "direction": "higher_is_better",
+        "explanation": (
+            "Interface pTM from the ESMFold2 critic re-score. Above 0.75 "
+            "is a credible designed interface; above 0.85 is strong."
+        ),
+    },
+
     ("iggm", "epitope_contacts"): {
         "good": 3,
         "excellent": 5,
@@ -660,12 +677,11 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md — there is no such file in
 # THIS repo, and citing it unqualified sent readers looking for one.
 #
-# This matters more than a mis-rendered number because ipTM is also the
-# RANKING key (shared/result_columns.py), and it labels filter_status --
-# until the container half lands. llm-proteinDesigner
-# fix/boltzgen-unreachable-gate drops that leg, leaving pLDDT and refolding
-# RMSD; PRESENT TENSE ONLY ONCE THAT IS DEPLOYED, since a results page renders
-# whatever the job stored and the branch is not on master yet.
+# This matters more than a mis-rendered number because ipTM is still the
+# RANKING key (shared/result_columns.py). It no longer decides pass anywhere:
+# llm-proteinDesigner#22 dropped that leg in the container (master 5f60456),
+# and GATE_COLUMNS["boltzgen"] leaves it out here, so the bar is pLDDT and
+# refolding RMSD on both sides. Order is what is left to get wrong.
 #
 # BOLTZGEN IS OUT, AND THE RUNS THAT PREDATE THE FIX ARE WHY IT TOOK AN
 # ARGUMENT. llm-proteinDesigner#18 (squash-merged as 311c29f, Modal deploy
@@ -782,3 +798,251 @@ def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
     if isinstance(tools, str):
         tools = [tools]
     return any(t in MULTICHAIN_IPTM_UNRELIABLE_TOOLS for t in tools)
+
+
+# ---------------------------------------------------------------------------
+# Derived quality — the bar is applied when a page RENDERS, never stored
+# ---------------------------------------------------------------------------
+#
+# A measurement is true forever. A verdict is true only against a threshold,
+# so every frozen copy of one silently becomes a lie the moment the threshold
+# moves. Four production defects came out of the verdict layer and none out of
+# the measurements:
+#
+#   1. BoltzGen labelled 65/65 candidates "below threshold" against an ipTM
+#      bar of 0.70 its refold cannot reach. The container was fixed
+#      (llm-proteinDesigner#22, master 5f60456); the 65 stored labels were not,
+#      and could not be.
+#   2. shared/job_recovery rebuilds a lost result from records streamed DURING
+#      the run. Those carry filter_status but no refolding_rmsd, because the
+#      refold happens at the end — a verdict written before one of the two
+#      measurements it depends on exists, then frozen.
+#   3. On BoltzGen's peptide protocol the refold metrics are never produced at
+#      all, so the gate quietly fell through to other columns.
+#   4. Two stored candidates carry refolding_rmsd exactly 0.00. That is a
+#      placeholder, and it clears a "<= 1.5" bar.
+#
+# Deriving here makes all four impossible rather than fixed. 1 dies because no
+# label is stored to go stale. 2 and 3 die because a gate column with NO
+# measurement leaves the record UNJUDGED — "not enough measured to say" is
+# itself a fact, and it is never a silent fall-through to whatever else
+# happened to be present. 4 dies because a placeholder is declared as one and
+# is read as absent.
+#
+# Nothing in shared/, blueprints/ or templates/ may read ``filter_status``
+# again; tests/test_derived_verdicts.py greps for it and fails if it comes
+# back.
+
+
+# Columns whose conjunction decides whether one design meets this tool's bar.
+#
+# THIS IS AN EXPLICIT WHITELIST AND NOT "every column that has a legend",
+# which was the first design and would have reproduced defect 1 above:
+# boltzgen HAS an ipTM legend, and an all-legend conjunction silently
+# reinstates the very leg llm-proteinDesigner#22 removed.
+#
+# A tool absent from this map has NO bar and every one of its designs is
+# ``unjudged`` — that is the correct reading for bindcraft (ships only its own
+# accepted designs), proteina and iggm (no gate), and opendde (co-folding has
+# no pass/fail concept at all). Absent is not the same as failing.
+#
+# Every column named here must have a legend for the same tool, because the
+# legend carries the bar. tests/test_derived_verdicts.py asserts that.
+GATE_COLUMNS: dict[str, tuple[str, ...]] = {
+    # ipTM is deliberately NOT a leg. BoltzGen refolds the design ALONE, so
+    # its ipTM is not the cofold quantity 0.70 describes. See the IPTM_THRESHOLD
+    # note in llm-proteinDesigner/docker/boltzgen/run_pipeline.py.
+    "boltzgen": ("pLDDT", "refolding_rmsd"),
+    "rfdiffusion": ("ipTM", "pLDDT", "i_pAE"),
+    "pxdesign": ("ipTM", "pLDDT", "pAE"),
+    "rfantibody": ("pLDDT", "ipAE", "pAE"),
+    "boltz2": ("ipTM", "pLDDT", "n_hotspot_contacts"),
+    # ponytail: ipTM only, and this gives something up. The pipeline's own
+    # classifier splits on mode — an scFv is judged on the CDR distogram
+    # proxy, a minibinder on ipTM AND pI < 6 (an undisplayable scaffold is a
+    # drop however well it folds). Neither leg can join a uniform conjunction:
+    # pI is null by construction in scFv mode, so gating on it would leave
+    # every antibody design permanently unjudged, and the proxy column carries
+    # a different quantity in each mode with a defensible bar in only one.
+    # Deciding from which columns happen to be populated is exactly defect 3.
+    # ipTM is measured in both modes and has one bar. The upgrade path is to
+    # stamp the mode onto each record, then declare a gate set per mode; pI
+    # and the proxy stay visible columns with their own legends meanwhile.
+    "esmfold2_design": ("ipTM",),
+}
+
+
+# Values that are a placeholder rather than a measurement, per (tool, column).
+# Defect 4: two stored BoltzGen candidates carry refolding_rmsd 0.00, which is
+# a perfect self-consistency no refold produces and which clears the bar. Read
+# as absent, so the record goes unjudged instead of passing on a stand-in.
+IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
+    ("boltzgen", "refolding_rmsd"): frozenset({0.0}),
+}
+
+
+# Storage spellings for a legend column key. Pipelines are not consistent:
+# boltz2 persists a flat ``designs[]`` with lowercase root keys (``iptm``,
+# ``complex_plddt``) while every container writes a capitalised ``scores``
+# dict. Resolution tries these in order, under ``scores`` then at the record
+# root, which is how the table and the ranking helpers already resolve metrics.
+#
+# ``complex_iplddt`` / ``iplddt`` are absent on purpose. Interface pLDDT is the
+# same quantity measured over a different REGION, so it cannot stand in for a
+# whole-structure pLDDT when that column is missing — substituting it would
+# answer the bar with a reading of something else, which is defect 3 wearing a
+# different column name. shared.metric_glossary.PLDDT_COLUMNS does list both,
+# correctly: that set says which values need rescaling to 0-100, not which are
+# interchangeable.
+_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "ipTM": ("ipTM", "iptm"),
+    "pLDDT": ("pLDDT", "plddt", "complex_pLDDT", "complex_plddt"),
+    "pAE": ("pAE", "pae"),
+    "i_pAE": ("i_pAE", "i_pae"),
+    "ipAE": ("ipAE", "ipae"),
+}
+
+
+class Judgement(NamedTuple):
+    """What the measurements on ONE record say about ONE tool's bar.
+
+    ``verdict`` is one of:
+
+    ``meets``
+        Every gate column is measured and at or better than its ``good``.
+    ``below``
+        At least one gate column is measured and worse than its ``good``.
+        A shortfall settles it even when another leg is unmeasured: one leg
+        definitively failing is a fact about the design, not about the gaps.
+    ``unjudged``
+        The tool declares no bar, or no leg fell short and at least one was
+        not measured. NOT a failure. ``shared.ranking`` depends on that
+        reading: judging an unmeasured record as failed once sank 240
+        recovered pxdesign rows at ipTM 0.99 below 100 bindcraft rows at 0.70.
+
+    ``shortfalls`` and ``unmeasured`` are rendered text, already carrying the
+    number and the bar ("pLDDT 72.4, below 80"), because the reader needs the
+    fact and not the word.
+    """
+
+    verdict: str
+    shortfalls: tuple[str, ...]
+    unmeasured: tuple[str, ...]
+
+
+def _fmt(value: float) -> str:
+    """Trim a bar or a reading to what it actually carries: 80.0 -> 80."""
+    return f"{value:g}"
+
+
+def gate_columns(tool: str) -> tuple[str, ...]:
+    """Columns whose conjunction is ``tool``'s bar; empty when it has none."""
+    return GATE_COLUMNS.get(tool or "", ())
+
+
+def tool_has_bar(tool: str) -> bool:
+    """Does this tool declare a quality bar at all?
+
+    A PROPERTY OF THE TOOL, not of what one result happened to store, and that
+    is the whole point. The regime used to be inferred per cohort from whether
+    any row carried a ``filter_status``, which made it depend on which
+    container version ran and on whether job recovery had rebuilt the row.
+    """
+    return bool(gate_columns(tool))
+
+
+def gate_bar_text(tool: str) -> str:
+    """The tool's bar as a sentence fragment: "pLDDT 80 and refolding RMSD 1.5".
+
+    Feeds the results banner, which has to state a fact ("no design here
+    reaches ...") rather than assert a verdict about quality.
+    """
+    parts = []
+    for col in gate_columns(tool):
+        legend = get_legend(tool, col)
+        if legend is None:
+            continue
+        parts.append(f"{_metric_glossary.get(col)["label"]} {_fmt(legend['good'])}")
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _resolve(record: object, tool: str, column: str):
+    """This record's value for a legend column, on the scale the bar is in.
+
+    ``scores`` first then the record root, over every storage spelling in
+    ``_COLUMN_ALIASES`` — the same resolution order the table and
+    ``shared.result_columns.candidate_metric`` use. pLDDT is put on 0-100
+    EXACTLY ONCE (``plddt_on_100`` is not idempotent below 0.01), because
+    boltz2 stores it 0-1 and the legends are all written on 0-100.
+
+    Returns None for absent, unparseable, or declared-placeholder values. Every
+    one of those means unmeasured, never failed.
+    """
+    if not isinstance(record, dict):
+        return None
+    scores = record.get("scores")
+    scores = scores if isinstance(scores, dict) else {}
+    raw = None
+    for key in _COLUMN_ALIASES.get(column, (column,)):
+        if scores.get(key) is not None:
+            raw = scores[key]
+            break
+        if record.get(key) is not None:
+            raw = record[key]
+            break
+    if raw is None:
+        return None
+    if column in _metric_glossary.PLDDT_COLUMNS:
+        return _metric_glossary.plddt_on_100(raw)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    if value in IMPLAUSIBLE_VALUES.get((tool, column), frozenset()):
+        return None
+    return value
+
+
+def judge(tool: str, record: object) -> Judgement:
+    """Compare ONE record's measurements against ``tool``'s bar, right now.
+
+    The only place in this repo that decides whether a design meets a bar.
+    Call it at render time and throw the answer away; never persist it.
+    """
+    columns = gate_columns(tool)
+    if not columns:
+        return Judgement("unjudged", (), ())
+
+    shortfalls: list[str] = []
+    unmeasured: list[str] = []
+    for col in columns:
+        label = _metric_glossary.get(col)["label"]
+        legend = get_legend(tool, col)
+        if legend is None:
+            # A gate column with no legend has no bar to be compared against.
+            # tests/test_derived_verdicts.py makes this unreachable; if it ever
+            # happens anyway, "we cannot say" is the safe answer, not "failed".
+            unmeasured.append(label)
+            continue
+        value = _resolve(record, tool, col)
+        if value is None:
+            unmeasured.append(label)
+            continue
+        good = float(legend["good"])
+        lower_is_better = legend["direction"] == "lower_is_better"
+        meets = value <= good if lower_is_better else value >= good
+        if not meets:
+            side = "above" if lower_is_better else "below"
+            shortfalls.append(f"{label} {_fmt(value)}, {side} {_fmt(good)}")
+
+    if shortfalls:
+        return Judgement("below", tuple(shortfalls), tuple(unmeasured))
+    if unmeasured:
+        return Judgement("unjudged", (), tuple(unmeasured))
+    return Judgement("meets", (), ())

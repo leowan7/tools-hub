@@ -16,7 +16,9 @@ from shared import exports, result_columns
 # ---------------------------------------------------------------------------
 
 def test_columns_and_primary_metric():
-    assert result_columns.columns_for("boltzgen") == ["ipTM", "pLDDT", "refolding_rmsd"]
+    assert result_columns.columns_for("boltzgen") == [
+        "ipTM", "pLDDT", "refolding_rmsd", "against_bar",
+    ]
     # rfantibody ranks on interface pAE, which is lower-is-better.
     assert result_columns.primary_metric_for("rfantibody") == ("ipAE", "asc")
     assert result_columns.primary_metric_for("rfdiffusion") == ("ipTM", "desc")
@@ -331,7 +333,7 @@ def test_aggregate_merges_sorts_dedupes(monkeypatch):
     out = cc.aggregate_campaign_candidates("C", user_id="u", limit=10)
 
     assert out["tool"] == "rfdiffusion"
-    assert out["columns"] == ["ipTM", "pLDDT", "i_pAE", "filter_status"]
+    assert out["columns"] == ["ipTM", "pLDDT", "i_pAE", "against_bar"]
     # attempt-1 of chunk 0 dropped -> 2 (j0b) + 1 (j1) = 3
     assert out["total"] == 3
     assert out["capped"] is False

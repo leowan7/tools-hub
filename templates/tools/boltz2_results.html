@@ -2,9 +2,15 @@
 
    Reshapes the Boltz-2 ``smoke_result`` schema into the candidate_table
    contract: each design becomes one row with scores keyed by the
-   metric_glossary tokens (ipTM, pTM, pLDDT, n_hotspot_contacts,
-   filter_status). complex_pLDDT is handed over RAW; candidate_table normalises it to the
-   AF2-convention 0–100 scale that pLDDT renders with. #}
+   metric_glossary tokens (ipTM, pTM, pLDDT, n_hotspot_contacts).
+   complex_pLDDT is handed over RAW; candidate_table normalises it to the
+   AF2-convention 0–100 scale that pLDDT renders with.
+
+   The pipeline's strict_pass / soft_pass / fail word is NOT carried over. The
+   Against bar column is derived from these same three metrics when the page
+   renders (shared/score_legends.GATE_COLUMNS), against the same bars the
+   pipeline used — ipTM 0.7, pLDDT 80, 4 hotspot contacts — so the row says
+   which leg fell short instead of naming a tier. #}
 
 {% from "components/results_shell.html" import results_panel %}
 
@@ -47,7 +53,6 @@
         'pTM': d.get('ptm'),
         'pLDDT': _plddt_raw,
         'n_hotspot_contacts': d.get('n_hotspot_contacts'),
-        'filter_status': d.get('filter_status'),
       },
       'contacted_residues': d.get('contacted_residues') or [],
       'n_hotspots': d.get('n_hotspots'),
@@ -60,7 +65,7 @@
    keep their submission order. #}
 {% set candidates = candidates | sort(attribute='scores.ipTM', reverse=True) %}
 
-{% set columns = ['ipTM', 'pTM', 'pLDDT', 'n_hotspot_contacts', 'filter_status'] %}
+{% set columns = ['ipTM', 'pTM', 'pLDDT', 'n_hotspot_contacts', 'against_bar'] %}
 
 {# Top summary panel: antigen + hotspots + run-level counters. #}
 <div class="panel" style="margin-top:1rem;">

@@ -3,9 +3,16 @@
    Reshapes the pipeline's per-prediction output into the candidate_table
    contract. Each prediction becomes one row with the model's own confidence
    ranking score, plus pTM / ipTM / pLDDT columns IF the (undocumented) OpenDDE
-   confidence file surfaced them. Co-folding has no pass/fail gate, so no
-   filter_status is mapped — every prediction is a valid structure ranked by
-   confidence, and the "below threshold" banner stays silent. #}
+   confidence file surfaced them. Co-folding has no pass/fail gate, so opendde
+   declares no bar in shared/score_legends.GATE_COLUMNS: every prediction is a
+   valid structure ranked by confidence, there is no Against bar column, and the
+   banner stays silent.
+
+   The pipeline does persist a "scored" / "no_score" marker on each design.
+   That is a statement about whether a score was AVAILABLE, not about
+   quality, and it used to be read as a verdict: neither string is a pass, so
+   every stored opendde result counted zero designs through
+   count_passed_candidates. Nothing reads it now. #}
 
 {% from "components/results_shell.html" import results_panel %}
 
@@ -21,8 +28,8 @@
 {% set designs_completed = output.get('designs_completed') or (raw_designs | length) %}
 {% set clone_url         = url_for('tools.tool_form', tool='opendde', clone_from=job.id) %}
 
-{# Reshape designs[] into the candidate contract. No filter_status is set, so the
-   shell treats every prediction as passing (co-folding has no quality gate). #}
+{# Reshape designs[] into the candidate contract. opendde declares no bar, so
+   every prediction is unjudged and the shell's banner cannot fire. #}
 {% set candidates = [] %}
 {% set opt = namespace(ptm=false, iptm=false, plddt=false) %}
 {% for d in raw_designs %}

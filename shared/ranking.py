@@ -54,7 +54,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Optional
 
-from shared.jobs import candidate_passed_filter, record_has_filter_signal
+from shared.score_legends import judge, tool_has_bar
 from shared.result_columns import (
     candidate_metric,
     normalize_candidate,
@@ -93,7 +93,7 @@ SORT_MODES: tuple[str, ...] = (SORT_PERCENTILE, SORT_TOOL)
 ANNOTATION_KEYS: tuple[str, ...] = (
     "_cohort_preset",
     "_cohort_n",
-    "_uses_filter",
+    "_tool_has_bar",
     "_metric_key",
     "_metric_direction",
     "_metric_value",
@@ -329,44 +329,41 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     PASS REGIME, two levels::
 
-        uses_filter = any(record_has_filter_signal(c) for c in cohort_rows)
-        passed(c)   = candidate_passed_filter(c)
-                      if uses_filter and record_has_filter_signal(c)
-                      else True
+        has_bar   = tool_has_bar(tool)                  # per TOOL
+        passed(c) = judge(tool, c).verdict != "below"    # per RECORD
 
-    The COHORT decides whether a filter regime is in force at all; the RECORD
-    is then judged only if it carries a verdict of its own. Both halves are
-    load bearing.
+    The TOOL decides whether a bar applies at all; the RECORD is then sunk
+    only on evidence that it fell short. Both halves are load bearing.
 
-    Cohort scope for the REGIME. Only 2 of the 7 campaign tools register a
-    ``filter_status`` column at all, rfdiffusion and pxdesign
-    (shared/result_columns.py:25,28). That registry is the in-repo source for
-    this claim, since the pipelines themselves live in the ranomics-*-prod
-    repos; note shared/jobs.py:80-84 names a different and wider set, and the
-    two have not been reconciled. Deciding the regime per record would make
-    every bindcraft, boltzgen, rfantibody, proteina and iggm design "not
-    passed" and sort the lot below every passing pxdesign and rfdiffusion
-    row, which partitions the table on tool identity rather than on design
-    quality.
+    Tool scope for the REGIME, and this is the half that used to be guessed.
+    It was ``any(record_has_filter_signal(c) for c in cohort_rows)`` — read
+    off whether some row in the cohort happened to carry a stored
+    ``filter_status``, which made the regime depend on which container version
+    ran and on whether job recovery had rebuilt the row. It is now a
+    declaration, ``shared.score_legends.GATE_COLUMNS``. The docstring that
+    stood here claimed only rfdiffusion and pxdesign emit a filter at all;
+    that was false against the deployed containers, where bindcraft stamps an
+    unconditional "pass" and rfantibody stamps a real verdict. Deciding the
+    regime per record would still be wrong for the original reason: it
+    partitions the table on tool identity rather than on design quality.
 
-    Record scope for the VERDICT, because the rows of one cohort do not all
-    carry one. Job recovery writes filter_status only when the streamed
-    partial carried one (shared/job_recovery.py:56-70), so a recovered chunk
-    of a pxdesign campaign arrives unsignalled beside signalled siblings.
-    Judging those unsignalled rows anyway returns False
-    (shared/jobs.py:139-153: no boolean flag, and an absent filter_status is
-    not in PASS_FILTER_STATUSES), and since ``passed`` LEADS canonical_sort_key
-    that is not a small error: probed, 240 recovered pxdesign rows at ipTM
-    0.99 sank below 100 bindcraft rows at 0.70, the target's best design was
-    handed rank 161, and 100 of those rows fell past the 300 cap and out of
-    the table entirely. Unjudged is not failed. A design nobody rejected keeps
-    its place.
+    Record scope for the VERDICT, because the rows of one cohort are not all
+    measured alike. A recovered chunk arrives without the metrics the run
+    produces at the end (shared/job_recovery.py rebuilds from records streamed
+    DURING the run, and boltzgen's refold happens after), so it sits
+    ``unjudged`` beside fully measured siblings. UNJUDGED IS NOT FAILED, and
+    since ``passed`` LEADS canonical_sort_key that is not a small distinction:
+    probed under the old rule, 240 recovered pxdesign rows at ipTM 0.99 sank
+    below 100 bindcraft rows at 0.70, the target's best design was handed rank
+    161, and 100 of those rows fell past the 300 cap and out of the table
+    entirely. A design nobody rejected keeps its place.
 
-    Per RESULT scope (what count_passed_candidates uses,
-    shared/jobs.py:179-203, and correctly, since a campaign total must equal
-    the sum of its children)
-    answers a different question: it is aggregating one job's delivered count,
-    not ordering one design against another target wide.
+    Per RESULT scope (``shared.jobs.count_candidates_meeting_bar``) answers a
+    different question and answers it the other way round: it counts only
+    ``meets``, because "N designs meet the bar" is a claim that needs evidence
+    FOR, while sinking a row needs evidence AGAINST. It is aggregating one
+    job's delivered count, not ordering one design against another target
+    wide.
 
     UNRANKED ROWS, two distinct causes, both marked ``_ranked = False``:
 
@@ -390,9 +387,7 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     for (tool, preset), members in cohorts.items():
         metric_key, direction = primary_metric_for(tool)
-        uses_filter = any(
-            record_has_filter_signal(annotated[i]) for i in members
-        )
+        has_bar = tool_has_bar(tool)
         values: dict[int, float] = {}
         for i in members:
             value = resolve_metric(annotated[i], tool, metric_key)
@@ -408,14 +403,10 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             row = annotated[i]
             row["_cohort_preset"] = preset
             row["_cohort_n"] = cohort_n
-            row["_uses_filter"] = uses_filter
+            row["_tool_has_bar"] = has_bar
             row["_metric_key"] = metric_key
             row["_metric_direction"] = direction
-            row["_passed"] = (
-                candidate_passed_filter(row)
-                if uses_filter and record_has_filter_signal(row)
-                else True
-            )
+            row["_passed"] = judge(tool, row).verdict != "below"
             value = values.get(i)
             row["_metric_value"] = value
             if value is None:
@@ -695,17 +686,18 @@ def build_tool_stats(
     ``shown``
         rows of this tool in the selected (capped) set.
     ``passed``
-        rows judged passed under the tool's cohort regime, before any cap.
-        NOT interchangeable with ``count_passed_candidates``: a record that
-        carries no filter signal of its own counts as passed here (unjudged
-        is not failed, see annotate_rows), while that function excludes it as
-        soon as a SIBLING record in the same result carries one. Probed on a
-        2 candidate result, one "pass" and one unsignalled: 1 there, 2 here.
-        Two scopes answering two questions. Do not print them as one number.
+        rows NOT shown to fall short of the tool's bar, before any cap.
+        NOT interchangeable with ``count_candidates_meeting_bar``, which
+        counts only rows shown to MEET it. An unjudged row — one whose gate
+        columns were not all measured — is counted here and excluded there,
+        on purpose: ordering needs evidence a design failed, counting needs
+        evidence a design passed. Probed on a 2 candidate result, one meeting
+        the bar and one unjudged: 1 there, 2 here. Two questions, two answers.
+        Do not print them as one number.
     ``metric`` / ``direction``
         the registered primary metric, ``None`` for a tool with none.
-    ``uses_filter``
-        True when any of the tool's cohorts carries a filter signal.
+    ``has_bar``
+        True when the tool declares a quality bar (score_legends.GATE_COLUMNS).
     ``percentile_suppressed``
         True when the tool has ranked rows but NONE of them carries a
         percentile, i.e. every cohort of the tool is under
@@ -743,7 +735,7 @@ def build_tool_stats(
             presets[preset] = {
                 "total": len(members),
                 "cohort_n": cohort_n,
-                "uses_filter": bool(members[0].get("_uses_filter")),
+                "has_bar": bool(members[0].get("_tool_has_bar")),
                 "percentile_suppressed": bool(
                     cohort_n and cohort_n < MIN_PERCENTILE_COHORT
                 ),
@@ -758,7 +750,7 @@ def build_tool_stats(
             "passed": sum(1 for r in rows if r.get("_passed")),
             "metric": metric_key,
             "direction": direction,
-            "uses_filter": any(r.get("_uses_filter") for r in rows),
+            "has_bar": any(r.get("_tool_has_bar") for r in rows),
             "percentile_suppressed": bool(ranked) and not any(
                 r.get("_rank_percentile") is not None for r in ranked
             ),

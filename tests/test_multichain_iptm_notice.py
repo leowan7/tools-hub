@@ -757,7 +757,7 @@ def _render_results(flask_app, tool: str, target_chain: str) -> str:
                 {
                     "design_name": "d0",
                     "sequence": "AAAA",
-                    "scores": {"ipTM": 0.91, "pLDDT": 88.0, "filter_status": "pass"},
+                    "scores": {"ipTM": 0.91, "pLDDT": 88.0},
                 }
             ],
             "tier": "pilot",
@@ -869,7 +869,7 @@ def _candidates():
     return [{
         "pdb_key": "designs/design_0.pdb",
         "sequence": "MKTAY",
-        "scores": {"ipTM": 0.91, "pLDDT": 88.0, "filter_status": "pass"},
+        "scores": {"ipTM": 0.91, "pLDDT": 88.0},
         "_source_tool": "rfdiffusion",
         "_source_job_id": "job-aaaaaaaa",
         "_source_campaign_id": _CAMPAIGN_ID,
@@ -878,7 +878,7 @@ def _candidates():
     }]
 
 
-_COLUMNS = ["ipTM", "pLDDT", "filter_status"]
+_COLUMNS = ["ipTM", "pLDDT", "against_bar"]
 
 
 def _campaign(tool: str, target_chain: str):
@@ -1162,7 +1162,7 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
     columns = set()
     for html in banner_surfaces.values():
         columns |= _column_labels(html)
-    assert {"pLDDT", "Filter"} <= columns, (
+    assert {"pLDDT", "Against bar"} <= columns, (
         f"the header extractor stopped seeing known columns, so this check "
         f"is guarding nothing: {sorted(columns)!r}"
     )

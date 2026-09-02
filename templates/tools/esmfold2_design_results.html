@@ -6,7 +6,12 @@
      - distogram iPTM proxy (or CDR distogram iPTM proxy in scFv mode)
      - final_loss (gradient-descent loss at step 150)
      - isoelectric_point (minibinder mode only; scFv mode reports —)
-     - filter_status (strict_pass | borderline | drop)
+     - quality, DERIVED at render time from ipTM against the tool's bar
+       (shared/score_legends.GATE_COLUMNS); the pipeline's strict_pass /
+       borderline / drop word is not carried over. The pI and CDR-proxy legs
+       of the pipeline's own classifier are not in the derived bar — see the
+       GATE_COLUMNS note for esmfold2_design for why a mode-dependent leg
+       cannot join a uniform conjunction. Both stay visible as columns.
 
    The pipeline returns a single best_sequence (the top design from the
    gradient run) plus a per-critic results table. Both are surfaced. #}
@@ -54,7 +59,6 @@
           'iPTM_proxy': _proxy,
           'final_loss': d.get('final_loss'),
           'pI': d.get('isoelectric_point') if not is_antibody else none,
-          'filter_status': d.get('filter_status'),
         },
         'designed_sequence': d.get('designed_sequence'),
     }) %}
@@ -65,9 +69,9 @@
 {# Add a seed column only when this run actually swept multiple seeds —
    single-seed jobs would just show "0" in every row. #}
 {% if is_antibody %}
-  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'filter_status'] + (['seed'] if is_sweep else []) %}
+  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'against_bar'] + (['seed'] if is_sweep else []) %}
 {% else %}
-  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'pI', 'filter_status'] + (['seed'] if is_sweep else []) %}
+  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'pI', 'against_bar'] + (['seed'] if is_sweep else []) %}
 {% endif %}
 
 {# Top summary panel. #}

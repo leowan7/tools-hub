@@ -32,8 +32,10 @@ from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
+from shared import score_legends
 from shared.jobs import (
     cancel_job,
+    candidate_meets_bar,
     candidate_records,
     complete_job,
     create_job,
@@ -338,13 +340,36 @@ def job_status(job_id: str):
     partials = inputs.get("_partial_candidates") or []
     if not isinstance(partials, list):
         partials = []
-    passed = 0
+    # Live count, derived from each partial's own measurements. This used to
+    # read the streamed ``filter_status`` and match it against the single
+    # string "pass", which undercounted every tool with a different vocabulary
+    # ("strict_pass") on top of being a stored verdict. A partial that has not
+    # yet reported every gate column is unjudged and does not count — the
+    # number rises as the run measures more, which is what a live counter
+    # should do.
+    passed = sum(
+        1 for cand in partials
+        if isinstance(cand, dict) and candidate_meets_bar(job.tool, cand)
+    )
+    # The live table's quality cell is derived HERE and not in the browser, so
+    # there is exactly one implementation of the bar. Shallow copies: the
+    # partials belong to job.inputs and this is a read path.
+    live = []
     for cand in partials:
         if not isinstance(cand, dict):
+            live.append(cand)
             continue
-        fs = str(cand.get("filter_status") or "").strip().lower()
-        if fs == "pass":
-            passed += 1
+        verdict = score_legends.judge(job.tool, cand)
+        row = dict(cand)
+        row["quality_verdict"] = verdict.verdict
+        row["quality"] = (
+            "; ".join(verdict.shortfalls) if verdict.verdict == "below"
+            else "Meets " + score_legends.gate_bar_text(job.tool)
+            if verdict.verdict == "meets"
+            else "Not measured: " + ", ".join(verdict.unmeasured)
+            if verdict.unmeasured else ""
+        )
+        live.append(row)
     return jsonify(
         {
             "id": job.id,
@@ -352,7 +377,7 @@ def job_status(job_id: str):
             "tool": job.tool,
             "preset": job.preset,
             "progress": inputs.get("_progress") or {},
-            "partial_candidates": partials,
+            "partial_candidates": live,
             "passed_count": passed,
             "gpu_seconds_used": job.gpu_seconds_used,
             "started_at": getattr(job, "started_at", None),

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from shared import score_legends
 from shared.credits import get_service_client
 
 logger = logging.getLogger(__name__)
@@ -76,12 +77,20 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     return merged
 
 
-# Filter-status strings that count as "passed the default quality filter".
-# Tools use two vocabularies: binder-design pipelines
-# (pxdesign/rfantibody/bindcraft/boltzgen) emit ``pass``; the cofold/design
-# tools (boltz2, esmfold2_design) emit the stricter ``strict_pass``. Both are
-# a pass; ``borderline`` / ``drop`` / ``fail`` are not.
-PASS_FILTER_STATUSES = frozenset({"pass", "strict_pass"})
+# THE STORED VERDICT IS NOT READ HERE ANY MORE, AND MUST NOT COME BACK.
+#
+# There was a ``PASS_FILTER_STATUSES`` frozenset on this line, and helpers
+# below that resolved a candidate's ``filter_status`` out of storage. Every
+# pipeline stamps that word at the end of a run, against thresholds that have
+# since moved, and a frozen verdict cannot move with them: 65 BoltzGen
+# candidates still say "below threshold" against an ipTM bar that
+# llm-proteinDesigner#22 removed because the refold cannot reach it.
+#
+# The bar is now applied when a page renders, from the measurements plus
+# shared.score_legends.GATE_COLUMNS. See the block comment there for the four
+# production defects this makes impossible rather than merely fixed, and
+# tests/test_derived_verdicts.py for the grep that keeps ``filter_status``
+# out of shared/, blueprints/ and templates/.
 
 
 def candidate_records(result: Optional[dict]) -> list:
@@ -140,94 +149,56 @@ def candidate_count(result: Optional[dict]) -> Optional[int]:
     return None
 
 
-def _candidate_filter_status(cand: object) -> object:
-    """Resolved ``filter_status`` for a candidate, checking ``scores`` then
-    the candidate root. Returns None when neither carries it."""
-    if not isinstance(cand, dict):
-        return None
-    scores = cand.get("scores")
-    if isinstance(scores, dict) and scores.get("filter_status") is not None:
-        return scores.get("filter_status")
-    return cand.get("filter_status")
+def candidate_meets_bar(tool: str, cand: object) -> bool:
+    """True iff ``cand``'s measurements meet every leg of ``tool``'s bar.
 
+    Evidence of meeting the bar, which is not the same as absence of evidence
+    against it — an ``unjudged`` record returns False here. Two callers want
+    two different questions answered and the asymmetry is deliberate:
 
-def _candidate_passed_flag(cand: object) -> Optional[bool]:
-    """Explicit boolean ``passed`` flag from ``scores`` or the candidate root,
-    or None when no boolean flag is present."""
-    if not isinstance(cand, dict):
-        return None
-    scores = cand.get("scores")
-    if isinstance(scores, dict) and isinstance(scores.get("passed"), bool):
-        return scores.get("passed")
-    flag = cand.get("passed")
-    return flag if isinstance(flag, bool) else None
+    * COUNTING (this function, via :func:`count_candidates_meeting_bar`, and
+      the campaign card beneath it). "N designs meet the bar" is a claim, and
+      a design whose refold never ran has not been shown to meet anything.
+    * ORDERING (``shared.ranking``). There, a record is sunk only on evidence
+      that it FAILED, because unjudged is not failed: judging unmeasured rows
+      as failures once sank 240 recovered pxdesign rows at ipTM 0.99 below 100
+      bindcraft rows at 0.70, handed the target's best design rank 161, and
+      pushed 100 rows past the display cap entirely.
 
-
-def candidate_passed_filter(cand: object) -> bool:
-    """True iff a candidate/design record passed the default quality filter.
-
-    An explicit boolean ``passed`` flag (from ``scores`` or the candidate root)
-    wins when present; otherwise the record passes when its ``filter_status``
-    (checked in both locations) is one of :data:`PASS_FILTER_STATUSES`. Only
-    meaningful for records that actually carry a filter signal — use
-    :func:`count_passed_candidates` to aggregate, which falls back to the
-    delivered count for pipelines that emit no per-candidate filter at all.
+    ``tool`` leads the signature because it decides which bar applies at all;
+    a record carries no opinion about that any more.
     """
-    flag = _candidate_passed_flag(cand)
-    if flag is not None:
-        return flag
-    status = _candidate_filter_status(cand)
-    return str(status or "").strip().lower() in PASS_FILTER_STATUSES
+    return score_legends.judge(tool, cand).verdict == "meets"
 
 
-def record_has_filter_signal(cand: object) -> bool:
-    """True iff a record carries any per-candidate filter signal — a boolean
-    ``passed`` flag or a non-empty ``filter_status``.
+def count_candidates_meeting_bar(result: Optional[dict], tool: str) -> int:
+    """How many of a job's designs meet ``tool``'s bar. Shape-tolerant across
+    the ``candidates[]`` / ``designs[]`` split.
 
-    Public because the regime it selects has to be decidable at more than one
-    scope. :func:`count_passed_candidates` decides it per RESULT, which keeps a
-    campaign total equal to the sum of its children. ``shared.ranking`` decides
-    it per (target, tool, preset) COHORT, because only 2 of the 7 campaign tools
-    emit a filter at all: judging each record on its own would sort every
-    bindcraft, boltzgen, rfantibody, proteina and iggm design below every
-    passing pxdesign and rfdiffusion one, which is a partition on tool identity
-    rather than on design quality.
-    """
-    if _candidate_passed_flag(cand) is not None:
-        return True
-    return bool(str(_candidate_filter_status(cand) or "").strip())
+    Two regimes, and which one applies is now a property of the TOOL rather
+    than an inference from what one result happened to store:
 
+    * The tool declares gate columns — only designs that meet every leg count.
+    * The tool declares none (bindcraft ships only its own accepted designs;
+      proteina, iggm and opendde have no gate) — every delivered record counts,
+      because each is already a keeper or the tool has no bar to fall short of.
 
-# Pre-existing private name, kept so the module-internal caller below reads the
-# same as it did before this became public. Not an alias for outside use.
-_record_has_filter_signal = record_has_filter_signal
+    The regime used to be read off whether any record carried a
+    ``filter_status``, which made it depend on which container version ran and
+    on whether job recovery had rebuilt the row. bindcraft stamps an
+    unconditional ``"pass"`` and rfantibody stamps a real verdict, so the
+    docstring that claimed both "omit the field" was false against the
+    deployed containers and this regime was firing where it said it did not.
 
-
-def count_passed_candidates(result: Optional[dict]) -> int:
-    """Number of a job's candidates that passed the default quality filter.
-
-    Shape-tolerant across the ``candidates[]`` / ``designs[]`` split. Two
-    regimes, decided per result:
-
-    * The records carry a filter signal (a ``filter_status`` on any record, or
-      an explicit ``passed`` boolean) — pxdesign / rfdiffusion emit one per
-      candidate. Only passing records count.
-    * NO record carries a filter signal — the pre-filtered binder tools
-      (bindcraft, rfantibody) return ONLY accepted designs and omit the field,
-      and boltzgen carries no per-candidate gate. Every delivered record counts,
-      since each is already a keeper (or the tool has no filter to fail). This
-      is the pre-fix delivered-count behaviour, so those tools do not collapse
-      to zero.
-
-    Keeps the campaign "Passed filters" total equal to the sum of what each
-    child's own job page shows.
+    Keeps the campaign total equal to the sum of what each child's own job
+    page shows.
     """
     records = candidate_records(result)
     if not records:
         return 0
-    if any(_record_has_filter_signal(c) for c in records):
-        return sum(1 for c in records if candidate_passed_filter(c))
-    return len(records)
+    if not score_legends.tool_has_bar(tool):
+        return len(records)
+    return sum(1 for c in records if candidate_meets_bar(tool, c))
 
 
 @dataclass(frozen=True)
