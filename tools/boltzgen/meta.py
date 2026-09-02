@@ -288,4 +288,105 @@ PILOT: dict | None = {
 # already example-safe — the guard lives in the two shared macros, not
 # here — so nothing else needs touching.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+# Captured from job 758c45e5 (2026-05-28) with
+# scripts/capture_example_result.py. Every figure below is a recorded
+# fact about THAT run, read back off the payload or the wallet ledger,
+# not an estimate and not a round number someone liked.
+#
+# The target is a PUBLISHED structure and is named for that reason:
+# 4ZQK is the human PD-1/PD-L1 complex, and chain A is PD-L1 (verified
+# against RCSB, not recalled). The publishing rule for these pages is
+# scores and published references only, which is why the sibling
+# pxdesign example has to describe its target instead of naming it.
+EXAMPLE: dict | None = {
+    "target": (
+        "Human PD-L1, the extracellular domain, taken as chain A of "
+        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
+        "115 residues. Hotspots 54, 56 and 115."
+    ),
+    "why_this_target": (
+        "It is a target you can mark your own homework on. Chain B of the "
+        "same file is PD-1, the natural partner, so the three hotspots are "
+        "not a guess &mdash; they are the face a real binding protein is "
+        "known to cover. If a design lands somewhere else, you can see that "
+        "it did. Most targets do not come with the answer attached."
+    ),
+    "inputs_used": [
+        (
+            "Target PDB",
+            "4ZQK",
+            "The solved PD-1/PD-L1 complex, straight from the PDB. No "
+            "preparation beyond picking the chain.",
+        ),
+        (
+            "Target chain",
+            "A",
+            "PD-L1 alone. Chain B is PD-1, and staging it too would have "
+            "asked the model to design into an already-occupied site.",
+        ),
+        (
+            "Hotspot residues",
+            "54, 56, 115",
+            "The PD-1-contacting face. Three is a normal number: enough to "
+            "aim the binder at one patch, few enough that you have not "
+            "drawn the interface yourself.",
+        ),
+        (
+            "Binder length min",
+            "50",
+            "A window rather than a fixed number, so the generator chooses "
+            "within it.",
+        ),
+        (
+            "Binder length max",
+            "70",
+            "The design that came back top is 57 residues, in the middle of "
+            "the window rather than pinned to either end.",
+        ),
+        (
+            "Budget (final candidates)",
+            "5",
+            "The pilot preset. BoltzGen generated and scored 200 to return "
+            "these 5 &mdash; you are seeing the top of a much larger pile.",
+        ),
+    ],
+    "what_came_back": (
+        "5 candidates out of <strong>200 generated and scored</strong>. "
+        "The best refolds to <strong>0.51 &Aring;</strong> of the pose it "
+        "was designed in, at pLDDT 78.2. All five clear the 2 &Aring; "
+        "refold leg &mdash; the worst is 1.77 &Aring; &mdash; and pLDDT "
+        "runs 69.1 to 78.2 across them. "
+        "The run took <strong>82 minutes</strong> and cost "
+        "<strong>$8.64</strong>, which is above the $3.15 the estimate "
+        "quoted: BoltzGen bills the compute it actually used, and this one "
+        "ran long."
+    ),
+    "how_to_read_it": (
+        "<strong>Read the refolding RMSD first.</strong> It is the column "
+        "with a real threshold on it: BoltzGen re-folds each design on its "
+        "own, with no target present, and measures how far the result "
+        "drifts from the pose it was generated in. At or under 2 &Aring; "
+        "the design is self-consistent &mdash; it wants to be that shape "
+        "whether or not the target is there. All five here pass, and 0.51 "
+        "&Aring; is about as tight as this gets. "
+        "<strong>Do not judge the ipTM against 0.7.</strong> That bar comes "
+        "from cofolding, where a model is handed both partners and asked "
+        "whether they dock; BoltzGen's refold folds the binder alone, so "
+        "there is no interface in it to score and the familiar threshold "
+        "does not transfer. The 0.538 to 0.653 you see here is not "
+        "\"nearly good\" &mdash; it is a number on a different scale, and "
+        "the site deliberately shows it without a pass bar. "
+        "pLDDT is the third question again: confidence in the binder's own "
+        "fold, not in the pairing."
+    ),
+    "what_we_did_next": (
+        "Treated all five as untested. A pilot this size tells you the "
+        "target and the hotspots are workable &mdash; 200 designs produced "
+        "5 that refold cleanly &mdash; and nothing more than that. The next "
+        "step is a real cofold of the top candidates, which is the "
+        "measurement the ipTM column here is NOT, and then SPR or BLI on "
+        "whatever survives it. Nothing on this page is evidence of binding."
+    ),
+    "cost_usd": "8.64",
+    "runtime": "82 minutes",
+}

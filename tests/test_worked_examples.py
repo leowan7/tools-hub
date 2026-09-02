@@ -1133,6 +1133,16 @@ PUBLISHABLE_SEQUENCES = {
         "human myelin basic protein, a published reference sequence -- it "
         "is what lets a reader check this example against the literature"
     ),
+    ("boltzgen", "candidates[0].pdb_content_b64"): (
+        "the delivered complex from our own BoltzGen demo run against a "
+        "PUBLISHED target: chain A is human PD-L1, the extracellular "
+        "domain of PDB 4ZQK, and chain B is the 57-residue binder that run "
+        "designed against it. A published reference plus one of our own "
+        "demo designs on it -- no customer target, no campaign design. It "
+        "is kept inline deliberately: the download on the example page is "
+        "this file, and a worked example whose download does not work "
+        "teaches the wrong thing about the tool"
+    ),
     ("esmfold", "pdb_b64"): (
         "the folded structure OF that published reference; the sequence it "
         "encodes is the cleared one above"
