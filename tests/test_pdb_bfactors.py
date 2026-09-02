@@ -25,6 +25,7 @@ import pytest
 
 from shared.pdb_bfactors import (
     _coordinate_bfactor,
+    _looks_like_cif,
     bfactors,
     bfactors_on_100,
     bfactors_on_100_b64,
@@ -359,7 +360,22 @@ class TestEveryDownloadPathConverts:
         )
         assert zipfile.ZipFile(io.BytesIO(archive)).read("x.pdb") == crystal
 
-    def test_every_structure_route_in_jobs_converts(self, tools_app):
+    # (payload B-factors, what every route must serve).
+    #
+    # The 0.01 row pins SINGLE APPLICATION on the customer surface.
+    # ``bfactors_on_100`` is documented as not idempotent -- 0.01 scales
+    # to 1.00, which is still inside the fractional window, so a second
+    # pass takes it to 100.00 -- and wrapping the route's call in itself
+    # passed 403 of 403 tests across every file that touches these
+    # routes. The staging path had an exactly-once test; the primary
+    # download, which serves far more people, had none.
+    @pytest.mark.parametrize(
+        "payload, expected",
+        [((0.21, 0.66), [21.0, 66.0]), ((0.01, 0.01), [1.0, 1.0])],
+    )
+    def test_every_structure_route_in_jobs_converts(
+        self, tools_app, payload, expected,
+    ):
         """Behavioural, not counted.
 
         The counted version asserted three occurrences of the call in
@@ -372,7 +388,7 @@ class TestEveryDownloadPathConverts:
         import types
 
         flask_app, _slugs = tools_app
-        fractional = _atom(1, 0.21) + _atom(2, 0.66)
+        fractional = _atom(1, payload[0]) + _atom(2, payload[1])
 
         job = types.SimpleNamespace()
         job.id = "job-1"
@@ -437,9 +453,10 @@ class TestEveryDownloadPathConverts:
 
         for name, body in served.items():
             values = _bfactors(body)
-            assert values == [21.0, 66.0], (
-                f"{name} route served {values}; the payload is 0.21/0.66 "
-                "and every page reads B-factors on 0-100"
+            assert values == expected, (
+                f"{name} route served {values} for a {payload} payload; "
+                f"expected {expected}. A doubled conversion reads 100.00 "
+                "where the design was 0.01 -- confident, and wrong."
             )
 
     def test_each_template_download_site_converts(self, tools_app):
@@ -653,10 +670,22 @@ class TestTheSeparatorHalfOfTheWeld:
             f"   0.000   0.000   0.000  1.00{b:5.2f}"
         )
 
-    @pytest.mark.parametrize(
-        "sep", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85",
-                "\u2028", "\u2029"],
-    )
+    # THE FIVE THAT ACTUALLY WELDED. ``float()`` takes each of these as
+    # trailing whitespace, so the truncated B field parsed and the
+    # writer overwrote all six columns. Verified against the parent
+    # commit: each produced a single 144-character line.
+    WELDED = ["\x0b", "\x0c", "\x85", "\u2028", "\u2029"]
+
+    # THE THREE THAT DID NOT. ``float()`` rejects the file separators,
+    # so ``_coordinate_bfactor`` already returned None and the file
+    # already declined. Kept as regression cover -- they are the same
+    # defect class and a future ``float()`` change would move them into
+    # the list above -- but listed apart, because a parameter that
+    # cannot fail on the defect its message names is decoration, and
+    # this file has been burned by exactly that before.
+    ALREADY_DECLINED = ["\x1c", "\x1d", "\x1e"]
+
+    @pytest.mark.parametrize("sep", WELDED + ALREADY_DECLINED)
     def test_no_record_is_welded_to_the_next(self, sep):
         assert len(self._short(1, 0.21)) == 65, "fixture is not 65 chars"
         pdb = self._short(1, 0.21) + sep + _atom(2, 0.66)
@@ -673,30 +702,74 @@ class TestTheSeparatorHalfOfTheWeld:
         assert out is pdb
 
 
-class TestAByteOrderMarkCannotSlipPastTheGate:
-    """F2. A BOM is not whitespace to Python and is not a coordinate
-    prefix, so a BOM'd first ATOM record was invisible to the gate AND
-    to the writer. Not "declined" -- HALF CONVERTED, which is the one
-    outcome the whole-file rule exists to make impossible."""
+class TestLeadingNoiseCannotSlipPastTheGate:
+    """F2, closed as a CLASS rather than at one byte offset.
 
-    def test_the_first_record_is_not_skipped(self):
-        pdb = "\ufeff" + _atom(1, 0.50) + _atom(2, 0.10) + _atom(3, 0.77)
-        # Read back without the mark so column offsets line up; the
-        # first record is the one that used to escape.
-        assert _bfactors(bfactors_on_100(pdb).replace("\ufeff", "")) == [
-            50.0, 10.0, 77.0,
-        ]
+    A BOM, a stray space, a tab or a NUL pad in front of a coordinate
+    record is not a coordinate-record prefix -- and a BOM is not even
+    whitespace to Python -- so the record failed ``startswith`` and was
+    passed over as though it were a REMARK. Invisible to the gate and to
+    the writer alike, which is not "declined", it is HALF CONVERTED.
 
-    def test_a_bom_does_not_hide_a_disqualifying_value(self):
-        """The other direction: the mark must not let a 0-100 file be
-        judged on its remaining records and converted."""
-        pdb = "\ufeff" + _atom(1, 88.50) + _atom(2, 0.10)
+    The first fix stripped a BOM at the FILE HEAD, which closed byte 0
+    and left every other offset open. Two reviewers found that
+    independently, and ``cat binder.pdb target.pdb`` where the second
+    was saved with a BOM puts the mark exactly at the chain seam -- the
+    stitched-complex case this module's fail-closed rule exists for.
+    """
+
+    NOISE = ["\ufeff", " ", "\t", "\x00"]
+
+    @pytest.mark.parametrize("noise", NOISE)
+    @pytest.mark.parametrize("where", [0, 1, 2])
+    def test_noise_anywhere_declines_the_whole_file(self, noise, where):
+        """Not half-converted, and not converted-with-the-mark-eaten:
+        DECLINED, byte for byte, wherever the noise sits."""
+        records = [_atom(1, 0.50), _atom(2, 0.10), _atom(3, 0.77)]
+        records[where] = noise + records[where]
+        pdb = "".join(records)
+
         assert not is_fractional(pdb)
         assert bfactors_on_100(pdb) is pdb
 
+    @pytest.mark.parametrize("noise", NOISE)
+    def test_noise_cannot_hide_a_disqualifying_value(self, noise):
+        """The direction that actually corrupts. A real 88.50 carried on
+        a noisy record used to be skipped, so it could not veto -- and
+        the file was judged fractional on its OTHER records and scaled.
+        Reproduced before the fix as 10.00 sitting beside 88.50."""
+        pdb = _atom(1, 0.10) + noise + _atom(2, 88.50)
+
+        assert not is_fractional(pdb), (
+            f"{noise!r} before an 88.50 record hid it from the gate"
+        )
+        # Identity, not a re-read: stripping the noise back out to line
+        # the columns up would also strip every real space in the file.
+        # A declined file comes back as the SAME object, which says
+        # everything a value comparison would and cannot be fooled.
+        assert bfactors_on_100(pdb) is pdb
+
     def test_a_bom_does_not_hide_a_cif_marker(self):
-        cif = "\ufeff" + "data_XYZ\nloop_\n_atom_site.group_PDB\n"
+        """The earlier version of this test was HOLLOW: its fixture was
+        ``BOM + "data_XYZ\nloop_\n_atom_site.group_PDB\n"``, and lines two
+        and three carry un-BOM'd markers, so the verdict came from them
+        and the test passed with the BOM handling removed entirely. The
+        marker must be the ONLY one in the file, and it must be the
+        BOM'd line, or this proves nothing."""
+        cif = "\ufeff" + "data_XYZ\n" + _atom(1, 0.21)
+
+        assert _looks_like_cif(cif), (
+            "the BOM'd data_ line is the only marker in this fixture; "
+            "if it is not detected the fixture has stopped discriminating"
+        )
         assert not is_fractional(cif)
+        assert bfactors_on_100(cif) is cif
+
+    def test_a_clean_file_still_converts(self):
+        """Non-vacuity: the rule above must not decline everything."""
+        assert _bfactors(bfactors_on_100(_atom(1, 0.21) + _atom(2, 0.66))) == [
+            21.0, 66.0,
+        ]
 
 
 class TestTheStaffCopyAgreesWithTheCustomerCopy:

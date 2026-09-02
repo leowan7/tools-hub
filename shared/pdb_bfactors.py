@@ -69,16 +69,23 @@ _COORD_RECORDS = ("ATOM  ", "HETATM")
 # short-circuit it was meant to stop competing with.
 _CIF_HEADER_BYTES = 16384
 
-# A byte-order mark ahead of the first record. It is not whitespace to
-# Python, so it does not strip and it is not a coordinate-record prefix:
-# a BOM'd first ATOM line was invisible to the gate AND to the writer,
-# which is not "declined", it is HALF CONVERTED. A file reading
-# 0.50/0.10/0.77 was staged as 0.50/10.00/77.00 -- the same one-chain-
-# converted shape the fail-closed rule exists to prevent, arriving
-# through the one door that rule does not watch. Stripped once at the
-# entry point so the predicate and the writer see the same text; a
-# converted file loses the mark, which a PDB should not have carried.
-_BOM = "\ufeff"
+# Leading bytes that are not part of the fixed-column layout: a
+# byte-order mark, a stray space or tab, a NUL pad. None of them is a
+# coordinate-record prefix, and a BOM is not even whitespace to Python,
+# so a record carrying one failed ``startswith`` and was SKIPPED as
+# though it were a REMARK -- invisible to the gate and to the writer
+# alike. That is not "declined", it is HALF CONVERTED: 0.50/0.10/0.77
+# came out 0.50/10.00/77.00, and a file holding a real 88.50 was judged
+# fractional because the record carrying it was never counted.
+#
+# An earlier fix stripped this at the file head only, which closed the
+# defect at byte 0 and left it reachable at every other offset -- and
+# ``cat binder.pdb target.pdb`` where the second was saved with a BOM
+# puts it exactly at the chain seam, which is the stitched-complex case
+# this module's fail-closed rule exists for. Two reviewers found that
+# independently. It is now handled as a CLASS, in the one place the
+# rule already lives, and nothing is stripped from anybody's bytes.
+_LEADING_NOISE = "\ufeff \t\x00"
 
 
 def _coordinate_bfactor(content: str) -> float | None:
@@ -148,7 +155,8 @@ def _looks_like_cif(pdb_text: str) -> bool:
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
     for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
-        if line.lstrip().startswith(("data_", "_atom_site.", "loop_")):
+        probe = line.lstrip().lstrip(_LEADING_NOISE).lstrip()
+        if probe.startswith(("data_", "_atom_site.", "loop_")):
             return True
     return False
 
@@ -176,8 +184,11 @@ def is_fractional(pdb_text: str) -> bool:
     record instead of scanning a 2944-design archive for a conclusion
     available on line one. The saving is real but not total -- ``_lines``
     builds the whole line list before it yields, so a decline still pays
-    one O(n) split. Measured at ~1.4 ms/MB against ~40 ms/MB to convert,
-    so it is worth stating accurately rather than fixing.
+    one O(n) split. Measured on the 663 KB Fc dimer: ~1.1 ms/MB to
+    decline against ~23 ms/MB to convert, a factor of about twenty.
+    (An earlier revision of this docstring said 1.4 and 40; the convert
+    figure was ~1.8x high. Machine-dependent either way, which is why
+    the ratio is the part worth stating.)
 
     KNOWN CEILING, deliberately not closed: a file whose B column is a
     uniform placeholder ``1.00`` carrying no confidence at all passes
@@ -190,12 +201,20 @@ def is_fractional(pdb_text: str) -> bool:
     distinct values. Left as one rule until something real produces the
     input. Uniform ``0.00`` is already a no-op.
     """
-    pdb_text = pdb_text.lstrip(_BOM)
     if _looks_like_cif(pdb_text):
         return False
     seen = False
     for content, _term in _lines(pdb_text):
         if not content.startswith(_COORD_RECORDS):
+            # A record that only LOOKS like one once leading noise is
+            # taken off is still a record this module can see and
+            # cannot read, so it disqualifies rather than being passed
+            # over. Without this the whole rule below is reachable
+            # around: prefix any ATOM line with a BOM, a space or a tab
+            # and it stops being counted, taking its disqualifying
+            # value with it.
+            if content.lstrip(_LEADING_NOISE).startswith(_COORD_RECORDS):
+                return False
             continue
         # ONE RULE. If a line claims to be a coordinate record and this
         # module cannot read its B-factor -- blank occupancy, a field
@@ -231,17 +250,11 @@ def bfactors_on_100(pdb_text: str) -> str:
     (the disordered example on this site bottoms out at 0.10) but the
     property is not guaranteed and must not be claimed.
     """
-    if not pdb_text:
-        return pdb_text
-    body = pdb_text.lstrip(_BOM)
-    if not is_fractional(body):
-        # The ORIGINAL object, never the stripped copy: callers use
-        # identity to decide whether to re-encode, and handing back a
-        # BOM-less twin would make every declined file look changed.
+    if not pdb_text or not is_fractional(pdb_text):
         return pdb_text
 
     out = []
-    for content, term in _lines(body):
+    for content, term in _lines(pdb_text):
         value = _coordinate_bfactor(content)
         if value is None:
             out.append(content + term)

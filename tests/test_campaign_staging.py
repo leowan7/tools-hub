@@ -107,19 +107,20 @@ def _uploads(client) -> list[tuple[str, bytes]]:
     return [(c.kwargs["path"], c.kwargs["file"]) for c in calls]
 
 
-def _stage_many(cands, *, download=None, prefix=""):
+def _stage_many(cands, *, download=None, prefix="", indices=None):
     ctx, client = _patched_bucket()
     dl = patch.object(storage_mod, "download_output", return_value=download)
+    if indices is None:
+        indices = list(range(len(cands)))
     with ctx, dl:
-        written = storage_mod.stage_campaign_candidates(
+        storage_mod.stage_campaign_candidates(
             campaign_id="camp-1",
             candidates=cands,
-            indices=list(range(len(cands))),
+            indices=indices,
             user_id="u1",
             job_id="job-1",
             prefix=prefix,
         )
-    assert len(written) == len(cands)
     return _uploads(client)
 
 
@@ -128,6 +129,10 @@ def _stage(cand, *, download=None):
     uploads = _stage_many([cand], download=download)
     assert len(uploads) == 1
     return uploads[0][1]
+
+
+def _b64_atom(b: float) -> str:
+    return base64.b64encode(_atom(1, b).encode()).decode()
 
 
 def test_an_inline_fractional_payload_is_staged_on_0_100():
@@ -261,3 +266,45 @@ def test_the_conversion_is_applied_exactly_once():
         "pdb_content_b64": base64.b64encode(_atom(1, 0.01).encode()).decode(),
     }
     assert _bfactors(_stage(cand)) == [1.00]
+
+
+def test_only_the_shortlisted_indices_are_staged():
+    """``indices`` IS the shortlist -- the designs the customer picked
+    to send to the wet lab. Replacing ``for idx in indices`` with
+    ``for idx in range(len(candidates))`` passed the ENTIRE suite,
+    6000-plus tests, byte-identical: staging every candidate instead of
+    the chosen few was invisible everywhere. That is not a scale bug,
+    it is the lab receiving structures nobody agreed to send.
+
+    The earlier helper hard-coded ``indices=range(len(cands))``, so no
+    test could tell the two apart. This one passes a strict subset, out
+    of order, and checks both which designs arrived and which did not.
+    """
+    cands = [
+        {"rank": n, "pdb_key": f"designs/d{n}.pdb",
+         "pdb_content_b64": _b64_atom(0.10 * n)}
+        for n in (1, 2, 3, 4)
+    ]
+    uploads = _stage_many(cands, indices=[2, 0])
+
+    assert [p for p, _ in uploads] == [
+        "camp-1/designs_d3.pdb", "camp-1/designs_d1.pdb",
+    ]
+    # 0.30 and 0.10 -> 30.00 and 10.00, in the order asked for. The two
+    # unpicked designs (0.20, 0.40) must not appear at all.
+    assert [_bfactors(d) for _, d in uploads] == [[30.0], [10.0]]
+
+
+def test_an_out_of_range_index_is_skipped_without_staging_anything_else():
+    """The silent-skip contract the docstring promises, pinned. A bad
+    index must drop that one candidate, not shift the window onto a
+    design the customer did not choose."""
+    cands = [
+        {"rank": n, "pdb_key": f"designs/d{n}.pdb",
+         "pdb_content_b64": _b64_atom(0.10 * n)}
+        for n in (1, 2)
+    ]
+    uploads = _stage_many(cands, indices=[1, 99, -1])
+
+    assert [p for p, _ in uploads] == ["camp-1/designs_d2.pdb"]
+    assert [_bfactors(d) for _, d in uploads] == [[20.0]]
