@@ -123,7 +123,6 @@ GLOSSARY: dict[str, dict] = {
         # over: BindCraft is Pacesa et al. (Nature 646, 483-492, 2025), and
         # Bennett et al. 2023 filters af2_complex_rmsd < 5 Å on the COMPLEX,
         # not a monomer refold. Neither paper defines this metric at all.
-        # Kept short: this tooltip clips inside .cand-table-scroll.
         "citation": "Stark et al., bioRxiv 2025 (BoltzGen).",
     },
     "RMSD": {
