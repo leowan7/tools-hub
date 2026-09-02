@@ -1023,6 +1023,12 @@ def test_the_residue_numbers_stay_parallel_to_the_sequence(tmp_path):
     appended in one loop today, on the far side of a `continue` that fires when
     _THREE_TO_ONE has no entry for the residue.
 
+    Nothing zips them yet: the sole caller is resolve_uniprot_id, which writes
+    `_, chain_seq = ...` and discards the numbers. So this guards a future
+    caller, not a live path, and it is here because the weld this whole section
+    is about IS a desync -- the failure mode is one line away from a function
+    that already shipped it once.
+
     That branch is what makes the invariant pinnable, and it is UNREACHABLE on
     the Fc fixture alone: all 211 of its admitted residues map, so appending the
     number before the lookup instead of after it goes unnoticed. polymer_residues
