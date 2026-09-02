@@ -71,32 +71,64 @@ _CIF_HEADER_BYTES = 16384
 
 # WHY A LINE THAT IS NOT A COORDINATE RECORD CAN STILL DISQUALIFY.
 #
-# The gate below skips lines that fail ``startswith(_COORD_RECORDS)``,
+# The gate below skips lines failing ``startswith(_COORD_RECORDS)``,
 # which is right for REMARK, TER and the rest -- but a coordinate record
 # carrying one invisible byte in front of it fails that test too, and
 # was skipped as though it were prose. Skipping is not disqualifying, so
-# the value on that record could not veto: 0.50/0.10/0.77 came out
-# 0.50/10.00/77.00, and a file holding a real 88.50 was judged
-# fractional because the record carrying it was never counted.
-# ``cat binder.pdb target.pdb`` where the second was saved with a BOM
-# puts one exactly at the chain seam.
+# the value on that record could not veto: a file holding a real 88.50
+# was judged fractional because the record carrying it was never
+# counted, and came out 10.00 beside 88.50.
 #
-# THIS TOOK THREE ATTEMPTS AND THE FIRST TWO ARE THE LESSON. Stripping
-# a BOM at the file head fixed byte 0 and left every other offset open.
-# Naming four characters -- BOM, space, tab, NUL -- let a no-break
-# space, a zero-width space, a word joiner and an ideographic space
-# through. Naming a Unicode block still let 213 codepoints through, all
-# of them C0/C1 controls. Every version was a longer list, and a list is
-# the wrong shape: it has to be complete to be correct, and there is no
-# way to know that it is.
+# ONLY A HIDDEN COORDINATE RECORD DISQUALIFIES. An invisible byte on a
+# line that was never going to hold a B-factor -- a BOM in front of
+# HEADER or CRYST1, a NUL pad, a DOS Ctrl-Z at end of file -- is
+# harmless, and declining those was a silent regression to the 0-1
+# scale on files that had converted correctly for months. Worse, it hit
+# the motivating case: ``cat binder.pdb target.pdb`` puts the mark on
+# the SECOND file's first line, and every real PDB starts with HEADER
+# or CRYST1, not an ATOM record. Fail-closed earns its keep on a record
+# this module can see and cannot read; it does not license declining a
+# line it was always going to skip.
 #
-# So the rule is inverted and asks a question with only two answers. A
-# leading byte is either printable or it is not. If it is not, the line
-# is something this module cannot account for and the file is declined
-# -- that is every control character, every zero-width and bidi format
-# character, the BOM, and every non-ASCII space, with no list to keep
-# up to date. The single invisible byte Python calls printable is the
-# ASCII space, and an indented record is caught by ``lstrip``.
+# WHAT COUNTS AS INVISIBLE, and the ceiling on it. Four earlier
+# attempts were LISTS, each missing the next tier. A BOM at the file
+# head missed every other offset. Four named characters missed five
+# more (no-break space, zero-width space, word joiner, ideographic
+# space, ZWNJ). A Unicode character class still missed 213 codepoints
+# -- mostly control characters, but not only: soft hyphen, the Arabic
+# letter mark and the tag block are format characters, not controls,
+# and there are only 65 Cc codepoints in all of Unicode, so "213
+# controls" was never arithmetic that worked. Then inspecting
+# ``content[0]`` alone missed anything behind a single leading space.
+#
+# A list has to be complete to be correct and there is no way to know
+# that it is. So the predicate is ``not str.isprintable()`` plus the
+# ASCII space -- the one invisible character Python calls printable --
+# applied over the WHOLE prefix rather than its first character.
+#
+# That covers every control, format, surrogate, private-use, unassigned
+# and separator codepoint. It does NOT cover the handful of assigned,
+# printable characters that happen to RENDER blank -- U+3164 HANGUL
+# FILLER, U+2800 BRAILLE PATTERN BLANK, the GAP FILLERs -- nor
+# zero-advance combining marks. Those are a judgement about glyphs
+# rather than about encoding, no structure writer emits one, and
+# chasing them would be a fourth list. Stated as a ceiling here and
+# pinned by a test rather than left to be rediscovered.
+
+
+def _visible_start(content: str) -> str:
+    """``content`` from its first visible character.
+
+    Recognition only -- nothing this returns is ever written. The file
+    it came from is either declined or untouched.
+    """
+    index = 0
+    while index < len(content) and (
+        content[index] == " " or not content[index].isprintable()
+    ):
+        index += 1
+    return content[index:]
+
 
 def _coordinate_bfactor(content: str) -> float | None:
     """The B-factor of ``content``, or None if it is not a PDB record.
@@ -165,7 +197,12 @@ def _looks_like_cif(pdb_text: str) -> bool:
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
     for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
-        if line.lstrip().startswith(("data_", "_atom_site.", "loop_")):
+        # Same helper as the record check below, so the two
+        # recognisers cannot disagree about what a line begins with. A
+        # CIF saved with a BOM is exactly as much a CIF as one without.
+        if _visible_start(line).startswith(
+            ("data_", "_atom_site.", "loop_")
+        ):
             return True
     return False
 
@@ -205,25 +242,28 @@ def is_fractional(pdb_text: str) -> bool:
     confidence, which is worse than the flat colouring the module
     exists to fix. Declining "every B-factor identical" would catch it,
     but that is a guess about INTENT bolted onto a rule that is
-    otherwise a fact about FORMAT, and no writer in this repo is known
-    to emit one: all three ``static/example`` depositions have 871+
-    distinct values. Left as one rule until something real produces the
-    input. Uniform ``0.00`` is already a no-op.
+    otherwise a fact about FORMAT. No pipeline here emits such a
+    column: no ``tools/*/run_pipeline.py`` writes a B-factor field at
+    all, they hand through whatever the model wrote. (An earlier note
+    cited the distinct-value counts of the three ``static/example``
+    depositions instead -- 979, 2545 and 871 -- which are real numbers
+    about DOWNLOADED files and say nothing about our writers.) Left as
+    one rule until something real produces the input. Uniform ``0.00``
+    is already a no-op.
     """
     if _looks_like_cif(pdb_text):
         return False
     seen = False
     for content, _term in _lines(pdb_text):
         if not content.startswith(_COORD_RECORDS):
-            # Two questions, between them exhaustive. Is the leading
-            # byte invisible? Then this line is unaccountable and the
-            # file is declined. Is it a coordinate record wearing an
-            # indent? Then it is a record this module can see and
-            # cannot read, which is the same verdict. See the note by
-            # _COORD_RECORDS for why this is not a list of characters.
-            if content[:1] and not content[0].isprintable():
-                return False
-            if content.lstrip().startswith(_COORD_RECORDS):
+            # One question: is this a coordinate record wearing an
+            # invisible prefix? Then it is a record this module can see
+            # and cannot read, and the file is declined. Anything else
+            # -- a BOM before HEADER, a NUL pad, a stray control byte
+            # on a REMARK -- is a line that holds no B-factor and was
+            # always going to be skipped. See the note by
+            # _COORD_RECORDS for why this is a predicate, not a list.
+            if _visible_start(content).startswith(_COORD_RECORDS):
                 return False
             continue
         # ONE RULE. If a line claims to be a coordinate record and this

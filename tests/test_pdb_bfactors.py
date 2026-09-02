@@ -764,71 +764,153 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         assert bfactors_on_100(pdb) is pdb
 
     def test_a_bom_does_not_let_a_cif_through(self):
-        """Which mechanism fires, asserted explicitly.
+        """Both recognisers read a line the same way.
 
-        ``lstrip()`` does not strip a BOM, so the CIF sniffer genuinely
-        MISSES a BOM'd ``data_`` marker -- and teaching it to see one
-        would be another list of characters, which is the mistake this
-        module has already made twice. It does not need to: the noise
-        rule declines the file first, on that same line, for the more
-        general reason. Pinning both verdicts stops the two mechanisms
-        silently swapping which one carries the case.
+        ``_looks_like_cif`` and the coordinate-record check now share
+        ``_visible_start``, so a CIF saved with a BOM is still a CIF.
+        They disagreed for one revision -- the record check saw through
+        an invisible prefix and the format sniffer did not -- and a
+        BOM'd ``data_`` file went from declining to converting on the
+        strength of a trailing PDB record.
 
-        The earlier version of this test was HOLLOW. Its fixture was
-        ``BOM + "data_XYZ\nloop_\n_atom_site.group_PDB\n"``, and lines
-        two and three carry un-BOM'd markers -- so the verdict came from
-        them and it passed with BOM handling removed entirely. Both
-        reviewers caught it. The marker has to be the only one in the
-        file AND the one wearing the mark.
+        The earlier version of this test was HOLLOW, and both reviewers
+        caught it: its fixture was ``BOM + "data_XYZ\nloop_\n
+        _atom_site.group_PDB\n"``, and lines two and three carry
+        un-BOM'd markers, so the verdict came from them and it passed
+        with BOM handling removed entirely. The marker has to be the
+        only one in the file AND the one wearing the mark.
         """
         cif = "\ufeff" + "data_XYZ\n" + _atom(1, 0.21)
 
-        assert not _looks_like_cif(cif), (
-            "the sniffer is not expected to see a BOM'd marker; if it "
-            "now does, this test is no longer about the noise rule"
+        assert _looks_like_cif(cif), (
+            "the BOM'd data_ line is the only marker in this fixture"
         )
-        # Declined anyway, and the trailing ATOM record is what makes
-        # that non-vacuous: drop the noise rule and this file is a
-        # perfectly good fractional PDB with an odd first line.
+        # The trailing ATOM record is what makes this non-vacuous: with
+        # the marker missed, this file is a good fractional PDB with an
+        # odd first line, and it converts.
         assert not is_fractional(cif)
         assert bfactors_on_100(cif) is cif
 
-    def test_no_codepoint_anywhere_can_hide_a_record(self):
-        """The guard the two earlier attempts could not have had.
+    # PREFIXES, not one character. Inspecting ``content[0]`` alone
+    # passed a single-character sweep and still let anything behind a
+    # leading SPACE through -- space is printable, so the check waved
+    # it past, and the rule never looked at the second byte. That is
+    # the same defect as a short list, expressed as a list of
+    # positions of length one, and a single-character sweep cannot see
+    # it. Found by a reviewer, not by this test.
+    @pytest.mark.parametrize(
+        "prefix", ["", " ", "  ", " \ufeff", "\ufeff "],
+        ids=["bare", "space", "two-spaces", "space+BOM", "BOM+space"],
+    )
+    def test_no_invisible_codepoint_can_hide_a_record(self, prefix):
+        """Completeness, checked against an authority OUTSIDE the rule.
 
-        Both of them were LISTS -- four characters, then a Unicode
-        block -- and a list is only correct if it is complete, which no
-        example-based test can show. This sweeps every codepoint Python
-        knows and asserts the count of leaks is zero, so it fails the
-        moment the rule stops being exhaustive rather than the moment
-        somebody thinks of the right character. The first list leaked 5
-        of these; the second leaked 213.
+        The first version of this test was CIRCULAR and a reviewer
+        caught it. It filtered with ``if ch.isprintable() and not
+        ch.isspace(): continue`` -- the exact complement of the
+        predicate under test -- so it only ever exercised codepoints
+        the rule handles by construction. It proved the rule agrees
+        with itself, and its docstring's claim to sweep "every
+        codepoint Python knows" was false.
 
-        Excludes the ten separators ``str.splitlines`` breaks on: those
-        end the line rather than sitting inside it, and they are covered
-        by TestTheSeparatorHalfOfTheWeld.
+        The universe here comes from ``unicodedata.category`` instead:
+        every ASSIGNED control, format, surrogate, private-use and
+        separator codepoint. That is a different authority from
+        ``str.isprintable``, so the test can genuinely fail. Unassigned
+        (Cn) is excluded -- it is 800k codepoints that cannot appear in
+        real text -- and marks are the documented ceiling below.
         """
+        import unicodedata
+
         splitters = set("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
-        clean = _atom(1, 0.10)
-        disqualifying = _atom(2, 88.50)
+        clean, disqualifying = _atom(1, 0.10), _atom(2, 88.50)
 
         leaks = []
         for cp in range(0x110000):
             ch = chr(cp)
             if ch in splitters:
                 continue
-            # Only invisibles can hide a record; a visible character
-            # would make the line genuinely unrecognisable, which every
-            # reader agrees about.
-            if ch.isprintable() and not ch.isspace():
+            if unicodedata.category(ch) not in {
+                "Cc", "Cf", "Cs", "Co", "Zs", "Zl", "Zp",
+            }:
                 continue
-            if is_fractional(clean + ch + disqualifying):
+            if is_fractional(clean + prefix + ch + disqualifying):
                 leaks.append(hex(cp))
 
         assert leaks == [], (
-            f"{len(leaks)} codepoint(s) still hide a coordinate record "
-            f"from the gate, e.g. {leaks[:8]} -- the file is judged "
+            f"{len(leaks)} invisible codepoint(s) still hide a "
+            f"coordinate record, e.g. {leaks[:8]} -- the file is judged "
             "fractional on its other records and half converted"
+        )
+
+    @pytest.mark.parametrize(
+        "ch, name",
+        [("\u3164", "HANGUL FILLER"),
+         ("\u2800", "BRAILLE PATTERN BLANK"),
+         ("\u0301", "COMBINING ACUTE ACCENT")],
+    )
+    def test_the_known_ceiling_is_still_where_it_was_documented(
+        self, ch, name,
+    ):
+        """A characterisation test, asserting a LIMIT rather than a fix.
+
+        These render blank or take no width, but Python calls them
+        printable and they are not whitespace, so the rule does not
+        strip them and a record behind one is still hidden. That is a
+        judgement about GLYPHS rather than about encoding, no structure
+        writer emits one, and closing it would mean a fourth list --
+        which is the mistake this module made three times already.
+
+        Pinned so the ceiling cannot be quietly forgotten, and so that
+        anyone who does close it has to delete this test on purpose
+        rather than discover the gap again from scratch.
+        """
+        assert ch.isprintable() and not ch.isspace(), (
+            f"{name} is no longer printable-and-not-space, so the rule "
+            "now covers it and this ceiling test is obsolete"
+        )
+        assert is_fractional(_atom(1, 0.10) + ch + _atom(2, 88.50)), (
+            f"{name} no longer hides a record -- the ceiling moved. "
+            "Good news; update this test and the note in the module."
+        )
+
+    # A BOM, a NUL pad or a stray control byte sitting on a line that
+    # holds NO B-factor. Declining these was a silent regression: the
+    # customer's download quietly stayed on 0-1, which is the original
+    # bug, on files that had been converting correctly for months.
+    #
+    # And it hit the motivating case hardest. The commit that
+    # introduced the blanket rule cited ``cat binder.pdb target.pdb``
+    # with a BOM'd second file -- but every real PDB opens with HEADER
+    # or CRYST1, not a coordinate record, so the mark lands on a line
+    # that was always going to be skipped. All three depositions in
+    # static/example open that way. The rule regressed the scenario it
+    # was written for more often than it fixed it.
+    HARMLESS = [
+        ("BOM before HEADER", "\ufeff", "HEADER    LYSOZYME"),
+        ("BOM before CRYST1", "\ufeff", "CRYST1   79.100   79.100"),
+        ("BOM before MODEL", "\ufeff", "MODEL        1"),
+        ("NUL pad line", "", "\x00\x00\x00\x00"),
+        ("DOS Ctrl-Z", "", "\x1a"),
+        ("control byte on a REMARK", "\x01", "REMARK   1 ANYTHING"),
+        ("zero-width space on TER", "\u200b", "TER    1234      LEU A   1"),
+    ]
+
+    @pytest.mark.parametrize(
+        "label, noise, line", HARMLESS, ids=[c[0] for c in HARMLESS],
+    )
+    def test_invisible_bytes_off_a_record_do_not_decline_the_file(
+        self, label, noise, line,
+    ):
+        """Fail-closed earns its keep on a record this module can see
+        and cannot read. It does not license declining a line that was
+        never going to hold a B-factor."""
+        pdb = noise + line + "\n" + _atom(1, 0.10) + _atom(2, 0.77)
+
+        assert is_fractional(pdb), f"{label} wrongly disqualified the file"
+        assert _bfactors(bfactors_on_100(pdb)) == [10.0, 77.0], (
+            f"{label} left the download on the 0-1 scale -- which is the "
+            "bug this module exists to fix, restored silently"
         )
 
     def test_a_clean_file_still_converts(self):
