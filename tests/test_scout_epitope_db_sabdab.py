@@ -37,6 +37,7 @@ unless ``SCOUT_SABDAB_LIVE=1``, following ``tests/test_rls.py``.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -122,6 +123,15 @@ class _FakeResponse:
         self.text = text
         self.status_code = status
 
+    @property
+    def ok(self) -> bool:
+        return self.status_code < 400
+
+    def json(self):
+        # Deliberately not a stored dict: a real 204 carries an empty body, and
+        # json() raising on it is the behaviour the 204 guard exists to skip.
+        return json.loads(self.text)
+
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
@@ -129,12 +139,14 @@ class _FakeResponse:
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    """No test may inherit another's index or per-UniProt cache."""
+    """No test may inherit another's index, per-UniProt cache, or backoff."""
     epitope_db._reset_summary_cache()
     epitope_db._CACHE.clear()
+    epitope_db._RCSB_RETRY_AT = 0.0
     yield
     epitope_db._reset_summary_cache()
     epitope_db._CACHE.clear()
+    epitope_db._RCSB_RETRY_AT = 0.0
 
 
 @pytest.fixture
@@ -400,6 +412,180 @@ class TestFailureIsNotCachedForever:
         )
         assert epitope_db.fetch_known_binders("P99999") == []
         assert epitope_db._CACHE["P99999"] == []
+
+
+class TestRcsbFailureIsNotCachedForever:
+    """The same guard, for the OTHER database the lookup rides on.
+
+    The class above covers SAbDab and was the whole of the guard. But
+    ``query_sabdab`` needs two upstreams: RCSB names the candidate structures,
+    SAbDab says which of them are antibody complexes. An RCSB outage produced
+    exactly the empty list a target with no antibodies produces, while the
+    SAbDab summary stayed perfectly readable — so the check passed, the miss
+    went into an unexpiring ``_CACHE``, and that accession reported "no known
+    binders" for the life of the gunicorn worker, long after RCSB recovered.
+
+    RCSB is reached with ``requests.post``; the summary with ``requests.get``.
+    These tests keep SAbDab healthy on purpose, so a pass can only come from
+    the RCSB arm of the guard.
+    """
+
+    @staticmethod
+    def _rcsb(monkeypatch, *, status=200, body="", exc=None):
+        """Answer the RCSB search POST with a status/body, or raise ``exc``.
+
+        Both failure modes are needed because the source treats them in
+        separate branches — a 5xx returns early, a raise lands in the handler —
+        and a guard added to only one of them looks identical from the outside.
+        """
+        calls = []
+
+        def _fake_post(url, **kwargs):
+            calls.append(url)
+            if exc is not None:
+                raise exc
+            return _FakeResponse(body, status)
+
+        monkeypatch.setattr(epitope_db.requests, "post", _fake_post)
+        return calls
+
+    def test_an_rcsb_outage_does_not_poison_the_cache(self, monkeypatch, served):
+        served(_SUMMARY_CSV)  # SAbDab is fine. Only RCSB is down.
+        self._rcsb(monkeypatch, status=503, body="service unavailable")
+
+        assert epitope_db.fetch_known_binders("P00533") == []
+        assert "P00533" not in epitope_db._CACHE, (
+            "an RCSB 503 wrote a permanent 'no known binders' for P00533; "
+            "_CACHE has no expiry, so that miss outlives the outage for the "
+            "life of the worker"
+        )
+
+    def test_a_network_error_is_an_outage_not_a_zero(self, monkeypatch, served):
+        """A raised exception and a 5xx are the same fact and must agree."""
+        served(_SUMMARY_CSV)
+
+        def _boom(url, **kwargs):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(epitope_db.requests, "post", _boom)
+
+        assert epitope_db.fetch_known_binders("P00533") == []
+        assert "P00533" not in epitope_db._CACHE
+
+    def test_the_lookup_is_right_once_rcsb_recovers(self, monkeypatch, served):
+        """Not caching is the means; answering correctly afterwards is the end.
+
+        Asserting only on ``_CACHE`` would pass against a version that never
+        re-queries, so this one walks the accession through the outage and out
+        the other side and demands the binder.
+        """
+        served(_SUMMARY_CSV)
+        self._rcsb(monkeypatch, status=503, body="")
+        assert epitope_db.fetch_known_binders("P0DTC2") == []
+
+        # The outage set the error-TTL backoff; recovery is only observable
+        # once it lapses. Same move as the summary tests make with
+        # ``_SUMMARY_EXPIRES_AT``, and it keeps the test off the clock.
+        epitope_db._RCSB_RETRY_AT = 0.0
+
+        monkeypatch.setattr(
+            epitope_db, "_fetch_and_compute_contacts", lambda *a, **k: []
+        )
+        calls = self._rcsb(
+            monkeypatch, body='{"result_set": [{"identifier": "7K8M"}]}'
+        )
+        binders = epitope_db.fetch_known_binders("P0DTC2")
+
+        assert calls, "RCSB was never re-queried; the outage had been cached"
+        assert [b["pdb_id"] for b in binders] == ["7K8M"]
+
+    @pytest.mark.parametrize(
+        "status,body",
+        [
+            (204, ""),                    # what the live API answers today
+            (200, '{"result_set": []}'),  # the other shape a zero could take
+        ],
+        ids=["204-empty-body", "200-empty-result-set"],
+    )
+    def test_a_genuine_rcsb_zero_is_still_cached(
+        self, monkeypatch, served, status, body
+    ):
+        """The counterpart, and the reason the sentinel is not just "always
+        refetch": a zero from RCSB is an answer, not a failure. It is a fact,
+        and it has to stay cheap — the first analysis of a target that resolves
+        to an accession with no PDB entries pays this lookup, and the cache is
+        what stops every later one paying it again.
+
+        Parametrised because only the 204 shape is what the API sends today;
+        pinning the 200-with-empty-result-set shape as well means a change in
+        how RCSB represents "nothing matched" cannot silently turn a zero into
+        a permanent outage.
+        """
+        served(_SUMMARY_CSV)
+        calls = self._rcsb(monkeypatch, status=status, body=body)
+
+        assert epitope_db.fetch_known_binders("P99999") == []
+        assert epitope_db._CACHE["P99999"] == []
+
+        epitope_db.fetch_known_binders("P99999")
+        assert len(calls) == 1, "a cached genuine zero went back to RCSB"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"status": 503, "body": ""},
+            {"exc": RuntimeError("connection reset")},
+        ],
+        ids=["http-503", "network-error"],
+    )
+    def test_a_dead_rcsb_is_not_probed_on_every_analysis(
+        self, monkeypatch, served, failure
+    ):
+        """Refusing to cache the outage is correct; flooding the outage is not.
+
+        Nothing is written to ``_CACHE`` during an RCSB outage, so without a
+        backoff every analysis re-probes — and this probe is a 12-second
+        request made inside a 2-slot semaphore (ANON_MAX_CONCURRENT_RUNS). A
+        hung RCSB would hold both slots and hand every other visitor a 503
+        BUSY, with no cache write left to damp it. This is the same bound
+        ``_SUMMARY_ERROR_TTL_SEC`` already puts on a dead SAbDab, and counting
+        the probes is the assertion with teeth: checking the timestamp alone
+        passes against a version that re-probes every time and merely rewrites
+        the clock.
+        """
+        served(_SUMMARY_CSV)
+        calls = self._rcsb(monkeypatch, **failure)
+
+        for _ in range(5):
+            assert epitope_db.fetch_known_binders("P00533") == []
+
+        assert len(calls) == 1, (
+            f"a dead RCSB cost {len(calls)} probes across 5 analyses; the "
+            f"error TTL is not short-circuiting"
+        )
+        # Still not cached — the backoff bounds the cost without reintroducing
+        # the permanent zero. Both properties or neither.
+        assert "P00533" not in epitope_db._CACHE
+
+        remaining = epitope_db._RCSB_RETRY_AT - time.monotonic()
+        assert 0 < remaining <= epitope_db._RCSB_ERROR_TTL_SEC
+
+    def test_a_2xx_without_result_set_is_an_outage_not_a_zero(
+        self, monkeypatch, served
+    ):
+        """A 2xx whose body is not the documented shape is unreadable.
+
+        ``data.get("result_set", [])`` turned it into an empty candidate list,
+        which the guard then wrote to the unexpiring cache as a fact — the
+        exact silent-permanent-zero this change exists to remove, on the one
+        input the sentinel did not cover. Reading ``data["result_set"]``
+        instead lets the KeyError reach the handler that classifies outages.
+        """
+        served(_SUMMARY_CSV)
+        self._rcsb(monkeypatch, status=200, body='{"error": "backend down"}')
+
+        assert epitope_db.fetch_known_binders("P00533") == []
+        assert "P00533" not in epitope_db._CACHE
 
 
 # ---------------------------------------------------------------------------

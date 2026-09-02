@@ -638,7 +638,29 @@ def _fetch_and_compute_contacts(pdb_id: str, antigen_chain: str, ab_chains: list
 # SAbDab query
 # ---------------------------------------------------------------------------
 
-def _rcsb_pdb_ids_for_uniprot(uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT) -> list:
+# A dead RCSB is bounded the same way a dead SAbDab is, and for the same
+# reason. Refusing to cache an outage is what stops the permanent zero, but it
+# also means every analysis re-probes — and this probe is a 12-second request
+# made INSIDE anon_compute_slot(ANON_MAX_CONCURRENT_RUNS), which is 2. An RCSB
+# that hangs rather than refusing would hold both slots and turn concurrent
+# /analyze calls into 503 BUSY, with no cache write left to damp it. One
+# timestamp bounds that at a single probe per TTL per worker.
+#
+# ponytail: one SHARED timestamp, not per-accession, and an unlocked float.
+# Shared means any failure darkens the lookup for every accession until the TTL
+# lapses — blunt, but the failures this actually sees are upstream-wide, and
+# the degraded answer is the safe one ([] returned, nothing cached). Unlocked
+# because this only needs a bound; the summary's lock buys single-flight on a
+# megabyte download, which this has no equivalent of, so a race at the boundary
+# costs at most a couple of extra probes. Go per-accession only if a one-off
+# malformed response for a single target is ever seen tripping it.
+_RCSB_ERROR_TTL_SEC = 5 * 60
+_RCSB_RETRY_AT = 0.0
+
+
+def _rcsb_pdb_ids_for_uniprot(
+    uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT
+) -> Optional[list]:
     """Return PDB IDs from RCSB that contain a polymer entity with the given
     UniProt accession, sorted by RCSB relevance score (best structures first).
 
@@ -647,8 +669,21 @@ def _rcsb_pdb_ids_for_uniprot(uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT) -
         limit: Maximum number of PDB IDs to return.
 
     Returns:
-        List of uppercase PDB ID strings. Empty on failure.
+        List of uppercase PDB ID strings; ``[]`` when RCSB answered and matched
+        nothing, ``None`` when RCSB could not be read.
+
+        The caller needs those two apart. ``fetch_known_binders`` writes an
+        unexpiring "no known binders" for this accession on the strength of an
+        empty answer, so returning ``[]`` for an outage would leave that miss
+        standing long after the upstream recovered — the same
+        silent-permanent-zero shape as the retired-endpoint bug this module
+        already carries guards for. Only this layer sees the status code and
+        the exception, so only this layer can tell them apart.
     """
+    global _RCSB_RETRY_AT
+    if time.monotonic() < _RCSB_RETRY_AT:
+        return None
+
     query_payload = {
         "query": {
             "type": "terminal",
@@ -676,12 +711,28 @@ def _rcsb_pdb_ids_for_uniprot(uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT) -
         )
         if not resp.ok:
             logger.warning("RCSB search returned HTTP %s for %s", resp.status_code, uniprot_id)
+            _RCSB_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+            return None
+        # A query that matches nothing comes back 204 with a ZERO-BYTE body,
+        # which json() below raises on. Without this branch that raise would be
+        # classified as an outage — and because the backoff above is SHARED
+        # across accessions, one target that legitimately has no structures
+        # would darken the known-binder lookup for every other target for a
+        # full error TTL. Verified against the live API 2026-09-02: five
+        # well-formed accessions with no PDB entry all answered 204/0 bytes,
+        # and `resp.ok` is True for 204, so the check above does not cover it.
+        if resp.status_code == 204:
             return []
         data = resp.json()
-        return [hit["identifier"].upper() for hit in data.get("result_set", [])]
+        # ``data["result_set"]``, not ``.get(..., [])``. A 2xx whose body is not
+        # the documented shape is an unreadable answer, not a zero; defaulting
+        # it to [] mints a forgeable genuine-zero and gets it cached. The
+        # KeyError falls into the handler below, where it belongs.
+        return [hit["identifier"].upper() for hit in data["result_set"]]
     except Exception:
         logger.warning("RCSB search failed for %s.", uniprot_id, exc_info=True)
-        return []
+        _RCSB_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+        return None
 
 
 def _classic_pdb_id(extended_id: str) -> str:
@@ -805,7 +856,7 @@ def _reset_summary_cache() -> None:
         _SUMMARY_EXPIRES_AT = 0.0
 
 
-def query_sabdab(uniprot_id: str) -> list:
+def query_sabdab(uniprot_id: str) -> Optional[list]:
     """Find antibody/nanobody structures for a target protein via RCSB + SAbDab.
 
     Step 1: Query RCSB search API to get PDB IDs containing the UniProt
@@ -823,10 +874,19 @@ def query_sabdab(uniprot_id: str) -> list:
         uniprot_id: UniProt accession (e.g. "P00533" for EGFR).
 
     Returns:
-        List of binder dicts sorted by resolution (best first). Returns []
-        on network failure or no antibody-complex structures found.
+        List of binder dicts sorted by resolution (best first); ``None`` when
+        RCSB could not be read, so nothing was ever established; ``[]``
+        otherwise.
+
+        ``[]`` is NOT by itself a genuine zero. It is also what an unreadable
+        SAbDab produces, because a missing index yields no rows for any PDB id.
+        So a caller that persists a miss has to check BOTH halves — ``None``
+        for RCSB, and ``_sabdab_summary_index()`` for SAbDab — which is what
+        ``fetch_known_binders`` does. Checking ``None`` alone is not enough.
     """
     pdb_ids = _rcsb_pdb_ids_for_uniprot(uniprot_id)
+    if pdb_ids is None:
+        return None
     if not pdb_ids:
         return []
 
@@ -906,8 +966,10 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
             Remaining hits are returned without contact residues.
 
     Returns:
-        List of binder dicts. Empty list if UniProt ID is blank or SAbDab
-        returns no hits.
+        List of binder dicts. Empty when the accession is blank or malformed,
+        when the target genuinely has no antibody complexes, OR when an
+        upstream was unreadable. Those three are not distinguishable from the
+        return value — only from the warnings the helpers log.
     """
     # Re-checked here, not just at extraction, because this is the function
     # that mints a cache key and it is reachable from more than one resolver.
@@ -921,12 +983,23 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
 
     sabdab_hits = query_sabdab(cache_key)
     if not sabdab_hits:
-        # Only remember "no binders" when the database was actually readable.
-        # This cache has no expiry, so caching a miss caused by an unreachable
-        # SAbDab would pin that miss for the life of the worker — surviving
-        # the 5-minute retry that already healed it, and reproducing in
-        # miniature the silent-permanent-zero failure this repoint fixes.
-        if _sabdab_summary_index():
+        # Only remember "no binders" when both upstreams actually answered.
+        # This cache has no expiry, so a miss written during an outage outlives
+        # the outage — bounded only by the entry cap eventually evicting it,
+        # never by the upstream recovering. That reproduces in miniature the
+        # silent-permanent-zero failure this repoint fixes.
+        #
+        # The lookup rides on two: RCSB names the candidate structures and
+        # SAbDab says which are antibody complexes. Before this guard grew its
+        # RCSB arm, either being down produced the same empty list as a target
+        # that genuinely has none, and vouching for SAbDab alone let an RCSB
+        # outage write permanent zeroes. ``None`` is RCSB's "I could not
+        # answer"; ``[]`` is an answer of zero.
+        #
+        # The SAbDab arm deliberately accepts a stale-but-served index (see
+        # _sabdab_summary_index): the summary is published weekly, so last
+        # week's copy is a fact, not an outage.
+        if sabdab_hits is not None and _sabdab_summary_index():
             _cache_put(cache_key, [])
         return []
 
