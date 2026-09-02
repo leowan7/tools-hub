@@ -59,9 +59,18 @@
             <strong>All {{ ns.total }} designs fell below quality thresholds.</strong>
             The pipeline ran cleanly. These candidates are shown so you can
             see the score distribution, but they should not be advanced to
-            validation without re-screening. To find passing designs, try
-            increasing the budget, widening the binder length range, or
-            refining hotspots for your target.
+            validation without re-screening.
+            {%- if is_refold_source(tool_slug) %}
+            The fastest next step is the second-opinion fold below: it
+            re-scores a shortlist with an independent predictor. Boltz-2
+            additionally re-folds against your target, which is a different
+            measurement rather than more of the same one. Re-running with a
+            bigger budget or a wider length range only helps if the bar is one
+            these designs could move.
+            {%- else %}
+            To find passing designs, try increasing the budget, widening the
+            binder length range, or refining hotspots for your target.
+            {%- endif %}
           </p>
         </div>
       {% endif %}
@@ -69,10 +78,14 @@
 
       {# C3 — Second-opinion fold. Spawn N orthogonal ColabFold /
          ESMFold jobs and route the user to /jobs/compare. Rendered
-         only when the source tool actually produces binder sequences
-         (kept in lockstep with shared.refold.SOURCE_TOOLS). #}
-      {% set REFOLD_SOURCES = ['rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
-      {% if tool_slug in REFOLD_SOURCES and not is_example %}
+         only when the source tool actually produces binder sequences.
+         ``is_refold_source`` is shared.refold.SOURCE_TOOLS.__contains__,
+         registered as a jinja global in app.py -- it used to be five slugs
+         typed out here with a note to keep them in lockstep, and the banner
+         above branches on the same predicate. A CALL, not `in`, so an
+         environment that forgot the global raises instead of quietly
+         rendering this whole block away. #}
+      {% if is_refold_source(tool_slug) and not is_example %}
         {# Campaign context refolds the whole campaign's global top-N; a single
            job refolds its own top-N. #}
         {% set refold_action = url_for('campaigns.compute_campaign_refold', campaign_id=campaign_id) if campaign_id else url_for('jobs.job_refold', job_id=job_id) %}
@@ -81,10 +94,14 @@
             Second-opinion fold
           </div>
           <p class="subtitle" style="font-size: 0.85rem; margin: 0 0 0.7rem 0; max-width: 64ch;">
+            {# "the source tool's own confidence", NOT "the bundled AF2
+               score": this panel renders for boltzgen, whose run contains no
+               co-folded AF2 number anywhere -- which is the premise of the
+               gate fix in tools/boltzgen/meta.py. #}
             Validate the top designs with an orthogonal predictor.
             ColabFold's no-MSA path or ESMFold's single-sequence path
-            will agree with the bundled AF2 score on robust designs and
-            diverge on AF2-overconfident ones.
+            will agree with the source tool's own confidence score on
+            robust designs and diverge on overconfident ones.
           </p>
           <div style="display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;">
             <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">

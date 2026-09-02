@@ -417,6 +417,21 @@ def create_app() -> Flask:
         _pdb_bfactors.bfactors_on_100_b64
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    # A CALLABLE, NOT THE SET, and the difference is the whole point. This
+    # replaced five slugs typed into components/results_shell.html under a
+    # comment asking the next reader to keep them "in lockstep with
+    # shared.refold.SOURCE_TOOLS" -- the arrangement that drifts.
+    #
+    # But exporting the set swaps one silent failure for another: jinja's
+    # Undefined implements __iter__ as iter(()), so `slug in REFOLD_SOURCES`
+    # renders False WITH NO ERROR in any environment that forgot to register
+    # it -- and the macro is rendered by bare Environments in tests. The
+    # second-opinion panel and its three billing forms would simply not
+    # appear, green. A call on Undefined raises UndefinedError instead, so the
+    # same mistake is loud. Verified both behaviours; see
+    # tests/test_boltzgen_iptm_has_no_cofold_bar.py.
+    from shared.refold import SOURCE_TOOLS as _refold_sources  # noqa: PLC0415
+    flask_app.jinja_env.globals["is_refold_source"] = _refold_sources.__contains__
     # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:
     # explanation plus the optional ``caveat``, the half that is about what an
     # old stored result may hold rather than about the metric. A global rather

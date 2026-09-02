@@ -35,10 +35,16 @@ seo_faq: list[dict] = [
     {
         "q": "Can I run BoltzGen online without setting up the model locally?",
         "a": (
+            # Scaffold names are the form's own <option> labels, and the
+            # metrics are scoped: designfolding_metrics defaults false on the
+            # peptide protocol, so pLDDT and refolding RMSD are not emitted
+            # there. templates/tools/boltzgen_form.html says the same.
             "Yes. Ranomics Tools runs BoltzGen on a dedicated GPU through "
             "your browser. Upload a target PDB, pick a scaffold class "
-            "(mini-binder, VHH, scFv, or peptide), and candidates come "
-            "back with structure + affinity-like scores per hit."
+            "(mini-protein, nanobody, antibody or peptide), and candidates "
+            "come back with a structure and the generator's interface score "
+            "per hit \u2014 plus pLDDT and a refolding RMSD on the "
+            "mini-protein, nanobody and antibody protocols."
         ),
     },
     {
@@ -190,10 +196,23 @@ about: dict = {
     "runtime_table": [
         {"preset": "pilot", "typical": "15 to 60 min"},
     ],
+    # "signals self-consistent BINDING" was the refold claim again, in a
+    # third place. The refold folds the binder alone, so it says the design
+    # folds to the shape it was designed as -- nothing about whether it binds.
+    #
+    # And 2 A was a third bar for one metric on one page: the container's pass
+    # bar is 2.0, the results legend calls 1.5 good and 1.0 excellent
+    # (shared/score_legends.py). Both are real and they mean different things,
+    # so name which is which rather than picking one and contradicting the
+    # other four lines down the page.
     "output_summary": (
         "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, "
-        "and downloadable PDBs. Refolding RMSD &lt; 2 &Aring; on the "
-        "top design typically signals self-consistent binding."
+        "and downloadable PDBs. Refolding RMSD is the design against its own "
+        "refold: at or under 2 &Aring; it clears the RMSD leg of the pass "
+        "bar, which also needs pLDDT at or above 80. Under 1.5 &Aring; the "
+        "results tooltip calls it self-consistent. That says the binder folds "
+        "as designed, not that it binds &mdash; re-fold a shortlist against "
+        "your target to check that."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

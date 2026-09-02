@@ -34,8 +34,7 @@ from html.parser import HTMLParser
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from shared import metric_glossary, ranking, score_legends
-from shared import pdb_bfactors
+from shared import metric_glossary, pdb_bfactors, ranking, refold, score_legends
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -53,6 +52,15 @@ def _env() -> Environment:
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
+    # results_shell.html gates the Second-opinion panel on this predicate, and
+    # gates it with a CALL. Registering it is not optional: omit it and that
+    # call raises UndefinedError, which is the entire point of the call form --
+    # the old `slug in REFOLD_SOURCES` rendered the whole block away SILENTLY.
+    #
+    # This file does NOT otherwise assert on the refold panel. A review checked:
+    # reverting the template to `in` deletes the block and leaves this file at
+    # 9 passed. The pin for that lives in the panel test below, not here.
+    env.globals["is_refold_source"] = refold.SOURCE_TOOLS.__contains__
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")
     return env
 
@@ -187,6 +195,27 @@ def test_the_wet_lab_panel_carries_no_primary_button():
     )
     html = tmpl.render(candidates=[_row()])
     assert "Validating in the lab is optional" in html, "panel did not render"
+    # bindcraft is a refold source, so the Second-opinion block must render.
+    # This catches the block disappearing; it CANNOT tell how it was gated --
+    # a review swapped the call for the five hardcoded slugs and this stayed
+    # green, so do not read it as pinning the call form.
+    assert "Second-opinion fold" in html, (
+        "the Second-opinion block did not render for a refold-source tool, so "
+        "three POST forms are missing from the page"
+    )
+    # THAT is pinned here, on the source, because it is a property of the
+    # template rather than of its output. `in` on a missing jinja global reads
+    # False and deletes the block silently; a call raises. Greppable beats
+    # inferred -- this repo has 37 guards that certified false by inferring.
+    src = (_TEMPLATES / "components" / "results_shell.html").read_text(
+        encoding="utf-8"
+    )
+    assert src.count("is_refold_source(tool_slug)") == 2, (
+        "results_shell.html no longer CALLS is_refold_source at both gates "
+        "(the all-failed banner's advice and the Second-opinion panel). If it "
+        "went back to `in`, or to a hardcoded slug list, a missing global "
+        "renders both blocks away without raising"
+    )
     assert "Binder Pilot" in html and "AI Binder Sprint" in html
     for link in ("Binder Pilot", "AI Binder Sprint"):
         idx = html.index(">" + link + "<")
