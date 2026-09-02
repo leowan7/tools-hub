@@ -18,6 +18,8 @@ registered in ``app.py``; templates do not import this module directly.
 
 from __future__ import annotations
 
+import re
+
 from typing import NamedTuple, NotRequired, Optional, TypedDict
 
 from shared import metric_glossary as _metric_glossary
@@ -875,6 +877,25 @@ def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
 #
 # Every column named here must have a legend for the same tool, because the
 # legend carries the bar. tests/test_derived_verdicts.py asserts that.
+# WHERE THESE BARS DIFFER FROM THE CONTAINERS' OWN, and they differ on four
+# legs. The bar is the legend's ``good`` value by decision, so that a column's
+# tooltip and the verdict in the cell beside it can never quote different
+# numbers. That decision re-labels delivered work in both directions, and the
+# full list is here rather than spread across four files:
+#
+#   boltzgen     refolding RMSD   1.5   vs the container's RMSD_THRESHOLD 2.0
+#   rfdiffusion  ipTM             0.65  vs its IPTM_THRESHOLD 0.70   (LOOSER)
+#   rfantibody   pAE              5.0   vs its PAE_THRESHOLD 10.0
+#   boltz2       pLDDT            80    vs its STRICT_PLDDT 0.85, i.e. 85 on
+#                                       the 0-100 scale this site renders
+#                                       (LOOSER)
+#
+# So a boltzgen design the container called "pass" at RMSD 1.8 now reads as
+# falling short, and a boltz2 design it called soft_pass at pLDDT 82 now reads
+# as meeting the bar. Neither is a bug; both are this decision. Changing a
+# number here changes what every historical results page says, which is the
+# property the whole design exists to have -- a correction reaches the old
+# pages instead of being frozen out of them.
 GATE_COLUMNS: dict[str, tuple[str, ...]] = {
     # ipTM is deliberately NOT a leg. BoltzGen refolds the design ALONE, so
     # its ipTM is not the cofold quantity 0.70 describes. See the IPTM_THRESHOLD
@@ -923,6 +944,8 @@ IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
     ("boltzgen", "refolding_rmsd"): frozenset({0.0}),
 
     # The container parsers' own fallbacks, read off their metric key lists.
+    # rfdiffusion's AF2 score reader returns iptm 0.0 / mean pLDDT 0.0 when the
+    # JSON has no such key and i_pAE 99.0 when it has no PAE matrix;
     # pxdesign's parse_summary_csv calls _safe_float(..., 0.0) for every metric
     # but pAE, and 99.0 for pAE; rfantibody's declares (metric, keys, default)
     # triples with 0.0 for pLDDT/ipTM/pTM and 99.0 for pAE/ipAE. Those numbers
@@ -931,6 +954,9 @@ IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
     # parse failure as a confident measured shortfall. Unmeasured is the true
     # answer. A real reading never lands on them: an ipTM or pLDDT of exactly
     # 0.0, or a PAE of exactly 99.0 Angstrom, is not a thing a model emits.
+    ("rfdiffusion", "ipTM"): frozenset({0.0}),
+    ("rfdiffusion", "pLDDT"): frozenset({0.0}),
+    ("rfdiffusion", "i_pAE"): frozenset({99.0}),
     ("pxdesign", "ipTM"): frozenset({0.0}),
     ("pxdesign", "pLDDT"): frozenset({0.0}),
     ("rfantibody", "pLDDT"): frozenset({0.0}),
@@ -1002,28 +1028,70 @@ class Judgement(NamedTuple):
     # fall short. See :func:`shortfall_bar_text`.
     shortfall_columns: tuple[str, ...] = ()
 
+    # Gate columns that carried a DECLARED PLACEHOLDER rather than a reading:
+    # a container's parse-failure default, or BoltzGen's 0.00 refolding RMSD.
+    #
+    # ABSENT AND BROKEN ARE NOT THE SAME THING, and collapsing them cost a
+    # correct ordering. Both leave the verdict ``unjudged``, because neither
+    # supports a claim about the design. But an absent metric is the ordinary
+    # shape of a job rebuilt from mid-run records and MUST NOT sink it -- that
+    # is the rule this module is built around. A placeholder is evidence the
+    # pipeline could not produce a number at all, and a record like that has no
+    # business outranking designs that were measured and fell short. Ranking
+    # reads this field to tell them apart; display uses it to say "not usable"
+    # rather than "not measured", which are different facts.
+    unusable: tuple[str, ...] = ()
+
 
 def _fmt(value: float) -> str:
     """Trim a bar or a reading to what it actually carries: 80.0 -> 80."""
     return f"{value:g}"
 
 
+# Trailing parentheticals in a glossary label that really are units. Anything
+# else stays part of the name: "Shape complementarity (SC)" is an ABBREVIATION,
+# and splitting it produced the reading "Shape complementarity 0.700 SC".
+_UNIT_PARENTHETICALS = ("\u00c5", "A", "kcal/mol", "%")
+
+
 def _label_and_unit(column: str) -> tuple[str, str]:
     """Split a glossary label into its name and its trailing unit.
 
-    The glossary labels a column for a TABLE HEADER, where the unit belongs in
-    a parenthetical: "Refolding RMSD (A)". Dropped into a sentence that reading
-    comes out as "Refolding RMSD (A) 1.5", with the unit stranded before the
-    number it belongs to. Split here and the sentence reads
-    "Refolding RMSD 1.5 A", which is how anyone would say it out loud.
+    The glossary labels a column for a TABLE HEADER, where a unit belongs in a
+    parenthetical: "Refolding RMSD (A)". Dropped into a sentence that reading
+    comes out "Refolding RMSD (A) 1.5", with the unit stranded ahead of the
+    number it qualifies. Split here and the sentence reads
+    "Refolding RMSD 1.5 A", which is how anyone would say it aloud.
 
-    A label with no parenthetical returns an empty unit and is unchanged.
+    A label whose parenthetical is not in :data:`_UNIT_PARENTHETICALS` is
+    returned whole, unit empty.
     """
     label = str(_metric_glossary.get(column).get("label") or column)
     if label.endswith(")") and " (" in label:
         name, _, unit = label.rpartition(" (")
-        return name, " " + unit[:-1]
+        unit = unit[:-1]
+        if unit in _UNIT_PARENTHETICALS:
+            return name, " " + unit
     return label, ""
+
+
+def shown_value(column: str, value: float) -> Optional[float]:
+    """``value`` as the page RENDERS it, back as a number.
+
+    THE COMPARISON USES THIS, NOT THE RAW READING, and that is what stops a
+    cell refuting itself. ipTM renders to three decimals, so 0.7499999 shows
+    as 0.750; comparing the raw value against a 0.75 bar produced the cell
+    "ipTM 0.750, below 0.75" -- a sentence a reader can only read as a bug.
+    A page cannot assert a distinction it does not render, so the number on
+    screen is the number judged.
+
+    The bar keeps its own exact value: it is a chosen threshold, not a
+    measurement, and rounding it would be inventing precision.
+    """
+    try:
+        return float(_metric_glossary.format_value(column, value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _reading(column: str, value: float) -> str:
@@ -1102,20 +1170,19 @@ def shortfall_bar_text(tool: str, columns) -> str:
     return _join_bar(tool, [c for c in gate_columns(tool) if c in wanted])
 
 
-def _resolve(record: object, tool: str, column: str):
-    """This record's value for a legend column, on the scale the bar is in.
+def _resolve_state(record: object, tool: str, column: str):
+    """``(value, state)`` where state is "ok", "absent" or "unusable".
 
     ``scores`` first then the record root, over every storage spelling in
-    ``_COLUMN_ALIASES`` — the same resolution order the table and
-    ``shared.result_columns.candidate_metric`` use. pLDDT is put on 0-100
-    EXACTLY ONCE (``plddt_on_100`` is not idempotent below 0.01), because
-    boltz2 stores it 0-1 and the legends are all written on 0-100.
+    ``_COLUMN_ALIASES`` -- the same resolution order the table and
+    ``shared.result_columns.candidate_metric`` use.
 
-    Returns None for absent, unparseable, or declared-placeholder values. Every
-    one of those means unmeasured, never failed.
+    "unusable" is a value the pipeline declared as a stand-in
+    (:data:`IMPLAUSIBLE_VALUES`). It is separated from "absent" because the two
+    justify different orderings; see ``Judgement.unusable``.
     """
     if not isinstance(record, dict):
-        return None
+        return None, "absent"
     scores = record.get("scores")
     scores = scores if isinstance(scores, dict) else {}
     raw = None
@@ -1127,37 +1194,41 @@ def _resolve(record: object, tool: str, column: str):
             raw = record[key]
             break
     if raw is None:
-        return None
+        return None, "absent"
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        return None
+        return None, "absent"
     if value != value:  # NaN
-        return None
+        return None, "absent"
 
     # ORDER MATTERS, AND GETTING IT WRONG MADE THE PLACEHOLDER GUARD INERT.
-    # This block used to return the rescaled pLDDT before either check below
-    # ran, so IMPLAUSIBLE_VALUES could not be declared on any pLDDT column at
-    # all -- the one family most likely to carry a stand-in, since rfantibody
-    # and pxdesign both default pLDDT to 0.0 on a parse failure. Declared
-    # values are compared in the STORED scale, which is why the check sits
-    # ahead of the rescale; 0.0 is 0.0 on either scale, so nothing is lost.
+    # This check used to sit after the pLDDT rescale below, so it could not be
+    # declared on any pLDDT column at all -- the family most likely to carry a
+    # stand-in, since three container parsers default pLDDT to 0.0. Declared
+    # values are compared in the STORED scale, which is why it sits ahead of
+    # the rescale; 0.0 is 0.0 on either scale, so nothing is lost.
     if value in IMPLAUSIBLE_VALUES.get((tool, column), frozenset()):
-        return None
+        return None, "unusable"
 
     if column in _metric_glossary.PLDDT_COLUMNS:
         # A negative pLDDT is a broken payload, not a confidence. plddt_on_100
         # passes it through on purpose so a reader SEES it in the table; a bar
         # must not turn it into a confident "pLDDT -5, below 80", which reads
-        # as a measured shortfall. Unmeasured is the true answer.
+        # as something that was measured.
         if value < 0:
-            return None
+            return None, "unusable"
         # Applied exactly once (plddt_on_100 is not idempotent below 0.01),
-        # because every legend on this site is written for the 0-100 scale
-        # while boltz2 and others store 0-1.
-        return _metric_glossary.plddt_on_100(value)
+        # because every legend here is written for the 0-100 scale while
+        # boltz2 and others store 0-1.
+        return _metric_glossary.plddt_on_100(value), "ok"
 
-    return value
+    return value, "ok"
+
+
+def _resolve(record: object, tool: str, column: str):
+    """The value only. See :func:`_resolve_state` for why it was not found."""
+    return _resolve_state(record, tool, column)[0]
 
 
 # The one string a pipeline stamps that this module still reads, and it is
@@ -1165,18 +1236,35 @@ def _resolve(record: object, tool: str, column: str):
 # model output exists (``_stub_scores`` / ``_stub_af2_scores`` in the container
 # repo) and marks them "stub (smoke)". That is PROVENANCE -- a fact about where
 # a number came from, which is exactly the kind of thing this design says to
-# store. Applying a bar to invented numbers would print "Meets pLDDT 80" over
-# values no model produced: at rank 20 the rfdiffusion stub is ipTM 0.65 /
-# pLDDT 90.0 / i_pAE 10.0, which clears its own tool's bar outright.
-_FABRICATED_MARKERS = ("stub",)
+# store.
+#
+# WHAT THE STUB ACTUALLY LOOKS LIKE, because an earlier version of this comment
+# got it wrong in a way worth recording. It claimed the boltzgen stub "at rank
+# 10" clears its own bar. Both smoke tiers emit ONE design (``_smoke_params``
+# sets num_designs 1, and rfdiffusion's stub path runs only under smoke's
+# skip_af2), so rank is always 1 and no such row exists. At rank 1 the boltzgen
+# stub is ipTM 0.46 / pLDDT 71.0 / RMSD 2.4 and the rfdiffusion one is
+# ipTM 0.46 / pLDDT 71.0 / i_pAE 11.9: both MISS their bars.
+#
+# The guard is still the right call, for the opposite reason to the one first
+# given. Judging a stub does not print a false "meets"; it prints a confident
+# "pLDDT 71.0, below 80" about a number no model produced, which is a
+# measurement claim over invented data. Either direction is a lie; this one is
+# simply the one that occurs.
+#
+# Whole word, anchored. A substring test on "stub" also fires on "no_stub",
+# "substub" and anything else a container invents, and docker/pxdesign passes
+# an ARBITRARY value through from its upstream summary CSV
+# (``filter_status = val``), so the input is not a closed vocabulary.
+_FABRICATED_RE = re.compile(r"\bstub\b", re.IGNORECASE)
 
 
 def is_fabricated(record: object) -> bool:
     """True when a pipeline marked this record's scores as fabricated.
 
     Reads the provenance marker only. Nothing here consults, or may consult,
-    the pass/fail half of that field -- see the block comment at the top of
-    this section for the difference and why it matters.
+    the pass/fail half of that field -- see the block comment above for the
+    difference and why it matters.
     """
     if not isinstance(record, dict):
         return False
@@ -1185,8 +1273,33 @@ def is_fabricated(record: object) -> bool:
     marker = scores.get("filter_status")
     if marker is None:
         marker = record.get("filter_status")
-    text = str(marker or "").lower()
-    return any(m in text for m in _FABRICATED_MARKERS)
+    return bool(_FABRICATED_RE.search(str(marker or "")))
+
+
+def bar_is_answerable(tool: str, records) -> bool:
+    """Could ANY of ``records`` resolve every leg of ``tool``'s bar?
+
+    For the live in-progress counter, which is fed streamed partials rather
+    than finished candidates. A boltzgen partial never carries a refolding
+    RMSD (the container's heartbeat sends ipTM, pLDDT and i_pae only, and the
+    refold happens at the end anyway) and an rfantibody partial never carries
+    a global pAE, so those bars cannot be answered mid-run at all.
+
+    THE OBVIOUS PREDICATE IS WRONG AND WAS SHIPPED ONCE. "some record is not
+    unjudged" looks equivalent and is not: one partial short on a leg that DOES
+    stream makes the set non-unjudged, so the counter reported a hard 0 that
+    could never rise, and flipped between 0 and None depending on whether a bad
+    design happened to arrive. Ask instead whether every leg was resolvable
+    somewhere; if not, the honest answer to "how many met the bar" is that this
+    page cannot say yet.
+    """
+    rows = [r for r in (records or []) if isinstance(r, dict)]
+    if not rows:
+        return False
+    return all(
+        any(_resolve(r, tool, col) is not None for r in rows)
+        for col in gate_columns(tool)
+    )
 
 
 def judge(tool: str, record: object) -> Judgement:
@@ -1205,6 +1318,7 @@ def judge(tool: str, record: object) -> Judgement:
     shortfalls: list[str] = []
     shortfall_cols: list[str] = []
     unmeasured: list[str] = []
+    unusable: list[str] = []
     for col in columns:
         # The bare name. A unit on a column nobody measured is noise: "Not
         # measured: Refolding RMSD" is the fact, and "(A)" adds nothing when
@@ -1217,13 +1331,22 @@ def judge(tool: str, record: object) -> Judgement:
             # happens anyway, "we cannot say" is the safe answer, not "failed".
             unmeasured.append(label)
             continue
-        value = _resolve(record, tool, col)
+        value, state = _resolve_state(record, tool, col)
+        if state == "unusable":
+            unusable.append(label)
+            continue
         if value is None:
             unmeasured.append(label)
             continue
         good = float(legend["good"])
         lower_is_better = legend["direction"] == "lower_is_better"
-        meets = value <= good if lower_is_better else value >= good
+        # The DISPLAYED value, so the cell's sentence is self-consistent: what
+        # the reader sees is what was compared. See shown_value.
+        seen = shown_value(col, value)
+        if seen is None:
+            unmeasured.append(label)
+            continue
+        meets = seen <= good if lower_is_better else seen >= good
         if not meets:
             side = "above" if lower_is_better else "below"
             _, unit = _label_and_unit(col)
@@ -1238,7 +1361,10 @@ def judge(tool: str, record: object) -> Judgement:
             tuple(shortfalls),
             tuple(unmeasured),
             tuple(shortfall_cols),
+            tuple(unusable),
         )
-    if unmeasured:
-        return Judgement("unjudged", (), tuple(unmeasured))
+    if unmeasured or unusable:
+        return Judgement(
+            "unjudged", (), tuple(unmeasured), (), tuple(unusable),
+        )
     return Judgement("meets", (), ())

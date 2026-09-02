@@ -329,8 +329,9 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     PASS REGIME, two levels::
 
-        has_bar   = tool_has_bar(tool)                  # per TOOL
-        passed(c) = judge(tool, c).verdict != "below"    # per RECORD
+        has_bar   = tool_has_bar(tool)                   # per TOOL
+        passed(c) = judge(tool, c).verdict != "below"     # per RECORD
+                    and not judge(tool, c).unusable       # (see below)
 
     The TOOL decides whether a bar applies at all; the RECORD is then sunk
     only on evidence that it fell short. Both halves are load bearing.
@@ -415,7 +416,20 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             row["_tool_has_bar"] = has_bar
             row["_metric_key"] = metric_key
             row["_metric_direction"] = direction
-            row["_passed"] = judge(tool, row).verdict != "below"
+            verdict = judge(tool, row)
+            # ABSENT AND BROKEN SORT DIFFERENTLY, and they must. An absent
+            # metric is the ordinary shape of a job rebuilt from mid-run
+            # records and keeps its place -- that is the rule this module is
+            # built around. A DECLARED PLACEHOLDER (a container's parse-failure
+            # default, or a 0.00 refolding RMSD) is evidence the pipeline could
+            # not produce a number, and a record like that has no business
+            # sitting above designs that were measured and fell short. Probed:
+            # one rfdiffusion row of 0.0 / 0.0 / 99.0 -- the exact triple its
+            # AF2 reader returns when the score JSON has no such keys -- led a
+            # table of 1200 measured designs.
+            row["_passed"] = (
+                verdict.verdict != "below" and not verdict.unusable
+            )
             value = values.get(i)
             row["_metric_value"] = value
             if value is None:

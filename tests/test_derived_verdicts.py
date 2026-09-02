@@ -304,6 +304,75 @@ def test_a_container_parse_failure_is_unmeasured_not_a_shortfall():
     ).verdict == "unjudged"
 
 
+def test_a_parse_failure_never_counts_as_meeting_the_bar():
+    """The placeholder rule must not become a way for a broken record to pass.
+
+    Unjudged is not failed, which is what keeps a recovered job's designs in
+    their place. It is also not PASSED: count_candidates_meeting_bar wants
+    evidence a design met the bar, and a parse-failure sentinel is evidence of
+    the opposite kind.
+    """
+    from shared.jobs import count_candidates_meeting_bar
+
+    result = {"candidates": [
+        {"scores": {"ipTM": 0.0, "pLDDT": 0.0, "i_pAE": 99.0}},   # all default
+        {"scores": {"ipTM": 0.9, "pLDDT": 88.0, "i_pAE": 6.0}},   # measured
+    ]}
+    assert count_candidates_meeting_bar(result, "rfdiffusion") == 1
+
+
+def test_a_broken_record_does_not_outrank_a_measured_one():
+    """ABSENT AND BROKEN ARE DIFFERENT, and the ordering has to tell them apart.
+
+    ``passed`` leads the ranking sort key and unjudged counts as passed, which
+    is what keeps a recovered job's designs in their place: judging unmeasured
+    rows as failures once sank 240 recovered pxdesign rows at ipTM 0.99 below
+    100 bindcraft rows at 0.70.
+
+    A DECLARED PLACEHOLDER is not that. It is evidence the pipeline could not
+    produce a number, and collapsing the two put one rfdiffusion row of
+    0.0 / 0.0 / 99.0 -- the exact triple its AF2 reader returns when the score
+    JSON has no such keys -- at the top of a table of 1200 measured designs.
+    Judgement.unusable separates them; ranking and the campaign sort both read
+    it.
+    """
+    from shared.ranking import rank_candidates
+
+    rows = [
+        {"_source_tool": "rfdiffusion", "_source_job_id": "j",
+         "_source_index": 0,
+         "scores": {"ipTM": 0.0, "pLDDT": 0.0, "i_pAE": 99.0}},   # broken
+        {"_source_tool": "rfdiffusion", "_source_job_id": "j",
+         "_source_index": 1,
+         "scores": {"ipTM": 0.30, "pLDDT": 88.0, "i_pAE": 6.0}},  # measured
+        {"_source_tool": "boltzgen", "_source_job_id": "b",
+         "_source_index": 2,
+         "scores": {"pLDDT": 88.0}},                              # recovered
+    ]
+    by_index = {
+        r["_source_index"]: r for r in rank_candidates(rows, limit=None)["rows"]
+    }
+    assert by_index[2]["_passed"] is True, "a recovered design must keep its place"
+    assert by_index[0]["_passed"] is False, "a placeholder must not read as passed"
+    assert by_index[1]["_passed"] is False
+
+
+def test_a_broken_leg_and_a_missing_leg_are_reported_differently():
+    """They are different facts, so the cell may not word them alike. "Not
+    measured" over a column that holds 0.0 is close enough to wrong: the column
+    is not empty, it is untrustworthy."""
+    broken = judge("rfdiffusion", {"scores": {"ipTM": 0.0, "pLDDT": 88.0,
+                                              "i_pAE": 6.0}})
+    assert broken.unusable == ("ipTM",) and broken.unmeasured == ()
+
+    missing = judge("boltzgen", {"scores": {"pLDDT": 88.0}})
+    assert missing.unmeasured == ("Refolding RMSD",) and missing.unusable == ()
+
+    # Both leave the verdict unjudged: neither supports a claim about the
+    # design, which is the half they DO share.
+    assert broken.verdict == missing.verdict == "unjudged"
+
+
 def test_a_negative_plddt_is_unmeasured_not_a_shortfall():
     """A negative confidence is a broken payload. plddt_on_100 passes it
     through so a reader SEES it in the table; a bar must not turn it into
@@ -314,14 +383,71 @@ def test_a_negative_plddt_is_unmeasured_not_a_shortfall():
 
 
 def test_a_reading_never_contradicts_itself():
-    """%g gave six significant figures and then trimmed, so an ipTM of
-    0.7499999 printed "0.75" and the cell read "ipTM 0.75, below 0.75". The
-    reading carries the metric's own display precision; the bar keeps %g,
-    because a threshold is an exact chosen number."""
-    (short,) = judge(
+    """THE PAGE JUDGES WHAT IT SHOWS.
+
+    %g gave six significant figures and then trimmed, so an ipTM of 0.7499999
+    printed "0.75" and the cell read "ipTM 0.75, below 0.75". Formatting the
+    reading at the metric's display precision only moved the contradiction to
+    "ipTM 0.750, below 0.75" -- an earlier version of this test asserted that
+    exact string, so its name certified the opposite of what it pinned.
+
+    The comparison now uses the DISPLAYED value. A page cannot assert a
+    distinction it does not render, so a reading that shows as 0.750 is 0.750
+    for the purpose of a 0.75 bar. The bar itself keeps its exact value: it is
+    a chosen threshold rather than a measurement.
+    """
+    assert judge(
         "pxdesign", {"scores": {"ipTM": 0.7499999, "pLDDT": 88.0}},
+    ).verdict == "meets"
+
+    # And a value that genuinely renders below it still falls short, naming
+    # the number the reader can see in the ipTM column beside it.
+    (short,) = judge(
+        "pxdesign", {"scores": {"ipTM": 0.7494, "pLDDT": 88.0}},
     ).shortfalls
-    assert short == "ipTM 0.750, below 0.75"
+    assert short == "ipTM 0.749, below 0.75"
+
+
+def test_a_value_exactly_on_the_bar_meets_it():
+    """The convention the glossary now states, pinned so the prose cannot
+    drift from it."""
+    assert judge(
+        "boltzgen", {"scores": {"pLDDT": 80.0, "refolding_rmsd": 1.5}},
+    ).verdict == "meets"
+
+
+def test_a_smoke_stub_marker_is_matched_as_a_whole_word():
+    """docker/pxdesign passes an arbitrary value through from its upstream
+    summary CSV, so the marker vocabulary is not closed. A substring test on
+    "stub" also fires on "no_stub" and "substub"."""
+    from shared.score_legends import is_fabricated
+
+    for marker in ("stub (smoke)", "STUB", "smoke stub"):
+        assert is_fabricated({"scores": {"filter_status": marker}}), marker
+    for marker in ("no_stub", "substub", "stubborn", "pass", ""):
+        assert not is_fabricated({"scores": {"filter_status": marker}}), marker
+
+
+def test_the_live_counter_says_nothing_rather_than_zero(monkeypatch):
+    """A boltzgen partial can never carry the refolding RMSD its bar needs, so
+    "0 met the bar" is a claim the run has not made. The predicate that
+    shipped first -- "some partial is not unjudged" -- pinned the counter at a
+    0 it could never leave, because one partial short on a leg that DOES
+    stream flips the set out of all-unjudged."""
+    from shared.score_legends import bar_is_answerable
+
+    # Exactly the shape webhooks/modal._sanitize_candidate stores from a
+    # boltzgen heartbeat: ipTM, pLDDT, i_pae. No refolding RMSD, ever.
+    partials = [
+        {"iptm": 0.5, "plddt": 92.0, "i_pae": None},
+        {"iptm": 0.4, "plddt": 60.0, "i_pae": None},
+    ]
+    assert not bar_is_answerable("boltzgen", partials)
+    # rfdiffusion streams all three of its legs, so its counter does work.
+    assert bar_is_answerable("rfdiffusion", [
+        {"iptm": 0.8, "plddt": 90.0, "i_pae": 5.0},
+    ])
+    assert not bar_is_answerable("boltzgen", [])
 
 
 def test_a_shortfall_names_the_reading_and_the_bar():

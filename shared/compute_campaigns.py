@@ -1481,7 +1481,12 @@ def aggregate_campaign_candidates(
     total = len(merged)
 
     def _sort_key(c: dict):
-        passed = 0 if judge(tool, c).verdict != "below" else 1
+        verdict = judge(tool, c)
+        # Matches shared.ranking exactly: unjudged keeps its place, a declared
+        # placeholder does not. See the note at ranking.annotate_rows.
+        passed = 0 if (
+            verdict.verdict != "below" and not verdict.unusable
+        ) else 1
         val = candidate_metric(c, metric_key)
         missing = 1 if val is None else 0
         ordv = 0.0 if val is None else (-val if direction == "desc" else val)

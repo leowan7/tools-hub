@@ -152,14 +152,28 @@ def _basename(pdb_key: str, fallback: str) -> str:
 # The verdict a pipeline stamped, which is NOT a metric and is no longer true
 # of anything. Excluded from BOTH loops in _metric_columns -- a CSV is the one
 # copy of a result that leaves this site, and shipping "below threshold" beside
-# the measurements would hand a customer a file that contradicts the page they
-# downloaded it from (65 BoltzGen designs carry that word against a bar their
-# container has since dropped). The measurements are exported unchanged and are
-# what the derived verdict is computed from, so nothing checkable is lost.
+# the measurements would hand a customer a file contradicting the page they
+# downloaded it from, on candidates whose bar has since moved.
 #
-# ``passed`` goes with it: no pipeline writes it today and it was the other
-# stored-verdict shape shared/jobs used to honour.
-_STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
+# EXCEPT WHEN IT IS THE PROVENANCE MARKER. The same field carries "stub
+# (smoke)", which says the numbers beside it were fabricated rather than
+# measured. Stripping that shipped a CSV of invented values with nothing
+# saying so, while the page beside it said "scores fabricated" -- the same
+# page-versus-export disagreement, pointing the other way. See
+# ``_keep_verdict_key``.
+_STALE_VERDICT_KEYS = frozenset({"filter_status"})
+
+
+def _keep_verdict_key(cands: list, key: str) -> bool:
+    """Is ``key`` worth exporting despite being a stored verdict field?
+
+    Only for the fabrication marker, and only when a row actually carries it,
+    so an ordinary export gains no empty column.
+    """
+    from shared.score_legends import is_fabricated  # noqa: PLC0415
+
+    return key == "filter_status" and any(is_fabricated(c) for c in cands)
+
 
 _NON_METRIC_ROOT_KEYS = frozenset({
     "pdb_key", "name", "rank", "scores",
@@ -183,13 +197,14 @@ def _metric_columns(cands: list, leading: list[str]) -> list[str]:
     real names beats exporting nothing.
     """
     out: list[str] = []
+    stale = {k for k in _STALE_VERDICT_KEYS if not _keep_verdict_key(cands, k)}
     for cand in cands:
         for k in (cand.get("scores") or {}):
-            if k not in out and k not in leading and k not in _STALE_VERDICT_KEYS:
+            if k not in out and k not in leading and k not in stale:
                 out.append(k)
     for cand in cands:
         for k, v in cand.items():
-            if k in _STALE_VERDICT_KEYS:
+            if k in stale:
                 continue
             if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
                 continue

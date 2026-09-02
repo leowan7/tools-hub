@@ -345,28 +345,35 @@ def job_status(job_id: str):
     # ("strict_pass") on top of being a stored verdict.
     #
     # None MEANS "CANNOT SAY YET", AND IT IS NOT THE SAME AS ZERO. A streamed
-    # partial is not a finished candidate: webhooks/modal._sanitize_candidate
-    # fixes the schema at rank / name / pdb_key / iptm / ptm / plddt /
-    # complex_plddt / complex_iplddt / i_pae / n_hotspot_contacts, so a
-    # boltzgen partial cannot carry the refolding RMSD its bar needs (the
-    # refold runs at the end) and an rfantibody one cannot carry a global pAE.
-    # Reporting 0 there asserts that nothing met the bar, which is a claim the
-    # run has not made; the template omits the clause entirely on None.
+    # partial is not a finished candidate. The limit is what each CONTAINER
+    # chooses to put in its heartbeat, not the webhook schema: boltzgen builds
+    # its new_candidate from ipTM, pLDDT and i_pae alone, so the refolding RMSD
+    # its bar needs never arrives (the refold runs at the end anyway), and
+    # rfantibody sends no global pAE. webhooks/modal._sanitize_candidate does
+    # have an ``rmsd`` field; nothing fills it for boltzgen, and
+    # _COLUMN_ALIASES does not treat it as a refolding RMSD, because RMSD means
+    # a different comparison for bindcraft. Reporting 0 here would assert that
+    # nothing met the bar, which is a claim the run has not made; the template
+    # omits the clause entirely on None.
     #
-    # A tool with no bar counts every delivered partial, matching what
-    # count_candidates_meeting_bar will say when the job finishes -- otherwise
-    # a bindcraft run reads "0 passed" all the way through and then N at the
-    # end, which looks like a bug in the run rather than in the counter.
+    # ``bar_is_answerable`` rather than "some partial is not unjudged": the
+    # second predicate shipped once and was wrong for exactly these two tools,
+    # because one partial short on a leg that DOES stream flips the set out of
+    # all-unjudged and pins the counter at a 0 it can never leave.
     rows = [c for c in partials if isinstance(c, dict)]
     if not score_legends.tool_has_bar(job.tool):
+        # No bar to meet, so this is a delivered count and the template says
+        # so. It must NOT be described as meeting a bar: esmfold2-design has
+        # no bar, and its own worked example turns on a design that folds
+        # beautifully and must not be ordered.
         passed = len(rows)
-    else:
-        judged = [score_legends.judge(job.tool, c) for c in rows]
-        passed = (
-            sum(1 for v in judged if v.verdict == "meets")
-            if any(v.verdict != "unjudged" for v in judged)
-            else None
+    elif score_legends.bar_is_answerable(job.tool, rows):
+        passed = sum(
+            1 for c in rows
+            if score_legends.judge(job.tool, c).verdict == "meets"
         )
+    else:
+        passed = None
 
     # The live table's quality cell is derived HERE and not in the browser, so
     # there is exactly one implementation of the bar. Shallow copies: the
@@ -396,6 +403,8 @@ def job_status(job_id: str):
             "progress": inputs.get("_progress") or {},
             "partial_candidates": live,
             "passed_count": passed,
+            # Whether that number is "met the bar" or just "delivered".
+            "has_bar": score_legends.tool_has_bar(job.tool),
             "gpu_seconds_used": job.gpu_seconds_used,
             "started_at": getattr(job, "started_at", None),
         }

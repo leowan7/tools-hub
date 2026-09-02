@@ -180,16 +180,59 @@ def test_the_banner_never_asserts_an_unfalsifiable_judgement(env):
         {"scores": {"pLDDT": 60.0, "refolding_rmsd": 3.0}},
     ])
     assert "fell below quality thresholds" not in html
-    assert "No design here reaches" in html
+    assert "No design here reaches pLDDT 80 and Refolding RMSD 1.5" in html
 
 
-def test_a_tool_with_no_bar_renders_no_banner_and_no_column(env):
+def test_the_banner_weakens_its_claim_when_rows_miss_different_legs(env):
+    """A conjunction is read distributively. "No design here reaches pLDDT 80
+    and Refolding RMSD 1.5" says nothing reached EITHER bar, which is false the
+    moment one design missed on pLDDT while another missed on RMSD: each of
+    those met the bar the other missed. The strong sentence is used only when
+    every design missed every leg in the union."""
+    mixed = _render_panel(env, "boltzgen", BOLTZGEN_COLUMNS, [
+        {"scores": {"pLDDT": 60.0, "refolding_rmsd": 1.0}},   # pLDDT only
+        {"scores": {"pLDDT": 88.0, "refolding_rmsd": 3.0}},   # RMSD only
+    ])
+    assert "No design here reaches" not in mixed
+    assert (
+        "Every design here falls short on at least one of "
+        "pLDDT 80 and Refolding RMSD 1.5"
+    ) in mixed
+
+
+def test_a_tool_with_no_bar_renders_no_banner(env):
     """opendde has no pass/fail concept at all. Nothing may imply it does."""
     html = _render_panel(env, "opendde", ["ipTM", "pLDDT"], [
         {"scores": {"ipTM": 0.01, "pLDDT": 20.0}},
     ])
     assert "No design here reaches" not in html
-    assert "against_bar" not in html
+    assert "Every design here falls short" not in html
+
+
+@pytest.mark.parametrize("tool", ["opendde", "bindcraft", "proteina", "iggm",
+                                  "esmfold2-design"])
+def test_no_bar_tool_declares_no_bar_column(tool):
+    """Asserting the column is absent from a render that was never given it is
+    vacuous -- an earlier version of this test did exactly that. Ask the
+    registry instead: a tool with no bar must not list the column anywhere,
+    since every cell it produced would say "unjudged" forever."""
+    from shared.result_columns import columns_for
+    from shared.score_legends import tool_has_bar
+
+    assert not tool_has_bar(tool)
+    assert "against_bar" not in columns_for(tool)
+
+
+def test_the_cell_still_renders_nothing_misleading_if_the_column_is_forced(env):
+    """And if someone does add it to a no-bar tool's column list, the cell must
+    not imply a judgement was made."""
+    html = _render_table(env, "opendde", ["against_bar"], [
+        {"scores": {"ipTM": 0.01}},
+    ])
+    # An em dash, not the bare string "Not measured:" with nothing after it,
+    # which is exactly how a bar keyed on an unregistered slug looked on a
+    # public page for the length of one commit.
+    assert _cells(html) == ["&mdash;"]
 
 
 # ---------------------------------------------------------------------------

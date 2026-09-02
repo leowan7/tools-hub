@@ -54,15 +54,25 @@
          counted as falling short, and its presence keeps the banner silent,
          because "none of these reaches the bar" would then be a claim the
          measurements do not support. #}
-      {% set ns = namespace(below=0, total=candidates|length, legs=[]) %}
+      {# Every row is judged against THIS panel's tool. results_panel is only
+         ever called with one tool's designs (a job page, or a campaign, which
+         is single-tool by construction); the pooled cross-tool table on the
+         target page calls candidate_table directly and never reaches here,
+         which is why that macro resolves each row's own _source_tool and this
+         one does not need to. A row tagged with a different tool would make
+         the banner's sentence false, so it also disqualifies the banner. #}
+      {% set ns = namespace(below=0, total=candidates|length, legs=[], foreign=false) %}
       {% for c in candidates %}
+        {% if c.get('_source_tool') and c.get('_source_tool') != tool_slug %}
+          {% set ns.foreign = true %}
+        {% endif %}
         {% set v = judge_design(tool_slug, c) %}
         {% if v.verdict == 'below' %}
           {% set ns.below = ns.below + 1 %}
           {% set ns.legs = ns.legs + v.shortfall_columns | list %}
         {% endif %}
       {% endfor %}
-      {% if ns.below > 0 and ns.below == ns.total %}
+      {% if ns.below > 0 and ns.below == ns.total and not ns.foreign %}
         <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
           <p class="subtitle" style="margin:0;">
             {# NAMES ONLY THE LEGS THAT ACTUALLY FELL SHORT, not the whole bar.
@@ -75,7 +85,28 @@
                measured. shortfall_bar_text takes the union of the rows' own
                shortfall_columns, so every leg named is one some design here
                was measured against and missed. #}
+            {# ONE LEG OR SEVERAL, and the sentence has to change with it.
+               "No design here reaches pLDDT 80 and Refolding RMSD 1.5" is a
+               conjunction a reader distributes: it says nothing reached the
+               pLDDT bar AND nothing reached the RMSD bar. That is true when
+               every design fell short on the same single leg, and false the
+               moment one design missed on pLDDT while another missed on RMSD
+               -- each of those designs met the other bar. The union of legs
+               only supports the weaker claim, so the weaker claim is what
+               gets made. #}
+            {% set legs = ns.legs | unique | list %}
+            {% set ns2 = namespace(every=true) %}
+            {% for c in candidates %}
+              {% set v = judge_design(tool_slug, c) %}
+              {% for leg in legs %}
+                {% if leg not in v.shortfall_columns %}{% set ns2.every = false %}{% endif %}
+              {% endfor %}
+            {% endfor %}
+            {% if ns2.every %}
             <strong>No design here reaches {{ shortfall_bar_text(tool_slug, ns.legs) }}.</strong>
+            {% else %}
+            <strong>Every design here falls short on at least one of {{ shortfall_bar_text(tool_slug, ns.legs) }}.</strong>
+            {% endif %}
             The pipeline ran cleanly. All {{ ns.total }} designs are shown so you
             can see the score distribution; each row names the measurement that
             fell short.

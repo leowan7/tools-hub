@@ -644,7 +644,9 @@
           if (total > 0) {
             var line = done + ' of ' + total + ' designs complete';
             if (passed !== null && !isNaN(passed)) {
-              line += ', ' + passed + ' meeting the quality bar so far';
+              line += ', ' + passed +
+                (data.has_bar ? ' meeting the quality bar so far'
+                              : ' returned so far');
             }
             liveSummary.textContent = line;
           } else if (done > 0) {

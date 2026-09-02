@@ -668,7 +668,7 @@
                      reading "measured against pLDDT 80 and Refolding RMSD 1.5"
                      over a row whose RMSD was never recorded asserts a
                      measurement that does not exist. #}
-                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ verdict.shortfalls | join('; ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}</span>
+                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ verdict.shortfalls | join('; ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}{% if verdict.unusable %}; {{ verdict.unusable | join(', ') }} not usable{% endif %}</span>
                 {% elif verdict.verdict == 'meets' %}
                   <span title="Every leg measured and met.">Meets {{ gate_bar_text(row_tool) }}</span>
                 {% else %}
@@ -677,7 +677,24 @@
                      end, so a job rebuilt from mid-run records has genuinely
                      not measured it; saying so beats inventing a verdict, and
                      inventing one is what this whole change removes. #}
+                  {% if verdict.unusable %}
+                  {# A DIFFERENT FACT FROM "not measured", and worth its own
+                     sentence. The pipeline wrote a stand-in here -- its own
+                     parse-failure default, or a refolding RMSD of exactly
+                     0.00 -- so there is a value on file and it is not a
+                     reading. Saying "not measured" would be close enough to
+                     wrong: the column is not empty, it is untrustworthy. #}
+                  <span title="This pipeline wrote a placeholder rather than a reading, so the design cannot be compared against {{ gate_bar_text(row_tool) }}.">Not usable: {{ verdict.unusable | join(', ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}</span>
+                  {% elif verdict.unmeasured %}
                   <span title="Not enough was measured to compare this design against {{ gate_bar_text(row_tool) }}.">Not measured: {{ verdict.unmeasured | join(', ') }}</span>
+                  {% else %}
+                  {# The tool declares no bar, so there is nothing to compare
+                     against and nothing to name. An empty list rendered as the
+                     bare string "Not measured:" with nothing after it, which is
+                     how a bar keyed on a slug no tool answers to looked on a
+                     public page for the length of one commit. #}
+                  <span title="This tool declares no quality bar.">&mdash;</span>
+                  {% endif %}
                 {% endif %}
               </td>
             {% else %}

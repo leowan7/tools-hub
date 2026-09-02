@@ -397,7 +397,8 @@
   <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 0 0 0.9rem;">
     <strong style="color: var(--text-primary);">{{ agg.total }}</strong> design{{ '' if agg.total == 1 else 's' }}
     from {{ agg.tools|length }} tool{{ '' if agg.tools|length == 1 else 's' }},
-    <strong style="color: var(--text-primary);">{{ agg.passed_total }}</strong> meeting their tool's quality bar.
+    <strong style="color: var(--text-primary);">{{ agg.passed_total }}</strong> either meeting their tool's quality bar or,
+    for the tools that declare none, simply delivered.
     {% if agg.refold_jobs %}
       {{ agg.refold_jobs }} validation fold{{ '' if agg.refold_jobs == 1 else 's' }} ran against these designs and
       {{ 'is' if agg.refold_jobs == 1 else 'are' }} not listed as designs of their own.
