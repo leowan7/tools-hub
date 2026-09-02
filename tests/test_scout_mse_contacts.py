@@ -191,10 +191,11 @@ def test_sequence_identity_denominator_is_the_shorter_sequence():
 
     An earlier version of this docstring went on to conclude that min() is
     therefore why the MSE gate in _extract_chain_sequence could not flip that
-    threshold. It does not follow, and the evidence behind it was a sequence
-    compared against its own MET-ized self -- pinned at 1.0000 by construction.
-    Measured against real UniProt references the gate moved the reported
-    identity on 61 of 173 SeMet chains.
+    threshold. It does not follow -- the denominator says nothing about how
+    many matches a deletion costs, which can be zero or more than one -- and
+    the evidence behind it was a sequence compared against its own MET-ized
+    self, pinned at 1.0000 by construction. Measured against real UniProt
+    references the gate moved the reported identity on 61 of 173 SeMet chains.
     """
     full = "ACDEFGHIKLMNPQRSTVWY"
     truncated = full[:10]
@@ -900,18 +901,27 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # _extract_chain_sequence: the same gate, but the consequence is a WELD.
 #
 # The four gates above lose a residue from a list. This one loses a LETTER from
-# a string, and a string closes the gap: dropping MSE 252 from 3ave chain A
-# turns KDTL-M-ISRT into KDTLISRT, a run that occurs in no real protein. The
-# sequence then goes to _sequence_identity against UniProt, and its identity is
+# a string, and a string closes the gap: re-spell 3ave chain A's MET 252 as a
+# HETATM MSE and KDTL-M-ISRT becomes KDTLISRT, which is not the sequence of that
+# chain. It then goes to _sequence_identity against UniProt, and the result is
 # rendered to the user as sequence_identity_pct.
 #
-# Measured against a real reference on 90 SeMet depositions (173 chains with an
-# MSE and a DBREF accession, 1030 residues recovered): the reported identity
-# moved on 61 chains, median 0.06 pp, max 4.0 pp, in both directions. Small --
-# but the earlier "benign" verdict on this site was measured by comparing the
-# gated sequence against its own MET-ized self, which forces exactly 1.0000
-# because one string is a subsequence of the other and the denominator is
-# min(len). That number could not have come out any other way.
+# (KDTLISRT is a perfectly ordinary octamer that does occur in real proteins --
+# an earlier draft of this comment claimed it could not, on no evidence. What
+# makes it wrong is only that it is not THIS chain.)
+#
+# Measured against real UniProt references on 90 SeMet depositions. 223 chains
+# carried an MSE or SEC, 196 of those also resolved a DBREF accession, and 173
+# were scored -- the other 23 returned no UniProt sequence. Across those 173,
+# with 1030 residues recovered, the reported identity moved on 61 chains, in
+# both directions, median 0.06 pp. The 4.0 pp maximum is a SINGLE deposition,
+# 3BKD, whose eight copies in the asymmetric unit are all eight of the extreme
+# rows and set the p90 as well; treat it as one observation, not eight.
+#
+# The earlier "benign" verdict on this site was measured by comparing the gated
+# sequence against its own MET-ized self, which forces exactly 1.0000 because
+# one string is a subsequence of the other and the denominator is min(len).
+# That number could not have come out any other way.
 #
 # Against the pre-fix gate this file goes 2 red / 26 green, and only the two
 # arms of test_a_modified_residue_stays_in_the_extracted_sequence are red --
@@ -930,8 +940,11 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # them: a guard that cannot fail looks exactly like one that passed.
 # ---------------------------------------------------------------------------
 
-# 3ave chain A residue 252 is a MET with four ordinary residues either side, so
-# re-spelling it is a pure record-type change and dropping it is a visible weld.
+# 3ave carries NO selenium: it has zero MSE records and its only MODRES lines
+# are the ASN 297 glycosylation sites. Residue 252 of chain A is an ordinary
+# MET with four ordinary residues either side, which is what makes it usable --
+# re-spelling it is a pure record-type change, and dropping it is a visible
+# weld. Read "MSE 252" anywhere below as "the MET at 252, re-spelled".
 _MET_RESNUM = 252
 _MET_CONTEXT = "KDTLMISRT"
 _WELDED_CONTEXT = "KDTLISRT"
@@ -1017,6 +1030,15 @@ def test_the_residue_numbers_stay_parallel_to_the_sequence(tmp_path):
     so one spliced DA reaches the branch and a desync becomes a length mismatch.
     An earlier version of this test omitted the DA and was killed by no mutant
     in the whole suite.
+
+    len(nums) == len(seq) is the only assertion here, deliberately. That version
+    also asserted the numbers were sorted and unique, and BOTH were properties
+    of this fixture rather than of the code: polymer_residues returns chain
+    order, not sorted order, and it dedupes on (resseq, icode) while callers
+    emit only resseq -- so an insertion-coded chain legitimately returns
+    [99, 100, 100, 100, 101]. test_insertion_coded_residues_are_distinct_
+    positions above pins that on purpose. Asserting the opposite here passed
+    only because 3ave has no insertion codes.
     """
     from Bio.PDB import PDBParser
 
@@ -1049,8 +1071,6 @@ def test_the_residue_numbers_stay_parallel_to_the_sequence(tmp_path):
 
     assert _UNMAPPED_RESNUM not in nums, "an unmapped residue reached the numbers"
     assert len(nums) == len(seq) > 0
-    assert nums == sorted(nums), "residue numbers are not in chain order"
-    assert len(set(nums)) == len(nums), "a position was emitted twice"
 
 
 @pytest.mark.parametrize("modified", ["MSE", "SEC"])
@@ -1103,11 +1123,19 @@ def test_an_altloc_pair_contributes_one_letter(tmp_path, modified):
 def test_a_welded_subsequence_can_still_score_a_perfect_identity():
     """Pins the caveat in _sequence_identity's docstring.
 
-    Matching BLOCKS are counted, not aligned positions, so a string that does
-    not occur in the reference at all still scores 1.0000 when the only
-    difference is a deletion. That is how the gate above stayed invisible: on
-    3BKD chain A the dropped MSE 33 produced a 24-mer absent from Q9Q0P0, and
-    this function called it a perfect match.
+    Matching BLOCKS are counted, not aligned positions, so a deletion CAN be
+    free: a string absent from the reference still scores 1.0000. That is how
+    the gate above stayed invisible -- a perfect score means "no evidence of
+    mismatch", not "identical".
+
+    "Can", not "does". A deletion that splits a repeated motif costs more than
+    the residue removed: DECDEDE -> DEDEDE scores 0.6667, and on 2ISB chain A
+    against O29167 one deletion cost two matches (1.0000 -> 0.9944). Five of
+    the 173 measured chains behave that way. An earlier draft of this docstring
+    and of _sequence_identity's stated the flat version and was wrong.
     """
     assert _WELDED_CONTEXT not in _MET_CONTEXT
     assert epitope_db._sequence_identity(_MET_CONTEXT, _WELDED_CONTEXT) == pytest.approx(1.0)
+
+    # The counterexample, pinned so the hedge above cannot quietly become false.
+    assert epitope_db._sequence_identity("DECDEDE", "DEDEDE") < 0.7

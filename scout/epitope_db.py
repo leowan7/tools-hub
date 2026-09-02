@@ -1045,11 +1045,16 @@ def _sequence_identity(seq_a: str, seq_b: str) -> float:
     the _MIN_VALIDATION_IDENTITY threshold check (0.70) but is not a rigorous
     pairwise alignment — use BLAST or biopython.Align for publication results.
 
-    Matching BLOCKS are counted, not aligned positions, so a deletion costs one
-    match and one denominator place and a string that does not occur in the
-    reference at all can still score 1.0000. Read a perfect score as "no
-    evidence of mismatch", not as "identical" -- that is how the hetflag gate
-    that used to sit in _extract_chain_sequence stayed invisible for so long.
+    Matching BLOCKS are counted, not aligned positions, so a deletion can be
+    FREE: a string that does not occur in the reference at all can still score
+    1.0000. Read a perfect score as "no evidence of mismatch", not as
+    "identical" -- that is how the hetflag gate that used to sit in
+    _extract_chain_sequence stayed invisible for so long.
+
+    A deletion can equally cost MORE than the residue removed, when it splits a
+    repeated motif and the greedy block match cannot recover: DECDEDE ->
+    DEDEDE scores 0.6667, not 6/6. Do not infer the size of a deletion's effect
+    from the size of the deletion.
 
     Args:
         seq_a: First amino acid sequence (one-letter code).
