@@ -637,8 +637,9 @@ class TestKnownPositive:
 
 
 class TestAccessionIsValidated:
-    """``_extract_uniprot_from_dbref`` reads eight characters out of columns
-    33-41 of a DBREF line in a file the caller uploaded.
+    """``_extract_uniprot_from_dbref`` reads a caller-uploaded accession
+    field: eight characters from columns 33-41 of a plain DBREF line, or
+    twenty-two from columns 18-40 of a DBREF2.
 
     With no format check those eight bytes became a lookup target and a
     permanent cache key: ``ZZ9QC001`` was accepted, resolved, and cached. The
@@ -744,3 +745,161 @@ class TestTheCacheIsBounded:
         for accession in ("P00533", "P00698", "P0DTC2"):
             assert epitope_db.fetch_known_binders(accession)
         assert len(epitope_db._CACHE) == 2
+
+
+# ---------------------------------------------------------------------------
+# 9. The accession does not always fit on the DBREF line
+# ---------------------------------------------------------------------------
+
+
+class TestTheTwoLineDbrefForm:
+    """The wwPDB splits DBREF into DBREF1/DBREF2 whenever the accession is
+    wider than the 8-character field on a plain DBREF line.
+
+    That is the case for every 10-character accession -- the ``A0A...`` range,
+    now a large fraction of TrEMBL. Matching only ``line.startswith("DBREF ")``
+    skipped both halves, so step 1 returned "" and the chain fell through to
+    the step-2 sequence search, which resolves almost nothing for experimental
+    structures. The user got no protein name at all from a file that states
+    the accession plainly. A QC sample of 409 real PDB-format depositions
+    found 44 of them -- roughly 10.8% -- carrying the two-line record at
+    all; 36 of those (8.8%) carry no plain DBREF, so the two-line form is
+    their only source.
+
+    Records below are copied byte-for-byte from real depositions (1HEW,
+    5YTL, 6EBC, 21JI), so the column positions are the wwPDB's rather than
+    this test's idea of them.
+    """
+
+    # Real 5YTL / 6EBC records. DBREF1 carries the entry NAME and the database;
+    # DBREF2 carries the accession.
+    DBREF1_A = "DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD"
+    DBREF2_A = "DBREF2 5YTL A     A0A1W6VP04                         31         352"
+    DBREF1_B = "DBREF1 6EBC B    1   141  UNP                  A0A202B6V5_CHRVL"
+    DBREF2_B = "DBREF2 6EBC B     A0A202B6V5                          1         141"
+    # Real 1HEW record: the single-line form must keep working.
+    DBREF_1HEW = (
+        "DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147"
+    )
+    # Real 21JI chain A: a chain carrying BOTH forms. The two-line pair is a
+    # 90-residue rat expression tag; the plain record is the 777-residue
+    # protein the user actually uploaded.
+    DBREF1_21JI = "DBREF1 21JI A  -66    23  UNP                  A0AA49QB00_RATRT"
+    DBREF2_21JI = "DBREF2 21JI A     A0AA49QB00                          1          90"
+    DBREF_21JI = "DBREF  21JI A   25   777  UNP    R8BKC2   R8BKC2_PHAM7    25    777"
+    ATOM = (
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
+        "  1.00 20.00           C"
+    )
+
+    def _write(self, tmp_path, *lines):
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text("\n".join([*lines, self.ATOM, "END", ""]), encoding="utf-8")
+        return pdb
+
+    def test_the_accession_is_read_off_the_dbref2_line(self, tmp_path):
+        """The bug: this returned "" even though the file names the accession."""
+        pdb = self._write(tmp_path, self.DBREF1_A, self.DBREF2_A)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "A0A1W6VP04"
+
+    def test_the_single_line_form_still_resolves(self, tmp_path):
+        """The two-line branch must not cost the path that already worked."""
+        pdb = self._write(tmp_path, self.DBREF_1HEW)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "P00698"
+
+    def test_both_forms_in_one_file_each_resolve_to_their_own_chain(self, tmp_path):
+        """Motivated by the 8 sampled files carrying both forms; the fixture
+        itself pairs two real records that never co-occur in one deposition."""
+        pdb = self._write(tmp_path, self.DBREF_1HEW, self.DBREF1_B, self.DBREF2_B)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "P00698"
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "B") == "A0A202B6V5"
+
+    def test_a_pair_for_another_chain_is_not_borrowed(self, tmp_path):
+        pdb = self._write(tmp_path, self.DBREF1_B, self.DBREF2_B)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_dbref2_naming_a_different_chain_is_not_borrowed(self, tmp_path):
+        """A DBREF1 arming chain A followed by a DBREF2 naming chain B is a
+        malformed pair -- but the file is caller-uploaded, so it is reachable.
+
+        The chain column has to be re-checked on the DBREF2 line itself:
+        arming alone does not cover this, and without the second check chain A
+        silently inherits chain B's accession. That is the case this fixture
+        exists to reach; the test above is satisfied by arming alone.
+        """
+        pdb = self._write(tmp_path, self.DBREF1_A, self.DBREF2_B)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_non_uniprot_pair_is_refused(self, tmp_path):
+        """DBREF1 is the only half naming the database, so dropping its check
+        would let this UniProt-shaped string through on a record that says GB."""
+        pdb = self._write(
+            tmp_path,
+            "DBREF1 5YTL A    2   323  GB                   A0A1W6VP04_GEOTD",
+            self.DBREF2_A,
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_malformed_accession_on_dbref2_is_still_validated(self, tmp_path):
+        """``_valid_accession`` guards the two-line form too."""
+        pdb = self._write(
+            tmp_path,
+            self.DBREF1_A,
+            "DBREF2 5YTL A     ZZ9QC00123                        31         352",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_plain_dbref_beats_a_two_line_pair_on_the_same_chain(self, tmp_path):
+        """Real 21JI chain A, in file order. Reading first-match-wins across
+        both forms regressed this: the wwPDB writes the tag's pair first, so
+        the 90-residue rat tag beat the 777-residue protein and the chain
+        resolved to an accession that fails the downstream identity gate --
+        losing a name the user previously got. The plain record wins.
+        """
+        pdb = self._write(
+            tmp_path, self.DBREF1_21JI, self.DBREF2_21JI, self.DBREF_21JI
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "R8BKC2"
+
+    def test_the_pair_still_wins_when_no_plain_dbref_names_the_chain(self, tmp_path):
+        """Precedence must not cost the fix: a plain DBREF for a DIFFERENT
+        chain does not suppress chain A's pair."""
+        pdb = self._write(tmp_path, self.DBREF_21JI.replace("21JI A", "21JI B"),
+                          self.DBREF1_A, self.DBREF2_A)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "A0A1W6VP04"
+
+    def test_a_dbref1_for_another_chain_cannot_arm_this_one(self, tmp_path):
+        """The mirror of the test above: DBREF1 names chain B, DBREF2 names
+        chain A. Arming on the chain rather than a bool is what refuses it --
+        with a bare flag, chain A silently borrows chain B's arming."""
+        pdb = self._write(tmp_path, self.DBREF1_B, self.DBREF2_A)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_a_dbref2_consumes_its_dbref1(self, tmp_path):
+        """A DBREF1 is spent by the next DBREF2 whether or not it matched.
+        Without that, the unmatched chain-B DBREF2 leaves chain A armed and
+        the following stray DBREF2 collects an accession it never earned."""
+        pdb = self._write(
+            tmp_path, self.DBREF1_A, self.DBREF2_B,
+            "DBREF2 5YTL A     A0A1W6VP04                         31         352",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    @pytest.mark.parametrize(
+        "truncated",
+        [
+            "DBREF1",
+            "DBREF2",
+            "DBREF ",
+            "DBREF1 5YTL A",
+            # 12 characters: one short of a readable chain column, and the
+            # exact length the old code raised IndexError on. Widening the
+            # guard to `< 12` puts that crash straight back.
+            "DBREF  1HEW ",
+        ],
+    )
+    def test_a_truncated_record_does_not_raise(self, tmp_path, truncated):
+        """The file is caller-uploaded; a short record must not raise out of
+        the lookup."""
+        pdb = self._write(tmp_path, truncated)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
