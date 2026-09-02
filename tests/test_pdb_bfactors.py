@@ -25,6 +25,8 @@ import pytest
 
 from shared.pdb_bfactors import (
     _coordinate_bfactor,
+    _looks_like_cif,
+    _visible_start,
     bfactors,
     bfactors_on_100,
     bfactors_on_100_b64,
@@ -359,7 +361,22 @@ class TestEveryDownloadPathConverts:
         )
         assert zipfile.ZipFile(io.BytesIO(archive)).read("x.pdb") == crystal
 
-    def test_every_structure_route_in_jobs_converts(self, tools_app):
+    # (payload B-factors, what every route must serve).
+    #
+    # The 0.01 row pins SINGLE APPLICATION on the customer surface.
+    # ``bfactors_on_100`` is documented as not idempotent -- 0.01 scales
+    # to 1.00, which is still inside the fractional window, so a second
+    # pass takes it to 100.00 -- and wrapping the route's call in itself
+    # passed every test in every file that touches these routes.
+    # The staging path had an exactly-once test; the primary
+    # download, which serves far more people, had none.
+    @pytest.mark.parametrize(
+        "payload, expected",
+        [((0.21, 0.66), [21.0, 66.0]), ((0.01, 0.01), [1.0, 1.0])],
+    )
+    def test_every_structure_route_in_jobs_converts(
+        self, tools_app, payload, expected,
+    ):
         """Behavioural, not counted.
 
         The counted version asserted three occurrences of the call in
@@ -372,7 +389,7 @@ class TestEveryDownloadPathConverts:
         import types
 
         flask_app, _slugs = tools_app
-        fractional = _atom(1, 0.21) + _atom(2, 0.66)
+        fractional = _atom(1, payload[0]) + _atom(2, payload[1])
 
         job = types.SimpleNamespace()
         job.id = "job-1"
@@ -437,9 +454,10 @@ class TestEveryDownloadPathConverts:
 
         for name, body in served.items():
             values = _bfactors(body)
-            assert values == [21.0, 66.0], (
-                f"{name} route served {values}; the payload is 0.21/0.66 "
-                "and every page reads B-factors on 0-100"
+            assert values == expected, (
+                f"{name} route served {values} for a {payload} payload; "
+                f"expected {expected}. A doubled conversion reads 100.00 "
+                "where the design was 0.01 -- confident, and wrong."
             )
 
     def test_each_template_download_site_converts(self, tools_app):
@@ -634,3 +652,506 @@ class TestAPartialBFieldAlsoDisqualifies:
         )
         assert is_fractional(pdb)
         assert bfactors(bfactors_on_100(pdb)) == [11.0]
+
+
+class TestTheSeparatorHalfOfTheWeld:
+    """F1. ``splitlines`` breaks on eight separators beyond CR/LF; the
+    reader stripped only CR/LF. A 65-character record terminated by one
+    of the other eight measured 66, ``float()`` took the separator as
+    trailing whitespace so the B field parsed, and the writer overwrote
+    all six columns -- eating the terminator and welding two records.
+    The module docstring claims this weld was fixed; the LENGTH half
+    was, the SEPARATOR half was not."""
+
+    # 65 characters: the B value occupies columns 61-65, one short of
+    # the six-wide field, so the record is unreadable ON ITS OWN.
+    def _short(self, serial: int, b: float) -> str:
+        return (
+            f"ATOM  {serial:5d}  CA  LEU A{serial:4d}    "
+            f"   0.000   0.000   0.000  1.00{b:5.2f}"
+        )
+
+    # THE FIVE THAT ACTUALLY WELDED. ``float()`` takes each of these as
+    # trailing whitespace, so the truncated B field parsed and the
+    # writer overwrote all six columns. Verified against the parent
+    # commit: each produced a single 144-character line.
+    WELDED = ["\x0b", "\x0c", "\x85", "\u2028", "\u2029"]
+
+    # THE THREE THAT DID NOT. ``float()`` rejects the file separators,
+    # so ``_coordinate_bfactor`` already returned None and the file
+    # already declined. Kept as regression cover -- they are the same
+    # defect class and a future ``float()`` change would move them into
+    # the list above -- but listed apart, because a parameter that
+    # cannot fail on the defect its message names is decoration, and
+    # this file has been burned by exactly that before.
+    ALREADY_DECLINED = ["\x1c", "\x1d", "\x1e"]
+
+    @pytest.mark.parametrize("sep", WELDED + ALREADY_DECLINED)
+    def test_no_record_is_welded_to_the_next(self, sep):
+        assert len(self._short(1, 0.21)) == 65, "fixture is not 65 chars"
+        pdb = self._short(1, 0.21) + sep + _atom(2, 0.66)
+        assert len(pdb.splitlines()) == 2
+
+        out = bfactors_on_100(pdb)
+
+        assert len(out.splitlines()) == 2, (
+            f"{sep!r} welded two records into "
+            f"{len(out.splitlines())} line(s)"
+        )
+        # And the right answer is to DECLINE: a record this module
+        # cannot read is exactly what the fail-closed rule is for.
+        assert out is pdb
+
+
+class TestLeadingNoiseCannotSlipPastTheGate:
+    """F2, closed as a CLASS rather than at one byte offset.
+
+    A BOM, a stray space, a tab or a NUL pad in front of a coordinate
+    record is not a coordinate-record prefix -- and a BOM is not even
+    whitespace to Python -- so the record failed ``startswith`` and was
+    passed over as though it were a REMARK. Invisible to the gate and to
+    the writer alike, which is not "declined", it is HALF CONVERTED.
+
+    The first fix stripped a BOM at the FILE HEAD, which closed byte 0
+    and left every other offset open. Two reviewers found that
+    independently, and ``cat binder.pdb target.pdb`` where the second
+    was saved with a BOM puts the mark exactly at the chain seam -- the
+    stitched-complex case this module's fail-closed rule exists for.
+    """
+
+    # Deliberately spans BOTH families, because the first version of
+    # the fix was a four-character list and a no-break space, a
+    # zero-width space, a word joiner and an ideographic space all still
+    # walked through it. Anything invisible has to disqualify, so the
+    # fixture has to test more than the four somebody happened to name.
+    NOISE = [
+        "\ufeff",    # byte-order mark
+        " ",        # plain space
+        "\t",        # tab
+        "\x00",      # NUL pad
+        "\xa0",      # no-break space   -- whitespace, but not ASCII
+        "\u200b",    # zero-width space -- invisible and not whitespace
+        "\u2060",    # word joiner
+        "\u3000",    # ideographic space
+    ]
+
+    @pytest.mark.parametrize("noise", NOISE)
+    @pytest.mark.parametrize("where", [0, 1, 2])
+    def test_noise_anywhere_declines_the_whole_file(self, noise, where):
+        """Not half-converted, and not converted-with-the-mark-eaten:
+        DECLINED, byte for byte, wherever the noise sits."""
+        records = [_atom(1, 0.50), _atom(2, 0.10), _atom(3, 0.77)]
+        records[where] = noise + records[where]
+        pdb = "".join(records)
+
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    @pytest.mark.parametrize("noise", NOISE)
+    def test_noise_cannot_hide_a_disqualifying_value(self, noise):
+        """The direction that actually corrupts. A real 88.50 carried on
+        a noisy record used to be skipped, so it could not veto -- and
+        the file was judged fractional on its OTHER records and scaled.
+        Reproduced before the fix as 10.00 sitting beside 88.50."""
+        pdb = _atom(1, 0.10) + noise + _atom(2, 88.50)
+
+        assert not is_fractional(pdb), (
+            f"{noise!r} before an 88.50 record hid it from the gate"
+        )
+        # Identity, not a re-read: stripping the noise back out to line
+        # the columns up would also strip every real space in the file.
+        # A declined file comes back as the SAME object, which says
+        # everything a value comparison would and cannot be fooled.
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_a_bom_does_not_let_a_cif_through(self):
+        """Both recognisers read a line the same way.
+
+        ``_looks_like_cif`` and the coordinate-record check now share
+        ``_visible_start``, so a CIF saved with a BOM is still a CIF.
+        Sharing it is REQUIRED, not tidiness: once the record rule was
+        narrowed to only-a-hidden-record, a BOM'd ``data_`` file stops
+        being declined by the noise rule, so the sniffer has to see the
+        marker or the file converts on the strength of a trailing PDB
+        record. (An earlier version of this docstring said the two
+        "disagreed for one revision". No committed revision behaved
+        that way -- it described an uncommitted working state, which is
+        not something a reader can ever check.)
+
+        The earlier version of this test was HOLLOW, and both reviewers
+        caught it: its fixture was ``BOM + "data_XYZ\nloop_\n
+        _atom_site.group_PDB\n"``, and lines two and three carry
+        un-BOM'd markers, so the verdict came from them and it passed
+        with BOM handling removed entirely. The marker has to be the
+        only one in the file AND the one wearing the mark.
+        """
+        cif = "\ufeff" + "data_XYZ\n" + _atom(1, 0.21)
+
+        assert _looks_like_cif(cif), (
+            "the BOM'd data_ line is the only marker in this fixture"
+        )
+        # The trailing ATOM record is what makes this non-vacuous: with
+        # the marker missed, this file is a good fractional PDB with an
+        # odd first line, and it converts.
+        assert not is_fractional(cif)
+        assert bfactors_on_100(cif) is cif
+
+    # PREFIXES OF SEVERAL LENGTHS, not one character, and not two.
+    #
+    # Inspecting ``content[0]`` alone passed a single-character sweep
+    # while letting anything behind a leading SPACE through: space is
+    # printable, so the check waved it past and never looked at byte
+    # two. That is the same defect as a short list, expressed as a list
+    # of POSITIONS of length one.
+    #
+    # The first fix for that shipped five prefix shapes whose longest
+    # invisible run was two, so a rule stripping at most three would
+    # have passed every test here and still half-converted a file
+    # behind four NULs -- the list of positions again, just longer. A
+    # reviewer built exactly that mutant and it went green. Eight NULs
+    # and a six-character mixed run are cheap and make a bounded strip
+    # fail; anyone tempted to cap the loop for cost will hit them.
+    @pytest.mark.parametrize(
+        "prefix",
+        ["", " ", "  ", " \ufeff", "\ufeff ", "\x00" * 8,
+         " \ufeff\t\u200b\x00 "],
+        ids=["bare", "space", "two-spaces", "space+BOM", "BOM+space",
+             "eight-NULs", "six-mixed"],
+    )
+    def test_no_invisible_codepoint_can_hide_a_record(self, prefix):
+        """Completeness, checked against an authority OUTSIDE the rule.
+
+        The first version of this test was CIRCULAR and a reviewer
+        caught it. It filtered with ``if ch.isprintable() and not
+        ch.isspace(): continue`` -- the exact complement of the
+        predicate under test -- so it only ever exercised codepoints
+        the rule handles by construction. It proved the rule agrees
+        with itself, and its docstring's claim to sweep "every
+        codepoint Python knows" was false.
+
+        The universe here comes from ``unicodedata.category``: every
+        ASSIGNED control, format, surrogate, private-use and separator
+        codepoint. Unassigned (Cn) is excluded -- 800k codepoints that
+        cannot appear in real text -- and marks are the ceiling below.
+
+        WHAT THIS DOES AND DOES NOT PROVE. An earlier docstring called
+        that universe "a different authority", implying the test could
+        discover an incompleteness in the rule. It cannot: the universe
+        is a strict subset of the rule's own predicate -- no codepoint
+        in it is uncovered -- so ``leaks == []`` holds by construction
+        for the rule as written. What it IS is a strong guard on the
+        SHAPE of the rule: every historical attempt fails it loudly,
+        the BOM-only strip and the four-character list and the Cc-only
+        class and the single-character check alike, and so does
+        dropping the space clause.
+
+        No mutant tallies here on purpose. A previous revision listed
+        one per attempt; adding two parameters to this test moved every
+        one of them by two and nobody noticed until a reviewer
+        re-measured. Numbers in a docstring are claims that have to
+        survive edits to the thing they describe, and in this file they
+        have not.
+        """
+        import unicodedata
+
+        splitters = set("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+        clean, disqualifying = _atom(1, 0.10), _atom(2, 88.50)
+
+        leaks = []
+        for cp in range(0x110000):
+            ch = chr(cp)
+            if ch in splitters:
+                continue
+            if unicodedata.category(ch) not in {
+                "Cc", "Cf", "Cs", "Co", "Zs", "Zl", "Zp",
+            }:
+                continue
+            if is_fractional(clean + prefix + ch + disqualifying):
+                leaks.append(hex(cp))
+
+        assert leaks == [], (
+            f"{len(leaks)} invisible codepoint(s) still hide a "
+            f"coordinate record, e.g. {leaks[:8]} -- the file is judged "
+            "fractional on its other records and half converted"
+        )
+
+    # Four, named because they are the ones a person could plausibly
+    # produce, and chosen to span BOTH families the module note
+    # describes: three blank-rendering codepoints and one zero-advance
+    # combining mark. U+FE0F rides along on pasted text constantly; an
+    # earlier version of this list omitted the variation selectors
+    # entirely and pinned only the exotic ones.
+    @pytest.mark.parametrize(
+        "ch, name",
+        [("\ufe0f", "VARIATION SELECTOR-16"),
+         ("\u3164", "HANGUL FILLER"),
+         ("\u2800", "BRAILLE PATTERN BLANK"),
+         ("\u0301", "COMBINING ACUTE ACCENT")],
+    )
+    def test_the_known_ceiling_is_still_where_it_was_documented(
+        self, ch, name,
+    ):
+        """A characterisation test, asserting a LIMIT rather than a fix.
+
+        These render blank or take no width, but Python calls them
+        printable and they are not whitespace, so the rule does not
+        strip them and a record behind one is still hidden. That is a
+        judgement about GLYPHS rather than about encoding, and closing
+        it would mean one more list of the kind this module has
+        repeatedly been wrong with.
+
+        Pinned so the ceiling cannot be quietly forgotten, and so that
+        anyone who does close it has to delete this test on purpose
+        rather than discover the gap again from scratch.
+        """
+        assert ch.isprintable() and not ch.isspace(), (
+            f"{name} is no longer printable-and-not-space, so the rule "
+            "now covers it and this ceiling test is obsolete"
+        )
+        pdb = _atom(1, 0.10) + ch + _atom(2, 88.50)
+        assert is_fractional(pdb), (
+            f"{name} no longer hides a record -- the ceiling moved. "
+            "Good news; update this test and the note in the module."
+        )
+        # Name the cost precisely. This is not a skipped line: the file
+        # that reaches the customer carries BOTH scales.
+        served = bfactors_on_100(pdb)
+        assert "10.00" in served and "88.50" in served, (
+            "the ceiling is a HALF CONVERSION -- if that stops being "
+            "true the note in the module is overstating the damage"
+        )
+
+    # A BOM, a NUL pad or a stray control byte sitting on a line that
+    # holds NO B-factor. Declining these was a silent regression: the
+    # customer's download quietly stayed on 0-1, which is the original
+    # bug, on files that had been converting correctly for months.
+    #
+    # And it hit the motivating case. The commit that introduced the
+    # blanket rule cited ``cat binder.pdb target.pdb`` with a BOM'd
+    # second file, and a PDB that opens with HEADER or CRYST1 puts that
+    # mark on a line which was always going to be skipped.
+    #
+    # TWO of the three depositions in static/example open that way --
+    # 1HEW and 3ave_igg1_fc_dimer with HEADER, but 3s7g_fc_ab opens
+    # with a bare ``ATOM  `` record, where the blanket rule was RIGHT.
+    # An earlier version of this comment said all three, and a reviewer
+    # checked the first six bytes. The narrowing is still correct
+    # because declining a file that hides nothing is a silent
+    # regression, but it is not the landslide that claim implied.
+    HARMLESS = [
+        ("BOM before HEADER", "\ufeff", "HEADER    LYSOZYME"),
+        ("BOM before CRYST1", "\ufeff", "CRYST1   79.100   79.100"),
+        ("BOM before MODEL", "\ufeff", "MODEL        1"),
+        ("NUL pad line", "", "\x00\x00\x00\x00"),
+        ("DOS Ctrl-Z", "", "\x1a"),
+        ("control byte on a REMARK", "\x01", "REMARK   1 ANYTHING"),
+        ("zero-width space on TER", "\u200b", "TER    1234      LEU A   1"),
+    ]
+
+    @pytest.mark.parametrize(
+        "label, noise, line", HARMLESS, ids=[c[0] for c in HARMLESS],
+    )
+    def test_invisible_bytes_off_a_record_do_not_decline_the_file(
+        self, label, noise, line,
+    ):
+        """Fail-closed earns its keep on a record this module can see
+        and cannot read. It does not license declining a line that was
+        never going to hold a B-factor."""
+        pdb = noise + line + "\n" + _atom(1, 0.10) + _atom(2, 0.77)
+
+        assert is_fractional(pdb), f"{label} wrongly disqualified the file"
+        assert _bfactors(bfactors_on_100(pdb)) == [10.0, 77.0], (
+            f"{label} left the download on the 0-1 scale -- which is the "
+            "bug this module exists to fix, restored silently"
+        )
+
+    def test_the_cif_sniffer_reads_a_line_the_same_way_the_gate_does(self):
+        """The sniffer shares ``_visible_start``, which makes it WIDER
+        than the ``lstrip()`` it replaced. That widening is behaviour
+        and went unpinned when it landed: an invisible byte in front
+        of a CIF marker now declines the file where it once converted.
+        Fail-closed and intended -- but it should fail a test if
+        somebody narrows it back, not surface as a surprise."""
+        pdb = "HEADER    X\n" + "\x00loop_\n" + _atom(1, 0.21)
+
+        assert _looks_like_cif(pdb)
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_the_prefix_strip_does_not_stop_at_a_fixed_length(self):
+        """Honestly named, after three goes at pretending otherwise.
+
+        A finite test cannot prove an unbounded loop. What it can do is
+        kill every cap a person would plausibly write, and SAY that is
+        what it does. The previous name -- "unbounded by construction"
+        -- was false: the fixtures were a length list whose ceiling was
+        the product of two literals in this method, and a reviewer put
+        a cap just above it and passed the entire 6109-test suite.
+
+        That was the third time this bound moved rather than went away:
+        two characters, then nine, then seven thousand. The residual is
+        stated rather than papered over -- a cap above the longest run
+        below still survives -- and the runs are chosen to cover the
+        caps that actually get written, which are powers of two and
+        round decimals near a buffer size.
+
+        The postcondition below is asserted on calls the equality check
+        has NOT already pinned -- inputs with no visible tail -- because
+        the previous version put it second on the same call and it
+        could then only ever see the "A" of "ATOM".
+
+        It does NOT strengthen the cap ladder, and saying so is the
+        point: its longest input is far shorter than the equality
+        loop's, so every cap it could catch is caught above it anyway.
+        A reviewer deleted it and got identical ladder results. What it
+        DOES catch is a different mutant class -- an off-by-one such as
+        ``len(content) - 1``, which leaves the last invisible byte in
+        place and which the equality loop alone misses.
+        """
+        invisible = "\ufeff \t\x00\u200b\u2060\xa0"
+
+        for run in (1, 2, 3, 8, 9, 17, 64, 65, 256, 1024, 4096, 65536):
+            for filler in ("\x00", " ", invisible):
+                out = _visible_start((filler * run) + "ATOM  rest")
+                assert out == "ATOM  rest", (
+                    f"{run} x {filler!r} left {out[:12]!r} -- the strip "
+                    "stops at a fixed length, and a record behind a "
+                    "longer run is invisible to the gate"
+                )
+
+        # THE POSTCONDITION, on returns nothing above has pinned: what
+        # comes back begins with a visible character, or is empty.
+        # These inputs have no visible tail at all, so the equality
+        # check cannot stand in front of it this time.
+        for text in ("", invisible, invisible * 500, "\x00" * 9999,
+                     invisible + "  ", " " * 300):
+            out = _visible_start(text)
+            assert not out or (out[0].isprintable() and out[0] != " "), (
+                f"_visible_start left {out[0]!r} at the front"
+            )
+
+    def test_a_realistic_pdb_is_not_mistaken_for_a_cif(self):
+        """The CIF sniffer's UPPER width, which nothing pinned.
+
+        Narrowing it is caught three ways. WIDENING it was free: adding
+        ``"_"`` and ``"#"`` to the marker tuple passed the whole suite
+        while making any PDB carrying a ``#`` comment -- a Rosetta
+        energy table, a script annotation -- sniff as mmCIF and decline
+        silently back onto the 0-1 scale. ``#`` is a plausible addition
+        precisely because a real CIF usually has one after ``data_``.
+        """
+        pdb = (
+            "REMARK   1 ANYTHING\n"
+            "# BEGIN_POSE_ENERGIES_TABLE\n"
+            "_underscore_leading_line\n"
+            + _atom(1, 0.21) + _atom(2, 0.66)
+        )
+
+        assert not _looks_like_cif(pdb), (
+            "a PDB with a # comment or an underscore line is not a CIF"
+        )
+        assert _bfactors(bfactors_on_100(pdb)) == [21.0, 66.0]
+
+    @pytest.mark.parametrize("b", [1.01, 1.5, 2.0])
+    def test_just_above_one_is_not_fractional(self, b):
+        """The window's upper bound, one-sided until now.
+
+        ``< 1.0`` is pinned by the column-width and non-idempotence
+        tests. The upper bound was not: widening the window to
+        ``<= 1.5`` passed everything, and would have scaled a 1.20
+        B-factor to 120.00.
+
+        Nothing in the suite exercised the gap, so the widened window
+        was never asked a question it could get wrong. That is the
+        whole reason, and two earlier attempts to say WHY were both
+        false: the first named a 1.0-to-31.0 gap and claimed no fixture
+        sat in it, the second kept that claim's evidence after
+        narrowing the gap to 1.0-to-1.5, where 1HEW holds nothing at
+        all. Evidence outlives the framing it was gathered for; this
+        one has now been checked directly rather than reasoned about.
+        """
+        pdb = _atom(1, 0.50) + _atom(2, b)
+
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_a_clean_file_still_converts(self):
+        """Non-vacuity: the rule above must not decline everything."""
+        assert _bfactors(bfactors_on_100(_atom(1, 0.21) + _atom(2, 0.66))) == [
+            21.0, 66.0,
+        ]
+
+
+class TestTheStaffCopyAgreesWithTheCustomerCopy:
+    """The invariant the campaign-staging change exists for, which was
+    stated in three prose comments and guarded by none.
+
+    Both surfaces convert today, but nothing pinned that they AGREE. If
+    the conversion is later dropped from either side they diverge again
+    with a green suite -- and divergence is the whole defect: one design,
+    two people, two scales.
+    """
+
+    def test_one_design_reaches_both_readers_identically(self, tools_app):
+        import types
+        from unittest.mock import MagicMock, patch
+
+        from shared import storage as storage_mod
+
+        flask_app, _slugs = tools_app
+        fractional = (_atom(1, 0.21) + _atom(2, 0.66)).encode()
+
+        # --- the CUSTOMER's copy, through the real download route.
+        job = types.SimpleNamespace()
+        job.id = "job-1"
+        job.tool = "esmfold"
+        job.status = "succeeded"
+        job.result = {"candidates": [{"rank": 1, "pdb_key": "designs/d.pdb"}]}
+        ctx = types.SimpleNamespace(user_id="u-1", email="u@example.com")
+
+        import blueprints.jobs as jobs_bp
+
+        originals = (
+            jobs_bp.load_user_context, jobs_bp.get_job,
+            jobs_bp.output_exists, jobs_bp.download_output,
+        )
+        jobs_bp.load_user_context = lambda: ctx
+        jobs_bp.get_job = lambda job_id, user_id=None, **_kw: job
+        jobs_bp.output_exists = lambda **_kw: True
+        jobs_bp.download_output = lambda **_kw: fractional
+        try:
+            with flask_app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess["user_email"] = "u@example.com"
+                customer = client.get(
+                    "/api/jobs/job-1/pdb/designs%2Fd.pdb"
+                ).get_data()
+        finally:
+            (jobs_bp.load_user_context, jobs_bp.get_job,
+             jobs_bp.output_exists, jobs_bp.download_output) = originals
+
+        # --- the STAFF copy, through the real campaign-staging path.
+        client_mock = MagicMock()
+        with patch.object(
+            storage_mod, "get_service_client", lambda: client_mock
+        ), patch.object(
+            storage_mod, "download_output", return_value=fractional
+        ):
+            storage_mod.stage_campaign_candidates(
+                campaign_id="camp-1",
+                candidates=[{"rank": 1, "pdb_key": "designs/d.pdb"}],
+                indices=[0],
+                user_id="u-1",
+                job_id="job-1",
+            )
+        staff = client_mock.storage.from_.return_value.upload.call_args.kwargs[
+            "file"
+        ]
+
+        assert staff == customer, (
+            "the shortlist Ranomics opens and the file the customer "
+            "downloads are the same design and must carry the same scale"
+        )
+        # ...and BOTH converted. Without this, deleting the conversion
+        # from both sides would leave them equal and this test green.
+        assert _bfactors(customer.decode()) == [21.0, 66.0]
