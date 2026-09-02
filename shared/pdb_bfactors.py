@@ -138,7 +138,7 @@ _CIF_HEADER_BYTES = 16384
 # Hangul fillers, the Mongolian free variation selectors, U+034F
 # COMBINING GRAPHEME JOINER -- together with U+2800 BRAILLE PATTERN
 # BLANK, and separately every zero-advance combining mark, which is
-# the larger of the two by an order of magnitude.
+# much the larger of the two families.
 #
 # BE PRECISE ABOUT WHAT THAT COSTS. It is not "a line is skipped": the
 # file comes out HALF CONVERTED, 10.00 beside 88.50, on the live
@@ -172,10 +172,11 @@ def _visible_start(content: str) -> str:
     MAX_CONTENT_LENGTH -- but a maximally-invisible payload at that cap
     is on the order of a second of worker CPU. Capping the loop is the
     obvious saving and it is exactly wrong: a cap is a length, and a
-    record behind a longer run walks straight past the gate. Two
-    reviewers found a cap surviving the suite, at three and then at
-    nine. If this ever needs to be cheaper, bound the number of LINES
-    inspected, never the prefix.
+    record behind a longer run walks straight past the gate. Reviewers
+    have found a cap surviving the whole suite more than once, at
+    different lengths each time, which is the argument against caps
+    rather than against any particular one. If this ever needs to be
+    cheaper, bound the number of LINES inspected, never the prefix.
     """
     index = 0
     while index < len(content) and (
@@ -291,9 +292,9 @@ def is_fractional(pdb_text: str) -> bool:
     NOT ABSOLUTE, and the exception is documented rather than implied.
     The blank-rendering and zero-width codepoints described in the note
     above ``_visible_start`` still hide a record from this predicate,
-    and a file behind one comes out half converted. Everything else this
-    module says
-    about the shape being impossible should be read as "impossible
+    and a file behind one comes out half converted. Everything else
+    this module says about the shape being impossible should be read
+    as "impossible
     except there", which is the whole reason that ceiling is pinned by
     a test.
 
@@ -318,12 +319,17 @@ def is_fractional(pdb_text: str) -> bool:
     but that is a guess about INTENT bolted onto a rule that is
     otherwise a fact about FORMAT. The design paths hand through
     whatever the model wrote rather than composing a B-factor column
-    themselves. The writers that exist -- ``sdf_to_pdb`` in
+    themselves. The writers that exist: ``sdf_to_pdb`` in
     ``tools/proteina/run_pipeline.py`` via RDKit's ``MolToPDBFile``,
-    and Biopython's ``PDBIO().save()`` in ``shared/pipeline_normalize``
-    and ``shared/pdb_inspect`` -- either have no call site (the first)
-    or re-serialise a structure that was parsed from somebody else's
-    file rather than composing a B column (the rest). What column RDKit
+    which has no call site; Biopython's ``PDBIO().save()`` in
+    ``shared/pipeline_normalize`` and ``shared/pdb_inspect``, which
+    re-serialise a structure parsed from somebody else's file rather
+    than composing a B column; and ``_FALLBACK_PDB`` in
+    ``tools/proteina/_hotspot_canary.py``, which DOES hand-compose one
+    -- a uniform ``0.00``, the harmless half of this ceiling -- and is
+    canary-only, reaching no download path. A reviewer found that last
+    one missing from an earlier version of this list, in a paragraph
+    reasoning about exactly that. What column RDKit
     would put there is NOT asserted here: rdkit is not installed in
     this repo's venv and no test exercises that function, so it is not
     something a reader can check.
@@ -334,15 +340,16 @@ def is_fractional(pdb_text: str) -> bool:
     up, written two hundred lines later. Enumerating is safer than
     claiming uniqueness, and shorter than defending it.
 
-    That hedge is the point. This is the third reasoning offered for
-    the same verdict: the first argued about WRITERS from the
-    distinct-value counts of three DOWNLOADED depositions, the second
-    claimed no ``run_pipeline`` writes a B-factor field at all, and
-    both were wrong and both were caught by reviewers. A verdict that
-    survives two bad arguments is one to state carefully, not one to
-    keep re-justifying. Left as one rule until something real produces
-    the input. Uniform ``0.00`` is
-    already a no-op.
+    That hedge is the point. This verdict has now been justified
+    several different ways and the earlier ones were wrong -- one
+    argued about WRITERS from the distinct-value counts of three
+    DOWNLOADED depositions, another claimed no ``run_pipeline`` writes
+    a B-factor field at all -- each caught by a reviewer. (An earlier
+    revision numbered them, and the number was itself wrong at every
+    revision that carried it, which is its own small lesson.) A verdict
+    that survives repeated bad arguments is one to state carefully,
+    not one to keep re-justifying. Left as one rule until something real produces
+    the input. Uniform ``0.00`` is already a no-op.
     """
     if _looks_like_cif(pdb_text):
         return False

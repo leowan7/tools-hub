@@ -367,7 +367,8 @@ class TestEveryDownloadPathConverts:
     # ``bfactors_on_100`` is documented as not idempotent -- 0.01 scales
     # to 1.00, which is still inside the fractional window, so a second
     # pass takes it to 100.00 -- and wrapping the route's call in itself
-    # passed every test in every file that touches these routes. The staging path had an exactly-once test; the primary
+    # passed every test in every file that touches these routes.
+    # The staging path had an exactly-once test; the primary
     # download, which serves far more people, had none.
     @pytest.mark.parametrize(
         "payload, expected",
@@ -994,11 +995,18 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         caps that actually get written, which are powers of two and
         round decimals near a buffer size.
 
-        The postcondition below is asserted on a call the equality
-        check has NOT already pinned, because the previous version put
-        it second and it could then only ever see the "A" of "ATOM":
-        provably inert, and the reviewer proved it by deleting the line
-        and getting identical results on every mutant.
+        The postcondition below is asserted on calls the equality check
+        has NOT already pinned -- inputs with no visible tail -- because
+        the previous version put it second on the same call and it
+        could then only ever see the "A" of "ATOM".
+
+        It does NOT strengthen the cap ladder, and saying so is the
+        point: its longest input is far shorter than the equality
+        loop's, so every cap it could catch is caught above it anyway.
+        A reviewer deleted it and got identical ladder results. What it
+        DOES catch is a different mutant class -- an off-by-one such as
+        ``len(content) - 1``, which leaves the last invisible byte in
+        place and which the equality loop alone misses.
         """
         invisible = "\ufeff \t\x00\u200b\u2060\xa0"
 
@@ -1053,13 +1061,14 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         ``<= 1.5`` passed everything, and would have scaled a 1.20
         B-factor to 120.00.
 
-        Not because no fixture holds a value in that gap -- 1HEW alone
-        holds hundreds -- but because none of them REACHES the window.
-        1HEW short-circuits on a first ATOM of 30.48, and the one
-        synthetic fixture in range sits behind a decode error. A value
-        being present in the file is not the same as a value being
-        exercised, and an earlier version of this docstring confused
-        the two.
+        Nothing in the suite exercised the gap, so the widened window
+        was never asked a question it could get wrong. That is the
+        whole reason, and two earlier attempts to say WHY were both
+        false: the first named a 1.0-to-31.0 gap and claimed no fixture
+        sat in it, the second kept that claim's evidence after
+        narrowing the gap to 1.0-to-1.5, where 1HEW holds nothing at
+        all. Evidence outlives the framing it was gathered for; this
+        one has now been checked directly rather than reasoned about.
         """
         pdb = _atom(1, 0.50) + _atom(2, b)
 
