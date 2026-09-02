@@ -123,14 +123,73 @@ def test_the_cell_never_renders_a_bare_verdict_word(env):
 
 
 def test_a_smoke_stub_is_never_judged(env):
-    """Fabricated scores, so no bar is applied. The stub row that used to carry
-    a red badge is at rank 10 of a boltzgen smoke run: pLDDT 80.0 and
-    refolding RMSD 1.5, which clears its own tool's bar exactly."""
+    """Fabricated scores, so no bar is applied.
+
+    "Not usable", not "not measured": the columns beside this row are full of
+    invented numbers rather than empty. A smoke run emits one design, and at
+    rank 1 the boltzgen stub is ipTM 0.46 / pLDDT 71.0 / RMSD 2.4 -- so what
+    judging a stub actually produces is a confident "pLDDT 71.0, below 80"
+    about a number no model ever computed."""
     html = _render_table(env, "boltzgen", BOLTZGEN_COLUMNS, [
         {"scores": {"pLDDT": 80.0, "refolding_rmsd": 1.5,
                     "filter_status": "stub (smoke)"}},
     ])
-    assert _cells(html) == ["Not measured: smoke-test stub, scores fabricated"]
+    assert _cells(html) == ["Not usable: smoke-test stub, scores fabricated"]
+
+
+def _col_cells(html, col):
+    import re as _re
+    return [
+        _re.sub(r"<[^>]+>", "", c).strip()
+        for c in _re.findall(
+            r'<td data-col="' + col + r'".*?</td>', html, _re.S,
+        )
+    ]
+
+
+def test_the_verdict_never_quotes_a_number_the_column_shows_as_missing(env):
+    """THE CELL AND THE COLUMN READ THE SAME VALUE, or the page contradicts
+    itself in the space of two table cells.
+
+    The metric columns used scores.get(col) while the judge resolved storage
+    aliases and fell back to the record root. So a job rebuilt by
+    shared/job_recovery -- which stores the interface PAE under the streamed
+    name i_pae, precisely so the record stays judgeable -- rendered a dash in
+    its i_pAE column beside a verdict cell quoting "i_pAE 12.50 A, above 10 A".
+    """
+    recovered = {
+        "rank": 1, "pdb_key": "designs/d1.pdb",
+        "scores": {"ipTM": 0.85, "pLDDT": 90.0, "i_pae": 12.5},
+    }
+    html = _render_table(
+        env, "rfdiffusion", ["ipTM", "pLDDT", "i_pAE", "against_bar"],
+        [recovered],
+    )
+    assert _col_cells(html, "i_pAE") == ["12.50"]
+    assert _cells(html) == ["i_pAE 12.50 Å, above 10 Å"]
+
+
+def test_a_root_keyed_row_renders_its_metrics(env):
+    """boltz2 persists a flat designs[] row with lowercase root keys and no
+    scores dict at all. Every metric column was a dash under a confident
+    "Meets ..."."""
+    html = _render_table(
+        env, "boltz2", ["ipTM", "pLDDT", "n_hotspot_contacts", "against_bar"],
+        [{"iptm": 0.9, "complex_plddt": 0.93, "n_hotspot_contacts": 6}],
+    )
+    assert _col_cells(html, "ipTM") == ["0.900"]
+    assert _col_cells(html, "pLDDT") == ["93.0"]
+    assert _cells(html) == [f"Meets {gate_bar_text('boltz2')}"]
+
+
+def test_a_contact_count_renders_as_a_count(env):
+    """The column formatted contacts at two decimals while the bar compares at
+    zero, so a column reading "3.60" sat beside "Meets ... Hotspot hits 4"."""
+    html = _render_table(
+        env, "boltz2", ["n_hotspot_contacts", "against_bar"],
+        [{"iptm": 0.9, "complex_plddt": 0.93, "n_hotspot_contacts": 6}],
+    )
+    assert _col_cells(html, "n_hotspot_contacts") == ["6"]
 
 
 # ---------------------------------------------------------------------------
@@ -263,3 +322,13 @@ def test_every_gating_tool_renders_a_meeting_cell(env, tool):
     assert cells == [f"Meets {gate_bar_text(tool)}"]
     assert cells[0] != "Meets "
     assert not cells[0].endswith(":")
+
+
+# A guard for "the app registers every global these macros call" was written
+# here and deleted. Jinja's find_undeclared_variables reports every {% set %}
+# name in a macro body as undeclared, so the check only passed behind a hardcoded
+# list of 20 template locals -- a list that rots on the next edit and gets
+# silenced rather than fixed. It also duplicated cover this file already has:
+# every test above renders through the app's REAL environment, so a macro
+# calling a name create_app does not register fails them outright. That is how
+# the raw_metric global was caught.

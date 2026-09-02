@@ -102,6 +102,124 @@ def test_pxdesign_is_not_gated_on_pae():
     ).verdict == "meets"
 
 
+# The bars this site applies, against the thresholds the containers apply, as
+# claimed in the comment above GATE_COLUMNS. Kept as data here so the claim is
+# checked rather than trusted -- an earlier version of that comment listed four
+# of the five and asserted it was complete.
+CONTAINER_THRESHOLDS = {
+    ("boltzgen", "refolding_rmsd"): ("RMSD_THRESHOLD", 2.0),
+    ("rfdiffusion", "ipTM"): ("IPTM_THRESHOLD", 0.70),
+    ("rfantibody", "pAE"): ("PAE_THRESHOLD", 10.0),
+    ("pxdesign", "ipTM"): ("IPTM_THRESHOLD", 0.70),
+}
+_CONTAINER_REPO = REPO.parent / "llm-proteinDesigner"
+
+
+def test_the_documented_divergences_are_the_actual_divergences():
+    """Every leg where this site's bar differs from its container's is listed.
+
+    The comment above GATE_COLUMNS names five, and a reader is entitled to
+    treat that list as exhaustive: a leg missing from it moves delivered work
+    with nothing saying why. This checks the four that are a plain container
+    constant; boltz2's is the fifth and is checked separately below, because
+    its pipeline lives in THIS repo on a different scale.
+
+    Skips when the sibling container repo is not checked out beside this one.
+    It is a real cross-repo claim and there is no way to verify it without the
+    other repo; asserting it from memory is what put a wrong number here.
+    """
+    import re
+
+    if not _CONTAINER_REPO.is_dir():
+        pytest.skip(f"container repo not present at {_CONTAINER_REPO}")
+
+    for (tool, column), (const, expected) in CONTAINER_THRESHOLDS.items():
+        path = _CONTAINER_REPO / "docker" / tool / "run_pipeline.py"
+        if not path.is_file():
+            pytest.skip(f"{path} not present")
+        source = path.read_text(encoding="utf-8", errors="replace")
+        found = re.search(rf"^{const}\s*=\s*([0-9.]+)", source, re.M)
+        assert found, f"{tool}: {const} not found"
+        assert float(found.group(1)) == expected, (
+            f"{tool}/{column}: the container now uses {found.group(1)}, not "
+            f"{expected}. The divergence table above GATE_COLUMNS is stale."
+        )
+        legend = get_legend(tool, column)
+        assert legend is not None and float(legend["good"]) != expected, (
+            f"{tool}/{column} no longer diverges; drop it from the table."
+        )
+
+
+def test_boltz2s_plddt_bar_is_looser_than_its_own_pipelines():
+    """The fifth divergence, and the only one whose pipeline is in this repo.
+
+    STRICT_PLDDT is written on the 0-1 scale boltz2 stores and this site
+    renders everything on 0-100, so the two numbers are not comparable until
+    one is scaled -- which is exactly how a comment came to claim they were
+    "the same bars the pipeline used".
+    """
+    import re
+
+    source = (
+        REPO / "tools" / "boltz2" / "run_pipeline.py"
+    ).read_text(encoding="utf-8")
+    found = re.search(r"^STRICT_PLDDT\s*=\s*([0-9.]+)", source, re.M)
+    assert found, "STRICT_PLDDT not found"
+    pipeline_bar = float(found.group(1)) * 100.0
+    assert pipeline_bar == 85.0
+    assert float(get_legend("boltz2", "pLDDT")["good"]) == 80.0
+
+
+def test_every_gate_leg_with_a_parse_default_declares_it():
+    """A container that substitutes a default when a column will not parse has
+    that default declared, or the page reports the parse failure as a
+    confident measured shortfall.
+
+    Two rounds of this fix each covered a subset: the first named pxdesign and
+    rfantibody, the second added rfdiffusion, and boltzgen -- the tool the
+    IMPLAUSIBLE_VALUES comment is written about -- was last.
+    """
+    expected = {
+        ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
+        ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),
+        ("rfdiffusion", "i_pAE"),
+        ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"),
+        ("rfantibody", "pLDDT"), ("rfantibody", "ipAE"), ("rfantibody", "pAE"),
+    }
+    assert expected <= set(IMPLAUSIBLE_VALUES), sorted(
+        expected - set(IMPLAUSIBLE_VALUES)
+    )
+    # And each declared value really does sit on the failing side of its bar,
+    # which is why leaving it undeclared is not harmless.
+    for (tool, column), values in IMPLAUSIBLE_VALUES.items():
+        legend = get_legend(tool, column)
+        for value in values:
+            record = {"scores": {column: value}}
+            assert judge(tool, record).verdict == "unjudged", (tool, column)
+
+
+def test_the_bar_is_unanswerable_for_a_tool_that_has_none():
+    """``all()`` over no columns is True, so a tool with no bar would report
+    its bar as answerable and the caller would count designs as meeting one.
+    Unreachable today only because blueprints/jobs asks tool_has_bar first."""
+    from shared.score_legends import bar_is_answerable
+
+    assert not bar_is_answerable("opendde", [{"scores": {"ipTM": 0.9}}])
+    assert not bar_is_answerable("bindcraft", [{"scores": {"ipTM": 0.9}}])
+
+
+def test_a_label_is_split_only_on_a_real_unit():
+    """"Shape complementarity (SC)" is an ABBREVIATION, not a unit, and
+    splitting it produced the reading "Shape complementarity 0.700 SC"."""
+    from shared.score_legends import _label_and_unit
+
+    assert _label_and_unit("refolding_rmsd") == ("Refolding RMSD", " \u00c5")
+    assert _label_and_unit("shape_complementarity") == (
+        "Shape complementarity (SC)", "",
+    )
+    assert _label_and_unit("ipTM") == ("ipTM", "")
+
+
 def test_boltzgen_is_not_gated_on_iptm():
     """The defect that started this. BoltzGen refolds the design ALONE, so its
     ipTM is not the cofold quantity a 0.70 bar describes, and 65 production
@@ -281,7 +399,12 @@ def test_a_smoke_stub_is_never_judged():
     assert is_fabricated(stub)
     verdict = judge("boltzgen", stub)
     assert verdict.verdict == "unjudged"
-    assert verdict.unmeasured == ("smoke-test stub, scores fabricated",)
+    # UNUSABLE, not unmeasured. The columns beside a stub row are not empty:
+    # they hold invented numbers, which is the textbook declared placeholder.
+    # It matters beyond wording -- ranking sinks an unusable row and floats an
+    # unmeasured one, and a stub has no business outranking a real design.
+    assert verdict.unusable == ("smoke-test stub, scores fabricated",)
+    assert verdict.unmeasured == ()
     # The same numbers without the marker DO meet the bar, which is what makes
     # the marker load-bearing rather than decorative.
     assert judge(

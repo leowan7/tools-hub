@@ -635,6 +635,10 @@
               {% endif %}
             </td>
           {% else %}
+          {# The ROW's tool, hoisted above the loop: both the metric cells
+             and the verdict cell resolve against it, and in a pooled table
+             they are not the table's tool. #}
+          {% set row_tool = cand.get('_source_tool') or tool_slug %}
           {% for col in columns %}
             {# The vs.-quality-bar cell is COMPUTED, never read. It used to render the
                ``filter_status`` word the pipeline stamped at the end of its
@@ -659,7 +663,6 @@
                  belt and braces -- and it is one column-list change away from
                  being the difference between a right answer and judging every
                  tool's designs against one tool's bar. #}
-              {% set row_tool = cand.get('_source_tool') or tool_slug %}
               {% set verdict = judge_design(row_tool, cand) %}
               <td data-col="against_bar" data-val="{{ verdict.verdict }}">
                 {% if verdict.verdict == 'below' %}
@@ -698,7 +701,13 @@
                 {% endif %}
               </td>
             {% else %}
-            {% set raw = scores.get(col) %}
+            {# raw_metric, not scores.get: the judge resolves aliases and
+               falls back to the record root, so reading only `scores` here
+               rendered a dash beside a verdict quoting the very number the
+               dash said was missing -- on the recovered rows this change
+               added `i_pae` to make judgeable, and on every boltz2 row,
+               which is keyed entirely at the root. #}
+            {% set raw = raw_metric(row_tool, cand, col) %}
             {% if raw is none %}
               <td data-col="{{ col }}" data-val="">—</td>
             {% else %}
@@ -726,11 +735,16 @@
                 {% set disp = '%.3f' | format(fval) %}
               {% elif col == 'pLDDT' %}
                 {% set disp = '%.1f' | format(fval) %}
-              {% elif col in ('seed', 'cluster_id') %}
-                {# seed / cluster_id are discrete integer IDs, not measurements —
-                   render as int so the column reads "0", "1" instead of "0.00",
-                   "1.00". data-val keeps the float so column sort still orders
-                   numerically. #}
+              {% elif col in ('seed', 'cluster_id', 'n_hotspot_contacts',
+                              'epitope_contacts') %}
+                {# Discrete integers, not measurements: seed and cluster_id
+                   are IDs, and the two contact counts are counts. Render as int
+                   so the column reads "4" rather than "4.00", and so it agrees
+                   with the bar in the verdict cell -- a contacts column showing
+                   "3.60" beside "Meets ... Hotspot hits 4" was the two
+                   formatters disagreeing, since score_legends compares at the
+                   glossary's .0f. data-val keeps the float so the column sort
+                   still orders numerically. #}
                 {% set disp = '%d' | format(fval) %}
               {% else %}
                 {% set disp = '%.2f' | format(fval) %}

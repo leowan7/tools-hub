@@ -877,18 +877,26 @@ def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
 #
 # Every column named here must have a legend for the same tool, because the
 # legend carries the bar. tests/test_derived_verdicts.py asserts that.
-# WHERE THESE BARS DIFFER FROM THE CONTAINERS' OWN, and they differ on four
+# WHERE THESE BARS DIFFER FROM THE CONTAINERS' OWN, and they differ on FIVE
 # legs. The bar is the legend's ``good`` value by decision, so that a column's
 # tooltip and the verdict in the cell beside it can never quote different
 # numbers. That decision re-labels delivered work in both directions, and the
-# full list is here rather than spread across four files:
+# full list is here rather than spread across the containers:
 #
 #   boltzgen     refolding RMSD   1.5   vs the container's RMSD_THRESHOLD 2.0
 #   rfdiffusion  ipTM             0.65  vs its IPTM_THRESHOLD 0.70   (LOOSER)
 #   rfantibody   pAE              5.0   vs its PAE_THRESHOLD 10.0
+#   pxdesign     ipTM             0.75  vs its IPTM_THRESHOLD 0.70
 #   boltz2       pLDDT            80    vs its STRICT_PLDDT 0.85, i.e. 85 on
 #                                       the 0-100 scale this site renders
 #                                       (LOOSER)
+#
+# Every other gate leg matches its container exactly. An earlier version of
+# this comment said "four" and omitted the pxdesign line while asserting the
+# list was complete -- on the tool that produces the most designs, and in the
+# stricter direction, so a design its container passed at ipTM 0.72 reads as
+# falling short with nothing saying why. tests/test_derived_verdicts.py now
+# checks this list against the containers rather than trusting it.
 #
 # So a boltzgen design the container called "pass" at RMSD 1.8 now reads as
 # falling short, and a boltz2 design it called soft_pass at pLDDT 82 now reads
@@ -939,11 +947,20 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 # a perfect self-consistency no refold produces and which clears the bar. Read
 # as absent, so the record goes unjudged instead of passing on a stand-in.
 IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
-    # Two stored BoltzGen candidates carry exactly 0.00 -- a perfect
-    # self-consistency no refold produces, and it clears a "<= 1.5" bar.
-    ("boltzgen", "refolding_rmsd"): frozenset({0.0}),
+    # Two stored BoltzGen candidates carry a refolding RMSD of exactly 0.00 --
+    # a perfect self-consistency no refold produces, and it clears a "<= 1.5"
+    # bar. 99.0 is the same column's parse-failure default, which fails the bar
+    # instead, and it was missed the first time round: the paragraph below
+    # named three other tools and skipped the one this comment is about.
+    ("boltzgen", "refolding_rmsd"): frozenset({0.0, 99.0}),
+    ("boltzgen", "pLDDT"): frozenset({0.0}),
 
     # The container parsers' own fallbacks, read off their metric key lists.
+    # EVERY GATING TOOL HAS THEM; an earlier version of this covered two of the
+    # four and the commit message said so, which was wrong twice over.
+    # boltzgen's metrics-CSV reader calls _safe_float(raw, 99.0) for the
+    # refolding RMSD and _safe_float(raw, 0.0) for ipTM and pLDDT (it rescales
+    # pLDDT to 0-100 itself, so 0.0 stays 0.0);
     # rfdiffusion's AF2 score reader returns iptm 0.0 / mean pLDDT 0.0 when the
     # JSON has no such key and i_pAE 99.0 when it has no PAE matrix;
     # pxdesign's parse_summary_csv calls _safe_float(..., 0.0) for every metric
@@ -1173,9 +1190,13 @@ def shortfall_bar_text(tool: str, columns) -> str:
 def _resolve_state(record: object, tool: str, column: str):
     """``(value, state)`` where state is "ok", "absent" or "unusable".
 
-    ``scores`` first then the record root, over every storage spelling in
-    ``_COLUMN_ALIASES`` -- the same resolution order the table and
-    ``shared.result_columns.candidate_metric`` use.
+    ``scores`` first then the record root, PER SPELLING, over every storage
+    name in ``_COLUMN_ALIASES``. Close to but not the same as
+    ``shared.result_columns.candidate_metric``, which checks scores then root
+    for ONE key: here a root ``pLDDT`` beats a ``scores.plddt``, because the
+    alias list is ordered by which spelling is canonical rather than by where
+    it sits. The table shares this function (see ``raw_metric``) so the two
+    cannot disagree about which value a row has.
 
     "unusable" is a value the pipeline declared as a stand-in
     (:data:`IMPLAUSIBLE_VALUES`). It is separated from "absent" because the two
@@ -1224,6 +1245,33 @@ def _resolve_state(record: object, tool: str, column: str):
         return _metric_glossary.plddt_on_100(value), "ok"
 
     return value, "ok"
+
+
+def raw_metric(tool: str, record: object, column: str):
+    """The RAW stored value the judge resolved for ``column``, or None.
+
+    THE TABLE AND THE VERDICT HAVE TO READ THE SAME CELL. The metric columns
+    used ``scores.get(col)`` while the judge resolved aliases and fell back to
+    the record root, so a recovered rfdiffusion row -- the exact shape
+    shared/job_recovery rebuilds, which stores the interface PAE under the
+    streamed name ``i_pae`` -- rendered "-" in its i_pAE column beside a
+    verdict cell quoting "i_pAE 12.50 A, above 10 A". A boltz2 row keyed
+    entirely at the root rendered every column as a dash under a confident
+    "Meets ...". Nothing may assert a number the table shows as missing.
+
+    Raw and unscaled on purpose: the caller normalises pLDDT itself, exactly
+    once, and ``plddt_on_100`` is not idempotent below 0.01.
+    """
+    if not isinstance(record, dict):
+        return None
+    scores = record.get("scores")
+    scores = scores if isinstance(scores, dict) else {}
+    for key in _COLUMN_ALIASES.get(column, (column,)):
+        if scores.get(key) is not None:
+            return scores[key]
+        if record.get(key) is not None:
+            return record[key]
+    return None
 
 
 def _resolve(record: object, tool: str, column: str):
@@ -1294,7 +1342,12 @@ def bar_is_answerable(tool: str, records) -> bool:
     page cannot say yet.
     """
     rows = [r for r in (records or []) if isinstance(r, dict)]
-    if not rows:
+    if not rows or not gate_columns(tool):
+        # ``all()`` over no columns is True, so a tool with no bar would report
+        # that its bar is answerable -- and the caller would then count designs
+        # as meeting one. Unreachable today only because blueprints/jobs asks
+        # tool_has_bar first, which is one reordering away from being the
+        # defect this function exists to prevent.
         return False
     return all(
         any(_resolve(r, tool, col) is not None for r in rows)
@@ -1313,7 +1366,14 @@ def judge(tool: str, record: object) -> Judgement:
         return Judgement("unjudged", (), ())
 
     if is_fabricated(record):
-        return Judgement("unjudged", (), ("smoke-test stub, scores fabricated",))
+        # UNUSABLE, NOT UNMEASURED, and the distinction this module just drew
+        # applies to itself. The columns beside a stub row are not empty: they
+        # hold invented numbers. That is the textbook declared placeholder, so
+        # it belongs in the same bucket, which also means ranking sinks a stub
+        # row rather than floating it on "unjudged is not failed".
+        return Judgement(
+            "unjudged", (), (), (), ("smoke-test stub, scores fabricated",),
+        )
 
     shortfalls: list[str] = []
     shortfall_cols: list[str] = []
