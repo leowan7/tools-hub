@@ -1226,6 +1226,14 @@ def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
         candidate = ws_ctx.get("gpu_sku")
         if isinstance(candidate, str) and candidate:
             gpu_sku = candidate
+    # Both sources above are always None in production (no wrapper returns a
+    # SKU, nothing stamps one into _workspace), so charge_for_job priced every
+    # tool at DEFAULT_USD_PER_SECOND -- the same dead lookup the wallet settle
+    # path had. The workspace cap over-delivered H100 compute 2.35x and
+    # under-delivered on A10G/A100-40GB. Same fallback, same reason.
+    from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
+
+    gpu_sku = gpu_class_for_job(job.tool, gpu_sku)
 
     try:
         from shared.workspaces import (  # noqa: PLC0415
@@ -1325,11 +1333,16 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         return
 
     gpu_seconds = max(0.0, float(job.gpu_seconds_used or 0))
-    gpu_class: Optional[str] = ws_ctx.get("gpu_class")
+    reported: Optional[str] = ws_ctx.get("gpu_class")
     if isinstance(job.result, dict):
         candidate = job.result.get("gpu_class") or job.result.get("gpu_sku")
         if isinstance(candidate, str) and candidate:
-            gpu_class = candidate
+            reported = candidate
+    # Nothing reports a SKU today, so without this the charge priced at the
+    # A100-80GB default for every tool while the quote priced at the spec.
+    from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
+
+    gpu_class: Optional[str] = gpu_class_for_job(job.tool, reported)
 
     # Params used for the parameter-scaled hard cap. Drop the private
     # underscore keys we stashed at submit time so the cap math only
@@ -1572,7 +1585,9 @@ def mid_run_monitor_check(
         )
         return None
 
-    gpu_class: Optional[str] = ws_ctx.get("gpu_class")
+    from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
+
+    gpu_class: Optional[str] = gpu_class_for_job(job.tool, ws_ctx.get("gpu_class"))
     cumulative_cost = compute_charge_usd(
         cumulative_gpu_seconds or 0, gpu_class
     )

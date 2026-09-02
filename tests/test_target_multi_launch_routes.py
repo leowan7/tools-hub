@@ -624,8 +624,9 @@ def test_the_estimate_encodes_money_as_strings(client):
 _DISPLAY_COHORT = "pace=burst&tool=rfdiffusion&designs=12&preset=pilot"
 
 # The cohort that exposed the rows-do-not-sum-to-the-total defect: rows of
-# $2.02 + $5.03 against a total ceiled from the exact sum of $7.04, and held
-# rows of $2.63 + $6.56 against $9.18. Needs two tools; a single row trivially
+# $2.02 + $5.03 against a total ceiled from the exact sum of $7.04 (the
+# figures as first recorded), and held rows now of $2.63 + $9.44 against a
+# $12.06 ceiling and a $12.07 panel. Needs two tools; a single row trivially
 # equals its own total.
 _TWO_TOOL_COHORT = (
     "pace=burst"
@@ -634,25 +635,40 @@ _TWO_TOOL_COHORT = (
 )
 
 # 12 designs is ONE sub-job per tool, which clamps the first wave, so burst and
-# steady price identically: $9.19 either way. Any test whose subject is a
+# steady price identically: $12.06 either way. Any test whose subject is a
 # displayed hold is therefore blind to which pace was passed -- swapping
 # `plan.pace` for a hardcoded PACE_BURST in the refusal left 257 tests green.
 # These cohorts are chosen so the two paces DIVERGE, and each is asserted with
 # _assert_pace_is_observable_on() rather than trusted.
 #
-#   rfdiffusion+pxdesign @200: burst $100.96 vs steady $36.71, and the burst
-#   panel ($100.96) differs from the ceiling of its exact sum ($100.95), so it
+#   rfdiffusion+pxdesign @200: burst $126.90 vs steady $48.24, and the burst
+#   panel ($126.90) differs from the ceiling of its exact sum ($126.89), so it
 #   also observes the rows-do-not-sum defect.
 _PACE_OBSERVABLE_COHORT = (
     "pace=burst"
     "&tool=rfdiffusion&designs=200&preset=pilot"
     "&tool=pxdesign&designs=200&preset=pilot"
 )
-#   bindcraft+rfantibody @200 is the only shape found where the STEADY panel
-#   ($419.50) also differs from the ceiling of the steady exact sum ($419.49),
-#   which is what the narrow-alternative test needs. Searched, not guessed.
-_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody")
+#   bindcraft+rfantibody+rfdiffusion @200 is a shape where the STEADY panel
+#   also differs from the ceiling of the steady exact sum, which is what the
+#   narrow-alternative test needs. Searched, not guessed.
+#
+#   The pair bindcraft+rfantibody used to be that shape and no longer is at any
+#   design count from 2 to 400: correcting bindcraft's gpu_class from
+#   A100-40GB to the A100-80GB its container runs on moved its price, and the
+#   two roundings now agree on that cohort. rfdiffusion is added rather than
+#   swapping the pair out so the form params below stay valid. Re-searched over
+#   every 2- and 3-tool combination of {bindcraft, rfantibody, rfdiffusion,
+#   pxdesign, boltzgen, proteina} at designs in {12, 24, 50, 100, 120, 200,
+#   250, 300, 400}: 79 of those 315 shapes satisfy this test's precondition and
+#   the refusal test's together. The count is grid-dependent -- it is here to
+#   show the search happened, not as a figure to check against.
+_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody", "rfdiffusion")
 _STEADY_DIVERGENT_DESIGNS = 200
+
+#   The refusal test needs the row sum to differ from the ceiling of the exact
+#   sum at BOTH paces; the same three tools at 100 designs do that.
+_REFUSAL_COHORT = ("bindcraft", "rfantibody", "rfdiffusion")
 
 
 def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client):
@@ -1755,15 +1771,22 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
 
     _login(client)
     t = _target()
-    # bindcraft+rfantibody@100, not rfdiffusion+pxdesign@12. Three preconditions
-    # have to hold simultaneously and the original cohort met none of them:
+    # bindcraft+rfantibody+rfdiffusion@100, not rfdiffusion+pxdesign@12. Three
+    # preconditions have to hold simultaneously and the original cohort met
+    # none of them:
     #   1. the paces must price differently (at 12 designs one sub-job per tool
     #      clamps the first wave and burst == steady, so the pace argument is
     #      unpinnable -- that mutation stayed green across 257 tests);
     #   2. the row sum must differ from the ceiling of the exact sum AT BURST;
     #   3. and the same must hold AT STEADY, or the steady case below is vacuous.
-    # 81 cohorts satisfy all three; this is the smallest. Searched, not guessed.
-    _assert_pace_is_observable_on(["bindcraft", "rfantibody"], 100)
+    # This was the pair bindcraft+rfantibody, which satisfied all three until
+    # bindcraft's gpu_class was corrected from A100-40GB to the A100-80GB its
+    # container runs on; at the new price the two roundings agree on that pair
+    # at every design count from 2 to 400 (all 399 checked, zero satisfy the
+    # three). rfdiffusion is added rather than the pair swapped out so the form
+    # params below keep working. For the search grid and its 79 hits see the
+    # note beside _STEADY_DIVERGENT_COHORT_TOOLS. Searched, not guessed.
+    _assert_pace_is_observable_on(_REFUSAL_COHORT, 100)
 
     # The form is passed EXPLICITLY and the plan is built from the same numbers.
     # The previous version computed rfdiffusion@12 + pxdesign@12 while _form()
@@ -1777,14 +1800,16 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
     # survived even after this cohort was widened to 200. Only the steady case
     # can tell them apart.
     form = _form(
-        tools=["bindcraft", "rfantibody"], pace=pace,
+        tools=list(_REFUSAL_COHORT), pace=pace,
         bindcraft__designs="100", bindcraft__binder_length_min="50",
         bindcraft__binder_length_max="100",
         rfantibody__designs="100", rfantibody__cdr_lengths="H1:8,H2:7,H3:10-16",
+        rfdiffusion__designs="100", rfdiffusion__binder_length_min="55",
+        rfdiffusion__binder_length_max="65",
     )
     plan = plan_multi_launch(
         [ToolLaunchSpec(tool=tool, preset="pilot", requested_designs=100,
-                        params={}) for tool in ("bindcraft", "rfantibody")],
+                        params={}) for tool in _REFUSAL_COHORT],
         pace,
     )
     panel = display_total_usd(r["first_wave_usd_display"] for r in plan.rows())
@@ -1820,11 +1845,11 @@ def test_the_narrow_alternative_quotes_the_panel_it_produces(client):
     )
 
     _login(client)
-    # bindcraft+rfantibody @200, not rfdiffusion+pxdesign @12. Two independent
-    # preconditions have to hold at once and only this shape satisfies both:
-    # the paces must diverge (else PACE_STEADY is unpinned), and the STEADY
-    # panel must differ from the ceiling of the steady exact sum (else the
-    # row-sum-versus-ceiling assertion is vacuous). Searched, not guessed.
+    # The cohort at the top of this file, not rfdiffusion+pxdesign @12. Two
+    # independent preconditions have to hold at once: the paces must diverge
+    # (else PACE_STEADY is unpinned), and the STEADY panel must differ from the
+    # ceiling of the steady exact sum (else the row-sum-versus-ceiling
+    # assertion is vacuous). Searched, not guessed -- see the note there.
     _assert_pace_is_observable_on(
         list(_STEADY_DIVERGENT_COHORT_TOOLS), _STEADY_DIVERGENT_DESIGNS
     )
@@ -1837,7 +1862,9 @@ def test_the_narrow_alternative_quotes_the_panel_it_produces(client):
         r["first_wave_usd_display"] for r in steady_plan.rows()
     )
     # The precondition its sibling asserts and this one did not. The two
-    # roundings agree in 56 of 120 2- to 7-tool cohorts, so on the wrong cohort
+    # roundings agree in 48 of 120 2- to 7-tool cohorts at 12 designs (51 at
+    # the 200 this cohort uses; the basis went unstated here for two rounds),
+    # so on the wrong cohort
     # this test passes with the bug reinstated and says nothing. That is the
     # exact failure round 7 shipped, and leaving it to the cohort's good luck
     # is how it recurs.

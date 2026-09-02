@@ -119,8 +119,13 @@ hand-applied. Do NOT re-add a stricter tool_jobs.status CHECK (live 0005 omits
   loose validator cap). rfantibody/pxdesign GATED out (1/chunk and validator-cap 24
   make 20k absurd until Phase 4). `MAX_SUBJOBS_PER_CAMPAIGN = 20` (not 50): child
   holds use the UNCHANGED reserve_hold, which enforces the $200/day single-job cap
-  (SQL, 0020); 20 sub-jobs keeps even boltzgen (~$8.74/chunk -> ~$175) under $200 so
-  a solo campaign never stalls on the daily cap.
+  (SQL, 0020); 20 sub-jobs keeps boltzgen (~$9.10/chunk held -> ~$182) under $200 so
+  a solo campaign never stalls on the daily cap. NOTE (2026-09-01): this
+  said "even boltzgen", which had the ladder backwards -- bindcraft is
+  ~$64.00/chunk held (~$1280 over 20) and blows the cap at 4 sub-jobs.
+  The old "$8.74/chunk -> $175" also quoted the ESTIMATE while the cap
+  applies to the HOLD, which was then exactly $200.00. boltzgen is the
+  tool that fits, not the worst case it clears.
 - **Phase 2 (L) — Robust driver at ~150-500 sub-jobs.** Daily-cap-EXEMPT child-hold
   RPC (raise MAX_SUBJOBS past the $200/day cap), a STALL REAPER (a campaign whose
   remaining chunks can never hold — persistent balance/cap refusal — must finalize as

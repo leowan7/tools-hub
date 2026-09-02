@@ -87,11 +87,18 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # Signup credit grant amount.
 #
 # Raised 5.00 -> 15.00 (2026-08-18). The tool pages now recommend a named
-# "pilot" as a new user's first run, and six of the ten pilots cost
-# $8.74-$12.59 -- so a $5 grant meant the very first action the site
-# recommended cost more than the balance it had just advertised, and a new
-# user's real first step was a top-up. 15.00 clears the most expensive pilot
-# with headroom.
+# "pilot" as a new user's first run, and the pricier pilots cost well over $5
+# -- so a $5 grant meant the very first action the site recommended cost more
+# than the balance it had just advertised, and a new user's real first step was
+# a top-up. 15.00 still clears the most expensive pilot: the priciest are
+# proteina and pxdesign at $12.58, leaving $2.42. The 2026-09-01 gpu_class
+# corrections moved the band (bindcraft $4.37 -> $6.29, pxdesign $8.74 ->
+# $12.58, boltzgen $8.74 -> $6.07). esmfold2-design's pilot is $9.86, under
+# both. opendde is the one expensive tool with no PILOT at all ($14.79 a run;
+# see the note in tools/opendde/meta.py for why it publishes no pilot card).
+# Any tool that gains a pilot above $15, or any rate change that lifts one
+# past it, needs this constant raised with it -- esmfold2-design is the one to
+# watch, H100-priced with the least headroom.
 #
 # This number is user-visible in ~18 places. Do NOT hardcode it in copy:
 # templates read it through the ``signup_credit`` jinja global and Python

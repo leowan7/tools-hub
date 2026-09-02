@@ -193,12 +193,26 @@ PILOT: dict | None = {
 # COST CORRECTED 2026-08-21. This first shipped at $1.42, which is the
 # campaign's own record of the RAW Modal cost for the call. What a reader of
 # this page would be charged is that figure through the wallet — see
-# shared.wallet.WALLET_MARKUP — so the published price was 18% under what the
-# run would actually settle at. It is now recomputed from the same 1380 GPU-
+# shared.wallet.WALLET_MARKUP — so the published price was 41% under what the
+# run would actually settle at. That $1.42 is exactly 1380 s at the A100-80GB
+# rate, so the gap here is the markup itself (1 - 1/1.70), not a rate-card
+# error; the "18%" this line carried until 2026-09-01 measured the shortfall
+# against the published figure rather than the settle figure, and did so
+# against the wrong rate as well. It is now recomputed from the same 1380 GPU-
 # seconds against this tool's rate-card entry, and
 # tests/test_worked_examples.py recomputes it again on every run so a
 # rate-card change fails a test instead of leaving a stale price in front of
 # a customer.
+#
+# COST CORRECTED AGAIN 2026-09-01, by exactly that mechanism. The $1.68 it
+# was corrected to priced 1380 s at A100-40GB, but pxdesign_app.py has always set
+# _GPU = "A100-80GB"; the wallet spec was the side that was wrong and it now
+# reads 80GB, so the same run settles at $2.41.
+# tests/test_gpu_class_drift.py now cross-checks the spec against the GPU the
+# container is configured for. For pxdesign that check is against an in-repo
+# mirror (shared/pdb_preflight_rules.py), not pxdesign_app.py itself, which
+# lives in the llm-proteinDesigner repo — so it narrows the drift window
+# rather than closing it. See that test's docstring.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
@@ -277,6 +291,6 @@ EXAMPLE: dict | None = {
         "and low ipTM, that is not a broken run: it is this result, and the "
         "answer is more designs or a different site, not a different setting."
     ),
-    "cost_usd": "1.68",
+    "cost_usd": "2.41",
     "runtime": "23 minutes",
 }

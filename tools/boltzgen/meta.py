@@ -167,7 +167,7 @@ about: dict = {
             "explanation": (
                 # NOT "higher budgets cost more" — that shipped, and the
                 # pilot card on the same page said the opposite. The
-                # estimator returns $8.7380 at budget 1, 4, 10, 50 and
+                # estimator returns $6.0690 at budget 1, 4, 10, 50 and
                 # 200 because it scales on ``num_designs``, which this
                 # form never submits and ``build_payload`` pins at 200.
                 # tests/test_pilot_recipes.py::TestBudgetDoesNotChangeThePrice
@@ -253,7 +253,7 @@ PILOT: dict | None = {
     # Identical to the form's defaults, and measured to be unavoidable.
     # BoltzGen has exactly one preset, and ``budget`` selects how many
     # of the 200 generated candidates come back — build_payload pins
-    # that 200 regardless — so the estimate is flat at $8.74 for every
+    # that 200 regardless — so the estimate is flat at $6.07 for every
     # budget from 1 to 50. There is no knob on this form that buys a
     # smaller or cheaper first run; lowering the budget returns fewer
     # designs for the same money, which is strictly worse. See

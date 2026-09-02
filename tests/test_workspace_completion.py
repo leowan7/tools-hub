@@ -331,7 +331,7 @@ class TestChargeAndWarn:
             inputs={"_workspace": {"target_pdb_id": "4Z18"}},
         )
         ws_before = _ws(user_id=user_id, spent=0.0)
-        ws_after = _ws(user_id=user_id, spent=0.6168)
+        ws_after = _ws(user_id=user_id, spent=0.4284)
         with patch(
             "shared.workspaces.get_active_workspace", return_value=ws_before
         ), patch(
@@ -343,8 +343,35 @@ class TestChargeAndWarn:
         assert kwargs["gpu_seconds"] == 600
         assert kwargs["tool"] == "rfdiffusion"
         assert kwargs["job_id"] == job.id
-        # gpu_sku unset => None passed (charge_for_job applies default rate)
-        assert kwargs["gpu_sku"] is None
+        # Nothing reports a SKU (no wrapper returns gpu_sku, nothing stamps
+        # one into _workspace), so this used to pass None and charge_for_job
+        # fell through to DEFAULT_USD_PER_SECOND -- debiting the workspace cap
+        # at the A100-80GB rate for every tool whatever its hardware. It now
+        # falls back to the tool's ToolSpec.gpu_class, which
+        # tests/test_gpu_class_drift.py pins to rfdiffusion's container.
+        assert kwargs["gpu_sku"] == "A100-40GB"
+
+    def test_charge_sku_comes_from_the_spec_not_a_constant(self):
+        """rfdiffusion alone cannot tell a spec lookup from a hardcode.
+
+        Its class is the one a plausible constant would carry, so replacing the
+        lookup with `gpu_sku or "A100-40GB"` left every sku assertion green
+        while every opendde/esmfold2-design workspace job debited 3.4x under.
+        """
+        user_id = str(uuid.uuid4())
+        job = self._job(
+            user_id=user_id, status="succeeded", gpu_seconds_used=600,
+            tool="opendde",
+            inputs={"_workspace": {"target_pdb_id": "4Z18"}},
+        )
+        ws = _ws(user_id=user_id, spent=0.0)
+        with patch(
+            "shared.workspaces.get_active_workspace", return_value=ws
+        ), patch(
+            "shared.workspaces.charge_for_job", return_value=ws
+        ) as charge:
+            jobs_mod._charge_workspace_for_completed_job(job)
+        assert charge.call_args.kwargs["gpu_sku"] == "H100"
 
     def test_gpu_sku_from_result_payload_wins(self):
         """Pipeline reports the actual GPU it used in result — prefer that."""
@@ -521,7 +548,7 @@ class TestCompleteJobIntegration:
             inputs={"_workspace": {"target_pdb_id": "4Z18"}},
         )
         ws_before = _ws(user_id=user_id, spent=0.0)
-        ws_after = _ws(user_id=user_id, spent=0.6168)
+        ws_after = _ws(user_id=user_id, spent=0.4284)
         with patch.object(
             jobs_mod,
             "resolve_user_email_and_meta",
