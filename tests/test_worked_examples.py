@@ -601,7 +601,7 @@ class TestExampleNumbersComeFromThePayload:
 
         blob = " ".join(str(v) for v in example.values())
         for figure in ("200", "69.1 to 78.2", "0.538 to 0.653", "0.51",
-                       "1.77", "82 minutes", "8.64"):
+                       "1.77", "82 minutes", "6.00"):
             assert figure in blob, f"boltzgen narration lost {figure}"
 
         # The bars the narration quotes are the legend's, not invented:
@@ -844,8 +844,13 @@ class TestExampleNumbersComeFromThePayload:
         "colabfold": 55.0,
         "af2": 388.0,
         "esmfold2-design": 306.0,
-        # 4944 s -> $8.6401 through compute_charge_usd, which is the
-        # "8.64" the boltzgen page prints. Absent, and the price on that
+        # 4944 s is what the boltzgen example's run consumed; the
+        # settled charge for it is what that page must print. The figure
+        # is NOT frozen: #211 re-billed at the GPU class the container
+        # actually runs on and moved this from $8.64 to $6.00 (and
+        # pxdesign's from $1.68 to $2.41), which this guard caught on the
+        # merge. That is the whole point of pinning it here rather than
+        # trusting the number in the page. Absent, and the price on that
         # page was pinned by nothing: a reviewer found the two guards
         # that check FIGURES and COST both skipped this tool, which is
         # why adding a whole worked example moved the suite count by

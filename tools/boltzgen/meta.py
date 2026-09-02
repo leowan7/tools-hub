@@ -372,7 +372,12 @@ EXAMPLE: dict | None = {
         "is what a pilot is for: the epitope is reachable, so a bigger run "
         "is worth paying for. Four of the five also refold to under "
         "1.5 &Aring; of the pose they were designed in, the tightest at "
-        "0.51 &Aring;."
+        "0.51 &Aring;. "
+        "It ran <strong>82 minutes</strong>, past the 15-to-60 range "
+        "quoted higher up this page: 200 designs against a 115-residue "
+        "target is the heavy end of a pilot. The charge follows the "
+        "compute actually used, so it landed just under the estimate "
+        "rather than over."
     ),
     "how_to_read_it": (
         "<strong>Refolding RMSD is the column with a real bar on it.</strong> "
@@ -404,6 +409,6 @@ EXAMPLE: dict | None = {
         "whatever clears pLDDT 80, and only then SPR or BLI. Nothing on "
         "this page is evidence of binding."
     ),
-    "cost_usd": "8.64",
+    "cost_usd": "6.00",
     "runtime": "82 minutes",
 }
