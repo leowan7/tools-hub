@@ -45,7 +45,7 @@ Ranomics wet lab.
 | **RFantibody** | Generate VHH / scFv against target (RoseTTAFold-2 validated) | smoke (PD-L1 demo, 2cr) · preview (PD-L1 demo, 8cr) · **pilot (real target, ~15cr)** |
 | **BindCraft** | De novo binder design, structure-based, AF2 multimer + ColabDesign | **pilot (real target, 22cr, ~45min)** |
 | **PXDesign** | Generate + AF2-IG validate. Best for targets where AF2 confidence matters. | smoke (PD-L1 demo, 8cr) · mini_pilot (PD-L1 demo, 16cr) · **pilot (real target, ~15cr)** |
-| **BoltzGen** | Boltz-2 backbone gen + refold-RMSD scoring | smoke (PD-L1 demo, 3cr) · mini_pilot (PD-L1 demo, 10cr) · **pilot (real target, ~10cr)** |
+| **BoltzGen** | All-atom binder gen + refold-RMSD scoring | smoke (PD-L1 demo, 3cr) · mini_pilot (PD-L1 demo, 10cr) · **pilot (real target, ~10cr)** |
 
 **Demo tiers stay** because they let a user see the output schema +
 score quality + UX before committing to a 45-min real-target run. They
