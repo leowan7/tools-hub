@@ -61,7 +61,11 @@
             see the score distribution, but they should not be advanced to
             validation without re-screening.
             {%- if is_refold_source(tool_slug) %}
-            The fastest next step is the second-opinion fold below: it
+            {#- No "below": the second-opinion block is gated on
+                `not is_example`, so on a worked-example page this
+                sentence pointed at a heading that is not rendered.
+                Position-independent wording is true on both. #}
+            The fastest next step is a second-opinion fold: it
             re-scores a shortlist with an independent predictor. Boltz-2
             additionally re-folds against your target, which is a different
             measurement rather than more of the same one. Re-running with a
