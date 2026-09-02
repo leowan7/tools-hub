@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Same MINOR as runtime.txt (3.13), but note this floats to the newest
       # 3.13.x on the runner while runtime.txt pins prod to exactly 3.13.0, so
