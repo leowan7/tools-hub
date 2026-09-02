@@ -22,12 +22,13 @@ in the first place. The fixtures are checked in and parsed offline; nothing
 here reaches the network.
 """
 
+import io
 import pathlib
 import tempfile
 
 import pytest
 
-from scout import epitope_db, interfaces
+from scout import epitope_db, interfaces, polymer
 
 pytest.importorskip("Bio")
 pytest.importorskip("numpy")
@@ -912,11 +913,21 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # because one string is a subsequence of the other and the denominator is
 # min(len). That number could not have come out any other way.
 #
-# Only the two arms of test_a_modified_residue_stays_in_the_extracted_sequence
-# discriminate: against the pre-fix gate this file goes 2 red / 26 green. The
-# rest are a non-vacuity floor, an invariant for future edits, and a guard on
-# the duplicate a bare whitelist would introduce -- all green either way, and
-# none of them evidence for this change.
+# Against the pre-fix gate this file goes 2 red / 26 green, and only the two
+# arms of test_a_modified_residue_stays_in_the_extracted_sequence are red --
+# they are the whole of the evidence for this change. The others answer a
+# different question, "would a plausible wrong version of the fix be caught",
+# and each names the mutant that kills it:
+#
+#   ...altloc_pair_contributes_one_letter  <- deleting polymer.py's dedupe
+#   ...residue_numbers_stay_parallel...    <- appending the number before the
+#                                             _THREE_TO_ONE lookup, not after
+#   ...welds_its_neighbours                <- nothing; non-vacuity floor
+#   ...welded_subsequence...perfect...     <- nothing; pins a docstring claim
+#
+# The first two were green against their own mutants when first written, and an
+# independent review caught that. Re-check them the same way before trusting
+# them: a guard that cannot fail looks exactly like one that passed.
 # ---------------------------------------------------------------------------
 
 # 3ave chain A residue 252 is a MET with four ordinary residues either side, so
@@ -924,6 +935,8 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 _MET_RESNUM = 252
 _MET_CONTEXT = "KDTLMISRT"
 _WELDED_CONTEXT = "KDTLISRT"
+# A residue number no Fc chain uses, for the nucleotide spliced in below.
+_UNMAPPED_RESNUM = 9001
 
 
 def _extract(tmp_path, text, chain_id="A"):
@@ -950,7 +963,10 @@ def test_a_modified_residue_stays_in_the_extracted_sequence(tmp_path, modified, 
 
     _THREE_TO_ONE has mapped MSE->M and SEC->C for as long as it has existed,
     so the hetflag gate that used to sit above it contradicted the map two
-    lines down: the lookup could never fire for either name.
+    lines down. Not for every spelling, though: an ATOM-spelled MSE carries a
+    blank hetflag and did reach the lookup, exactly as the module header says of
+    1CC1's SEC 492. It is the HETATM spelling -- the one real depositions use --
+    that the gate could never let through.
     """
     text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
     base_nums, base_seq = _extract(tmp_path, text)
@@ -991,13 +1007,47 @@ def test_the_residue_numbers_stay_parallel_to_the_sequence(tmp_path):
     """The invariant the weld violates, stated so a future edit trips over it.
 
     _extract_chain_sequence returns two lists that callers may zip. They are
-    appended in one loop today; this pins that, and pins chain order, which is
-    what makes an index into the sequence mean a residue number.
-    """
-    text = _respell_as(_FC_DIMER.read_text(encoding="utf-8", errors="replace"),
-                       "A", _MET_RESNUM, "MSE")
-    nums, seq = _extract(tmp_path, text)
+    appended in one loop today, on the far side of a `continue` that fires when
+    _THREE_TO_ONE has no entry for the residue.
 
+    That branch is what makes the invariant pinnable, and it is UNREACHABLE on
+    the Fc fixture alone: all 211 of its admitted residues map, so appending the
+    number before the lookup instead of after it goes unnoticed. polymer_residues
+    admits blank-hetflag nucleotides by design -- its own docstring says so --
+    so one spliced DA reaches the branch and a desync becomes a length mismatch.
+    An earlier version of this test omitted the DA and was killed by no mutant
+    in the whole suite.
+    """
+    from Bio.PDB import PDBParser
+
+    lines = _respell_as(_FC_DIMER.read_text(encoding="utf-8", errors="replace"),
+                        "A", _MET_RESNUM, "MSE").splitlines()
+    at = next(
+        i for i, line in enumerate(lines)
+        if line.startswith(("ATOM", "HETATM"))
+        and len(line) > 26
+        and line[21] == "A"
+        and line[22:26].strip() == str(_MET_RESNUM)
+    )
+    nucleotide = [
+        _pdb_atom(90000 + k, name, "DA", "A", _UNMAPPED_RESNUM, 90.0 + k, 90.0, 90.0)
+        for k, name in enumerate(("P", "C1", "N9"))
+    ]
+    spliced = "\n".join(lines[:at] + nucleotide + lines[at:]) + "\n"
+
+    # Non-vacuity: the spliced residue must actually REACH the lookup, or this
+    # is back to asserting a branch nothing executes.
+    assert epitope_db._THREE_TO_ONE.get("DA") is None
+    chain = PDBParser(PERMISSIVE=True, QUIET=True).get_structure(
+        "x", io.StringIO(spliced))[0]["A"]
+    assert any(r.get_id()[1] == _UNMAPPED_RESNUM for r in polymer.polymer_residues(chain)), (
+        "polymer_residues no longer admits the spliced nucleotide, so the "
+        "aa-is-None branch is unreachable and this test proves nothing"
+    )
+
+    nums, seq = _extract(tmp_path, spliced)
+
+    assert _UNMAPPED_RESNUM not in nums, "an unmapped residue reached the numbers"
     assert len(nums) == len(seq) > 0
     assert nums == sorted(nums), "residue numbers are not in chain order"
     assert len(set(nums)) == len(nums), "a position was emitted twice"
@@ -1011,24 +1061,43 @@ def test_an_altloc_pair_contributes_one_letter(tmp_path, modified):
     which lengthens the sequence and moves the identity denominator. The
     contacts test above pins the same guard against a list; a string needs its
     own arm because the failure looks different.
+
+    The copy must be spliced ADJACENT to the residue it pairs with. Prepending
+    it at the top of the file -- what the contacts test does, and gets away with
+    because its target sits near the chain start -- lands it beside LEU 234
+    here, where the connectivity gate rejects it outright and the dedupe is
+    never reached. Reviewed as green against a deleted dedupe before this was
+    corrected.
+
+    Which LETTER survives is deliberately not asserted. The dedupe keeps the
+    copy that comes first in the file, so a MET/SEC pair reads C and a MET/MSE
+    pair reads M -- and only the second is a real thing, since SEC substitutes
+    for CYS, not MET. One position, one letter, and nothing else disturbed is
+    the property that holds for both.
     """
     text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
     base_nums, base_seq = _extract(tmp_path, text)
 
-    partner = [
-        "HETATM" + line[6:17] + modified + line[20:]
-        for line in text.splitlines()
+    lines = text.splitlines()
+    hits = [
+        (i, "HETATM" + line[6:17] + modified + line[20:])
+        for i, line in enumerate(lines)
         if line.startswith("ATOM")
         and len(line) > 26
         and line[21] == "A"
         and line[22:26].strip() == str(_MET_RESNUM)
     ]
-    assert partner, "fixture must have atoms at the target residue"
-    lines = text.splitlines()
-    nums, seq = _extract(tmp_path, "\n".join(lines[:1] + partner + lines[1:]) + "\n")
+    assert hits, "fixture must have atoms at the target residue"
+    at = hits[0][0]
+    partner = [line for _, line in hits]
+    nums, seq = _extract(tmp_path, "\n".join(lines[:at] + partner + lines[at:]) + "\n")
 
+    index = base_nums.index(_MET_RESNUM)
     assert nums == base_nums, f"altloc pair emitted {len(nums)} positions"
-    assert seq == base_seq, "the altloc pair added a letter to the sequence"
+    assert len(seq) == len(base_seq), "the altloc pair added a letter"
+    assert seq[:index] == base_seq[:index] and seq[index + 1:] == base_seq[index + 1:], (
+        "the altloc pair disturbed the sequence beyond its own position"
+    )
 
 
 def test_a_welded_subsequence_can_still_score_a_perfect_identity():
