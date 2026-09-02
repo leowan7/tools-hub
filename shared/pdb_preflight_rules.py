@@ -317,7 +317,7 @@ _BINDCRAFT = ToolRules(
 
 _BOLTZGEN = ToolRules(
     slug="boltzgen",
-    gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
+    gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/boltzgen_app.py:_GPU
     multi_chain_supported=True,      # Boltz-class models cofold multi-chain
     # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
     # {A:115, B:106, C:55} in 430 s. include:/binding_types: are per-chain
