@@ -125,8 +125,11 @@ _CIF_HEADER_BYTES = 16384
 #
 # A list has to be complete to be correct and there is no way to know
 # that it is. So the predicate is ``not str.isprintable()`` plus the
-# ASCII space -- the one invisible character Python calls printable --
+# ASCII space -- the one WHITESPACE character Python calls printable --
 # applied over the WHOLE prefix rather than its first character.
+# ("Invisible" would be wrong and the next paragraph says why: Python
+# calls roughly two thousand zero-width characters printable too. Only
+# the whitespace claim is the true one, and only it is needed here.)
 #
 # That covers every control, format, surrogate, private-use, unassigned
 # and separator codepoint. It does NOT cover characters that are
@@ -288,8 +291,8 @@ def is_fractional(pdb_text: str) -> bool:
     NOT ABSOLUTE, and the exception is documented rather than implied.
     The blank-rendering and zero-width codepoints described in the note
     above ``_visible_start`` still hide a record from this predicate,
-    and a file behind one comes out half converted. Everything else
-    this module says
+    and a file behind one comes out half converted. Everything else this
+    module says
     about the shape being impossible should be read as "impossible
     except there", which is the whole reason that ceiling is pinned by
     a test.
@@ -315,13 +318,21 @@ def is_fractional(pdb_text: str) -> bool:
     but that is a guess about INTENT bolted onto a rule that is
     otherwise a fact about FORMAT. The design paths hand through
     whatever the model wrote rather than composing a B-factor column
-    themselves. The one place in the tree that writes a PDB from
-    scratch is ``sdf_to_pdb`` in ``tools/proteina/run_pipeline.py``,
-    via RDKit's ``MolToPDBFile``; it has no call site, and it stages a
-    ligand input rather than a design. What column RDKit would put
-    there is NOT asserted here -- rdkit is not installed in this
-    repo's venv and no test exercises that function, so it is not
+    themselves. The writers that exist -- ``sdf_to_pdb`` in
+    ``tools/proteina/run_pipeline.py`` via RDKit's ``MolToPDBFile``,
+    and Biopython's ``PDBIO().save()`` in ``shared/pipeline_normalize``
+    and ``shared/pdb_inspect`` -- either have no call site (the first)
+    or re-serialise a structure that was parsed from somebody else's
+    file rather than composing a B column (the rest). What column RDKit
+    would put there is NOT asserted here: rdkit is not installed in
+    this repo's venv and no test exercises that function, so it is not
     something a reader can check.
+
+    An earlier version of this sentence said ``sdf_to_pdb`` was "the
+    one place in the tree that writes a PDB from scratch", which is the
+    same shape of universal this module warns about two hundred lines
+    up, written two hundred lines later. Enumerating is safer than
+    claiming uniqueness, and shorter than defending it.
 
     That hedge is the point. This is the third reasoning offered for
     the same verdict: the first argued about WRITERS from the

@@ -895,7 +895,7 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         These render blank or take no width, but Python calls them
         printable and they are not whitespace, so the rule does not
         strip them and a record behind one is still hidden. That is a
-judgement about GLYPHS rather than about encoding, and closing
+        judgement about GLYPHS rather than about encoding, and closing
         it would mean one more list of the kind this module has
         repeatedly been wrong with.
 
@@ -977,38 +977,50 @@ judgement about GLYPHS rather than about encoding, and closing
         assert not is_fractional(pdb)
         assert bfactors_on_100(pdb) is pdb
 
-    def test_the_prefix_strip_is_unbounded_by_construction(self):
-        """The POSTCONDITION, not a length.
+    def test_the_prefix_strip_does_not_stop_at_a_fixed_length(self):
+        """Honestly named, after three goes at pretending otherwise.
 
-        Round 4 found the fixtures bounded at two characters, so a strip
-        capped at three passed everything. The fix added an eight-NUL
-        case -- and round 5 found the bound had simply moved to nine. A
-        cap of 9, 10, 16 or 64 passed the whole suite. Every fixture
-        that names a length is a cap waiting to be written at length+1;
-        listing longer ones is the same list, further along.
+        A finite test cannot prove an unbounded loop. What it can do is
+        kill every cap a person would plausibly write, and SAY that is
+        what it does. The previous name -- "unbounded by construction"
+        -- was false: the fixtures were a length list whose ceiling was
+        the product of two literals in this method, and a reviewer put
+        a cap just above it and passed the entire 6109-test suite.
 
-        So assert what ``_visible_start`` is FOR: whatever it returns
-        starts with a visible character, or is empty. A capped
-        implementation returns a string still wearing its prefix and
-        fails this for any run longer than the cap, at every cap, with
-        no fixture to keep ahead of.
+        That was the third time this bound moved rather than went away:
+        two characters, then nine, then seven thousand. The residual is
+        stated rather than papered over -- a cap above the longest run
+        below still survives -- and the runs are chosen to cover the
+        caps that actually get written, which are powers of two and
+        round decimals near a buffer size.
+
+        The postcondition below is asserted on a call the equality
+        check has NOT already pinned, because the previous version put
+        it second and it could then only ever see the "A" of "ATOM":
+        provably inert, and the reviewer proved it by deleting the line
+        and getting identical results on every mutant.
         """
         invisible = "\ufeff \t\x00\u200b\u2060\xa0"
 
-        for run in (1, 2, 3, 8, 9, 17, 65, 1000):
+        for run in (1, 2, 3, 8, 9, 17, 64, 65, 256, 1024, 4096, 65536):
             for filler in ("\x00", " ", invisible):
-                noisy = (filler * run) + "ATOM  rest"
-                out = _visible_start(noisy)
+                out = _visible_start((filler * run) + "ATOM  rest")
                 assert out == "ATOM  rest", (
                     f"{run} x {filler!r} left {out[:12]!r} -- the strip "
-                    "is capped, and a record behind a longer run is "
-                    "invisible to the gate"
+                    "stops at a fixed length, and a record behind a "
+                    "longer run is invisible to the gate"
                 )
-                assert out[:1].isprintable() and out[:1] != " "
 
-        # And the empty cases, which the loop must not fall over on.
-        assert _visible_start("") == ""
-        assert _visible_start(invisible * 4) == ""
+        # THE POSTCONDITION, on returns nothing above has pinned: what
+        # comes back begins with a visible character, or is empty.
+        # These inputs have no visible tail at all, so the equality
+        # check cannot stand in front of it this time.
+        for text in ("", invisible, invisible * 500, "\x00" * 9999,
+                     invisible + "  ", " " * 300):
+            out = _visible_start(text)
+            assert not out or (out[0].isprintable() and out[0] != " "), (
+                f"_visible_start left {out[0]!r} at the front"
+            )
 
     def test_a_realistic_pdb_is_not_mistaken_for_a_cif(self):
         """The CIF sniffer's UPPER width, which nothing pinned.
@@ -1037,10 +1049,17 @@ judgement about GLYPHS rather than about encoding, and closing
         """The window's upper bound, one-sided until now.
 
         ``< 1.0`` is pinned by the column-width and non-idempotence
-        tests, but nothing sat between 1.0 and the next fixture value
-        (31.0), so widening the window to ``<= 1.5`` passed everything
-        and would have scaled a 1.20 B-factor to 120.00 -- past the end
-        of a six-wide field on anything larger.
+        tests. The upper bound was not: widening the window to
+        ``<= 1.5`` passed everything, and would have scaled a 1.20
+        B-factor to 120.00.
+
+        Not because no fixture holds a value in that gap -- 1HEW alone
+        holds hundreds -- but because none of them REACHES the window.
+        1HEW short-circuits on a first ATOM of 30.48, and the one
+        synthetic fixture in range sits behind a decode error. A value
+        being present in the file is not the same as a value being
+        exercised, and an earlier version of this docstring confused
+        the two.
         """
         pdb = _atom(1, 0.50) + _atom(2, b)
 
