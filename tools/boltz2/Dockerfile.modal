@@ -1,4 +1,4 @@
-# Boltz-2 (MIT, Wohlwend et al.) — antibody-trained cofold validator.
+# Boltz-2 (MIT, Passaro et al.) — antibody-trained cofold validator.
 #
 # Strategy: start from an official pytorch base image (torch + CUDA pinned for us)
 # then pip install boltz. Boltz pulls its own model weights at first run; we mount

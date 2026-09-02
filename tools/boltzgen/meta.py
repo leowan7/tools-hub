@@ -11,8 +11,8 @@ Shapes
                          ``typical_minutes`` is a human-readable range
                          (e.g. ``"15-60"``).
     paper_citation    — short inline citation.
-    paper_url         — link to the Boltz preprint / repo.
-    github_url        — upstream jwohlwend/boltz repo.
+    paper_url         — bioRxiv permalink for the BoltzGen preprint.
+    github_url        — upstream HannesStark/boltzgen repo.
     comparison_one_liner — what you have / what you get, plus
                            which sibling tool to use instead.
     example_output_id — optional job_id of a public demo run; None until
@@ -27,9 +27,9 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "pilot": {"typical_minutes": "15 to 60"},
 }
 
-paper_citation: str = "Wohlwend et al., MIT (2024)"
-paper_url: str = "https://github.com/jwohlwend/boltz"
-github_url: str = "https://github.com/jwohlwend/boltz"
+paper_citation: str = "Stark et al., bioRxiv 2025"
+paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.11.20.689494v1"
+github_url: str = "https://github.com/HannesStark/boltzgen"
 
 seo_faq: list[dict] = [
     {
@@ -104,7 +104,7 @@ about: dict = {
         "guessing which to commit to. It is the only design tool here "
         "that handles sugars, post-translational modifications and "
         "non-standard residues on the target natively. BoltzGen, "
-        "Wohlwend et al., MIT 2024."
+        "Stark et al., bioRxiv 2025."
     ),
     "when_to_use": [
         (
@@ -133,7 +133,7 @@ about: dict = {
         {
             "name": "Protocol",
             "explanation": (
-                "Boltz-2 design protocol. <code>protein-anything</code> "
+                "BoltzGen design protocol. <code>protein-anything</code> "
                 "for general mini-protein binders, "
                 "<code>nanobody-anything</code> for VHH scaffolds, "
                 "<code>antibody-anything</code> for antibody scaffolds, "

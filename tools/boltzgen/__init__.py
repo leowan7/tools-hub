@@ -23,7 +23,7 @@ from tools.base import (
 )
 
 
-# Boltz-2 design protocols the wrapper forwards via ``--protocol``.
+# BoltzGen design protocols the wrapper forwards via ``--protocol``.
 # Mirrors the upstream BoltzGen CLI; protein-small_molecule is omitted
 # because the form does not yet collect a ligand input.
 ALLOWED_PROTOCOLS: frozenset[str] = frozenset({

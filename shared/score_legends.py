@@ -335,7 +335,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         ),
     },
 
-    # ── BoltzGen (Boltz-1 distilled generator + refold check) ────────
+    # ── BoltzGen (all-atom binder generator + refold check) ──────────
     ("boltzgen", "ipTM"): {
         # NO ``good``/``excellent`` — see the Legend TypedDict. They were 0.7
         # and 0.8, copied from the boltz2 cofold legend directly below, and

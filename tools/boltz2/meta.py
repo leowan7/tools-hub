@@ -27,8 +27,8 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "msa_server": {"typical_minutes": "~3"},
 }
 
-paper_citation: str = "Wohlwend et al., bioRxiv 2025"
-paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.06.14.659707v2"
+paper_citation: str = "Passaro et al., bioRxiv 2025"
+paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.06.14.659707v1"
 github_url: str = "https://github.com/jwohlwend/boltz"
 comparison_one_liner: str = (
     "You already have a binder sequence and the target it should "
@@ -54,7 +54,7 @@ about: dict = {
         "before you order DNA. Returns the folded complex plus ipTM "
         "(confidence in the interface), pTM (confidence in the whole "
         "complex) and per-residue confidence for every design. Boltz-2, "
-        "Wohlwend et al., <em>bioRxiv</em> 2025."
+        "Passaro et al., <em>bioRxiv</em> 2025."
     ),
     "when_to_use": [
         (
