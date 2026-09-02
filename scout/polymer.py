@@ -86,55 +86,42 @@ _CA_TRACE_SCALE = 1.95
 
 
 def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
-    """Shortest plausible backbone link between two residues, or infinity.
+    """Length of the peptide bond that would join a to b, or infinity.
 
-    Measures C->N in BOTH directions and takes the smaller, so admission does
-    not depend on the order records happen to appear in the file. Falls back to
-    CA--CA when a backbone C or N is absent: in a CA-only trace (low-resolution
-    X-ray, EM) a chain link and a free ligand are still perfectly
-    distinguishable, because consecutive CA atoms sit ~3.8 A apart.
+    Measures the FORWARD pair only -- ``a["C"] -> b["N"]`` -- because that is
+    the bond. Callers always pass (upstream, downstream); both sweeps are
+    pinned on that, since reversing either one admits a free ligand.
+
+    Falls back to CA--CA when the forward pair cannot be measured, so a CA-only
+    trace (low-resolution X-ray, EM) still resolves: consecutive CA atoms sit
+    3.78-3.82 A apart and a stray ligand does not.
+
+    THE REVERSE DIRECTION IS NOT CONSULTED, and three separate defects came
+    from consulting it. C(i+1)...N(i) runs 4.1-6.1 A on genuinely bonded pairs,
+    so it never rescues a real bond -- it is pure downside:
+
+      * Taken as the answer, it made admission non-monotone: a CA-only MSE was
+        admitted, and ADDING its C atom let the reverse measure and drop it.
+      * Read as "we could measure something", it let the CA proxy override a
+        forward measurement that had already answered.
+      * Folded into a min, it admitted a free ligand 6.0 A forward and 8.0 A
+        CA--CA whose C happened to sit 1.5 A from the previous residue's N --
+        a clash, not a bond.
+
+    Order-independence is deliberately NOT a property here. It was, when both
+    directions were measured, and that is exactly what cost the three defects
+    above. A file whose records invert two list-adjacent residues will drop a
+    genuine link; no generator observed produces that layout.
     """
-    best = float("inf")
     a, b = residues[idx_a], residues[idx_b]
-    for upstream, downstream in ((a, b), (b, a)):
-        try:
-            best = min(best, upstream["C"] - downstream["N"])
-        except KeyError:
-            continue
-
-    # CA--CA SUBSTITUTES for a measurement that could not be taken; it does not
-    # compete with one that could. The distinction is the whole subtlety here:
-    #
-    #   * Guarding the fallback on "BOTH directions raised" is non-monotone.
-    #     For a CA-only MSE both raise and the fallback admits it, but ADDING
-    #     its C atom lets the reverse direction measure -- C(i+1)...N(i), which
-    #     runs 4.1-6.1 A on real bonded pairs -- and that is finite, so the
-    #     residue is dropped. More information, worse answer.
-    #
-    #   * Consulting CA unconditionally is too permissive. A residue whose two
-    #     C->N distances BOTH measure and both exceed the threshold is not
-    #     bonded, and its CA can still sit at chain-like spacing: translating
-    #     one 3 A off its bond leaves CA--CA at 2.5 A, which the scaled test
-    #     would wave through.
-    #
-    # So: fall back only when the FORWARD measurement could not be taken.
-    #
-    # Gating on "either direction raised" was the same error a third time. The
-    # reverse distance C(i+1)...N(i) runs 4.1-6.1 A on genuinely bonded pairs
-    # (measured over 210 of them in the 3ave fixture, median 5.6), so it is
-    # never evidence about a peptide bond -- but its ABSENCE was being read as
-    # "we could not measure", which let the CA proxy override a forward
-    # measurement that had already answered conclusively. Measured: a free MSE
-    # ligand 5.11 A from the chain (not bonded, forward, unambiguous) with no C
-    # atom of its own was admitted at CA/scale = 1.905, reopening the phantom
-    # interface. Callers always pass (upstream, downstream), so a["C"]/b["N"]
-    # is the peptide-relevant pair.
-    if "C" not in a or "N" not in b:
-        try:
-            best = min(best, (a["CA"] - b["CA"]) / _CA_TRACE_SCALE)
-        except KeyError:
-            pass
-    return best
+    try:
+        return a["C"] - b["N"]
+    except KeyError:
+        pass
+    try:
+        return (a["CA"] - b["CA"]) / _CA_TRACE_SCALE
+    except KeyError:
+        return float("inf")
 
 
 def polymer_residues(chain) -> list:

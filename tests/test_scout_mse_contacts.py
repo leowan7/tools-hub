@@ -815,3 +815,76 @@ def test_the_ca_proxy_does_not_override_a_measurement_that_was_taken():
         f"6.17 A, was admitted on the Ca proxy: {kept}"
     )
     assert kept == [1], f"the real residue must survive: {kept}"
+
+
+def test_the_reverse_direction_is_never_consulted():
+    """C(i+1)...N(i) must play no part in admission.
+
+    It runs 4.1-6.1 A on genuinely bonded pairs, so it can never rescue a real
+    bond, and consulting it produced three separate defects: non-monotone
+    admission, a CA proxy overriding a measurement that was taken, and this --
+    a free ligand 6.0 A forward and 8.0 A Ca--Ca admitted because its C landed
+    1.5 A from the previous residue's N, which is a clash, not a bond.
+
+    Restoring the reverse term as a min, in any of its forms, admits residue
+    500 here.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    text = (
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      3  C   ALA A   1       2.009   1.420   0.000  1.00 0.00           C\n"
+        "HETATM  900  N   MSE A 500       8.009   1.420   0.000  1.00 0.00           N\n"
+        "HETATM  901  CA  MSE A 500       9.458   0.000   0.000  1.00 0.00           C\n"
+        "HETATM  902  C   MSE A 500       0.000   1.500   0.000  1.00 0.00           C\n"
+        "END\n"
+    )
+    chain = PDBParser(QUIET=True).get_structure("rev", io.StringIO(text))[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert kept == [1], (
+        f"a free ligand was admitted on a reverse C...N contact of 1.5 A, "
+        f"with the forward pair at 6.0 A and Ca--Ca at 8.0 A: {kept}"
+    )
+
+
+def test_the_backward_sweep_passes_its_residues_upstream_first():
+    """Both sweeps must call _bond_length as (upstream, downstream).
+
+    The whole forward-only gate rests on that argument order, and only the
+    forward sweep was pinned. Reversing the BACKWARD sweep's arguments admits
+    an N-terminal free ligand: its own C sits near the following residue's N,
+    which is the reverse pair, and reading it as the forward one calls that a
+    bond.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    # Free MSE FIRST in the chain, so only the backward sweep can reach it.
+    # Forward (MSE.C -> ALA.N) is 6.0 A; the reverse pair is short.
+    text = (
+        "HETATM  900  CA  MSE A 500       0.000   0.000   0.000  1.00 0.00           C\n"
+        "HETATM  901  C   MSE A 500       6.000   1.420   0.000  1.00 0.00           C\n"
+        "ATOM      1  N   ALA A   1       3.850   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      2  CA  ALA A   1       5.308   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      3  C   ALA A   1       5.859   1.420   0.000  1.00 0.00           C\n"
+        "ATOM      4  N   ALA A   2       7.700   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      5  CA  ALA A   2       9.158   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      6  C   ALA A   2       9.709   1.420   0.000  1.00 0.00           C\n"
+        "END\n"
+    )
+    chain = PDBParser(QUIET=True).get_structure("bwd", io.StringIO(text))[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert 500 not in kept, (
+        f"the backward sweep admitted an N-terminal free ligand, so it is "
+        f"measuring the reverse pair as though it were the bond: {kept}"
+    )
