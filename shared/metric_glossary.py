@@ -110,7 +110,22 @@ GLOSSARY: dict[str, dict] = {
             "self-consistent — it will fold to the intended backbone."
         ),
         "good_range": "< 1.5 Å; < 1.0 Å excellent",
-        "citation": "Bennett et al., Nat Commun 2023 (BindCraft)",
+        # The CUTOFFS are ours, and the citation must not appear to back them:
+        # candidate_table.html renders Range and citation adjacent. We know of
+        # no published source stating 1.5/1.0 Å for a refolding RMSD —
+        # BoltzGen's paper uses 2.5 Å (twice: the small-molecule campaign AND
+        # the target-dependence benchmark) and its CLI ships
+        # --refolding_rmsd_threshold with a 3.0 example.
+        #
+        # This read "Bennett et al., Nat Commun 2023 (BindCraft)", wrong twice
+        # over: BindCraft is Pacesa et al. (Nature 646, 483-492, 2025), and
+        # Bennett et al. 2023 filters af2_complex_rmsd < 5 Å on the COMPLEX,
+        # not a monomer refold. Neither paper defines this metric at all.
+        # Kept short: this tooltip clips inside .cand-table-scroll.
+        "citation": (
+            "Stark et al., bioRxiv 2025 (BoltzGen); cutoffs are ours, "
+            "not from the paper."
+        ),
     },
     "RMSD": {
         "label": "RMSD (Å)",

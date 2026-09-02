@@ -329,7 +329,7 @@ _BOLTZGEN = ToolRules(
         hard_cap_target_aa=600,      # Week 2: 400 → 600 (AF3-class headroom)
         soft_warn_target_aa=360,
         hard_cap_combined_aa=700,
-        runtime_base_min=600.0,      # Boltz-1 diffusion ~5-10 min/design × 100
+        runtime_base_min=600.0,      # BoltzGen sampling ~5-10 min/design × 100
         runtime_alpha=1.0,
         cap_basis="literature",      # AF3-class headroom
     ),
