@@ -923,7 +923,7 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # one string is a subsequence of the other and the denominator is min(len).
 # That number could not have come out any other way.
 #
-# Against the pre-fix gate this file goes 2 red / 26 green, and only the two
+# Against the pre-fix gate this file goes 2 red / 40 green, and only the two
 # arms of test_a_modified_residue_stays_in_the_extracted_sequence are red --
 # they are the whole of the evidence for this change. The others answer a
 # different question, "would a plausible wrong version of the fix be caught",
@@ -936,8 +936,9 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 #   ...welded_subsequence...perfect...     <- nothing; pins a docstring claim
 #
 # The first two were green against their own mutants when first written, and an
-# independent review caught that. Re-check them the same way before trusting
-# them: a guard that cannot fail looks exactly like one that passed.
+# independent review caught that -- the desync one survived this whole file AND
+# 502 tests across the repo. Re-check them the same way before trusting them: a
+# guard that cannot fail looks exactly like one that passed.
 # ---------------------------------------------------------------------------
 
 # 3ave carries NO selenium: it has zero MSE records and its only MODRES lines
