@@ -93,26 +93,41 @@ def _bfactors(data: bytes) -> list[float]:
     ]
 
 
-def _uploaded(client) -> bytes:
-    """The bytes handed to ``bucket.upload``."""
-    call = client.storage.from_.return_value.upload.call_args
-    assert call is not None, "nothing was uploaded"
-    return call.kwargs["file"]
+def _uploads(client) -> list[tuple[str, bytes]]:
+    """Every ``(path, bytes)`` handed to ``bucket.upload``, in order.
+
+    Reads ``call_args_LIST``, not ``call_args``. The single-call version
+    of this helper left the loop dimension unpinned: converting only the
+    first candidate and shipping the rest raw kept every test green,
+    which is the same two-scales-in-one-place defect the change exists
+    to prevent, just moved from across-buckets to within-folder.
+    """
+    calls = client.storage.from_.return_value.upload.call_args_list
+    assert calls, "nothing was uploaded"
+    return [(c.kwargs["path"], c.kwargs["file"]) for c in calls]
 
 
-def _stage(cand, *, download=None):
+def _stage_many(cands, *, download=None, prefix=""):
     ctx, client = _patched_bucket()
     dl = patch.object(storage_mod, "download_output", return_value=download)
     with ctx, dl:
         written = storage_mod.stage_campaign_candidates(
             campaign_id="camp-1",
-            candidates=[cand],
-            indices=[0],
+            candidates=cands,
+            indices=list(range(len(cands))),
             user_id="u1",
             job_id="job-1",
+            prefix=prefix,
         )
-    assert len(written) == 1
-    return _uploaded(client)
+    assert len(written) == len(cands)
+    return _uploads(client)
+
+
+def _stage(cand, *, download=None):
+    """One candidate, one upload, bytes only."""
+    uploads = _stage_many([cand], download=download)
+    assert len(uploads) == 1
+    return uploads[0][1]
 
 
 def test_an_inline_fractional_payload_is_staged_on_0_100():
@@ -153,10 +168,14 @@ def test_a_storage_resolved_payload_is_converted_too():
 
 
 def test_a_payload_already_on_0_100_is_uploaded_byte_for_byte():
-    """af2, colabfold and pxdesign already store 0-100. Re-encoding what
-    the gate declined is how an earlier draft of the bytes helper
-    destroyed non-UTF-8 content, so identity is the assertion here, not
-    equality."""
+    """Byte-integrity at THIS call site -- not the gate, which
+    tests/test_pdb_bfactors.py already pins five ways. af2, colabfold
+    and pxdesign already store 0-100, and identity (not equality) is
+    the assertion because re-encoding what the gate declined is how an
+    earlier draft of the bytes helper destroyed non-UTF-8 content. This
+    test and the two below still pass with the storage.py call deleted;
+    what they catch is that call mangling a payload it should not
+    touch."""
     pdb = (_atom(1, 88.50) + _atom(2, 42.00)).encode()
     cand = {"rank": 1, "pdb_key": "designs/d.pdb", "scores": {}}
     staged = _stage(cand, download=pdb)
@@ -165,19 +184,22 @@ def test_a_payload_already_on_0_100_is_uploaded_byte_for_byte():
 
 
 def test_a_crystal_target_keeps_its_real_b_factors():
-    """The whole-file gate, on the case that motivated it.
-    ``static/example/1HEW.pdb`` runs 0.01 to 150.80 — a per-atom rule
-    would scale the 0.01 atom to 1.00 and leave the 150.80, corrupting a
-    deposition it has no business touching."""
+    """A staged crystal target reaches the bucket unchanged.
+    ``static/example/1HEW.pdb`` runs 0.01 to 150.80, so a per-atom rule
+    would scale the 0.01 atom and leave the 150.80 — but the gate for
+    that lives in the module's own suite. What this pins is that the
+    staging path routes a mixed-scale file through it at all."""
     pdb = (_atom(1, 0.01) + _atom(2, 150.80)).encode()
     cand = {"rank": 1, "pdb_key": "designs/target.pdb", "scores": {}}
     assert _bfactors(_stage(cand, download=pdb)) == [0.01, 150.80]
 
 
 def test_an_unreadable_coordinate_record_declines_the_whole_file():
-    """Fails closed, the same way the download routes do. A stitched
-    binder+target complex whose target chain carries a blank occupancy
-    must not arrive with one chain converted and the other not."""
+    """Fails closed at the staging call site, the same way the download
+    routes do: a stitched binder+target complex whose target chain
+    carries a blank occupancy must not arrive in the bucket with one
+    chain converted and the other not. The predicate itself is the
+    module's to guarantee; this pins that staging inherits it."""
     blank_occupancy = (
         "ATOM      2  CA  LEU A   2    "
         "   0.000   0.000   0.000      49.00           C\n"
@@ -187,3 +209,55 @@ def test_an_unreadable_coordinate_record_declines_the_whole_file():
     staged = _stage(cand, download=pdb)
     assert staged is pdb
     assert _bfactors(staged) == [0.11, 49.00]
+
+
+def test_every_candidate_in_the_shortlist_is_converted():
+    """The loop dimension, and the ``prefix`` one with it.
+
+    Both were unpinned: `if not written:` (convert only the first) and
+    `if not prefix:` (convert only the arm that passes none) each kept
+    the whole file green. Two of the three production call sites pass a
+    non-empty prefix -- blueprints/lab_projects.py:641 (campaign) and
+    :995 (target); only :1233 (legacy single-job) omits it -- so a
+    prefix-conditioned regression would have hit the majority of real
+    handoffs invisibly.
+
+    Asserts the object PATH as well as the bytes. `client.storage.from_`
+    is a MagicMock that returns the same object for any bucket argument,
+    so nothing else in this file would notice a path built wrong.
+    """
+    cands = [
+        {
+            "rank": n,
+            "pdb_key": f"designs/design_{n:03d}.pdb",
+            "pdb_content_b64": base64.b64encode(
+                _atom(1, 0.21 * n).encode()
+            ).decode(),
+        }
+        for n in (1, 2, 3)
+    ]
+    uploads = _stage_many(cands, prefix="mpnn-01c3b3a6/")
+
+    assert [path for path, _ in uploads] == [
+        "camp-1/mpnn-01c3b3a6/designs_design_001.pdb",
+        "camp-1/mpnn-01c3b3a6/designs_design_002.pdb",
+        "camp-1/mpnn-01c3b3a6/designs_design_003.pdb",
+    ]
+    assert [_bfactors(data) for _, data in uploads] == [
+        [21.0], [42.0], [63.0],
+    ]
+
+
+def test_the_conversion_is_applied_exactly_once():
+    """``bfactors_on_100`` documents itself as NOT idempotent and says
+    "Apply exactly once" -- 0.01 scales to 1.00, which is still inside
+    the fractional window, so a second pass takes it to 100.00. Wrapping
+    the call in itself kept every other test green because no fixture
+    lived down there. A B-factor is written to two decimals, so 0.01 is
+    the smallest non-zero value a file can hold; this is the boundary."""
+    cand = {
+        "rank": 1,
+        "pdb_key": "designs/d.pdb",
+        "pdb_content_b64": base64.b64encode(_atom(1, 0.01).encode()).decode(),
+    }
+    assert _bfactors(_stage(cand)) == [1.00]

@@ -634,3 +634,141 @@ class TestAPartialBFieldAlsoDisqualifies:
         )
         assert is_fractional(pdb)
         assert bfactors(bfactors_on_100(pdb)) == [11.0]
+
+
+class TestTheSeparatorHalfOfTheWeld:
+    """F1. ``splitlines`` breaks on eight separators beyond CR/LF; the
+    reader stripped only CR/LF. A 65-character record terminated by one
+    of the other eight measured 66, ``float()`` took the separator as
+    trailing whitespace so the B field parsed, and the writer overwrote
+    all six columns -- eating the terminator and welding two records.
+    The module docstring claims this weld was fixed; the LENGTH half
+    was, the SEPARATOR half was not."""
+
+    # 65 characters: the B value occupies columns 61-65, one short of
+    # the six-wide field, so the record is unreadable ON ITS OWN.
+    def _short(self, serial: int, b: float) -> str:
+        return (
+            f"ATOM  {serial:5d}  CA  LEU A{serial:4d}    "
+            f"   0.000   0.000   0.000  1.00{b:5.2f}"
+        )
+
+    @pytest.mark.parametrize(
+        "sep", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85",
+                "\u2028", "\u2029"],
+    )
+    def test_no_record_is_welded_to_the_next(self, sep):
+        assert len(self._short(1, 0.21)) == 65, "fixture is not 65 chars"
+        pdb = self._short(1, 0.21) + sep + _atom(2, 0.66)
+        assert len(pdb.splitlines()) == 2
+
+        out = bfactors_on_100(pdb)
+
+        assert len(out.splitlines()) == 2, (
+            f"{sep!r} welded two records into "
+            f"{len(out.splitlines())} line(s)"
+        )
+        # And the right answer is to DECLINE: a record this module
+        # cannot read is exactly what the fail-closed rule is for.
+        assert out is pdb
+
+
+class TestAByteOrderMarkCannotSlipPastTheGate:
+    """F2. A BOM is not whitespace to Python and is not a coordinate
+    prefix, so a BOM'd first ATOM record was invisible to the gate AND
+    to the writer. Not "declined" -- HALF CONVERTED, which is the one
+    outcome the whole-file rule exists to make impossible."""
+
+    def test_the_first_record_is_not_skipped(self):
+        pdb = "\ufeff" + _atom(1, 0.50) + _atom(2, 0.10) + _atom(3, 0.77)
+        # Read back without the mark so column offsets line up; the
+        # first record is the one that used to escape.
+        assert _bfactors(bfactors_on_100(pdb).replace("\ufeff", "")) == [
+            50.0, 10.0, 77.0,
+        ]
+
+    def test_a_bom_does_not_hide_a_disqualifying_value(self):
+        """The other direction: the mark must not let a 0-100 file be
+        judged on its remaining records and converted."""
+        pdb = "\ufeff" + _atom(1, 88.50) + _atom(2, 0.10)
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
+
+    def test_a_bom_does_not_hide_a_cif_marker(self):
+        cif = "\ufeff" + "data_XYZ\nloop_\n_atom_site.group_PDB\n"
+        assert not is_fractional(cif)
+
+
+class TestTheStaffCopyAgreesWithTheCustomerCopy:
+    """The invariant the campaign-staging change exists for, which was
+    stated in three prose comments and guarded by none.
+
+    Both surfaces convert today, but nothing pinned that they AGREE. If
+    the conversion is later dropped from either side they diverge again
+    with a green suite -- and divergence is the whole defect: one design,
+    two people, two scales.
+    """
+
+    def test_one_design_reaches_both_readers_identically(self, tools_app):
+        import types
+        from unittest.mock import MagicMock, patch
+
+        from shared import storage as storage_mod
+
+        flask_app, _slugs = tools_app
+        fractional = (_atom(1, 0.21) + _atom(2, 0.66)).encode()
+
+        # --- the CUSTOMER's copy, through the real download route.
+        job = types.SimpleNamespace()
+        job.id = "job-1"
+        job.tool = "esmfold"
+        job.status = "succeeded"
+        job.result = {"candidates": [{"rank": 1, "pdb_key": "designs/d.pdb"}]}
+        ctx = types.SimpleNamespace(user_id="u-1", email="u@example.com")
+
+        import blueprints.jobs as jobs_bp
+
+        originals = (
+            jobs_bp.load_user_context, jobs_bp.get_job,
+            jobs_bp.output_exists, jobs_bp.download_output,
+        )
+        jobs_bp.load_user_context = lambda: ctx
+        jobs_bp.get_job = lambda job_id, user_id=None, **_kw: job
+        jobs_bp.output_exists = lambda **_kw: True
+        jobs_bp.download_output = lambda **_kw: fractional
+        try:
+            with flask_app.test_client() as client:
+                with client.session_transaction() as sess:
+                    sess["user_email"] = "u@example.com"
+                customer = client.get(
+                    "/api/jobs/job-1/pdb/designs%2Fd.pdb"
+                ).get_data()
+        finally:
+            (jobs_bp.load_user_context, jobs_bp.get_job,
+             jobs_bp.output_exists, jobs_bp.download_output) = originals
+
+        # --- the STAFF copy, through the real campaign-staging path.
+        client_mock = MagicMock()
+        with patch.object(
+            storage_mod, "get_service_client", lambda: client_mock
+        ), patch.object(
+            storage_mod, "download_output", return_value=fractional
+        ):
+            storage_mod.stage_campaign_candidates(
+                campaign_id="camp-1",
+                candidates=[{"rank": 1, "pdb_key": "designs/d.pdb"}],
+                indices=[0],
+                user_id="u-1",
+                job_id="job-1",
+            )
+        staff = client_mock.storage.from_.return_value.upload.call_args.kwargs[
+            "file"
+        ]
+
+        assert staff == customer, (
+            "the shortlist Ranomics opens and the file the customer "
+            "downloads are the same design and must carry the same scale"
+        )
+        # ...and BOTH converted. Without this, deleting the conversion
+        # from both sides would leave them equal and this test green.
+        assert _bfactors(customer.decode()) == [21.0, 66.0]

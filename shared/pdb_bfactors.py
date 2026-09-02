@@ -69,6 +69,17 @@ _COORD_RECORDS = ("ATOM  ", "HETATM")
 # short-circuit it was meant to stop competing with.
 _CIF_HEADER_BYTES = 16384
 
+# A byte-order mark ahead of the first record. It is not whitespace to
+# Python, so it does not strip and it is not a coordinate-record prefix:
+# a BOM'd first ATOM line was invisible to the gate AND to the writer,
+# which is not "declined", it is HALF CONVERTED. A file reading
+# 0.50/0.10/0.77 was staged as 0.50/10.00/77.00 -- the same one-chain-
+# converted shape the fail-closed rule exists to prevent, arriving
+# through the one door that rule does not watch. Stripped once at the
+# entry point so the predicate and the writer see the same text; a
+# converted file loses the mark, which a PDB should not have carried.
+_BOM = "\ufeff"
+
 
 def _coordinate_bfactor(content: str) -> float | None:
     """The B-factor of ``content``, or None if it is not a PDB record.
@@ -87,9 +98,26 @@ def _coordinate_bfactor(content: str) -> float | None:
 
 
 def _lines(pdb_text: str):
-    """``(content, terminator)`` per line, terminator preserved."""
+    """``(content, terminator)`` per line, terminator preserved.
+
+    The split and the strip MUST agree on what a line ending is, and
+    hard-coding ``\r\n`` did not. ``str.splitlines`` also breaks on
+    ``\x0b \x0c \x1c \x1d \x1e \x85 \u2028 \u2029``, so a 65-character
+    coordinate record terminated by one of those came back as 66
+    characters with the separator sitting in column 66 -- and
+    ``float()`` accepts most of them as trailing whitespace, so the B
+    field parsed, the writer overwrote all six columns, and the
+    terminator was eaten. Two ATOM records welded into one 144-character
+    line.
+
+    That is the same weld the module docstring above says was fixed.
+    Routing reader and writer through one predicate closed the 66-vs-65
+    LENGTH half of it; this closes the SEPARATOR half. Splitting each
+    raw line with the same function that produced it is symmetric by
+    construction, which hard-coding a terminator set never is.
+    """
     for raw in pdb_text.splitlines(keepends=True):
-        content = raw.rstrip("\r\n")
+        content = raw.splitlines()[0]
         yield content, raw[len(content):]
 
 
@@ -143,11 +171,26 @@ def is_fractional(pdb_text: str) -> bool:
     49.0 on the other. If this module cannot read a line it can see,
     it does not get to make a whole-file judgement about the file.
 
-    Short-circuits on the first disqualifying value. That is what keeps
-    the cost off af2, colabfold and pxdesign, which already store
-    0-100: they bail on their first ATOM record instead of scanning a
-    2944-design archive to reach a conclusion available on line one.
+    Short-circuits on the first disqualifying value, which keeps the
+    cost off af2, colabfold and pxdesign: they bail on their first ATOM
+    record instead of scanning a 2944-design archive for a conclusion
+    available on line one. The saving is real but not total -- ``_lines``
+    builds the whole line list before it yields, so a decline still pays
+    one O(n) split. Measured at ~1.4 ms/MB against ~40 ms/MB to convert,
+    so it is worth stating accurately rather than fixing.
+
+    KNOWN CEILING, deliberately not closed: a file whose B column is a
+    uniform placeholder ``1.00`` carrying no confidence at all passes
+    this gate and is promoted to a uniform ``100.00`` -- fake perfect
+    confidence, which is worse than the flat colouring the module
+    exists to fix. Declining "every B-factor identical" would catch it,
+    but that is a guess about INTENT bolted onto a rule that is
+    otherwise a fact about FORMAT, and no writer in this repo is known
+    to emit one: all three ``static/example`` depositions have 871+
+    distinct values. Left as one rule until something real produces the
+    input. Uniform ``0.00`` is already a no-op.
     """
+    pdb_text = pdb_text.lstrip(_BOM)
     if _looks_like_cif(pdb_text):
         return False
     seen = False
@@ -188,11 +231,17 @@ def bfactors_on_100(pdb_text: str) -> str:
     (the disordered example on this site bottoms out at 0.10) but the
     property is not guaranteed and must not be claimed.
     """
-    if not pdb_text or not is_fractional(pdb_text):
+    if not pdb_text:
+        return pdb_text
+    body = pdb_text.lstrip(_BOM)
+    if not is_fractional(body):
+        # The ORIGINAL object, never the stripped copy: callers use
+        # identity to decide whether to re-encode, and handing back a
+        # BOM-less twin would make every declined file look changed.
         return pdb_text
 
     out = []
-    for content, term in _lines(pdb_text):
+    for content, term in _lines(body):
         value = _coordinate_bfactor(content)
         if value is None:
             out.append(content + term)
