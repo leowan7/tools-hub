@@ -14,6 +14,7 @@ next outage pages us instead.
 | Railway native deploy-failure email | 1 | Verified — Deployment Failed/Crashed/OOM → Email & In-App to leo@ranomics.com | None |
 | `/readyz` deep readiness endpoint (catches the failure mode the two monitors above miss) | 1b | Implemented (uncommitted); UptimeRobot monitor pre-created + paused | Resume that monitor after deploy |
 | Synthetic monitor (smoke script on a schedule) | 2 | Live — script (`10f4688`) + workflow (`b539ea7`) on `main`, `RK_LIVE_KEY` secret set, 6h cron green | Confirm Actions failure email reaches leo@ |
+| Deploy-drift guard (`/health` build SHA vs `main`) | 2 | Live in the same workflow as the smoke, separate job, 6h cron | Same Actions failure email as the row above; this guard has no other delivery path |
 | Sentry error tracking | 2 | Deferred by decision | Revisit later |
 | Outbound-timeout audit | 3 | Done; Storage patch applied (uncommitted) | Review the Storage patch diff |
 | Operator alert on new Platform API submission | Bonus | Shipped in working tree (uncommitted) | Review the diff |
@@ -85,6 +86,10 @@ Each layer catches what the layer above misses.
    kills at the platform level, before or independent of HTTP symptoms.
 5. **Error tracking (Sentry).** Catches unhandled exceptions and slow requests
    with stack traces. Deferred for now.
+6. **Deploy-drift guard**, comparing `/health`'s build SHA against `main`.
+   Catches production silently running older code than trunk -- the one failure
+   mode every layer above is blind to by construction, since stale code is
+   healthy code and answers every probe correctly.
 
 ---
 
@@ -224,6 +229,10 @@ replay, read-back, and withdraw loop against `https://tools.ranomics.com/api/v1/
 using `RK_LIVE_KEY`. Exit code 0 on all-pass, 1 on any failure. This is the deepest
 check: it catches Mode B plus auth, idempotency, persistence, and response-shape
 regressions that a simple URL ping cannot.
+
+The same workflow carries a second, independent job that answers a question
+none of the layers above ask. See "Deploy drift detected" under
+[Runbook: responding to an alert](#runbook-responding-to-an-alert).
 
 ### Two prerequisites and how cleanup works
 
@@ -709,10 +718,65 @@ reset the counters — that hides the refusal rate rather than fixing it.
 workflow on `main` before the thing it probes is live. The failed run poisons
 `main`'s check suite and gates the deploy behind itself.
 
+### Deploy drift detected
+
+The deploy-drift job in `synthetic-smoke.yml` failed. Production is running an
+older commit than `main`.
+
+**A merge to `main` does not reliably redeploy, and nothing else here would tell
+you.** On 2026-08-20 Railway created no deployment at all for `2ec3cce` (#173):
+no entry in its deployment history, not even a skipped one, and Watch Paths on
+the `web` service is empty so nothing filtered it out. Production served the
+previous commit for 8.6 hours. Every other layer was correctly green throughout,
+because stale code is still perfectly healthy code — they all ask "is production
+working?", and this is the only check that asks "is production the thing we
+merged?".
+
+**Detection latency is up to ~6 hours**, the cron interval. This job bounds how
+long drift can go unnoticed; it does not make shipping observable in real time.
+Right after a merge you care about, curl `/health` or dispatch the workflow.
+
+**The alert names the deployed commit and lists every merged commit missing
+from production.** GitHub's failure email carries no log body, so open the run.
+
+1. Confirm it: `curl -s https://tools.ranomics.com/health` against
+   `git rev-parse origin/main`.
+2. Railway dashboard → project `tools-hub` → service `web` → Deployments. If
+   the missing commit has **no entry of any kind** (check that the toggle reads
+   "Hide Skipped", so skipped deploys are visible), the deploy event was
+   dropped. There is nothing to fix in the repo.
+
+   **Do not reach for Redeploy first.** Redeploy acts on an EXISTING
+   deployment and rebuilds the commit that deployment was for, which here is
+   the stale one, so the guard just fires again in 6h. What you need is
+   something that makes Railway deploy the MISSING commit: push a fresh commit
+   to `main` (an empty one is enough — `git commit --allow-empty -m "chore:
+   retrigger deploy" && git push`), then confirm with
+   `curl -s https://tools.ranomics.com/health` that `build` moved. If it did
+   not, the drop is not a one-off and the deploy trigger itself is the fault.
+3. If instead the entry exists and **failed**, this is a broken build, not drift.
+   Read its logs; the guard is telling you the truth about production either way.
+
+**This guard can deadlock with the Wait-for-CI gate.** A red Actions suite on
+main's HEAD makes Railway skip same-commit deploys. This guard goes red exactly
+when production is stale on commit X, which is exactly when someone needs X
+deployed. Clearing the suite with `gh run rerun` will NOT break the loop: the
+guard cannot go green until production is actually redeployed, so it re-fails
+and the suite is red again. Break it at the deploy (step 2 above), never at the
+check.
+
+**One red herring, recorded so it is not chased twice.** The `railway-app` check
+suite on a GitHub commit sits at `status=queued, conclusion=null` indefinitely.
+That is true of commits that deployed perfectly, so it is not evidence of
+anything. Railway's GitHub App never reports check-suite status. Verify any
+theory against a known-good commit before acting on it.
+
 ### Railway emailed a deploy failure / crash / OOM
 
 1. Open the deployment in Railway and read the build or runtime logs.
-2. Build failure: fix and push (Railway auto-deploys main).
+2. Build failure: fix and push. Railway USUALLY redeploys on a push to
+   main, but not reliably -- see "Deploy drift detected" above. Confirm
+   with `/health` rather than assuming the push shipped.
 3. Crash loop or OOM: check memory; OOM may mean a leak or a too-large worker
    count for the plan. Roll back if a recent change caused it.
 
@@ -738,4 +802,6 @@ server. Review at https://tools.ranomics.com/admin/campaigns and follow up.
 - Railway web service: `d118e62a-64e8-4f73-9b25-d5536e14c7a9`
 - Railway environment: `ce3eedc4-fcd8-49c5-b0e2-23ca9de785d4`
 - Alert destination: email leo@ranomics.com
-- Trunk: `main`, auto-deploys to Railway on push.
+- Trunk: `main`. Railway redeploys on a push to main in the normal case, but
+  has been observed creating no deployment at all for a merged commit; the
+  deploy-drift job is what catches that.
