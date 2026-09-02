@@ -22,12 +22,13 @@ in the first place. The fixtures are checked in and parsed offline; nothing
 here reaches the network.
 """
 
+import io
 import pathlib
 import tempfile
 
 import pytest
 
-from scout import epitope_db, interfaces
+from scout import epitope_db, interfaces, polymer
 
 pytest.importorskip("Bio")
 pytest.importorskip("numpy")
@@ -184,9 +185,17 @@ def test_sequence_identity_denominator_is_the_shorter_sequence():
     """Pins the behaviour whose docstring used to claim the opposite.
 
     The docstring said identity was divided by the length of the LONGER
-    sequence; the code uses min(). That mattered: it is the reason the MSE gate
-    in _extract_chain_sequence cannot flip the 0.70 validation threshold, and
-    the wrong docstring would have made that look like a live bug.
+    sequence; the code uses min(). PDB chains are usually domain constructs
+    shorter than the full-length UniProt entry, so max would reject them all at
+    the 0.70 threshold.
+
+    An earlier version of this docstring went on to conclude that min() is
+    therefore why the MSE gate in _extract_chain_sequence could not flip that
+    threshold. It does not follow -- the denominator says nothing about how
+    many matches a deletion costs, which can be zero or more than one -- and
+    the evidence behind it was a sequence compared against its own MET-ized
+    self, pinned at 1.0000 by construction. Measured against real UniProt
+    references the gate moved the reported identity on 61 of 173 SeMet chains.
     """
     full = "ACDEFGHIKLMNPQRSTVWY"
     truncated = full[:10]
@@ -888,3 +897,261 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
         f"the backward sweep admitted an N-terminal free ligand, so it is "
         f"measuring the reverse pair as though it were the bond: {kept}"
     )
+# ---------------------------------------------------------------------------
+# _extract_chain_sequence: the same gate, but the consequence is a WELD.
+#
+# The four gates above lose a residue from a list. This one loses a LETTER from
+# a string, and a string closes the gap: re-spell 3ave chain A's MET 252 as a
+# HETATM MSE and KDTL-M-ISRT becomes KDTLISRT, which is not the sequence of that
+# chain. It then goes to _sequence_identity against UniProt, and the result is
+# rendered to the user as sequence_identity_pct.
+#
+# (An earlier draft called KDTLISRT a run that "occurs in no real protein", on
+# no evidence. A reviewer reported finding it in three UniProtKB entries but
+# recorded no accession, and the peptide-search service is unreachable from
+# here, so treat BOTH directions as unverified. The load-bearing half needs
+# neither: it is not the sequence of THIS chain.)
+#
+# Measured against real UniProt references on 90 SeMet depositions. 223 chains
+# carried an MSE or SEC, 196 of those also resolved a DBREF accession, and 173
+# were scored -- the other 23 returned no UniProt sequence. Across those 173,
+# with 1030 residues recovered, the reported identity moved on 61 chains, in
+# both directions, median 0.06 pp. The 4.0 pp maximum is a SINGLE deposition,
+# 3BKD, whose eight copies in the asymmetric unit are all eight of the extreme
+# rows and set the p90 as well; treat it as one observation, not eight.
+#
+# The earlier "benign" verdict on this site was measured by comparing the gated
+# sequence against its own MET-ized self. That asks only whether difflib can
+# re-align around k gaps, never whether the chain resembles its real reference,
+# and it measured 1.0000 on all 173 chains. NOT because a subsequence is forced
+# to score 1.0 -- test_a_welded_subsequence... pins a subsequence that scores
+# 0.6667 -- but because the comparison cannot express the thing it was cited for.
+#
+# Against the pre-fix gate this file goes 2 red / 40 green, and only the two
+# arms of test_a_modified_residue_stays_in_the_extracted_sequence are red --
+# they are the whole of the evidence for this change. The others answer a
+# different question, "would a plausible wrong version of the fix be caught",
+# and each names the mutant that kills it:
+#
+#   ...altloc_pair_contributes_one_letter  <- deleting polymer.py's dedupe
+#   ...residue_numbers_stay_parallel...    <- appending the number before the
+#                                             _THREE_TO_ONE lookup, not after
+#   ...welds_its_neighbours                <- nothing; non-vacuity floor
+#   ...welded_subsequence...perfect...     <- nothing; pins a docstring claim
+#
+# The first two were green against their own mutants when first written, and an
+# independent review caught that -- the desync one survived this whole file AND
+# 502 tests across the repo. Re-check them the same way before trusting them: a
+# guard that cannot fail looks exactly like one that passed.
+# ---------------------------------------------------------------------------
+
+# 3ave carries NO selenium: it has zero MSE records and its only MODRES lines
+# are the ASN 297 glycosylation sites. Residue 252 of chain A is an ordinary
+# MET with four ordinary residues either side, which is what makes it usable --
+# re-spelling it is a pure record-type change, and dropping it is a visible
+# weld. Read "MSE 252" anywhere below as "the MET at 252, re-spelled".
+_MET_RESNUM = 252
+_MET_CONTEXT = "KDTLMISRT"
+_WELDED_CONTEXT = "KDTLISRT"
+# A residue number no Fc chain uses, for the nucleotide spliced in below.
+_UNMAPPED_RESNUM = 9001
+
+
+def _extract(tmp_path, text, chain_id="A"):
+    path = tmp_path / "chain.pdb"
+    path.write_text(text, encoding="utf-8")
+    return epitope_db._extract_chain_sequence(path, chain_id)
+
+
+def _drop_residue(text, chain, resnum):
+    return "\n".join(
+        line for line in text.splitlines()
+        if not (
+            line.startswith(("ATOM", "HETATM"))
+            and len(line) > 26
+            and line[21] == chain
+            and line[22:26].strip() == str(resnum)
+        )
+    ) + "\n"
+
+
+@pytest.mark.parametrize("modified,letter", [("MSE", "M"), ("SEC", "C")])
+def test_a_modified_residue_stays_in_the_extracted_sequence(tmp_path, modified, letter):
+    """Re-spelling one residue may change its letter, never the sequence length.
+
+    _THREE_TO_ONE has mapped MSE->M and SEC->C for as long as it has existed,
+    so the hetflag gate that used to sit above it contradicted the map two
+    lines down. Not for every spelling, though: an ATOM-spelled MSE carries a
+    blank hetflag and did reach the lookup, exactly as the module header says of
+    1CC1's SEC 492. It is the HETATM spelling -- the one real depositions use --
+    that the gate could never let through.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+    base_nums, base_seq = _extract(tmp_path, text)
+    index = base_nums.index(_MET_RESNUM)
+    assert base_seq[index] == "M", "fixture must start with a MET at this position"
+
+    nums, seq = _extract(tmp_path, _respell_as(text, "A", _MET_RESNUM, modified))
+
+    assert nums == base_nums, (
+        f"{modified} {_MET_RESNUM} dropped out of the residue numbers"
+    )
+    assert seq == base_seq[:index] + letter + base_seq[index + 1:], (
+        f"{modified} {_MET_RESNUM} changed the sequence beyond its own letter"
+    )
+
+
+def test_dropping_that_residue_welds_its_neighbours(tmp_path):
+    """Non-vacuity floor, and the defect made concrete.
+
+    The arm above asserts a sequence does NOT change, which proves nothing
+    unless removing the residue provably does change it. This is what the
+    hetflag gate used to produce for a HETATM-spelled MSE at this position.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+    _, base_seq = _extract(tmp_path, text)
+    assert _MET_CONTEXT in base_seq
+
+    nums, seq = _extract(tmp_path, _drop_residue(text, "A", _MET_RESNUM))
+
+    assert _MET_RESNUM not in nums
+    assert len(seq) == len(base_seq) - 1
+    assert _WELDED_CONTEXT in seq and _MET_CONTEXT not in seq, (
+        "the gap did not close, so this fixture cannot detect a weld"
+    )
+
+
+def test_the_residue_numbers_stay_parallel_to_the_sequence(tmp_path):
+    """The invariant the weld violates, stated so a future edit trips over it.
+
+    _extract_chain_sequence returns two lists that callers may zip. They are
+    appended in one loop today, on the far side of a `continue` that fires when
+    _THREE_TO_ONE has no entry for the residue.
+
+    Nothing zips them yet: the sole caller is resolve_uniprot_id, which writes
+    `_, chain_seq = ...` and discards the numbers. So this guards a future
+    caller, not a live path, and it is here because the weld this whole section
+    is about IS a desync -- the failure mode is one line away from a function
+    that already shipped it once.
+
+    That branch is what makes the invariant pinnable, and it is UNREACHABLE on
+    the Fc fixture alone: all 211 of its admitted residues map, so appending the
+    number before the lookup instead of after it goes unnoticed. polymer_residues
+    admits blank-hetflag nucleotides by design -- its own docstring says so --
+    so one spliced DA reaches the branch and a desync becomes a length mismatch.
+    An earlier version of this test omitted the DA and was killed by no mutant
+    in the whole suite.
+
+    len(nums) == len(seq) is the only assertion here, deliberately. That version
+    also asserted the numbers were sorted and unique, and BOTH were properties
+    of this fixture rather than of the code: polymer_residues returns chain
+    order, not sorted order, and it dedupes on (resseq, icode) while callers
+    emit only resseq -- so an insertion-coded chain legitimately returns
+    [99, 100, 100, 100, 101]. test_insertion_coded_residues_are_distinct_
+    positions above pins that on purpose. Asserting the opposite here passed
+    only because 3ave has no insertion codes.
+    """
+    from Bio.PDB import PDBParser
+
+    lines = _respell_as(_FC_DIMER.read_text(encoding="utf-8", errors="replace"),
+                        "A", _MET_RESNUM, "MSE").splitlines()
+    at = next(
+        i for i, line in enumerate(lines)
+        if line.startswith(("ATOM", "HETATM"))
+        and len(line) > 26
+        and line[21] == "A"
+        and line[22:26].strip() == str(_MET_RESNUM)
+    )
+    nucleotide = [
+        _pdb_atom(90000 + k, name, "DA", "A", _UNMAPPED_RESNUM, 90.0 + k, 90.0, 90.0)
+        for k, name in enumerate(("P", "C1", "N9"))
+    ]
+    spliced = "\n".join(lines[:at] + nucleotide + lines[at:]) + "\n"
+
+    # Non-vacuity: the spliced residue must actually REACH the lookup, or this
+    # is back to asserting a branch nothing executes.
+    assert epitope_db._THREE_TO_ONE.get("DA") is None
+    chain = PDBParser(PERMISSIVE=True, QUIET=True).get_structure(
+        "x", io.StringIO(spliced))[0]["A"]
+    assert any(r.get_id()[1] == _UNMAPPED_RESNUM for r in polymer.polymer_residues(chain)), (
+        "polymer_residues no longer admits the spliced nucleotide, so the "
+        "aa-is-None branch is unreachable and this test proves nothing"
+    )
+
+    nums, seq = _extract(tmp_path, spliced)
+
+    assert _UNMAPPED_RESNUM not in nums, "an unmapped residue reached the numbers"
+    assert len(nums) == len(seq) > 0
+
+
+@pytest.mark.parametrize("modified", ["MSE", "SEC"])
+def test_an_altloc_pair_contributes_one_letter(tmp_path, modified):
+    """The defect a bare whitelist would introduce on THIS consumer.
+
+    Admitting the two names without deduping emits a MET/MSE altloc pair twice,
+    which lengthens the sequence and moves the identity denominator. The
+    contacts test above pins the same guard against a list; a string needs its
+    own arm because the failure looks different.
+
+    The copy must be spliced ADJACENT to the residue it pairs with. Prepending
+    it at the top of the file -- what the contacts test does, and gets away with
+    because its target sits near the chain start -- lands it beside LEU 234
+    here, where the connectivity gate rejects it outright and the dedupe is
+    never reached. Reviewed as green against a deleted dedupe before this was
+    corrected.
+
+    Which LETTER survives is deliberately not asserted. The dedupe keeps the
+    copy that comes first in the file, so a MET/SEC pair reads C and a MET/MSE
+    pair reads M -- and only the second is a real thing, since SEC substitutes
+    for CYS, not MET. One position, one letter, and nothing else disturbed is
+    the property that holds for both.
+    """
+    text = _FC_DIMER.read_text(encoding="utf-8", errors="replace")
+    base_nums, base_seq = _extract(tmp_path, text)
+
+    lines = text.splitlines()
+    hits = [
+        (i, "HETATM" + line[6:17] + modified + line[20:])
+        for i, line in enumerate(lines)
+        if line.startswith("ATOM")
+        and len(line) > 26
+        and line[21] == "A"
+        and line[22:26].strip() == str(_MET_RESNUM)
+    ]
+    assert hits, "fixture must have atoms at the target residue"
+    at = hits[0][0]
+    partner = [line for _, line in hits]
+    nums, seq = _extract(tmp_path, "\n".join(lines[:at] + partner + lines[at:]) + "\n")
+
+    index = base_nums.index(_MET_RESNUM)
+    assert nums == base_nums, f"altloc pair emitted {len(nums)} positions"
+    assert len(seq) == len(base_seq), "the altloc pair added a letter"
+    assert seq[:index] == base_seq[:index] and seq[index + 1:] == base_seq[index + 1:], (
+        "the altloc pair disturbed the sequence beyond its own position"
+    )
+
+
+def test_a_welded_subsequence_can_still_score_a_perfect_identity():
+    """Pins the caveat in _sequence_identity's docstring.
+
+    Matching BLOCKS are counted, not aligned positions, so a deletion CAN be
+    free: a string absent from the reference still scores 1.0000. That is how
+    the gate above stayed invisible -- a perfect score means "no evidence of
+    mismatch", not "identical".
+
+    "Can", not "does". A deletion that splits a repeated motif costs MORE than
+    the residue removed -- DECDEDE -> DEDEDE loses two matches for one deleted
+    character, 0.6667 -- which is why the size of a deletion tells you nothing
+    about the size of its effect.
+
+    No real chain in the 173-chain corpus does this: matches lost <= residues
+    removed on 173 of 173. Two earlier drafts of this docstring cited corpus
+    figures here anyway (2ISB chain A, "five of the 173"); both were wrong, and
+    the second was written to correct the first. Only the synthetic case below
+    is evidence, because only it is pinned.
+    """
+    assert _WELDED_CONTEXT not in _MET_CONTEXT
+    assert epitope_db._sequence_identity(_MET_CONTEXT, _WELDED_CONTEXT) == pytest.approx(1.0)
+
+    # The counterexample, pinned so the hedge above cannot quietly become false.
+    assert epitope_db._sequence_identity("DECDEDE", "DEDEDE") < 0.7

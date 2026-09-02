@@ -392,7 +392,9 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
 def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     """One-line cost summary for the completion email. Empty if no wallet ctx.
 
-    Returns strings like ``"Estimated $0.45, charged $0.52 (95 GPU-sec on L4)."``.
+    Returns strings like ``"Estimated $0.45, charged $0.52 (300 GPU-sec on
+    A100-80GB)."`` -- 300 s at the A100-80GB rate through WALLET_MARKUP is
+    $0.5243. (The figures here used to be arithmetically impossible.)
     The "charged" figure is capped at the per-tool hard cap so absorbed
     variance does not surface here — the user only sees what their wallet
     actually paid.
@@ -409,15 +411,27 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     gpu_seconds = job.gpu_seconds_used or 0
     if gpu_seconds <= 0:
         return ""
-    gpu_class = wallet_ctx.get("gpu_class") or "GPU"
     estimate_raw = wallet_ctx.get("estimate_usd")
     try:
         from decimal import Decimal  # noqa: PLC0415
 
         from shared.wallet import compute_charge_usd  # noqa: PLC0415
-        from shared.wallet_estimates import compute_hard_cap  # noqa: PLC0415
+        from shared.wallet_estimates import (  # noqa: PLC0415
+            compute_hard_cap,
+            gpu_class_for_job,
+        )
     except Exception:
         return ""
+    # Must resolve EXACTLY as the settle path does (shared/jobs.py
+    # _settle_wallet_hold_for_completed_job), including the job.result probe:
+    # this line recomputes the charge rather than reading the settled ledger
+    # row, so any divergence prints a "charged $X" the wallet never took.
+    reported = wallet_ctx.get("gpu_class")
+    if isinstance(job.result, dict):
+        candidate = job.result.get("gpu_class") or job.result.get("gpu_sku")
+        if isinstance(candidate, str) and candidate:
+            reported = candidate
+    gpu_class = gpu_class_for_job(job.tool, reported)
     params = {
         k: v
         for k, v in (job.inputs or {}).items()
@@ -437,7 +451,7 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
         except Exception:
             pass
     bits.append(f"charged ${float(actual):.2f}")
-    return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class})."
+    return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
 
 
 def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: ANN001

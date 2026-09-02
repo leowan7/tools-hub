@@ -35,12 +35,27 @@ def test_cushion_below_cap_is_multiplier_times_point():
 
 
 def test_cushion_clamped_to_cap_for_expensive_tool():
-    # boltzgen baseline: 1.5x the point estimate exceeds the hard cap, so the
+    # bindcraft baseline: 1.5x the point estimate exceeds the hard cap, so the
     # hold clamps to the cap (reserving beyond it has no billing benefit).
+    #
+    # Was boltzgen, which stopped clamping AT THIS BASELINE when its gpu_class
+    # was corrected from A100-80GB to the A100-40GB its container has always
+    # run on: the point estimate fell to $6.07 and 1.5x that fits under the $10
+    # cap. Only at the baseline -- the ratio is not scale-invariant, because
+    # the scaled cap saturates at absolute_cap ($300) while the point estimate
+    # keeps growing, so boltzgen clamps again from num_designs=66 up. That is a
+    # property of the pure function: boltzgen's form submits `budget` (1-50),
+    # never `num_designs`, so no real submission reaches n=66.
+    # bindcraft moved the other way (40GB -> 80GB, $6.29 against an $8 cap) and
+    # is the only clamping spec whose clamp is on the cushion ALONE: af2,
+    # alphafold2, proteina and opendde also clamp at these params but each has
+    # a worst_case_gpu_seconds floor in the same expression, which would blur
+    # what this test is pinning. The precondition below is asserted, not
+    # assumed, so a future rate change makes this loud instead of vacuous.
     params = _pilot(2)
-    point = estimated_cost_for_tool(None, "boltzgen", params)
-    cap = compute_hard_cap("boltzgen", params)
-    hold = cushioned_hold_usd(None, "boltzgen", params)
+    point = estimated_cost_for_tool(None, "bindcraft", params)
+    cap = compute_hard_cap("bindcraft", params)
+    hold = cushioned_hold_usd(None, "bindcraft", params)
     assert HOLD_CUSHION_MULTIPLIER * point > cap  # precondition: cushion over cap
     assert hold == cap
     assert point < hold <= cap     # still a cushion, up to the cap

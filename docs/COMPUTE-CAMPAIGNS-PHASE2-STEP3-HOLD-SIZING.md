@@ -142,7 +142,10 @@ true ceiling, so it touches NO gate: `reserve_hold`, `wallet_preflight`, and the
 settle path are all unchanged (a cushion clamped to the cap always passes the
 existing per-tool-cap and SQL guards, and every tool cap is <= $500 so it never
 trips the $1000 self-serve ceiling). Net for boltzgen: hold clamps to the $10
-tool cap (a real cushion above the ~$8.74 point estimate), not the ~$13 raw 1.5x.
+tool cap (a real cushion above the then-$8.74 point estimate), not the ~$13 raw
+1.5x. (2026-09-01: boltzgen's point estimate is now $6.07 after its gpu_class
+was corrected to A100-40GB, so the 1.5x cushion is $9.10 and no longer clamps
+to the $10 cap. The reasoning stands; the arithmetic moved.)
 
 **(b) Step 3 split into 3a and 3b.** The cushion (3a) is independent of the
 cost-kill removal (3b), and 3b has a much wider test and security-test surface

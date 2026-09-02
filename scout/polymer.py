@@ -136,6 +136,21 @@ def polymer_residues(chain) -> list:
     they emit the sequence number alone, so residues 100 and 100A still appear
     as two entries spelled "100". That predates this module -- see the header.
 
+    The survivor is whichever copy comes FIRST in the file, so the dedupe can
+    substitute rather than merely drop: a HETATM MSE recorded ahead of a
+    blank-hetflag LYS at the same position yields M, where the old hetflag gate
+    yielded K. Deliberately not resolved by preferring the blank hetflag --
+    across 244 real chains there are zero blank-hetflag position collisions and
+    zero occurrences of this shape, and the SEVEN call sites that share this
+    function (accessibility x2, epitope_db x3, interfaces x2) are a wide blast
+    radius for a case that requires chemically nonsensical microheterogeneity.
+    Revisit if one is ever seen.
+
+    Note scout/glycan.py carries its own copy of this dedupe and resolves the
+    tie the OTHER way, preferring the blank hetflag. The two disagree on the
+    same input. That is not reconciled: glycan.py builds a letter list and has
+    no coordinates, so it cannot use this function at all.
+
     Args:
         chain: A Biopython Chain.
 

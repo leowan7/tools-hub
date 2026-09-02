@@ -1018,9 +1018,12 @@ def _extract_chain_sequence(pdb_path, chain_id: str) -> tuple:
 
         residue_numbers = []
         one_letter = []
-        for residue in chain_map[chain_id]:
-            if residue.id[0] != " ":
-                continue  # Skip HETATM and water
+        # polymer_residues, not a bare hetflag test: MSE/SEC are ordinary
+        # polymer residues deposited as HETATM, and _THREE_TO_ONE below already
+        # maps both to M/C, so a hetflag gate here contradicts the map two lines
+        # down. It also dedupes MET/MSE altloc pairs, which a bare whitelist
+        # would emit twice, and refuses free ligands.
+        for residue in polymer.polymer_residues(chain_map[chain_id]):
             aa = _THREE_TO_ONE.get(residue.resname.strip())
             if aa is None:
                 continue
@@ -1042,11 +1045,16 @@ def _sequence_identity(seq_a: str, seq_b: str) -> float:
     the _MIN_VALIDATION_IDENTITY threshold check (0.70) but is not a rigorous
     pairwise alignment — use BLAST or biopython.Align for publication results.
 
-    Because the denominator is the shorter length, dropping residues from one
-    input shrinks numerator and denominator together and barely moves the
-    result. That is why the MSE gate in _extract_chain_sequence, which yields
-    a 170-residue sequence for 1B24's 173-residue chain A, scores 100% either
-    way and cannot flip this threshold.
+    Matching BLOCKS are counted, not aligned positions, so a deletion can be
+    FREE: a string that does not occur in the reference at all can still score
+    1.0000. Read a perfect score as "no evidence of mismatch", not as
+    "identical" -- that is how the hetflag gate that used to sit in
+    _extract_chain_sequence stayed invisible for so long.
+
+    A deletion can equally cost MORE than the residue removed, when it splits a
+    repeated motif and the greedy block match cannot recover: DECDEDE ->
+    DEDEDE scores 0.6667, not 6/6. Do not infer the size of a deletion's effect
+    from the size of the deletion.
 
     Args:
         seq_a: First amino acid sequence (one-letter code).
