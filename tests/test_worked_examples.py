@@ -758,7 +758,7 @@ class TestExampleNumbersComeFromThePayload:
         page they can read without signing in, so it has to be the
         CUSTOMER-facing charge rather than the raw Modal cost. The two
         differ by shared.wallet.WALLET_MARKUP, and the first pxdesign
-        example quoted the raw figure — 18% under what the wallet would
+        example quoted the raw figure — 41% under what the wallet would
         actually settle at.
 
         Recomputing it here also ties the page to the rate card: change a

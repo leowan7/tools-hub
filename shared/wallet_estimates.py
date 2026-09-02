@@ -131,7 +131,7 @@ class ToolSpec:
 TOOL_SPECS: Mapping[str, ToolSpec] = {
     "mpnn": ToolSpec(
         slug="mpnn",
-        gpu_class="L4",
+        gpu_class="A10G",
         expected_gpu_seconds=60.0,
         designs_per_run_baseline=8,
         scaling_param="num_seq_per_target",
@@ -233,7 +233,7 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     ),
     "bindcraft": ToolSpec(
         slug="bindcraft",
-        gpu_class="A100-40GB",
+        gpu_class="A100-80GB",
         expected_gpu_seconds=3600.0,
         designs_per_run_baseline=2,
         scaling_param="num_designs",
@@ -242,7 +242,7 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     ),
     "pxdesign": ToolSpec(
         slug="pxdesign",
-        gpu_class="A100-40GB",
+        gpu_class="A100-80GB",
         expected_gpu_seconds=3600.0,
         designs_per_run_baseline=2,
         scaling_param="num_designs",
@@ -266,12 +266,29 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     ),
     "boltzgen": ToolSpec(
         slug="boltzgen",
-        gpu_class="A100-80GB",
+        gpu_class="A100-40GB",
         # 2026-05-28 recal: the first prod pilot (job 758c45e5) used 4944
-        # GPU-s / $8.64. The prior 1800 under-reserved by ~2.7x, so overrun
-        # runs took a true-up 'charge' on settle. 5000 ~= a typical pilot
-        # (estimate ~$8.74, just over observed actual); historical p90
-        # supersedes this bootstrap once >=20 runs land.
+        # GPU-s. The prior 1800 under-reserved by ~2.7x, so overrun runs took
+        # a true-up 'charge' on settle. 5000 ~= a typical pilot; historical
+        # p90 supersedes this bootstrap once >=20 runs land.
+        # That pilot settled at $8.64, which is 4944 s priced at the
+        # A100-80GB rate -- both this spec and the settle-side fallback said
+        # 80GB while the container has always been A100-40GB. At the correct
+        # 40GB rate the same run is $6.00 and the 5000 s bootstrap estimates
+        # $6.07.
+        # The caps are NOT a physical bound here: boltzgen's container runs to
+        # _MAX_SESSION_S = 82800 s (23 h), which at the 40GB rate can bill
+        # $100.50 -- ten times base_hard_cap and a third of absolute_cap. As
+        # everywhere else in this table the customer is capped and Ranomics
+        # absorbs the rest; do not read the caps as a ceiling on real spend.
+        # Lowering the estimate also opened a variance window this tool did not
+        # have: the cushioned hold is now $9.10 against a $10 cap (it used to
+        # clamp AT the cap), so a run past 7500 GPU-s posts a true-up of up to
+        # $0.90 where none was possible before. Deliberate, and the settle
+        # true-up path exists for it -- but note the 30.5% saving is the
+        # UNCAPPED ratio and does not hold in this regime: both worlds clamp at
+        # $10, so a 7500 s run pays 9.0% less and anything from 8239 s pays
+        # exactly the same as before.
         expected_gpu_seconds=5000.0,
         designs_per_run_baseline=2,
         scaling_param="num_designs",
@@ -410,6 +427,55 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
 def get_tool_spec(tool_slug: str) -> Optional[ToolSpec]:
     """Return the :class:`ToolSpec` for ``tool_slug`` or ``None``."""
     return TOOL_SPECS.get(tool_slug)
+
+
+def gpu_class_for_job(
+    tool_slug: Optional[str], reported: Optional[str] = None
+) -> Optional[str]:
+    """GPU class to price one job at: what the run reported, else the spec.
+
+    The estimate and the hold are always priced at ``spec.gpu_class``. The
+    settle-side charge prices at whatever the run reported -- but no Modal
+    wrapper emits ``gpu_class``/``gpu_sku`` today and nothing stamps one into
+    ``inputs._wallet``, so ``reported`` is in practice always ``None`` and
+    :func:`shared.wallet.gpu_usd_per_second` used to fall through to
+    ``DEFAULT_USD_PER_SECOND`` (the A100-80GB rate) for EVERY tool regardless
+    of hardware. That silently billed A10G / A100-40GB work at 80GB prices and
+    H100 work below cost, and it decoupled the charge from the quote.
+
+    Falling back to the spec instead makes one declaration -- ``ToolSpec
+    .gpu_class`` -- drive the estimate, the hold and the charge together. A
+    wrapper that later does report its SKU still wins.
+
+    ``tests/test_gpu_class_drift.py`` pins that declaration to the container's
+    own ``_GPU`` for the nine tools whose Modal app lives in this repo (ten
+    specs, since the historic ``alphafold2`` alias shares ``af2``'s). For the
+    five deployed from llm-proteinDesigner (bindcraft, boltzgen, pxdesign,
+    rfantibody, rfdiffusion) it pins against an in-repo mirror instead, which
+    does NOT catch both sides drifting from that repo together -- see that
+    file's docstring before trusting this one.
+
+    Returns ``None`` for an unregistered slug, which keeps the old
+    default-rate behaviour for tools with no spec.
+    """
+    spec = TOOL_SPECS.get(tool_slug or "")
+    if reported:
+        # Only if it is a class we can actually price. Modal's own device
+        # strings are not rate-card keys: it reports SXM/PCIe part names like
+        # "A100-SXM4-40GB", where this card is keyed on "A100-40GB" -- and a
+        # miss falls to the default, not to an error. So returning `reported`
+        # unchecked means
+        # the FIRST wrapper that honestly reports its SKU silently reinstates
+        # DEFAULT_USD_PER_SECOND, the exact bug this function exists to close.
+        # An unpriceable report loses to the spec rather than to the default.
+        if reported in GPU_USD_PER_SECOND:
+            return reported
+        logger.warning(
+            "gpu_class_for_job: %s reported gpu_class=%r which is not on the "
+            "rate card; pricing at the spec (%s) instead",
+            tool_slug, reported, spec.gpu_class if spec else None,
+        )
+    return spec.gpu_class if spec is not None else None
 
 
 # ---------------------------------------------------------------------------
