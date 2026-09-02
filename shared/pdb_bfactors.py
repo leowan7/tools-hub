@@ -69,24 +69,34 @@ _COORD_RECORDS = ("ATOM  ", "HETATM")
 # short-circuit it was meant to stop competing with.
 _CIF_HEADER_BYTES = 16384
 
-# Leading bytes that are not part of the fixed-column layout: a
-# byte-order mark, a stray space or tab, a NUL pad. None of them is a
-# coordinate-record prefix, and a BOM is not even whitespace to Python,
-# so a record carrying one failed ``startswith`` and was SKIPPED as
-# though it were a REMARK -- invisible to the gate and to the writer
-# alike. That is not "declined", it is HALF CONVERTED: 0.50/0.10/0.77
-# came out 0.50/10.00/77.00, and a file holding a real 88.50 was judged
-# fractional because the record carrying it was never counted.
+# WHY A LINE THAT IS NOT A COORDINATE RECORD CAN STILL DISQUALIFY.
 #
-# An earlier fix stripped this at the file head only, which closed the
-# defect at byte 0 and left it reachable at every other offset -- and
+# The gate below skips lines that fail ``startswith(_COORD_RECORDS)``,
+# which is right for REMARK, TER and the rest -- but a coordinate record
+# carrying one invisible byte in front of it fails that test too, and
+# was skipped as though it were prose. Skipping is not disqualifying, so
+# the value on that record could not veto: 0.50/0.10/0.77 came out
+# 0.50/10.00/77.00, and a file holding a real 88.50 was judged
+# fractional because the record carrying it was never counted.
 # ``cat binder.pdb target.pdb`` where the second was saved with a BOM
-# puts it exactly at the chain seam, which is the stitched-complex case
-# this module's fail-closed rule exists for. Two reviewers found that
-# independently. It is now handled as a CLASS, in the one place the
-# rule already lives, and nothing is stripped from anybody's bytes.
-_LEADING_NOISE = "\ufeff \t\x00"
-
+# puts one exactly at the chain seam.
+#
+# THIS TOOK THREE ATTEMPTS AND THE FIRST TWO ARE THE LESSON. Stripping
+# a BOM at the file head fixed byte 0 and left every other offset open.
+# Naming four characters -- BOM, space, tab, NUL -- let a no-break
+# space, a zero-width space, a word joiner and an ideographic space
+# through. Naming a Unicode block still let 213 codepoints through, all
+# of them C0/C1 controls. Every version was a longer list, and a list is
+# the wrong shape: it has to be complete to be correct, and there is no
+# way to know that it is.
+#
+# So the rule is inverted and asks a question with only two answers. A
+# leading byte is either printable or it is not. If it is not, the line
+# is something this module cannot account for and the file is declined
+# -- that is every control character, every zero-width and bidi format
+# character, the BOM, and every non-ASCII space, with no list to keep
+# up to date. The single invisible byte Python calls printable is the
+# ASCII space, and an indented record is caught by ``lstrip``.
 
 def _coordinate_bfactor(content: str) -> float | None:
     """The B-factor of ``content``, or None if it is not a PDB record.
@@ -155,8 +165,7 @@ def _looks_like_cif(pdb_text: str) -> bool:
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
     for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
-        probe = line.lstrip().lstrip(_LEADING_NOISE).lstrip()
-        if probe.startswith(("data_", "_atom_site.", "loop_")):
+        if line.lstrip().startswith(("data_", "_atom_site.", "loop_")):
             return True
     return False
 
@@ -206,14 +215,15 @@ def is_fractional(pdb_text: str) -> bool:
     seen = False
     for content, _term in _lines(pdb_text):
         if not content.startswith(_COORD_RECORDS):
-            # A record that only LOOKS like one once leading noise is
-            # taken off is still a record this module can see and
-            # cannot read, so it disqualifies rather than being passed
-            # over. Without this the whole rule below is reachable
-            # around: prefix any ATOM line with a BOM, a space or a tab
-            # and it stops being counted, taking its disqualifying
-            # value with it.
-            if content.lstrip(_LEADING_NOISE).startswith(_COORD_RECORDS):
+            # Two questions, between them exhaustive. Is the leading
+            # byte invisible? Then this line is unaccountable and the
+            # file is declined. Is it a coordinate record wearing an
+            # indent? Then it is a record this module can see and
+            # cannot read, which is the same verdict. See the note by
+            # _COORD_RECORDS for why this is not a list of characters.
+            if content[:1] and not content[0].isprintable():
+                return False
+            if content.lstrip().startswith(_COORD_RECORDS):
                 return False
             continue
         # ONE RULE. If a line claims to be a coordinate record and this

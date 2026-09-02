@@ -718,7 +718,21 @@ class TestLeadingNoiseCannotSlipPastTheGate:
     stitched-complex case this module's fail-closed rule exists for.
     """
 
-    NOISE = ["\ufeff", " ", "\t", "\x00"]
+    # Deliberately spans BOTH families, because the first version of
+    # the fix was a four-character list and a no-break space, a
+    # zero-width space, a word joiner and an ideographic space all still
+    # walked through it. Anything invisible has to disqualify, so the
+    # fixture has to test more than the four somebody happened to name.
+    NOISE = [
+        "\ufeff",    # byte-order mark
+        " ",        # plain space
+        "\t",        # tab
+        "\x00",      # NUL pad
+        "\xa0",      # no-break space   -- whitespace, but not ASCII
+        "\u200b",    # zero-width space -- invisible and not whitespace
+        "\u2060",    # word joiner
+        "\u3000",    # ideographic space
+    ]
 
     @pytest.mark.parametrize("noise", NOISE)
     @pytest.mark.parametrize("where", [0, 1, 2])
@@ -749,21 +763,73 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         # everything a value comparison would and cannot be fooled.
         assert bfactors_on_100(pdb) is pdb
 
-    def test_a_bom_does_not_hide_a_cif_marker(self):
-        """The earlier version of this test was HOLLOW: its fixture was
-        ``BOM + "data_XYZ\nloop_\n_atom_site.group_PDB\n"``, and lines two
-        and three carry un-BOM'd markers, so the verdict came from them
-        and the test passed with the BOM handling removed entirely. The
-        marker must be the ONLY one in the file, and it must be the
-        BOM'd line, or this proves nothing."""
+    def test_a_bom_does_not_let_a_cif_through(self):
+        """Which mechanism fires, asserted explicitly.
+
+        ``lstrip()`` does not strip a BOM, so the CIF sniffer genuinely
+        MISSES a BOM'd ``data_`` marker -- and teaching it to see one
+        would be another list of characters, which is the mistake this
+        module has already made twice. It does not need to: the noise
+        rule declines the file first, on that same line, for the more
+        general reason. Pinning both verdicts stops the two mechanisms
+        silently swapping which one carries the case.
+
+        The earlier version of this test was HOLLOW. Its fixture was
+        ``BOM + "data_XYZ\nloop_\n_atom_site.group_PDB\n"``, and lines
+        two and three carry un-BOM'd markers -- so the verdict came from
+        them and it passed with BOM handling removed entirely. Both
+        reviewers caught it. The marker has to be the only one in the
+        file AND the one wearing the mark.
+        """
         cif = "\ufeff" + "data_XYZ\n" + _atom(1, 0.21)
 
-        assert _looks_like_cif(cif), (
-            "the BOM'd data_ line is the only marker in this fixture; "
-            "if it is not detected the fixture has stopped discriminating"
+        assert not _looks_like_cif(cif), (
+            "the sniffer is not expected to see a BOM'd marker; if it "
+            "now does, this test is no longer about the noise rule"
         )
+        # Declined anyway, and the trailing ATOM record is what makes
+        # that non-vacuous: drop the noise rule and this file is a
+        # perfectly good fractional PDB with an odd first line.
         assert not is_fractional(cif)
         assert bfactors_on_100(cif) is cif
+
+    def test_no_codepoint_anywhere_can_hide_a_record(self):
+        """The guard the two earlier attempts could not have had.
+
+        Both of them were LISTS -- four characters, then a Unicode
+        block -- and a list is only correct if it is complete, which no
+        example-based test can show. This sweeps every codepoint Python
+        knows and asserts the count of leaks is zero, so it fails the
+        moment the rule stops being exhaustive rather than the moment
+        somebody thinks of the right character. The first list leaked 5
+        of these; the second leaked 213.
+
+        Excludes the ten separators ``str.splitlines`` breaks on: those
+        end the line rather than sitting inside it, and they are covered
+        by TestTheSeparatorHalfOfTheWeld.
+        """
+        splitters = set("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+        clean = _atom(1, 0.10)
+        disqualifying = _atom(2, 88.50)
+
+        leaks = []
+        for cp in range(0x110000):
+            ch = chr(cp)
+            if ch in splitters:
+                continue
+            # Only invisibles can hide a record; a visible character
+            # would make the line genuinely unrecognisable, which every
+            # reader agrees about.
+            if ch.isprintable() and not ch.isspace():
+                continue
+            if is_fractional(clean + ch + disqualifying):
+                leaks.append(hex(cp))
+
+        assert leaks == [], (
+            f"{len(leaks)} codepoint(s) still hide a coordinate record "
+            f"from the gate, e.g. {leaks[:8]} -- the file is judged "
+            "fractional on its other records and half converted"
+        )
 
     def test_a_clean_file_still_converts(self):
         """Non-vacuity: the rule above must not decline everything."""
