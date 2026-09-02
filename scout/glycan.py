@@ -135,27 +135,34 @@ def detect_glycosylation_sequons(chain) -> list[dict]:
     # that case WORSE than the gate it replaced, which dropped the HETATM twin
     # and found the sequon. scout/parser.py and scout/polymer.py carry the same
     # guard for the same reason.
-    # A blank-hetflag residue WINS a position collision, whatever the file
-    # order. Keeping simply the first one seen let a free MSE/SEC ligand whose
-    # (resseq, icode) collides with a real residue evict it when its HETATM
-    # records happen to be written first -- legal PDB, and the whole sequon is
-    # then lost. scout/polymer.py does not have this problem because it dedupes
-    # AFTER its connectivity test, so a free ligand is never a candidate; this
-    # module has no coordinates to run such a test, so it resolves by hetflag.
-    _by_position = {}
-    _order = []
+    # Collapse ONLY an ADJACENT residue at the same (resseq, icode). That is
+    # what a MET/MSE altloc twin is: partial Se incorporation writes both
+    # spellings of ONE residue, so Biopython yields two Residue objects side by
+    # side. Anything else sharing a residue number -- a duplicate-numbered
+    # segment in a fusion construct, a free ligand written at the file head --
+    # is a DIFFERENT residue and must keep its own slot in this list, because
+    # the list is indexed positionally at i, i+1, i+2.
+    #
+    # Resolving a collision by hetflag alone, without asking whether the two
+    # are the same residue, was wrong in both directions: a PRO sharing the
+    # number from 200 A away evicted a real in-polymer MSE and deleted a true
+    # N-x-S/T sequon, and a free MSE at the file head hoisted a real ASN into
+    # its slot and FABRICATED one. Adjacency is the cheap test that separates
+    # a twin from a coincidence.
+    standard_residues = []
     for r in chain.get_residues():
         if not (r.resname.strip() in _MODIFIED_AA
                 or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)):
             continue
-        _position = r.get_id()[1:]  # (resseq, icode)
-        _previous = _by_position.get(_position)
-        if _previous is None:
-            _by_position[_position] = r
-            _order.append(_position)
-        elif _previous.id[0] != " " and r.id[0] == " ":
-            _by_position[_position] = r   # the real polymer residue displaces it
-    standard_residues = [_by_position[_p] for _p in _order]
+        if standard_residues:
+            _previous = standard_residues[-1]
+            if _previous.get_id()[1:] == r.get_id()[1:]:
+                # An altloc twin of the residue just kept. Prefer the
+                # blank-hetflag spelling, but keep exactly one either way.
+                if _previous.id[0] != " " and r.id[0] == " ":
+                    standard_residues[-1] = r
+                continue
+        standard_residues.append(r)
 
     sequons = []
     for i in range(len(standard_residues) - 2):

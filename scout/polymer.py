@@ -74,10 +74,15 @@ MODIFIED_AA: frozenset[str] = frozenset({"MSE", "SEC"})
 # 2.27-2.57 A on 1B24 chain A, so 2.0 clears the closest case by 0.27 A.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
-# CA--CA in consecutive residues is ~3.8 A, versus ~1.33 A for the C->N bond.
-# Dividing the CA distance by this factor lets one threshold serve both tests
-# without a second constant to keep in sync.
-_CA_TRACE_SCALE = 2.1
+# CA--CA in consecutive residues is 3.78-3.82 A in trans peptides, versus
+# ~1.33 A for the C->N bond. Dividing the CA distance by this factor lets one
+# threshold serve both tests without a second constant to keep in sync.
+#
+# 1.95, not 2.1: the scaled threshold is 2.0 * scale, so 2.1 accepted CA--CA up
+# to 4.2 A and admitted free ligands sitting 4.0 A from a chain end -- a
+# distance no peptide bond produces. 1.95 puts the ceiling at 3.9 A, which
+# still clears genuine 3.8 A chain spacing with margin while rejecting 4.0.
+_CA_TRACE_SCALE = 1.95
 
 
 def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:

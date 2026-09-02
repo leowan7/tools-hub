@@ -383,3 +383,92 @@ def test_a_free_ligand_cannot_evict_a_real_residue_at_its_position():
             f"with records ordered {label}, a free MSE ligand at resseq 1 "
             f"displaced the real ASN and the sequon was lost: {found}"
         )
+
+
+def _residue_lines(resname, resnum, x, hetatm=False, start=1):
+    """PDB records for one residue at exact column positions."""
+    out, serial = [], start
+    for atom_name in ("N", "CA", "C", "O", "CB"):
+        line = list(" " * 80)
+
+        def put(text, col, line=line):
+            for offset, char in enumerate(str(text)):
+                line[col - 1 + offset] = char
+
+        put("HETATM" if hetatm else "ATOM  ", 1)
+        put("%5d" % serial, 7)
+        put(" %-3s" % atom_name, 13)
+        put("%3s" % resname, 18)
+        put("A", 22)
+        put("%4d" % resnum, 23)
+        put("%8.3f" % x, 31)
+        put("%8.3f" % 0.0, 39)
+        put("%8.3f" % 0.0, 47)
+        put("  1.00 20.00", 55)
+        put("C", 77)
+        out.append("".join(line).rstrip())
+        serial += 1
+    return out
+
+
+def _chain_from(rows):
+    import io
+
+    from Bio.PDB import PDBParser
+
+    lines, serial = [], 1
+    for resname, resnum, x, hetatm in rows:
+        block = _residue_lines(resname, resnum, x, hetatm, serial)
+        lines.extend(block)
+        serial += len(block)
+    return PDBParser(QUIET=True).get_structure(
+        "s", io.StringIO("\n".join(lines) + "\nEND\n")
+    )[0]["A"]
+
+
+def test_a_distant_residue_sharing_a_number_does_not_evict_an_in_polymer_mse():
+    """Only an ADJACENT same-position residue is an altloc twin.
+
+    Resolving a (resseq, icode) collision by hetflag alone, without asking
+    whether the two are the same residue, let any blank-hetflag residue in the
+    chain evict a genuine in-polymer MSE -- including one 200 A away in a
+    duplicate-numbered segment, which fusion constructs and renumbered uploads
+    produce. The real sequon was then deleted, biasing glycan_risk optimistic:
+    the exact direction this module's fix exists to correct.
+    """
+    chain = _chain_from([
+        ("ALA", 9, 0.0, False),
+        ("ASN", 10, 3.8, False),
+        ("MSE", 11, 7.6, True),      # the real x of the sequon
+        ("THR", 12, 11.4, False),
+        ("VAL", 13, 15.2, False),
+        ("PRO", 11, 200.0, False),   # unrelated, merely shares the number
+    ])
+    found = [(f["resnum"], f["motif"]) for f in detect_glycosylation_sequons(chain)]
+    assert found == [(10, "N-M-T")], (
+        "a distant PRO sharing residue number 11 evicted the in-polymer MSE "
+        "and deleted a real sequon: %r" % (found,)
+    )
+
+
+def test_a_free_ligand_does_not_hoist_a_real_residue_into_its_slot():
+    """The survivor of a collision keeps its OWN position in the list.
+
+    Recording the slot on first sight fixed it by whichever residue LOST, so a
+    free MSE written at the head of the file hoisted a real ASN out of its own
+    window -- destroying the true N-S-T and FABRICATING an N-A-S. A fabricated
+    sequon fabricates the user-facing warning with it.
+    """
+    chain = _chain_from([
+        ("MSE", 11, 300.0, True),    # free ligand, written first, shares a number
+        ("ALA", 10, 0.0, False),
+        ("ASN", 11, 3.8, False),
+        ("SER", 12, 7.6, False),
+        ("THR", 13, 11.4, False),
+        ("VAL", 14, 15.2, False),
+    ])
+    found = [(f["resnum"], f["motif"]) for f in detect_glycosylation_sequons(chain)]
+    assert found == [(11, "N-S-T")], (
+        "the real N-S-T was lost or a sequon fabricated by slot inheritance: %r"
+        % (found,)
+    )

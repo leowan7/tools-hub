@@ -776,3 +776,42 @@ def test_glycan_insertion_codes_are_distinct_positions():
     assert [(f["resnum"], f["motif"]) for f in found] == [(100, "N-G-T")], (
         "insertion-coded residues collapsed, losing the sequon: %r" % (found,)
     )
+
+
+def test_the_ca_proxy_does_not_override_a_measurement_that_was_taken():
+    """A free ligand at non-bonded Ca spacing stays out, either way round.
+
+    _bond_length consults Ca--Ca when the forward C->N pair is unmeasurable.
+    With the scale at 2.1 that accepted Ca--Ca up to 4.2 A, so a free MSE
+    sitting 4.0 A from a chain end -- a distance no peptide bond produces --
+    was admitted even though the reverse C->N had been measured at 6.17 A and
+    said otherwise. The commit that introduced this was titled for stopping
+    exactly that, and stopped only the mirror case.
+
+    The fix is not to trust the reverse measurement, which runs 4.1-6.1 A on
+    genuinely bonded pairs and so cannot discriminate. It is that the Ca proxy
+    was too loose: trans-peptide Ca--Ca is 3.78-3.82 A, and the ceiling is now
+    3.9 A rather than 4.2 A.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    from scout import polymer
+
+    text = (
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      3  C   ALA A   1       2.009   1.420   0.000  1.00 0.00           C\n"
+        "HETATM  900  CA  MSE A 501       5.458   0.000   0.000  1.00 0.00           C\n"
+        "HETATM  901  C   MSE A 501       6.009   1.420   0.000  1.00 0.00           C\n"
+        "END\n"
+    )
+    chain = PDBParser(QUIET=True).get_structure("p", io.StringIO(text))[0]["A"]
+    kept = [r.get_id()[1] for r in polymer.polymer_residues(chain)]
+
+    assert 501 not in kept, (
+        f"a free MSE 4.0 A from the chain, with the reverse C->N measured at "
+        f"6.17 A, was admitted on the Ca proxy: {kept}"
+    )
+    assert kept == [1], f"the real residue must survive: {kept}"
