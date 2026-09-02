@@ -768,10 +768,14 @@ class TestLeadingNoiseCannotSlipPastTheGate:
 
         ``_looks_like_cif`` and the coordinate-record check now share
         ``_visible_start``, so a CIF saved with a BOM is still a CIF.
-        They disagreed for one revision -- the record check saw through
-        an invisible prefix and the format sniffer did not -- and a
-        BOM'd ``data_`` file went from declining to converting on the
-        strength of a trailing PDB record.
+        Sharing it is REQUIRED, not tidiness: once the record rule was
+        narrowed to only-a-hidden-record, a BOM'd ``data_`` file stops
+        being declined by the noise rule, so the sniffer has to see the
+        marker or the file converts on the strength of a trailing PDB
+        record. (An earlier version of this docstring said the two
+        "disagreed for one revision". No committed revision behaved
+        that way -- it described an uncommitted working state, which is
+        not something a reader can ever check.)
 
         The earlier version of this test was HOLLOW, and both reviewers
         caught it: its fixture was ``BOM + "data_XYZ\nloop_\n
@@ -791,16 +795,27 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         assert not is_fractional(cif)
         assert bfactors_on_100(cif) is cif
 
-    # PREFIXES, not one character. Inspecting ``content[0]`` alone
-    # passed a single-character sweep and still let anything behind a
-    # leading SPACE through -- space is printable, so the check waved
-    # it past, and the rule never looked at the second byte. That is
-    # the same defect as a short list, expressed as a list of
-    # positions of length one, and a single-character sweep cannot see
-    # it. Found by a reviewer, not by this test.
+    # PREFIXES OF SEVERAL LENGTHS, not one character, and not two.
+    #
+    # Inspecting ``content[0]`` alone passed a single-character sweep
+    # while letting anything behind a leading SPACE through: space is
+    # printable, so the check waved it past and never looked at byte
+    # two. That is the same defect as a short list, expressed as a list
+    # of POSITIONS of length one.
+    #
+    # The first fix for that shipped five prefix shapes whose longest
+    # invisible run was two, so a rule stripping at most three would
+    # have passed every test here and still half-converted a file
+    # behind four NULs -- the list of positions again, just longer. A
+    # reviewer built exactly that mutant and it went green. Eight NULs
+    # and a six-character mixed run are cheap and make a bounded strip
+    # fail; anyone tempted to cap the loop for cost will hit them.
     @pytest.mark.parametrize(
-        "prefix", ["", " ", "  ", " \ufeff", "\ufeff "],
-        ids=["bare", "space", "two-spaces", "space+BOM", "BOM+space"],
+        "prefix",
+        ["", " ", "  ", " \ufeff", "\ufeff ", "\x00" * 8,
+         " \ufeff\t\u200b\x00 "],
+        ids=["bare", "space", "two-spaces", "space+BOM", "BOM+space",
+             "eight-NULs", "six-mixed"],
     )
     def test_no_invisible_codepoint_can_hide_a_record(self, prefix):
         """Completeness, checked against an authority OUTSIDE the rule.
@@ -813,12 +828,22 @@ class TestLeadingNoiseCannotSlipPastTheGate:
         with itself, and its docstring's claim to sweep "every
         codepoint Python knows" was false.
 
-        The universe here comes from ``unicodedata.category`` instead:
-        every ASSIGNED control, format, surrogate, private-use and
-        separator codepoint. That is a different authority from
-        ``str.isprintable``, so the test can genuinely fail. Unassigned
-        (Cn) is excluded -- it is 800k codepoints that cannot appear in
-        real text -- and marks are the documented ceiling below.
+        The universe here comes from ``unicodedata.category``: every
+        ASSIGNED control, format, surrogate, private-use and separator
+        codepoint. Unassigned (Cn) is excluded -- 800k codepoints that
+        cannot appear in real text -- and marks are the ceiling below.
+
+        WHAT THIS DOES AND DOES NOT PROVE. An earlier docstring called
+        that universe "a different authority", implying the test could
+        discover an incompleteness in the rule. It cannot: the universe
+        is a strict SUBSET of the rule's own predicate (0 codepoints in
+        it are uncovered; 824,718 covered codepoints are outside it, all
+        Cn), so ``leaks == []`` holds by construction for the rule as
+        written. What it is is a strong guard on the SHAPE of the rule:
+        every historical attempt fails it loudly -- a BOM-only strip by
+        33 tests, a four-character list by 21, a Cc-only class by 26,
+        dropping the space clause by 9, and a single-character check by
+        4. That is worth having under an honest name.
         """
         import unicodedata
 
@@ -843,9 +868,14 @@ class TestLeadingNoiseCannotSlipPastTheGate:
             "fractional on its other records and half converted"
         )
 
+    # Three of 268, named because they are the ones a person could
+    # plausibly produce. U+FE0F rides along on pasted text constantly;
+    # an earlier version of this list omitted the variation selectors
+    # entirely and pinned only the exotic ones.
     @pytest.mark.parametrize(
         "ch, name",
-        [("\u3164", "HANGUL FILLER"),
+        [("\ufe0f", "VARIATION SELECTOR-16"),
+         ("\u3164", "HANGUL FILLER"),
          ("\u2800", "BRAILLE PATTERN BLANK"),
          ("\u0301", "COMBINING ACUTE ACCENT")],
     )
@@ -869,9 +899,17 @@ class TestLeadingNoiseCannotSlipPastTheGate:
             f"{name} is no longer printable-and-not-space, so the rule "
             "now covers it and this ceiling test is obsolete"
         )
-        assert is_fractional(_atom(1, 0.10) + ch + _atom(2, 88.50)), (
+        pdb = _atom(1, 0.10) + ch + _atom(2, 88.50)
+        assert is_fractional(pdb), (
             f"{name} no longer hides a record -- the ceiling moved. "
             "Good news; update this test and the note in the module."
+        )
+        # Name the cost precisely. This is not a skipped line: the file
+        # that reaches the customer carries BOTH scales.
+        served = bfactors_on_100(pdb)
+        assert "10.00" in served and "88.50" in served, (
+            "the ceiling is a HALF CONVERSION -- if that stops being "
+            "true the note in the module is overstating the damage"
         )
 
     # A BOM, a NUL pad or a stray control byte sitting on a line that
@@ -879,13 +917,18 @@ class TestLeadingNoiseCannotSlipPastTheGate:
     # customer's download quietly stayed on 0-1, which is the original
     # bug, on files that had been converting correctly for months.
     #
-    # And it hit the motivating case hardest. The commit that
-    # introduced the blanket rule cited ``cat binder.pdb target.pdb``
-    # with a BOM'd second file -- but every real PDB opens with HEADER
-    # or CRYST1, not a coordinate record, so the mark lands on a line
-    # that was always going to be skipped. All three depositions in
-    # static/example open that way. The rule regressed the scenario it
-    # was written for more often than it fixed it.
+    # And it hit the motivating case. The commit that introduced the
+    # blanket rule cited ``cat binder.pdb target.pdb`` with a BOM'd
+    # second file, and a PDB that opens with HEADER or CRYST1 puts that
+    # mark on a line which was always going to be skipped.
+    #
+    # TWO of the three depositions in static/example open that way --
+    # 1HEW and 3ave_igg1_fc_dimer with HEADER, but 3s7g_fc_ab opens
+    # with a bare ``ATOM  `` record, where the blanket rule was RIGHT.
+    # An earlier version of this comment said all three, and a reviewer
+    # checked the first six bytes. The narrowing is still correct
+    # because declining a file that hides nothing is a silent
+    # regression, but it is not the landslide that claim implied.
     HARMLESS = [
         ("BOM before HEADER", "\ufeff", "HEADER    LYSOZYME"),
         ("BOM before CRYST1", "\ufeff", "CRYST1   79.100   79.100"),
@@ -912,6 +955,19 @@ class TestLeadingNoiseCannotSlipPastTheGate:
             f"{label} left the download on the 0-1 scale -- which is the "
             "bug this module exists to fix, restored silently"
         )
+
+    def test_the_cif_sniffer_reads_a_line_the_same_way_the_gate_does(self):
+        """The sniffer shares ``_visible_start``, which makes it WIDER
+        than the ``lstrip()`` it replaced. That widening is behaviour
+        and went unpinned for two commits: an invisible byte in front
+        of a CIF marker now declines the file where it once converted.
+        Fail-closed and intended -- but it should fail a test if
+        somebody narrows it back, not surface as a surprise."""
+        pdb = "HEADER    X\n" + "\x00loop_\n" + _atom(1, 0.21)
+
+        assert _looks_like_cif(pdb)
+        assert not is_fractional(pdb)
+        assert bfactors_on_100(pdb) is pdb
 
     def test_a_clean_file_still_converts(self):
         """Non-vacuity: the rule above must not decline everything."""

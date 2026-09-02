@@ -14,10 +14,19 @@ breakpoints paints the whole chain one flat colour.
 
 This module converts on the way OUT, next to
 ``shared.metric_glossary.plddt_on_100`` which does the same job for the
-numbers. Nothing stored is rewritten: the jobs table holds completed
+numbers. No SOURCE OF TRUTH is rewritten: the jobs table holds completed
 runs whose PDBs no pipeline change could reach, and a pipeline fix would
 split the convention silently -- files written before it on one scale,
 after it on the other, with nothing in either to say which.
+
+One caller is an exception worth knowing about before you read the rest.
+``shared.storage.stage_campaign_candidates`` copies a shortlist into the
+``lab-campaigns`` bucket for wet-lab handoff and PERSISTS what this
+module returns, because nothing in the app reads that bucket back and
+there is no read-time seam to convert at. The original in
+``tool-outputs`` is still untouched, so the paragraph above holds for
+the source of truth -- but "nothing stored is rewritten" is no longer
+true of every byte this module produces.
 
 WHY THE GATE IS WHOLE-FILE AND NOT PER-ATOM. A real crystallographic
 B-factor can be below 1. ``static/example/1HEW.pdb``, hen egg-white
@@ -85,21 +94,34 @@ _CIF_HEADER_BYTES = 16384
 # harmless, and declining those was a silent regression to the 0-1
 # scale on files that had converted correctly for months. Worse, it hit
 # the motivating case: ``cat binder.pdb target.pdb`` puts the mark on
-# the SECOND file's first line, and every real PDB starts with HEADER
-# or CRYST1, not an ATOM record. Fail-closed earns its keep on a record
-# this module can see and cannot read; it does not license declining a
-# line it was always going to skip.
+# the SECOND file's first line, and a PDB that opens with HEADER or
+# CRYST1 wears it somewhere harmless. Not all of them do -- of the
+# three depositions in static/example, two open with HEADER and
+# 3s7g_fc_ab.pdb opens with a bare ATOM record, where declining was
+# right. An earlier version of this note said "every real PDB", which
+# is the kind of universal that is always one counterexample from
+# false, and the counterexample was already in the repo.
 #
-# WHAT COUNTS AS INVISIBLE, and the ceiling on it. Four earlier
-# attempts were LISTS, each missing the next tier. A BOM at the file
-# head missed every other offset. Four named characters missed five
-# more (no-break space, zero-width space, word joiner, ideographic
-# space, ZWNJ). A Unicode character class still missed 213 codepoints
-# -- mostly control characters, but not only: soft hyphen, the Arabic
-# letter mark and the tag block are format characters, not controls,
-# and there are only 65 Cc codepoints in all of Unicode, so "213
-# controls" was never arithmetic that worked. Then inspecting
-# ``content[0]`` alone missed anything behind a single leading space.
+# Fail-closed earns its keep on a record this module can see and cannot
+# read; it does not license declining a line it was always going to
+# skip.
+#
+# WHAT COUNTS AS INVISIBLE, and the ceiling on it. Every earlier
+# attempt here was a LIST, and each one missed the tier below it: a BOM
+# at the file head missed every other offset; four named characters
+# missed the no-break space, the zero-width space, the word joiner, the
+# ideographic space and ZWNJ; a Unicode character class still missed a
+# swathe of control and format codepoints; and inspecting ``content[0]``
+# alone missed anything behind a single leading space, which is a list
+# of POSITIONS rather than of characters.
+#
+# (Earlier revisions of this note put a count on each tier. Those
+# numbers came from mutants nobody will run again, one of them was
+# arithmetically impossible -- it described a figure as "all C0/C1
+# controls" when there are only 65 Cc codepoints in the whole of
+# Unicode -- and none is reproducible from anything committed. The
+# shape is the lesson; the tallies were decoration that had to be
+# defended.)
 #
 # A list has to be complete to be correct and there is no way to know
 # that it is. So the predicate is ``not str.isprintable()`` plus the
@@ -107,13 +129,22 @@ _CIF_HEADER_BYTES = 16384
 # applied over the WHOLE prefix rather than its first character.
 #
 # That covers every control, format, surrogate, private-use, unassigned
-# and separator codepoint. It does NOT cover the handful of assigned,
-# printable characters that happen to RENDER blank -- U+3164 HANGUL
-# FILLER, U+2800 BRAILLE PATTERN BLANK, the GAP FILLERs -- nor
-# zero-advance combining marks. Those are a judgement about glyphs
-# rather than about encoding, no structure writer emits one, and
-# chasing them would be a fourth list. Stated as a ceiling here and
-# pinned by a test rather than left to be rediscovered.
+# and separator codepoint. It does NOT cover the assigned, printable
+# characters that render blank or take no width: measured, exactly
+# **268** of them still hide a record -- the Default_Ignorable set
+# (variation selectors U+FE00..U+FE0F and U+E0100..U+E01EF, the Hangul
+# fillers, the Mongolian free variation selectors, U+034F COMBINING
+# GRAPHEME JOINER) plus U+2800 BRAILLE PATTERN BLANK.
+#
+# BE PRECISE ABOUT WHAT THAT COSTS. It is not "a line is skipped": the
+# file comes out HALF CONVERTED, 10.00 beside 88.50, on the live
+# customer download path. It is accepted anyway because deciding which
+# glyphs look blank is a judgement about typography rather than about
+# encoding, it would be a sixth list, and no structure writer emits
+# one -- no tools/*/run_pipeline.py writes a B-factor field at all,
+# they hand through whatever the model wrote. The realistic way in is
+# a human pasting text that carries a variation selector. Pinned by a
+# test naming that case, so closing it is a deliberate act.
 
 
 def _visible_start(content: str) -> str:
@@ -197,9 +228,17 @@ def _looks_like_cif(pdb_text: str) -> bool:
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
     for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
-        # Same helper as the record check below, so the two
-        # recognisers cannot disagree about what a line begins with. A
-        # CIF saved with a BOM is exactly as much a CIF as one without.
+        # Same helper as the record check below, so the two recognisers
+        # cannot disagree about what a line begins with: a CIF saved
+        # with a BOM is exactly as much a CIF as one without.
+        #
+        # It is WIDER than the lstrip() it replaced, and measurably
+        # dearer -- a Python-level loop where there was a C-level
+        # strip, about +0.02 ms on a 132 KB header. The comment above
+        # asks this check to be cheaper than the thing it guards and it
+        # still is by two orders of magnitude, but the trade is real
+        # and the widening is behaviour: a NUL in front of ``loop_``
+        # now sniffs as CIF and declines. Fail-closed, and pinned.
         if _visible_start(line).startswith(
             ("data_", "_atom_site.", "loop_")
         ):
@@ -225,16 +264,26 @@ def is_fractional(pdb_text: str) -> bool:
     49.0 on the other. If this module cannot read a line it can see,
     it does not get to make a whole-file judgement about the file.
 
+    NOT ABSOLUTE, and the exception is documented rather than implied.
+    The 268 blank-rendering codepoints named by ``_COORD_RECORDS``
+    above still hide a record from this predicate, and a file behind
+    one comes out half converted. Everything else this module says
+    about the shape being impossible should be read as "impossible
+    except there", which is the whole reason that ceiling is pinned by
+    a test.
+
     Short-circuits on the first disqualifying value, which keeps the
     cost off af2, colabfold and pxdesign: they bail on their first ATOM
     record instead of scanning a 2944-design archive for a conclusion
     available on line one. The saving is real but not total -- ``_lines``
     builds the whole line list before it yields, so a decline still pays
-    one O(n) split. Measured on the 663 KB Fc dimer: ~1.1 ms/MB to
-    decline against ~23 ms/MB to convert, a factor of about twenty.
-    (An earlier revision of this docstring said 1.4 and 40; the convert
-    figure was ~1.8x high. Machine-dependent either way, which is why
-    the ratio is the part worth stating.)
+    one O(n) split. Measured on the Fc dimer in static/example: of
+    order 1 ms/MB to decline against of order 20 ms/MB to convert, so
+    declining is roughly twenty times cheaper. Three revisions of this
+    docstring carried three different pairs of figures, and reviewers
+    measured a fourth and a fifth on their own machines -- which is the
+    argument for stating the RATIO and an order of magnitude rather
+    than digits that read as precision nobody can reproduce.
 
     KNOWN CEILING, deliberately not closed: a file whose B column is a
     uniform placeholder ``1.00`` carrying no confidence at all passes
@@ -242,14 +291,20 @@ def is_fractional(pdb_text: str) -> bool:
     confidence, which is worse than the flat colouring the module
     exists to fix. Declining "every B-factor identical" would catch it,
     but that is a guess about INTENT bolted onto a rule that is
-    otherwise a fact about FORMAT. No pipeline here emits such a
-    column: no ``tools/*/run_pipeline.py`` writes a B-factor field at
-    all, they hand through whatever the model wrote. (An earlier note
-    cited the distinct-value counts of the three ``static/example``
-    depositions instead -- 979, 2545 and 871 -- which are real numbers
-    about DOWNLOADED files and say nothing about our writers.) Left as
-    one rule until something real produces the input. Uniform ``0.00``
-    is already a no-op.
+    otherwise a fact about FORMAT. Nothing here is known to emit such a
+    column: the design paths hand through whatever the model wrote, and
+    the one PDB WRITER in the tree -- ``sdf_to_pdb`` in
+    ``tools/proteina/run_pipeline.py``, which calls RDKit's
+    ``MolToPDBFile`` and would emit exactly this uniform column -- has
+    no call site, and stages a ligand input rather than a design.
+    (Two earlier versions of this sentence were wrong in opposite
+    directions: one argued about WRITERS from the distinct-value counts
+    of three DOWNLOADED depositions, the other claimed no
+    ``run_pipeline`` writes a B-factor field at all. Both were caught
+    by reviewers. The conclusion survived twice, which is exactly why
+    the reasoning needed fixing rather than the verdict.) Left as one
+    rule until something real produces the input. Uniform ``0.00`` is
+    already a no-op.
     """
     if _looks_like_cif(pdb_text):
         return False

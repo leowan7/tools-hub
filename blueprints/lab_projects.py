@@ -576,7 +576,7 @@ def _submit_campaign_shortlist(
         # The index has to exist in the source job's results. Unvalidated, an
         # out-of-range ref is persisted, counted on the staff email and on the
         # customer's page -- and then silently skipped by
-        # `stage_campaign_candidates` (shared/storage.py:218-220), so the lab
+        # `stage_campaign_candidates` (its out-of-range guard), so the lab
         # receives fewer PDBs than every number anyone can see.
         #
         # `candidate_count` and not `len(candidate_records(...))`: the list form
@@ -1192,7 +1192,7 @@ def _submit_job_shortlist(
         # The index has to exist in this job's results. Unvalidated, an
         # out-of-range index is persisted, counted on the staff email and on the
         # customer's page -- and then silently skipped by
-        # `stage_campaign_candidates` (shared/storage.py:218-220), so the lab
+        # `stage_campaign_candidates` (its out-of-range guard), so the lab
         # receives fewer PDBs than every number anyone can see. This arm ran no
         # per-index check at all before A91.
         if n_records is not None and idx >= n_records:
