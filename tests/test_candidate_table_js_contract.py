@@ -404,6 +404,12 @@ _HOOKS = [
     # direction, which is the one that actually bites -- see its docstring.
     (r'\[name="source_job_id"\]', 'the hidden input name="source_job_id"',
      ("job",), _el(tag="input", name="source_job_id")),
+    # The metric tooltip stopped being a ::after and became an element this
+    # file creates, so the icon is now a DOM hook like any other. Columnar
+    # modes only: multi-tool replaces the caller's columns with
+    # Tool/Score/Pctile, which carry plain `title` attributes and no icon.
+    (r"'\.mtt\[data-tooltip\]'", "span.mtt carrying data-tooltip", _COLUMNAR,
+     _el(tag="span", cls="mtt", attr="data-tooltip")),
 ]
 
 _HOOK_IDS = [f"{h[1]} [{'+'.join(h[2])}]" for h in _HOOKS]
@@ -419,6 +425,183 @@ def test_every_dom_hook_the_js_reads_is_emitted_by_the_template(
         assert check(_DOM[mode]), (
             f"candidate_table.js reads {js_token}, but the macro's {mode} mode "
             f"no longer renders {emitted}. The JS will silently find nothing.")
+
+
+_MACRO_SRC = (
+    _TEMPLATES / "components" / "candidate_table.html"
+).read_text(encoding="utf-8")
+
+
+def _macro_css_rules(selector_substring: str) -> list[tuple[str, str]]:
+    """``(selector, declarations)`` for each rule in the macro's ``<style>``
+    whose selector mentions ``selector_substring``.
+
+    Comments are stripped first so a ``}`` inside one cannot close a block
+    early, and the flat ``selector{decls}`` scan is only exact while the block
+    holds no nested at-rule -- which is asserted rather than assumed, because
+    an ``@media`` override is one of the ways the position below could be
+    changed without any guard here noticing.
+    """
+    src = re.sub(r"/\*.*?\*/", "", _MACRO_SRC, flags=re.S)
+    assert "@media" not in src and "@supports" not in src, (
+        "the macro grew a nested at-rule, so this flat CSS scan no longer "
+        "sees every rule and the guards built on it would pass over an "
+        "override rather than fail on it"
+    )
+    rules = []
+    for sel, decls in re.findall(r"([^{}]*)\{([^{}]*)\}", src):
+        lines = [ln.strip() for ln in sel.strip().splitlines() if ln.strip()]
+        if lines and selector_substring in lines[-1]:
+            rules.append((lines[-1], decls))
+    return rules
+
+
+def test_the_metric_tooltip_is_not_anchored_inside_the_scroller():
+    """The tooltip has two clipping ancestors, not one: ``.cand-table-scroll``
+    is ``overflow-x: auto`` (per CSS spec a non-visible overflow on one axis
+    makes the other axis clip too) and ``.panel`` above it is ``overflow:
+    hidden`` outright. As a ``::after`` on the icon the tooltip was cut at
+    whichever edge it was anchored to, by however much room the table left
+    below its own header -- so a short run lost most of the text and a long
+    run lost none, and the defect hid on exactly the pages people read for
+    longest. Anchoring to the other edge, which is what the attempt before
+    this one did, only changes which end goes.
+
+    An overflow ancestor clips a descendant only when it also contains that
+    descendant's containing block, so the ANCHOR is what decides. That is what
+    these assertions are about, and they fail differently: a revert to the
+    pseudo-element, a re-parenting back into the table, and a change of
+    positioning scheme are three separate ways to put the clip back.
+
+    WHAT THIS CANNOT SEE, since there is no browser in this suite: that the
+    element is laid out where it should be, or that an ancestor ``transform``
+    / ``filter`` / ``contain`` on ``html`` or ``body`` has captured the fixed
+    box's containing block. Those need a rendered page.
+    """
+    assert "attr(data-tooltip)" not in _MACRO_SRC, (
+        "the tooltip is a ::after fed by attr(data-tooltip) again, which "
+        "parents it on the icon and puts it back under both clips"
+    )
+    # COUNT, not just presence. Asserting only that the <body> call exists let
+    # a second appendChild -- ``.cand-table-scroll.appendChild(popEl)`` on the
+    # next line -- move the element straight back under the clip with this
+    # test still green.
+    assert _JS.count("appendChild(popEl)") == 1, (
+        "candidate_table.js appends the tooltip element in more than one "
+        "place, so the last one wins and this file can no longer say where "
+        "the tooltip ends up"
+    )
+    assert "document.body.appendChild(popEl)" in _JS, (
+        "candidate_table.js no longer parents the tooltip on <body>"
+    )
+
+    rules = _macro_css_rules(".mtt-pop")
+    assert rules, "the .mtt-pop rules are gone from the macro"
+    positioned = [(sel, d) for sel, d in rules if "position:" in d]
+    assert positioned, (
+        "no .mtt-pop rule declares a position, so the box is static and every "
+        "coordinate placeTooltip writes is ignored"
+    )
+    # EVERY .mtt-pop rule, not the first one. Checking only the first block let
+    # `.mtt-pop.is-open` -- the rule in force whenever the box is visible --
+    # override the position with this test still green.
+    for sel, decls in positioned:
+        assert re.search(r"position:\s*fixed\s*;", decls), (
+            "the rule `%s` gives the tooltip a position other than fixed. "
+            "placeTooltip writes VIEWPORT coordinates; anything else resolves "
+            "them against <body> (static/style.css makes it position: "
+            "relative), so the box lands in the wrong place and then drifts "
+            "away from its icon as the page scrolls." % sel
+        )
+
+
+def test_the_tooltip_listeners_are_actually_installed():
+    """Every part of this feature -- hover, focus, Escape, reposition -- hangs
+    off one call site, and nothing else in the suite touches it. Deleting the
+    single ``initTooltips();`` line leaves the CSS, the markup, the selector
+    and the handlers all present and correct, the tooltip never opens, and
+    every other guard here stays green over a feature that does nothing."""
+    assert _JS.count("function initTooltips(") == 1, (
+        "initTooltips is defined more or less than once"
+    )
+    boot = _JS.split("addEventListener('DOMContentLoaded'", 1)
+    assert len(boot) == 2, "candidate_table.js has no DOMContentLoaded boot"
+    assert re.search(r"\binitTooltips\(\)\s*;", boot[1]), (
+        "initTooltips() is defined but never called from the boot block, so "
+        "no tooltip listener is ever bound and the icons do nothing"
+    )
+
+
+def test_the_focus_path_opens_the_tooltip_and_the_aria_wiring_survives():
+    """The companion to test_the_tooltip_icon_is_reachable_without_a_mouse,
+    which only proves a `focusin` listener EXISTS. Emptying that handler
+    leaves the tabindex, the listener and this file's other assertions intact
+    while focusing an icon shows nothing at all."""
+    parts = _JS.split("addEventListener('focusin'", 1)
+    assert len(parts) == 2, "candidate_table.js has no focusin listener"
+    handler = parts[1].split("addEventListener(", 1)[0]
+    assert "showTooltip(" in handler, (
+        "the focusin handler no longer calls showTooltip, so the icon takes "
+        "focus and nothing opens:\n" + handler
+    )
+    # The description has to be announced, and it has to be released again --
+    # one element and one id are shared by every icon, so an icon that keeps
+    # aria-describedby after another icon takes the box advertises the wrong
+    # column's text.
+    for token in (
+        "setAttribute('role', 'tooltip')",
+        "setAttribute('aria-describedby'",
+        "removeAttribute('aria-describedby')",
+    ):
+        assert token in _JS, (
+            "candidate_table.js no longer emits %s, so the tooltip is not "
+            "wired to the control it describes" % token
+        )
+
+
+def test_the_tooltip_is_clamped_into_the_viewport_on_both_axes():
+    """Escaping the scroller only to run off the screen is the same defect in
+    a bigger box. Preferring below and flipping above covers two of three
+    cases; the third -- too tall to fit below AND too tall to fit above -- is
+    ordinary on a short viewport, and without a clamp the box stayed below and
+    left the screen entirely. Both axes need the same two-sided treatment.
+
+    A TEXT PROXY for a layout fact, deliberately: there is no browser here to
+    measure a rendered box. It goes red if either clamp is deleted, which is
+    the regression that actually happened, and it cannot tell you the
+    arithmetic is right."""
+    parts = _JS.split("function placeTooltip(", 1)
+    assert len(parts) == 2, "placeTooltip is gone"
+    place = re.sub(r"\s+", " ", parts[1].split("\n  function ", 1)[0])
+    for var in ("left", "top"):
+        assert re.search(r"if \(%s > \w+\) %s = \w+;" % (var, var), place), (
+            "placeTooltip no longer clamps `%s` at its upper bound, so the "
+            "tooltip can be placed past the far edge of the viewport" % var
+        )
+        assert re.search(r"if \(%s < \w+\) %s = \w+;" % (var, var), place), (
+            "placeTooltip no longer clamps `%s` at its lower bound, so the "
+            "tooltip can be placed off the near edge of the viewport" % var
+        )
+
+
+@pytest.mark.parametrize("mode", _COLUMNAR)
+def test_the_tooltip_icon_is_reachable_without_a_mouse(mode):
+    """The tooltip is the only place a column's bar, definition and citation
+    are stated, and hover is the only thing that used to open it. The span
+    carries tabindex so it takes focus; candidate_table.js opens on focusin
+    as well as pointerover, and both halves have to be present for either to
+    be worth anything."""
+    icons = _el(tag="span", cls="mtt")(_DOM[mode])
+    assert icons, f"the macro's {mode} mode renders no .mtt icon at all"
+    for _tag, attrs in icons:
+        assert attrs.get("tabindex") == "0", (
+            f"a .mtt icon in {mode} mode has no tabindex, so the tooltip is "
+            f"unreachable by keyboard"
+        )
+    assert re.search(r"addEventListener\('focusin'", _JS), (
+        "the icon takes focus but candidate_table.js no longer opens the "
+        "tooltip on focusin, so focusing it shows nothing"
+    )
 
 
 @pytest.mark.parametrize("mode", ["job", "campaign"])
