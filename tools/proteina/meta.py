@@ -75,7 +75,15 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "validate": {"typical_minutes": "1 to 3"},
 }
 
-paper_citation: str = "Geffner et al., NVIDIA (2025)"
+# THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This read
+# "Geffner et al., NVIDIA (2025)", which is `geffner2025proteina` -- "Proteina:
+# Scaling Flow-based Protein Structure Generative Models", ICLR 2025 -- the
+# BASE backbone generator, which the upstream README lists separately as prior
+# work. The paper for the thing this tool actually runs is `didi2026scaling`,
+# "Scaling Atomistic Protein Binder Design with Generative Pretraining and
+# Test-Time Compute", ICLR 2026; Geffner is its seventh author. Same mix-up the
+# github_url comment below warns about, made two lines above it.
+paper_citation: str = "Didi et al., ICLR 2026"
 paper_url: str = "https://research.nvidia.com/labs/genair/proteina-complexa/"
 # The binder/ligand/AME search code, configs, reward stack, and weights live in
 # the Proteina-Complexa repo (branch ``dev``), NOT the base ``proteina`` backbone
@@ -184,7 +192,7 @@ about: dict = {
         "across as many GPUs as your balance funds, then ranks globally "
         "across all of them and clusters the winners, so you get a "
         "spread of different designs rather than many copies of one. "
-        "Proteina-Complexa, Geffner et al., NVIDIA 2025."
+        "Proteina-Complexa, Didi et al., ICLR 2026."
     ),
     "when_to_use": [
         (

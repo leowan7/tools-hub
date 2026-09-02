@@ -184,7 +184,11 @@
                   <option value="rfantibody">RFantibody: VHH (nanobody)</option>
                   <option value="bindcraft">BindCraft: de novo binder</option>
                   <option value="pxdesign">PXDesign: AF2-IG validated</option>
-                  <option value="boltzgen">BoltzGen: Boltz-2 backbone</option>
+                  {# This label used to credit the backbones to Boltz-2.
+                     BoltzGen is its own all-atom generator; Boltz-2 is a
+                     separate model it calls at the fold/refold step. Pinned
+                     by tests/test_citations_name_the_right_model.py. #}
+                  <option value="boltzgen">BoltzGen: all-atom binder</option>
                 </select>
               </div>
               <button type="submit" class="btn-primary" id="handoff-submit">
