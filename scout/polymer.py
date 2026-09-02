@@ -67,36 +67,57 @@ MODIFIED_AA: frozenset[str] = frozenset({"MSE", "SEC"})
 
 # C(i)->N(i+1) in a real peptide bond is ~1.33 A. Biopython's PPBuilder
 # defaults to 1.8 A; 2.0 is 11% looser, to tolerate modest refinement error.
-# The UPPER bound is load-bearing, not merely conservative: intra-residue N...C
-# measures 2.27-2.57 A on 1B24 chain A, so a cutoff above ~2.26 would let a
-# MET/MSE altloc pair certify ITSELF as bonded, reintroducing the double count
-# this module exists to prevent.
+# The upper bound is a real constraint but it is NOT what stops the double
+# count: the (resseq, icode) dedupe collapses a MET/MSE altloc pair whatever
+# the threshold is, verified at 2.0, 3.0 and 10.0 A. What the bound does buy is
+# margin against a self-certifying junction -- intra-residue N...C measures
+# 2.27-2.57 A on 1B24 chain A, so 2.0 clears the closest case by 0.27 A.
 _PEPTIDE_BOND_MAX_ANGSTROM = 2.0
 
-# CA--CA in consecutive residues is ~3.8 A, versus ~1.33 A for the C->N bond.
-# Dividing the CA distance by this factor lets one threshold serve both tests
-# without a second constant to keep in sync.
-_CA_TRACE_SCALE = 2.1
+# CA--CA in consecutive residues is 3.78-3.82 A in trans peptides, versus
+# ~1.33 A for the C->N bond. Dividing the CA distance by this factor lets one
+# threshold serve both tests without a second constant to keep in sync.
+#
+# 1.95, not 2.1: the scaled threshold is 2.0 * scale, so 2.1 accepted CA--CA up
+# to 4.2 A and admitted free ligands sitting 4.0 A from a chain end -- a
+# distance no peptide bond produces. 1.95 puts the ceiling at 3.9 A, which
+# still clears genuine 3.8 A chain spacing with margin while rejecting 4.0.
+_CA_TRACE_SCALE = 1.95
 
 
 def _bond_length(residues: list, idx_a: int, idx_b: int) -> float:
-    """Shortest plausible backbone link between two residues, or infinity.
+    """Length of the peptide bond that would join a to b, or infinity.
 
-    Measures C->N in BOTH directions and takes the smaller, so admission does
-    not depend on the order records happen to appear in the file. Falls back to
-    CA--CA when a backbone C or N is absent: in a CA-only trace (low-resolution
-    X-ray, EM) a chain link and a free ligand are still perfectly
-    distinguishable, because consecutive CA atoms sit ~3.8 A apart.
+    Measures the FORWARD pair only -- ``a["C"] -> b["N"]`` -- because that is
+    the bond. Callers always pass (upstream, downstream); both sweeps are
+    pinned on that, since reversing either one admits a free ligand.
+
+    Falls back to CA--CA when the forward pair cannot be measured, so a CA-only
+    trace (low-resolution X-ray, EM) still resolves: consecutive CA atoms sit
+    3.78-3.82 A apart and a stray ligand does not.
+
+    THE REVERSE DIRECTION IS NOT CONSULTED, and three separate defects came
+    from consulting it. C(i+1)...N(i) runs 4.1-6.1 A on genuinely bonded pairs,
+    so it never rescues a real bond -- it is pure downside:
+
+      * Taken as the answer, it made admission non-monotone: a CA-only MSE was
+        admitted, and ADDING its C atom let the reverse measure and drop it.
+      * Read as "we could measure something", it let the CA proxy override a
+        forward measurement that had already answered.
+      * Folded into a min, it admitted a free ligand 6.0 A forward and 8.0 A
+        CA--CA whose C happened to sit 1.5 A from the previous residue's N --
+        a clash, not a bond.
+
+    Order-independence is deliberately NOT a property here. It was, when both
+    directions were measured, and that is exactly what cost the three defects
+    above. A file whose records invert two list-adjacent residues will drop a
+    genuine link; no generator observed produces that layout.
     """
-    best = float("inf")
     a, b = residues[idx_a], residues[idx_b]
-    for upstream, downstream in ((a, b), (b, a)):
-        try:
-            best = min(best, upstream["C"] - downstream["N"])
-        except KeyError:
-            continue
-    if best < float("inf"):
-        return best
+    try:
+        return a["C"] - b["N"]
+    except KeyError:
+        pass
     try:
         return (a["CA"] - b["CA"]) / _CA_TRACE_SCALE
     except KeyError:
@@ -114,6 +135,21 @@ def polymer_residues(chain) -> list:
     altloc pair count once. It does NOT make the callers' reported lists unique:
     they emit the sequence number alone, so residues 100 and 100A still appear
     as two entries spelled "100". That predates this module -- see the header.
+
+    The survivor is whichever copy comes FIRST in the file, so the dedupe can
+    substitute rather than merely drop: a HETATM MSE recorded ahead of a
+    blank-hetflag LYS at the same position yields M, where the old hetflag gate
+    yielded K. Deliberately not resolved by preferring the blank hetflag --
+    across 244 real chains there are zero blank-hetflag position collisions and
+    zero occurrences of this shape, and the SEVEN call sites that share this
+    function (accessibility x2, epitope_db x3, interfaces x2) are a wide blast
+    radius for a case that requires chemically nonsensical microheterogeneity.
+    Revisit if one is ever seen.
+
+    Note scout/glycan.py carries its own copy of this dedupe and resolves the
+    tie the OTHER way, preferring the blank hetflag. The two disagree on the
+    same input. That is not reconciled: glycan.py builds a letter list and has
+    no coordinates, so it cannot use this function at all.
 
     Args:
         chain: A Biopython Chain.

@@ -276,3 +276,199 @@ def test_unmodified_fixtures_are_untouched(name):
         assert not {r.resname.strip() for r in chain.get_residues()} & _MODIFIED
         got = {(d["resnum"], d["motif"]) for d in detect_glycosylation_sequons(chain)}
         assert got == _pre_fix_detect(chain)
+
+
+def _pdb_line(serial, atom_name, resname, chain, resnum, x, hetatm=False):
+    """One PDB ATOM/HETATM record at exact column positions."""
+    line = list(" " * 80)
+
+    def put(text, start):  # 1-indexed PDB columns
+        for offset, char in enumerate(str(text)):
+            line[start - 1 + offset] = char
+
+    put("HETATM" if hetatm else "ATOM  ", 1)
+    put(f"{serial:5d}", 7)
+    put(f" {atom_name:<3s}", 13)
+    put(f"{resname:>3s}", 18)
+    put(chain, 22)
+    put(f"{resnum:4d}", 23)
+    put(f"{x:8.3f}", 31)
+    put(f"{0.0:8.3f}", 39)
+    put(f"{0.0:8.3f}", 47)
+    put("  1.00 20.00", 55)
+    put("C", 77)
+    return "".join(line).rstrip()
+
+
+def test_a_selenomethionine_altloc_twin_does_not_hide_a_sequon():
+    """ASN-[MET/MSE at one resnum]-THR is a real N-x-S/T sequon.
+
+    Partial Se incorporation deposits MET and MSE at the SAME residue number as
+    two altlocs whose hetflags differ (" " vs "H_MSE"), so Biopython yields two
+    Residue objects and both satisfy the residue filter. The filtered list is
+    then indexed POSITIONALLY at i, i+1, i+2, so the twin shifts the window:
+    the chain reads N-M-M-T and no sequon is reported.
+
+    Admitting MSE without deduplicating made this case WORSE than the hetflag
+    gate it replaced, which dropped the HETATM twin and found the sequon. That
+    is a regression in the direction the fix exists to prevent, so it is pinned
+    here rather than left to the sibling modules' guards.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    lines, serial = [], 1
+    for resname, resnum, x, hetatm in (
+        ("ASN", 1, 3.8, False),
+        ("MET", 2, 7.6, False),   # the ATOM half of the altloc pair
+        ("MSE", 2, 7.6, True),    # the HETATM half, same residue number
+        ("THR", 3, 11.4, False),
+    ):
+        for atom_name in ("N", "CA", "C", "O", "CB"):
+            lines.append(
+                _pdb_line(serial, atom_name, resname, "A", resnum, x, hetatm)
+            )
+            serial += 1
+
+    structure = PDBParser(QUIET=True).get_structure(
+        "twin", io.StringIO("\n".join(lines) + "\nEND\n")
+    )
+    found = detect_glycosylation_sequons(structure[0]["A"])
+
+    assert [(f["resnum"], f["motif"]) for f in found] == [(1, "N-M-T")], (
+        f"the MET/MSE altloc twin hid a real N-M-T sequon: {found}"
+    )
+
+
+def test_a_free_ligand_cannot_evict_a_real_residue_at_its_position():
+    """A blank-hetflag residue wins a position collision, whatever the file order.
+
+    The dedupe added for the altloc twin originally kept whichever residue came
+    first in the file. A free MSE/SEC ligand whose (resseq, icode) collides with
+    a real residue then evicted it when its HETATM records were written first --
+    legal PDB, and the whole sequon is lost. That is the same optimistic
+    direction as the bug the dedupe exists to fix.
+
+    scout/polymer.py cannot hit this because it dedupes AFTER a connectivity
+    test, so a free ligand is never a candidate. This module has no coordinates
+    for such a test, so it resolves the collision by hetflag instead.
+    """
+    import io
+
+    from Bio.PDB import PDBParser
+
+    ligand = (
+        "HETATM  900  N   MSE A   1      50.000   0.000   0.000  1.00 0.00           N\n"
+        "HETATM  901  CA  MSE A   1      51.400   0.000   0.000  1.00 0.00           C\n"
+    )
+    body = (
+        "ATOM      1  N   ASN A   1       0.000   0.000   0.000  1.00 0.00           N\n"
+        "ATOM      2  CA  ASN A   1       1.458   0.000   0.000  1.00 0.00           C\n"
+        "ATOM      3  C   ASN A   1       2.009   1.420   0.000  1.00 0.00           C\n"
+        "ATOM      4  N   LYS A   2       2.530   2.850   0.000  1.00 0.00           N\n"
+        "ATOM      5  CA  LYS A   2       3.988   2.850   0.000  1.00 0.00           C\n"
+        "ATOM      6  C   LYS A   2       4.539   4.270   0.000  1.00 0.00           C\n"
+        "ATOM      7  N   THR A   3       5.060   5.700   0.000  1.00 0.00           N\n"
+        "ATOM      8  CA  THR A   3       6.518   5.700   0.000  1.00 0.00           C\n"
+        "ATOM      9  C   THR A   3       7.069   7.120   0.000  1.00 0.00           C\n"
+    )
+
+    for label, text in (("hetatm first", ligand + body), ("atom first", body + ligand)):
+        chain = PDBParser(QUIET=True).get_structure(
+            label, io.StringIO(text + "END\n")
+        )[0]["A"]
+        found = detect_glycosylation_sequons(chain)
+        assert [(f["resnum"], f["motif"]) for f in found] == [(1, "N-K-T")], (
+            f"with records ordered {label}, a free MSE ligand at resseq 1 "
+            f"displaced the real ASN and the sequon was lost: {found}"
+        )
+
+
+def _residue_lines(resname, resnum, x, hetatm=False, start=1):
+    """PDB records for one residue at exact column positions."""
+    out, serial = [], start
+    for atom_name in ("N", "CA", "C", "O", "CB"):
+        line = list(" " * 80)
+
+        def put(text, col, line=line):
+            for offset, char in enumerate(str(text)):
+                line[col - 1 + offset] = char
+
+        put("HETATM" if hetatm else "ATOM  ", 1)
+        put("%5d" % serial, 7)
+        put(" %-3s" % atom_name, 13)
+        put("%3s" % resname, 18)
+        put("A", 22)
+        put("%4d" % resnum, 23)
+        put("%8.3f" % x, 31)
+        put("%8.3f" % 0.0, 39)
+        put("%8.3f" % 0.0, 47)
+        put("  1.00 20.00", 55)
+        put("C", 77)
+        out.append("".join(line).rstrip())
+        serial += 1
+    return out
+
+
+def _chain_from(rows):
+    import io
+
+    from Bio.PDB import PDBParser
+
+    lines, serial = [], 1
+    for resname, resnum, x, hetatm in rows:
+        block = _residue_lines(resname, resnum, x, hetatm, serial)
+        lines.extend(block)
+        serial += len(block)
+    return PDBParser(QUIET=True).get_structure(
+        "s", io.StringIO("\n".join(lines) + "\nEND\n")
+    )[0]["A"]
+
+
+def test_a_distant_residue_sharing_a_number_does_not_evict_an_in_polymer_mse():
+    """Only an ADJACENT same-position residue is an altloc twin.
+
+    Resolving a (resseq, icode) collision by hetflag alone, without asking
+    whether the two are the same residue, let any blank-hetflag residue in the
+    chain evict a genuine in-polymer MSE -- including one 200 A away in a
+    duplicate-numbered segment, which fusion constructs and renumbered uploads
+    produce. The real sequon was then deleted, biasing glycan_risk optimistic:
+    the exact direction this module's fix exists to correct.
+    """
+    chain = _chain_from([
+        ("ALA", 9, 0.0, False),
+        ("ASN", 10, 3.8, False),
+        ("MSE", 11, 7.6, True),      # the real x of the sequon
+        ("THR", 12, 11.4, False),
+        ("VAL", 13, 15.2, False),
+        ("PRO", 11, 200.0, False),   # unrelated, merely shares the number
+    ])
+    found = [(f["resnum"], f["motif"]) for f in detect_glycosylation_sequons(chain)]
+    assert found == [(10, "N-M-T")], (
+        "a distant PRO sharing residue number 11 evicted the in-polymer MSE "
+        "and deleted a real sequon: %r" % (found,)
+    )
+
+
+def test_a_free_ligand_does_not_hoist_a_real_residue_into_its_slot():
+    """The survivor of a collision keeps its OWN position in the list.
+
+    Recording the slot on first sight fixed it by whichever residue LOST, so a
+    free MSE written at the head of the file hoisted a real ASN out of its own
+    window -- destroying the true N-S-T and FABRICATING an N-A-S. A fabricated
+    sequon fabricates the user-facing warning with it.
+    """
+    chain = _chain_from([
+        ("MSE", 11, 300.0, True),    # free ligand, written first, shares a number
+        ("ALA", 10, 0.0, False),
+        ("ASN", 11, 3.8, False),
+        ("SER", 12, 7.6, False),
+        ("THR", 13, 11.4, False),
+        ("VAL", 14, 15.2, False),
+    ])
+    found = [(f["resnum"], f["motif"]) for f in detect_glycosylation_sequons(chain)]
+    assert found == [(11, "N-S-T")], (
+        "the real N-S-T was lost or a sequon fabricated by slot inheritance: %r"
+        % (found,)
+    )

@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from shared import pdb_bfactors as _pdb_bfactors
 from shared.credits import get_service_client
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,12 @@ def stage_campaign_candidates(
     object behind ``pdb_key`` (``user_id``/``job_id`` locate it). ``indices``
     is the 0-based shortlist selected on the results page.
 
+    Each payload goes through ``pdb_bfactors.bfactors_on_100_bytes`` on
+    the way in, so the staff copy carries pLDDT on the same 0-100 scale
+    the customer's own download has used since #202. Whole-file gated:
+    anything already on 0-100, any crystal target, any mmCIF and anything
+    unparseable is uploaded byte-for-byte unchanged.
+
     Returns the list of storage object paths written. Silently skips a
     candidate that resolves via neither path rather than failing the submit.
     """
@@ -242,6 +249,31 @@ def stage_campaign_candidates(
                 continue
         if data is None:
             continue
+        # ONE SCALE FOR THE STAFF COPY. Every customer-facing download has
+        # served pLDDT B-factors on 0-100 since #202, but this bucket kept
+        # the stored 0-1 -- so the Ranomics scientist opening the shortlist
+        # in PyMOL and the customer who downloaded the same design from
+        # /jobs were colouring two different scales and could not compare
+        # notes. Staff are the readers MOST likely to reach for
+        # `spectrum b, ..., minimum=50, maximum=90`.
+        #
+        # AT WRITE TIME, WHICH THE #202 NOTE SAID TO AVOID. It said to
+        # convert at whatever READS the bucket; there is nothing to hook.
+        # `presigned_campaign_url` signs only the operator-uploaded results
+        # envelope (tools/platform_api/routes.py:806), never these objects,
+        # and staff open them through the Supabase console. So the choice is
+        # here or nowhere. It is also less of a departure than it sounds:
+        # this bucket is a derived CRO deliverable keyed by campaign, not a
+        # source of truth. tool-outputs still holds the untouched original,
+        # and that is the copy every guarantee is written against.
+        #
+        # The gate does the discriminating, so no tool slug is consulted:
+        # af2/colabfold/pxdesign already store 0-100 and decline on their
+        # first ATOM record, a staged crystal target declines (1HEW runs
+        # 0.01-150.80), a .cif declines twice over, and anything this module
+        # cannot parse declines rather than being half-converted. Declined
+        # files come back as the SAME object and upload byte-for-byte.
+        data = _pdb_bfactors.bfactors_on_100_bytes(data)
         filename = _safe_filename(raw_key)
         # ``prefix`` namespaces a multi-sub-job campaign shortlist by source
         # job so identically-named designs from different sub-jobs don't

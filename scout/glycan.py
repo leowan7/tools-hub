@@ -126,11 +126,43 @@ def detect_glycosylation_sequons(chain) -> list[dict]:
             cb_coord -- np.ndarray (3,) or None if Cb/Ca missing
             motif    -- str, e.g. "N-K-T" showing the tripeptide
     """
-    standard_residues = [
-        r for r in chain.get_residues()
-        if r.resname.strip() in _MODIFIED_AA
-        or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)
-    ]
+    # Deduplicated on (resseq, icode). Partial Se incorporation deposits MET and
+    # MSE at ONE residue number as two altlocs whose hetflags differ (" " vs
+    # "H_MSE"), so Biopython yields two Residue objects and both pass the test
+    # above. This list is then indexed POSITIONALLY at i, i+1, i+2, so the twin
+    # shifts the window and a real sequon is missed: an N-[MET/MSE]-T chain
+    # reads N-M-M-T and reports nothing. Admitting MSE without this dedupe made
+    # that case WORSE than the gate it replaced, which dropped the HETATM twin
+    # and found the sequon. scout/parser.py and scout/polymer.py carry the same
+    # guard for the same reason.
+    # Collapse ONLY an ADJACENT residue at the same (resseq, icode). That is
+    # what a MET/MSE altloc twin is: partial Se incorporation writes both
+    # spellings of ONE residue, so Biopython yields two Residue objects side by
+    # side. Anything else sharing a residue number -- a duplicate-numbered
+    # segment in a fusion construct, a free ligand written at the file head --
+    # is a DIFFERENT residue and must keep its own slot in this list, because
+    # the list is indexed positionally at i, i+1, i+2.
+    #
+    # Resolving a collision by hetflag alone, without asking whether the two
+    # are the same residue, was wrong in both directions: a PRO sharing the
+    # number from 200 A away evicted a real in-polymer MSE and deleted a true
+    # N-x-S/T sequon, and a free MSE at the file head hoisted a real ASN into
+    # its slot and FABRICATED one. Adjacency is the cheap test that separates
+    # a twin from a coincidence.
+    standard_residues = []
+    for r in chain.get_residues():
+        if not (r.resname.strip() in _MODIFIED_AA
+                or (r.id[0] == " " and r.resname.strip() in _THREE_TO_ONE)):
+            continue
+        if standard_residues:
+            _previous = standard_residues[-1]
+            if _previous.get_id()[1:] == r.get_id()[1:]:
+                # An altloc twin of the residue just kept. Prefer the
+                # blank-hetflag spelling, but keep exactly one either way.
+                if _previous.id[0] != " " and r.id[0] == " ":
+                    standard_residues[-1] = r
+                continue
+        standard_residues.append(r)
 
     sequons = []
     for i in range(len(standard_residues) - 2):
