@@ -141,9 +141,15 @@ def polymer_residues(chain) -> list:
     blank-hetflag LYS at the same position yields M, where the old hetflag gate
     yielded K. Deliberately not resolved by preferring the blank hetflag --
     across 244 real chains there are zero blank-hetflag position collisions and
-    zero occurrences of this shape, and the five call sites that share this
-    function are a wide blast radius for a case that requires chemically
-    nonsensical microheterogeneity. Revisit if one is ever seen.
+    zero occurrences of this shape, and the SEVEN call sites that share this
+    function (accessibility x2, epitope_db x3, interfaces x2) are a wide blast
+    radius for a case that requires chemically nonsensical microheterogeneity.
+    Revisit if one is ever seen.
+
+    Note scout/glycan.py carries its own copy of this dedupe and resolves the
+    tie the OTHER way, preferring the blank hetflag. The two disagree on the
+    same input. That is not reconciled: glycan.py builds a letter list and has
+    no coordinates, so it cannot use this function at all.
 
     Args:
         chain: A Biopython Chain.

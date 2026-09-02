@@ -906,9 +906,11 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # chain. It then goes to _sequence_identity against UniProt, and the result is
 # rendered to the user as sequence_identity_pct.
 #
-# (KDTLISRT is a perfectly ordinary octamer that does occur in real proteins --
-# an earlier draft of this comment claimed it could not, on no evidence. What
-# makes it wrong is only that it is not THIS chain.)
+# (An earlier draft called KDTLISRT a run that "occurs in no real protein", on
+# no evidence. A reviewer reported finding it in three UniProtKB entries but
+# recorded no accession, and the peptide-search service is unreachable from
+# here, so treat BOTH directions as unverified. The load-bearing half needs
+# neither: it is not the sequence of THIS chain.)
 #
 # Measured against real UniProt references on 90 SeMet depositions. 223 chains
 # carried an MSE or SEC, 196 of those also resolved a DBREF accession, and 173
@@ -919,9 +921,11 @@ def test_the_backward_sweep_passes_its_residues_upstream_first():
 # rows and set the p90 as well; treat it as one observation, not eight.
 #
 # The earlier "benign" verdict on this site was measured by comparing the gated
-# sequence against its own MET-ized self, which forces exactly 1.0000 because
-# one string is a subsequence of the other and the denominator is min(len).
-# That number could not have come out any other way.
+# sequence against its own MET-ized self. That asks only whether difflib can
+# re-align around k gaps, never whether the chain resembles its real reference,
+# and it measured 1.0000 on all 173 chains. NOT because a subsequence is forced
+# to score 1.0 -- test_a_welded_subsequence... pins a subsequence that scores
+# 0.6667 -- but because the comparison cannot express the thing it was cited for.
 #
 # Against the pre-fix gate this file goes 2 red / 40 green, and only the two
 # arms of test_a_modified_residue_stays_in_the_extracted_sequence are red --
@@ -1135,11 +1139,16 @@ def test_a_welded_subsequence_can_still_score_a_perfect_identity():
     the gate above stayed invisible -- a perfect score means "no evidence of
     mismatch", not "identical".
 
-    "Can", not "does". A deletion that splits a repeated motif costs more than
-    the residue removed: DECDEDE -> DEDEDE scores 0.6667, and on 2ISB chain A
-    against O29167 one deletion cost two matches (1.0000 -> 0.9944). Five of
-    the 173 measured chains behave that way. An earlier draft of this docstring
-    and of _sequence_identity's stated the flat version and was wrong.
+    "Can", not "does". A deletion that splits a repeated motif costs MORE than
+    the residue removed -- DECDEDE -> DEDEDE loses two matches for one deleted
+    character, 0.6667 -- which is why the size of a deletion tells you nothing
+    about the size of its effect.
+
+    No real chain in the 173-chain corpus does this: matches lost <= residues
+    removed on 173 of 173. Two earlier drafts of this docstring cited corpus
+    figures here anyway (2ISB chain A, "five of the 173"); both were wrong, and
+    the second was written to correct the first. Only the synthetic case below
+    is evidence, because only it is pinned.
     """
     assert _WELDED_CONTEXT not in _MET_CONTEXT
     assert epitope_db._sequence_identity(_MET_CONTEXT, _WELDED_CONTEXT) == pytest.approx(1.0)
