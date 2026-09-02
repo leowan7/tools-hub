@@ -434,6 +434,9 @@ def create_app() -> Flask:
     # value. They used to differ: scores.get(col) in the cell against
     # alias-plus-root resolution in the judge.
     flask_app.jinja_env.globals["raw_metric"] = _score_legends.raw_metric
+    flask_app.jinja_env.globals["verdict_text"] = (
+        _score_legends.verdict_text
+    )
     # A CALLABLE, NOT THE SET, and the difference is the whole point. This
     # replaced five slugs typed into components/results_shell.html under a
     # comment asking the next reader to keep them "in lockstep with

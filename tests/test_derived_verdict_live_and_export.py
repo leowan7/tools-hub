@@ -121,6 +121,53 @@ def test_the_live_rows_carry_the_derived_text_not_a_stored_word(client):
     assert row["bar_text"] == "ipTM 0.100, below 0.65"
 
 
+def test_a_fabricated_row_says_so_on_the_live_page_too(client):
+    """THE REGRESSION THIS ENDPOINT SHIPPED TWICE, now pinned.
+
+    The results table and this endpoint used to branch on the verdict
+    separately. When ``unusable`` arrived -- added so a fabricated row could
+    not read as measured -- the table learned it and the endpoint did not, so
+    the live page showed a smoke stub's invented numbers beside an empty bar
+    column while the finished table on the same page said they were
+    fabricated. Both render through score_legends.verdict_text now, and that
+    is what makes a third state impossible to half-apply.
+    """
+    body = _status(client, "boltzgen", [
+        {"rank": 1, "iptm": 0.46, "plddt": 71.0,
+         "filter_status": "stub (smoke)"},
+    ])
+    row = body["partial_candidates"][0]
+    assert row["bar_verdict"] == "unjudged"
+    assert row["bar_text"] == "Not usable: smoke-test stub, scores fabricated"
+
+
+def test_a_placeholder_row_says_so_on_the_live_page(client):
+    """The same hole swallowed every parse-failure row: 0.0 / 0.0 / 99.0 is
+    what rfdiffusion's AF2 reader writes when the score JSON has no such
+    keys, and it rendered an empty bar column."""
+    body = _status(client, "rfdiffusion", [
+        {"rank": 1, "iptm": 0.0, "plddt": 0.0, "i_pae": 99.0},
+    ])
+    row = body["partial_candidates"][0]
+    assert row["bar_verdict"] == "unjudged"
+    assert row["bar_text"].startswith("Not usable: ")
+    assert row["bar_text"]
+
+
+def test_every_verdict_state_renders_some_text_when_a_bar_applies(client):
+    """The shape of the bug, generalised: a gating tool may never produce an
+    empty bar cell, whatever its measurements look like."""
+    body = _status(client, "boltzgen", [
+        {"rank": 1, "iptm": 0.9, "plddt": 92.0, "refolding_rmsd": 1.0},
+        {"rank": 2, "iptm": 0.9, "plddt": 40.0, "refolding_rmsd": 1.0},
+        {"rank": 3, "iptm": 0.9, "plddt": 92.0},
+        {"rank": 4, "iptm": 0.9, "plddt": 0.0, "refolding_rmsd": 99.0},
+        {"rank": 5, "filter_status": "stub (smoke)"},
+    ])
+    for row in body["partial_candidates"]:
+        assert row["bar_text"], row
+
+
 # ---------------------------------------------------------------------------
 # The CSV
 # ---------------------------------------------------------------------------

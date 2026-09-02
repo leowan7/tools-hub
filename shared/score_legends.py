@@ -997,6 +997,7 @@ IMPLAUSIBLE_VALUES: dict[tuple[str, str], frozenset[float]] = {
 # interchangeable.
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "ipTM": ("ipTM", "iptm"),
+    "pTM": ("pTM", "ptm"),
     "pLDDT": ("pLDDT", "plddt", "complex_pLDDT", "complex_plddt"),
     "pAE": ("pAE", "pae"),
     "i_pAE": ("i_pAE", "i_pae"),
@@ -1247,7 +1248,7 @@ def _resolve_state(record: object, tool: str, column: str):
     return value, "ok"
 
 
-def raw_metric(tool: str, record: object, column: str):
+def raw_metric(record: object, column: str):
     """The RAW stored value the judge resolved for ``column``, or None.
 
     THE TABLE AND THE VERDICT HAVE TO READ THE SAME CELL. The metric columns
@@ -1255,12 +1256,29 @@ def raw_metric(tool: str, record: object, column: str):
     the record root, so a recovered rfdiffusion row -- the exact shape
     shared/job_recovery rebuilds, which stores the interface PAE under the
     streamed name ``i_pae`` -- rendered "-" in its i_pAE column beside a
-    verdict cell quoting "i_pAE 12.50 A, above 10 A". A boltz2 row keyed
-    entirely at the root rendered every column as a dash under a confident
-    "Meets ...". Nothing may assert a number the table shows as missing.
+    verdict cell quoting "i_pAE 12.50 A, above 10 A". Nothing may assert a
+    number the table shows as missing.
+
+    THAT IS THE OBSERVED CASE AND IT IS THE ONLY ONE. An earlier version of
+    this paragraph also claimed a boltz2 row keyed entirely at the record root
+    "rendered every column as a dash", which no surface produces: boltz2's
+    results template reshapes each design into a ``scores`` dict before the
+    macro sees it, and shared/result_columns has no boltz2 entry, so the
+    pooled target table renders no metric cells for it at all. Root resolution
+    here is defensive rather than a repair, and it is worth having for the
+    same reason the alias list is: the judge already resolves that way, so the
+    two sides agreeing costs nothing.
 
     Raw and unscaled on purpose: the caller normalises pLDDT itself, exactly
     once, and ``plddt_on_100`` is not idempotent below 0.01.
+
+    NO TOOL ARGUMENT. It carried one that nothing read, and a signature
+    implying tool-awareness it does not have is a claim like any other: this
+    does NOT apply that tool's IMPLAUSIBLE_VALUES, which is why a boltzgen row
+    can print 99.00 in its RMSD column beside "Not usable: Refolding RMSD".
+    That pairing is intended -- the column shows what is stored, the verdict
+    says the stored value is not a reading -- but it is only legible if the
+    signature does not promise otherwise.
     """
     if not isinstance(record, dict):
         return None
@@ -1322,6 +1340,41 @@ def is_fabricated(record: object) -> bool:
     if marker is None:
         marker = record.get("filter_status")
     return bool(_FABRICATED_RE.search(str(marker or "")))
+
+
+def verdict_text(tool: str, verdict: "Judgement") -> str:
+    """One judgement as the one sentence every surface shows for it.
+
+    THE ONLY RENDERER, and there used to be two. The results table branched on
+    the verdict in Jinja and the live status endpoint branched on it again in
+    Python, so when a fifth state arrived -- ``unusable``, added to stop a
+    fabricated row reading as measured -- the table learned it and the endpoint
+    did not. The live page then showed a smoke stub's invented ipTM and pLDDT
+    beside an empty bar column while the finished table on the same page said
+    "Not usable: smoke-test stub, scores fabricated". A page contradicting
+    itself about invented numbers is the exact harm this whole change exists
+    to remove, and it took one un-mirrored branch.
+
+    Returns "" only when the tool declares no bar, which is the one case with
+    nothing to say.
+    """
+    if verdict.verdict == "below":
+        parts = ["; ".join(verdict.shortfalls)]
+        if verdict.unmeasured:
+            parts.append(", ".join(verdict.unmeasured) + " not measured")
+        if verdict.unusable:
+            parts.append(", ".join(verdict.unusable) + " not usable")
+        return "; ".join(parts)
+    if verdict.verdict == "meets":
+        return "Meets " + gate_bar_text(tool)
+    if verdict.unusable:
+        text = "Not usable: " + ", ".join(verdict.unusable)
+        if verdict.unmeasured:
+            text += "; " + ", ".join(verdict.unmeasured) + " not measured"
+        return text
+    if verdict.unmeasured:
+        return "Not measured: " + ", ".join(verdict.unmeasured)
+    return ""
 
 
 def bar_is_answerable(tool: str, records) -> bool:

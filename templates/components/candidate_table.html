@@ -507,7 +507,6 @@
           {% endif %}
           {% set grp.n = grp.n + 1 %}
         {% endif %}
-        {% set scores      = cand.get('scores', {}) %}
         {% set idx         = loop.index0 %}
         {# Per-candidate source: in a merged campaign table each row came from a
            different sub-job. Fall back to the table's own job for single-job
@@ -664,40 +663,27 @@
                  being the difference between a right answer and judging every
                  tool's designs against one tool's bar. #}
               {% set verdict = judge_design(row_tool, cand) %}
+              {% set text = verdict_text(row_tool, verdict) %}
               <td data-col="against_bar" data-val="{{ verdict.verdict }}">
+                {# ONE renderer, shared with the live status endpoint. The two
+                   surfaces used to branch on the verdict separately, so a
+                   fifth state reached one and not the other and the live page
+                   showed a smoke stub's invented numbers beside an empty bar
+                   column. The title still differs per state, because a tooltip
+                   answers a different question from the cell. #}
                 {% if verdict.verdict == 'below' %}
-                  {# The gaps are shown ALONGSIDE the shortfall, never swallowed
-                     by it. One leg failing settles the verdict, but a tooltip
-                     reading "measured against pLDDT 80 and Refolding RMSD 1.5"
-                     over a row whose RMSD was never recorded asserts a
-                     measurement that does not exist. #}
-                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ verdict.shortfalls | join('; ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}{% if verdict.unusable %}; {{ verdict.unusable | join(', ') }} not usable{% endif %}</span>
+                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ text }}</span>
                 {% elif verdict.verdict == 'meets' %}
-                  <span title="Every leg measured and met.">Meets {{ gate_bar_text(row_tool) }}</span>
+                  <span title="Every leg measured and met.">{{ text }}</span>
+                {% elif text %}
+                  <span title="This design cannot be compared against {{ gate_bar_text(row_tool) }}: a leg is missing, or the pipeline wrote a placeholder rather than a reading.">{{ text }}</span>
                 {% else %}
-                  {# Unjudged is NOT a failure, and the cell must not read like
-                     one. The refold that produces BoltzGen's RMSD runs at the
-                     end, so a job rebuilt from mid-run records has genuinely
-                     not measured it; saying so beats inventing a verdict, and
-                     inventing one is what this whole change removes. #}
-                  {% if verdict.unusable %}
-                  {# A DIFFERENT FACT FROM "not measured", and worth its own
-                     sentence. The pipeline wrote a stand-in here -- its own
-                     parse-failure default, or a refolding RMSD of exactly
-                     0.00 -- so there is a value on file and it is not a
-                     reading. Saying "not measured" would be close enough to
-                     wrong: the column is not empty, it is untrustworthy. #}
-                  <span title="This pipeline wrote a placeholder rather than a reading, so the design cannot be compared against {{ gate_bar_text(row_tool) }}.">Not usable: {{ verdict.unusable | join(', ') }}{% if verdict.unmeasured %}; {{ verdict.unmeasured | join(', ') }} not measured{% endif %}</span>
-                  {% elif verdict.unmeasured %}
-                  <span title="Not enough was measured to compare this design against {{ gate_bar_text(row_tool) }}.">Not measured: {{ verdict.unmeasured | join(', ') }}</span>
-                  {% else %}
                   {# The tool declares no bar, so there is nothing to compare
                      against and nothing to name. An empty list rendered as the
                      bare string "Not measured:" with nothing after it, which is
                      how a bar keyed on a slug no tool answers to looked on a
                      public page for the length of one commit. #}
                   <span title="This tool declares no quality bar.">&mdash;</span>
-                  {% endif %}
                 {% endif %}
               </td>
             {% else %}
@@ -707,7 +693,7 @@
                dash said was missing -- on the recovered rows this change
                added `i_pae` to make judgeable, and on every boltz2 row,
                which is keyed entirely at the root. #}
-            {% set raw = raw_metric(row_tool, cand, col) %}
+            {% set raw = raw_metric(cand, col) %}
             {% if raw is none %}
               <td data-col="{{ col }}" data-val="">—</td>
             {% else %}
@@ -721,8 +707,16 @@
                  (75.93 -> 75.9) and broke the sentence on that page
                  quoting a 1.77 spread. This is a scale fix; it does not
                  get to change precision as a side effect. #}
+              {# `float(default=none)`, not a bare `|float`: Jinja's default
+                 is 0.0, so a stored "n/a" rendered a fabricated 0.000 in the
+                 column while the verdict cell beside it said the leg was never
+                 measured. The `fval is none` guard below already handles the
+                 gap honestly; it just never used to be reachable for anything
+                 but a pLDDT. NaN is caught the same way -- it formats as "nan"
+                 and is not a measurement either. #}
               {% set fval = plddt_on_100(raw) if col in PLDDT_COLUMNS
-                            else raw | float %}
+                            else raw | float(default=none) %}
+              {% if fval is not none and fval != fval %}{% set fval = none %}{% endif %}
               {% if fval is none %}
                 {# plddt_on_100 returns None for an unparseable value.
                    ``raw is none`` above catches nulls but not "" or "n/a",
@@ -743,9 +737,14 @@
                    with the bar in the verdict cell -- a contacts column showing
                    "3.60" beside "Meets ... Hotspot hits 4" was the two
                    formatters disagreeing, since score_legends compares at the
-                   glossary's .0f. data-val keeps the float so the column sort
-                   still orders numerically. #}
-                {% set disp = '%d' | format(fval) %}
+                   glossary's .0f. `%.0f` and not `%d`: %d TRUNCATES, so 3.6
+                   printed "3" beside a bar that had rounded it to 4, which is
+                   the same disagreement with different digits. epitope_contacts
+                   is here because a count is a count; iggm declares no bar, so
+                   for that one there is no verdict cell to agree with.
+                   data-val keeps the float so the column sort still orders
+                   numerically. #}
+                {% set disp = '%.0f' | format(fval) %}
               {% else %}
                 {% set disp = '%.2f' | format(fval) %}
               {% endif %}

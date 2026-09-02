@@ -386,13 +386,7 @@ def job_status(job_id: str):
         verdict = score_legends.judge(job.tool, cand)
         row = dict(cand)
         row["bar_verdict"] = verdict.verdict
-        row["bar_text"] = (
-            "; ".join(verdict.shortfalls) if verdict.verdict == "below"
-            else "Meets " + score_legends.gate_bar_text(job.tool)
-            if verdict.verdict == "meets"
-            else "Not measured: " + ", ".join(verdict.unmeasured)
-            if verdict.unmeasured else ""
-        )
+        row["bar_text"] = score_legends.verdict_text(job.tool, verdict)
         live.append(row)
     return jsonify(
         {

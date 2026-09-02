@@ -59,6 +59,7 @@ import re
 from html import unescape
 from pathlib import Path
 
+from shared import score_legends
 from shared.score_legends import (
     SCORE_LEGENDS,
     get_legend,
@@ -176,6 +177,15 @@ def _column_tooltip(tool_slug: str) -> str:
         score_legend_for=get_legend,
         legend_text=legend_text,
         ordinal=ranking.ordinal,
+        # The macro applies the bar when it renders. This env survives without
+        # these only because it passes an EMPTY candidate list, so the cell
+        # loop never runs -- one candidate and it is an UndefinedError.
+        judge_design=score_legends.judge,
+        verdict_text=score_legends.verdict_text,
+        gate_bar_text=score_legends.gate_bar_text,
+        shortfall_bar_text=score_legends.shortfall_bar_text,
+        tool_has_bar=score_legends.tool_has_bar,
+        raw_metric=score_legends.raw_metric,
         csrf_input=lambda: "",
         url_for=lambda _endpoint, **kw: "/static/" + kw.get("filename", ""),
     )

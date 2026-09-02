@@ -102,75 +102,110 @@ def test_pxdesign_is_not_gated_on_pae():
     ).verdict == "meets"
 
 
-# The bars this site applies, against the thresholds the containers apply, as
-# claimed in the comment above GATE_COLUMNS. Kept as data here so the claim is
-# checked rather than trusted -- an earlier version of that comment listed four
-# of the five and asserted it was complete.
-CONTAINER_THRESHOLDS = {
-    ("boltzgen", "refolding_rmsd"): ("RMSD_THRESHOLD", 2.0),
-    ("rfdiffusion", "ipTM"): ("IPTM_THRESHOLD", 0.70),
-    ("rfantibody", "pAE"): ("PAE_THRESHOLD", 10.0),
-    ("pxdesign", "ipTM"): ("IPTM_THRESHOLD", 0.70),
+# EVERY gate leg, mapped to the constant its pipeline gates on. Thirteen of
+# them, so the test below can compute which legs diverge instead of being told.
+#
+# The first version of this listed only the four known divergences and iterated
+# those, which meant a NEW divergence was invisible -- proven by mutation:
+# moving rfantibody's ipAE bar from 10.0 to 8.0 created a sixth undocumented
+# divergence and left the whole suite green. That is the exact class of defect
+# the comment above GATE_COLUMNS exists to prevent, so the guard for it has to
+# enumerate the legs rather than the exceptions.
+#
+# ``scale`` converts the container's number onto the 0-100 scale this site
+# renders pLDDT on; it is 1.0 everywhere except boltz2, whose STRICT_PLDDT is
+# written 0-1. That difference is how a comment came to claim the two sides
+# used "the same bars".
+CONTAINER_GATES = {
+    # (tool, column): (repo, module path, constant, scale)
+    ("boltzgen", "pLDDT"): ("container", "boltzgen", "PLDDT_THRESHOLD", 1.0),
+    ("boltzgen", "refolding_rmsd"): ("container", "boltzgen", "RMSD_THRESHOLD", 1.0),
+    ("rfdiffusion", "ipTM"): ("container", "rfdiffusion", "IPTM_THRESHOLD", 1.0),
+    ("rfdiffusion", "pLDDT"): ("container", "rfdiffusion", "PLDDT_THRESHOLD", 1.0),
+    ("rfdiffusion", "i_pAE"): ("container", "rfdiffusion", "IPAE_THRESHOLD", 1.0),
+    ("pxdesign", "ipTM"): ("container", "pxdesign", "IPTM_THRESHOLD", 1.0),
+    ("pxdesign", "pLDDT"): ("container", "pxdesign", "PLDDT_THRESHOLD", 1.0),
+    ("rfantibody", "pLDDT"): ("container", "rfantibody", "PLDDT_THRESHOLD", 1.0),
+    ("rfantibody", "ipAE"): ("container", "rfantibody", "IPAE_THRESHOLD", 1.0),
+    ("rfantibody", "pAE"): ("container", "rfantibody", "PAE_THRESHOLD", 1.0),
+    ("boltz2", "ipTM"): ("local", "boltz2", "STRICT_IPTM", 1.0),
+    ("boltz2", "pLDDT"): ("local", "boltz2", "STRICT_PLDDT", 100.0),
+    ("boltz2", "n_hotspot_contacts"): (
+        "local", "boltz2", "STRICT_HOTSPOT_CONTACTS_MIN", 1.0,
+    ),
+}
+
+# The divergences the comment above GATE_COLUMNS claims are the complete set.
+DOCUMENTED_DIVERGENCES = {
+    ("boltzgen", "refolding_rmsd"),
+    ("rfdiffusion", "ipTM"),
+    ("rfantibody", "pAE"),
+    ("pxdesign", "ipTM"),
+    ("boltz2", "pLDDT"),
 }
 _CONTAINER_REPO = REPO.parent / "llm-proteinDesigner"
 
 
-def test_the_documented_divergences_are_the_actual_divergences():
-    """Every leg where this site's bar differs from its container's is listed.
-
-    The comment above GATE_COLUMNS names five, and a reader is entitled to
-    treat that list as exhaustive: a leg missing from it moves delivered work
-    with nothing saying why. This checks the four that are a plain container
-    constant; boltz2's is the fifth and is checked separately below, because
-    its pipeline lives in THIS repo on a different scale.
-
-    Skips when the sibling container repo is not checked out beside this one.
-    It is a real cross-repo claim and there is no way to verify it without the
-    other repo; asserting it from memory is what put a wrong number here.
-    """
+def _pipeline_bar(where, tool, const, scale):
+    """The threshold a pipeline gates on, on this site's scale, or None."""
     import re
 
+    if where == "container":
+        path = _CONTAINER_REPO / "docker" / tool / "run_pipeline.py"
+    else:
+        path = REPO / "tools" / tool / "run_pipeline.py"
+    if not path.is_file():
+        return None
+    found = re.search(
+        rf"^{const}\s*=\s*([0-9.]+)",
+        path.read_text(encoding="utf-8", errors="replace"),
+        re.M,
+    )
+    return float(found.group(1)) * scale if found else None
+
+
+def test_every_gate_leg_is_mapped_to_its_pipeline_constant():
+    """The map above covers every leg, so the divergence check cannot miss one
+    by simply not knowing about it."""
+    legs = {(t, c) for t, cols in GATE_COLUMNS.items() for c in cols}
+    assert legs == set(CONTAINER_GATES), sorted(legs ^ set(CONTAINER_GATES))
+
+
+def test_the_documented_divergences_are_the_actual_divergences():
+    """Every leg where this site's bar differs from its pipeline's is listed.
+
+    A reader is entitled to treat the list above GATE_COLUMNS as exhaustive: a
+    leg missing from it moves delivered work with nothing saying why, which is
+    what happened to pxdesign's ipTM. This computes the set rather than
+    checking the ones already known, so a bar edited here or a threshold edited
+    there both fail it.
+
+    Skips the container legs when the sibling repo is not checked out beside
+    this one. It is a real cross-repo claim, and there is no honest way to
+    verify it without the other repo -- asserting it from memory is what put a
+    wrong number in that comment.
+    """
     if not _CONTAINER_REPO.is_dir():
         pytest.skip(f"container repo not present at {_CONTAINER_REPO}")
 
-    for (tool, column), (const, expected) in CONTAINER_THRESHOLDS.items():
-        path = _CONTAINER_REPO / "docker" / tool / "run_pipeline.py"
-        if not path.is_file():
-            pytest.skip(f"{path} not present")
-        source = path.read_text(encoding="utf-8", errors="replace")
-        found = re.search(rf"^{const}\s*=\s*([0-9.]+)", source, re.M)
-        assert found, f"{tool}: {const} not found"
-        assert float(found.group(1)) == expected, (
-            f"{tool}/{column}: the container now uses {found.group(1)}, not "
-            f"{expected}. The divergence table above GATE_COLUMNS is stale."
-        )
-        legend = get_legend(tool, column)
-        assert legend is not None and float(legend["good"]) != expected, (
-            f"{tool}/{column} no longer diverges; drop it from the table."
-        )
+    actual = set()
+    unread = []
+    for (tool, column), (where, mod, const, scale) in CONTAINER_GATES.items():
+        pipeline = _pipeline_bar(where, mod, const, scale)
+        if pipeline is None:
+            unread.append(f"{tool}/{column} ({const})")
+            continue
+        if float(get_legend(tool, column)["good"]) != pipeline:
+            actual.add((tool, column))
+    assert not unread, f"could not read a pipeline constant for: {unread}"
+    assert actual == DOCUMENTED_DIVERGENCES, (
+        "the divergence list above GATE_COLUMNS is stale.\n"
+        f"  undocumented: {sorted(actual - DOCUMENTED_DIVERGENCES)}\n"
+        f"  no longer diverging: {sorted(DOCUMENTED_DIVERGENCES - actual)}"
+    )
 
 
-def test_boltz2s_plddt_bar_is_looser_than_its_own_pipelines():
-    """The fifth divergence, and the only one whose pipeline is in this repo.
-
-    STRICT_PLDDT is written on the 0-1 scale boltz2 stores and this site
-    renders everything on 0-100, so the two numbers are not comparable until
-    one is scaled -- which is exactly how a comment came to claim they were
-    "the same bars the pipeline used".
-    """
-    import re
-
-    source = (
-        REPO / "tools" / "boltz2" / "run_pipeline.py"
-    ).read_text(encoding="utf-8")
-    found = re.search(r"^STRICT_PLDDT\s*=\s*([0-9.]+)", source, re.M)
-    assert found, "STRICT_PLDDT not found"
-    pipeline_bar = float(found.group(1)) * 100.0
-    assert pipeline_bar == 85.0
-    assert float(get_legend("boltz2", "pLDDT")["good"]) == 80.0
-
-
-def test_every_gate_leg_with_a_parse_default_declares_it():
+def test_every_gate_leg_with_a_parse_default_declares_it(monkeypatch):
     """A container that substitutes a default when a column will not parse has
     that default declared, or the page reports the parse failure as a
     confident measured shortfall.
@@ -189,13 +224,43 @@ def test_every_gate_leg_with_a_parse_default_declares_it():
     assert expected <= set(IMPLAUSIBLE_VALUES), sorted(
         expected - set(IMPLAUSIBLE_VALUES)
     )
-    # And each declared value really does sit on the failing side of its bar,
-    # which is why leaving it undeclared is not harmless.
+    # And every declaration CHANGES something. A stale one -- a container that
+    # stopped using that default, or a value copied from the wrong tool -- is
+    # dead weight that reads as protection, and this is a file about not
+    # trusting a claim because it is written down.
+    #
+    # Deliberately not "the value fails its bar": BoltzGen's refolding RMSD of
+    # 0.00 is the defect that started all of this and sits on the PASSING side,
+    # which is why it had to be declared at all. A placeholder can land either
+    # side of a threshold; what it can never do is deserve a verdict.
     for (tool, column), values in IMPLAUSIBLE_VALUES.items():
-        legend = get_legend(tool, column)
+        # Every OTHER leg exactly on its bar, so the column under test is the
+        # only thing that can decide the answer. A record carrying one metric
+        # is unjudged whatever the declaration says, which would make the
+        # comparison below vacuous.
+        meeting = {
+            col: float(get_legend(tool, col)["good"])
+            for col in GATE_COLUMNS[tool]
+        }
         for value in values:
-            record = {"scores": {column: value}}
+            record = {"scores": dict(meeting, **{column: value})}
             assert judge(tool, record).verdict == "unjudged", (tool, column)
+
+            undeclared = dict(IMPLAUSIBLE_VALUES)
+            undeclared.pop((tool, column))
+            monkeypatch.setitem(
+                judge.__globals__, "IMPLAUSIBLE_VALUES", undeclared,
+            )
+            without = judge(tool, record)
+            monkeypatch.undo()
+            assert without.unusable == (), (tool, column, value)
+            # Undeclared, this leg is read as a reading: either a confident
+            # shortfall over a number nothing measured, or -- worse -- a design
+            # counted as meeting the bar on a stand-in.
+            assert without.shortfalls or without.verdict == "meets", (
+                f"{tool}/{column}={value} produces the same answer declared or "
+                "not, so the declaration guards nothing"
+            )
 
 
 def test_the_bar_is_unanswerable_for_a_tool_that_has_none():
