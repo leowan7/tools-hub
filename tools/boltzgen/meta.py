@@ -300,36 +300,41 @@ PILOT: dict | None = {
 # pxdesign example has to describe its target instead of naming it.
 EXAMPLE: dict | None = {
     "target": (
-        "Human PD-L1, the extracellular domain, taken as chain A of "
+        "Human PD-L1, the IgV domain, taken as chain A of "
         "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
-        "115 residues. Hotspots 54, 56 and 115."
+        "115 modelled residues, crystal numbering 18-132. Hotspots Ile54, "
+        "Tyr56 and Met115."
     ),
     "why_this_target": (
         "It is a target you can mark your own homework on. Chain B of the "
         "same file is PD-1, the natural partner, so the three hotspots are "
-        "not a guess &mdash; they are the face a real binding protein is "
-        "known to cover. If a design lands somewhere else, you can see that "
-        "it did. Most targets do not come with the answer attached."
+        "not a guess &mdash; they are residues a real binding protein is "
+        "known to cover. That makes one question answerable here that is "
+        "usually not: never mind whether these designs are good, did the "
+        "model aim where it was pointed?"
     ),
     "inputs_used": [
         (
             "Target PDB",
-            "4ZQK",
-            "The solved PD-1/PD-L1 complex, straight from the PDB. No "
-            "preparation beyond picking the chain.",
+            "the 4ZQK file, uploaded whole",
+            "Both chains, exactly as it downloads from the PDB. No "
+            "trimming and no renumbering, so chain A keeps its crystal "
+            "numbering 18-132 &mdash; which is the numbering the hotspot "
+            "field expects.",
         ),
         (
             "Target chain",
             "A",
-            "PD-L1 alone. Chain B is PD-1, and staging it too would have "
-            "asked the model to design into an already-occupied site.",
+            "This is what restricts the design to PD-L1. Chain B in the "
+            "same file is PD-1, and the run ignores it &mdash; otherwise "
+            "the model would be designing into an occupied site.",
         ),
         (
             "Hotspot residues",
             "54, 56, 115",
-            "The PD-1-contacting face. Three is a normal number: enough to "
-            "aim the binder at one patch, few enough that you have not "
-            "drawn the interface yourself.",
+            "Ile54, Tyr56 and Met115 in the file's own numbering. Three is "
+            "a normal number: enough to aim the binder at one patch, few "
+            "enough that you have not drawn the interface yourself.",
         ),
         (
             "Binder length min",
@@ -340,52 +345,64 @@ EXAMPLE: dict | None = {
         (
             "Binder length max",
             "70",
-            "The design that came back top is 57 residues, in the middle of "
-            "the window rather than pinned to either end.",
+            "The top design came back at 57 residues, in the middle of the "
+            "window rather than pinned to either end.",
         ),
         (
             "Budget (final candidates)",
             "5",
-            "The pilot preset. BoltzGen generated and scored 200 to return "
-            "these 5 &mdash; you are seeing the top of a much larger pile.",
+            "How many designs to keep. BoltzGen generated and scored 200 "
+            "to return these 5, ranked by ipTM &mdash; you are seeing the "
+            "top of a much larger pile. The guided pilot on this page "
+            "uses 4.",
         ),
     ],
     "what_came_back": (
-        "5 candidates out of <strong>200 generated and scored</strong>. "
-        "The best refolds to <strong>0.51 &Aring;</strong> of the pose it "
-        "was designed in, at pLDDT 78.2. All five clear the 2 &Aring; "
-        "refold leg &mdash; the worst is 1.77 &Aring; &mdash; and pLDDT "
-        "runs 69.1 to 78.2 across them. "
-        "The run took <strong>82 minutes</strong> and cost "
-        "<strong>$8.64</strong>, which is above the $3.15 the estimate "
-        "quoted: BoltzGen bills the compute it actually used, and this one "
-        "ran long."
+        "<strong>Read the banner above the table first: the platform marks "
+        "all five of these below threshold, and it is right.</strong> The "
+        "pass bar wants pLDDT at or above 80 and none of these reaches it "
+        "&mdash; they run 69.1 to 78.2. Nothing here is a design you would "
+        "order. "
+        "What the run did do is aim. The delivered complex puts the binder "
+        "on <strong>Ile54, Tyr56 and Met115</strong> &mdash; all three "
+        "residues we asked for, at 3.8, 2.3 and 3.3 &Aring; &mdash; along "
+        "with Glu58, Arg113 and Tyr123, part of the same face PD-1 itself "
+        "covers. On a target whose natural partner sits in the next chain "
+        "of the same file, that is checkable rather than asserted, and it "
+        "is what a pilot is for: the epitope is reachable, so a bigger run "
+        "is worth paying for. Four of the five also refold to under "
+        "1.5 &Aring; of the pose they were designed in, the tightest at "
+        "0.51 &Aring;."
     ),
     "how_to_read_it": (
-        "<strong>Read the refolding RMSD first.</strong> It is the column "
-        "with a real threshold on it: BoltzGen re-folds each design on its "
-        "own, with no target present, and measures how far the result "
-        "drifts from the pose it was generated in. At or under 2 &Aring; "
-        "the design is self-consistent &mdash; it wants to be that shape "
-        "whether or not the target is there. All five here pass, and 0.51 "
-        "&Aring; is about as tight as this gets. "
+        "<strong>Refolding RMSD is the column with a real bar on it.</strong> "
+        "BoltzGen re-folds each design on its own, with no target present, "
+        "and measures the drift from the pose it was generated in. Under "
+        "1.5 &Aring; the table calls it self-consistent: the design wants "
+        "to be that shape whether or not the target is there. Four of these "
+        "five clear it; rank 2, at 1.77 &Aring;, does not. "
+        "<strong>pLDDT is the one that fails here.</strong> Above 80 is "
+        "confidently folded and 0 of 5 make it. A design can sit on the "
+        "right epitope and still not be a protein worth synthesising, and "
+        "that is exactly this run. "
         "<strong>Do not judge the ipTM against 0.7.</strong> That bar comes "
         "from cofolding, where a model is handed both partners and asked "
-        "whether they dock; BoltzGen's refold folds the binder alone, so "
-        "there is no interface in it to score and the familiar threshold "
-        "does not transfer. The 0.538 to 0.653 you see here is not "
-        "\"nearly good\" &mdash; it is a number on a different scale, and "
-        "the site deliberately shows it without a pass bar. "
-        "pLDDT is the third question again: confidence in the binder's own "
-        "fold, not in the pairing."
+        "whether they dock. BoltzGen's is its generator's own score, not on "
+        "that scale, which is why this site shows it with no pass bar. The "
+        "0.538 to 0.653 here is not “nearly good” &mdash; it is a "
+        "reading you can rank designs by and cannot compare against a "
+        "cofold number, including the 0.98 quoted further down this page "
+        "from a different measurement."
     ),
     "what_we_did_next": (
-        "Treated all five as untested. A pilot this size tells you the "
-        "target and the hotspots are workable &mdash; 200 designs produced "
-        "5 that refold cleanly &mdash; and nothing more than that. The next "
-        "step is a real cofold of the top candidates, which is the "
-        "measurement the ipTM column here is NOT, and then SPR or BLI on "
-        "whatever survives it. Nothing on this page is evidence of binding."
+        "Treated all five as failed, because they are, and kept the "
+        "epitope. What 200 designs and 82 minutes bought is the knowledge "
+        "that the site is reachable &mdash; the generator put binders on "
+        "the residues we named &mdash; and that a 50-70 residue budget "
+        "produced nothing foldable enough to order. The next run is a "
+        "larger budget on the same hotspots, then an independent cofold of "
+        "whatever clears pLDDT 80, and only then SPR or BLI. Nothing on "
+        "this page is evidence of binding."
     ),
     "cost_usd": "8.64",
     "runtime": "82 minutes",

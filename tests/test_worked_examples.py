@@ -523,6 +523,99 @@ class TestExampleNumbersComeFromThePayload:
         assert not example.get("structure_file")
 
 
+    def test_a_failing_payload_is_owned_by_its_narration(self, tools_app):
+        """The defect class, not one instance.
+
+        ``results_shell.html`` prints a yellow banner -- "All N designs
+        fell below quality thresholds ... should not be advanced to
+        validation" -- whenever every candidate carries a failing
+        ``filter_status``. The boltzgen example is the first payload that
+        trips it, and the first draft of its narration said the designs
+        PASSED, twice, in the sentences either side of that banner. The
+        numbers were all correct; the page contradicted itself anyway,
+        because the narration was written against the payload and never
+        read against the render.
+
+        So: any example whose payload trips the banner has to say so in
+        words. A page can absolutely show a failed run -- that is often
+        the honest thing -- but it cannot show one while claiming
+        otherwise.
+        """
+        import shared.jobs as jobs_mod
+
+        _, slugs = tools_app
+        # The BANNER'S OWN WORDS, not a family of near-synonyms. The
+        # first version of this accepted any of "fail", "none of these"
+        # and friends -- and "fail" appears incidentally in almost any
+        # honest narration ("pLDDT is the one that fails here"), so
+        # gutting the acknowledgement left this test green. A guard for
+        # a contradiction has to demand the specific phrase the page
+        # contradicts.
+        owned = ("below threshold",)
+        for slug, example in sorted(_examples(slugs).items()):
+            path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
+            if not path.exists():
+                continue
+            result = json.loads(path.read_text(encoding="utf-8"))
+            rows = jobs_mod.candidate_records(result)
+            scored = [r for r in rows if jobs_mod.record_has_filter_signal(r)]
+            if not scored:
+                continue
+            failing = [
+                r for r in scored if not jobs_mod.candidate_passed_filter(r)
+            ]
+            if len(failing) != len(scored):
+                continue          # banner does not fire for this tool
+
+            blob = " ".join(str(v) for v in example.values()).lower()
+            assert any(phrase in blob for phrase in owned), (
+                f"{slug}: every candidate in its example payload is below "
+                "threshold, so the results banner tells the reader the run "
+                "failed -- and the narration never mentions it. Say so, or "
+                "capture a different run."
+            )
+
+    def test_boltzgen_narration_matches_its_result_json(self, tools_app):
+        """Every figure the boltzgen page prints, held against the
+        payload it prints them from."""
+        _, slugs = tools_app
+        example = _examples(slugs)["boltzgen"]
+        result = json.loads(
+            (REPO / "tools" / "boltzgen" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        cands = result["candidates"]
+        assert len(cands) == 5
+        assert result["total_designs"] == 200
+        assert round(result["runtime_minutes"]) == 82
+
+        def col(name):
+            return [c["scores"][name] for c in cands]
+
+        assert round(min(col("ipTM")), 3) == 0.538
+        assert round(max(col("ipTM")), 3) == 0.653
+        assert round(min(col("pLDDT")), 1) == 69.1
+        assert round(max(col("pLDDT")), 1) == 78.2
+        assert round(min(col("refolding_rmsd")), 2) == 0.51
+        assert round(max(col("refolding_rmsd")), 2) == 1.77
+
+        blob = " ".join(str(v) for v in example.values())
+        for figure in ("200", "69.1 to 78.2", "0.538 to 0.653", "0.51",
+                       "1.77", "82 minutes", "8.64"):
+            assert figure in blob, f"boltzgen narration lost {figure}"
+
+        # The bars the narration quotes are the legend's, not invented:
+        # an earlier draft said 2 A was "self-consistent" where the
+        # column tooltip says 1.5, and never mentioned the pLDDT bar
+        # that 0 of 5 designs clear.
+        from shared.score_legends import SCORE_LEGENDS
+        assert SCORE_LEGENDS[("boltzgen", "refolding_rmsd")]["good"] == 1.5
+        assert SCORE_LEGENDS[("boltzgen", "pLDDT")]["good"] == 80
+        assert "1.5" in blob and "80" in blob
+        assert not any(
+            c["scores"]["pLDDT"] >= 80 for c in cands
+        ), "a design now clears pLDDT 80; the narration says none does"
+
     def test_pxdesign_narration_matches_its_result_json(self, tools_app):
         """Third pin. This example's whole lesson is a contrast between two
         columns, so if either median drifts the page argues for something
@@ -751,6 +844,13 @@ class TestExampleNumbersComeFromThePayload:
         "colabfold": 55.0,
         "af2": 388.0,
         "esmfold2-design": 306.0,
+        # 4944 s -> $8.6401 through compute_charge_usd, which is the
+        # "8.64" the boltzgen page prints. Absent, and the price on that
+        # page was pinned by nothing: a reviewer found the two guards
+        # that check FIGURES and COST both skipped this tool, which is
+        # why adding a whole worked example moved the suite count by
+        # zero.
+        "boltzgen": 4944.0,
     }
 
     def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):
