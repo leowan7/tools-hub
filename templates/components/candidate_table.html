@@ -242,35 +242,71 @@
   font-size: .65rem;
   cursor: help;
   margin-left: .25rem;
-  position: relative;
   vertical-align: middle;
+  /* No `position: relative`. It existed only to make this icon the containing
+     block for the ::after that used to be the tooltip; nothing is anchored to
+     this element any more. Harmless to restore today, and load-bearing again
+     the moment anything absolutely positioned is nested in the table, so it
+     stays off. */
 }
-/* Tooltip is anchored BELOW the icon because the table lives inside
-   .cand-table-scroll (overflow-x: auto, which per spec implicitly clips
-   on the y-axis too). Anchoring above the header would put the tooltip
-   above the wrapper's top edge and clip the text — the user would see
-   only an empty tooltip border. */
-.mtt::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  top: calc(100% + .35rem);
-  left: 50%;
-  transform: translateX(-50%);
+.mtt:focus-visible {
+  outline: 2px solid var(--accent, #2B9E7E);
+  outline-offset: 2px;
+}
+
+/* THE TOOLTIP IS NOT IN THE TABLE. It is one element appended to <body> and
+   positioned by static/js/candidate_table.js.
+   TWO ancestors clip it: .cand-table-scroll is overflow-x: auto, and per spec
+   a non-visible overflow on one axis makes the other axis clip too; .panel
+   above it is overflow: hidden outright. As a ::after on the icon the tooltip
+   was cut at whichever edge it was anchored to, by however much room the
+   table left below its own header — so a short run lost most of the text and
+   a long run lost none. On the worked examples a 2-design table cut both its
+   tooltips badly while the 25- and 64-design tables cut neither.
+   An overflow ancestor only clips a descendant whose containing block it also
+   contains, so the anchor is what decides. position: fixed on a child of
+   <body> resolves against the viewport, outside both clippers. */
+.mtt-pop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* 999, deliberately one under the .modal-overlay below. As a body child
+     appended at first hover this element is last in DOM order, so at an equal
+     z-index it would paint OVER the lab-submit modal. Clears the sticky
+     navbar (100) either way. */
+  z-index: 999;
   background: #1e2a3a;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: .5rem .65rem;
   font-size: .78rem;
+  /* Stated, not inherited. As a ::after inside a <th> this rendered at 700,
+     inheriting the header's bold; reparented to <body> it becomes 400. 400 is
+     right for body copy, so this pins the change rather than leaving the
+     weight to whatever the new parent resolves to. It pins ONLY the weight:
+     font-family, letter-spacing and word-spacing are still inherited and each
+     moves the line count. Those agree today only because <body> and the <th>
+     resolve to the same family. */
+  font-weight: 400;
   color: var(--text-primary);
   white-space: normal;
   width: 240px;
-  z-index: 100;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .15s;
+  box-sizing: border-box;
   line-height: 1.4;
+  pointer-events: none;
+  /* visibility, not display: the JS measures offsetWidth/offsetHeight to
+     place the box before it is shown, and a display:none element has no
+     box to measure. visibility:hidden keeps the layout box while taking
+     the text out of the accessibility tree between hovers. */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s, visibility 0s linear .15s;
 }
-.mtt:hover::after { opacity: 1; }
+.mtt-pop.is-open {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .15s, visibility 0s;
+}
 
 /* Star button */
 .star-btn {
@@ -462,8 +498,11 @@
           <th data-col="{{ col }}" class="sortable-col"
               {% if leg %}title="{{ leg_text }}"{% endif %}>
             {{ g.get('label', col) -}}
+            {# tabindex so the tooltip is reachable without a mouse. A <span>
+               does not fire a click on Enter the way a <button> does, so this
+               does not hand the enclosing th[data-col] a keyboard sort. #}
             {% if tooltip_text %}
-              <span class="mtt"
+              <span class="mtt" tabindex="0"
                     data-tooltip="{{ tooltip_text }}">?</span>
             {% endif %}
           </th>

@@ -2,10 +2,11 @@
 
 Modal app: ``ranomics-boltzgen-prod``. GPU: A100-40GB.
 
-BoltzGen uses the Boltz-2 model to generate binder backbones against a
-target, then scores each candidate for refolding RMSD, ipTM, and
+BoltzGen is its own all-atom generative model -- NOT Boltz-2, which it
+invokes separately at the fold/refold step. It generates binder backbones
+against a target, then scores each candidate for refolding RMSD, ipTM, and
 pLDDT. The pilot tier accepts a caller-supplied target PDB, optional
-hotspot residues, a configurable binder-length window, and a Boltz-2
+hotspot residues, a configurable binder-length window, and a BoltzGen
 design protocol (mini-protein, nanobody, antibody, or peptide). Runs
 ~15-60 min on A100-40GB and emails results on completion.
 """

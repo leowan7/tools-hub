@@ -1,6 +1,7 @@
 /**
  * Candidate table behaviour: column sort, star/shortlist, sessionStorage
- * persistence, 3D viewer expand, and lab-submit modal population.
+ * persistence, 3D viewer expand, lab-submit modal population, and the metric
+ * header tooltip.
  *
  * Works for a single job's table AND for a merged campaign table whose
  * candidates come from many sub-jobs. Shortlist entries are {j: jobId, i: idx}
@@ -151,6 +152,182 @@
       btn.classList.toggle('starred', on);
       btn.textContent = on ? '★' : '☆';
     });
+  }
+
+  // ─── Metric tooltip ──────────────────────────────────────────────────────
+  //
+  // ONE element, appended to <body>, positioned from here rather than by CSS.
+  //
+  // It used to be a ::after on the icon, which put its containing block inside
+  // .cand-table-scroll. That div sets overflow-x: auto, and per spec a
+  // non-visible overflow on one axis makes the other axis clip too, so the
+  // tooltip was cut at the scroller's bottom edge -- while .panel above it is
+  // `overflow: hidden` outright, so anchoring to the top edge instead (which
+  // is what the previous attempt did) only changed which end was lost. How
+  // much was lost depended on the room the table left below its own header,
+  // so a short run cut most of the text and a long one cut none: the defect
+  // hid on exactly the pages people read for longest.
+  //
+  // An overflow ancestor clips a descendant only when it also contains that
+  // descendant's containing block, so what the box is ANCHORED to is what
+  // decides. Anchoring to the viewport puts it outside both clippers, which
+  // means position: fixed -- and a fixed box has to be told where to go and
+  // kept there as things scroll under it. That is the whole reason the
+  // placement is here rather than in CSS. See the .mtt-pop rule in
+  // components/candidate_table.html.
+
+  var popEl  = null;   // the shared tooltip element, created on first use
+  var popFor = null;   // the icon it currently describes, for aria-describedby
+
+  function tooltipEl() {
+    if (!popEl) {
+      popEl = document.createElement('div');
+      popEl.className = 'mtt-pop';
+      popEl.id        = 'mtt-pop';
+      popEl.setAttribute('role', 'tooltip');
+      document.body.appendChild(popEl);
+    }
+    return popEl;
+  }
+
+  function placeTooltip(icon, el) {
+    var r    = icon.getBoundingClientRect();
+    var w    = el.offsetWidth;
+    var h    = el.offsetHeight;
+    var edge = 8;   // keep clear of the viewport edges
+    var gap  = 7;   // the .35rem the old ::after used, at a 20px root
+
+    // ``* 0.5`` rather than ``/ 2``: the comment stripper in
+    // tests/test_candidate_table_js_contract.py cannot tell a division slash
+    // from the start of a regex literal, and refuses a file containing either.
+    var left = r.left + (r.width * 0.5) - (w * 0.5);
+    var max  = window.innerWidth - w - edge;
+    if (left > max)  left = max;
+    if (left < edge) left = edge;
+
+    // Below the icon by default, which is where it has always sat. Flip above
+    // only when below overflows the viewport AND above genuinely fits.
+    var top = r.bottom + gap;
+    if (top + h > window.innerHeight - edge && r.top - h - gap > edge) {
+      top = r.top - h - gap;
+    }
+    // THEN CLAMP, because neither side may fit. Preferring below and flipping
+    // above covers only two of three cases, and the third is common: a 480px
+    // tooltip in a 720px window with its icon mid-page overflows below and is
+    // too tall to go above, so the flip does not fire and the box ran off the
+    // bottom of the screen -- 282px of it, on the widest glossary entry. That
+    // is worse than the scroller clip this whole change exists to remove.
+    // Overlapping its own icon is the ordinary tradeoff; being unreadable is
+    // not one. Same two-sided clamp `left` gets above.
+    var lowest = window.innerHeight - h - edge;
+    if (top > lowest) top = lowest;
+    if (top < edge)   top = edge;
+    // A tooltip taller than the viewport still overflows the bottom, but now
+    // starts at the top edge, so the definition -- the sentence that opens
+    // the text -- is the part that survives.
+
+    el.style.left = left + 'px';
+    el.style.top  = top + 'px';
+  }
+
+  function showTooltip(icon) {
+    var text = icon.getAttribute('data-tooltip');
+    if (!text) return;
+    var el = tooltipEl();
+    // RELEASE THE PREVIOUS ICON before re-pointing the box at this one. There
+    // is a single tooltip element and a single id, so the icon it used to
+    // describe must give up `aria-describedby` or two icons claim the same
+    // description. Focusing one icon and then hovering another did exactly
+    // that: the focused icon went on advertising an id whose text was now the
+    // other column's, so a screen reader announced the wrong metric for the
+    // control the user was actually on -- and the attribute then outlived the
+    // tooltip, because hideTooltip only ever clears the LAST icon.
+    if (popFor && popFor !== icon) popFor.removeAttribute('aria-describedby');
+    el.textContent = text;
+    // Placed BEFORE it is shown. The box is measurable while visibility:hidden,
+    // so moving to a second icon never flashes at the first one's coordinates.
+    placeTooltip(icon, el);
+    el.classList.add('is-open');
+    icon.setAttribute('aria-describedby', el.id);
+    popFor = icon;
+  }
+
+  function hideTooltip() {
+    if (popEl)  popEl.classList.remove('is-open');
+    if (popFor) popFor.removeAttribute('aria-describedby');
+    popFor = null;
+  }
+
+  function tooltipIcon(e) {
+    var t = e.target;
+    return (t && t.closest) ? t.closest('.mtt[data-tooltip]') : null;
+  }
+
+  // The icon holding focus, if any. Focus outlives a hover, so leaving a
+  // hovered icon returns to this one instead of closing.
+  function focusedIcon() {
+    var a = document.activeElement;
+    return (a && a.closest) ? a.closest('.mtt[data-tooltip]') : null;
+  }
+
+  // Keep the box on its icon while anything scrolls under it, rather than
+  // closing. Closing on scroll defeats the keyboard path this change added:
+  // tabbing to an icon in an off-screen column makes the browser scroll it
+  // into view, and that scroll event is dispatched from "update the
+  // rendering" -- AFTER the synchronous focusin -- so the tooltip the focus
+  // had just opened was closed by the scroll the focus itself caused.
+  function trackTooltip() {
+    if (!popFor || !popEl || !popEl.classList.contains('is-open')) return;
+    if (!popFor.isConnected) { hideTooltip(); return; }
+    var r = popFor.getBoundingClientRect();
+    // Its icon has scrolled out of the viewport. A box still pinned to the
+    // edge would be describing a column nobody can see.
+    if (r.bottom < 0 || r.top > window.innerHeight) { hideTooltip(); return; }
+    placeTooltip(popFor, popEl);
+  }
+
+  // Delegated on `document`, not bound per table: the listeners then cover
+  // every table on the page, survive a bfcache restore without being rebound
+  // (which is what would double them up), and cost one handler either way.
+  function initTooltips() {
+    document.addEventListener('pointerover', function (e) {
+      var icon = tooltipIcon(e);
+      if (icon) showTooltip(icon);
+    });
+    document.addEventListener('pointerout', function (e) {
+      if (!tooltipIcon(e)) return;
+      // A touch pointer is destroyed after pointerup and the UA then fires
+      // pointerout, so honouring it on touch would close the tooltip the tap
+      // had just opened -- and the old `:hover` rule did NOT do that, because
+      // mobile browsers make hover sticky after a tap. Touch closes on the
+      // next pointerdown elsewhere instead.
+      if (e.pointerType === 'touch') return;
+      // Never close a tooltip the keyboard is holding open. Without this, a
+      // user reading a focused icon's tooltip lost it to any stray mouse
+      // movement across the table, with no way back but blur and refocus.
+      var focused = focusedIcon();
+      if (focused) { showTooltip(focused); return; }
+      hideTooltip();
+    });
+    document.addEventListener('pointerdown', function (e) {
+      if (!tooltipIcon(e)) hideTooltip();
+    });
+    // Reached without a mouse through tabindex="0" on the span.
+    document.addEventListener('focusin', function (e) {
+      var icon = tooltipIcon(e);
+      if (icon) showTooltip(icon);
+    });
+    document.addEventListener('focusout', function (e) {
+      if (tooltipIcon(e)) hideTooltip();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') hideTooltip();
+    });
+    // A fixed box does not travel with the page, and this table carries a
+    // scroller of its own. Capture phase so a scroll of .cand-table-scroll is
+    // caught as well as the window's.
+    window.addEventListener('scroll', trackTooltip, true);
+    window.addEventListener('resize', trackTooltip);
   }
 
   // ─── Sort ────────────────────────────────────────────────────────────────
@@ -350,6 +527,9 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-cand-table-id]').forEach(initTable);
+    // Once, not per table: the tooltip listeners are delegated on `document`
+    // and one set already covers every table on the page.
+    initTooltips();
   });
 
   // A back/forward-cached page is restored with its DOM exactly as it was left

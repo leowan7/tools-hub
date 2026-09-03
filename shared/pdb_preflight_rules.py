@@ -216,7 +216,7 @@ class ToolRules:
 #   rfantibody 41 min @ 412 aa × 4 designs  →  base=200 min @ 120 aa × 100
 #   designs assuming alpha=1.2. Other tools scaled proportionally from
 #   published per-design rates (RFdiffusion ~5-10 min/design at small
-#   targets, BindCraft ~30 min/trajectory, Boltz-1 ~5-10 min/design).
+#   targets, BindCraft ~30 min/trajectory, BoltzGen ~5-10 min/design).
 #
 # The estimate is surfaced in the preflight panel as advisory copy. It
 # no longer blocks submit — the tier-collapse PR retired the wall-clock

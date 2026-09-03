@@ -20,7 +20,7 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 }
 
 paper_citation: str = "Wang et al., ICLR 2025"
-paper_url: str = "https://arxiv.org/abs/2504.09248"
+paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.09.19.613838v1"
 github_url: str = "https://github.com/TencentAI4S/IgGM"
 comparison_one_liner: str = (
     "You have an antibody or nanobody and an antigen, and you want "

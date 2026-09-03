@@ -41,7 +41,7 @@ GLOSSARY: dict[str, dict] = {
             "the number, and for some tools on when the run happened."
         ),
         "good_range": "0.65 to 0.75 depending on the tool; the bar that applies is quoted above",
-        "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
+        "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "pLDDT": {
         "label": "pLDDT",
@@ -60,7 +60,7 @@ GLOSSARY: dict[str, dict] = {
             "confident complex geometry."
         ),
         "good_range": "< 5 Å across the interface",
-        "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
+        "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "ipAE": {
         "label": "ipAE (Å)",
@@ -82,7 +82,7 @@ GLOSSARY: dict[str, dict] = {
             "interaction. Lower is better."
         ),
         "good_range": "< 10 Å passes; < 6 Å strong",
-        "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
+        "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "pTM": {
         "label": "pTM",
@@ -110,21 +110,36 @@ GLOSSARY: dict[str, dict] = {
             "self-consistent — it will fold to the intended backbone."
         ),
         "good_range": "< 1.5 Å; < 1.0 Å excellent",
-        # THE CUTOFFS ABOVE ARE OURS. We know of no published source stating
-        # 1.5/1.0 Å for a refolding RMSD — BoltzGen's paper uses 2.5 Å (twice:
-        # the small-molecule campaign AND the target-dependence benchmark) and
-        # its CLI ships --refolding_rmsd_threshold with a 3.0 example. The
-        # citation below names the model that does the refold, NOT a source for
-        # good_range. candidate_table.html renders the two adjacent, so do not
-        # read the pairing as provenance and do not "correct" 1.5/1.0 toward
-        # whatever number the cited paper happens to use.
+        # THE CUTOFFS ABOVE ARE OURS, and the citation is not their source.
+        # candidate_table.html renders good_range and citation adjacent, which
+        # in every OTHER entry here does mean the cited paper states the bar;
+        # this one is the exception. Published numbers for the same idea are
+        # all looser or from a different pipeline: BoltzGen's paper filters at
+        # 2.5 Å, its CLI ships --refolding_rmsd_threshold with a 3.0 example,
+        # and BindCraft's default filters use 3.5 Å for the binder predicted
+        # in bound vs unbound form. (RFdiffusion's published filters do quote
+        # a 1.0 Å binder r.m.s.d., but for its own AF2 pipeline, not a refold
+        # of this shape.) So do not "correct" 1.5/1.0 toward whatever number
+        # the cited paper happens to use.
+        #
+        # THE NUMBERS THAT ACTUALLY GATE THE UI ARE NOT THESE. good_range is a
+        # display string; the pass/excellent verdict comes from
+        # shared/score_legends.py ("boltzgen", "refolding_rmsd"), which carries
+        # a pointer back here. Change one and you must change the other, or the
+        # tooltip states two different bars in one sentence.
         #
         # This read "Bennett et al., Nat Commun 2023 (BindCraft)", wrong twice
         # over: BindCraft is Pacesa et al. (Nature 646, 483-492, 2025), and
         # Bennett et al. 2023 filters af2_complex_rmsd < 5 Å on the COMPLEX,
-        # not a monomer refold. Neither paper defines this metric at all.
-        # Kept short: this tooltip clips inside .cand-table-scroll.
-        "citation": "Stark et al., bioRxiv 2025 (BoltzGen).",
+        # not a monomer refold.
+        #
+        # NO ENGINE IN THE PARENTHETICAL, per the rule at the top of this
+        # entry: it read "(BoltzGen)", which is the same global-entry-naming-a-
+        # per-tool-fact mistake the definition was just cleaned of, and it also
+        # begged the question of whether BoltzGen or the Boltz-2 it invokes at
+        # the refold step is "the model that does the refold". The per-tool
+        # legend already says whose refold it is.
+        "citation": "Stark et al., bioRxiv 2025.",
     },
     "RMSD": {
         "label": "RMSD (Å)",

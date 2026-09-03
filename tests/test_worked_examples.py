@@ -523,6 +523,113 @@ class TestExampleNumbersComeFromThePayload:
         assert not example.get("structure_file")
 
 
+    def test_a_failing_payload_is_owned_by_its_narration(self, tools_app):
+        """The defect class, not one instance.
+
+        ``results_shell.html`` prints a yellow banner -- "All N designs
+        fell below quality thresholds ... should not be advanced to
+        validation" -- whenever every candidate carries a failing
+        ``filter_status``. The boltzgen example is the first payload that
+        trips it, and the first draft of its narration said the designs
+        PASSED, twice, in the sentences either side of that banner. The
+        numbers were all correct; the page contradicted itself anyway,
+        because the narration was written against the payload and never
+        read against the render.
+
+        So: any example whose payload trips the banner has to say so in
+        words. A page can absolutely show a failed run -- that is often
+        the honest thing -- but it cannot show one while claiming
+        otherwise.
+        """
+        import shared.jobs as jobs_mod
+        from shared.score_legends import judge
+
+        _, slugs = tools_app
+        # The BANNER'S OWN WORDS, not a family of near-synonyms. The
+        # first version of this accepted any of "fail", "none of these"
+        # and friends -- and "fail" appears incidentally in almost any
+        # honest narration ("pLDDT is the one that fails here"), so
+        # gutting the acknowledgement left this test green. A guard for
+        # a contradiction has to demand the specific phrase the page
+        # contradicts.
+        #
+        # THE PHRASE MOVED WITH THE BANNER, and that is the hazard this
+        # test now also covers. It used to demand "below threshold" --
+        # the words the banner printed while it read a stored
+        # filter_status. The banner states the measurement instead now
+        # ("No design here reaches ..." / "Every design here falls short
+        # on at least one of ..."), so a narration saying "below
+        # threshold" describes a page that no longer exists. The
+        # boltzgen narration said exactly that, and was still passing
+        # this guard at the moment the banner stopped saying it.
+        owned = ("falls short", "fall short", "reaches it", "reaches the bar")
+        for slug, example in sorted(_examples(slugs).items()):
+            path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
+            if not path.exists():
+                continue
+            result = json.loads(path.read_text(encoding="utf-8"))
+            rows = jobs_mod.candidate_records(result)
+            # DERIVED, exactly as results_shell.html derives it. This
+            # used to ask shared.jobs whether each record carried a
+            # filter signal and whether it passed; no record carries one
+            # any more, and reading the stored word would make the guard
+            # answer for a page nobody renders.
+            verdicts = [judge(slug, r) for r in rows]
+            if all(v.verdict == "unjudged" for v in verdicts):
+                continue
+            failing = [v for v in verdicts if v.verdict == "below"]
+            if not failing or len(failing) != len(rows):
+                continue          # banner does not fire for this tool
+
+            blob = " ".join(str(v) for v in example.values()).lower()
+            assert any(phrase in blob for phrase in owned), (
+                f"{slug}: every candidate in its example payload is below "
+                "threshold, so the results banner tells the reader the run "
+                "failed -- and the narration never mentions it. Say so, or "
+                "capture a different run."
+            )
+
+    def test_boltzgen_narration_matches_its_result_json(self, tools_app):
+        """Every figure the boltzgen page prints, held against the
+        payload it prints them from."""
+        _, slugs = tools_app
+        example = _examples(slugs)["boltzgen"]
+        result = json.loads(
+            (REPO / "tools" / "boltzgen" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        cands = result["candidates"]
+        assert len(cands) == 5
+        assert result["total_designs"] == 200
+        assert round(result["runtime_minutes"]) == 82
+
+        def col(name):
+            return [c["scores"][name] for c in cands]
+
+        assert round(min(col("ipTM")), 3) == 0.538
+        assert round(max(col("ipTM")), 3) == 0.653
+        assert round(min(col("pLDDT")), 1) == 69.1
+        assert round(max(col("pLDDT")), 1) == 78.2
+        assert round(min(col("refolding_rmsd")), 2) == 0.51
+        assert round(max(col("refolding_rmsd")), 2) == 1.77
+
+        blob = " ".join(str(v) for v in example.values())
+        for figure in ("200", "69.1 to 78.2", "0.538 to 0.653", "0.51",
+                       "1.77", "82 minutes", "6.00"):
+            assert figure in blob, f"boltzgen narration lost {figure}"
+
+        # The bars the narration quotes are the legend's, not invented:
+        # an earlier draft said 2 A was "self-consistent" where the
+        # column tooltip says 1.5, and never mentioned the pLDDT bar
+        # that 0 of 5 designs clear.
+        from shared.score_legends import SCORE_LEGENDS
+        assert SCORE_LEGENDS[("boltzgen", "refolding_rmsd")]["good"] == 1.5
+        assert SCORE_LEGENDS[("boltzgen", "pLDDT")]["good"] == 80
+        assert "1.5" in blob and "80" in blob
+        assert not any(
+            c["scores"]["pLDDT"] >= 80 for c in cands
+        ), "a design now clears pLDDT 80; the narration says none does"
+
     def test_pxdesign_narration_matches_its_result_json(self, tools_app):
         """Third pin. This example's whole lesson is a contrast between two
         columns, so if either median drifts the page argues for something
@@ -768,6 +875,18 @@ class TestExampleNumbersComeFromThePayload:
         "colabfold": 55.0,
         "af2": 388.0,
         "esmfold2-design": 306.0,
+        # 4944 s is what the boltzgen example's run consumed; the
+        # settled charge for it is what that page must print. The figure
+        # is NOT frozen: #211 re-billed at the GPU class the container
+        # actually runs on and moved this from $8.64 to $6.00 (and
+        # pxdesign's from $1.68 to $2.41), which this guard caught on the
+        # merge. That is the whole point of pinning it here rather than
+        # trusting the number in the page. Absent, and the price on that
+        # page was pinned by nothing: a reviewer found the two guards
+        # that check FIGURES and COST both skipped this tool, which is
+        # why adding a whole worked example moved the suite count by
+        # zero.
+        "boltzgen": 4944.0,
     }
 
     def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):
@@ -1149,6 +1268,16 @@ PUBLISHABLE_SEQUENCES = {
     ("esmfold", "sequence"): (
         "human myelin basic protein, a published reference sequence -- it "
         "is what lets a reader check this example against the literature"
+    ),
+    ("boltzgen", "candidates[0].pdb_content_b64"): (
+        "the delivered complex from our own BoltzGen demo run against a "
+        "PUBLISHED target: chain A is human PD-L1, the extracellular "
+        "domain of PDB 4ZQK, and chain B is the 57-residue binder that run "
+        "designed against it. A published reference plus one of our own "
+        "demo designs on it -- no customer target, no campaign design. It "
+        "is kept inline deliberately: the download on the example page is "
+        "this file, and a worked example whose download does not work "
+        "teaches the wrong thing about the tool"
     ),
     ("esmfold", "pdb_b64"): (
         "the folded structure OF that published reference; the sequence it "
