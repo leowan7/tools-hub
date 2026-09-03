@@ -7,7 +7,7 @@
    surfaced here as ipAE), pae, and pred_lddt. ipTM/pTM are AF2-only
    metrics — RFantibody does not produce them. ipAE is the primary
    binder-quality gate (< 10 Å passes per the paper). #}
-{% set columns    = ['ipAE', 'pLDDT', 'pAE'] %}
+{% set columns    = ['ipAE', 'pLDDT', 'pAE', 'against_bar'] %}
 {% set clone_url  = url_for('tools.tool_form', tool='rfantibody', clone_from=job.id) %}
 
 {% call results_panel(

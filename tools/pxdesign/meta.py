@@ -255,7 +255,9 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "25 designs, of which <strong>2 passed</strong>. The best scored "
+        "25 designs, of which <strong>one</strong> reaches the bar this "
+        "site applies &mdash; ipTM 0.75 and pLDDT 80, the numbers in the "
+        "column tooltips. The best scored "
         "ipTM 0.88 at pLDDT 88, with the re-folded complex landing 1.64 &Aring; "
         "from where the generator put it and 577 &Aring;&sup2; of surface "
         "buried against the target. "
@@ -263,7 +265,14 @@ EXAMPLE: dict | None = {
         "in this call is 91 &mdash; high &mdash; while the median ipTM is "
         "0.14. <strong>21 of the 25 designs fold beautifully and do not "
         "bind anything.</strong> All four calls looked like this; 8 of the "
-        "full 100 passed."
+        "full 100 cleared the pipeline&rsquo;s own filter at the time. "
+        "That count is the PIPELINE&rsquo;s, recorded when the round ran. "
+        "The table above is scored against this site&rsquo;s bar every time "
+        "you load it, which is why the two numbers need not agree: one is a "
+        "record of what a container decided in 2026, the other is a "
+        "comparison made just now. The second design the pipeline passed "
+        "sits at pLDDT 78, under the 80 bar; it cleared because PXDesign&rsquo;s "
+        "own summary said so, not because it met a threshold."
     ),
     "how_to_read_it": (
         "Those two columns answer different questions and this round is what "
@@ -273,10 +282,10 @@ EXAMPLE: dict | None = {
         "design can be a textbook helical bundle and dock nowhere near the "
         "site, and 21 of these are exactly that. Sort by ipTM, never by "
         "pLDDT. "
-        "The filter behind the pass/below-threshold column is the tool "
-        "re-folding each design from scratch and checking it lands where the "
-        "generator claimed: ipTM at or above 0.50 and the re-folded complex "
-        "within 3.0 &Aring;. That second half is what bites &mdash; across "
+        "The pipeline&rsquo;s own filter, the one behind that 8-of-100, is the "
+        "tool re-folding each design from scratch and checking it lands where "
+        "the generator claimed: ipTM at or above 0.50 and the re-folded "
+        "complex within 3.0 &Aring;. That second half is what bites &mdash; across "
         "the round the median complex misses by 13.7 &Aring;, while all 8 "
         "survivors land "
         "inside 2.3 &Aring;. A design that clears the first and fails the "

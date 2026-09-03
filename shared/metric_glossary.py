@@ -40,7 +40,7 @@ GLOSSARY: dict[str, dict] = {
             "chains that interface spans depends on the tool that produced "
             "the number, and for some tools on when the run happened."
         ),
-        "good_range": "> 0.75 strong; > 0.65 acceptable",
+        "good_range": "0.65 to 0.75 depending on the tool",
         "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "pLDDT": {
@@ -168,20 +168,28 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "< 5 favourable; > 10 developability concern",
         "citation": "Chennamsetty et al., PNAS 2009",
     },
-    "filter_status": {
-        "label": "Filter",
+    # Replaces a "filter_status" entry that defined the WORD a pipeline
+    # stamped. No word is stored now; this column is computed when the page
+    # renders. See the block comment in shared/score_legends.py.
+    "against_bar": {
+        "label": "vs. quality bar",
         "definition": (
-            "Pipeline quality gate result. 'pass' means the design cleared all "
-            "production thresholds (AF2-IG re-scoring, RMSD, SC). 'below "
-            "threshold' means the pipeline ran cleanly but the design did "
-            "not meet pilot-tier quality bars — useful for inspecting the "
-            "score distribution, not for advancing to validation. 'stub' "
-            "marks smoke-test stubs whose scores are placeholders. "
-            "'strict_pass' / 'soft_pass' are Boltz-2 cofold tiers: "
-            "strict_pass = complex_pLDDT >= 85 AND ipTM >= 0.7 AND at "
-            "least 4 hotspot contacts."
+            "How this design's own measurements compare to the bar for its "
+            "tool, computed when this page loaded rather than when the run "
+            "finished. A design that falls short names the measurement and "
+            "the bar it fell short of. 'Not measured' means at least one leg "
+            "of the bar was never recorded for this design, which is not a "
+            "failure; the commonest cause is a job rebuilt from records "
+            "streamed mid-run, which cannot contain a metric the run produces "
+            "at the end. 'Not usable' is a different thing: the pipeline wrote "
+            "a stand-in rather than a reading, so the column is not empty but "
+            "its value is not a measurement either. Smoke-test rows say that "
+            "too, their scores being fabricated. The bars are the "
+            "per-column 'good' values in shared/score_legends.py, the same "
+            "numbers the column tooltips quote, and a value exactly ON a bar "
+            "counts as meeting it."
         ),
-        "good_range": "pass / strict_pass",
+        "good_range": "meets the bar on every leg",
         "citation": "",
     },
     "n_hotspot_contacts": {
@@ -265,7 +273,7 @@ _FORMAT: dict[str, str] = {
     "RMSD": ".2f",
     "shape_complementarity": ".3f",
     "SAP": ".2f",
-    "filter_status": "str",
+    "against_bar": "str",
     "n_hotspot_contacts": ".0f",
     "epitope_contacts": ".0f",
     # A 0-1 fraction. The ".3f" default printed a third digit ProteinMPNN's

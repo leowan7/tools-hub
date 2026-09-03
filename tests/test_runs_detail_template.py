@@ -63,8 +63,11 @@ def test_succeeded_zero_hits_does_not_render_dead_run_string(app):
         )
     assert "0 / 24 designs delivered" not in html
     assert "designs delivered" not in html
-    # The filter-passing metric is labeled truthfully.
-    assert "Passed filters" in html
+    # The quality metric is labeled truthfully, and NAMES THE BAR it counted
+    # against. It read "Passed filters" over a number derived from a word each
+    # pipeline stamped at the end of its run, so a threshold correction could
+    # never reach it. A reader who can see the bar can check the number.
+    assert "Meet ipTM 0.65, pLDDT 80 and i_pAE" in html
 
 
 def test_subjob_completion_headline_renders(app):

@@ -358,8 +358,8 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "<strong>Read the banner above the table first: the platform marks "
-        "all five of these below threshold, and it is right.</strong> The "
+        "<strong>Read the banner above the table first: every one of these "
+        "five falls short of the bar, and the banner is right.</strong> The "
         "pass bar wants pLDDT at or above 80 and none of these reaches it "
         "&mdash; they run 69.1 to 78.2. Nothing here is a design you would "
         "order. "

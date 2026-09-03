@@ -395,6 +395,35 @@ class TestAnUnparseablePLDDTDoesNotCrashThePage:
         assert "88.0" in html, html[:400]
 
 
+def test_no_glossary_range_points_at_other_text_on_the_page():
+    """A ``good_range`` has to stand on its own wherever it is printed.
+
+    ``candidate_table.html`` appends this string to the metric tooltip
+    only when the tool states no bar of its own -- precisely the case
+    where there is nothing else in the tooltip to point AT. ipTM's read
+    "0.65 to 0.75 depending on the tool; the bar that applies is quoted
+    above", which is true on pxdesign (its legend names 0.75) and
+    dangling on af2, colabfold, rfantibody and proteina, all of which
+    render an ipTM column with no ipTM legend. Four live public pages
+    told the reader to look above at nothing.
+
+    The glossary is metric-scoped and a bar is tool-scoped; a sentence
+    here cannot assume what a per-tool legend happens to say beside it.
+    """
+    from shared.metric_glossary import GLOSSARY
+
+    deictic = ("above", "below this", "quoted", "beside", "shown here")
+    offenders = {
+        metric: [w for w in deictic if w in (entry.get("good_range") or "").lower()]
+        for metric, entry in GLOSSARY.items()
+    }
+    offenders = {m: w for m, w in offenders.items() if w}
+    assert not offenders, (
+        "these good_range strings refer to text that may not be there: "
+        f"{offenders}. State the range on its own terms."
+    )
+
+
 def test_every_plddt_key_the_exporter_can_meet_is_registered():
     """PLDDT_COLUMNS has TWO jobs and the registry guard only checks one.
 
@@ -508,8 +537,11 @@ class TestTheOtherSurfaces:
         assert label == "pLDDT"
         assert value == "83.000", value
         # The caption underneath is the reason this matters: it quotes the
-        # band, so the number above it has to be on the same scale.
-        assert "Above 80" in caption, caption
+        # band, so the number above it has to be on the same scale. The NUMBER
+        # is what this test is about -- it asserted the phrase "Above 80" and
+        # went red when the legends were reworded to "80 or more", which is
+        # the same band said the way `judge` actually compares it.
+        assert "80" in caption and "0.8" not in caption, caption
 
     def test_the_csv_export_matches_the_page(self):
         """Read the table, download the CSV, filter > 70 -- that returned

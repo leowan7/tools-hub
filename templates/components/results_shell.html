@@ -35,31 +35,81 @@
   </div>
   <div class="panel-body">
     {% if candidates %}
-      {# Detect populated-but-all-failing case. Pass-equivalent statuses:
-         - 'pass' — composite tools that cleared the production filter
-         - 'strict_pass' — Boltz-2 cofold strict tier (complex_pLDDT > 85,
-           ipTM > 0.7, hotspot hits > 4)
-         - 'soft_pass' — Boltz-2 cofold soft tier (ipTM > 0.5)
-         Failing statuses: 'fail', 'below threshold', everything else
-         tool-specific. 'stub' marks smoke-test stubs (also excluded).
-         Designs with no filter_status (boltzgen normal path) are treated
-         as passing. Banner fires only when EVERY candidate has a clearly
-         failing filter_status set. #}
-      {% set _pass_statuses = ['pass', 'strict_pass', 'soft_pass'] %}
-      {% set ns = namespace(failing=0, total=candidates|length) %}
+      {# Populated but nothing reaches the bar. The verdict is DERIVED here,
+         at render time, from each design's own measurements against
+         shared/score_legends.GATE_COLUMNS — no stored label is read. That is
+         why the banner can state a threshold at all: quote a number the page
+         did not just compute and it goes stale the moment the number moves,
+         which is exactly how 65 BoltzGen designs came to carry a permanent
+         "below threshold" against a bar their container no longer uses.
+
+         The banner says what was MEASURED ("no design here reaches pLDDT 80
+         and refolding RMSD 1.5"), not what it is worth. A design that falls
+         short of a bar is a fact; "fell below quality thresholds" is a
+         judgement whose thresholds the reader cannot see, and this banner
+         used to make it without naming one.
+
+         Fires only when EVERY design falls short. A design that cannot be
+         judged — one whose gate columns were not all measured — is not
+         counted as falling short, and its presence keeps the banner silent,
+         because "none of these reaches the bar" would then be a claim the
+         measurements do not support. #}
+      {# Every row is judged against THIS panel's tool. results_panel is only
+         ever called with one tool's designs (a job page, or a campaign, which
+         is single-tool by construction); the pooled cross-tool table on the
+         target page calls candidate_table directly and never reaches here,
+         which is why that macro resolves each row's own _source_tool and this
+         one does not need to. A row tagged with a different tool would make
+         the banner's sentence false, so it also disqualifies the banner. #}
+      {% set ns = namespace(below=0, total=candidates|length, legs=[], foreign=false) %}
       {% for c in candidates %}
-        {% set fs = c.get('scores', {}).get('filter_status', '') %}
-        {% if fs and fs not in _pass_statuses and 'stub' not in fs %}
-          {% set ns.failing = ns.failing + 1 %}
+        {% if c.get('_source_tool') and c.get('_source_tool') != tool_slug %}
+          {% set ns.foreign = true %}
+        {% endif %}
+        {% set v = judge_design(tool_slug, c) %}
+        {% if v.verdict == 'below' %}
+          {% set ns.below = ns.below + 1 %}
+          {% set ns.legs = ns.legs + v.shortfall_columns | list %}
         {% endif %}
       {% endfor %}
-      {% if ns.failing > 0 and ns.failing == ns.total %}
+      {% if ns.below > 0 and ns.below == ns.total and not ns.foreign %}
         <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
           <p class="subtitle" style="margin:0;">
-            <strong>All {{ ns.total }} designs fell below quality thresholds.</strong>
-            The pipeline ran cleanly. These candidates are shown so you can
-            see the score distribution, but they should not be advanced to
-            validation without re-screening.
+            {# NAMES ONLY THE LEGS THAT ACTUALLY FELL SHORT, not the whole bar.
+               A design is judged "below" as soon as ONE leg falls short, even
+               when another was never measured -- which is the ordinary shape
+               of a job rebuilt from mid-run records, since the metrics a run
+               produces at the end are simply absent. Quoting the whole bar
+               there put half a sentence about a number this page does not
+               have into a banner whose entire purpose is to say only what was
+               measured. shortfall_bar_text takes the union of the rows' own
+               shortfall_columns, so every leg named is one some design here
+               was measured against and missed. #}
+            {# ONE LEG OR SEVERAL, and the sentence has to change with it.
+               "No design here reaches pLDDT 80 and Refolding RMSD 1.5" is a
+               conjunction a reader distributes: it says nothing reached the
+               pLDDT bar AND nothing reached the RMSD bar. That is true when
+               every design fell short on the same single leg, and false the
+               moment one design missed on pLDDT while another missed on RMSD
+               -- each of those designs met the other bar. The union of legs
+               only supports the weaker claim, so the weaker claim is what
+               gets made. #}
+            {% set legs = ns.legs | unique | list %}
+            {% set ns2 = namespace(every=true) %}
+            {% for c in candidates %}
+              {% set v = judge_design(tool_slug, c) %}
+              {% for leg in legs %}
+                {% if leg not in v.shortfall_columns %}{% set ns2.every = false %}{% endif %}
+              {% endfor %}
+            {% endfor %}
+            {% if ns2.every %}
+            <strong>No design here reaches {{ shortfall_bar_text(tool_slug, ns.legs) }}.</strong>
+            {% else %}
+            <strong>Every design here falls short on at least one of {{ shortfall_bar_text(tool_slug, ns.legs) }}.</strong>
+            {% endif %}
+            The pipeline ran cleanly. All {{ ns.total }} designs are shown so you
+            can see the score distribution; each row names the measurement that
+            fell short.
             {%- if is_refold_source(tool_slug) %}
             {#- No "below": the second-opinion block is gated on
                 `not is_example`, so on a worked-example page this
@@ -72,8 +122,8 @@
             bigger budget or a wider length range only helps if the bar is one
             these designs could move.
             {%- else %}
-            To find passing designs, try increasing the budget, widening the
-            binder length range, or refining hotspots for your target.
+            To find designs that reach it, try increasing the budget, widening
+            the binder length range, or refining hotspots for your target.
             {%- endif %}
           </p>
         </div>

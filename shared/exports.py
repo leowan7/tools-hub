@@ -123,6 +123,17 @@ def export_key(cand: dict, i: int) -> dict:
             key[column] = value
     key["pdb_key"] = cand.get("pdb_key", "")
     key["source_rank"] = cand.get("rank", i + 1)
+    # Whether these numbers were measured at all. The smoke tier fabricates
+    # deterministic scores when no model output exists, and stripping the
+    # stored verdict field took the only marker saying so out of every CSV --
+    # so the file handed over invented values with nothing to distinguish
+    # them, while the page beside it said "scores fabricated". PER ROW, and
+    # omitted entirely when nothing in the file is a stub, matching how every
+    # other column here behaves.
+    from shared.score_legends import is_fabricated  # noqa: PLC0415
+
+    if is_fabricated(cand):
+        key["provenance"] = "stub (smoke)"
     return key
 
 
@@ -134,6 +145,8 @@ def _export_keys(cands: list) -> tuple[list[dict], list[str]]:
         if any(column in k for k in keys):
             leading.append(column)
     leading += ["pdb_key", "source_rank"]
+    if any("provenance" in k for k in keys):
+        leading.append("provenance")
     return keys, leading
 
 
@@ -149,6 +162,26 @@ def _basename(pdb_key: str, fallback: str) -> str:
 
 # Root-level keys that are never metrics: identity, provenance, bulk payloads.
 # Everything else scalar at the root IS exported (see _metric_columns).
+# The verdict a pipeline stamped, which is NOT a metric and is no longer true
+# of anything. Excluded from BOTH loops in _metric_columns -- a CSV is the one
+# copy of a result that leaves this site, and shipping "below threshold" beside
+# the measurements would hand a customer a file contradicting the page they
+# downloaded it from, on candidates whose bar has since moved.
+#
+# UNCONDITIONALLY. A first attempt kept the whole column whenever ANY row in
+# the file was a smoke stub, so one fabricated design re-opened it for every
+# real row beside it and shipped their stale verdict after all -- reachable in
+# a cross-job export that happens to include a smoke sub-job. The fabrication
+# marker travels as its own per-row provenance column instead (see
+# ``export_key``), which is a column the stale word has no way into.
+#
+# ``passed`` is listed with it. No pipeline in either repo writes one today and
+# the helpers that honoured it are gone; the entry is here so a pipeline that
+# starts writing one cannot quietly reopen the door. It was dropped from this
+# set once, silently, which is the reason for this paragraph.
+_STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
+
+
 _NON_METRIC_ROOT_KEYS = frozenset({
     "pdb_key", "name", "rank", "scores",
     "sequence", "binder_sequence", "designed_sequence",
@@ -173,10 +206,13 @@ def _metric_columns(cands: list, leading: list[str]) -> list[str]:
     out: list[str] = []
     for cand in cands:
         for k in (cand.get("scores") or {}):
-            if k not in out and k not in leading:
+            if (k not in out and k not in leading
+                    and k not in _STALE_VERDICT_KEYS):
                 out.append(k)
     for cand in cands:
         for k, v in cand.items():
+            if k in _STALE_VERDICT_KEYS:
+                continue
             if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
                 continue
             if k.startswith("_"):          # provenance tags

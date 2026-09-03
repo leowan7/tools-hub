@@ -16,7 +16,9 @@ from shared import exports, result_columns
 # ---------------------------------------------------------------------------
 
 def test_columns_and_primary_metric():
-    assert result_columns.columns_for("boltzgen") == ["ipTM", "pLDDT", "refolding_rmsd"]
+    assert result_columns.columns_for("boltzgen") == [
+        "ipTM", "pLDDT", "refolding_rmsd", "against_bar",
+    ]
     # rfantibody ranks on interface pAE, which is lower-is-better.
     assert result_columns.primary_metric_for("rfantibody") == ("ipAE", "asc")
     assert result_columns.primary_metric_for("rfdiffusion") == ("ipTM", "desc")
@@ -331,7 +333,7 @@ def test_aggregate_merges_sorts_dedupes(monkeypatch):
     out = cc.aggregate_campaign_candidates("C", user_id="u", limit=10)
 
     assert out["tool"] == "rfdiffusion"
-    assert out["columns"] == ["ipTM", "pLDDT", "i_pAE", "filter_status"]
+    assert out["columns"] == ["ipTM", "pLDDT", "i_pAE", "against_bar"]
     # attempt-1 of chunk 0 dropped -> 2 (j0b) + 1 (j1) = 3
     assert out["total"] == 3
     assert out["capped"] is False
@@ -388,10 +390,19 @@ def test_aggregate_pages_past_the_postgrest_max_rows_clamp(monkeypatch):
     rows were missing. .limit() does not help — it is clamped the same way.
     """
     n = _FAKE_MAX_ROWS + 200
+    # ipTM starts at 0.0001, not 0.0. This campaign's tool is rfdiffusion, and
+    # 0.0 is the exact value its AF2 score reader substitutes when the JSON has
+    # no iptm key -- a parse failure, not a measurement, and
+    # shared.score_legends declares it as one. A design with an unusable metric
+    # is unjudged rather than failed, so the row generated for i=0 stopped
+    # being the worst design in the table and became one nobody had judged,
+    # which sorts it into the other bucket and puts it on top. The fixture was
+    # encoding a broken record by accident; the subject here is paging past the
+    # PostgREST clamp, so it starts one step up instead.
     rows = [
         {"id": f"j{i:05d}", "campaign_id": "C", "status": "succeeded",
          "chunk_index": i, "attempt": 1,
-         "result": {"candidates": [_cand(i, i / 10000.0, "pass")]}}
+         "result": {"candidates": [_cand(i, (i + 1) / 10000.0, "pass")]}}
         for i in range(n)
     ]
     _patch(monkeypatch, rows)

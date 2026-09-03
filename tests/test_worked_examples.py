@@ -523,57 +523,174 @@ class TestExampleNumbersComeFromThePayload:
         assert not example.get("structure_file")
 
 
+    # Phrases that OWN an all-failed banner. Every one is a universal
+    # negative on its own: it says nothing here cleared the bar, which is
+    # the claim the banner makes and the claim a narration has to stand
+    # behind. Reserved vocabulary -- the paired test below fails if any of
+    # them appears in an example whose banner does NOT fire.
+    OWNS_A_FAILING_BANNER = ("none of these", "none of them", "no design here")
+
+    @staticmethod
+    def _banner_fires(slug, result):
+        """True when ``results_shell.html`` would print the all-failed banner.
+
+        Mirrors that template's condition and nothing else: it fires on
+        ``ns.below > 0 and ns.below == ns.total and not ns.foreign``,
+        judging every row against THIS tool. An unjudged row (a gate
+        column that was never measured) is not a shortfall, so its
+        presence keeps the banner silent -- "none of these reaches the
+        bar" would otherwise be a claim the measurements do not support.
+        """
+        import shared.jobs as jobs_mod
+        from shared.score_legends import judge
+
+        rows = jobs_mod.candidate_records(result)
+        # A row tagged with another tool makes the banner's sentence
+        # false, so the template suppresses the banner outright. No
+        # example payload carries _source_tool today; without this the
+        # guard would demand an acknowledgement for a banner nobody sees
+        # the moment one did.
+        if any(r.get("_source_tool") not in (None, slug) for r in rows):
+            return False
+        verdicts = [judge(slug, r) for r in rows]
+        below = [v for v in verdicts if v.verdict == "below"]
+        return bool(below) and len(below) == len(rows)
+
     def test_a_failing_payload_is_owned_by_its_narration(self, tools_app):
         """The defect class, not one instance.
 
-        ``results_shell.html`` prints a yellow banner -- "All N designs
-        fell below quality thresholds ... should not be advanced to
-        validation" -- whenever every candidate carries a failing
-        ``filter_status``. The boltzgen example is the first payload that
-        trips it, and the first draft of its narration said the designs
-        PASSED, twice, in the sentences either side of that banner. The
-        numbers were all correct; the page contradicted itself anyway,
-        because the narration was written against the payload and never
-        read against the render.
+        ``results_shell.html`` prints a yellow banner -- "No design here
+        reaches ..." / "Every design here falls short on at least one of
+        ..." -- when every candidate falls short of this site's bar. The
+        boltzgen example is the one payload that trips it, and the first
+        draft of its narration said the designs PASSED, twice, in the
+        sentences either side of that banner. The numbers were all
+        correct; the page contradicted itself anyway, because the
+        narration was written against the payload and never read against
+        the render.
 
         So: any example whose payload trips the banner has to say so in
         words. A page can absolutely show a failed run -- that is often
         the honest thing -- but it cannot show one while claiming
         otherwise.
-        """
-        import shared.jobs as jobs_mod
 
+        THE BANNER'S WORDS HAVE MOVED ONCE ALREADY, and the guard and the
+        prose it guards went stale together. It used to demand "below
+        threshold", the words printed while the banner read a stored
+        ``filter_status``; the banner states the measurement now, and the
+        boltzgen narration was still saying "the platform marks all five
+        of these below threshold" -- describing a page that no longer
+        rendered -- while this test certified it. A guard and a sentence
+        pinned to the same dead phrase go stale silently together, which
+        is why the phrase list is reserved vocabulary checked by the test
+        below rather than a quotation of the banner.
+        """
         _, slugs = tools_app
-        # The BANNER'S OWN WORDS, not a family of near-synonyms. The
-        # first version of this accepted any of "fail", "none of these"
-        # and friends -- and "fail" appears incidentally in almost any
-        # honest narration ("pLDDT is the one that fails here"), so
-        # gutting the acknowledgement left this test green. A guard for
-        # a contradiction has to demand the specific phrase the page
-        # contradicts.
-        owned = ("below threshold",)
         for slug, example in sorted(_examples(slugs).items()):
             path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
             if not path.exists():
                 continue
             result = json.loads(path.read_text(encoding="utf-8"))
-            rows = jobs_mod.candidate_records(result)
-            scored = [r for r in rows if jobs_mod.record_has_filter_signal(r)]
-            if not scored:
+            if not self._banner_fires(slug, result):
                 continue
-            failing = [
-                r for r in scored if not jobs_mod.candidate_passed_filter(r)
-            ]
-            if len(failing) != len(scored):
-                continue          # banner does not fire for this tool
 
             blob = " ".join(str(v) for v in example.values()).lower()
-            assert any(phrase in blob for phrase in owned), (
-                f"{slug}: every candidate in its example payload is below "
-                "threshold, so the results banner tells the reader the run "
-                "failed -- and the narration never mentions it. Say so, or "
-                "capture a different run."
+            assert any(p in blob for p in self.OWNS_A_FAILING_BANNER), (
+                f"{slug}: every design in its example payload falls short "
+                "of this site's bar, so the results banner tells the reader "
+                "so -- and the narration never does. Say it plainly (any of "
+                f"{list(self.OWNS_A_FAILING_BANNER)}), or capture a "
+                "different run."
             )
+
+    def test_the_owning_phrases_are_reserved_for_a_failing_banner(
+        self, tools_app,
+    ):
+        """No owning phrase may appear where the banner does NOT fire.
+
+        This is what keeps the list above honest, and it is not
+        hypothetical. The list briefly held "reaches the bar", which
+        pxdesign's narration already uses to say ONE design PASSED, and
+        "not one of", which proteina's already contains. Either would let
+        a narration asserting the OPPOSITE of the banner satisfy the
+        guard -- the exact contradiction it exists to catch. Two
+        independent reviewers found that hole by mutation; the suite
+        found nothing, because the guard only ever reads payloads that
+        fail, and the loose phrase lives in one that passes.
+
+        A phrase honest passing prose already contains cannot certify a
+        failing page. So these are reserved words: if this fails, either
+        the phrase is too loose to mean "nothing here cleared the bar"
+        and belongs out of the list, or a narration is using a reserved
+        phrase loosely and should be reworded.
+        """
+        _, slugs = tools_app
+        checked = 0
+        for slug, example in sorted(_examples(slugs).items()):
+            path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
+            if not path.exists():
+                continue
+            result = json.loads(path.read_text(encoding="utf-8"))
+            if self._banner_fires(slug, result):
+                continue
+            checked += 1
+            blob = " ".join(str(v) for v in example.values()).lower()
+            used = [p for p in self.OWNS_A_FAILING_BANNER if p in blob]
+            assert not used, (
+                f"{slug}: its narration uses {used}, which this file "
+                "reserves for owning an all-failed banner -- but this "
+                "example's banner does not fire, so either the phrase is "
+                "used loosely here or it is too loose to be reserved."
+            )
+        # Vacuous otherwise: if every example tripped the banner this
+        # would pass having compared nothing.
+        assert checked >= 5, f"only {checked} non-failing examples examined"
+
+    def test_banner_fires_agrees_with_the_template_on_the_cases_no_example_has(
+        self,
+    ):
+        """The three branches of ``_banner_fires`` no payload exercises.
+
+        Every worked example today is all-below (boltzgen) or not-all-below
+        (the rest), so the interesting conditions -- a foreign row, an
+        unjudged row, an empty table -- are reached by NO example and the
+        helper's agreement with ``results_shell.html`` on them is
+        asserted nowhere. An unexercised branch inside a guard is how a
+        guard comes to certify falsely: it reads as covered because the
+        tests around it are green.
+
+        Each case below is the template's own rule, restated:
+        ``ns.below > 0 and ns.below == ns.total and not ns.foreign``.
+        """
+        below = {"scores": {"pLDDT": 10.0, "refolding_rmsd": 99.0}}
+        meets = {"scores": {"pLDDT": 95.0, "refolding_rmsd": 0.5}}
+        # Genuinely unjudged: the measured leg MEETS its bar and the
+        # other is absent. A row measured at pLDDT 10 with no RMSD is
+        # "below", not unjudged -- one leg short is enough, even when
+        # another was never measured. Getting that backwards here is
+        # what this fixture originally did.
+        unjudged = {"scores": {"pLDDT": 95.0}}          # no refolding_rmsd
+
+        fires = self._banner_fires
+
+        # The ordinary firing case, so the negatives below mean something.
+        assert fires("boltzgen", {"candidates": [below, below]}) is True
+        assert fires("boltzgen", {"candidates": [below, meets]}) is False
+
+        # ns.total == 0: the template never reaches the banner.
+        assert fires("boltzgen", {"candidates": []}) is False
+
+        # An unmeasured gate column is NOT a shortfall. "None of these
+        # reaches the bar" would be a claim the measurements cannot
+        # support, so one unjudged row silences the banner.
+        assert fires("boltzgen", {"candidates": [below, unjudged]}) is False
+
+        # ns.foreign: a row from another tool makes the banner's sentence
+        # false, so the template suppresses it even though every row is
+        # below. This is the branch with no payload behind it.
+        foreign = dict(below, _source_tool="pxdesign")
+        assert fires("boltzgen", {"candidates": [below, foreign]}) is False
+        assert fires("boltzgen", {"candidates": [dict(below, _source_tool="boltzgen")]}) is True
 
     def test_boltzgen_narration_matches_its_result_json(self, tools_app):
         """Every figure the boltzgen page prints, held against the
@@ -632,7 +749,20 @@ class TestExampleNumbersComeFromThePayload:
         plddt = [s["pLDDT"] for s in scores]
 
         assert len(cands) == 25 == result["total_designs"]
+        # TWO COUNTS, AND THE NARRATION MUST QUOTE THE RIGHT ONE. The stored
+        # ``filter_status`` is what the CONTAINER decided when this round ran,
+        # kept in the fixture as a historical record; the page renders a
+        # verdict derived from the measurements every time it loads. They
+        # differ here, and that is the whole point of the change: the second
+        # design the pipeline passed sits at pLDDT 78, under the 80 bar, and
+        # cleared only because PXDesign's own summary said so.
+        from shared.score_legends import judge
+
         assert sum(1 for s in scores if s["filter_status"] == "pass") == 2
+        derived = sum(
+            1 for c in cands if judge("pxdesign", c).verdict == "meets"
+        )
+        assert derived == 1
         assert max(iptm) == 0.88
         assert statistics.median(iptm) == 0.14
         assert statistics.median(plddt) == 91
@@ -644,8 +774,12 @@ class TestExampleNumbersComeFromThePayload:
         assert scores[0]["ipTM"] == 0.88 and scores[0]["pLDDT"] == 88.0
 
         blurb = example["what_came_back"]
-        for figure in ("25 designs", "2 passed", "0.88", "88", "91",
-                       "0.14", "21 of the 25"):
+        # "one" is the DERIVED count asserted above, not the stored one. If a
+        # bar moves, this fails and the copy has to be rewritten with it --
+        # which is the guard: a worked example that narrates a number the page
+        # no longer shows is exactly the contradiction this change removes.
+        for figure in ("25 designs", "<strong>one</strong> reaches the bar",
+                       "0.88", "88", "91", "0.14", "21 of the 25"):
             assert figure in blurb, f"{figure} missing from what_came_back"
 
         # Only ipTM / pLDDT / pAE / filter_status: the four keys the live

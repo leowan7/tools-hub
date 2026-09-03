@@ -4,7 +4,7 @@ Self-serve batched design at /campaigns/* + /api/campaigns/* plus the
 /runs/* and /admin/campaigns/* legacy 301 redirects. Lifted verbatim from
 ``create_app()``; only ``@flask_app.route`` -> ``@campaigns_bp.route`` and
 compute-campaign endpoint self-refs -> ``campaigns.*``. The helpers
-(_campaign_passed_filters, _cutover_redirect) move in with the routes.
+(_campaign_candidates_meeting_bar, _cutover_redirect) move in with the routes.
 
 The preauth copy and the campaign-tool flag gate are NOT here: Phase 2 moved
 them to shared/compute_campaigns.py so the multi-tool launch screen in
@@ -803,18 +803,19 @@ def compute_campaign_status(campaign_id):
     payload["subjobs"] = counts
     # Terminal sub-jobs (succeeded + failed + timeout) are the accurate
     # progress signal: every sub-job that finished has a downloadable
-    # result regardless of how many candidates passed the quality filter.
+    # result regardless of how many candidates meet the quality bar.
     payload["subjobs_complete"] = (
         counts.get("succeeded", 0)
         + counts.get("failed", 0)
         + counts.get("timeout", 0)
     )
     payload["subjobs_total"] = campaign.total_subjobs
-    # ``hits`` is the number of candidates that PASSED the quality filter,
-    # summed over succeeded children. It is NOT the number of designs
-    # produced (small batches often pass nothing). ``designs_delivered``
-    # is kept as a back-compat alias for the same value.
-    hits = _campaign_passed_filters(campaign_id)
+    # ``hits`` is the number of candidates that MEET the tool's quality bar,
+    # summed over succeeded children and computed from their measurements at
+    # request time — no stored verdict is read. It is NOT the number of designs
+    # produced (small batches often meet nothing). ``designs_delivered`` is
+    # kept as a back-compat alias for the same value.
+    hits = _campaign_candidates_meeting_bar(campaign_id, campaign.tool)
     payload["hits"] = hits
     payload["designs_delivered"] = hits
     payload["terminal"] = campaign.status in (
@@ -829,22 +830,28 @@ def compute_campaign_status(campaign_id):
     payload["paused"] = campaign.status == "paused_insufficient_funds"
     return jsonify(payload)
 
-def _campaign_passed_filters(campaign_id: str) -> int:
-    """Sum candidates that PASSED the default quality filter across a
-    campaign's succeeded children.
+def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
+    """Sum candidates that MEET ``tool``'s quality bar across a campaign's
+    succeeded children.
 
-    Feeds the campaign detail page's "Passed filters" card, which used to
-    under-report because it summed ``len(result.candidates)`` — every
-    candidate, not just the passing ones — and only ever read
-    ``result["candidates"]``, missing tools that persist rows under
-    ``result["designs"]`` or nest ``filter_status`` under
-    ``candidate["scores"]``.
+    Feeds the campaign detail page's quality card, which names the bar it
+    counted against precisely because this number moves when the bar does.
+    Nothing here reads a stored verdict: ``count_candidates_meeting_bar``
+    compares each child's measurements against
+    ``shared.score_legends.GATE_COLUMNS`` on every call, so a threshold
+    correction is reflected the next time the page loads rather than being
+    frozen into 65 candidates that can never be re-labelled.
 
-    ``count_passed_candidates`` handles every shape and, per child, filters
-    by ``filter_status`` when the records carry one (pxdesign, rfdiffusion)
-    and falls back to the delivered count when they don't (the pre-filtered
-    bindcraft / rfantibody, and boltzgen) — so the total equals the sum of
-    what each child's own job page shows and no tool collapses to zero.
+    ``tool`` has to be passed because the bar is a property of the tool. It
+    used to be inferred from whether any record carried a ``filter_status``,
+    which read the wrong regime for bindcraft (stamps an unconditional
+    "pass") and rfantibody (stamps a real verdict) — both of which the old
+    docstring here claimed emit no filter at all.
+
+    The card still handles every result shape: ``count_candidates_meeting_bar``
+    reads ``result["candidates"]`` or ``result["designs"]`` and resolves
+    metrics under ``scores`` or at the record root, which is the shape bug
+    that made this card under-report before.
     """
     client = get_service_client()
     if client is None:
@@ -860,8 +867,10 @@ def _campaign_passed_filters(campaign_id: str) -> int:
         )
     except Exception:
         return 0
-    from shared.jobs import count_passed_candidates  # noqa: PLC0415
-    return sum(count_passed_candidates(r.get("result")) for r in rows)
+    from shared.jobs import count_candidates_meeting_bar  # noqa: PLC0415
+    return sum(
+        count_candidates_meeting_bar(r.get("result"), tool) for r in rows
+    )
 
 # CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
 # (limit=None). The ZIP keeps a top-N cap because it pulls every candidate's

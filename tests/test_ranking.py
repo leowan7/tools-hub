@@ -80,39 +80,51 @@ def _find(result, tool, index):
 # Pass regime: the cohort-scope decision
 # ---------------------------------------------------------------------------
 
-def test_tool_with_no_filter_signal_is_not_demoted_below_a_filtered_tool():
+def test_tool_with_no_bar_is_not_demoted_below_a_gated_tool():
     """The single most important behaviour in the module.
 
-    bindcraft emits no per-candidate filter at all; pxdesign emits one and
-    here every pxdesign row PASSES it while scoring far lower. If the pass
-    regime were decided per record, every bindcraft row would count as "not
-    passed" and the whole table would be pxdesign first, i.e. partitioned on
-    tool identity. At cohort scope the two tools interleave by rank.
+    bindcraft declares no quality bar at all; pxdesign does, and here every
+    pxdesign row MEETS it while scoring lower. If a tool without a bar were
+    treated as failing one, the whole table would be pxdesign first, i.e.
+    partitioned on tool identity rather than design quality.
+
+    The regime is now a property of the TOOL (score_legends.GATE_COLUMNS)
+    rather than an inference from whether some row happened to carry a stored
+    word. That is a stronger version of the same guarantee: it no longer
+    depends on which container version produced the rows.
     """
     rows = _metric_rows(
-        "bindcraft", "ipTM", [0.95 - 0.01 * i for i in range(10)], job="bc-1",
+        "bindcraft", "ipTM", [0.99 - 0.01 * i for i in range(10)], job="bc-1",
     ) + _metric_rows(
-        "pxdesign", "ipTM", [0.60 - 0.01 * i for i in range(10)], job="px-1",
-        extra_scores={"filter_status": "pass"},
+        "pxdesign", "ipTM", [0.85 - 0.01 * i for i in range(10)], job="px-1",
+        extra_scores={"pLDDT": 88.0, "pAE": 3.0},
     )
 
     out = ranking.rank_candidates(rows, limit=None)
 
     assert all(r["_passed"] for r in out["rows"])
-    assert out["tools"]["bindcraft"]["uses_filter"] is False
-    assert out["tools"]["pxdesign"]["uses_filter"] is True
+    assert out["tools"]["bindcraft"]["has_bar"] is False
+    assert out["tools"]["pxdesign"]["has_bar"] is True
     # Identical rank structure in both cohorts, so the two tools alternate.
     assert [r["_source_tool"] for r in out["rows"]] == ["bindcraft", "pxdesign"] * 10
 
 
-def test_a_row_its_own_tool_failed_sorts_below_a_filterless_tools_rows():
-    """passed leads the sort key even against a much better raw score."""
+def test_a_row_short_of_its_own_bar_sorts_below_a_bar_free_tools_rows():
+    """passed leads the sort key even against a much better raw score.
+
+    boltzgen is the gated tool here on purpose: its bar is pLDDT and refolding
+    RMSD and NOT the ipTM it ranks on, so a row's rank and its verdict can be
+    set independently. That separation is the point of
+    GATE_COLUMNS["boltzgen"] -- an ipTM leg is what mislabelled 65 production
+    designs.
+    """
     rows = _metric_rows(
-        "pxdesign", "ipTM", [0.99, 0.98], job="px-fail",
-        extra_scores={"filter_status": "fail"},
+        "boltzgen", "ipTM", [0.99, 0.98], job="bg-short",
+        extra_scores={"pLDDT": 40.0, "refolding_rmsd": 1.0},
     ) + [
-        _row("pxdesign", job="px-pass", index=i,
-             scores={"ipTM": 0.70 - 0.01 * i, "filter_status": "pass"})
+        _row("boltzgen", job="bg-meets", index=i,
+             scores={"ipTM": 0.70 - 0.01 * i, "pLDDT": 88.0,
+                     "refolding_rmsd": 1.0})
         for i in range(3)
     ] + _metric_rows(
         "bindcraft", "ipTM", [0.50 - 0.01 * i for i in range(5)], job="bc-1",
@@ -121,61 +133,66 @@ def test_a_row_its_own_tool_failed_sorts_below_a_filterless_tools_rows():
     out = ranking.rank_candidates(rows, limit=None)
 
     assert [_ident(r) for r in out["rows"][-2:]] == [
-        ("pxdesign", "px-fail", 0), ("pxdesign", "px-fail", 1),
+        ("boltzgen", "bg-short", 0), ("boltzgen", "bg-short", 1),
     ]
     assert all(r["_passed"] for r in out["rows"][:-2])
 
 
-def test_an_unsignalled_row_is_not_failed_by_a_signalled_sibling():
-    """Unjudged is not failed, even inside a cohort that has a filter regime.
+def test_an_unmeasured_row_is_not_failed_by_a_fully_measured_sibling():
+    """Unjudged is not failed, even inside a cohort whose tool HAS a bar.
 
-    Job recovery writes filter_status only when the streamed partial carried
-    one, so one pxdesign cohort holds signalled and unsignalled rows at once.
-    Judging the unsignalled ones anyway returns False (no boolean flag, no
-    status), and since ``passed`` leads the sort key that inverts the table:
-    the tool's best designs sink below every other row and get pushed past
-    the cap, while a much worse design that happens to carry ``pass`` leads.
+    A job rebuilt by shared/job_recovery holds only what was streamed during
+    the run, and boltzgen's refold happens at the end, so one cohort holds
+    fully measured rows beside rows missing a whole leg. Calling those
+    failures would invert the table: ``passed`` leads the sort key, so the
+    tool's best designs would sink below every other row and get pushed past
+    the cap, while a much worse fully measured design leads.
     """
-    # Minimal shape: one row carries a signal, four do not.
+    # One row is fully measured; four are missing refolding_rmsd entirely.
     minimal = [
-        _row("bindcraft", job="bc-1", index=0,
-             scores={"ipTM": 0.50, "passed": True}),
+        _row("boltzgen", job="bg-1", index=0,
+             scores={"ipTM": 0.50, "pLDDT": 88.0, "refolding_rmsd": 1.0}),
     ] + _metric_rows(
-        "bindcraft", "ipTM", [0.90 - 0.01 * i for i in range(4)], job="bc-2",
+        "boltzgen", "ipTM", [0.90 - 0.01 * i for i in range(4)], job="bg-2",
+        extra_scores={"pLDDT": 88.0},
     )
 
     out = ranking.rank_candidates(minimal, limit=None)
 
-    assert out["tools"]["bindcraft"]["uses_filter"] is True
+    assert out["tools"]["boltzgen"]["has_bar"] is True
     assert all(r["_passed"] for r in out["rows"])
-    assert out["tools"]["bindcraft"]["passed"] == 5
-    # The four better designs lead; the signalled 0.50 row is last on merit.
+    assert out["tools"]["boltzgen"]["passed"] == 5
+    # The four better designs lead; the measured 0.50 row is last on merit.
     assert [r["_metric_value"] for r in out["rows"]] == [
         pytest.approx(v) for v in (0.90, 0.89, 0.88, 0.87, 0.50)
     ]
 
     # At scale: 240 recovered rows must not be demoted below another tool.
+    # This is the probed production shape -- 240 recovered rows at ipTM 0.99
+    # sank below 100 bindcraft rows at 0.70, the best design was handed rank
+    # 161, and 100 rows fell past the 300 cap out of the table entirely.
     rows = (
-        [_row("pxdesign", job="px-live", index=i,
-              scores={"ipTM": 0.55 - 0.001 * i, "filter_status": "pass"})
+        [_row("boltzgen", job="bg-live", index=i,
+              scores={"ipTM": 0.55 - 0.001 * i, "pLDDT": 88.0,
+                      "refolding_rmsd": 1.0})
          for i in range(60)]
-        + [_row("pxdesign", job="px-recovered", index=i,
-                scores={"ipTM": 0.99 - 0.001 * i})
+        + [_row("boltzgen", job="bg-recovered", index=i,
+                scores={"ipTM": 0.99 - 0.001 * i, "pLDDT": 88.0})
            for i in range(240)]
         + _metric_rows("bindcraft", "ipTM", [0.70] * 100, job="bc-1")
     )
 
     out = ranking.rank_candidates(rows)          # DEFAULT_LIMIT = 300
 
-    assert out["tools"]["pxdesign"]["passed"] == 300      # not 60
-    assert out["tools"]["pxdesign"]["uses_filter"] is True
+    assert out["tools"]["boltzgen"]["passed"] == 300      # not 60
+    assert out["tools"]["boltzgen"]["has_bar"] is True
     best = next(
         r for r in out["rows"]
-        if r["_source_job_id"] == "px-recovered" and r["_source_index"] == 0
+        if r["_source_job_id"] == "bg-recovered" and r["_source_index"] == 0
     )
     assert best["_metric_value"] == pytest.approx(0.99)
     assert best["_rank_position"] == 1
-    assert [r["_source_job_id"] for r in out["rows"][:5]] == ["px-recovered"] * 5
+    assert [r["_source_job_id"] for r in out["rows"][:5]] == ["bg-recovered"] * 5
 
 
 # ---------------------------------------------------------------------------
@@ -595,8 +612,39 @@ def test_a_cohort_of_one_lands_mid_table_on_a_fraction_fixed_by_its_size():
     assert ranking.rank_statistics([25.0], 25.0, "asc") == (0.5, 50, 1)
     assert ranking.rank_statistics([0.99], 0.99, "desc") == (0.5, 50, 1)
 
+    # iggm, because it declares no quality bar. rfantibody stood here and now
+    # HAS one (pLDDT / ipAE / pAE), so a lone row on a very poor ipAE is sunk
+    # by its own measurement before the cohort statistic gets to speak -- which
+    # is the right outcome, and is pinned separately below. This test is about
+    # the statistic, so it needs a tool the bar cannot interfere with.
     rows = [
-        _row("rfantibody", job="rfab-1", index=0, scores={"ipAE": 25.0}),
+        _row("iggm", job="iggm-1", index=0, scores={"epitope_contacts": 1.0}),
+    ] + _metric_rows(
+        "bindcraft", "ipTM", [0.50 + 0.01 * i for i in range(40)], job="bc-1",
+    )
+
+    out = ranking.rank_candidates(rows, limit=None)
+    lone = _find(out, "iggm", 0)
+
+    assert lone["_cohort_n"] == 1
+    assert lone["_rank_fraction"] == 0.5
+    assert lone["_rank_percentile"] is None
+    assert lone["_percentile_suppressed"] is True
+    assert lone["_rank_position"] == 21     # of 41, on 1 epitope contact
+    assert sum(1 for r in out["rows"][21:] if r["_ranked"]) == 20
+
+
+def test_a_lone_row_of_a_GATED_tool_sinks_on_its_own_measurement():
+    """The counterpart, and an improvement this change brought with it.
+
+    The cohort-of-one statistic puts any lone design mid-table whatever it
+    scored. When the tool declares a bar, a design measured short of it is now
+    sunk on that measurement first, because ``passed`` leads the sort key. The
+    fraction is still 0.5; it just no longer decides where the row lands.
+    """
+    rows = [
+        _row("rfantibody", job="rfab-1", index=0,
+             scores={"ipAE": 25.0, "pLDDT": 88.0, "pAE": 3.0}),
     ] + _metric_rows(
         "bindcraft", "ipTM", [0.50 + 0.01 * i for i in range(40)], job="bc-1",
     )
@@ -604,12 +652,9 @@ def test_a_cohort_of_one_lands_mid_table_on_a_fraction_fixed_by_its_size():
     out = ranking.rank_candidates(rows, limit=None)
     lone = _find(out, "rfantibody", 0)
 
-    assert lone["_cohort_n"] == 1
     assert lone["_rank_fraction"] == 0.5
-    assert lone["_rank_percentile"] is None
-    assert lone["_percentile_suppressed"] is True
-    assert lone["_rank_position"] == 21          # of 41, on a very poor ipAE
-    assert sum(1 for r in out["rows"][21:] if r["_ranked"]) == 20
+    assert lone["_passed"] is False
+    assert out["rows"][-1] is lone
 
 
 # ---------------------------------------------------------------------------
@@ -655,28 +700,31 @@ def test_the_floor_does_not_spend_the_cap_on_a_tools_failed_designs():
     to passing and its floor must come back, or "reserves nothing" could be
     satisfied by a floor that had simply stopped working.
     """
-    def _scenario(px_status):
-        px = _metric_rows(
-            "pxdesign", "ipTM", [0.30 + 0.01 * i for i in range(6)], job="px-1",
-            extra_scores={"filter_status": px_status},
+    # boltzgen, whose bar (pLDDT / refolding RMSD) is independent of the ipTM
+    # it ranks on, so the same poor-ranking rows can be put either side of the
+    # bar without changing their position in the sort.
+    def _scenario(plddt):
+        bg = _metric_rows(
+            "boltzgen", "ipTM", [0.30 + 0.01 * i for i in range(6)], job="bg-1",
+            extra_scores={"pLDDT": plddt, "refolding_rmsd": 1.0},
         )
         bc = _metric_rows(
             "bindcraft", "ipTM", [0.90 - 0.001 * i for i in range(30)], job="bc-1",
         )
-        return px + bc
+        return bg + bc
 
-    failed = ranking.rank_candidates(_scenario("fail"), limit=10)
+    failed = ranking.rank_candidates(_scenario(40.0), limit=10)
     shown_tools = {r["_source_tool"] for r in failed["rows"]}
 
     assert shown_tools == {"bindcraft"}, "a rejected design took a capped slot"
-    assert failed["tools"]["pxdesign"]["shown"] == 0
+    assert failed["tools"]["boltzgen"]["shown"] == 0
     # The tool is not hidden: its stats still report what it produced.
-    assert failed["tools"]["pxdesign"]["total"] == 6
+    assert failed["tools"]["boltzgen"]["total"] == 6
     assert not any(r["_floor_reserved"] for r in failed["rows"])
 
-    passed = ranking.rank_candidates(_scenario("pass"), limit=10)
+    passed = ranking.rank_candidates(_scenario(88.0), limit=10)
 
-    assert passed["tools"]["pxdesign"]["shown"] == ranking.PER_TOOL_FLOOR
+    assert passed["tools"]["boltzgen"]["shown"] == ranking.PER_TOOL_FLOOR
     assert any(r["_floor_reserved"] for r in passed["rows"])
 
 
@@ -710,11 +758,13 @@ def test_failed_rows_restart_the_fraction_range_below_the_passed_bucket():
     group rather than as a continuation of the ranked list.
     """
     rows = (
-        [_row("pxdesign", job="px-fail", index=i,
-              scores={"ipTM": 0.99 - 0.001 * i, "filter_status": "fail"})
+        [_row("boltzgen", job="bg-short", index=i,
+              scores={"ipTM": 0.99 - 0.001 * i, "pLDDT": 40.0,
+                      "refolding_rmsd": 1.0})
          for i in range(5)]
-        + [_row("pxdesign", job="px-pass", index=i,
-                scores={"ipTM": 0.60 - 0.001 * i, "filter_status": "pass"})
+        + [_row("boltzgen", job="bg-meets", index=i,
+                scores={"ipTM": 0.60 - 0.001 * i, "pLDDT": 88.0,
+                        "refolding_rmsd": 1.0})
            for i in range(20)]
         + _metric_rows(
             "bindcraft", "ipTM", [0.50 - 0.001 * i for i in range(25)],
@@ -955,19 +1005,19 @@ def test_select_under_cap_stamps_floor_reserved_in_place():
     ]
 
 
-def test_passed_here_is_not_the_same_number_as_count_passed_candidates():
+def test_passed_here_is_not_the_same_number_as_the_counting_helper():
     """One result, two legitimate answers. Pinned because a page that shows
     both would otherwise look like it is contradicting itself.
 
-    A record with no filter signal of its own is passed here (unjudged is not
-    failed) and not passed there (a sibling carries a signal, so the whole
-    result is judged under the filter regime).
+    A design whose gate columns were not all measured is passed HERE (ordering
+    sinks a row only on evidence it fell short) and not counted THERE
+    (counting claims a design met the bar, which needs evidence for).
     """
     from shared import jobs
 
     candidates = [
-        {"scores": {"ipTM": 0.90, "filter_status": "pass"}},
-        {"scores": {"ipTM": 0.99}},
+        {"scores": {"ipTM": 0.90, "pLDDT": 88.0, "pAE": 3.0}},   # measured
+        {"scores": {"ipTM": 0.99}},                              # unmeasured
     ]
     rows = [
         _row("pxdesign", job="px-1", index=i, preset="default",
@@ -977,9 +1027,11 @@ def test_passed_here_is_not_the_same_number_as_count_passed_candidates():
 
     out = ranking.rank_candidates(rows, limit=None)
 
-    assert jobs.count_passed_candidates({"candidates": candidates}) == 1
+    assert jobs.count_candidates_meeting_bar(
+        {"candidates": candidates}, "pxdesign",
+    ) == 1
     assert out["tools"]["pxdesign"]["passed"] == 2
-    assert out["tools"]["pxdesign"]["uses_filter"] is True
+    assert out["tools"]["pxdesign"]["has_bar"] is True
 
 
 def test_a_non_coercible_source_index_degrades_one_row_without_raising():

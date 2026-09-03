@@ -54,15 +54,37 @@ logger = logging.getLogger(__name__)
 
 
 def _candidate_from_partial(part: dict) -> dict:
-    """Rebuild a result.candidate (nested scores) from a streamed partial."""
+    """Rebuild a result.candidate (nested scores) from a streamed partial.
+
+    MEASUREMENTS ONLY. This carried the partial's ``filter_status`` across too,
+    and that one line was a whole class of defect: a partial is streamed DURING
+    the run, so it holds the verdict but not the metrics the run produces at
+    the end — boltzgen's refolding RMSD arrives after the refold. The rebuilt
+    candidate therefore froze a verdict about two measurements while carrying
+    only one of them, on 50 stored candidates.
+
+    Dropping it loses nothing, because no reader wants the word. The bar is
+    applied to whatever measurements ARE here, at render time
+    (shared/score_legends.judge), and a recovered candidate missing an
+    end-of-run metric comes back UNJUDGED rather than passed or failed — which
+    is the true statement about it.
+    """
     basename = posixpath.basename(str(part.get("pdb_key") or ""))
     scores: dict = {}
     if part.get("iptm") is not None:
         scores["ipTM"] = part["iptm"]
     if part.get("plddt") is not None:
         scores["pLDDT"] = part["plddt"]
-    if part.get("filter_status"):
-        scores["filter_status"] = part["filter_status"]
+    if part.get("i_pae") is not None:
+        # Kept under the streamed name. It is one quantity -- interface PAE --
+        # that three containers spell three ways, and the partial schema has a
+        # single field for it (webhooks/modal._sanitize_candidate), so the
+        # partial cannot say which spelling its tool uses.
+        # shared.score_legends resolves "i_pae" for both the rfdiffusion
+        # (i_pAE) and rfantibody (ipAE) bars, so writing the raw name is what
+        # keeps a recovered job judgeable. Dropping it made every recovered
+        # rfdiffusion job unjudged forever on a leg it had measured.
+        scores["i_pae"] = part["i_pae"]
     return {
         "rank": part.get("rank"),
         "pdb_key": f"designs/{basename}",

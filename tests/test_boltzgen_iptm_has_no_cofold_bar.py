@@ -59,6 +59,7 @@ import re
 from html import unescape
 from pathlib import Path
 
+from shared import score_legends
 from shared.score_legends import (
     SCORE_LEGENDS,
     get_legend,
@@ -176,6 +177,15 @@ def _column_tooltip(tool_slug: str) -> str:
         score_legend_for=get_legend,
         legend_text=legend_text,
         ordinal=ranking.ordinal,
+        # The macro applies the bar when it renders. This env survives without
+        # these only because it passes an EMPTY candidate list, so the cell
+        # loop never runs -- one candidate and it is an UndefinedError.
+        judge_design=score_legends.judge,
+        verdict_text=score_legends.verdict_text,
+        gate_bar_text=score_legends.gate_bar_text,
+        shortfall_bar_text=score_legends.shortfall_bar_text,
+        tool_has_bar=score_legends.tool_has_bar,
+        raw_metric=score_legends.raw_metric,
         csrf_input=lambda: "",
         url_for=lambda _endpoint, **kw: "/static/" + kw.get("filename", ""),
     )
@@ -381,11 +391,15 @@ def _asserted(pattern, text: str):
 # durable fix is the one the legend's own comment names: do not restate
 # thresholds in copy at all.
 _BAR_CLAIM = re.compile(
-    # "above 0.6", "aim for 0.55+", "0.5 or better", "treat 0.5 as"
+    # "above 0.6", "aim for 0.55+", "0.5 or better", "treat 0.5 as",
+    # "0.65 or more". The last was missing and is not a hypothetical: the gate
+    # legends were reworded from "Above 0.65" to "0.65 or more" when it turned
+    # out `judge` compares >= while every legend said "Above", and this pattern
+    # then stopped seeing a bar that was still plainly stated.
     r"(above|over|aim\s+for|at\s+least|better\s+than|treat|from)\s+0\.\d+"
     r"|0\.\d+\s*\+"
-    r"|0\.\d+\s+(or\s+better|or\s+higher|and\s+up(wards?)?|and\s+above"
-    r"|upwards?|is\s+(good|strong|credible|acceptable))",
+    r"|0\.\d+\s+(or\s+better|or\s+higher|or\s+more|and\s+up(wards?)?"
+    r"|and\s+above|upwards?|is\s+(good|strong|credible|acceptable))",
     re.I,
 )
 

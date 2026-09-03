@@ -155,6 +155,13 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["judge_design"] = score_legends.judge
+    env.globals["verdict_text"] = score_legends.verdict_text
+    env.globals["plddt_on_100"] = metric_glossary.plddt_on_100
+    env.globals["gate_bar_text"] = score_legends.gate_bar_text
+    env.globals["shortfall_bar_text"] = score_legends.shortfall_bar_text
+    env.globals["tool_has_bar"] = score_legends.tool_has_bar
+    env.globals["raw_metric"] = score_legends.raw_metric
     env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal

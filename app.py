@@ -417,6 +417,26 @@ def create_app() -> Flask:
         _pdb_bfactors.bfactors_on_100_b64
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    # The bar is applied HERE, when a page renders, and the answer is thrown
+    # away with the response. Nothing persists it. A stored verdict is only
+    # true against the threshold that was live when it was written, and this
+    # site shipped 65 BoltzGen candidates permanently labelled "below
+    # threshold" against a bar the container has since dropped. See the block
+    # comment in shared/score_legends.py.
+    flask_app.jinja_env.globals["judge_design"] = _score_legends.judge
+    flask_app.jinja_env.globals["gate_bar_text"] = _score_legends.gate_bar_text
+    flask_app.jinja_env.globals["shortfall_bar_text"] = (
+        _score_legends.shortfall_bar_text
+    )
+    flask_app.jinja_env.globals["tool_has_bar"] = _score_legends.tool_has_bar
+    # The metric CELLS resolve through this too, so a column and the
+    # verdict beside it can never disagree about whether a row has a
+    # value. They used to differ: scores.get(col) in the cell against
+    # alias-plus-root resolution in the judge.
+    flask_app.jinja_env.globals["raw_metric"] = _score_legends.raw_metric
+    flask_app.jinja_env.globals["verdict_text"] = (
+        _score_legends.verdict_text
+    )
     # A CALLABLE, NOT THE SET, and the difference is the whole point. This
     # replaced five slugs typed into components/results_shell.html under a
     # comment asking the next reader to keep them "in lockstep with

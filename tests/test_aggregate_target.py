@@ -1199,22 +1199,23 @@ def test_passed_total_and_per_tool_passed_are_separate_predicates(
 ):
     """Two questions, two predicates. A future unification must break one.
 
-    ``passed_total`` is ``count_passed_candidates``'s per RESULT semantics
-    (shared/jobs.py:179-203), so a target total equals the sum of the run pages
-    beneath it: one record in this result carries a filter signal, so the
-    unsignalled sibling is excluded and the answer is 1.
+    ``passed_total`` is ``count_candidates_meeting_bar``'s per RESULT
+    semantics, so a target total equals the sum of the run pages beneath it.
+    Counting claims a design MET the bar, which needs evidence for, so the
+    record missing two of pxdesign's three legs is excluded and the answer
+    is 1.
 
-    ``per_tool[t]["passed"]`` is shared.ranking's per COHORT regime, where a
-    record carrying no verdict of its own is not a failure, so the answer is 2.
-    They diverge in production after job recovery, which writes filter_status
-    only when the streamed partial carried one.
+    ``per_tool[t]["passed"]`` is shared.ranking's regime, where a record that
+    cannot be judged is not a failure -- ordering sinks a row only on evidence
+    it fell short -- so the answer is 2. They diverge on exactly the records
+    job recovery rebuilds, which hold only what was streamed mid-run.
     """
     rows = [
         _job_row(
             "solo-1", tool="pxdesign", preset="default", target_id="T",
             candidates=[
                 {"pdb_key": "p.pdb",
-                 "scores": {"ipTM": 0.90, "filter_status": "pass"}},
+                 "scores": {"ipTM": 0.90, "pLDDT": 88.0, "pAE": 3.0}},
                 {"pdb_key": "u.pdb", "scores": {"ipTM": 0.80}},
             ],
         ),
@@ -1244,12 +1245,12 @@ def test_passed_total_counts_the_deduped_campaign_side_and_the_standalone_one(
     received. Here attempt 1 carries three passing records that must not
     contribute at all.
 
-    Campaign side: attempt 2 delivers one passing record and one carrying no
-    verdict, and per RESULT semantics exclude the unsignalled sibling once any
-    record in the same result is signalled, so it contributes 1. Standalone
-    side: one pass and one fail, so it contributes 1. Total 2. The cohort
-    regime answers 3 for the same rows, because unjudged is not failed there;
-    the two predicates are pinned independently and must stay that way.
+    Campaign side: attempt 2 delivers one fully measured record that meets the
+    bar and one measured on only part of it, and per RESULT semantics count
+    only the first, so it contributes 1. Standalone side: one meets and one
+    falls short, so it contributes 1. Total 2. The ranking regime answers 3
+    for the same rows, because a record it cannot judge is not a failure
+    there; the two predicates are pinned independently and must stay that way.
     """
     rows = [
         _job_row(
@@ -1257,7 +1258,7 @@ def test_passed_total_counts_the_deduped_campaign_side_and_the_standalone_one(
             campaign_id="C", chunk_index=0, attempt=1,
             candidates=[
                 {"pdb_key": f"old{i}.pdb",
-                 "scores": {"ipTM": 0.5, "filter_status": "pass"}}
+                 "scores": {"ipTM": 0.8, "pLDDT": 88.0, "pAE": 3.0}}
                 for i in range(3)
             ],
         ),
@@ -1266,7 +1267,7 @@ def test_passed_total_counts_the_deduped_campaign_side_and_the_standalone_one(
             campaign_id="C", chunk_index=0, attempt=2,
             candidates=[
                 {"pdb_key": "new-pass.pdb",
-                 "scores": {"ipTM": 0.90, "filter_status": "pass"}},
+                 "scores": {"ipTM": 0.90, "pLDDT": 88.0, "pAE": 3.0}},
                 {"pdb_key": "new-unjudged.pdb", "scores": {"ipTM": 0.80}},
             ],
         ),
@@ -1274,9 +1275,9 @@ def test_passed_total_counts_the_deduped_campaign_side_and_the_standalone_one(
             "solo-1", tool="pxdesign", preset="default", target_id="T",
             candidates=[
                 {"pdb_key": "solo-pass.pdb",
-                 "scores": {"ipTM": 0.70, "filter_status": "pass"}},
-                {"pdb_key": "solo-fail.pdb",
-                 "scores": {"ipTM": 0.60, "filter_status": "fail"}},
+                 "scores": {"ipTM": 0.78, "pLDDT": 88.0, "pAE": 3.0}},
+                {"pdb_key": "solo-short.pdb",
+                 "scores": {"ipTM": 0.60, "pLDDT": 88.0, "pAE": 3.0}},
             ],
         ),
     ]

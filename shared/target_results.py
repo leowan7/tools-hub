@@ -79,7 +79,7 @@ from shared.compute_campaigns import (
     list_campaigns_for_target,
 )
 from shared.credits import get_service_client
-from shared.jobs import candidate_records, count_passed_candidates
+from shared.jobs import candidate_records, count_candidates_meeting_bar
 from shared.ranking import (
     DEFAULT_LIMIT,
     SORT_MODES,
@@ -223,9 +223,9 @@ def _merge_child_rows(
     """Dedupe ONE campaign's retry siblings and expand them to candidate rows.
 
     Returns ``(candidate_rows, passed_count)``, where ``passed_count`` is the
-    per-RESULT ``count_passed_candidates`` total over the deduped jobs. It is
+    per-RESULT ``count_candidates_meeting_bar`` total over the deduped jobs. It is
     accumulated here because the result JSON is already in memory; calling
-    ``_campaign_passed_filters`` once per run instead would be N full re-scans
+    ``_campaign_candidates_meeting_bar`` once per run instead would be N full re-scans
     of every result on a page that has just scanned them.
 
     ``tool``, ``campaign_id`` and ``preset`` are SCALARS rather than values
@@ -256,7 +256,7 @@ def _merge_child_rows(
     merged: list[dict[str, Any]] = []
     passed = 0
     for job in best_by_chunk.values():
-        passed += count_passed_candidates(job.get("result"))
+        passed += count_candidates_meeting_bar(job.get("result"), tool)
         merged += _candidate_rows(
             job, tool=tool, preset=preset, campaign_id=campaign_id,
         )
@@ -535,13 +535,15 @@ def aggregate_target_candidates(
     work. ``ok=True`` with ``tools == []`` means yours and empty: render an
     empty state, export an empty file.
 
-    ``passed_total`` uses ``count_passed_candidates``'s per-RESULT semantics
+    ``passed_total`` uses ``count_candidates_meeting_bar``'s per-RESULT semantics
     summed over the deduped jobs, so a target total equals the sum of the run
     pages beneath it. ``per_tool[t]["passed"]`` answers a different question
-    under ``shared.ranking``'s per-cohort regime, where a record carrying no
-    filter verdict of its own is not a failure. The two diverge after job
-    recovery, which writes ``filter_status`` only when the streamed partial
-    carried one. Two questions, two predicates. They are pinned by separate
+    under ``shared.ranking``'s regime, where a record that cannot be judged is
+    not a failure. The two diverge on any record whose gate columns were not
+    all measured — a job recovered from records streamed mid-run carries no
+    end-of-run metric, so it is unjudged: counted by ranking, excluded here.
+    Counting needs evidence a design MET the bar; ordering needs evidence one
+    FELL SHORT. Two questions, two predicates. They are pinned by separate
     tests; do not print them as one number and do not "unify" them.
 
     ``provisional`` is computed over CAMPAIGNS ONLY, against
@@ -673,7 +675,9 @@ def aggregate_target_candidates(
             refold_jobs += 1
             continue
         standalone_jobs += 1
-        passed_total += count_passed_candidates(job.get("result"))
+        passed_total += count_candidates_meeting_bar(
+            job.get("result"), job.get("tool"),
+        )
         merged += _candidate_rows(
             job,
             tool=job.get("tool"),
