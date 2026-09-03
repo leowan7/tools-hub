@@ -17,8 +17,16 @@ The defect keeps recurring because the neighbours are genuinely close: Boltz
     error, which is the worst thing a guard can do: it made the fix red.
   * ``tools/iggm/meta.py`` linked arXiv 2504.09248, a control-theory paper
     on homomorphic encryption. IgGM has no arXiv version.
+  * ``tools/esmfold2_design/meta.py`` was credited to an organisation,
+    "Chan Zuckerberg Biohub, 2026", where the paper has a first author:
+    Candido et al., bioRxiv 2026. Worse, ``esmfold2_design_form.html``
+    credited the five preset targets to "the EvolutionaryScale 2025
+    paper" -- a different organisation and a different year -- eleven
+    lines above the <option> list it describes. And this file PINNED the
+    organisation form, so the correct citation was red: the SECOND time
+    the guard did the one thing a guard must never do.
 
-Two of those five were in a URL, not in the citation string, so the URLs are
+Two of those six were in a URL, not in the citation string, so the URLs are
 asserted here too. Five of the eight files the first sweep corrected live
 outside any ``tools/<slug>/`` directory, so the leak scan is repo-wide.
 
@@ -40,8 +48,13 @@ from shared.metric_glossary import GLOSSARY
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
-# tool slug -> a surname its paper_citation must contain (or the organisation,
-# where the work is not credited to a first author).
+# tool slug -> a surname its paper_citation must contain.
+#
+# The organisation may stand in ONLY where a primary source shows the work
+# genuinely has no first author. That clause is how "Biohub" sat here for
+# esmfold2_design while Crossref recorded Candido, S. with sequence="first"
+# -- so before using it, look the authors up, do not assume from the
+# citation string already in the repo.
 FIRST_AUTHOR: dict[str, str] = {
     "af2": "Jumper",
     "bindcraft": "Pacesa",
@@ -49,7 +62,10 @@ FIRST_AUTHOR: dict[str, str] = {
     "boltzgen": "Stark",
     "colabfold": "Mirdita",
     "esmfold": "Lin",
-    "esmfold2_design": "Biohub",
+    # NOT "Biohub". Crossref gives Candido, S. as sequence="first" on
+    # 10.64898/2026.06.03.729735; Biohub is the affiliation, not a
+    # substitute for the author.
+    "esmfold2_design": "Candido",
     "iggm": "Wang",
     "mpnn": "Dauparas",
     "opendde": "Aureka",
@@ -87,7 +103,11 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "boltzgen": ("2025.11.20.689494", "HannesStark/boltzgen"),
     "colabfold": ("s41592-022-01488-1", "sokrypton/ColabFold"),
     "esmfold": ("science.ade2574", "facebookresearch/esm"),
-    "esmfold2_design": ("biohub.ai", "evolutionaryscale/esm"),
+    # The DOI, not the publisher's "biohub.ai/papers/esm_protein.pdf"
+    # path: that 301s to this DOI today, but the token "biohub.ai"
+    # identifies no particular paper, so it would pass a link to any
+    # other one they publish. Repo renamed evolutionaryscale -> Biohub.
+    "esmfold2_design": ("2026.06.03.729735", "Biohub/esm"),
     "iggm": ("2024.09.19.613838", "TencentAI4S/IgGM"),
     "mpnn": ("science.add2187", "dauparas/ProteinMPNN"),
     "opendde": ("2607.03787", "aurekaresearch/OpenDDE"),
@@ -158,6 +178,14 @@ FOREIGN_SIGNATURES: dict[str, tuple[str, ...]] = {
     # Boltz-2 genuinely lives in jwohlwend/boltz, so only the author string is
     # barred: "Wohlwend et al" is the Boltz-1 citation.
     "boltz2": ("Wohlwend et al",),
+    # The pre-rename owner of the upstream repo: github.com/evolutionaryscale
+    # /esm 301s to github.com/Biohub/esm, so a stale link still resolves and
+    # nothing breaks to signal it. The misattributing form of the same name,
+    # "the EvolutionaryScale 2025 paper", named the wrong organisation AND
+    # the wrong year on the form's own target picker. If a mention ever
+    # becomes deliberate, drop that one string from this tuple rather than
+    # deleting the entry.
+    "esmfold2_design": ("EvolutionaryScale", "evolutionaryscale"),
 }
 
 # A DENYLIST, not an allowlist. The first version listed the suffixes to scan
@@ -374,6 +402,19 @@ def test_no_neighbouring_models_name_leaks_into_a_tool(
         if p.is_file() and p.suffix.lower() not in _SKIP_SUFFIXES
     ]
     assert files, "no files scanned for %s -- this guard would vacuously pass" % slug
+
+    # The tool's own templates too. Scoping this to tools/<slug>/ is why
+    # "the EvolutionaryScale 2025 paper" survived: it was an <option>
+    # description on the form itself, and no check here could see the
+    # file it lived in.
+    templates = sorted((REPO / "templates" / "tools").glob("%s_*.html" % slug))
+    assert templates, (
+        "no templates/tools/%s_*.html matched. Every tool in this map has "
+        "a form template, so an empty glob means the naming convention "
+        "moved and this half of the scan is silently covering nothing."
+        % slug
+    )
+    files += templates
 
     hits: list[str] = []
     for path in files:
