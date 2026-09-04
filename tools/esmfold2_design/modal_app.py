@@ -47,10 +47,11 @@ _GPU = "H100"
 # SHA is cloned into /opt/ at image build time so run_pipeline.py can do
 # ``import binder_design`` directly. Bump the SHA to bump the algorithm.
 #
-# The upstream org was renamed. The old owner path kept building only
-# because git and pip follow the 301 silently, which holds right up until
-# someone re-creates that org name. The old name is barred by
-# tests/test_citations_name_the_right_model.py, so it is not written here.
+# The repo moved to a different org -- a transfer, not a rename: the two orgs
+# have distinct GitHub ids, and a rename keeps the id. The old owner path kept
+# building only because git and pip follow the 301 silently, which holds right
+# up until someone re-creates that repo under the old owner. The old name is
+# barred by tests/test_citations_name_the_right_model.py, so it is not here.
 _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 # 60 min ceiling per H100 worker — covers the worst-case scfv preset
 # with batch_size=6 plus weight-load tail latency on a cold container.

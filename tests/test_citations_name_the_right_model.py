@@ -21,14 +21,14 @@ The defect keeps recurring because the neighbours are genuinely close: Boltz
     "Chan Zuckerberg Biohub, 2026", where the paper has a first author:
     Candido et al., bioRxiv 2026. Worse, ``esmfold2_design_form.html``
     credited the five preset targets to "the EvolutionaryScale 2025
-    paper" -- a different organisation and a different year -- eleven
+    paper" -- a different organisation and a different year -- twenty-two
     lines above the <option> list it describes. And this file PINNED the
     organisation form, so the correct citation was red: the SECOND time
     the guard did the one thing a guard must never do.
 
-Two of those six were in a URL, not in the citation string, so the URLs are
-asserted here too. Five of the eight files the first sweep corrected live
-outside any ``tools/<slug>/`` directory, so the leak scan is repo-wide.
+Some of those were in a URL and not in the citation string at all, so the
+URLs are asserted here too. Four of the eight files the first sweep corrected
+live outside any ``tools/<slug>/`` directory, so the leak scan is repo-wide.
 
 Every value below was checked against a PRIMARY source -- publisher Crossref
 metadata, the bioRxiv details API, arXiv's API, or the upstream repository's
@@ -68,6 +68,10 @@ FIRST_AUTHOR: dict[str, str] = {
     "esmfold2_design": "Candido",
     "iggm": "Wang",
     "mpnn": "Dauparas",
+    # Checked, because this is the one live use of the organisation clause
+    # above and it has the exact shape that was wrong for Biohub. It is NOT:
+    # arXiv 2607.03787 carries a single citation_author, "project, Aureka AI
+    # OpenDDE" -- the work has no person as first author.
     "opendde": "Aureka",
     # NOT Geffner. The tool is Proteina-Complexa (didi2026scaling, ICLR 2026);
     # geffner2025proteina is the base backbone generator, which the upstream
@@ -106,13 +110,28 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     # The DOI, not the publisher's "biohub.ai/papers/esm_protein.pdf"
     # path: that 301s to this DOI today, but the token "biohub.ai"
     # identifies no particular paper, so it would pass a link to any
-    # other one they publish. Repo renamed evolutionaryscale -> Biohub.
+    # other one they publish. The repo moved orgs, evolutionaryscale ->
+    # Biohub. A transfer, not a rename: the two orgs have distinct GitHub ids
+    # (131310367 from 2023, 262686015 from 2026) and a rename keeps the id.
     "esmfold2_design": ("2026.06.03.729735", "Biohub/esm"),
     "iggm": ("2024.09.19.613838", "TencentAI4S/IgGM"),
     "mpnn": ("science.add2187", "dauparas/ProteinMPNN"),
     "opendde": ("2607.03787", "aurekaresearch/OpenDDE"),
     # Both must say complexa. The base model lives at .../genair/proteina/ and
     # in a different repository.
+    #
+    # These two tokens are WEAKER than the rest of this map -- neither is a
+    # DOI nor an owner/repo pair, so a GitHub link pasted into paper_url would
+    # pass, as would any fork of the repo name.
+    #
+    # KNOWN TRAP, left in place rather than half-fixed. The upstream repo
+    # moved: NVIDIA-Digital-Bio/proteina-complexa 301s to
+    # NVIDIA-BioNeMo/Proteina-Complexa -- new owner AND new casing. The
+    # assertion below is a case-sensitive substring test, so this lowercase
+    # token already goes RED the day someone corrects meta.py to the canonical
+    # URL, and pinning the owner would do the same. It is the only github_url
+    # in this repo that redirects. Fix meta.py and this token in one change;
+    # touching either alone turns a correct value into a failure.
     "proteina": ("proteina-complexa", "proteina-complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
     "rfantibody": ("2024.03.14.585103", "RosettaCommons/RFantibody"),
@@ -136,9 +155,28 @@ MODEL_LABEL_AUTHOR: dict[str, str] = {
 }
 
 # A line naming the KEY must not also carry one of its VALUES: those belong to
-# a different model. Applied repo-wide, because the leak has appeared in a
-# score legend, a runtime table, a product doc and a module docstring -- none
-# of them under tools/<slug>/.
+# a different model.
+#
+# Repo-wide, not scoped to tools/<slug>/, because this pattern has appeared on
+# both sides of that boundary: shared/score_legends.py had a section header
+# pairing "BoltzGen" with "Boltz-1", and tools/boltzgen/meta.py:76 had
+# "BoltzGen (Wohlwend et al., MIT 2024)" in its user-facing About copy. Both
+# were corrected in 879b5ea. A tool-scoped scan sees only the second.
+#
+# The second one also shows this matcher's BLIND SPOT, which is worth more
+# than the history: 3ec66b9, a pure copy pass, reflowed that sentence so the
+# two names landed on separate lines. Still misattributed, now invisible to a
+# line-scoped check -- and nothing about that commit was aiming at this. A
+# file-scoped check like FOREIGN_SIGNATURES keeps seeing it; this one does not.
+#
+# This matcher has therefore never caught anything: CONTEXT_BARS first appears
+# in 819bf13, and 879b5ea and 3ec66b9 are both ancestors of it. It is a
+# regression guard, not a record of finds.
+#
+# No count and no per-guard attribution is given here, on purpose: every
+# version of that history so far has been falsified by replaying the matcher
+# over the blobs. Do that rather than trust a sentence about it, this one
+# included.
 CONTEXT_BARS: dict[str, tuple[str, ...]] = {
     "BoltzGen": ("Boltz-1", "Wohlwend", "jwohlwend"),
 }
@@ -178,7 +216,7 @@ FOREIGN_SIGNATURES: dict[str, tuple[str, ...]] = {
     # Boltz-2 genuinely lives in jwohlwend/boltz, so only the author string is
     # barred: "Wohlwend et al" is the Boltz-1 citation.
     "boltz2": ("Wohlwend et al",),
-    # The pre-rename owner of the upstream repo: github.com/evolutionaryscale
+    # The previous owner of the upstream repo: github.com/evolutionaryscale
     # /esm 301s to github.com/Biohub/esm, so a stale link still resolves and
     # nothing breaks to signal it. The misattributing form of the same name,
     # "the EvolutionaryScale 2025 paper", named the wrong organisation AND
@@ -211,10 +249,15 @@ def _meta(slug: str):
 
 
 def _text_files():
-    """Every text file in the repo except this test's own directory.
+    """The repo's text files, minus this test's own directory and the
+    skip lists.
 
     ``tests/`` is excluded because this file necessarily contains the barred
-    strings it is looking for.
+    strings it is looking for. ``_SKIP_SUFFIXES`` and ``_SKIP_DIRS`` take out
+    binaries, vendored trees and caches -- and also ``.svg``, ``.pdb`` and
+    ``.cif``, which are plain text. So this is NOT every text file: a leak
+    parked under ``vendor/``, ``runs/`` or ``content-migration/``, or written
+    into an SVG label, is not scanned.
     """
     for path in REPO.rglob("*"):
         if not path.is_file() or path.suffix.lower() in _SKIP_SUFFIXES:
@@ -240,6 +283,31 @@ def test_every_tool_meta_is_covered_here() -> None:
             % (name, sorted(on_disk - set(mapping)),
                sorted(set(mapping) - on_disk))
         )
+
+
+def test_the_leak_maps_are_not_empty() -> None:
+    """Emptying a MAP switches its guard off silently.
+
+    The per-entry floors below catch an emptied TUPLE, which fails loudly.
+    Nothing caught an emptied MAP: it yields an empty ``parametrize``, and
+    pytest's default ``empty_parameter_set_mark`` is SKIP. This repo ships no
+    pytest ini (no pytest.ini / setup.cfg / tox.ini / pyproject.toml, and
+    tests/conftest.py sets no ini options), so the default applies and the
+    guard would report SKIPPED rather than failing.
+    """
+    assert CONTEXT_BARS, (
+        "CONTEXT_BARS is empty, so test_no_line_naming_one_model_carries_"
+        "another_models_signature now SKIPs instead of running"
+    )
+    assert FOREIGN_SIGNATURES, (
+        "FOREIGN_SIGNATURES is empty, so test_no_neighbouring_models_name_"
+        "leaks_into_a_tool now SKIPs instead of running"
+    )
+    assert NEVER_NAMED or BARRED_PHRASES, (
+        "NEVER_NAMED and BARRED_PHRASES are both empty, so the repo-wide scan "
+        "test_a_model_this_platform_does_not_run_is_not_named_anywhere now "
+        "SKIPs instead of running"
+    )
 
 
 @pytest.mark.parametrize("slug,expected", sorted(FIRST_AUTHOR.items()))
@@ -331,10 +399,25 @@ def test_no_line_naming_one_model_carries_another_models_signature(
     subject: str, barred: tuple[str, ...]
 ) -> None:
     """Repo-wide, because the leak is not confined to tool directories: of the
-    eight files the first sweep corrected, five were a score legend, a runtime
-    table, a product doc, a module docstring and the glossary. Scoping this to
-    ``tools/<slug>/`` let every one of those be reverted with the suite green.
+    eight files the first sweep (879b5ea) corrected, four sit outside any
+    ``tools/<slug>/`` directory -- a score legend, a runtime table, a product
+    doc and the glossary. A scan scoped to tool directories cannot see any of
+    them.
+
+    This docstring used to add a claim about what stayed green when those were
+    reverted. It was true of the suite as it stood at that sweep and false of
+    the suite now, so it is gone rather than re-derived.
     """
+    # Same floor as its sibling below: emptying a tuple rather than deleting
+    # the entry leaves ``scanned`` non-zero and ``hits`` empty, so the test
+    # reports PASSED having looked for nothing.
+    assert barred, (
+        "CONTEXT_BARS[%r] is empty, so this guard scans every file and "
+        "matches nothing. Remove the whole entry if it is obsolete -- and see "
+        "test_the_leak_maps_are_not_empty before removing the last one."
+        % subject
+    )
+
     hits: list[str] = []
     scanned = 0
     for path, rel in _text_files():
@@ -396,6 +479,19 @@ def test_a_model_this_platform_does_not_run_is_not_named_anywhere(
 def test_no_neighbouring_models_name_leaks_into_a_tool(
     slug: str, barred: tuple[str, ...]
 ) -> None:
+    # An emptied tuple leaves this test reporting PASSED over nothing: the walk
+    # below still runs and still finds files, it just matches no string. The
+    # floors already here (assert files / assert templates) prove the SCAN
+    # happened, which is a different vacuity from having nothing to scan FOR.
+    # Reaching it takes emptying an entry rather than deleting it -- one step
+    # past the allowlisting edit the esmfold2_design comment above describes.
+    assert barred, (
+        "FOREIGN_SIGNATURES[%r] is empty, so this guard scans every file "
+        "and matches nothing. Remove the whole entry if it is obsolete -- and "
+        "see test_the_leak_maps_are_not_empty before removing the last one."
+        % slug
+    )
+
     files = [
         p
         for p in (REPO / "tools" / slug).rglob("*")
@@ -403,15 +499,24 @@ def test_no_neighbouring_models_name_leaks_into_a_tool(
     ]
     assert files, "no files scanned for %s -- this guard would vacuously pass" % slug
 
-    # The tool's own templates too. Scoping this to tools/<slug>/ is why
-    # "the EvolutionaryScale 2025 paper" survived: it was an <option>
-    # description on the form itself, and no check here could see the
-    # file it lived in.
+    # The tool's own templates too. Scoping this to tools/<slug>/ is why "the
+    # EvolutionaryScale 2025 paper" survived: it was an <option> description on
+    # the form itself, and no check here could see the file it lived in.
+    #
+    # LIMIT, stated because a guard that hides its blind spot is worse than
+    # none: this adds the tool's OWN two templates, not templates/ generally.
+    # The same string moved to another tool's form, to a shared component, or
+    # to templates/help/ still slips. It cannot simply go repo-wide, because
+    # these tuples are scoped BY CONSTRUCTION -- boltzgen bars "jwohlwend",
+    # and tools/boltz2/meta.py links jwohlwend/boltz legitimately, so a
+    # repo-wide sweep of these tuples fails on correct code. Widening this
+    # means per-tool name sets, not a wider walk.
     templates = sorted((REPO / "templates" / "tools").glob("%s_*.html" % slug))
     assert templates, (
-        "no templates/tools/%s_*.html matched. Every tool in this map has "
-        "a form template, so an empty glob means the naming convention "
-        "moved and this half of the scan is silently covering nothing."
+        "no templates/tools/%s_*.html matched. Every tool here has a form and "
+        "a results template, so an empty glob means the naming convention "
+        "moved and this half of the scan covers nothing. It floors at zero "
+        "only -- losing one of a tool's two templates still passes."
         % slug
     )
     files += templates
