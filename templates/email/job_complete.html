@@ -19,9 +19,12 @@
      top_score_value      Score value string (e.g. "0.74"); empty when no top score
      top_score_caption    Interpretation of the top score, built by
                           shared.score_legends.email_caption: one line about
-                          the metric, plus -- only when this job's target
-                          names more than one chain -- that metric's caveat,
-                          a short second paragraph. Empty if none.
+                          the metric, plus -- when that metric's caveat
+                          applies to this job, which for a chain-conditional
+                          caveat means the target names more than one chain
+                          and for a ``caveat_before`` one means the job was
+                          created before that instant -- that caveat, a short
+                          second paragraph. Empty if none.
 
                           This said "1-line interpretation of the top score"
                           until a review measured it. It was never true: the

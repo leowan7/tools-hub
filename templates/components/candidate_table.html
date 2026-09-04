@@ -703,6 +703,16 @@
                  tool's designs against one tool's bar. #}
               {% set verdict = judge_design(row_tool, cand) %}
               {% set text = verdict_text(row_tool, verdict) %}
+              {# The verdict is DERIVED from this row's own measurements
+                 (shared/score_legends.judge), so when those measurements
+                 carry an era caveat the verdict inherits it -- otherwise the
+                 one cell on the page that states a conclusion is the one cell
+                 with no caveat on it, which is where two reviewers found this.
+                 No date is available per row here (the pooled target page tags
+                 rows without one), so this is the unknown-date case and
+                 over-warns by design; see caveat_applies. #}
+              {% set era_note = score_era_caveat(row_tool) %}
+              {% set era_suffix = (" " ~ era_note) if era_note else "" %}
               <td data-col="against_bar" data-val="{{ verdict.verdict }}">
                 {# ONE renderer, shared with the live status endpoint. The two
                    surfaces used to branch on the verdict separately, so a
@@ -717,9 +727,9 @@
                      answers "what was it compared against". The cell carries
                      any gaps alongside the shortfall, so nothing here implies
                      a leg was measured when it was not. #}
-                  <span title="Compared against {{ gate_bar_text(row_tool) }}.">{{ text }}</span>
+                  <span title="Compared against {{ gate_bar_text(row_tool) }}.{{ era_suffix }}">{{ text }}</span>
                 {% elif verdict.verdict == 'meets' %}
-                  <span title="Every leg measured and met.">{{ text }}</span>
+                  <span title="Every leg measured and met.{{ era_suffix }}">{{ text }}</span>
                 {% elif verdict.unusable %}
                   {# ABSENT AND BROKEN GET DIFFERENT TOOLTIPS, because they are
                      different facts and the whole reason `unusable` exists is

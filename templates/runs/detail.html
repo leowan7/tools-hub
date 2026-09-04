@@ -176,9 +176,11 @@
     {% endif %}
     {% from "components/results_shell.html" import results_panel %}
     {% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
+    {% from "components/score_era_notice.html" import score_era_notice %}
     {# campaign.params is the sanitized submit payload (shared/compute_campaigns
        drops only underscore-prefixed wiring keys), so target_chain survives. #}
     {{ multichain_iptm_notice(campaign.tool, (campaign.params or {}).get('target_chain')) }}
+    {{ score_era_notice(campaign.tool, campaign.created_at) }}
     {% call results_panel(candidates=candidates, columns=result_columns, tool_slug=campaign.tool, job_id='', clone_url='', campaign_id=campaign.id) %}
       <p class="subtitle">No designs passed the quality filter yet.</p>
     {% endcall %}

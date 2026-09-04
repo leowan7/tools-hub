@@ -164,6 +164,7 @@ def _env() -> Environment:
     env.globals["raw_metric"] = score_legends.raw_metric
     env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["legend_text"] = score_legends.legend_text
+    env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 
+from datetime import datetime, timezone
 from typing import NamedTuple, NotRequired, Optional, TypedDict
 
 from shared import metric_glossary as _metric_glossary
@@ -100,6 +101,117 @@ class Legend(TypedDict):
     # that do not need one. So the split stays and the email opts in per job —
     # see ``email_caption``.
     caveat: NotRequired[str]
+
+    # WHEN does ``caveat`` apply -- as an instant, for a caveat whose
+    # antecedent is a DATE rather than a chain count.
+    #
+    # BoltzGen's caveat opens "On a multi-chain target ...", so the condition a
+    # consumer must evaluate is the job's chain count, and ``caveat_applies``
+    # falls back to that when this key is absent.
+    #
+    # RFdiffusion's opens "Runs before the September 2026 container update",
+    # which is a different antecedent on a different axis, and the container
+    # fix is deployed -- so a run happening NOW is not affected. An earlier
+    # draft of this field was a bool (``caveat_always``) that simply skipped
+    # the question, and three reviewers independently called it the same
+    # defect the chain gate exists to prevent: every future RFdiffusion
+    # customer mailed 400 characters whose premise is false for their run,
+    # which is the "a caveat shown to everyone is a caveat nobody reads" rule
+    # this repo pins at tests/test_multichain_iptm_notice.py.
+    #
+    # An ISO-8601 instant rather than a bool, because the antecedent IS a date
+    # and a consumer holding ``job.created_at`` can evaluate it exactly. A
+    # consumer that has no date over-warns rather than under-warns; see
+    # ``caveat_applies``.
+    caveat_before: NotRequired[str]
+
+
+# The instant the fixed RFdiffusion container could first serve a run.
+#
+# Not the merge and not the Modal deploy: `run_pipeline.py` ships INSIDE the
+# image, so the boundary is when "Build and Push RFdiffusion Docker" finished
+# for llm-proteinDesigner `e976f32` -- 2026-09-04T16:45:37Z, read off the run
+# rather than estimated. A job created before that ran the old image.
+#
+# It is a PROXY and says so: what actually changed is the image a run pulled,
+# and no job row records the container SHA it ran under (checked -- nothing in
+# this repo reads, writes or requires such a field). A job created a minute
+# before the boundary and executed a minute after it ran the NEW image and
+# will be over-warned. That is the safe direction, and it is the only error
+# this boundary can make in that region.
+RFDIFFUSION_SCORE_ERA_BOUNDARY = "2026-09-04T16:45:37Z"
+
+# Every AF2-derived RFdiffusion score from before llm-proteinDesigner#23 is a
+# constant, not a measurement -- so it goes on all three of that tool's scored
+# columns, defined ONCE here rather than pasted three times.
+#
+# WHAT CHANGED. #23 (squash-merged as e976f32 on that repo's master) changed
+# THREE things about what a run stores, and an earlier draft of this comment
+# said "two" and was corrected in review:
+#
+#   * The AF2 re-score passed ``--msa-mode single_sequence`` for the WHOLE
+#     complex. That is right for the de novo binder, which has no homologs to
+#     align, and wrong for the natural target, which has thousands. Measured on
+#     job 7349a7bc (4ZQK chain A, 8 designs): the target chain came back at
+#     pLDDT 38.7 and 16.4 A RMSD from its own crystal structure, and the
+#     designed binder out-scored it. ipTM, pLDDT and i_pAE are all read off
+#     that complex, so all three describe a target AF2 rebuilt wrongly.
+#   * ``pLDDT`` CHANGED WHAT IT MEANS. It is now the mean over the BINDER
+#     residues; before #23 it was the whole-complex mean, which that container
+#     now reports separately as ``complex_pLDDT``. So the pLDDT legend's own
+#     explanation -- "AF2 confidence on the designed binder" -- is false for
+#     every pre-boundary row, and the old value was additionally dragged down
+#     by the misfolded target it averaged over.
+#   * ``denoiser.noise_scale_ca`` / ``noise_scale_frame`` were left at the
+#     stock 1.0 instead of the 0 the binder recipe calls for, so the backbones
+#     themselves differ from what the tool now produces.
+#
+# WHY THE ORDERING IS NAMED TOO, and leaving it out was a shipped half-measure
+# here twice before (components/multichain_iptm_notice.html; the BoltzGen
+# caveat below, which names it): rfdiffusion RANKS on ipTM
+# (shared/result_columns.py), pre-boundary ipTM sat in a 0.06-0.13 band, and
+# aggregate_target_candidates / aggregate_campaign_candidates sort then
+# truncate at limit=300 -- so that near-constant decides which designs are
+# visible at all. Disclaiming the values while the order silently persists is
+# the exact shape this repo has already paid for.
+#
+# WHERE THIS RENDERS, and why it is not the only surface. A legend caveat
+# reaches a column tooltip and the completion email. That is the right home
+# for the POOLED TARGET PAGE, where a pre-boundary row sits beside a
+# post-boundary one and shared/target_results.py tags rows with no date:
+# neither _STANDALONE_COLUMNS nor _CHILD_COLUMNS selects created_at, so no
+# per-row gate is available there and the ungated tooltip is what is left.
+#
+# It is NOT enough on a JOB or CAMPAIGN page, and an earlier draft of this
+# comment generalised the pooled page's limitation to every surface and
+# concluded "no banner". Those pages DO carry a date (job.created_at,
+# campaign.created_at), the amber banner shape already exists, and the job
+# page's own summary line tells a reader in body text that "the pipeline ran
+# cleanly" while every number under it is void. A hover tooltip does not
+# answer that. Hence components/score_era_notice.html, gated on the date.
+#
+# WHY ALL THREE COLUMNS RATHER THAN THE RANKING KEY ALONE. GATE_COLUMNS
+# ["rfdiffusion"] is exactly ("ipTM", "pLDDT", "i_pAE"): those three ARE the
+# conjunction ``judge`` evaluates into the verdict #216 renders, so a reader
+# who checks only the column that carries the warning would still be handed a
+# verdict derived from two that do not. The verdict CELL carries it too, for
+# the same reason -- see components/candidate_table.html.
+#
+# ("rfdiffusion", "RMSD") is deliberately left uncaveated, and the evidence
+# for that was wrong the first time it was written here. ``parse_af2_scores``
+# in that container returns ipTM, pLDDT and i_pAE, plus ``complex_pLDDT`` on
+# the branch that splits the binder out; ``filter_status`` is stamped onto the
+# dict by its CALLERS rather than returned. What matters for RMSD survives the
+# correction: the key appears nowhere in that container, so the legend renders
+# nowhere and a caveat on it would be dead text.
+_RFDIFFUSION_SCORE_ERA_CAVEAT = (
+    "Runs before the September 2026 container update scored each design "
+    "against a target AlphaFold had rebuilt without an MSA, so their "
+    "ipTM, pLDDT and i_pAE describe that broken complex rather than the "
+    "design; pLDDT there is a whole-complex mean, not the binder's. "
+    "Designs are ordered on ipTM, so an older run's ordering is "
+    "indicative only."
+)
 
 
 # (tool_slug, column_key) -> Legend.
@@ -204,6 +316,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "Interface pTM from the AF2 multimer re-score. 0.65 or more "
             "is a credible binder; 0.75 or more is strong."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_before": RFDIFFUSION_SCORE_ERA_BOUNDARY,
     },
     ("rfdiffusion", "pLDDT"): {
         "good": 80,
@@ -213,6 +327,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "pLDDT is AF2 confidence on the designed binder. 80 or more "
             "is confidently folded; 90 or more is high confidence."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_before": RFDIFFUSION_SCORE_ERA_BOUNDARY,
     },
     ("rfdiffusion", "i_pAE"): {
         "good": 10.0,
@@ -223,6 +339,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "the binder-target interface. 10 angstroms or less passes; "
             "6 or less is strong."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_before": RFDIFFUSION_SCORE_ERA_BOUNDARY,
     },
     ("rfdiffusion", "RMSD"): {
         "good": 1.5,
@@ -429,9 +547,13 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # the results page does.
         #
         # So the caveat is opt-in per job rather than absent: ``email_caption``
-        # appends it when THAT JOB's target names more than one chain, which is
-        # the condition the caveat's own first clause states and which the
+        # appends THIS ONE when that job's target names more than one chain,
+        # which is the condition its own first clause states and which the
         # email — unlike the legend — can evaluate, because it has the job.
+        # The gate belongs to the caveat, not to the function: a legend whose
+        # caveat names an ERA instead of a chain count sets ``caveat_before``,
+        # and ``caveat_applies`` reads that job's date. See the RFdiffusion
+        # legends above.
         #
         # Truncating in the email instead was considered and rejected: every
         # other legend is "definition. threshold.", so "first sentence only"
@@ -626,11 +748,98 @@ def names_multiple_chains(target_chain) -> bool:  # noqa: ANN001
     return len(set(chains)) > 1
 
 
-def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN001
+def _as_instant(value) -> Optional[datetime]:  # noqa: ANN001
+    """Parse an ISO-8601 instant, or ``None`` if it is not one.
+
+    Returns ``None`` rather than raising, because every caller here treats an
+    unreadable date as "I do not know when this ran" and over-warns. A naive
+    value is read as UTC: Supabase hands these back with an offset, and the
+    one shape that arrives without one is a hand-written test fixture.
+    """
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            moment = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def caveat_applies(legend: Optional[Legend], target_chain=None,  # noqa: ANN001
+                   created_at=None) -> bool:  # noqa: ANN001
+    """Does this legend's ``caveat`` hold for THIS job?
+
+    ONE place decides, because the question is asked from three: the
+    completion email, the era banner, and the tests that pin both. When it
+    lived inline in ``email_caption`` the banner could not reuse it.
+
+    A caveat states its own antecedent and this reads whichever one it states:
+
+      * ``caveat_before`` -- a date. True when the job was created before that
+        instant. This is RFdiffusion's shape.
+      * otherwise -- the chain count, which is BoltzGen's shape ("On a
+        multi-chain target ...").
+
+    WHEN THE DATE IS UNKNOWN IT RETURNS TRUE, and that asymmetry is the whole
+    design. A missing or unparseable ``created_at`` means the caller cannot
+    tell which container ran, and the two errors are not equal: over-warning
+    costs a sentence on a run that did not need it, under-warning lets a
+    number that is not a measurement render as one. The pooled target page is
+    exactly this case -- shared/target_results.py tags rows with no date -- so
+    it gets the caveat on every RFdiffusion row rather than none.
+    """
+    if not isinstance(legend, dict):
+        return False
+    if not str(legend.get("caveat") or "").strip():
+        return False
+    before = legend.get("caveat_before")
+    if before:
+        moment = _as_instant(created_at)
+        boundary = _as_instant(before)
+        if moment is None or boundary is None:
+            return True
+        return moment < boundary
+    return names_multiple_chains(target_chain)
+
+
+def score_era_caveat(tool_slug: str, created_at=None) -> str:  # noqa: ANN001
+    """The era caveat for one tool's run, or ``""`` when it does not apply.
+
+    What components/score_era_notice.html renders, and what the verdict cell
+    in components/candidate_table.html appends to its tooltip. Returns the
+    SAME string the column tooltips and the completion email carry -- the
+    banner exists to change where the sentence appears, not what it says, and
+    a second wording would be two copies of one claim drifting apart.
+
+    Returns ``""`` for a run after the boundary, which is what self-gates the
+    banner: a template can call it unconditionally.
+    """
+    if not tool_slug:
+        return ""
+    for (slug, _col), legend in SCORE_LEGENDS.items():
+        if slug != tool_slug or not legend.get("caveat_before"):
+            continue
+        if caveat_applies(legend, created_at=created_at):
+            return str(legend.get("caveat") or "").strip()
+        return ""
+    return ""
+
+
+def email_caption(legend: Optional[Legend], target_chain,  # noqa: ANN001
+                  created_at=None) -> str:  # noqa: ANN001
     """The legend as the JOB-COMPLETION EMAIL needs it, for one job.
 
-    ``explanation`` always; plus ``caveat`` when this job's target names more
-    than one chain.
+    ``explanation`` always; plus ``caveat`` when ``caveat_applies`` says this
+    job meets the caveat's own antecedent -- the chain count for BoltzGen's,
+    the creation date for RFdiffusion's.
 
     WHY THE EMAIL GETS THE CAVEAT AT ALL. The mail is not only sent about a run
     that just finished. ``shared/jobs.complete_job`` — which sends it — is
@@ -643,7 +852,7 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
     "the binder-to-target interface" with no caveat. A caveat is about what a
     STORED result may hold, and these mails are about stored results.
 
-    WHY THE CHAIN GATE. The caveat's own first clause is "On a multi-chain
+    WHY THERE IS A GATE AT ALL. BoltzGen's caveat opens "On a multi-chain
     target …", so on a single-chain run it is a conditional with a false
     antecedent: true, but noise — and a caveat shown to everyone is a caveat
     nobody reads (the rule this repo pins at
@@ -653,6 +862,21 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
     That is the whole difference between the two consumers, and it is why this
     is a second function rather than an argument to ``legend_text``.
 
+    WHY THE GATE IS NOT ALWAYS THE CHAIN GATE. A caveat states its own
+    antecedent, and the chain count is only ONE antecedent a caveat can have.
+    RFdiffusion's is a DATE — what changed was the container, so a run on the
+    fixed image is simply not affected. Gating that on chain count would
+    silently withhold it from every single-chain run; NOT gating it at all
+    (the first draft of this change, and what three reviewers rejected) mails
+    400 characters to every future customer about a defect their run does not
+    have. This function asks ``caveat_applies`` instead, and the email is the
+    consumer that can answer, because it holds the job: ``job.created_at`` is
+    already printed in the same message.
+
+    The alternative considered and rejected was widening the chain gate for
+    everyone: that would put BoltzGen's multi-chain sentence into
+    single-chain BoltzGen mail, which is the defect the gate was added to fix.
+
     The caveat is appended VERBATIM rather than paraphrased into something
     shorter. A shorter email-only wording is a second copy of one claim, and
     two copies drifting apart is what produced the last three defects here.
@@ -661,7 +885,7 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
         return ""
     caption = str(legend.get("explanation") or "").strip()
     caveat = str(legend.get("caveat") or "").strip()
-    if caveat and names_multiple_chains(target_chain):
+    if caveat and caveat_applies(legend, target_chain, created_at):
         caption = f"{caption} {caveat}".strip()
     return caption
 

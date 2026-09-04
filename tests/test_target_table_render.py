@@ -52,6 +52,7 @@ def _env() -> Environment:
     env.globals["tool_has_bar"] = score_legends.tool_has_bar
     env.globals["raw_metric"] = score_legends.raw_metric
     env.globals["legend_text"] = score_legends.legend_text
+    env.globals["score_era_caveat"] = score_legends.score_era_caveat
     # The REAL function, not a stub. A stub here would let the percentile cell
     # be tested against this file's idea of an ordinal rather than production's.
     env.globals["ordinal"] = ranking.ordinal
