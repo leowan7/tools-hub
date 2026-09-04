@@ -460,9 +460,9 @@ def create_app() -> Flask:
     # the OTHER consumer of a stored result and calls
     # shared/score_legends.email_caption instead — same two halves, but the
     # caveat half is gated on the job, which a table cannot see: on the chain
-    # count for a caveat whose first clause is about chains, and not at all
-    # for one marked ``caveat_always`` (RFdiffusion's era note, which is true
-    # of every run of that tool whatever its chain count). It is
+    # count for a caveat whose first clause is about chains, and on the job's
+    # creation date for one that carries ``caveat_before`` (RFdiffusion's era
+    # note, which is about runs from before its container fix). It is
     # not exempt from caveats: complete_job also runs from the stuck-job
     # sweeper, the inline poll and scripts/finalize_stuck_job.py, so that mail
     # can be about a result the app read back out of Storage.
@@ -471,6 +471,14 @@ def create_app() -> Flask:
     # rather than as a chain-splitting expression repeated across six results
     # templates — the tool set and the "more than one chain" rule are one
     # decision, and it is testable there.
+    # The era caveat for ONE run, gated on that run's own date -- what
+    # components/score_era_notice.html renders and what the verdict cell in
+    # components/candidate_table.html appends to its tooltip. Returns "" when
+    # the run postdates the tool's container fix, so a template can call it
+    # unconditionally and the banner gates itself.
+    flask_app.jinja_env.globals["score_era_caveat"] = (
+        _score_legends.score_era_caveat
+    )
     flask_app.jinja_env.globals["multichain_iptm_unreliable"] = (
         _score_legends.multichain_iptm_unreliable
     )

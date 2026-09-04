@@ -98,9 +98,14 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 #
 #   _CAVEAT_LIMIT bounds the part that is CONDITIONAL — appended when the
 #   caveat's own antecedent holds for the job, which for BoltzGen's means the
-#   target names more than one chain and for an RFdiffusion-style
-#   ``caveat_always`` note means every run. Either way it is bounded here, and
-#   the ceiling is measured on the APPENDED form. The rule is that a caveat is
+#   target names more than one chain and for one carrying ``caveat_before``
+#   (RFdiffusion's era note) means the job predates that instant.
+#
+#   IT MEASURES ``legend["caveat"]`` ITSELF, not the appended caption — a
+#   review corrected that claim here, because the two ceilings are exactly the
+#   distinction this comment block exists to draw and blurring them is how the
+#   previous version came to watch the wrong string. ``_CAPTION_LIMIT`` below
+#   is the one measured on the appended form. The rule is that a caveat is
 #   subordinate to what it
 #   qualifies: at most twice the line it hangs off. Past that it is not a note
 #   on a one-line reading, it is the body of a different message and it belongs
@@ -546,16 +551,30 @@ def test_no_legend_outgrows_the_email_caption_slot():
     # second copy of the explanation check the moment the gate moves, and it
     # would degenerate silently — which is exactly how the version this
     # replaces came to measure the wrong string.
-    appended = {
+    #
+    # IT MUST BE A CHAIN-GATED CAVEAT THAT GROWS, and asserting merely that
+    # SOMETHING grew stopped being enough the moment a second kind of caveat
+    # existed. RFdiffusion's is gated on a date, and ``email_caption`` is
+    # called here without one, so it appends whatever the chain gate does —
+    # meaning a dead chain gate left this premise satisfied and the failure
+    # message below claiming to detect one was false. Proven by mutation, in
+    # review, on the commit that introduced the second kind.
+    chain_gated = {
         key for key, legend in SCORE_LEGENDS.items()
-        if captions[key] > len(legend["explanation"])
+        if legend.get("caveat") and not legend.get("caveat_before")
+    }
+    appended = {
+        key for key in chain_gated
+        if captions[key] > len(SCORE_LEGENDS[key]["explanation"])
     }
     assert appended, (
-        f"no legend's caption grows on a {_MULTI_CHAIN!r} target, so this "
-        f"check is measuring the same string as the one above. Either the "
-        f"chain gate in shared/score_legends.email_caption no longer opens "
-        f"for {_MULTI_CHAIN!r}, or no legend carries a caveat any more; "
-        f"re-point this rather than leave it passing."
+        f"no CHAIN-GATED legend's caption grows on a {_MULTI_CHAIN!r} target, "
+        f"so this check is measuring the same string as the one above. Either "
+        f"the chain gate in shared/score_legends.email_caption no longer opens "
+        f"for {_MULTI_CHAIN!r}, or no legend carries a chain-conditional "
+        f"caveat any more; re-point this rather than leave it passing. "
+        f"(Date-gated caveats are excluded on purpose: they append here "
+        f"regardless of the chain gate, so they cannot witness it.)"
     )
     over_caption = {k: n for k, n in captions.items() if n > _CAPTION_LIMIT}
     assert not over_caption, (
