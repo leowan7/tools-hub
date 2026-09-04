@@ -624,39 +624,6 @@
 }
 
 /* --------------------------------------------------------------------------
-   PPI interface badges
-   -------------------------------------------------------------------------- */
-
-.interface-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.interface-badge.large {
-  background: rgba(196, 91, 83, 0.1);
-  color: #E8736B;
-  border: 1px solid rgba(196, 91, 83, 0.25);
-}
-
-.interface-badge.medium {
-  background: rgba(196, 154, 58, 0.1);
-  color: var(--warning);
-  border: 1px solid rgba(196, 154, 58, 0.25);
-}
-
-.interface-badge.small {
-  background: rgba(74, 142, 194, 0.1);
-  color: var(--info);
-  border: 1px solid rgba(74, 142, 194, 0.25);
-}
-
-/* --------------------------------------------------------------------------
    Binder / overlap badges
    -------------------------------------------------------------------------- */
 
