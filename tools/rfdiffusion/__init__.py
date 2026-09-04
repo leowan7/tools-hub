@@ -8,7 +8,8 @@ ipTM / pLDDT / i_pAE statistics from the AF2 model.
 
 Known-good on commit ``d83335c`` (Bug 8 unblock). Pilot tier accepts a
 caller-supplied target PDB plus hotspots and runs on the webhook flow
-(~15-30 min on A100-40GB).
+(~25 min for four designs, ~40 for eight, on A100-40GB -- see the
+measurement note above ``preset_runtime_rows`` in meta.py).
 """
 
 from __future__ import annotations
@@ -144,16 +145,16 @@ adapter = ToolAdapter(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back brand-new binders, each carrying a real "
         "AlphaFold2 confidence score against your target. A pilot run "
-        "takes roughly 15 to 30 min."
+        "takes roughly 25 min for four designs, 40 for eight."
     ),
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~30 min start to first results",
+            label="Your target, ~25 min start to first results",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
                 "with AF2 multimer validation. Pick 1 to 1000 candidates. "
-                "Start with a small batch (4 designs, ~30 min) to "
+                "Start with a small batch (4 designs, ~25 min) to "
                 "confirm your target and hotspots, then scale to 100+ "
                 "once the small batch looks reasonable. Results emailed "
                 "when complete; A100-80GB."

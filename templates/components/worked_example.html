@@ -69,11 +69,20 @@ Usage:
     {# The tool's real results component, outside the panel body so it
        keeps its own chrome — exactly as it renders on /jobs/<id>. #}
     {% set example = true %}
+    {# ``created_at`` is load-bearing, not decoration. A results partial may
+       carry an era notice gated on when the run happened
+       (components/score_era_notice.html, via score_legends.score_era_caveat),
+       and that gate OVER-WARNS when it cannot read a date -- deliberately, so
+       the dateless pooled target page still warns. A stub with no date
+       therefore makes every worked example render "these scores are not
+       measurements" over its own numbers. ``ex.ran_on`` is the real run's
+       creation time; a tool with no era caveat is unaffected either way. #}
     {% set job = {
          "id": "example",
          "status": "succeeded",
          "tool": adapter.slug,
          "inputs": {},
+         "created_at": ex.ran_on,
          "result": ex.result,
        } %}
     {% include adapter.results_partial %}
