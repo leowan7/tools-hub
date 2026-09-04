@@ -274,7 +274,20 @@
 
         if (submitBtn) {
           var blocked = ceiling || hard;
-          submitBtn.disabled = blocked;
+          // See the twin in static/js/preflight.js. Both scripts write
+          // this one button, so neither assigns `disabled` outright: each
+          // owns a flag and both recompute from the union. Assigning it
+          // here used to clear a preflight refusal a quarter second after
+          // the panel had rendered it. `blocked` below still means the
+          // WALLET's own verdict, which is what the hidden/shown branch
+          // wants -- do not fold the preflight flag into it.
+          if (blocked) {
+            submitBtn.dataset.blockWallet = '1';
+          } else {
+            delete submitBtn.dataset.blockWallet;
+          }
+          submitBtn.disabled = submitBtn.dataset.blockWallet === '1' ||
+                               submitBtn.dataset.blockPreflight === '1';
           if (insufficient && !blocked) {
             submitBtn.setAttribute('hidden', '');
           } else {

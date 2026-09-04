@@ -73,10 +73,31 @@
     form.appendChild(reuseTokenInput);
   }
 
+  // TWO SCRIPTS OWN THIS BUTTON, so neither may assign `disabled`
+  // outright. templates/wallet/_partials.html grabs the same element
+  // (its button[type="submit"]:not([data-gate-button]) selector matches
+  // #tool-submit-btn) and wrote `disabled = ceiling || hard` on every
+  // debounced estimate. A FAILING preflight is the fastest response this
+  // route can give -- inspect_pdb_bytes throws on the first token and the
+  // route returns before preflight_for_tool -- so it landed first,
+  // disabled the button, and the estimate 250ms later re-enabled it: a red
+  // "Can't run this target as-is" panel sitting above a live Submit
+  // button. It broke the other way too, a ready verdict re-enabling a
+  // button the wallet had blocked.
+  //
+  // Each side now owns one flag and both recompute from the union, so
+  // neither has to load first and neither can clear the other's refusal.
+  // Keep the two attribute names in step with the wallet twin.
   function setSubmitEnabled(enabled) {
     if (!submitBtn) return;
-    submitBtn.disabled = !enabled;
-    submitBtn.setAttribute("aria-disabled", String(!enabled));
+    if (enabled) {
+      delete submitBtn.dataset.blockPreflight;
+    } else {
+      submitBtn.dataset.blockPreflight = "1";
+    }
+    submitBtn.disabled = submitBtn.dataset.blockPreflight === "1" ||
+                         submitBtn.dataset.blockWallet === "1";
+    submitBtn.setAttribute("aria-disabled", String(submitBtn.disabled));
   }
 
   function showLoading(label) {
