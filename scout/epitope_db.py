@@ -15,11 +15,24 @@ Each returned dict has:
     species         str   — Antigen source organism from SAbDab
     resolution      float — X-ray/cryo-EM resolution in Angstroms (None if NMR)
     affinity        str   — Kd if deposited, else empty string
-    contact_residues list[int] — Antigen residue numbers at the interface
+    contact_residues list[int] — Antigen residue numbers at the interface.
+                          ABSENT when the interface was not established: the
+                          entry is past ``max_contact_structures`` (permanent,
+                          and the common case for a well-studied target), the
+                          coordinate host was unreadable or still inside its
+                          backoff, the body would not parse, or the download
+                          outran the join. A 404 is NOT in that list — an entry
+                          with no PDB-format file settles as [].
+                          Absent is not zero. ``.get("contact_residues", [])``
+                          is safe when you only need residue numbers, but test
+                          ``"contact_residues" in entry`` before telling a user
+                          anything about the interface, and never write a
+                          placeholder [] back.
     antigen_chain   str   — Antigen chain ID in the PDB entry
     ab_chains       list[str] — Antibody chain IDs
 """
 
+import copy
 import csv
 import difflib
 import logging
@@ -766,12 +779,27 @@ def _compute_contacts(
     antigen_chain: str,
     ab_chains: list,
     cutoff: float = _CONTACT_CUTOFF_ANGSTROM,
-) -> list:
+) -> Optional[list]:
     """Compute antigen residue numbers in contact with antibody chains.
 
     Uses BioPython to parse the structure and NumPy for vectorised distance
-    computation. Returns an empty list if either library is unavailable or
-    if the chain IDs are not found in the structure.
+    computation.
+
+    Returns ``None`` when the coordinates could not be read at all -- the
+    libraries are missing, or anything in the parse-and-measure raised --
+    and a list otherwise. The caller caches what it gets forever, so those
+    two have to stay apart: an unreadable body that answers ``[]`` is
+    indistinguishable from an interface with nothing in it, and gets
+    written down as a fact.
+
+    A structure that parsed but does not contain the named chains answers
+    ``[]``: re-downloading produces the same absence every time, so there is
+    nothing to retry. That is right when the chains really are absent and
+    WRONG in one case this module does not handle -- SAbDab's chain ids come
+    from mmCIF ``auth_asym_id`` and the download URL serves the legacy .pdb,
+    which can label chains differently. There is no chain-id mapping anywhere
+    here, so such an entry caches a permanent "contacts nothing". Pre-existing,
+    and a retry would not fix it; a mapping would.
 
     Args:
         pdb_text: Raw text content of a PDB coordinate file.
@@ -780,14 +808,15 @@ def _compute_contacts(
         cutoff: Distance threshold in Angstroms.
 
     Returns:
-        Sorted list of antigen residue sequence numbers (PDB auth_seq_id).
+        Sorted list of antigen residue sequence numbers (PDB auth_seq_id), or
+        ``None`` if the structure could not be read.
     """
     try:
         from Bio.PDB import PDBParser  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
     except ImportError:
         logger.debug("BioPython or NumPy not available; skipping contact computation.")
-        return []
+        return None
 
     try:
         parser = PDBParser(QUIET=True)
@@ -835,10 +864,36 @@ def _compute_contacts(
 
     except Exception:
         logger.debug("Contact computation error.", exc_info=True)
-        return []
+        return None
 
 
-def _fetch_and_compute_contacts(pdb_id: str, antigen_chain: str, ab_chains: list) -> list:
+# Bound on a dead files.rcsb.org, mirroring _RCSB_RETRY_AT for the search host.
+# Refusing to cache a failure is what stops the permanent zero, but it also
+# means every analysis retries, and a retry is up to _MAX_CONTACT_STRUCTURES
+# downloads (~0.5-5 MB each, see that constant) started inside
+# anon_compute_slot(ANON_MAX_CONCURRENT_RUNS), which is 2.
+#
+# ponytail: one SHARED unlocked timestamp, matching _RCSB_RETRY_AT, and armed
+# ONLY by a TRANSPORT failure -- a non-404 error status or a raise from
+# requests. That restriction is the whole of what makes "shared" tolerable.
+# The per-entry failures are the ones a structure carries forever: a 404
+# (mmCIF-only entry) and a body that will not parse. Neither arms this, so no
+# single bad structure can darken contact downloads for every other target.
+# A transport error is not entry-specific in that way -- it says the host is
+# unhappy -- so it does darken them, for one TTL, and an accession analysed in
+# that window gets no interface rather than a wrong one. Blunt, and the same
+# trade _RCSB_RETRY_AT already makes one layer up.
+#
+# Note this is a deadline, not a flag: a later success does not clear it, only
+# the clock does. Deliberate, and again the same as _RCSB_RETRY_AT -- clearing
+# on success would let one healthy entry in a round re-open the floodgate for
+# the four still failing behind it.
+_PDB_FILE_RETRY_AT = 0.0
+
+
+def _fetch_and_compute_contacts(
+    pdb_id: str, antigen_chain: str, ab_chains: list
+) -> Optional[list]:
     """Download a PDB file from RCSB and compute interface contact residues.
 
     Args:
@@ -847,22 +902,59 @@ def _fetch_and_compute_contacts(pdb_id: str, antigen_chain: str, ab_chains: list
         ab_chains: Antibody chain IDs.
 
     Returns:
-        Sorted list of contact residue numbers, or [] on failure.
+        Sorted list of contact residue numbers; ``[]`` when the answer is
+        genuinely no contacts (or there is nothing to compute against, or the
+        entry has no PDB-format file at all); ``None`` when the coordinates
+        could not be read and the question is still open.
+
+        ``fetch_known_binders`` caches what this returns for the life of the
+        worker, so ``[]`` for a 503 is what pins "this antibody touches
+        nothing" long after files.rcsb.org recovers -- the same
+        silent-permanent-zero shape as the search-side outage above, one layer
+        down. Only this layer sees the status code, so only this layer can tell
+        the two apart.
+
+        A 404 is deliberately on the ``[]`` side. Structures too large for the
+        legacy format are mmCIF-only and answer 404 forever, so classifying
+        that as an outage would re-download the same absence on every retry.
+
+        An armed backoff also answers ``None``, without asking the host at
+        all. Same meaning -- the question is open -- and the same handling:
+        the entry stays pending and is re-attempted once the TTL lapses.
     """
+    global _PDB_FILE_RETRY_AT
     if not antigen_chain or not ab_chains:
         return []
+    if time.monotonic() < _PDB_FILE_RETRY_AT:
+        return None
     try:
         url = RCSB_PDB_DOWNLOAD_URL.format(pdb_id=pdb_id.upper())
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT_SEC)
-        if not resp.ok:
-            logger.debug(
-                "PDB download failed for %s: HTTP %s", pdb_id, resp.status_code
-            )
+        if resp.status_code == 404:
+            logger.debug("No PDB-format file for %s (404).", pdb_id)
             return []
+        if not resp.ok:
+            logger.warning(
+                "PDB download failed for %s: HTTP %s. Backing off "
+                "files.rcsb.org for %ss.",
+                pdb_id, resp.status_code, _RCSB_ERROR_TTL_SEC,
+            )
+            _PDB_FILE_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+            return None
+        # A parse failure below returns None WITHOUT arming the backoff. The
+        # bytes arrived, so the host is fine; the entry is re-downloaded on the
+        # next lookup of this accession and nothing else is affected. That is
+        # one download per lookup per unreadable structure -- bounded by
+        # _MAX_CONTACT_STRUCTURES, and the price of not writing down a zero we
+        # cannot justify.
         return _compute_contacts(resp.text, antigen_chain, ab_chains)
     except Exception:
-        logger.debug("PDB download/parse error for %s.", pdb_id, exc_info=True)
-        return []
+        logger.warning(
+            "PDB download error for %s. Backing off files.rcsb.org for %ss.",
+            pdb_id, _RCSB_ERROR_TTL_SEC, exc_info=True,
+        )
+        _PDB_FILE_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1159,7 +1251,10 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
             "resolution": resolution,
             "species": species,
             "affinity": str(affinity) if affinity else "",
-            "contact_residues": [],
+            # No "contact_residues" key. SAbDab does not carry the interface;
+            # it is computed from coordinates by fetch_known_binders, and a
+            # placeholder [] here is indistinguishable downstream from a
+            # computed empty interface. Absence is what says "not established".
         })
 
     # Deduplicate by pdb_id (keep best resolution row per structure).
@@ -1180,6 +1275,88 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
 
 
 # ---------------------------------------------------------------------------
+# Contact resolution (the per-entry half of the cache)
+# ---------------------------------------------------------------------------
+
+# How long to wait on the contact-download threads before giving up on this
+# round. Was an inline literal; named so the late-thread guard in
+# tests/test_scout_epitope_db_sabdab.py can shorten it instead of sleeping.
+_CONTACT_JOIN_TIMEOUT_SEC = 20
+
+
+def _resolve_contacts(cache_key: str, entries: list, limit: int) -> list:
+    """Fill in ``contact_residues`` for the first *limit* entries lacking it.
+
+    Returns a fresh list of fresh dicts and stores it under *cache_key*. Both
+    the fresh lookup and the cache hit come through here, so an entry whose
+    interface could not be computed is retried on the next lookup instead of
+    being served as a permanent zero -- which is the whole point: ``_CACHE``
+    has no expiry, so a 503 from files.rcsb.org during the first analysis of a
+    target used to pin ``contact_residues: []`` on that binder for the life of
+    the worker. The known-binder table then showed that antibody stuck on
+    "pending" forever, and _get_binder_overlaps dropped it from the feasibility
+    overlap silently.
+
+    The expensive half -- the RCSB search and the SAbDab index lookup that
+    produced *entries* -- is NOT discarded when a coordinate download flakes.
+    Only the entries that failed are re-attempted.
+
+    Two costs of that, both deliberate:
+
+    A thread that outruns the join has its result DISCARDED, where the old code
+    let the late write land (unsafely -- it landed in an already-cached,
+    already-returned dict). So a slow-but-working structure now costs its work
+    and stays pending. Bounded by re-attempting on the next lookup.
+
+    ponytail: two concurrent callers for the same accession both resolve and
+    both _cache_put, so the loser's interface is clobbered and re-fetched later.
+    Harmless under the sync workers this runs on today (one request per process
+    at a time); if gunicorn.conf.py's documented gthread flip ever happens,
+    hold _CACHE_LOCK across the read-resolve-write instead.
+    """
+    pending = [
+        i for i, entry in enumerate(entries[:limit])
+        if "contact_residues" not in entry
+    ]
+    resolved: dict = {}
+
+    if pending and time.monotonic() >= _PDB_FILE_RETRY_AT:
+        # Slots, not the entry dicts. A thread that outruns the join below is
+        # still running when this function caches its result, so it must not
+        # hold a reference to anything reachable from _CACHE: the old worker
+        # wrote straight into a dict that was already cached AND already
+        # returned, mutating it under a caller mid-json.dump. A late write into
+        # this local list is discarded instead, and the entry stays pending.
+        slots: list = [None] * len(pending)
+
+        def _worker(slot: int, idx: int) -> None:
+            entry = entries[idx]
+            slots[slot] = _fetch_and_compute_contacts(
+                entry["pdb_id"], entry["antigen_chain"], entry["ab_chains"]
+            )
+
+        threads = [
+            threading.Thread(target=_worker, args=(slot, idx), daemon=True)
+            for slot, idx in enumerate(pending)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=_CONTACT_JOIN_TIMEOUT_SEC)
+
+        resolved = {
+            idx: slots[slot] for slot, idx in enumerate(pending)
+            if slots[slot] is not None
+        }
+
+    out = [dict(entry) for entry in entries]
+    for idx, residues in resolved.items():
+        out[idx]["contact_residues"] = residues
+    _cache_put(cache_key, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -1194,13 +1371,19 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
     Args:
         uniprot_id: UniProt accession (e.g. "P00533" for EGFR).
         max_contact_structures: Number of structures to compute contacts for.
-            Remaining hits are returned without contact residues.
+            Remaining hits are returned without a ``contact_residues`` key.
 
     Returns:
         List of binder dicts. Empty when the accession is blank or malformed,
         when the target genuinely has no antibody complexes, OR when an
         upstream was unreadable. Those three are not distinguishable from the
         return value — only from the warnings the helpers log.
+
+        An entry carries ``contact_residues`` only once the interface has
+        actually been computed; see the module docstring. The key is filled in
+        by a later call if the coordinate host was down for this one, so the
+        returned list is a snapshot, not a stable identity — callers get a
+        fresh copy every time and must not hold onto it.
     """
     # Re-checked here, not just at extraction, because this is the function
     # that mints a cache key and it is reachable from more than one resolver.
@@ -1209,58 +1392,71 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
         return []
 
     with _CACHE_LOCK:
-        if cache_key in _CACHE:
-            return _CACHE[cache_key]
+        cached = _CACHE.get(cache_key)
 
-    sabdab_hits = query_sabdab(cache_key)
-    if not sabdab_hits:
-        # Only remember "no binders" when both upstreams actually answered.
-        # This cache has no expiry, so a miss written during an outage outlives
-        # the outage — bounded only by the entry cap eventually evicting it,
-        # never by the upstream recovering. That reproduces in miniature the
-        # silent-permanent-zero failure this repoint fixes.
-        #
-        # The lookup rides on two: RCSB names the candidate structures and
-        # SAbDab says which are antibody complexes. Before this guard grew its
-        # RCSB arm, either being down produced the same empty list as a target
-        # that genuinely has none, and vouching for SAbDab alone let an RCSB
-        # outage write permanent zeroes. ``None`` is RCSB's "I could not
-        # answer"; ``[]`` is an answer of zero.
-        #
-        # The SAbDab arm deliberately accepts a stale-but-served index (see
-        # _sabdab_summary_index): the summary is published weekly, so last
-        # week's copy is a fact, not an outage.
-        if sabdab_hits is not None and _sabdab_summary_index():
-            _cache_put(cache_key, [])
-        return []
+    if cached is None:
+        sabdab_hits = query_sabdab(cache_key)
+        if not sabdab_hits:
+            # Only remember "no binders" when both upstreams actually
+            # answered. This cache has no expiry, so a miss written during an
+            # outage outlives the outage — bounded only by the entry cap
+            # eventually evicting it, never by the upstream recovering. That
+            # reproduces in miniature the silent-permanent-zero failure this
+            # repoint fixes.
+            #
+            # The lookup rides on two: RCSB names the candidate structures and
+            # SAbDab says which are antibody complexes. Before this guard grew
+            # its RCSB arm, either being down produced the same empty list as a
+            # target that genuinely has none, and vouching for SAbDab alone let
+            # an RCSB outage write permanent zeroes. ``None`` is RCSB's "I
+            # could not answer"; ``[]`` is an answer of zero.
+            #
+            # The SAbDab arm deliberately accepts a stale-but-served index (see
+            # _sabdab_summary_index): the summary is published weekly, so last
+            # week's copy is a fact, not an outage.
+            #
+            # A coordinate download that fails is NOT handled here: it costs
+            # one entry's interface, not the whole (expensive) list, so
+            # _resolve_contacts keeps the list and retries that entry.
+            if sabdab_hits is not None and _sabdab_summary_index():
+                _cache_put(cache_key, [])
+            return []
+        cached = sabdab_hits
 
-    # Compute contacts for the top N structures in parallel.
-    to_process = sabdab_hits[:max_contact_structures]
-    remainder = sabdab_hits[max_contact_structures:]
+    # Both paths land here, so a cache hit retries any interface that was never
+    # established rather than serving it as a permanent zero.
+    #
+    # deepcopy, not dict(entry): a shallow copy still shares the
+    # contact_residues and ab_chains LIST objects with the cache, so "the
+    # caller cannot corrupt the cache" would have been true only of rebinding a
+    # key and false of the mutation anyone would actually reach for
+    # (list.append). The lists are small and there are at most
+    # _RCSB_PROBE_LIMIT of them, against an HTTP call.
+    return copy.deepcopy(
+        _resolve_contacts(cache_key, cached, max_contact_structures)
+    )
 
-    processed = [dict(entry) for entry in to_process]
 
-    def _worker(idx: int, entry: dict) -> None:
-        residues = _fetch_and_compute_contacts(
-            entry["pdb_id"], entry["antigen_chain"], entry["ab_chains"]
-        )
-        processed[idx]["contact_residues"] = residues
+def cached_binders(uniprot_id: str) -> Optional[list]:
+    """Binders for *uniprot_id* if this worker already has them, else ``None``.
 
-    threads = [
-        threading.Thread(target=_worker, args=(i, entry), daemon=True)
-        for i, entry in enumerate(to_process)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=20)
+    A read of ``_CACHE`` and nothing else: no RCSB search, no SAbDab summary,
+    no coordinate downloads, no threads. It exists so a caller outside
+    ``anon_compute_slot`` can benefit from an interface this worker has since
+    repaired without putting a multi-upstream network call on its path --
+    ``fetch_known_binders`` on a cold worker is a 12 s search plus a 60 s
+    summary fetch plus a round of downloads, which is not something to hang off
+    a page render.
 
-    # Append remaining hits (no contact residue computation).
-    result = processed + [dict(entry) for entry in remainder]
-
-    _cache_put(cache_key, result)
-
-    return result
+    ``None`` means "this worker has not looked this accession up", NOT "no
+    binders" -- an accession with none genuinely caches ``[]``.
+    """
+    key = _valid_accession(uniprot_id)
+    if not key:
+        return None
+    with _CACHE_LOCK:
+        entries = _CACHE.get(key)
+    return None if entries is None else copy.deepcopy(entries)
 
 
 # ---------------------------------------------------------------------------
