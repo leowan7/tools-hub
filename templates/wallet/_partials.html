@@ -204,6 +204,22 @@
 
       var submitBtn = form.querySelector('[data-submit-cta], button[type="submit"]:not([data-gate-button])');
 
+      // SEED THE UNION FROM THE SERVER'S OWN REFUSAL, and do it HERE
+      // rather than in preflight.js because this script is inline and
+      // runs at parse time, while preflight.js is `defer`red -- this is
+      // the earliest moment at which the button's `disabled` is still
+      // exactly what the server rendered and no script has touched it.
+      //
+      // All eight panel forms render the button disabled when a SUBMITTED
+      // run came back with a failed preflight verdict. Without this line
+      // the first estimate computes false || false and clears a refusal
+      // neither script made -- and clears only the `disabled` property,
+      // leaving the server's aria-disabled="true" behind, so assistive
+      // tech announced a live button as disabled.
+      if (submitBtn && submitBtn.disabled) {
+        submitBtn.dataset.blockPreflight = '1';
+      }
+
       // Three directions, not one. This block renders a cost, two balances, a
       // cap and a required top-up through what used to be a single NEAREST
       // rounding, so it printed BELOW the real estimate on 6 of 13 tool forms
@@ -288,6 +304,11 @@
           }
           submitBtn.disabled = submitBtn.dataset.blockWallet === '1' ||
                                submitBtn.dataset.blockPreflight === '1';
+          // Mirrors the twin. Writing .disabled without this left the
+          // attribute stale on every wallet-only block.
+          submitBtn.setAttribute(
+            'aria-disabled', String(submitBtn.disabled),
+          );
           if (insufficient && !blocked) {
             submitBtn.setAttribute('hidden', '');
           } else {

@@ -1428,11 +1428,15 @@ def tool_preflight(tool: str):
         # (shared/pdb_inspect.py). Converting first left source_label as
         # the user's own `.cif` name while pdb_bytes had already become
         # PDB text, so MMCIFParser was handed PDB and raised on the first
-        # token. EVERY cif upload, on all eight forms that mount this
-        # panel, came back "Could not parse the uploaded file as mmCIF.
-        # Error: ValueError." Meanwhile tool_submit inspects raw and
-        # converts after, so it accepted the same bytes and ran the job:
-        # the panel refused targets the gate was happy to run.
+        # token. EVERY cif upload came back "Could not parse the uploaded
+        # file as mmCIF. Error: ValueError." on all SEVEN tools in
+        # PREFLIGHT_TOOLS. Eight forms mount this panel; iggm is not in
+        # that set, so the route returns READY above without ever reading
+        # the upload and its panel inspects nothing at all.
+        #
+        # Meanwhile tool_submit inspects raw and converts after, so it
+        # accepted the same bytes and ran the job: the panel refused
+        # targets the gate was happy to run.
         #
         # tool_submit (below) and pdb_intake.resolve_target_upload are the
         # two existing implementations of the correct order; this is the
@@ -1471,10 +1475,18 @@ def tool_preflight(tool: str):
 
     # CONVERT ONLY NOW, AND ONLY BEFORE preflight_for_tool. That function
     # has no CIF handling whatsoever: it scans raw ATOM/HETATM columns and
-    # says so in its own docstring. Hand it mmCIF and every scan finds zero
-    # residues SILENTLY instead of raising, which is a worse failure than
-    # the one this reorder fixes. Conversion belongs between the inspection
-    # above and the gate below, and nowhere else.
+    # says so in its own docstring.
+    #
+    # MEASURED, and the obvious guess is wrong in both directions --
+    # nothing raises out of the route, and nothing passes cleanly either.
+    # Handed mmCIF the gate refuses with a sentence that blames the user's
+    # file for our own mistake: six of the seven report "Couldn't
+    # pre-flight your upload (IndexError). The file may be malformed." and
+    # boltz2 reports "Antigen chain 'A' has no protein residues in this
+    # PDB." What every one of them has in common is a residue count of 0,
+    # which is why the test pins the COUNT and not the verdict.
+    # Conversion belongs between the inspection above and the
+    # gate below, and nowhere else.
     if needs_cif_convert:
         try:
             pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, source_label)
