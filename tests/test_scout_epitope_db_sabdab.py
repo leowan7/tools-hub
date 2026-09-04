@@ -143,10 +143,12 @@ def _clean_caches():
     epitope_db._reset_summary_cache()
     epitope_db._CACHE.clear()
     epitope_db._RCSB_RETRY_AT = 0.0
+    epitope_db._PDB_FILE_RETRY_AT = 0.0
     yield
     epitope_db._reset_summary_cache()
     epitope_db._CACHE.clear()
     epitope_db._RCSB_RETRY_AT = 0.0
+    epitope_db._PDB_FILE_RETRY_AT = 0.0
 
 
 @pytest.fixture
@@ -586,6 +588,402 @@ class TestRcsbFailureIsNotCachedForever:
 
         assert epitope_db.fetch_known_binders("P00533") == []
         assert "P00533" not in epitope_db._CACHE
+
+
+class TestContactFailureIsNotCachedForever:
+    """The same guard again, one layer down: the per-BINDER interface.
+
+    The two classes above stop an outage pinning "this target has no known
+    binders". This one stops an outage pinning "this known binder contacts
+    nothing", which is the same silent permanent zero wearing a smaller hat and
+    was deliberately left out of that change because it needed its own shape.
+
+    Discarding the whole binder list because one coordinate download flaked
+    would be wrong -- the list is the expensive part (an RCSB search plus the
+    SAbDab index) and it was fine. So the interface is cached SEPARATELY from
+    the list: absent until established, retried on the next lookup, and the
+    list itself is never re-fetched. ``[]`` in ``contact_residues`` therefore
+    means "settled -- do not ask again": a genuinely empty interface, or one
+    of the two permanent absences (no PDB-format file, no chains to compute
+    against). It never means "the host was down".
+
+    RCSB's coordinate host is reached with ``requests.get``, the same verb as
+    the SAbDab summary, so these tests dispatch on URL and keep both databases
+    healthy on purpose: a pass can only come from the contact arm.
+    """
+
+    @staticmethod
+    def _hosts(monkeypatch, *, status=200, exc=None, contacts=(18, 19, 20)):
+        """Serve the summary, and answer files.rcsb.org however asked.
+
+        Returns the list of coordinate URLs requested, so a test can count
+        downloads rather than trust a timestamp.
+        """
+        downloads = []
+
+        def _fake_get(url, **kwargs):
+            if url.startswith(epitope_db.SABDAB_SUMMARY_URL):
+                return _FakeResponse(_SUMMARY_CSV, 200)
+            downloads.append(url)
+            if exc is not None:
+                raise exc
+            return _FakeResponse("ATOM  (stand-in)", status)
+
+        monkeypatch.setattr(epitope_db.requests, "get", _fake_get)
+        # The parse is covered by tests/test_scout_mse_contacts.py against real
+        # coordinates. What matters here is only that a readable body yields an
+        # answer and an unreadable one never reaches this function at all.
+        monkeypatch.setattr(
+            epitope_db, "_compute_contacts", lambda *a, **k: list(contacts)
+        )
+        return downloads
+
+    @staticmethod
+    def _binders(monkeypatch, ids=("7K8M",)):
+        monkeypatch.setattr(
+            epitope_db, "_rcsb_pdb_ids_for_uniprot", lambda *a, **k: list(ids)
+        )
+
+    def test_a_503_is_not_written_down_as_an_empty_interface(self, monkeypatch):
+        self._binders(monkeypatch)
+        self._hosts(monkeypatch, status=503)
+
+        binders = epitope_db.fetch_known_binders("P0DTC2")
+
+        assert [b["pdb_id"] for b in binders] == ["7K8M"], (
+            "the binder LIST must survive a coordinate download failing; "
+            "only the interface is unknown"
+        )
+        assert "contact_residues" not in binders[0], (
+            "a 503 from files.rcsb.org was recorded as 'this antibody contacts "
+            "nothing'. _CACHE has no expiry, so that zero outlives the outage "
+            "for the life of the worker, and the UI shows a known antibody "
+            "touching nothing."
+        )
+
+    def test_the_interface_is_right_once_the_download_recovers(self, monkeypatch):
+        """Not caching the failure is the means; healing is the end.
+
+        Asserting only on the absent key passes against a version that never
+        retries, so this one walks a binder through the outage and out.
+        """
+        self._binders(monkeypatch)
+        self._hosts(monkeypatch, status=503)
+        assert "contact_residues" not in epitope_db.fetch_known_binders("P0DTC2")[0]
+
+        # The failed round set the backoff; recovery is only observable once it
+        # lapses. Same move the RCSB tests make with _RCSB_RETRY_AT.
+        epitope_db._PDB_FILE_RETRY_AT = 0.0
+        downloads = self._hosts(monkeypatch, status=200)
+
+        binders = epitope_db.fetch_known_binders("P0DTC2")
+        assert downloads, "the coordinates were never re-downloaded"
+        assert binders[0]["contact_residues"] == [18, 19, 20]
+
+    def test_the_binder_list_is_not_re_fetched_to_repair_an_interface(
+        self, monkeypatch
+    ):
+        """The expensive half must not be thrown away with the cheap half.
+
+        A retry that also re-ran the RCSB search would put a 12-second request
+        back inside anon_compute_slot on every analysis of an outage-affected
+        target -- trading a permanent zero for a permanent cost.
+        """
+        searches = []
+
+        def _search(uniprot_id, *a, **k):
+            searches.append(uniprot_id)
+            return ["7K8M"]
+
+        monkeypatch.setattr(epitope_db, "_rcsb_pdb_ids_for_uniprot", _search)
+        self._hosts(monkeypatch, status=503)
+        epitope_db.fetch_known_binders("P0DTC2")
+
+        epitope_db._PDB_FILE_RETRY_AT = 0.0
+        self._hosts(monkeypatch, status=200)
+        binders = epitope_db.fetch_known_binders("P0DTC2")
+
+        assert binders[0]["contact_residues"] == [18, 19, 20]
+        assert len(searches) == 1, (
+            f"repairing one interface cost {len(searches)} RCSB searches; the "
+            f"cached binder list was discarded along with the failed download"
+        )
+
+    def test_a_computed_empty_interface_is_cached(self, monkeypatch):
+        """The counterpart, and the reason this is a sentinel and not "always
+        refetch": an interface that really is empty is a fact, and
+        re-downloading a multi-megabyte structure to re-derive it on every
+        analysis is exactly the cost the cache exists to remove.
+        """
+        self._binders(monkeypatch)
+        downloads = self._hosts(monkeypatch, status=200, contacts=())
+
+        assert epitope_db.fetch_known_binders("P0DTC2")[0]["contact_residues"] == []
+        epitope_db.fetch_known_binders("P0DTC2")
+        assert len(downloads) == 1, "a computed empty interface went back to RCSB"
+
+    def test_a_404_is_an_answer_not_an_outage(self, monkeypatch):
+        """Structures too large for the legacy format are mmCIF-only and 404
+        forever. Classifying that as an outage would re-download the same
+        absence every TTL and, because the backoff is shared, stall every other
+        target's interfaces behind one oversized entry.
+        """
+        self._binders(monkeypatch)
+        downloads = self._hosts(monkeypatch, status=404)
+
+        assert epitope_db.fetch_known_binders("P0DTC2")[0]["contact_residues"] == []
+        epitope_db.fetch_known_binders("P0DTC2")
+        assert len(downloads) == 1, "a 404 was retried as though it were an outage"
+
+        # The timestamp alone proves nothing here -- the fixture initialises
+        # it to 0.0, so asserting that is asserting the fixture. Whether a
+        # SECOND accession can still download is the property that matters.
+        # The host is healthy for it: if the 404 had armed the backoff,
+        # _fetch_and_compute_contacts short-circuits to None before ever
+        # asking, so a healthy host is what makes an armed backoff visible.
+        self._binders(monkeypatch, ids=["1A2Y"])
+        self._hosts(monkeypatch, status=200)
+        assert epitope_db.fetch_known_binders("P00698")[0][
+            "contact_residues"
+        ] == [18, 19, 20], (
+            "one entry with no PDB-format file tripped the SHARED backoff and "
+            "darkened contact downloads for every other target"
+        )
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"status": 503},
+            {"exc": RuntimeError("connection reset")},
+        ],
+        ids=["http-503", "network-error"],
+    )
+    def test_a_dead_coordinate_host_is_not_re_downloaded_every_analysis(
+        self, monkeypatch, failure
+    ):
+        """Refusing to cache the outage is correct; flooding it is not.
+
+        Nothing is written for a failed interface, so without a backoff every
+        analysis re-downloads up to _MAX_CONTACT_STRUCTURES structures of
+        0.5-5 MB, inside a 2-slot semaphore. Counting the downloads is the
+        assertion with teeth: checking the timestamp alone passes against a
+        version that re-downloads every time and merely rewrites the clock.
+        """
+        self._binders(monkeypatch)
+        downloads = self._hosts(monkeypatch, **failure)
+
+        for _ in range(5):
+            epitope_db.fetch_known_binders("P0DTC2")
+
+        assert len(downloads) == 1, (
+            f"a dead files.rcsb.org cost {len(downloads)} downloads across 5 "
+            f"analyses; the error TTL is not short-circuiting"
+        )
+        remaining = epitope_db._PDB_FILE_RETRY_AT - time.monotonic()
+        assert 0 < remaining <= epitope_db._RCSB_ERROR_TTL_SEC
+
+    def test_an_unreadable_body_never_arms_the_shared_backoff(self, monkeypatch):
+        """The failure mode a shared timestamp has to survive.
+
+        An earlier version armed the backoff whenever a ROUND resolved nothing.
+        That reads as "the host is down" only on the first round: ``pending`` is
+        recomputed each call as the entries still missing the key, so from round
+        two on a round contains ONLY the entries that keep failing, and an
+        all-failed round is guaranteed. One structure whose body will not parse
+        therefore re-armed a process-wide 5-minute blackout on every lookup, and
+        any target analysed inside that window came back with no interfaces at
+        all -- the bug this file exists to close, re-created across targets
+        instead of pinned to one.
+
+        Running THREE rounds is the whole point: round one passed under the old
+        code too, so a single-round version of this guard is worthless.
+        """
+        self._binders(monkeypatch, ids=["1A2Y", "7K8M"])
+        # 200 with a body that cannot be read: the host is fine, the entry is
+        # not. 7K8M's antibody chains are A,B and 1A2Y's are B,A, so the stub
+        # can fail exactly one of them.
+        monkeypatch.setattr(
+            epitope_db.requests,
+            "get",
+            lambda url, **k: _FakeResponse(
+                _SUMMARY_CSV
+                if url.startswith(epitope_db.SABDAB_SUMMARY_URL)
+                else "ATOM  (stand-in)",
+                200,
+            ),
+        )
+        monkeypatch.setattr(
+            epitope_db,
+            "_compute_contacts",
+            lambda text, chain, ab, **k: None if ab == ["A", "B"] else [7],
+        )
+
+        for round_no in (1, 2, 3):
+            binders = {
+                b["pdb_id"]: b for b in epitope_db.fetch_known_binders("P0DTC2")
+            }
+            assert binders["1A2Y"]["contact_residues"] == [7]
+            assert "contact_residues" not in binders["7K8M"]
+            assert epitope_db._PDB_FILE_RETRY_AT == 0.0, (
+                f"round {round_no}: one unparseable structure armed the SHARED "
+                f"backoff. Every other target analysed in the next "
+                f"{epitope_db._RCSB_ERROR_TTL_SEC}s gets no interfaces at all."
+            )
+
+    def test_an_unreadable_body_does_not_blank_another_target(self, monkeypatch):
+        """The consequence spelled out, on a second accession.
+
+        The guard above is about a timestamp; this one is about what a different
+        user analysing a different protein actually gets back.
+        """
+        self._binders(monkeypatch, ids=["7K8M"])
+        monkeypatch.setattr(
+            epitope_db.requests,
+            "get",
+            lambda url, **k: _FakeResponse(
+                _SUMMARY_CSV
+                if url.startswith(epitope_db.SABDAB_SUMMARY_URL)
+                else "ATOM  (stand-in)",
+                200,
+            ),
+        )
+        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: None)
+        for _ in range(3):
+            epitope_db.fetch_known_binders("P0DTC2")
+
+        # A different protein, whose own structure reads perfectly.
+        self._binders(monkeypatch, ids=["1A2Y"])
+        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: [7])
+        assert epitope_db.fetch_known_binders("P00698")[0]["contact_residues"] == [7]
+
+    def test_a_transport_failure_does_arm_the_backoff(self, monkeypatch):
+        """The other half, and the reason the backoff exists at all.
+
+        A non-404 status or a raise from requests is not entry-specific -- it
+        says the host is unhappy -- so it is the one thing allowed to arm the
+        shared timestamp. Without this, the two guards above would pass against
+        a version that has no backoff whatsoever and floods a dead host.
+        """
+        self._binders(monkeypatch)
+        self._hosts(monkeypatch, status=503)
+        epitope_db.fetch_known_binders("P0DTC2")
+
+        remaining = epitope_db._PDB_FILE_RETRY_AT - time.monotonic()
+        assert 0 < remaining <= epitope_db._RCSB_ERROR_TTL_SEC
+
+    def test_an_interface_already_established_is_never_re_downloaded(
+        self, monkeypatch
+    ):
+        """A repair round must touch only what is still missing."""
+        self._binders(monkeypatch, ids=["1A2Y", "7K8M"])
+        monkeypatch.setattr(
+            epitope_db.requests,
+            "get",
+            lambda url, **k: _FakeResponse(
+                _SUMMARY_CSV
+                if url.startswith(epitope_db.SABDAB_SUMMARY_URL)
+                else "ATOM  (stand-in)",
+                503 if "7K8M" in url else 200,
+            ),
+        )
+        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: [7])
+        binders = {b["pdb_id"]: b for b in epitope_db.fetch_known_binders("P0DTC2")}
+        assert binders["1A2Y"]["contact_residues"] == [7]
+        assert "contact_residues" not in binders["7K8M"]
+
+        epitope_db._PDB_FILE_RETRY_AT = 0.0
+        downloads = self._hosts(monkeypatch, status=200, contacts=[9])
+        binders = {b["pdb_id"]: b for b in epitope_db.fetch_known_binders("P0DTC2")}
+        assert binders["7K8M"]["contact_residues"] == [9]
+        assert [u for u in downloads if "1A2Y" in u] == [], (
+            "an interface that was already established was re-downloaded"
+        )
+
+
+class TestALateThreadCannotMutateAReturnedResult:
+    """``join(timeout=...)`` means a contact thread can outlive the call.
+
+    The old worker wrote its result straight into a dict that was, by then,
+    already inside ``_CACHE`` and already returned to a caller -- and
+    ``fetch_known_binders`` handed back the cache's own list object, so the
+    late write landed in a structure the route was json.dump-ing at
+    scout/routes.py. Two properties fix it and both are guarded here: a thread
+    writes only into a local slot, and callers get copies.
+    """
+
+    @staticmethod
+    def _healthy_summary(monkeypatch):
+        monkeypatch.setattr(
+            epitope_db, "_rcsb_pdb_ids_for_uniprot", lambda *a, **k: ["7K8M"]
+        )
+        monkeypatch.setattr(
+            epitope_db.requests,
+            "get",
+            lambda url, **k: _FakeResponse(_SUMMARY_CSV, 200),
+        )
+
+    def test_a_thread_that_outruns_the_join_writes_nothing_shared(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(epitope_db, "_CONTACT_JOIN_TIMEOUT_SEC", 0.05)
+        self._healthy_summary(monkeypatch)
+
+        release = threading.Event()
+
+        def _slow(*a, **k):
+            release.wait(10)
+            return [1, 2, 3]
+
+        monkeypatch.setattr(epitope_db, "_fetch_and_compute_contacts", _slow)
+
+        binders = epitope_db.fetch_known_binders("P0DTC2")
+        cached = epitope_db._CACHE["P0DTC2"]
+        assert "contact_residues" not in binders[0]
+
+        release.set()
+        # Give the straggler every chance to land somewhere it should not.
+        for _ in range(200):
+            if any("contact_residues" in b for b in (*binders, *cached)):
+                break
+            time.sleep(0.01)
+
+        assert "contact_residues" not in binders[0], (
+            "a thread that outran the join wrote into the dict the caller "
+            "already had; the route json.dump()s that object"
+        )
+        assert "contact_residues" not in cached[0], (
+            "a thread that outran the join wrote into a dict already in _CACHE"
+        )
+
+    def test_the_caller_does_not_get_the_cache_s_own_objects(self, monkeypatch):
+        self._healthy_summary(monkeypatch)
+        monkeypatch.setattr(
+            epitope_db, "_fetch_and_compute_contacts", lambda *a, **k: [1, 2, 3]
+        )
+
+        first = epitope_db.fetch_known_binders("P0DTC2")
+        assert first is not epitope_db._CACHE["P0DTC2"]
+        assert first[0] is not epitope_db._CACHE["P0DTC2"][0]
+
+        first[0]["pdb_id"] = "TAMPERED"
+        # The LISTS, not just a scalar key. A shallow dict() copy passes the
+        # rebind above while still handing out the cache's own list objects,
+        # so asserting only the rebind certifies more than it checks --
+        # append is the mutation anyone would actually reach for.
+        first[0]["contact_residues"].append(999)
+        first[0]["ab_chains"].append("ZZ")
+
+        again = epitope_db.fetch_known_binders("P0DTC2")[0]
+        assert again["pdb_id"] == "7K8M", (
+            "a caller rebinding a key on its own result rewrote the cache"
+        )
+        assert again["contact_residues"] == [1, 2, 3], (
+            "a caller appending to its own contact_residues rewrote the "
+            "cache: the copy is shallow and shares the list object"
+        )
+        assert again["ab_chains"] == ["A", "B"], (
+            "a caller appending to its own ab_chains rewrote the cache"
+        )
 
 
 # ---------------------------------------------------------------------------

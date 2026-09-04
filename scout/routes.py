@@ -748,6 +748,59 @@ def _results_csv_chain_id(job_dir: Path) -> "str | None":
     return first_row.get("chain_id") or None
 
 
+def _binders_with_contacts(cache: dict) -> list[dict]:
+    """Binders from *cache*, with any unestablished interface filled in.
+
+    ``contact_residues`` is absent, not empty, on a binder whose coordinates
+    could not be read when analyze_cache.json was written (see
+    scout.epitope_db). Treating that absence as "contacts nothing" drops a real
+    antibody out of the overlap list, and on disk it survives both the outage
+    and a worker restart. epitope_db retries those downloads on its next
+    lookup, so if this worker has since repaired the accession, use what it
+    has.
+
+    Deliberately ``cached_binders`` and not ``fetch_known_binders``: this runs
+    in /feasibility/analyze, which -- unlike /analyze -- holds no
+    anon_compute_slot, so a lookup here is not covered by the concurrency
+    bound. On a cold worker fetch_known_binders is a 12 s RCSB search plus a
+    60 s summary fetch plus a round of downloads, against a 120 s gunicorn
+    timeout and workers = 2. A read of the in-process cache is the whole of
+    what this is worth: the job's own /analyze already rewrites
+    analyze_cache.json, so a re-analyze remains the way a cold worker heals.
+    """
+    binders = cache.get("known_binders", [])
+    uniprot_id = cache.get("uniprot_id", "")
+    # Only the first _MAX_CONTACT_STRUCTURES entries are ever given an
+    # interface; past that, absence is permanent and normal, not an outage.
+    # Checking `all(...)` over the WHOLE list instead would be unsatisfiable
+    # for any target with more binders than that -- i.e. every well-studied
+    # one -- and would ask on every single render.
+    from scout.epitope_db import (  # noqa: PLC0415
+        _MAX_CONTACT_STRUCTURES,
+        cached_binders,
+    )
+    repairable = [b for b in binders[:_MAX_CONTACT_STRUCTURES]
+                  if "contact_residues" not in b]
+    if not uniprot_id or not repairable:
+        return binders
+
+    warm = cached_binders(uniprot_id)
+    if not warm:
+        return binders
+    fresh = {b.get("pdb_id"): b for b in warm}
+
+    # Fill in only the missing interfaces. Swapping the whole list in would
+    # also swap in whatever SAbDab has published since, which is a different
+    # change from the one this is here to make.
+    out = []
+    for b in binders:
+        contacts = None
+        if "contact_residues" not in b:
+            contacts = (fresh.get(b.get("pdb_id")) or {}).get("contact_residues")
+        out.append(b if contacts is None else {**b, "contact_residues": contacts})
+    return out
+
+
 def _get_binder_overlaps(
     job_dir: Path, epitope_residues: list[int], chain_id: str
 ) -> list[dict]:
@@ -772,9 +825,11 @@ def _get_binder_overlaps(
     if cache.get("chain") != chain_id:
         return []
 
+    binders = _binders_with_contacts(cache)
+
     epitope_set = set(epitope_residues)
     overlaps = []
-    for binder in cache.get("known_binders", []):
+    for binder in binders:
         contacts = set(binder.get("contact_residues", []))
         overlap = epitope_set & contacts
         if overlap:
@@ -1301,6 +1356,15 @@ def analyze():
         "known_binders": known_binders,
         "ppi_interfaces": ppi_interfaces,
         "chain": chain_id,
+        # Stored so _get_binder_overlaps can pick up an interface this
+        # worker has computed SINCE this file was written. Without it,
+        # an outage at /analyze time freezes the unestablished interface
+        # onto disk for the life of the job, outliving both the outage
+        # and a worker restart. It does not make the file self-healing:
+        # the reader only consults the in-process cache (see
+        # _binders_with_contacts on why it must not fetch), so a cold
+        # worker still needs a re-analyze.
+        "uniprot_id": uniprot_id,
     }
     analyze_cache_path = job_dir / "analyze_cache.json"
     with analyze_cache_path.open("w") as _cf:
