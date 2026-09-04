@@ -194,6 +194,22 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     PDB format example:
         DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147
 
+    The wwPDB splits the record in two whenever the accession is wider
+    than the 8-character field above, which is the case for every
+    10-character accession. The accession then sits on the DBREF2 line;
+    DBREF1 carries the database name and the entry name, never the
+    accession:
+        DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
+        DBREF2 5YTL A     A0A1W6VP04                         31         352
+
+    A plain DBREF for the chain WINS over a two-line pair. Both forms
+    appear together on ~0.5% of entries, and there the pair is typically
+    an expression tag or fusion partner covering a short N-terminal
+    segment (21JI chain A: a 90-residue rat tag alongside the 777-residue
+    protein). Preferring the plain record keeps this function's answer for
+    every file that already had one, so the two-line branch can only add
+    an accession where there was none.
+
     mmCIF format: uses BioPython MMCIF2Dict to parse _struct_ref and
     _struct_ref_seq loops. Cross-references ref_id to match chain_id
     with the correct UniProt accession.
@@ -218,10 +234,29 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     except OSError:
         return ""
 
+    # Chain armed by a UNP-typed DBREF1, or None. Holding the chain rather
+    # than a bool is what stops a DBREF1 for one chain arming a DBREF2 for
+    # another; None as the empty value keeps a blank chain column (which is
+    # a legal, and matchable, chain id here) from reading as "armed".
+    armed_chain = None
+
+    # First two-line accession seen for this chain. Only returned if no
+    # plain DBREF matches -- see the docstring on precedence.
+    two_line_accession = ""
+    two_line_seen = False
+
     for line in text.splitlines():
+        # Chain is column 12 in all three record types, so read it once,
+        # above the dispatch. That makes this guard cover EVERY line, not
+        # just DBREF ones -- a bare "END" is 3 characters. Keep it here:
+        # moving it into the branches reintroduces an IndexError on any
+        # file whose lines are not all padded to 80 columns.
+        if len(line) < 13:
+            continue
+        dbref_chain = line[12].strip()
+
         if line.startswith("DBREF "):
-            # Columns: 12 = chain, 26-32 = db (UNP/SWS/TRE), 33-40 = accession
-            dbref_chain = line[12].strip()
+            # wwPDB 1-based cols 13 = chain, 27-32 = db, 34-41 = accession.
             db_name = line[26:32].strip()
             accession = line[33:41].strip()
             if dbref_chain == chain_id and db_name in ("UNP", "SWS", "TRE"):
@@ -230,7 +265,27 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
                 # is the only place that has to be right.
                 return _valid_accession(accession)
 
-    return ""
+        elif line.startswith("DBREF1"):
+            # Two-line form, used whenever the accession does not fit the
+            # 8-character field above -- which is every 10-character A0A...
+            # accession. DBREF1 is the only half that names the database,
+            # so a non-UNP pair can only be refused here.
+            db_name = line[26:32].strip()
+            armed_chain = (
+                dbref_chain if db_name in ("UNP", "SWS", "TRE") else None
+            )
+
+        elif line.startswith("DBREF2"):
+            # wwPDB 1-based cols 19-40 = accession -> line[18:40].
+            # Both halves must name the wanted chain: the file is
+            # caller-uploaded, so the pairing is checked, not trusted.
+            if not two_line_seen and armed_chain == dbref_chain == chain_id:
+                two_line_seen = True
+                two_line_accession = _valid_accession(line[18:40].strip())
+            # A DBREF2 consumes its DBREF1, whether or not it matched.
+            armed_chain = None
+
+    return two_line_accession
 
 
 def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
