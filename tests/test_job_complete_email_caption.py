@@ -96,9 +96,12 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 #   block of a 560px-wide email body. Room to reword an entry, not room for a
 #   second paragraph. Unchanged, and it is the tight one on purpose.
 #
-#   _CAVEAT_LIMIT bounds the part that is CONDITIONAL — appended only when the
-#   job's own target names more than one chain, which is the case its first
-#   clause is about. The rule is that a caveat is subordinate to what it
+#   _CAVEAT_LIMIT bounds the part that is CONDITIONAL — appended when the
+#   caveat's own antecedent holds for the job, which for BoltzGen's means the
+#   target names more than one chain and for an RFdiffusion-style
+#   ``caveat_always`` note means every run. Either way it is bounded here, and
+#   the ceiling is measured on the APPENDED form. The rule is that a caveat is
+#   subordinate to what it
 #   qualifies: at most twice the line it hangs off. Past that it is not a note
 #   on a one-line reading, it is the body of a different message and it belongs
 #   behind the "View results" link the mail already carries.
@@ -528,7 +531,8 @@ def test_no_legend_outgrows_the_email_caption_slot():
         f"at {max(n for k, n in lengths.items() if k not in over)}. Long-form "
         f"context belongs in the optional ``caveat``, which "
         f"components/candidate_table.html renders and which reaches the email "
-        f"only on a job whose target names more than one chain — and which is "
+        f"only when that caveat's own antecedent holds for the job — and "
+        f"which is "
         f"bounded below rather than unbounded."
     )
 
@@ -606,7 +610,8 @@ def test_no_legend_text_describes_a_table():
 
     BOTH FIELDS. This used to walk ``explanation`` only, on the reasoning that
     ``caveat`` never left the results table — and ``caveat`` is now the half
-    that reaches the email on a multi-chain run, as well as the half rendered
+    that reaches the email whenever its antecedent holds, as well as the
+    half rendered
     in the pooled per-row Score tooltip, where the visible order is by
     percentile and not by the number the caveat is about. Deixis is worse
     there, not better.

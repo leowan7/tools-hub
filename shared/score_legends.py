@@ -101,6 +101,76 @@ class Legend(TypedDict):
     # see ``email_caption``.
     caveat: NotRequired[str]
 
+    # Does ``caveat`` reach the completion email UNCONDITIONALLY?
+    #
+    # Default false, which is the BoltzGen shape: that caveat opens "On a
+    # multi-chain target ...", so on a single-chain run it is a conditional
+    # with a false antecedent, and ``email_caption`` gates it on the job's own
+    # target rather than mail a note whose premise does not hold.
+    #
+    # RFdiffusion's era caveat has no such antecedent. What changed there was
+    # the AF2 re-score itself and the diffusion noise, on EVERY run of the tool
+    # -- one chain or six. Gating it on chain count would silently withhold it
+    # from every single-chain run, on which it is just as true. So the gate is
+    # a property of the caveat, not of the function: a caveat states its own
+    # antecedent, and only the caveat knows whether the email can evaluate it.
+    #
+    # This does NOT widen what a caveat may say. ``_CAVEAT_LIMIT`` in
+    # tests/test_job_complete_email_caption.py bounds every caveat, and it is
+    # measured on the appended form -- so an ungated caveat is bounded by the
+    # same ceiling that already bounded a gated one.
+    caveat_always: NotRequired[bool]
+
+
+# Every AF2-derived RFdiffusion score from before llm-proteinDesigner#23 is a
+# constant, not a measurement -- so it goes on all three of that tool's scored
+# columns, defined ONCE here rather than pasted three times. Three copies of
+# one claim is how the last three defects in this file started.
+#
+# WHAT CHANGED. #23 (squash-merged as e976f32 on that repo's master) fixed two
+# things in docker/rfdiffusion/run_pipeline.py in the same commit:
+#
+#   * The AF2 re-score passed ``--msa-mode single_sequence`` for the WHOLE
+#     complex. That is right for the de novo binder, which has no homologs to
+#     align, and wrong for the natural target, which has thousands. Measured on
+#     job 7349a7bc (4ZQK chain A, 8 designs): the target chain came back at
+#     pLDDT 38.7 and 16.4 A RMSD from its own crystal structure, and the
+#     designed binder out-scored it. ipTM, pLDDT and i_pAE are all read off
+#     that complex, so all three describe a target AF2 rebuilt wrongly.
+#   * ``denoiser.noise_scale_ca`` / ``noise_scale_frame`` were left at the
+#     stock 1.0 instead of the 0 the binder recipe calls for, so the backbones
+#     themselves differ from what the tool now produces.
+#
+# WHY A LEGEND CAVEAT AND NOT A BANNER, which is the same question BoltzGen's
+# answered two PRs ago and the answer has not changed: the pooled target page
+# is where a pre-update row sits beside a post-update one, and
+# shared/target_results.py tags those rows with _source_tool / _source_preset /
+# _source_campaign_id / _source_job_id / _source_index / _source_chunk and no
+# date. Neither _STANDALONE_COLUMNS nor _CHILD_COLUMNS selects created_at. An
+# era banner would need all of that plus a deploy boundary to compare against,
+# and the container SHA a job ran under is not recorded either -- so a date
+# would be a proxy for the thing that actually changed. The legend renders per
+# row from that row's own tool (components/candidate_table.html), which is the
+# resolution this needs.
+#
+# WHY ALL THREE COLUMNS RATHER THAN THE RANKING KEY ALONE. GATE_COLUMNS
+# ["rfdiffusion"] is exactly ("ipTM", "pLDDT", "i_pAE"): those three ARE the
+# conjunction ``judge`` evaluates, so a reader who checks only the column that
+# carries the warning still gets a pass/fail derived from two that do not.
+#
+# ("rfdiffusion", "RMSD") is deliberately left uncaveated. parse_af2_scores in
+# that container emits ipTM, pLDDT, i_pAE, complex_pLDDT and filter_status --
+# no RMSD -- so that legend renders nowhere and a caveat on it is dead text.
+_RFDIFFUSION_SCORE_ERA_CAVEAT = (
+    "Runs before the September 2026 container update folded the target "
+    "chain without an MSA during the AlphaFold re-score, so the target "
+    "came back misfolded and ipTM, pLDDT and i_pAE all describe that "
+    "broken complex, not the designed interface. Those runs also "
+    "diffused at the stock noise setting. Scores from before that "
+    "update are not comparable with later ones, nor is any pass "
+    "judgement computed from them."
+)
+
 
 # (tool_slug, column_key) -> Legend.
 # The column_key matches the score key in candidate.scores[...] (the same
@@ -204,6 +274,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "Interface pTM from the AF2 multimer re-score. 0.65 or more "
             "is a credible binder; 0.75 or more is strong."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_always": True,
     },
     ("rfdiffusion", "pLDDT"): {
         "good": 80,
@@ -213,6 +285,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "pLDDT is AF2 confidence on the designed binder. 80 or more "
             "is confidently folded; 90 or more is high confidence."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_always": True,
     },
     ("rfdiffusion", "i_pAE"): {
         "good": 10.0,
@@ -223,6 +297,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "the binder-target interface. 10 angstroms or less passes; "
             "6 or less is strong."
         ),
+        "caveat": _RFDIFFUSION_SCORE_ERA_CAVEAT,
+        "caveat_always": True,
     },
     ("rfdiffusion", "RMSD"): {
         "good": 1.5,
@@ -429,9 +505,12 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # the results page does.
         #
         # So the caveat is opt-in per job rather than absent: ``email_caption``
-        # appends it when THAT JOB's target names more than one chain, which is
-        # the condition the caveat's own first clause states and which the
+        # appends THIS ONE when that job's target names more than one chain,
+        # which is the condition its own first clause states and which the
         # email — unlike the legend — can evaluate, because it has the job.
+        # The gate belongs to the caveat, not to the function: a legend whose
+        # caveat has no chain antecedent sets ``caveat_always`` and is appended
+        # unconditionally. See the RFdiffusion legends above.
         #
         # Truncating in the email instead was considered and rejected: every
         # other legend is "definition. threshold.", so "first sentence only"
@@ -629,8 +708,9 @@ def names_multiple_chains(target_chain) -> bool:  # noqa: ANN001
 def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN001
     """The legend as the JOB-COMPLETION EMAIL needs it, for one job.
 
-    ``explanation`` always; plus ``caveat`` when this job's target names more
-    than one chain.
+    ``explanation`` always; plus ``caveat`` when the caveat's own antecedent
+    holds for this job -- which is either "the target names more than one
+    chain" or, for a caveat marked ``caveat_always``, unconditionally.
 
     WHY THE EMAIL GETS THE CAVEAT AT ALL. The mail is not only sent about a run
     that just finished. ``shared/jobs.complete_job`` — which sends it — is
@@ -643,7 +723,7 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
     "the binder-to-target interface" with no caveat. A caveat is about what a
     STORED result may hold, and these mails are about stored results.
 
-    WHY THE CHAIN GATE. The caveat's own first clause is "On a multi-chain
+    WHY THERE IS A GATE AT ALL. BoltzGen's caveat opens "On a multi-chain
     target …", so on a single-chain run it is a conditional with a false
     antecedent: true, but noise — and a caveat shown to everyone is a caveat
     nobody reads (the rule this repo pins at
@@ -653,6 +733,18 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
     That is the whole difference between the two consumers, and it is why this
     is a second function rather than an argument to ``legend_text``.
 
+    WHY THE GATE IS NOT ALWAYS THE CHAIN GATE. A caveat states its own
+    antecedent, and the chain count is only ONE antecedent a caveat can have.
+    RFdiffusion's era caveat has a different one — what changed was the AF2
+    re-score and the diffusion noise, on every run of that tool regardless of
+    how many chains the target names — so gating it on chain count would
+    silently withhold it from every single-chain run, on which it is just as
+    true. Those legends set ``caveat_always``, and this function reads the
+    flag rather than assuming every caveat is about chains. The
+    alternative considered and rejected was widening the chain gate for
+    everyone: that would put BoltzGen's multi-chain sentence into
+    single-chain BoltzGen mail, which is the defect the gate was added to fix.
+
     The caveat is appended VERBATIM rather than paraphrased into something
     shorter. A shorter email-only wording is a second copy of one claim, and
     two copies drifting apart is what produced the last three defects here.
@@ -661,7 +753,9 @@ def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN00
         return ""
     caption = str(legend.get("explanation") or "").strip()
     caveat = str(legend.get("caveat") or "").strip()
-    if caveat and names_multiple_chains(target_chain):
+    if caveat and (
+        legend.get("caveat_always") or names_multiple_chains(target_chain)
+    ):
         caption = f"{caption} {caveat}".strip()
     return caption
 

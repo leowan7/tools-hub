@@ -1407,7 +1407,8 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     # runs from the stuck-job sweeper, the inline poll and
     # scripts/finalize_stuck_job.py, so that mail can be about a result read
     # back out of Storage, and shared/score_legends.email_caption gives it the
-    # caveat when the job's target names more than one chain. The tooltip half
+    # caveat when that caveat's antecedent holds — for this one, when the job's
+    # target names more than one chain. The tooltip half
     # of the split is pinned in tests/test_target_table_render.py, the email
     # half in tests/test_job_complete_email_caption.py; this asserts the
     # CONTENT, so that neither half can be satisfied by a legend that says

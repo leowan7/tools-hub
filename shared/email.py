@@ -264,9 +264,13 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         # transport captured: each mailed a pre-deploy BoltzGen score
         # described as "the binder-to-target interface", uncaveated.
         #
-        # ``email_caption`` appends the caveat only when THIS job's target
-        # names more than one chain — the condition the caveat states, and one
-        # the legend cannot evaluate because it never sees a job. The chain
+        # ``email_caption`` appends the caveat when the caveat's own
+        # antecedent holds for THIS job — for BoltzGen's, that the target names
+        # more than one chain, which is the condition that caveat states and
+        # one the legend cannot evaluate because it never sees a job; for a
+        # caveat marked ``caveat_always`` (RFdiffusion's era note), always,
+        # because what changed there was the AF2 re-score itself and is true of
+        # a one-chain run exactly as much as a six-chain one. The chain
         # comes from ``job.inputs`` (the value the run was SUBMITTED with),
         # not from a target row, which is editable and is overridden per
         # launch (templates/targets/launch.html: "Overrides the target default

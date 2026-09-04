@@ -458,8 +458,11 @@ def create_app() -> Flask:
     # than three inline concatenations in candidate_table.html, so a caveat
     # cannot land on the header tooltip and miss the per-row one. The email is
     # the OTHER consumer of a stored result and calls
-    # shared/score_legends.email_caption instead — same two halves, gated on
-    # the chain count of the job it is about, which a table cannot see. It is
+    # shared/score_legends.email_caption instead — same two halves, but the
+    # caveat half is gated on the job, which a table cannot see: on the chain
+    # count for a caveat whose first clause is about chains, and not at all
+    # for one marked ``caveat_always`` (RFdiffusion's era note, which is true
+    # of every run of that tool whatever its chain count). It is
     # not exempt from caveats: complete_job also runs from the stuck-job
     # sweeper, the inline poll and scripts/finalize_stuck_job.py, so that mail
     # can be about a result the app read back out of Storage.
