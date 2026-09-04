@@ -139,6 +139,13 @@ states the current one directly beneath:
     now:    20 hits/IP fleet-wide, each buying a whole analysis = ~300
             CPU-s/IP, so ~4 addresses saturate it, and 10 per worker.
 
+As of 2026-09-04 that `now:` row reads **~280**, not ~300. `/scout/analyze`
+was paying for a PPI interface detection on every request whose result the
+browser discarded -- the renderer had no call site -- and removing it took
+~1 CPU-s off the pair. Nothing in this section's reasoning changes: 1,200 /
+280 is still four addresses, and the lever in the same comment still lands
+under the old ~180 (at ~170) rather than on it exactly.
+
 Budget is 2 sync workers x 600 s = **1,200 CPU-s** per window. At the current
 ceiling of 10 the worst-case per-IP demand is already ~300 CPU-s, so **four
 addresses saturate the fleet** — four *distinct* addresses, which is what this
