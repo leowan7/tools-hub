@@ -126,20 +126,30 @@ class Legend(TypedDict):
     caveat_before: NotRequired[str]
 
 
-# The instant the fixed RFdiffusion container could first serve a run.
+# The instant the fixed RFdiffusion pipeline could first serve a run.
 #
-# Not the merge and not the Modal deploy: `run_pipeline.py` ships INSIDE the
-# image, so the boundary is when "Build and Push RFdiffusion Docker" finished
-# for llm-proteinDesigner `e976f32` -- 2026-09-04T16:45:37Z, read off the run
-# rather than estimated. A job created before that ran the old image.
+# THE MODAL DEPLOY, not the registry image build, and the first version of this
+# constant had that exactly backwards -- it said "run_pipeline.py ships INSIDE
+# the image" and took the "Build and Push RFdiffusion Docker" completion
+# (16:45:37Z) as the boundary. Read the app definition instead:
+# llm-proteinDesigner/infrastructure/modal/rfdiffusion_app.py builds with
+# ``modal.Image.from_dockerfile(...).add_local_file("docker/rfdiffusion/
+# run_pipeline.py", ..., copy=True)``, and docker/rfdiffusion/Dockerfile.modal
+# starts ``FROM runpod/base:0.6.2-cuda11.8.0`` with a header that says in as
+# many words "No COPY run_pipeline.py". So the pipeline is MOUNTED at deploy
+# time and the pushed registry image is not what this app runs.
 #
-# It is a PROXY and says so: what actually changed is the image a run pulled,
-# and no job row records the container SHA it ran under (checked -- nothing in
-# this repo reads, writes or requires such a field). A job created a minute
-# before the boundary and executed a minute after it ran the NEW image and
-# will be over-warned. That is the safe direction, and it is the only error
-# this boundary can make in that region.
-RFDIFFUSION_SCORE_ERA_BOUNDARY = "2026-09-04T16:45:37Z"
+# The deploy log for `e976f32` is where the number comes from, not an estimate:
+# "Created mount docker/rfdiffusion/run_pipeline.py" then "App deployed in
+# 1.534s" at 2026-09-04T16:30:43Z. Rounded up to the job's completion.
+#
+# It is still a PROXY, for the reason the old comment gave and which survives
+# the correction: a job row records no container SHA (checked -- nothing in
+# this repo reads, writes or requires such a field), so a DATE is the only
+# handle. A job created just before the boundary and executed just after it ran
+# the new pipeline and will be over-warned. That is the safe direction, and it
+# is the only error this boundary can make in that region.
+RFDIFFUSION_SCORE_ERA_BOUNDARY = "2026-09-04T16:30:46Z"
 
 # Every AF2-derived RFdiffusion score from before llm-proteinDesigner#23 is a
 # constant, not a measurement -- so it goes on all three of that tool's scored
