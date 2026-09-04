@@ -1,0 +1,103 @@
+name: UniProt capability (scout sequence search)
+
+# Capability detection for scout's UniProt sequence-search fallback.
+#
+# `scout/epitope_db.py::_search_uniprot_by_sequence` resolves a chain sequence
+# to an accession by querying UniProtKB's `checksum:` field with the sequence's
+# CRC64. That field is the whole mechanism: if UniProt retires it, renames it,
+# or stops indexing CRC64, every query returns HTTP 200 with zero results and
+# the function goes silently inert -- returning "" for every sequence, forever,
+# with no error anywhere.
+#
+# That is not hypothetical. It is exactly the bug this test file was written
+# for: the previous implementation sent `sequence[:50]` as a free-text query,
+# which UniProtKB answers 200/no-hit because text search does not index
+# sequences. It shipped, was audited once without anyone noticing it never
+# returned anything, and stayed dead until someone measured it.
+#
+# The hermetic tests cannot catch that class. They assert the query this code
+# puts on the wire, which is the right thing to pin and is what runs on every
+# PR -- but a scripted fake answers whatever it is told to, so it cannot know
+# whether the real endpoint still honours the query. Only a live call can.
+#
+# WHY THIS IS NOT IN THE BLOCKING PR SUITE (.github/workflows/pytest.yml):
+# a UniProt outage would then redden every open PR and every push to main. In
+# this repo that is worse than noise -- Railway's Wait-for-CI gate SKIPS the
+# deploy for a commit whose suite is red, so an upstream hiccup at UniProt
+# would silently stop shipping. Capability drift is a "find out within a day"
+# problem, not a "block the merge" problem, so it runs on a cadence instead.
+#
+# A failure here means one of two things, and the run log distinguishes them:
+#   - UniProt changed something. Read the assertion; the fix is in
+#     `_search_uniprot_by_sequence`.
+#   - UniProt is transiently down. Two of the three tests fail on an outage
+#     (verified by pointing the endpoint at a dead path). That is deliberate:
+#     a monitor that goes quiet when its own subject breaks is the failure
+#     mode this exists to prevent. Re-run the job to distinguish.
+#
+# No secrets needed -- the UniProt REST API is public and unauthenticated.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily, 06:17 UTC (off the hour on purpose)
+  workflow_dispatch: {}    # manual run, e.g. after touching the query
+
+concurrency:
+  group: uniprot-capability
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  capability:
+    name: Live UniProt checksum lookup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The only thing that un-skips TestLiveCapability. Without it the three
+      # tests below are skipped, which is what makes them safe to keep in the
+      # default suite.
+      SCOUT_UNIPROT_LIVE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Scoped to the one class on purpose: this job exists to answer "does the
+      # live endpoint still behave", not to re-run a suite the PR gate already
+      # ran. `--no-header -rs` prints the skip reasons, so a run that silently
+      # collected nothing is visible as such rather than passing green.
+      - name: Run the live capability tests
+        run: |
+          python -m pytest \
+            tests/test_scout_uniprot_sequence_search.py::TestLiveCapability \
+            -v --no-header -rs -p no:cacheprovider
+
+      # A green run above with zero tests executed would be a monitor that
+      # certifies nothing -- the shape this repo has shipped before. Assert the
+      # count is exactly the three that exist.
+      - name: Guard - the live tests actually ran
+        run: |
+          COUNT=$(python -m pytest \
+            tests/test_scout_uniprot_sequence_search.py::TestLiveCapability \
+            --collect-only -q -p no:cacheprovider | grep -c '::test_' || true)
+          echo "collected live tests: $COUNT"
+          if [ "$COUNT" -ne 3 ]; then
+            echo "::error::expected 3 live capability tests, collected $COUNT."
+            echo "::error::If a test was renamed or removed, update this guard."
+            exit 1
+          fi

@@ -427,12 +427,25 @@
 
       // UniProt bar
       if (data.uniprot_id) {
-        var info = '<a href="https://www.uniprot.org/uniprot/' + data.uniprot_id + '" target="_blank" rel="noopener" class="pdb-link">' + data.uniprot_id + '</a>';
-        if (data.uniprot_name) info += ' \u2014 ' + data.uniprot_name;
+        // Built as nodes rather than an innerHTML string: uniprot_name can now
+        // carry a TrEMBL submissionNames value, which is submitter free text
+        // from EMBL/Ensembl and not ours to trust. Same createTextNode shape
+        // the refusal message below uses.
+        var infoEl = document.getElementById('uniprot-info');
+        infoEl.textContent = '';
+        var uniprotLink = document.createElement('a');
+        uniprotLink.href = 'https://www.uniprot.org/uniprot/' + encodeURIComponent(data.uniprot_id);
+        uniprotLink.target = '_blank';
+        uniprotLink.rel = 'noopener';
+        uniprotLink.className = 'pdb-link';
+        uniprotLink.textContent = data.uniprot_id;
+        infoEl.appendChild(uniprotLink);
+        var infoTail = '';
+        if (data.uniprot_name) infoTail += ' \u2014 ' + data.uniprot_name;
         if (data.sequence_identity_pct && data.sequence_identity_pct !== 'unknown') {
-          info += ' (identity: ' + data.sequence_identity_pct + ')';
+          infoTail += ' (identity: ' + data.sequence_identity_pct + ')';
         }
-        document.getElementById('uniprot-info').innerHTML = info;
+        if (infoTail) infoEl.appendChild(document.createTextNode(infoTail));
         document.getElementById('uniprot-bar').hidden = false;
       }
 

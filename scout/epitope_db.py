@@ -58,6 +58,11 @@ SABDAB_SUMMARY_URL = "https://sabdab.opig.stats.ox.ac.uk/api/download/all-summar
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 RCSB_PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
 UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
+# UniProtKB indexes its sequences by CRC64/MD5 checksum, exposed as the
+# `checksum:` search field, so an exact sequence resolves in one GET. A real
+# similarity search (EBI ncbiblast) is a submit/poll job and needs a budget
+# this request path does not have.
+UNIPROTKB_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
 
 # How many RCSB PDB IDs to check against SAbDab before giving up. Higher
 # values increase recall. Since the SAbDab side became an in-memory dict
@@ -300,43 +305,183 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
     return ""
 
 
-def _search_uniprot_by_sequence(sequence: str) -> str:
-    """Search UniProt by protein sequence using the peptide search endpoint.
+# Below 20 residues a whole-sequence match stops being evidence: the 10-mer
+# HUMAN neurokinin B is byte-identical to marsh frog P67935, the only entry
+# UniProt stores at that length. Above it a length floor is the wrong lever,
+# because wrong answers reach well past 300 residues under BOTH designs: a
+# reviewed-only count returns a lone wrong organism at 346 aa (Q6ZSG1, shared
+# with 14 other primates) and 544 aa (Q5VTE6), and the uniqueness rule below
+# still does at 337 aa -- 9P0K_D and 8GGA_B, human G-protein beta-1 answered
+# as Bos taurus. No threshold reaches that class. The uniqueness rule reaches
+# it only where the siblings are genuinely tied, which is why the query counts
+# all of UniProtKB.
+#
+# 20 admits the short fully-modelled chains this function handles best: 1ACW_A
+# -> P56215 at 29 aa and 1AGT_A -> P46111 at 38 aa, both returning the file's
+# own DBREF accession at the entry's exact length. Neither reaches this code
+# in production -- both have a resolvable DBREF and return at step 1 -- so
+# they bound the function, not the path.
+_MIN_SEARCHABLE_LENGTH = 20
 
-    Queries UniProtKB search with a sequence prefix and returns the top hit
-    accession. Falls back gracefully on network failure, timeout, or no
-    results.
+
+def _search_uniprot_by_sequence(sequence: str) -> str:
+    """Resolve a chain sequence to a UniProt accession by exact-sequence match.
+
+    Asks UniProtKB for every entry whose CRC64 checksum equals this
+    sequence's, and accepts the answer ONLY when exactly one exists.
+
+    Refusing on ambiguity is the whole point. One sequence is often carried by
+    several species' entries -- haemoglobin subunit beta is identical in human,
+    bonobo and chimpanzee -- and nothing in the sequence chooses between them.
+    Returning one anyway produced a confident wrong answer that the caller's
+    identity check cannot catch, because identical sequences score 100%; for
+    that case it also silently zeroed the known-binder lookup, because P68872
+    indexes no PDB entries at all.
+
+    The count is deliberately taken over ALL of UniProtKB, unreviewed and
+    fragment entries included. Do NOT add ``reviewed:true`` or
+    ``fragment:false`` here: those filters delete the entries that constitute
+    the tie, so a sequence several organisms share comes back as a unique
+    match and the wrong organism is asserted at "100.0% identity". Human VHL
+    P40337 is the worked case -- five entries carry that sequence, four of them
+    chimpanzee or bonobo, and the filtered query returns exactly one of them.
+    ``TestLiveCapability`` checks it against the live API, but those tests are
+    opt-in behind ``SCOUT_UNIPROT_LIVE=1``; what runs by default is the
+    hermetic assertion on the query this function puts on the wire.
+
+    The cost is a trade, and the measurement does not flatter it. Over 5271
+    random PDB chains (163 checksum hits, 132 with DBREF ground truth) a
+    filtered pick-first query answered 89 times at 15% error; this rule
+    answers 59 times at 17%. Those intervals overlap, so on that population
+    the uniqueness rule buys NO measurable precision -- it answers 34% less
+    often at the same error rate, refusing 44 of 76 previously correct
+    answers (57.9%, CI 47-68%). Two narrower frames agree on the size: 36.5%
+    over random reviewed human entries, 40.5% over named therapeutic targets.
+
+    Read that against the population it came from. Ground truth exists only
+    for a chain that HAS a DBREF -- and such a chain resolves at step 1 and
+    never arrives here. Of those 163 hits, 31 carried no DBREF at all, and
+    those are what production actually sends to this function: models,
+    designs, non-model organisms. On a frame built that way -- 240
+    non-model-organism chains -- the filtered query answered 18 times with 16
+    of them the WRONG ORGANISM. So the rule is protection against that
+    specific failure on the traffic that gets here, NOT a general precision
+    win, and this docstring should not be read as claiming one. Recovering
+    the recall belongs to a narrower rule -- resolve a tie whose members all
+    share one organism -- not to restoring the filters.
+
+    Dropping the filters also ADMITS wrong answers the filters excluded: 6 of
+    the 10 wrong answers in that sample had no filtered match at all, two of
+    them at 337 aa. Not one-sided in either direction.
+
+    The rule is not complete, and the gap that fires is not the obvious one. A
+    length-truncated or fragmentary entry can be the unique match while every
+    correct entry differs from it by a residue and so never forms a tie. The
+    102-aa Xenopus histone H4 of 1KX5_B, initiator methionine excised, matches
+    exactly one entry in all of UniProtKB -- a hoatzin -- because the 845
+    correct H4 entries, Xenopus among them, are all one residue longer. No
+    length or identity threshold closes that: neither is evidence about
+    organism.
+
+    Matching is byte-exact, so any difference misses, and most deposited
+    crystal chains do: 12 of these 13 (1HEW_A, 1MBN_A, 4INS_A/B/C/D,
+    1KX5_A/B/C/D, 1BPI_A, 1PGB_A, 1SHG_A), and 1387 of 1431 -- 96.9% -- in a
+    random PDB sample. Signal peptides and excised initiator methionines are
+    the obvious guess and explain only 2 of the 11 whose DBREF entry still
+    exists; mature and domain constructs dominate (1SHG_A is a 57-aa SH3
+    domain cut from a 2477-aa entry), and two more miss because their DBREF
+    names a since-deleted accession. Both counts were measured before #209
+    restored MSE/SEC to the extracted sequence; none of these 13 chains carries
+    an MSE atom, but the 1431-chain figure predates that change and no one has
+    re-run it since.
+
+    The 13th chain is the warning, not the reassurance: 1KX5_B hits, and
+    returns the hoatzin above for a Xenopus nucleosome. What this function
+    recovers is therefore NOT reliably a chain at full canonical length. A
+    de-novo design has no UniProt entry, so it returns "".
+
+    ponytail: exact-match only. A similarity search (EBI ncbiblast) would
+    reach the truncated chains, but it is submit/poll -- a POST to ``/run``
+    then a separate ``/status/<jobid>`` -- which does not fit a blocking
+    request, and it makes the organism problem strictly worse by returning
+    near-matches from the species byte-exact matching excludes.
 
     Args:
-        sequence: One-letter amino acid sequence string (minimum 20 residues).
+        sequence: One-letter amino acid sequence string. Anything shorter than
+            ``_MIN_SEARCHABLE_LENGTH`` returns "" without a request.
 
     Returns:
-        UniProt accession string, or empty string if no match found.
+        UniProt accession string, or "" if there is no unambiguous match.
     """
 
-    if not sequence or len(sequence) < 20:
+    if not sequence or len(sequence) < _MIN_SEARCHABLE_LENGTH:
         return ""
 
     try:
-        # The peptide search endpoint accepts short sequences directly. (A
-        # preceding POST to the idmapping/run endpoint used to sit here; it
-        # submitted an empty id list and its response was overwritten by this
-        # GET on the very next statement, so it only ever cost a round-trip.)
+        from Bio.SeqUtils.CheckSum import crc64  # noqa: PLC0415
+    except Exception:
+        # Loud on purpose: swallowing this at DEBUG would return "" for every
+        # sequence forever -- the silent death this function was fixed for.
+        # Broader than ImportError because a half-written install raises
+        # RuntimeError/OSError. Note this does NOT keep a corrupt BioPython off
+        # the request path: _extract_chain_sequence runs first and still lets
+        # such an error escape.
+        logger.warning(
+            "Bio.SeqUtils.CheckSum.crc64 unavailable; sequence search disabled.",
+            exc_info=True,
+        )
+        return ""
+
+    try:
+        # BioPython renders this as "CRC-<16 hex>"; UniProt wants the bare hex.
+        checksum = crc64(sequence).replace("CRC-", "")
         resp = requests.get(
-            "https://rest.uniprot.org/uniprotkb/search",
+            UNIPROTKB_SEARCH_URL,
             params={
-                "query": f"({sequence[:50]})",
+                # No reviewed/fragment filter on purpose -- see the docstring.
+                # Filtering here hides the ties this function exists to detect.
+                "query": f"(checksum:{checksum})",
                 "format": "json",
-                "size": "1",
-                "fields": "accession,protein_name",
+                # Two rows because the header-missing fallback below counts
+                # ROWS. Never lower this: at size=1 a tie returns one row, and
+                # a missing header would then read as a unique match.
+                "size": "2",
+                "fields": "accession",
             },
             timeout=_REQUEST_TIMEOUT_SEC,
         )
-        if resp.ok:
-            data = resp.json()
-            results = data.get("results", [])
-            if results:
-                return results[0].get("primaryAccession", "")
+        if not resp.ok:
+            # Say so: a 429 or 503 is otherwise indistinguishable in the log
+            # from "this protein is not in UniProt".
+            logger.info(
+                "UniProt sequence search returned HTTP %s; treating as no match.",
+                resp.status_code,
+            )
+            return ""
+        results = resp.json().get("results", [])
+
+        # x-total-results is the FULL match count; len(results) is capped by
+        # `size`, so it can only ever undercount a tie.
+        try:
+            total = int(resp.headers.get("x-total-results", ""))
+        except (TypeError, ValueError):
+            total = len(results)
+
+        # len(results) too: a header saying 1 while the body carries two rows
+        # is a disagreement, and trusting the header alone would accept it.
+        if total != 1 or len(results) != 1:
+            if total > 1:
+                # "at least" because the fallback above is row-capped.
+                logger.info(
+                    "Sequence matches at least %d UniProt entries; "
+                    "refusing to guess between them.", total,
+                )
+            return ""
+
+        # Format-check for the same reason the DBREF path does: the accession
+        # is interpolated into a UniProtKB URL path and becomes a _CACHE key,
+        # and it arrives over the network.
+        return _valid_accession(results[0].get("primaryAccession", ""))
     except Exception:
         logger.debug("UniProt sequence search failed.", exc_info=True)
 
@@ -367,16 +512,34 @@ def _fetch_uniprot_metadata(uniprot_id: str) -> dict:
             # Extract recommended name or first submitted name.
             prot = data.get("proteinDescription", {})
             rec = prot.get("recommendedName", {})
+            # The live API spells this "submissionNames"; "submittedNames" was
+            # the older spelling, kept as a harmless second try. Reading only
+            # the old one returned an empty name for every submission-named
+            # entry -- unreachable while the sequence search filtered to
+            # reviewed entries, reachable now that it counts all of UniProtKB.
+            submitted = (
+                prot.get("submissionNames") or prot.get("submittedNames") or []
+            )
             if rec:
-                result["protein_name"] = rec.get("fullName", {}).get("value", "")
-            elif prot.get("submittedNames"):
-                result["protein_name"] = (
-                    prot["submittedNames"][0].get("fullName", {}).get("value", "")
-                )
-            # Append organism if available.
+                name = rec.get("fullName", {}).get("value", "")
+            elif submitted:
+                name = submitted[0].get("fullName", {}).get("value", "")
+            else:
+                name = ""
+            # A fragment entry is a partial sequence record, so say so: an
+            # exact checksum match against one is still a match, but
+            # annotating a whole chain with it is not the same claim. Test the
+            # VALUE -- "flag" is also present on complete entries, where it
+            # reads "Precursor" (P00698 does).
+            if prot.get("flag") == "Fragment":
+                name = f"{name} (fragment)" if name else "(fragment)"
+            # Organism is appended even when the name is empty. Gating it on
+            # the name dropped both for a submission-named entry, leaving a
+            # bare accession on screen beside "identity: 100.0%".
             org = data.get("organism", {}).get("scientificName", "")
-            if org and result["protein_name"]:
-                result["protein_name"] += f" ({org})"
+            if org:
+                name = f"{name} ({org})" if name else org
+            result["protein_name"] = name
     except Exception:
         logger.debug("UniProt metadata fetch failed for %s.", uniprot_id, exc_info=True)
 
@@ -400,9 +563,22 @@ def resolve_uniprot_id(pdb_path, chain_id: str) -> dict:
            for RCSB structures). If found, validate by sequence identity.
            If validation API is unreachable, accept the DBREF accession
            anyway (DBREF is depositor-annotated and highly reliable).
-        2. Fall back to UniProt sequence search for structures without DBREF
-           (e.g. AlphaFold models). Sequence search results are only accepted
-           if identity >= 70%.
+        2. Fall back to an EXACT sequence match when step 1 produced no
+           accepted accession -- no reference record, an unreadable one, or one
+           that failed validation -- provided a chain sequence was extractable
+           and the match differs from the accession step 1 already rejected.
+           AlphaFold DB downloads reach step 2 more often than their DBREF
+           line suggests: ``_extract_uniprot_from_dbref`` reads a fixed 8-char
+           column per the PDB spec, so a 10-char accession such as A0A2K5QDT7
+           truncates to A0A2K5QD and is rejected at step 1. Those are
+           overwhelmingly TrEMBL, so this path sees unreviewed entries far out
+           of proportion to their share of UniProt. Accepted only when the
+           sequence matches exactly one UniProt entry; see
+           ``_search_uniprot_by_sequence``.
+           The identity gate below cannot screen this path: a checksum match is
+           byte-equal to the entry's canonical sequence, so it scores 1.0 by
+           construction and ``must_validate`` only proves UniProt answered.
+           Uniqueness is the sole correctness check on a step-2 result.
 
     Args:
         pdb_path: Path to the uploaded PDB or mmCIF file.
