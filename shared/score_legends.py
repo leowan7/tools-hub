@@ -126,29 +126,53 @@ class Legend(TypedDict):
     caveat_before: NotRequired[str]
 
 
-# The instant the fixed RFdiffusion pipeline could first serve a run.
+# The instant the fixed RFdiffusion pipeline could first serve a run HERE.
 #
-# THE MODAL DEPLOY, not the registry image build, and the first version of this
-# constant had that exactly backwards -- it said "run_pipeline.py ships INSIDE
-# the image" and took the "Build and Push RFdiffusion Docker" completion
-# (16:45:37Z) as the boundary. Read the app definition instead:
-# llm-proteinDesigner/infrastructure/modal/rfdiffusion_app.py builds with
-# ``modal.Image.from_dockerfile(...).add_local_file("docker/rfdiffusion/
-# run_pipeline.py", ..., copy=True)``, and docker/rfdiffusion/Dockerfile.modal
-# starts ``FROM runpod/base:0.6.2-cuda11.8.0`` with a header that says in as
-# many words "No COPY run_pipeline.py". So the pipeline is MOUNTED at deploy
-# time and the pushed registry image is not what this app runs.
+# THERE ARE TWO RFDIFFUSION IMAGES IN THE SIBLING REPO AND THEY SHIP THE
+# PIPELINE DIFFERENTLY. Getting the wrong one is not a careless mistake -- the
+# first version of this constant made it, and the reasoning it used is TRUE of
+# the other image:
 #
-# The deploy log for `e976f32` is where the number comes from, not an estimate:
-# "Created mount docker/rfdiffusion/run_pipeline.py" then "App deployed in
-# 1.534s" at 2026-09-04T16:30:43Z. Rounded up to the job's completion.
+#   * docker/rfdiffusion/Dockerfile      -> `COPY run_pipeline.py` at line 69.
+#     Built and pushed by .github/workflows/docker-rfdiffusion.yml to
+#     ghcr.io/leowan7/kendrew-rfdiffusion, and pulled by RUNPOD pods
+#     (llm-proteinDesigner/backend/config.py, `runpod_image_rfdiffusion`).
+#     For that path the pipeline really does ship inside the image, so the
+#     image build IS the boundary.
+#   * docker/rfdiffusion/Dockerfile.modal -> `FROM runpod/base:0.6.2-cuda11.8.0`
+#     under a header stating "No COPY run_pipeline.py". The pipeline is added
+#     separately by infrastructure/modal/rfdiffusion_app.py, as
+#     ``Image.from_dockerfile(...).add_local_file("docker/rfdiffusion/
+#     run_pipeline.py", "/opt/run_pipeline.py", copy=True)`` -- copied into a
+#     new image layer at `modal deploy` time, keyed on the file's content.
 #
-# It is still a PROXY, for the reason the old comment gave and which survives
+# TOOLS-HUB CALLS THE MODAL APP (gpu/modal_client.py; tool_jobs rows carry a
+# modal_function_call_id and no RunPod field), so the second is the one that
+# dates a change for THIS repo, and the registry push does not.
+#
+# WHERE THE NUMBER COMES FROM, so it can be re-derived rather than trusted:
+# llm-proteinDesigner Actions run 33895498649 ("Deploy Modal apps", commit
+# e976f32), its "Deploy rfdiffusion to main" job. The log reads "Created mount
+# docker/rfdiffusion/run_pipeline.py" then "App deployed in 1.534s" at
+# 16:30:43Z; that job's own completed_at is 16:30:46Z, which is the value
+# below -- the later of the two, so the boundary cannot land before the deploy
+# had finished. ("Job" there is a GitHub Actions job. Everywhere else in this
+# file a job is a tool_jobs row.)
+#
+# IT IS COMPARED AGAINST ``created_at``, NOT ``started_at``, AND THAT IS A
+# CHOICE. Both are on the row (migrations/0005_tool_jobs.sql; shared/jobs.py)
+# and both reach every surface that calls this. ``started_at`` is strictly
+# closer to the truth, since what ran a job is whatever was deployed when it
+# EXECUTED. ``created_at`` is used because ``created_at <= started_at`` always,
+# so it can only ever warn a run that did not need it -- never miss one that
+# did -- and it is the field the completion email already prints. As of
+# 2026-09-04 no rfdiffusion job straddles the boundary (zero rows with
+# created_at < boundary <= started_at), so the two agree on live data.
+#
+# IT IS STILL A PROXY, for the reason the first version gave and which survives
 # the correction: a job row records no container SHA (checked -- nothing in
-# this repo reads, writes or requires such a field), so a DATE is the only
-# handle. A job created just before the boundary and executed just after it ran
-# the new pipeline and will be over-warned. That is the safe direction, and it
-# is the only error this boundary can make in that region.
+# this repo reads, writes or requires such a field), so a date is the only
+# handle available.
 RFDIFFUSION_SCORE_ERA_BOUNDARY = "2026-09-04T16:30:46Z"
 
 # Every AF2-derived RFdiffusion score from before llm-proteinDesigner#23 is a
