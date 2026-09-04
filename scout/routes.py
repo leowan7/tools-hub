@@ -1132,14 +1132,32 @@ def analyze():
             uniprot_id = ""
             uniprot_name = ""
             uniprot_identity_pct = "unknown"
+            uniprot_source = ""
             from scout.epitope_db import fetch_known_binders, resolve_uniprot_id  # noqa: PLC0415
             uniprot_result = resolve_uniprot_id(pdb_path, chain_id)
             uniprot_id = uniprot_result["uniprot_id"]
             uniprot_name = uniprot_result["protein_name"]
             uniprot_identity_pct = uniprot_result["identity_pct"]
+            uniprot_source = uniprot_result["source"]
+            # Two accessions that render identically are not equally trusted.
+            # A "dbref" one is stated by the file's own reference record. A
+            # "sequence_search" one was INFERRED by matching this chain's
+            # checksum against UniProtKB, which cannot distinguish organisms
+            # that carry an identical sequence -- measured at a wrong organism
+            # in roughly one answer in six.
+            #
+            # Worse, the identity figure on that path is 1.0 BY CONSTRUCTION:
+            # the accession was found by matching this chain, and validation
+            # then re-fetches that same canonical sequence, so it compares a
+            # string against itself and can only return 100.0%. Rendering that
+            # reads as corroboration the number cannot supply, so it is
+            # dropped here and the provenance carries the information instead.
+            if uniprot_source == "sequence_search":
+                uniprot_identity_pct = "unknown"
             logger.warning(
-                "UniProt resolution: id=%s name=%s identity=%s",
-                uniprot_id or "(empty)", uniprot_name or "(none)", uniprot_identity_pct,
+                "UniProt resolution: id=%s name=%s identity=%s source=%s",
+                uniprot_id or "(empty)", uniprot_name or "(none)",
+                uniprot_identity_pct, uniprot_source or "(none)",
             )
             if uniprot_id:
                 try:
@@ -1397,6 +1415,11 @@ def analyze():
         "uniprot_id": uniprot_id,
         "uniprot_name": uniprot_name,
         "sequence_identity_pct": uniprot_identity_pct,
+        # "dbref" (stated by the uploaded file) or "sequence_search"
+        # (inferred from the chain sequence, organism unconfirmed). The
+        # client renders these differently; see the comment at the
+        # resolve_uniprot_id call above for why they must not look alike.
+        "uniprot_source": uniprot_source,
     }), 200
 
 

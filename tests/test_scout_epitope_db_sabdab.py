@@ -1301,3 +1301,84 @@ class TestTheTwoLineDbrefForm:
         the lookup."""
         pdb = self._write(tmp_path, truncated)
         assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+
+class TestAlphaFoldOverflowsTheAccessionField:
+    """AlphaFold DB writes a PLAIN DBREF and lets a 10-character accession
+    overflow the 8-wide field, instead of splitting into DBREF1/DBREF2.
+
+    The wwPDB never does this, so the two-line support added for real
+    depositions does not reach AFDB files at all. An 8-wide slice returned
+    "A0A2K5QD", `_valid_accession` rejected it, and the model fell through to
+    the sequence-search path for an accession its own file already stated --
+    which then answered from UniProtKB's checksum index and could pick the
+    wrong organism. Every AFDB model with a 10-character accession, i.e. the
+    overwhelming majority of TrEMBL ones, went that way.
+
+    The line below is copied verbatim from AF-A0A2K5QDT7-F1-model_v6.pdb.
+    """
+
+    # Real AFDB output. Columns 34-43 hold the accession, overrunning the
+    # spec's 34-41 field, with the entry name pushed right after it.
+    DBREF_AFDB = (
+        "DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM"
+        "     1    130"
+    )
+    # The spec-conformant 6-character case, which the fixed-width slice
+    # handled correctly and which must keep working.
+    DBREF_1HEW = (
+        "DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147"
+    )
+    # A blank accession column. Tokenising from column 34 picks up the ENTRY
+    # NAME here, not an accession, so this pins that the format check is what
+    # refuses it -- the reason reading a token does not loosen the boundary.
+    DBREF_NO_ACCESSION = (
+        "DBREF  1ABC A    1   129  UNP             LYC_CHICK       19    147"
+    )
+    ATOM = (
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
+        "  1.00 20.00           C"
+    )
+
+    def _write(self, tmp_path, *lines):
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text("\n".join([*lines, self.ATOM, "END", ""]), encoding="utf-8")
+        return pdb
+
+    def test_a_ten_character_accession_on_a_plain_dbref_resolves(self, tmp_path):
+        """The bug. Kills the 8-wide slice: it yields "A0A2K5QD" -> ""."""
+        pdb = self._write(tmp_path, self.DBREF_AFDB)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "A0A2K5QDT7"
+
+    def test_the_six_character_form_is_unchanged(self, tmp_path):
+        """Kills a fixed-width widening. `line[33:43]` reads "P00698   L" here,
+        because .strip() does not remove interior spaces -- so the obvious
+        alternative fix breaks the case that already worked."""
+        pdb = self._write(tmp_path, self.DBREF_1HEW)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "P00698"
+
+    def test_a_blank_accession_column_is_still_refused(self, tmp_path):
+        """Reading a token rather than a field must not admit the entry name.
+
+        Asserts the mechanism as well as the answer: the token really is
+        picked up, and `_valid_accession` is what rejects it. Without the
+        second assertion this passes for the wrong reason if the parser
+        stops reading the line at all.
+        """
+        assert epitope_db._valid_accession("LYC_CHICK") == ""
+        pdb = self._write(tmp_path, self.DBREF_NO_ACCESSION)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_the_overflowing_accession_does_not_leak_the_entry_name(self, tmp_path):
+        """A greedy read could return "A0A2K5QDT7 A0A2K5QDT7_CEBIM" joined, or
+        the entry name from the next column. Pin the exact token."""
+        pdb = self._write(tmp_path, self.DBREF_AFDB)
+        got = epitope_db._extract_uniprot_from_dbref(pdb, "A")
+        assert got == "A0A2K5QDT7"
+        assert "_CEBIM" not in got
+        assert " " not in got
+
+    def test_another_chain_is_not_answered_from_this_record(self, tmp_path):
+        """Chain scoping is unaffected by how the accession is read."""
+        pdb = self._write(tmp_path, self.DBREF_AFDB)
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "B") == ""

@@ -139,7 +139,8 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr("scout.pipeline.run_pipeline", _fake_pipeline)
     monkeypatch.setattr(
         "scout.epitope_db.resolve_uniprot_id",
-        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
     )
     monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
     monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])

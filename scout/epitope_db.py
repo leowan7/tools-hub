@@ -215,6 +215,11 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
         DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
         DBREF2 5YTL A     A0A1W6VP04                         31         352
 
+    AlphaFold DB does NOT split. It emits a plain DBREF and lets a
+    10-character accession overflow the 8-wide field, so the accession is
+    read as the first token from column 34 rather than as a fixed slice:
+        DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+
     A plain DBREF for the chain WINS over a two-line pair. Both forms
     appear together on ~0.5% of entries, and there the pair is typically
     an expression tag or fusion partner covering a short N-terminal
@@ -271,7 +276,30 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
         if line.startswith("DBREF "):
             # wwPDB 1-based cols 13 = chain, 27-32 = db, 34-41 = accession.
             db_name = line[26:32].strip()
-            accession = line[33:41].strip()
+            # Read the accession as the first whitespace-delimited TOKEN from
+            # column 34, not as the 8-wide field the spec defines. The wwPDB
+            # splits into DBREF1/DBREF2 when the accession does not fit, but
+            # AlphaFold DB does not: it emits a plain DBREF and lets the
+            # 10-character accession overflow into the next column.
+            #
+            #   DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+            #
+            # An 8-wide slice returns "A0A2K5QD", which _valid_accession
+            # rejects, so every AFDB model with a 10-character accession --
+            # the overwhelming majority of TrEMBL ones -- failed here and fell
+            # through to the sequence-search path for an answer its own file
+            # already stated.
+            #
+            # NOT a wider fixed slice: line[33:43] would return "P00698   L"
+            # for the 6-character case, because .strip() does not remove the
+            # interior spaces. Tokenising is what handles both widths.
+            #
+            # Reading a token cannot loosen the trust boundary: a blank
+            # accession column makes this pick up the entry NAME instead
+            # (LYC_CHICK), and _valid_accession rejects that exactly as it
+            # rejected the truncation.
+            _fields = line[33:].split()
+            accession = _fields[0] if _fields else ""
             if dbref_chain == chain_id and db_name in ("UNP", "SWS", "TRE"):
                 # Validated here rather than at the call site: this is the one
                 # place both the PDB and the mmCIF branch pass through, so it
@@ -635,12 +663,13 @@ def resolve_uniprot_id(pdb_path, chain_id: str) -> dict:
            accepted accession -- no reference record, an unreadable one, or one
            that failed validation -- provided a chain sequence was extractable
            and the match differs from the accession step 1 already rejected.
-           AlphaFold DB downloads reach step 2 more often than their DBREF
-           line suggests: ``_extract_uniprot_from_dbref`` reads a fixed 8-char
-           column per the PDB spec, so a 10-char accession such as A0A2K5QDT7
-           truncates to A0A2K5QD and is rejected at step 1. Those are
-           overwhelmingly TrEMBL, so this path sees unreviewed entries far out
-           of proportion to their share of UniProt. Accepted only when the
+           AlphaFold DB downloads USED to arrive here in bulk, because
+           ``_extract_uniprot_from_dbref`` read a fixed 8-char column and a
+           10-character accession such as A0A2K5QDT7 truncated to A0A2K5QD
+           and was rejected at step 1. They now resolve there, from the
+           accession their own file states. What is left for step 2 is files
+           with genuinely no usable reference record: design outputs, and
+           depositions stripped of their DBREF lines. Accepted only when the
            sequence matches exactly one UniProt entry; see
            ``_search_uniprot_by_sequence``.
            The identity gate below cannot screen this path: a checksum match is
