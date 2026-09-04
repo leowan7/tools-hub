@@ -1,6 +1,7 @@
 {# RFdiffusion results partial -- included by job_detail.html on status=succeeded #}
 {% from "components/results_shell.html" import results_panel %}
 {% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
+{% from "components/score_era_notice.html" import score_era_notice %}
 
 {% set output     = job.result or {} %}
 {% set candidates = output.get('candidates', []) %}
@@ -8,6 +9,11 @@
 {% set clone_url  = url_for('tools.tool_form', tool='rfdiffusion', clone_from=job.id) %}
 
 {{ multichain_iptm_notice('rfdiffusion', (job.inputs or {}).get('target_chain')) }}
+{# Above the table and above results_shell's "the pipeline ran cleanly" line,
+   because it contradicts them. job.created_at is the submit time, which is the
+   best proxy this repo has for the image a run pulled: no job row records a
+   container SHA. #}
+{{ score_era_notice('rfdiffusion', job.created_at) }}
 
 {% call results_panel(
     candidates=candidates,

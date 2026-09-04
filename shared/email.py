@@ -264,18 +264,27 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         # transport captured: each mailed a pre-deploy BoltzGen score
         # described as "the binder-to-target interface", uncaveated.
         #
-        # ``email_caption`` appends the caveat only when THIS job's target
-        # names more than one chain — the condition the caveat states, and one
-        # the legend cannot evaluate because it never sees a job. The chain
+        # ``email_caption`` appends the caveat when the caveat's own
+        # antecedent holds for THIS job — for BoltzGen's, that the target names
+        # more than one chain; for RFdiffusion's, that the job was created
+        # before the container fix shipped. Both are conditions the legend
+        # cannot evaluate, because a legend is keyed on ``(tool, column)`` and
+        # never sees a job, and both are ones this function CAN, because it
+        # holds the job. The date matters as much as the chain count: without
+        # it every future RFdiffusion customer is mailed a note about a defect
+        # their run does not have. The chain
         # comes from ``job.inputs`` (the value the run was SUBMITTED with),
         # not from a target row, which is editable and is overridden per
         # launch (templates/targets/launch.html: "Overrides the target default
-        # for these runs only").
+        # for these runs only"). The date is ``job.created_at``, the same value
+        # this mail already prints as "submitted ..." a few lines below.
         from shared.score_legends import email_caption  # noqa: PLC0415
 
         inputs = getattr(job, "inputs", None)
         target_chain = inputs.get("target_chain") if isinstance(inputs, dict) else None
-        caption = email_caption(legend, target_chain)
+        caption = email_caption(
+            legend, target_chain, getattr(job, "created_at", None),
+        )
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)

@@ -1,0 +1,54 @@
+{# score_era_notice.html — "the numbers on this page predate the fix that made
+   them mean anything", for a run that used a superseded container.
+
+   WHY A BANNER AS WELL AS THE LEGEND CAVEAT. shared/score_legends carries the
+   same sentence on the affected metric legends, which reaches the column
+   tooltip and the completion email. That is the only surface available on the
+   pooled target page, where a pre-boundary row sits beside a post-boundary one
+   and shared/target_results.py tags rows with no date to gate on.
+
+   It is not enough HERE. On a job page the numbers are introduced by body
+   text — components/results_shell.html renders "No design here reaches ipTM
+   0.65, pLDDT 80 and i_pAE 10 A. The pipeline ran cleanly." — and #216 then
+   renders a per-row verdict as flat prose ("pLDDT 64.2, below 80"). A reader
+   who never hovers a tooltip is told, in plain language and twice, that their
+   designs failed a measurement. The claim that the measurement is void has to
+   appear in the same register as the claim it contradicts, and above it.
+
+   THE COPY IS NOT A SECOND WORDING. It renders whatever
+   score_legends.score_era_caveat returns, which is the identical string the
+   tooltips and the email carry. This repo's recorded failure mode in this area
+   is two copies of one claim drifting apart, so the banner changes WHERE the
+   sentence appears and not what it says. Only the heading is local, and it
+   states no quantity, so there is nothing in it to drift.
+
+   IT SELF-GATES ON THE DATE. score_era_caveat returns "" for a run after the
+   tool's container boundary, so callers pass the date and do not test it. A
+   caller with no date gets the banner (see caveat_applies for why the unknown
+   case over-warns) — which is why the pooled target page does NOT call this:
+   there every RFdiffusion row would trip it, including post-fix ones, and a
+   page-level banner cannot say "some of these rows". The per-row tooltip can.
+
+   Usage — above a candidate table, on a surface that knows when the run was:
+
+     {% from "components/score_era_notice.html" import score_era_notice %}
+     {{ score_era_notice(job.tool, job.created_at) }}
+#}
+{% macro score_era_notice(tool_slug, created_at) %}
+{% set era_caveat = score_era_caveat(tool_slug, created_at) %}
+{% if era_caveat %}
+  <div data-score-era-notice
+       style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
+    <p class="subtitle" style="margin:0;">
+      {# Deixis-free for the same reason the sibling banner is: this renders on
+         a job page and a campaign page, and it may not describe furniture that
+         only one of them has. "This run" is safe — both are about one run. #}
+      <strong>The scores on this run predate the fix that made them
+      meaningful.</strong>
+      {{ era_caveat }}
+      Re-run the design to get scores that can be compared with current ones;
+      the stored numbers below are kept as a record, not as a measurement.
+    </p>
+  </div>
+{% endif %}
+{% endmacro %}

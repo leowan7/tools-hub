@@ -60,6 +60,7 @@ def _env() -> Environment:
     env.globals["tool_has_bar"] = score_legends.tool_has_bar
     env.globals["shortfall_bar_text"] = score_legends.shortfall_bar_text
     env.globals["legend_text"] = score_legends.legend_text
+    env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
     # results_shell.html gates the Second-opinion panel on this predicate, and
