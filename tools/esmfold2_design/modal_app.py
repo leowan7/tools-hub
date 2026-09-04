@@ -43,9 +43,15 @@ _RUN_PIPELINE_LOCAL = "tools/esmfold2_design/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "H100"
 
-# Pinned upstream commit on evolutionaryscale/esm. binder_design.py at this
+# Pinned upstream commit on Biohub/esm. binder_design.py at this
 # SHA is cloned into /opt/ at image build time so run_pipeline.py can do
 # ``import binder_design`` directly. Bump the SHA to bump the algorithm.
+#
+# The repo moved to a different org -- a transfer, not a rename: the two orgs
+# have distinct GitHub ids, and a rename keeps the id. The old owner path kept
+# building only because git and pip follow the 301 silently, which holds right
+# up until someone re-creates that repo under the old owner. The old name is
+# barred by tests/test_citations_name_the_right_model.py, so it is not here.
 _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 # 60 min ceiling per H100 worker — covers the worst-case scfv preset
 # with batch_size=6 plus weight-load tail latency on a cold container.
@@ -170,7 +176,7 @@ def _park_raw_archive(payload: Any) -> dict[str, str]:
         )
         return {}
 
-# Mirrors the upstream cookbook image build (evolutionaryscale/esm
+# Mirrors the upstream cookbook image build (Biohub/esm
 # cookbook/tutorials/binder_design.py, ~line 1150): micromamba base for
 # the conda-only deps (anarci + hmmer from bioconda), then pip for esm
 # itself. abnumber is the pythonic wrapper around anarci that
@@ -226,13 +232,13 @@ image = (
         "pandas==3.0.3",
         "py3Dmol==2.5.5",
         "torch==2.12.0",
-        f"esm @ git+https://github.com/evolutionaryscale/esm.git@{_ESM_GIT_SHA}",
+        f"esm @ git+https://github.com/Biohub/esm.git@{_ESM_GIT_SHA}",
     )
     .run_commands(
         # Fetch the pinned binder_design.py via GitHub's archive endpoint
         # rather than git clone — we only need one file, and shallow git
         # fetch by SHA fails on GitHub (couldn't find remote ref).
-        f"curl -fL https://github.com/evolutionaryscale/esm/archive/{_ESM_GIT_SHA}.tar.gz "
+        f"curl -fL https://github.com/Biohub/esm/archive/{_ESM_GIT_SHA}.tar.gz "
         f"  -o /tmp/esm.tar.gz "
         f"&& tar -xzf /tmp/esm.tar.gz -C /tmp/ "
         f"&& cp /tmp/esm-{_ESM_GIT_SHA}/cookbook/tutorials/binder_design.py "
