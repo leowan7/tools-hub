@@ -191,30 +191,6 @@
             </div>
           </div>
 
-          <!-- PPI interfaces panel -->
-          <div class="panel" id="ppi-section" hidden>
-            <div class="panel-header">
-              <span class="panel-title">Interaction interfaces</span>
-              <span id="ppi-count" class="panel-badge"></span>
-            </div>
-            <div class="panel-body" style="padding-top:0.5rem;">
-              <div style="overflow-x:auto;">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Partner</th>
-                      <th>Chain</th>
-                      <th>Contacts</th>
-                      <th>Size</th>
-                      <th>Epitope overlap</th>
-                    </tr>
-                  </thead>
-                  <tbody id="ppi-table-body"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
           <!-- Known binders (SAbDab) -->
           <div class="panel results-full" id="known-binders-section" hidden>
             <div class="panel-header">
@@ -282,9 +258,6 @@
       '#ef4444', '#3b82f6', '#22c55e', '#f97316',
       '#a855f7', '#14b8a6', '#eab308', '#ec4899',
     ];
-    const PPI_COLORS = [
-      '#facc15', '#f472b6', '#38bdf8', '#a3e635',
-    ];
 
     const STAGES = {
       parsing: { pct: 10, label: 'Parsing structure\u2026' },
@@ -295,7 +268,6 @@
     };
 
     let _activeSource = null;
-    let _currentPpiInterfaces = [];
 
     // -----------------------------------------------------------------------
     // SSE progress stream
@@ -721,51 +693,6 @@
     }
 
     // -----------------------------------------------------------------------
-    // PPI interfaces table
-    // -----------------------------------------------------------------------
-    function renderPpiInterfaces(interfaces, epitopes) {
-      var section = document.getElementById('ppi-section');
-      var tbody = document.getElementById('ppi-table-body');
-      var countEl = document.getElementById('ppi-count');
-      tbody.innerHTML = '';
-      countEl.textContent = interfaces.length + ' interface' + (interfaces.length !== 1 ? 's' : '');
-
-      interfaces.forEach(function(iface, idx) {
-        var tr = document.createElement('tr');
-        var color = PPI_COLORS[idx % PPI_COLORS.length];
-
-        // Name
-        var name = iface.partner_name || 'Unknown';
-
-        // Overlap with predicted epitopes
-        var overlapLabels = [];
-        var ifaceResSet = new Set(iface.contact_residues || []);
-        epitopes.forEach(function(ep, i) {
-          var epResidues = new Set(ep.residue_numbers || []);
-          var overlap = [];
-          ifaceResSet.forEach(function(r) { if (epResidues.has(r)) overlap.push(r); });
-          if (overlap.length >= 2) {
-            var epColor = PATCH_COLORS[i % PATCH_COLORS.length];
-            overlapLabels.push(
-              '<span class="overlap-badge" style="border-color:' + epColor + ';color:' + epColor + '">Epitope ' + (i+1) + ' (' + overlap.length + ')</span>'
-            );
-          }
-        });
-        var overlapDisplay = overlapLabels.length > 0 ? overlapLabels.join(' ') : '<span style="color:var(--muted)">\u2014</span>';
-
-        tr.innerHTML =
-          '<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';opacity:0.7;margin-right:0.4rem;vertical-align:middle;"></span>' + name + '</td>' +
-          '<td style="font-family:var(--font-mono);font-size:0.75rem;">' + iface.partner_chain + '</td>' +
-          '<td style="font-weight:600;">' + iface.contact_count + ' res</td>' +
-          '<td><span class="interface-badge ' + iface.interface_area + '">' + iface.interface_area + '</span></td>' +
-          '<td>' + overlapDisplay + '</td>';
-        tbody.appendChild(tr);
-      });
-
-      section.hidden = false;
-    }
-
-    // -----------------------------------------------------------------------
     // Known binders table
     // -----------------------------------------------------------------------
     function renderKnownBinders(binders, epitopes) {
@@ -906,9 +833,7 @@
     // cards on screen under the new chain's UniProt bar, permanently whenever
     // renderViewer returns early (a failed /scout/pdb fetch does exactly that).
     //
-    // Add new per-chain elements to this list, not to a caller. #ppi-section is
-    // absent on purpose: renderPpiInterfaces has no call site, so clearing it
-    // would be a guard standing over code that does not run.
+    // Add new per-chain elements to this list, not to a caller.
     function _clearChainScopedResults() {
       document.getElementById('viewer-container').innerHTML = '';
       document.getElementById('epitope-legend').innerHTML = '';
@@ -939,11 +864,6 @@
       document.getElementById('progress-container').hidden = true;
       document.getElementById('progress-bar').style.width = '0%';
       _clearChainScopedResults();
-      // Not in the shared clear: nothing populates the PPI section today, but a
-      // full reset should still put the page back exactly as it loaded.
-      document.getElementById('ppi-table-body').innerHTML = '';
-      document.getElementById('ppi-section').hidden = true;
-      _currentPpiInterfaces = [];
       var btn = document.getElementById('analyze-btn');
       if (btn) { btn.disabled = false; btn.textContent = 'Analyze epitopes'; }
     }

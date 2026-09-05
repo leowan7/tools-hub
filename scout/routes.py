@@ -153,20 +153,27 @@ ANON_INTAKE_LIMIT = 10
 # box is 2 sync workers x 600 s ~= 1,200 CPU-s.
 #
 #   adversarial /progress  ~9 CPU-s   (run_pipeline at the 8 MB upload cap)
-#   adversarial /analyze   ~6 CPU-s   (binder lookup ~4.2 + interfaces ~1)
-#   adversarial analysis  ~15 CPU-s   (the pair)
+#   adversarial /analyze   ~5 CPU-s   (binder lookup ~4.2, network-bound)
+#   adversarial analysis  ~14 CPU-s   (the pair)
+#
+# /analyze was ~6 until 2026-09-04, when ~1 CPU-s of PPI interface detection
+# came out of it. That call ran on every analysis inside the slot and the
+# browser discarded the result: the renderer had no call site. Measured at
+# 130 ms on static/example/3ave_igg1_fc_dimer.pdb, ~0.9 s extrapolated to the
+# 8 MB cap. Only the wasted call went -- the detector is still live, and
+# run_feasibility_pipeline still scores interface_competition with it.
 #
 #   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
 #           so ~7 addresses saturate the fleet, and 5 analyses per worker.
-#   now:    20 hits/IP fleet-wide, each buying a whole analysis = ~300
+#   now:    20 hits/IP fleet-wide, each buying a whole analysis = ~280
 #           CPU-s/IP, so ~4 addresses saturate it, and 10 per worker.
 #
 # THAT INCREASE IS REAL AND IS THE PRICE OF THE FIX. Charging once per
 # analysis necessarily lets one charge buy a whole analysis instead of half of
 # one; there is no version of "bill it once" that does not. It is stated here
 # rather than buried because the lever is one line: dropping this to 6 puts
-# per-IP worst-case CPU back at ~180 exactly, at the cost of 6 analyses per
-# worker instead of 10.
+# per-IP worst-case CPU at ~170, just under the ~180 the fleet carried
+# before, at the cost of 6 analyses per worker instead of 10.
 #
 # WHY IT IS NOT BEING RAISED, which the plan's Phase 4 asks for. ONE
 # precondition, unmet — and a second consideration that used to be written
@@ -1079,7 +1086,7 @@ def example():
     # no credit — called on its own, or called a second time on the same job —
     # it is charged like anything else, which matters because THIS route can
     # run the pipeline itself when results.csv is missing (a dropped SSE
-    # stream), and does the binder lookup and interface detection every time.
+    # stream), and does the binder lookup every time.
     pair=PAIR_CLOSES,
     # The meter must key its credit on the job THIS VIEW runs, so it calls the
     # very function the first line of the body calls. Reading the job id from
@@ -1116,7 +1123,6 @@ def analyze():
         return jsonify({"error": "Job not found or expired. Please re-upload your file."}), 404
 
     known_binders = []
-    ppi_interfaces = []
     _chain_total = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
@@ -1151,9 +1157,6 @@ def analyze():
                 except Exception:
                     logger.exception("Known binder lookup failed for %s", uniprot_id)
                     known_binders = []
-
-            from scout.interfaces import detect_interfaces  # noqa: PLC0415
-            ppi_interfaces = detect_interfaces(pdb_path, chain_id)
         except ValueError as exc:
             if isinstance(exc, ScoutInputError):
                 return jsonify({"error": _client_error(exc)}), 422
@@ -1354,7 +1357,6 @@ def analyze():
     analyze_cache = {
         "epitopes": top3,
         "known_binders": known_binders,
-        "ppi_interfaces": ppi_interfaces,
         "chain": chain_id,
         # Stored so _get_binder_overlaps can pick up an interface this
         # worker has computed SINCE this file was written. Without it,
@@ -1393,7 +1395,6 @@ def analyze():
         "chain": chain_id,
         "epitopes": top3,
         "known_binders": known_binders,
-        "ppi_interfaces": ppi_interfaces,
         "uniprot_id": uniprot_id,
         "uniprot_name": uniprot_name,
         "sequence_identity_pct": uniprot_identity_pct,
