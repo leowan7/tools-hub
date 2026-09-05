@@ -43,6 +43,7 @@ import threading
 import time
 
 import pytest
+import requests
 
 from scout import epitope_db
 
@@ -130,7 +131,26 @@ class _FakeResponse:
     def json(self):
         # Deliberately not a stored dict: a real 204 carries an empty body, and
         # json() raising on it is the behaviour the 204 guard exists to skip.
-        return json.loads(self.text)
+        #
+        # And it raises what requests raises. ``Response.json()`` wraps a decode
+        # failure in ``requests.exceptions.JSONDecodeError``, which SUBCLASSES
+        # the stdlib error but is not subclassed BY it, so a double raising the
+        # bare stdlib error is not substitutable for a real response.
+        #
+        # Nothing here distinguishes them today, because the module still
+        # catches a broad ``except Exception``. What the unfaithful double cost
+        # was the NEXT change: narrowing that except to the requests type is the
+        # natural tightening and is exactly right in production, where an HTML
+        # proxy error page raises the requests type — but against a stdlib-only
+        # double the error would sail straight past the narrowed handler and
+        # turn this file red. A false alarm on a correct change, which is the
+        # kind of noise that gets a real fix reverted.
+        try:
+            return json.loads(self.text)
+        except json.JSONDecodeError as exc:
+            raise requests.exceptions.JSONDecodeError(
+                exc.msg, exc.doc, exc.pos
+            ) from exc
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -277,6 +297,26 @@ class TestEndpoint:
         for _ in range(5):
             epitope_db._sabdab_summary_index()
         assert len(calls) == 1
+
+    def test_a_valid_csv_under_an_error_status_is_not_an_index(self, served):
+        """A 5xx carrying a perfectly good body is an outage, not a database.
+
+        ``served`` has taken a ``status`` since it was written and not one of
+        its call sites ever passed one, which left
+        ``resp.raise_for_status()`` in ``_sabdab_summary_index`` completely
+        unguarded: before this test existed, deleting that line kept the whole
+        file green — verified by mutation at 34f9434, where the file was 52
+        passed either way. (The count has moved a long way since -- #223 added
+        a section and #224 added two test classes to this file -- so the number
+        is quoted with the commit it was taken at rather than re-stated,
+        because it is a historical measurement.) A cache or CDN
+        answering a
+        stale-but-parseable summary under a 503 would have been indexed as
+        fact, and — because a served index is what ``fetch_known_binders``
+        accepts as SAbDab having answered — used to write permanent misses.
+        """
+        served(_SUMMARY_CSV, status=503)
+        assert epitope_db._sabdab_summary_index() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1436,3 +1476,302 @@ class TestAccessionFieldWidth:
         result = epitope_db.resolve_uniprot_id(pdb, "A")
         assert result["uniprot_id"] == "A0A2K5QDT7"
         assert result["source"] == "dbref"
+
+
+# ---------------------------------------------------------------------------
+# 11. The RCSB page size must not truncate the antibody complexes away
+# ---------------------------------------------------------------------------
+
+
+class TestRecallIsNotTruncatedByThePageSize:
+    """``_RCSB_PROBE_LIMIT`` was 40, and that quietly destroyed recall.
+
+    The search is an ``exact_match`` on a UniProt accession, so RCSB scores
+    every hit exactly 1.0 and the ``sort_by: score`` block this code used to
+    send was inert — the reply came back in identifier-ascending order whatever
+    the direction, verified against the live API. PDB ids are roughly
+    chronological and antibody complexes skew modern, so "the first 40" tended
+    to miss them. Measured 2026-09-04 against RCSB and this module's own
+    SAbDab index: of the 1340 antibody complexes for SARS-CoV-2 spike the
+    first 40 ids held 16 (1.2% recall), and haemoglobin beta and insulin
+    found none at all. It is a tendency rather than a law -- EGFR's 3-of-30
+    is what a uniform draw gives -- and it bites hardest on exactly the
+    heavily studied targets this feature exists for.
+
+    Nor did it fail loudly, which is why no guard already here caught it. #215
+    taught this path to tell "could not read" (``None``) from "read zero"
+    (``[]``) so an outage stops writing permanent misses — but a truncated
+    search is a SUCCESSFUL one that genuinely did read zero. It sails through
+    that guard, and ``fetch_known_binders`` pins "no known binders" into a
+    cache with no expiry. The /analyze route does log "0 binders found" at
+    WARNING for it, but that line is character-for-character what a target
+    with no antibodies logs, so it reads as a fact rather than a symptom.
+
+    The stub below truncates server-side, exactly as RCSB does. That is the
+    only shape in which the two property tests can fail if the constant
+    regresses — a stub that returned everything regardless of ``rows`` would
+    stay green at any page size at all.
+    """
+
+    # 60 decoys that all sort BEFORE the one real hit ("1" < "7") and match no
+    # row in the fixture index, so the single antibody complex sits at position
+    # 61 — past the old page size, reachable only by not truncating. Same shape
+    # as production: old low-numbered entries first, the modern complex last.
+    _DECOYS = [f"1B{n:02d}" for n in range(60)]
+    _ALL_IDS = _DECOYS + ["7K8M"]
+
+    @pytest.fixture
+    def rcsb(self, monkeypatch):
+        """Answer the RCSB search as RCSB does, and record the rows asked for."""
+        asked = []
+
+        def _fake_post(url, **kwargs):
+            paginate = kwargs["json"]["request_options"]["paginate"]
+            rows, start = paginate["rows"], paginate["start"]
+            asked.append(rows)
+            page = self._ALL_IDS[start:start + rows]
+            return _FakeResponse(json.dumps({
+                "total_count": len(self._ALL_IDS),
+                "result_set": [{"identifier": i, "score": 1.0} for i in page],
+            }))
+
+        monkeypatch.setattr(epitope_db.requests, "post", _fake_post)
+        return asked
+
+    def test_a_complex_past_the_first_40_ids_is_still_found(self, served, rcsb):
+        """The property itself. Red at any page size below 61."""
+        served(_SUMMARY_CSV)
+        binders = epitope_db.query_sabdab("P0DTC2")
+        assert [b["pdb_id"] for b in binders] == ["7K8M"], (
+            f"asked RCSB for {rcsb} rows and lost the only antibody complex"
+        )
+
+    def test_the_truncated_miss_is_not_pinned_in_the_cache(self, served, rcsb):
+        """Truncation did not merely lose the hit, it made the loss permanent."""
+        served(_SUMMARY_CSV)
+        assert epitope_db.fetch_known_binders("P0DTC2")
+        assert epitope_db._CACHE["P0DTC2"] != []
+
+    def test_the_shipped_page_size_is_rcsbs_maximum(self):
+        """Pins "no truncation at all", which the property test above cannot.
+
+        A regression to some middling value — 500, say — would still satisfy
+        the 61-id property while silently truncating spike's 2262 entries all
+        over again. 10000 is RCSB's ceiling; 10001 is an HTTP 400, measured
+        2026-09-04.
+        """
+        assert epitope_db._RCSB_ROWS_MAX == 10000
+        assert epitope_db._RCSB_PROBE_LIMIT == epitope_db._RCSB_ROWS_MAX
+
+    @pytest.mark.parametrize(
+        "limit,expected", [(1, 1), (40, 40), (99_999, 10_000)]
+    )
+    def test_the_row_count_is_capped_at_rcsbs_maximum(self, limit, expected, rcsb):
+        """Ask for more than RCSB allows and it 400s the whole search."""
+        epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=limit)
+        assert rcsb == [expected]
+
+    @pytest.mark.parametrize("limit", [0, -5, 0.5, 0.9, 1e-9])
+    def test_a_limit_below_one_answers_without_a_request(self, limit, rcsb):
+        """"At most zero ids" is already answered, and answered with zero.
+
+        The boundary is ONE, not zero. The payload floors with int(), so a
+        fractional limit would send rows=0 -- an HTTP 200 with no result_set,
+        which the strict read treats as unreadable and pays for with the SHARED
+        backoff. An earlier draft guarded on ``> 0`` and let 0.5 straight
+        through into exactly that; QC found it.
+
+        An earlier draft clamped this UP to 1, which asked RCSB for a page and
+        handed back an id the caller had explicitly not asked for. Asserting
+        only the rows requested — as that draft's test did — cannot see it, so
+        the RETURN VALUE is what is checked here.
+
+        Not asking also matters: RCSB answers ``rows=0`` with an HTTP 200
+        carrying no ``result_set`` at all (measured 2026-09-04), and #215's
+        deliberately strict read treats that as unreadable and spends the
+        SHARED error backoff on it, darkening every other accession for a full
+        TTL.
+        """
+        assert epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=limit) == []
+        assert rcsb == [], "a request was sent for a limit that needs none"
+        assert epitope_db._RCSB_RETRY_AT == 0.0, "backoff spent on a no-op"
+
+    def test_a_truncated_page_is_reported(self, rcsb, caplog):
+        """The detection the original bug lacked, not just a bigger number.
+
+        RCSB returns ``total_count`` in every reply and this code ignored it,
+        which is why a page size of 40 could destroy recall in silence. Raising
+        the ceiling alone only moves the number: P0DTD1 already returns 3668
+        entries against a 10000 cap (measured 2026-09-04), so the day some
+        accession crosses it the identical bug returns with the identical
+        silence. Here the stub reports more matches than it serves.
+        """
+        import logging  # noqa: PLC0415
+
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=10)
+        assert any(
+            "truncated the entry list" in r.message and "P0DTC2" in str(r.args)
+            for r in caplog.records
+        ), f"no truncation warning; saw {[r.message for r in caplog.records]}"
+
+    def test_the_truncation_warning_names_served_then_total(self, rcsb, caplog):
+        """Order of the two counts, which a substring check cannot see.
+
+        Swapping the arguments yields "61 of 10 returned" -- an operator
+        reading that concludes RCSB sent MORE than it has and goes looking for
+        the wrong bug. QC found this mutation surviving.
+        """
+        import logging  # noqa: PLC0415
+
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=10)
+        msgs = [
+            r.getMessage() for r in caplog.records
+            if "truncated the entry list" in r.message
+        ]
+        assert msgs, "no truncation warning at all"
+        assert "10 of 61 returned" in msgs[0], msgs[0]
+
+    @pytest.mark.parametrize("bogus", ["61", 61.0, None, "lots"])
+    def test_an_unreadable_total_count_is_not_silently_ignored(
+        self, bogus, monkeypatch, caplog
+    ):
+        """A retype upstream must not disable the detector in silence.
+
+        The whole point of reading total_count is that a truncation nobody can
+        see is the bug. A bare ``isinstance(total, int)`` -- which an earlier
+        draft used, and which QC caught surviving mutation -- turns any rename
+        or retype into exactly that: no warning, no detection, forever. The
+        numeric-looking values must still detect; the rest must at least say
+        they cannot.
+        """
+        import logging  # noqa: PLC0415
+
+        def _fake_post(url, **kwargs):
+            return _FakeResponse(json.dumps({
+                "total_count": bogus,
+                "result_set": [{"identifier": "1ABC"}],
+            }))
+
+        monkeypatch.setattr(epitope_db.requests, "post", _fake_post)
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            assert epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2") == ["1ABC"]
+        # Match the unreadable-value warning specifically. Asserting only that
+        # SOMETHING was logged — as an earlier draft did — is satisfied for the
+        # numeric-looking values by the TRUNCATION warning, so those two params
+        # silently duplicated another test instead of pinning this one. QC
+        # caught that by deleting the truncation block and watching them fail.
+        unreadable = [
+            r for r in caplog.records if "no readable total_count" in r.message
+        ]
+        detected = [
+            r for r in caplog.records if "truncated the entry list" in r.message
+        ]
+        assert unreadable or detected, (
+            f"total_count={bogus!r} silently disabled the detector"
+        )
+        if isinstance(bogus, (int, float)) or (
+            isinstance(bogus, str) and bogus.isdigit()
+        ):
+            assert detected, f"{bogus!r} is readable but was not used"
+        else:
+            assert unreadable, f"{bogus!r} is unreadable but nothing said so"
+
+    def test_a_boolean_total_count_warns_instead_of_reporting_truncation(
+        self, monkeypatch, caplog
+    ):
+        """``bool`` is an ``int`` in Python, so ``True > 0`` would report a
+        truncation on an empty page. But rejecting it SILENTLY — as an earlier
+        draft did — is the very thing the block's own comment forbids, so it
+        has to go down the unreadable-value path and say so."""
+        import logging  # noqa: PLC0415
+
+        def _fake_post(url, **kwargs):
+            return _FakeResponse(json.dumps(
+                {"total_count": True, "result_set": []}
+            ))
+
+        monkeypatch.setattr(epitope_db.requests, "post", _fake_post)
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2")
+        assert not [
+            r for r in caplog.records
+            if "truncated the entry list" in r.message
+        ]
+        assert [r for r in caplog.records if "no readable total_count" in r.message]
+
+    def test_an_infinite_total_count_does_not_arm_the_shared_backoff(
+        self, monkeypatch, caplog
+    ):
+        """``int(float('inf'))`` raises OverflowError, which is NOT a subclass
+        of ValueError.
+
+        An earlier draft caught only (TypeError, ValueError), so this escaped
+        into the outer handler: a readable result_set was thrown away, the
+        reply was logged as "RCSB search failed", and the SHARED backoff was
+        armed -- darkening the known-binder lookup for EVERY other accession
+        for a full error TTL, on a reply that was perfectly usable.
+
+        ``json.loads`` really does produce this: a bare ``Infinity`` token, or
+        any number at or above 1e309.
+        """
+        import logging  # noqa: PLC0415
+
+        def _fake_post(url, **kwargs):
+            return _FakeResponse(
+                '{"total_count": Infinity, "result_set": [{"identifier": "1ABC"}]}'
+            )
+
+        monkeypatch.setattr(epitope_db.requests, "post", _fake_post)
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            assert epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2") == ["1ABC"]
+        assert epitope_db._RCSB_RETRY_AT == 0.0, (
+            "a readable reply armed the SHARED backoff"
+        )
+        assert [r for r in caplog.records if "no readable total_count" in r.message]
+
+    @pytest.mark.parametrize(
+        "limit,expected_rows", [(40.5, 40), (10_000.9, 10_000)]
+    )
+    def test_a_fractional_limit_is_coerced_not_shipped(
+        self, limit, expected_rows, rcsb
+    ):
+        """``"rows": 40.5`` earns an HTTP 400 and spends the SHARED backoff."""
+        epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=limit)
+        assert rcsb == [expected_rows]
+
+    def test_an_infinite_limit_is_clamped_not_raised(self, rcsb):
+        """The other end of the same hazard the NaN guard closes.
+
+        ``inf >= 1`` is True, so infinity sails past that guard and reaches the
+        payload. An earlier draft coerced with ``min(int(limit), _RCSB_ROWS_MAX)``,
+        and ``int(inf)`` raises OverflowError -- built OUTSIDE the ``try``, so it
+        left the function as an exception rather than either documented return.
+        Clamping before coercing means int() only ever sees a finite number.
+        """
+        epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2", limit=float("inf"))
+        assert rcsb == [epitope_db._RCSB_ROWS_MAX]
+
+    def test_a_nan_limit_does_not_reach_rcsb(self, rcsb):
+        """NaN fails every comparison, so any bare ``<``/``<=`` bound is False
+        for it and execution would carry on to the coercion, where ``int(NaN)``
+        raises ValueError -- outside the ``try``, so it would leave the function
+        as an exception rather than either documented return."""
+        assert epitope_db._rcsb_pdb_ids_for_uniprot(
+            "P0DTC2", limit=float("nan")
+        ) == []
+        assert rcsb == []
+        assert epitope_db._RCSB_RETRY_AT == 0.0
+
+    def test_a_complete_page_is_not_reported_as_truncated(self, rcsb, caplog):
+        """The complement. A warning that always fires is noise, and noise on
+        this path is what let the original silence go unnoticed."""
+        import logging  # noqa: PLC0415
+
+        with caplog.at_level(logging.WARNING, logger=epitope_db.logger.name):
+            epitope_db._rcsb_pdb_ids_for_uniprot("P0DTC2")
+        assert not [
+            r for r in caplog.records
+            if "truncated the entry list" in r.message
+        ]

@@ -773,16 +773,56 @@
       var tbody = document.getElementById('known-binders-body');
       var countEl = document.getElementById('known-binders-count');
       tbody.innerHTML = '';
-      countEl.textContent = binders.length + ' structure' + (binders.length !== 1 ? 's' : '');
 
-      binders.forEach(function(b) {
+      // Render a bounded slice, not the whole list. Since the RCSB page size
+      // stopped truncating, a heavily studied target answers with well over a
+      // thousand structures -- SARS-CoV-2 spike returns 1340 -- and nothing
+      // downstream bounded this table: no max-height, no pagination, one <tr>
+      // each. The list arrives sorted by
+      // resolution and only the first few carry contact residues, so the tail
+      // is the least useful part of it. The full list is still in the JSON
+      // reply and in analyze_cache.json for anything that wants it.
+      var MAX_BINDER_ROWS = 100;
+      var shown = binders.slice(0, MAX_BINDER_ROWS);
+      countEl.textContent = binders.length > shown.length
+        ? 'showing ' + shown.length + ' of ' + binders.length + ' structures'
+        : binders.length + ' structure' + (binders.length !== 1 ? 's' : '');
+
+      shown.forEach(function(b) {
         var tr = document.createElement('tr');
         var pdbLink = '<a href="https://www.rcsb.org/structure/' + b.pdb_id + '" target="_blank" rel="noopener" class="pdb-link">' + b.pdb_id + '</a>';
         var res = b.resolution != null ? b.resolution.toFixed(1) + ' \u00c5' : 'N/A';
-        var contacts = (b.contact_residues || []);
-        var contactDisplay = contacts.length > 0
-          ? contacts.slice(0, 10).join(', ') + (contacts.length > 10 ? '\u2026 (+' + (contacts.length - 10) + ')' : '')
-          : '<span style="color:var(--muted)">pending</span>';
+        // An ABSENT contact_residues and a PRESENT empty one mean different
+        // things, and `b.contact_residues || []` collapses them. What each one
+        // means is written down once, in scout/epitope_db.py's module
+        // docstring; do not paraphrase it here, because a paraphrase in this
+        // file is what went stale and shipped two different false labels.
+        //
+        // The two fallback labels below therefore report only what the SERVER
+        // DID -- it recorded no contacts, or it has not recorded any -- and
+        // neither claims to know why. An earlier draft labelled these rows
+        // "none found" and commented it "looked, found nothing within the
+        // cutoff"; both were wrong, because a present [] arrives five ways and
+        // only ONE of them is a measurement. (Five code paths -- nothing here
+        // counts how often each is hit.) They are enumerated in that same
+        // module docstring, not here.
+        var computed = Object.prototype.hasOwnProperty.call(b, 'contact_residues')
+          && b.contact_residues !== null;
+        var contacts = computed ? b.contact_residues : [];
+        var contactDisplay;
+        if (contacts.length > 0) {
+          contactDisplay = contacts.slice(0, 10).join(', ')
+            + (contacts.length > 10 ? '\u2026 (+' + (contacts.length - 10) + ')' : '');
+        } else if (computed) {
+          contactDisplay =
+            '<span style="color:var(--muted)">no contacts recorded</span>';
+        } else {
+          // NOT "pending". Contacts are computed server-side before this reply
+          // is built, and only for the best few entries, so for most rows
+          // nothing is on its way and "pending" promised work that never
+          // arrives.
+          contactDisplay = '<span style="color:var(--muted)">not computed</span>';
+        }
 
         var overlapLabels = [];
         if (contacts.length > 0) {

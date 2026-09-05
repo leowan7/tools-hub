@@ -28,6 +28,18 @@ Each returned dict has:
                           ``"contact_residues" in entry`` before telling a user
                           anything about the interface, and never write a
                           placeholder [] back.
+                          A PRESENT [] is not a measurement either. It means
+                          only that this module has SETTLED the row and will
+                          not retry it, and it arrives five ways: SAbDab
+                          records no antigen chain (2347 of 22201 rows, 10.6%,
+                          measured 2026-09-04) or no antibody chain -- both
+                          settle with no download at all -- the entry is
+                          mmCIF-only so the
+                          .pdb fetch 404s (no coordinates read), the antigen
+                          chain is not in the legacy file, no antibody atoms
+                          are found, or the interface genuinely has nothing
+                          within the cutoff. Only the last is a measurement,
+                          so a caller must not render [] as "none found".
     antigen_chain   str   — Antigen chain ID in the PDB entry
     ab_chains       list[str] — Antibody chain IDs
 """
@@ -60,9 +72,10 @@ logger = logging.getLogger(__name__)
 #
 # Fetching the whole database once and indexing it in memory is not a
 # compromise, it is strictly cheaper than what it replaces: the old code made
-# ONE HTTPS request PER candidate PDB id, up to _RCSB_PROBE_LIMIT (40) of them,
-# each on its own raw unbounded thread, on EVERY anonymous /analyze. One
-# request that is then reused by every subsequent lookup beats 40 that are not.
+# ONE HTTPS request PER candidate PDB id, up to _RCSB_PROBE_LIMIT (40 at the
+# time) of them, each on its own raw unbounded thread, on EVERY anonymous
+# /analyze. One request that is then reused by every subsequent lookup beats
+# 40 that are not.
 # The payload is ~11.7 MB of CSV but only ~1.2 MB on the wire (the server
 # gzips; requests negotiates and decodes it transparently), and the parsed
 # index keeps only the six fields used below.
@@ -77,11 +90,62 @@ UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
 # this request path does not have.
 UNIPROTKB_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
 
-# How many RCSB PDB IDs to check against SAbDab before giving up. Higher
-# values increase recall. Since the SAbDab side became an in-memory dict
-# lookup this costs nothing per id — the only cost is the single RCSB search
-# request, whose page size this is.
-_RCSB_PROBE_LIMIT = 40
+# How many RCSB PDB IDs to check against SAbDab. Since the
+# SAbDab side became an in-memory dict lookup this costs nothing per id — the
+# only cost is the single RCSB search request, whose page size this is. So it
+# is set to that request's maximum and nothing is truncated.
+#
+# 40 was a vestige of the retired per-id HTTP fan-out, and it destroyed recall.
+# The search is an ``exact_match`` on an accession, so every hit scores exactly
+# 1.0 and RCSB falls back to identifier-ascending order. PDB ids are roughly
+# chronological and antibody complexes skew modern, so "the first 40" tended to
+# miss them. Measured 2026-09-04 against RCSB and this module's own SAbDab index
+# (11,565 entries):
+#
+#     accession  target            entries  Ab complexes  found@40  recall
+#     P0DTC2     spike                2262          1340        16    1.2%
+#     P01308     insulin               386            13         0    0.0%
+#     P68871     haemoglobin beta      350             1         0    0.0%
+#     P00533     EGFR                  392            30         3   10.0%
+#     Q9NZQ7     PD-L1                  78            15        11   73.3%
+#
+# The effect is a tendency, not a law, and the counts above are printed so it
+# can be checked: EGFR's 3-of-30 is what a uniform draw would give (40/392 x 30
+# = 3.1) and PD-L1's 11-of-15 is better than uniform. It is the big, heavily
+# studied targets — the ones this feature exists for — where it bites hardest.
+#
+# And it did not fail loudly. A truncated search was a SUCCESSFUL one: the
+# helper handed back a healthy list of 40 ids, none of which happened to be
+# in SAbDab, so query_sabdab reported [] and fetch_known_binders could not
+# tell that from a target with genuinely no antibodies. The miss then went
+# into a cache
+# with no expiry and pinned "no known binders" for the life of the worker.
+# The /analyze route does log "0 binders found" for it at WARNING, on every
+# request — but that line is character-for-character what a target with no
+# antibodies logs, so it reads as a fact rather than a symptom. #215 cannot
+# catch this shape either: it separates "could not read" from "read zero",
+# and a truncated page really did read zero.
+#
+# Cost of not truncating, measured 2026-09-04. Spike at 2262 entries is ~8 KB
+# on the wire in one request (118 KB decoded; RCSB gzips, as the SAbDab note
+# above does for its own figure), against ~318 B on the wire at rows=40. The
+# largest accession found while checking was not spike but SARS-CoV-2 rep1ab
+# (P0DTD1) at 3668 entries, measured at ~12 KB on the wire (191 KB decoded) —
+# still one request, and still noise. The cap that costs real money is untouched: only
+# _MAX_CONTACT_STRUCTURES structures are ever downloaded and parsed, however
+# many ids come back here.
+#
+# What the extra ids DO grow is the result list, which is returned whole --
+# into the /analyze JSON reply and onto disk in analyze_cache.json. Spike goes
+# from ~16 binder dicts to 1340, about 3 KB to ~254 KB (~11 KB of it gzipped
+# on the wire), measured 2026-09-04 AFTER #224 -- before it, every entry
+# carried a placeholder contact_residues [] and the same list measured ~279 KB.
+# That is accepted rather than capped here, so the data stays
+# complete for anything reading it; the known-binders TABLE caps its own
+# rendering instead, and says how many it is showing. See
+# templates/scout/index.html.
+_RCSB_ROWS_MAX = 10000  # RCSB's ceiling; 10001 is an HTTP 400.
+_RCSB_PROBE_LIMIT = _RCSB_ROWS_MAX
 
 # Timeout for all external HTTP requests.
 _REQUEST_TIMEOUT_SEC = 12
@@ -160,7 +224,8 @@ def _cache_put(key: str, value: list) -> None:
 
 # In-process index of the whole SAbDab summary: PDB id (uppercase, classic
 # 4-character form) → list of legacy-shaped row dicts. Built once per TTL per
-# worker; ~6.7 MB resident for 11,458 entries / 21,914 rows.
+# worker; ~6.7 MB resident for 11,565 entries / 22,201 rows (2026-09-04;
+# SAbDab grows weekly, so treat these as a scale, not a constant).
 _SUMMARY_INDEX: Optional[dict] = None
 _SUMMARY_EXPIRES_AT = 0.0
 _SUMMARY_LOCK = threading.Lock()
@@ -1052,15 +1117,49 @@ def _rcsb_pdb_ids_for_uniprot(
     uniprot_id: str, limit: int = _RCSB_PROBE_LIMIT
 ) -> Optional[list]:
     """Return PDB IDs from RCSB that contain a polymer entity with the given
-    UniProt accession, sorted by RCSB relevance score (best structures first).
+    UniProt accession, in RCSB's default identifier-ascending order.
+
+    NOT in relevance order, which this used to claim. ``exact_match`` on an
+    accession scores every hit exactly 1.0, so a ``score`` sort is inert —
+    verified 2026-09-02 that ``direction`` desc, ``direction`` asc and no sort
+    block at all return byte-identical, ``sorted()``-equal ids. The block was
+    therefore removed rather than left standing as decoration that reads like
+    a guarantee.
+
+    The SET of hits does not depend on this order: ``query_sabdab`` looks up
+    every id returned here and re-sorts its own hits by resolution. The order
+    is not entirely washed out, though — that sort is stable, so equal
+    resolutions (and every hit whose resolution is unknown, since those all
+    share one sort key) stay in the order they arrived in, and
+    ``fetch_known_binders`` computes contacts for the first
+    ``_MAX_CONTACT_STRUCTURES`` of them. So RCSB's ordering does decide ties at
+    that boundary. It is deterministic, not arbitrary — identifier-ascending —
+    but it is not nothing, and it matters more now that a popular target yields
+    hundreds of hits rather than a handful.
+
+    What the order used to decide, and no longer does, is which hits exist at
+    all: that is what ``limit`` truncating the page did, and why ``limit`` now
+    defaults to RCSB's maximum page size — see ``_RCSB_PROBE_LIMIT``.
 
     Args:
         uniprot_id: UniProt accession in uppercase (e.g. "P00533").
-        limit: Maximum number of PDB IDs to return.
+        limit: Maximum number of PDB IDs to return, capped at
+            ``_RCSB_ROWS_MAX``. Anything that is not at least 1 —
+            fractions, which the payload would floor to zero, and NaN,
+            which is unordered rather than small — short-circuits to ``[]``
+            without a request: RCSB answers
+            ``rows=0`` with an HTTP 200 carrying no ``result_set`` at all
+            (measured 2026-09-04), and the strict read below rightly refuses
+            to treat that as a zero — so asking would spend the SHARED error
+            backoff on a self-inflicted wound. It is an internal, typed
+            parameter; no production caller passes it, and something
+            non-numeric raises here rather than returning per the contract
+            below.
 
     Returns:
         List of uppercase PDB ID strings; ``[]`` when RCSB answered and matched
-        nothing, ``None`` when RCSB could not be read.
+        nothing — or when ``limit`` was not at least 1, which is answered
+        here without asking — and ``None`` when RCSB could not be read.
 
         The caller needs those two apart. ``fetch_known_binders`` writes an
         unexpiring "no known binders" for this accession on the strength of an
@@ -1073,6 +1172,28 @@ def _rcsb_pdb_ids_for_uniprot(
     global _RCSB_RETRY_AT
     if time.monotonic() < _RCSB_RETRY_AT:
         return None
+
+    # "At most zero ids" is already answered, and answered with zero of them.
+    # Clamping it up to 1 instead — which an earlier draft of this did — asks
+    # RCSB for a page and returns an id the caller explicitly did not want.
+    #
+    # ``>= 1``, not ``> 0``: the payload floors with int(), so any limit in
+    # (0, 1) would send rows=0 — the one request this guard exists to stop.
+    # An earlier draft used ``> 0`` and let 0.5 through.
+    #
+    # Negated rather than written ``limit < 1`` so that NaN lands here too:
+    # NaN fails every comparison, so ``limit < 1`` is False for it and it
+    # would reach the coercion below, where ``int(NaN)`` raises ValueError —
+    # outside the ``try``, so it would leave this function as an exception
+    # rather than either documented return.
+    #
+    # Infinity is the same hazard from the other end: it passes any lower
+    # bound, so the coercion below is written ``int(min(limit, ...))`` and
+    # not ``min(int(limit), ...)`` — clamping first means int() only ever
+    # sees a finite number. An earlier draft had that the other way round
+    # and let inf raise OverflowError out of the function.
+    if not (limit >= 1):
+        return []
 
     query_payload = {
         "query": {
@@ -1089,8 +1210,10 @@ def _rcsb_pdb_ids_for_uniprot(
         },
         "return_type": "entry",
         "request_options": {
-            "paginate": {"start": 0, "rows": limit},
-            "sort": [{"sort_by": "score", "direction": "desc"}],
+            "paginate": {
+                "start": 0,
+                "rows": int(min(limit, _RCSB_ROWS_MAX)),
+            },
         },
     }
     try:
@@ -1118,7 +1241,54 @@ def _rcsb_pdb_ids_for_uniprot(
         # the documented shape is an unreadable answer, not a zero; defaulting
         # it to [] mints a forgeable genuine-zero and gets it cached. The
         # KeyError falls into the handler below, where it belongs.
-        return [hit["identifier"].upper() for hit in data["result_set"]]
+        result_set = data["result_set"]
+        # RCSB reports the true match count in every reply and this code ignored
+        # it, which is why a page size of 40 could destroy recall in silence for
+        # as long as it did. Raising the ceiling alone would only move that
+        # number: headroom is 2.7x, not orders of magnitude — SARS-CoV-2 rep1ab
+        # (P0DTD1) already returns 3668 entries against a 10000 cap, measured
+        # 2026-09-04 — so the day some accession crosses it, the identical bug
+        # returns with the identical silence. Reading total_count closes the
+        # class instead of postponing it.
+        # Read defensively, and SAY SO when it cannot be read. A bare
+        # isinstance(..., int) test — which an earlier draft used — turned an
+        # upstream rename or retype into a permanently and silently disabled
+        # detector, which is the exact failure this detector exists to prevent.
+        #
+        # bool is rejected rather than coerced: it is an int in Python, so
+        # `True` would read as a count of 1 and fire the warning on an empty
+        # page. It goes down the same warn path as any other unreadable value,
+        # because a bool here would mean the field had changed meaning.
+        #
+        # OverflowError is caught alongside TypeError and ValueError. It is not
+        # hypothetical: json.loads yields float('inf') for a bare `Infinity`
+        # token and for any number >= 1e309, and int(inf) raises OverflowError,
+        # which the outer handler would read as "RCSB search failed" — throwing
+        # away a perfectly good result_set AND arming the SHARED backoff, so one
+        # odd reply would darken the lookup for every other accession for a full
+        # TTL. That is the self-inflicted wound the limit guard above exists to
+        # avoid, and an earlier draft of this block reintroduced it here.
+        raw_total = data.get("total_count")
+        try:
+            if isinstance(raw_total, bool):
+                raise TypeError("total_count is a bool")
+            total = int(raw_total)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(
+                "RCSB reply for %s carries no readable total_count (%r), so "
+                "a truncated page cannot be detected. Has the field been "
+                "renamed?", uniprot_id, raw_total,
+            )
+            total = None
+        if total is not None and total > len(result_set):
+            logger.warning(
+                "RCSB truncated the entry list for %s: %d of %d returned. "
+                "Known-binder recall is INCOMPLETE for this target. If the "
+                "page asked for was _RCSB_ROWS_MAX, that is already RCSB's "
+                "maximum and the fix is pagination rather than a larger page.",
+                uniprot_id, len(result_set), total,
+            )
+        return [hit["identifier"].upper() for hit in result_set]
     except Exception:
         logger.warning("RCSB search failed for %s.", uniprot_id, exc_info=True)
         _RCSB_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
@@ -1131,8 +1301,8 @@ def _classic_pdb_id(extended_id: str) -> str:
     SAbDab 2 reports PDB entries in the extended ``pdb_0000XXXX`` form, where
     ``XXXX`` is the classic accession. RCSB's search API — and the coordinate
     download URL — still speak the classic form, so the index is keyed on it.
-    Verified against the live summary: all 21,914 rows match ``pdb_0000`` plus
-    four characters.
+    Verified against the live summary: all 22,201 rows match ``pdb_0000`` plus
+    four characters (re-counted 2026-09-04).
 
     Returns "" for anything that is not in that shape, so a future format
     change cannot silently produce garbage keys.
@@ -1497,8 +1667,13 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
     # contact_residues and ab_chains LIST objects with the cache, so "the
     # caller cannot corrupt the cache" would have been true only of rebinding a
     # key and false of the mutation anyone would actually reach for
-    # (list.append). The lists are small and there are at most
-    # _RCSB_PROBE_LIMIT of them, against an HTTP call.
+    # (list.append). Cost is a real question now that _RCSB_PROBE_LIMIT is
+    # RCSB's page maximum rather than the 40 it was when this was written: the
+    # list is one entry per SAbDab hit, 1340 of them for SARS-CoV-2 spike.
+    # Measured 2026-09-04 at 6.9 ms for that copy against 0.2 ms for the old
+    # ~16, which is noise beside the RCSB search it follows — but note this
+    # copy also runs on a warm cache hit, where there is no HTTP call left to
+    # amortise it against.
     return copy.deepcopy(
         _resolve_contacts(cache_key, cached, max_contact_structures)
     )
