@@ -995,8 +995,10 @@ def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client
 # rather than asserted here.
 #
 # Nothing caught it because no test fed a `.cif` through a TOOLS route --
-# scout has its own upload path and does (tests/test_scout_chain_scoped_
-# results.py:829) -- and tests/test_pdb_inspect.py never passes `filename=`
+# scout has its own upload path and does, via _cif_two_chains in
+# tests/test_scout_chain_scoped_results.py -- named rather than given a line
+# number, because the line moved within hours of this being written -- and
+# tests/test_pdb_inspect.py never passes `filename=`
 # at all, so the is_cif branch it selects on was unexercised in both
 # directions.
 
