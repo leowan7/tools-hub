@@ -15,11 +15,24 @@ Each returned dict has:
     species         str   — Antigen source organism from SAbDab
     resolution      float — X-ray/cryo-EM resolution in Angstroms (None if NMR)
     affinity        str   — Kd if deposited, else empty string
-    contact_residues list[int] — Antigen residue numbers at the interface
+    contact_residues list[int] — Antigen residue numbers at the interface.
+                          ABSENT when the interface was not established: the
+                          entry is past ``max_contact_structures`` (permanent,
+                          and the common case for a well-studied target), the
+                          coordinate host was unreadable or still inside its
+                          backoff, the body would not parse, or the download
+                          outran the join. A 404 is NOT in that list — an entry
+                          with no PDB-format file settles as [].
+                          Absent is not zero. ``.get("contact_residues", [])``
+                          is safe when you only need residue numbers, but test
+                          ``"contact_residues" in entry`` before telling a user
+                          anything about the interface, and never write a
+                          placeholder [] back.
     antigen_chain   str   — Antigen chain ID in the PDB entry
     ab_chains       list[str] — Antibody chain IDs
 """
 
+import copy
 import csv
 import difflib
 import logging
@@ -90,10 +103,11 @@ _CONTACT_CUTOFF_ANGSTROM = 4.5
 # the 6-character and 10-character forms.
 #
 # This is a trust boundary, not a tidiness check. The accession arrives from
-# columns 33-41 of a DBREF line in a file the caller uploaded, so without it
-# any eight bytes at all become a cache key and a lookup target: `ZZ9QC001`
-# was accepted, resolved, and cached. Every entry point that can mint a cache
-# key runs a string through here first.
+# a DBREF line, or from mmCIF ``_struct_ref.pdbx_db_accession``, in a file
+# the caller uploaded, so without it any bytes at all become a cache key
+# and a lookup target: `ZZ9QC001` was accepted, resolved, and cached.
+# Every entry point that can mint a cache key runs a string through here
+# first.
 _UNIPROT_ACCESSION_RE = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$"
 )
@@ -194,6 +208,22 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     PDB format example:
         DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147
 
+    The wwPDB splits the record in two whenever the accession is wider
+    than the 8-character field above, which is the case for every
+    10-character accession. The accession then sits on the DBREF2 line;
+    DBREF1 carries the database name and the entry name, never the
+    accession:
+        DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
+        DBREF2 5YTL A     A0A1W6VP04                         31         352
+
+    A plain DBREF for the chain WINS over a two-line pair. Both forms
+    appear together on ~0.5% of entries, and there the pair is typically
+    an expression tag or fusion partner covering a short N-terminal
+    segment (21JI chain A: a 90-residue rat tag alongside the 777-residue
+    protein). Preferring the plain record keeps this function's answer for
+    every file that already had one, so the two-line branch can only add
+    an accession where there was none.
+
     mmCIF format: uses BioPython MMCIF2Dict to parse _struct_ref and
     _struct_ref_seq loops. Cross-references ref_id to match chain_id
     with the correct UniProt accession.
@@ -218,19 +248,94 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     except OSError:
         return ""
 
+    # Chain armed by a UNP-typed DBREF1, or None. Holding the chain rather
+    # than a bool is what stops a DBREF1 for one chain arming a DBREF2 for
+    # another; None as the empty value keeps a blank chain column (which is
+    # a legal, and matchable, chain id here) from reading as "armed".
+    armed_chain = None
+
+    # First two-line accession seen for this chain. Only returned if no
+    # plain DBREF matches -- see the docstring on precedence.
+    two_line_accession = ""
+    two_line_seen = False
+
     for line in text.splitlines():
+        # Chain is column 12 in all three record types, so read it once,
+        # above the dispatch. That makes this guard cover EVERY line, not
+        # just DBREF ones -- a bare "END" is 3 characters. Keep it here:
+        # moving it into the branches reintroduces an IndexError on any
+        # file whose lines are not all padded to 80 columns.
+        if len(line) < 13:
+            continue
+        dbref_chain = line[12].strip()
+
         if line.startswith("DBREF "):
-            # Columns: 12 = chain, 26-32 = db (UNP/SWS/TRE), 33-40 = accession
-            dbref_chain = line[12].strip()
-            db_name = line[26:32].strip()
-            accession = line[33:41].strip()
+            # wwPDB 1-based cols 13 = chain, 27-32 = db, 34-41 = accession;
+            # indices 12, 26-32 and 33.. below.
+            #
+            # .upper() to match the mmCIF branch, which has always had it:
+            # a lowercase "unp" must not resolve in one format and not the
+            # other. Both DBREF forms need it; see the DBREF1 branch below.
+            #
+            # The two-line form handled further down is the wwPDB's answer to
+            # an accession too wide for that 8-character field. AlphaFold DB
+            # does not use it: it writes the 10-character accession straight
+            # through the field on a PLAIN DBREF and lets the entry name shift
+            # right, which no amount of DBREF1/DBREF2 support will read:
+            #   DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+            # so read to the next space rather than stopping at index 41.
+            # Split on a literal space, not on whitespace, so that a blank
+            # accession field stays blank instead of promoting the next
+            # column into it.
+            #
+            # Reading it correctly also settles the precedence above in the
+            # direction the docstring already wants: such a file returns its
+            # own plain accession now, instead of falling through to a
+            # two-line pair that is usually a tag or fusion partner.
+            #
+            # One shape the old fixed slice accepted is given up: an accession
+            # that does not START at index 33 — right-justified, or indented
+            # by even one column — which used to be stripped to size and now
+            # reads as empty. Unobserved: the field is a left-justified
+            # LString, and all five real plain-DBREF lines on hand
+            # (two AlphaFold, 1HEW, 3AVE x2) start the accession at index 33.
+            # Four of the five also leave index 41 blank; the fifth is the
+            # AlphaFold overflow this reads, whose accession runs through it.
+            #
+            # An accession packed against the entry name (P00698-2LYC_CHICK)
+            # is lost too, but costs nothing HERE: _valid_accession takes only
+            # the 6- and 10-character forms, so an 8-character field can only
+            # hold an isoform, which it rejected before this change as well.
+            # shared/uniprot_lookup.py allows a -\d+ tail and does pay for it.
+            db_name = line[26:32].strip().upper()
+            accession = line[33:].split(" ")[0].strip()
             if dbref_chain == chain_id and db_name in ("UNP", "SWS", "TRE"):
                 # Validated here rather than at the call site: this is the one
                 # place both the PDB and the mmCIF branch pass through, so it
                 # is the only place that has to be right.
                 return _valid_accession(accession)
 
-    return ""
+        elif line.startswith("DBREF1"):
+            # Two-line form, used whenever the accession does not fit the
+            # 8-character field above -- which is every 10-character A0A...
+            # accession. DBREF1 is the only half that names the database,
+            # so a non-UNP pair can only be refused here.
+            db_name = line[26:32].strip().upper()
+            armed_chain = (
+                dbref_chain if db_name in ("UNP", "SWS", "TRE") else None
+            )
+
+        elif line.startswith("DBREF2"):
+            # wwPDB 1-based cols 19-40 = accession -> line[18:40].
+            # Both halves must name the wanted chain: the file is
+            # caller-uploaded, so the pairing is checked, not trusted.
+            if not two_line_seen and armed_chain == dbref_chain == chain_id:
+                two_line_seen = True
+                two_line_accession = _valid_accession(line[18:40].strip())
+            # A DBREF2 consumes its DBREF1, whether or not it matched.
+            armed_chain = None
+
+    return two_line_accession
 
 
 def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
@@ -245,7 +350,17 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
         chain_id: Chain identifier to look up.
 
     Returns:
-        UniProt accession string, or empty string if not found.
+        The accession for THIS chain, or "" -- when no UNP-referencing
+        _struct_ref_seq row names it (7K8M chains A and B ARE named by a row,
+        which points at db_name PDB, so they get ""), when BioPython is
+        missing, and when the file will not read or parse. A "?" or "."
+        placeholder comes back verbatim; the _valid_accession call in
+        _extract_uniprot_from_dbref scrubs it.
+
+        Not another chain's accession from a file that parses as intended.
+        Malformed input that skews the positional pairing below still can
+        mis-associate; that behaviour is older than this chain scoping and is
+        unchanged by it.
     """
     try:
         from Bio.PDB.MMCIF2Dict import MMCIF2Dict  # noqa: PLC0415
@@ -298,10 +413,27 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
             if ref_id in unp_map:
                 return unp_map[ref_id]
 
-    # If chain matching fails, return the first UNP accession found
-    if unp_map:
-        return next(iter(unp_map.values()))
-
+    # No fallback to "the first UNP accession in the file". That fallback
+    # mislabelled PRESENT chains, not only absent ones: 7K8M chains A and B
+    # are the Fab, whose _struct_ref rows carry db_name PDB and so never enter
+    # unp_map, and both answered P0DTC2 -- the antigen's accession returned
+    # for the antibody. 1IGT chain A answered with the heavy chain's P01863.
+    # resolve_uniprot_id's 70% identity gate is not a backstop: step 1 runs
+    # must_validate=False, so with no chain sequence or no UniProt reply the
+    # wrong accession ships with identity None and goes on to key the
+    # known-binder lookup.
+    # Note what the loop above does NOT do: it returns only when the row
+    # naming the chain also carries a UNP ref_id. 7K8M A and 1IGT A are each
+    # named by a row -- pointing at db_name PDB -- and so reached here.
+    #
+    # The cost. The fallback answered with one file-level accession rather
+    # than a chain-level one, so it was right exactly when that accession
+    # happened to be the chain's own. That says nothing about how many
+    # references the file carries: it can be right on a two-UNP-reference
+    # file, and it was wrong on the one-UNP-reference files above.
+    # Such a chain now returns "" and reaches the step-2 sequence search if
+    # a chain sequence was extractable. Guessing produced the wrong answers
+    # above, so the miss is the cheaper error.
     return ""
 
 
@@ -564,17 +696,20 @@ def resolve_uniprot_id(pdb_path, chain_id: str) -> dict:
            If validation API is unreachable, accept the DBREF accession
            anyway (DBREF is depositor-annotated and highly reliable).
         2. Fall back to an EXACT sequence match when step 1 produced no
-           accepted accession -- no reference record, an unreadable one, or one
+           accepted accession -- no reference record, one naming a non-UniProt
+           database (as 7K8M's two Fab chains do), an unreadable one, or one
            that failed validation -- provided a chain sequence was extractable
            and the match differs from the accession step 1 already rejected.
-           AlphaFold DB downloads reach step 2 more often than their DBREF
-           line suggests: ``_extract_uniprot_from_dbref`` reads a fixed 8-char
-           column per the PDB spec, so a 10-char accession such as A0A2K5QDT7
-           truncates to A0A2K5QD and is rejected at step 1. Those are
-           overwhelmingly TrEMBL, so this path sees unreviewed entries far out
-           of proportion to their share of UniProt. Accepted only when the
-           sequence matches exactly one UniProt entry; see
-           ``_search_uniprot_by_sequence``.
+           AlphaFold DB downloads used to reach step 2 far more often than
+           their DBREF line suggests: ``_extract_uniprot_from_dbref`` read a
+           fixed 8-char column per the PDB spec, so a 10-char accession such
+           as A0A2K5QDT7 truncated to A0A2K5QD and was rejected at step 1.
+           That entry overflows the field rather than emitting DBREF1/DBREF2,
+           so the accession is now read to the next space and it resolves at
+           step 1. What still reaches step 2, and how it is distributed
+           between reviewed and unreviewed entries, is not measured.
+           Accepted only when the sequence matches exactly one UniProt
+           entry; see ``_search_uniprot_by_sequence``.
            The identity gate below cannot screen this path: a checksum match is
            byte-equal to the entry's canonical sequence, so it scores 1.0 by
            construction and ``must_validate`` only proves UniProt answered.
@@ -711,12 +846,27 @@ def _compute_contacts(
     antigen_chain: str,
     ab_chains: list,
     cutoff: float = _CONTACT_CUTOFF_ANGSTROM,
-) -> list:
+) -> Optional[list]:
     """Compute antigen residue numbers in contact with antibody chains.
 
     Uses BioPython to parse the structure and NumPy for vectorised distance
-    computation. Returns an empty list if either library is unavailable or
-    if the chain IDs are not found in the structure.
+    computation.
+
+    Returns ``None`` when the coordinates could not be read at all -- the
+    libraries are missing, or anything in the parse-and-measure raised --
+    and a list otherwise. The caller caches what it gets forever, so those
+    two have to stay apart: an unreadable body that answers ``[]`` is
+    indistinguishable from an interface with nothing in it, and gets
+    written down as a fact.
+
+    A structure that parsed but does not contain the named chains answers
+    ``[]``: re-downloading produces the same absence every time, so there is
+    nothing to retry. That is right when the chains really are absent and
+    WRONG in one case this module does not handle -- SAbDab's chain ids come
+    from mmCIF ``auth_asym_id`` and the download URL serves the legacy .pdb,
+    which can label chains differently. There is no chain-id mapping anywhere
+    here, so such an entry caches a permanent "contacts nothing". Pre-existing,
+    and a retry would not fix it; a mapping would.
 
     Args:
         pdb_text: Raw text content of a PDB coordinate file.
@@ -725,14 +875,15 @@ def _compute_contacts(
         cutoff: Distance threshold in Angstroms.
 
     Returns:
-        Sorted list of antigen residue sequence numbers (PDB auth_seq_id).
+        Sorted list of antigen residue sequence numbers (PDB auth_seq_id), or
+        ``None`` if the structure could not be read.
     """
     try:
         from Bio.PDB import PDBParser  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
     except ImportError:
         logger.debug("BioPython or NumPy not available; skipping contact computation.")
-        return []
+        return None
 
     try:
         parser = PDBParser(QUIET=True)
@@ -780,10 +931,36 @@ def _compute_contacts(
 
     except Exception:
         logger.debug("Contact computation error.", exc_info=True)
-        return []
+        return None
 
 
-def _fetch_and_compute_contacts(pdb_id: str, antigen_chain: str, ab_chains: list) -> list:
+# Bound on a dead files.rcsb.org, mirroring _RCSB_RETRY_AT for the search host.
+# Refusing to cache a failure is what stops the permanent zero, but it also
+# means every analysis retries, and a retry is up to _MAX_CONTACT_STRUCTURES
+# downloads (~0.5-5 MB each, see that constant) started inside
+# anon_compute_slot(ANON_MAX_CONCURRENT_RUNS), which is 2.
+#
+# ponytail: one SHARED unlocked timestamp, matching _RCSB_RETRY_AT, and armed
+# ONLY by a TRANSPORT failure -- a non-404 error status or a raise from
+# requests. That restriction is the whole of what makes "shared" tolerable.
+# The per-entry failures are the ones a structure carries forever: a 404
+# (mmCIF-only entry) and a body that will not parse. Neither arms this, so no
+# single bad structure can darken contact downloads for every other target.
+# A transport error is not entry-specific in that way -- it says the host is
+# unhappy -- so it does darken them, for one TTL, and an accession analysed in
+# that window gets no interface rather than a wrong one. Blunt, and the same
+# trade _RCSB_RETRY_AT already makes one layer up.
+#
+# Note this is a deadline, not a flag: a later success does not clear it, only
+# the clock does. Deliberate, and again the same as _RCSB_RETRY_AT -- clearing
+# on success would let one healthy entry in a round re-open the floodgate for
+# the four still failing behind it.
+_PDB_FILE_RETRY_AT = 0.0
+
+
+def _fetch_and_compute_contacts(
+    pdb_id: str, antigen_chain: str, ab_chains: list
+) -> Optional[list]:
     """Download a PDB file from RCSB and compute interface contact residues.
 
     Args:
@@ -792,22 +969,59 @@ def _fetch_and_compute_contacts(pdb_id: str, antigen_chain: str, ab_chains: list
         ab_chains: Antibody chain IDs.
 
     Returns:
-        Sorted list of contact residue numbers, or [] on failure.
+        Sorted list of contact residue numbers; ``[]`` when the answer is
+        genuinely no contacts (or there is nothing to compute against, or the
+        entry has no PDB-format file at all); ``None`` when the coordinates
+        could not be read and the question is still open.
+
+        ``fetch_known_binders`` caches what this returns for the life of the
+        worker, so ``[]`` for a 503 is what pins "this antibody touches
+        nothing" long after files.rcsb.org recovers -- the same
+        silent-permanent-zero shape as the search-side outage above, one layer
+        down. Only this layer sees the status code, so only this layer can tell
+        the two apart.
+
+        A 404 is deliberately on the ``[]`` side. Structures too large for the
+        legacy format are mmCIF-only and answer 404 forever, so classifying
+        that as an outage would re-download the same absence on every retry.
+
+        An armed backoff also answers ``None``, without asking the host at
+        all. Same meaning -- the question is open -- and the same handling:
+        the entry stays pending and is re-attempted once the TTL lapses.
     """
+    global _PDB_FILE_RETRY_AT
     if not antigen_chain or not ab_chains:
         return []
+    if time.monotonic() < _PDB_FILE_RETRY_AT:
+        return None
     try:
         url = RCSB_PDB_DOWNLOAD_URL.format(pdb_id=pdb_id.upper())
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT_SEC)
-        if not resp.ok:
-            logger.debug(
-                "PDB download failed for %s: HTTP %s", pdb_id, resp.status_code
-            )
+        if resp.status_code == 404:
+            logger.debug("No PDB-format file for %s (404).", pdb_id)
             return []
+        if not resp.ok:
+            logger.warning(
+                "PDB download failed for %s: HTTP %s. Backing off "
+                "files.rcsb.org for %ss.",
+                pdb_id, resp.status_code, _RCSB_ERROR_TTL_SEC,
+            )
+            _PDB_FILE_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+            return None
+        # A parse failure below returns None WITHOUT arming the backoff. The
+        # bytes arrived, so the host is fine; the entry is re-downloaded on the
+        # next lookup of this accession and nothing else is affected. That is
+        # one download per lookup per unreadable structure -- bounded by
+        # _MAX_CONTACT_STRUCTURES, and the price of not writing down a zero we
+        # cannot justify.
         return _compute_contacts(resp.text, antigen_chain, ab_chains)
     except Exception:
-        logger.debug("PDB download/parse error for %s.", pdb_id, exc_info=True)
-        return []
+        logger.warning(
+            "PDB download error for %s. Backing off files.rcsb.org for %ss.",
+            pdb_id, _RCSB_ERROR_TTL_SEC, exc_info=True,
+        )
+        _PDB_FILE_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1104,7 +1318,10 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
             "resolution": resolution,
             "species": species,
             "affinity": str(affinity) if affinity else "",
-            "contact_residues": [],
+            # No "contact_residues" key. SAbDab does not carry the interface;
+            # it is computed from coordinates by fetch_known_binders, and a
+            # placeholder [] here is indistinguishable downstream from a
+            # computed empty interface. Absence is what says "not established".
         })
 
     # Deduplicate by pdb_id (keep best resolution row per structure).
@@ -1125,6 +1342,88 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
 
 
 # ---------------------------------------------------------------------------
+# Contact resolution (the per-entry half of the cache)
+# ---------------------------------------------------------------------------
+
+# How long to wait on the contact-download threads before giving up on this
+# round. Was an inline literal; named so the late-thread guard in
+# tests/test_scout_epitope_db_sabdab.py can shorten it instead of sleeping.
+_CONTACT_JOIN_TIMEOUT_SEC = 20
+
+
+def _resolve_contacts(cache_key: str, entries: list, limit: int) -> list:
+    """Fill in ``contact_residues`` for the first *limit* entries lacking it.
+
+    Returns a fresh list of fresh dicts and stores it under *cache_key*. Both
+    the fresh lookup and the cache hit come through here, so an entry whose
+    interface could not be computed is retried on the next lookup instead of
+    being served as a permanent zero -- which is the whole point: ``_CACHE``
+    has no expiry, so a 503 from files.rcsb.org during the first analysis of a
+    target used to pin ``contact_residues: []`` on that binder for the life of
+    the worker. The known-binder table then showed that antibody stuck on
+    "pending" forever, and _get_binder_overlaps dropped it from the feasibility
+    overlap silently.
+
+    The expensive half -- the RCSB search and the SAbDab index lookup that
+    produced *entries* -- is NOT discarded when a coordinate download flakes.
+    Only the entries that failed are re-attempted.
+
+    Two costs of that, both deliberate:
+
+    A thread that outruns the join has its result DISCARDED, where the old code
+    let the late write land (unsafely -- it landed in an already-cached,
+    already-returned dict). So a slow-but-working structure now costs its work
+    and stays pending. Bounded by re-attempting on the next lookup.
+
+    ponytail: two concurrent callers for the same accession both resolve and
+    both _cache_put, so the loser's interface is clobbered and re-fetched later.
+    Harmless under the sync workers this runs on today (one request per process
+    at a time); if gunicorn.conf.py's documented gthread flip ever happens,
+    hold _CACHE_LOCK across the read-resolve-write instead.
+    """
+    pending = [
+        i for i, entry in enumerate(entries[:limit])
+        if "contact_residues" not in entry
+    ]
+    resolved: dict = {}
+
+    if pending and time.monotonic() >= _PDB_FILE_RETRY_AT:
+        # Slots, not the entry dicts. A thread that outruns the join below is
+        # still running when this function caches its result, so it must not
+        # hold a reference to anything reachable from _CACHE: the old worker
+        # wrote straight into a dict that was already cached AND already
+        # returned, mutating it under a caller mid-json.dump. A late write into
+        # this local list is discarded instead, and the entry stays pending.
+        slots: list = [None] * len(pending)
+
+        def _worker(slot: int, idx: int) -> None:
+            entry = entries[idx]
+            slots[slot] = _fetch_and_compute_contacts(
+                entry["pdb_id"], entry["antigen_chain"], entry["ab_chains"]
+            )
+
+        threads = [
+            threading.Thread(target=_worker, args=(slot, idx), daemon=True)
+            for slot, idx in enumerate(pending)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=_CONTACT_JOIN_TIMEOUT_SEC)
+
+        resolved = {
+            idx: slots[slot] for slot, idx in enumerate(pending)
+            if slots[slot] is not None
+        }
+
+    out = [dict(entry) for entry in entries]
+    for idx, residues in resolved.items():
+        out[idx]["contact_residues"] = residues
+    _cache_put(cache_key, out)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -1139,13 +1438,19 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
     Args:
         uniprot_id: UniProt accession (e.g. "P00533" for EGFR).
         max_contact_structures: Number of structures to compute contacts for.
-            Remaining hits are returned without contact residues.
+            Remaining hits are returned without a ``contact_residues`` key.
 
     Returns:
         List of binder dicts. Empty when the accession is blank or malformed,
         when the target genuinely has no antibody complexes, OR when an
         upstream was unreadable. Those three are not distinguishable from the
         return value — only from the warnings the helpers log.
+
+        An entry carries ``contact_residues`` only once the interface has
+        actually been computed; see the module docstring. The key is filled in
+        by a later call if the coordinate host was down for this one, so the
+        returned list is a snapshot, not a stable identity — callers get a
+        fresh copy every time and must not hold onto it.
     """
     # Re-checked here, not just at extraction, because this is the function
     # that mints a cache key and it is reachable from more than one resolver.
@@ -1154,58 +1459,71 @@ def fetch_known_binders(uniprot_id: str, max_contact_structures: int = _MAX_CONT
         return []
 
     with _CACHE_LOCK:
-        if cache_key in _CACHE:
-            return _CACHE[cache_key]
+        cached = _CACHE.get(cache_key)
 
-    sabdab_hits = query_sabdab(cache_key)
-    if not sabdab_hits:
-        # Only remember "no binders" when both upstreams actually answered.
-        # This cache has no expiry, so a miss written during an outage outlives
-        # the outage — bounded only by the entry cap eventually evicting it,
-        # never by the upstream recovering. That reproduces in miniature the
-        # silent-permanent-zero failure this repoint fixes.
-        #
-        # The lookup rides on two: RCSB names the candidate structures and
-        # SAbDab says which are antibody complexes. Before this guard grew its
-        # RCSB arm, either being down produced the same empty list as a target
-        # that genuinely has none, and vouching for SAbDab alone let an RCSB
-        # outage write permanent zeroes. ``None`` is RCSB's "I could not
-        # answer"; ``[]`` is an answer of zero.
-        #
-        # The SAbDab arm deliberately accepts a stale-but-served index (see
-        # _sabdab_summary_index): the summary is published weekly, so last
-        # week's copy is a fact, not an outage.
-        if sabdab_hits is not None and _sabdab_summary_index():
-            _cache_put(cache_key, [])
-        return []
+    if cached is None:
+        sabdab_hits = query_sabdab(cache_key)
+        if not sabdab_hits:
+            # Only remember "no binders" when both upstreams actually
+            # answered. This cache has no expiry, so a miss written during an
+            # outage outlives the outage — bounded only by the entry cap
+            # eventually evicting it, never by the upstream recovering. That
+            # reproduces in miniature the silent-permanent-zero failure this
+            # repoint fixes.
+            #
+            # The lookup rides on two: RCSB names the candidate structures and
+            # SAbDab says which are antibody complexes. Before this guard grew
+            # its RCSB arm, either being down produced the same empty list as a
+            # target that genuinely has none, and vouching for SAbDab alone let
+            # an RCSB outage write permanent zeroes. ``None`` is RCSB's "I
+            # could not answer"; ``[]`` is an answer of zero.
+            #
+            # The SAbDab arm deliberately accepts a stale-but-served index (see
+            # _sabdab_summary_index): the summary is published weekly, so last
+            # week's copy is a fact, not an outage.
+            #
+            # A coordinate download that fails is NOT handled here: it costs
+            # one entry's interface, not the whole (expensive) list, so
+            # _resolve_contacts keeps the list and retries that entry.
+            if sabdab_hits is not None and _sabdab_summary_index():
+                _cache_put(cache_key, [])
+            return []
+        cached = sabdab_hits
 
-    # Compute contacts for the top N structures in parallel.
-    to_process = sabdab_hits[:max_contact_structures]
-    remainder = sabdab_hits[max_contact_structures:]
+    # Both paths land here, so a cache hit retries any interface that was never
+    # established rather than serving it as a permanent zero.
+    #
+    # deepcopy, not dict(entry): a shallow copy still shares the
+    # contact_residues and ab_chains LIST objects with the cache, so "the
+    # caller cannot corrupt the cache" would have been true only of rebinding a
+    # key and false of the mutation anyone would actually reach for
+    # (list.append). The lists are small and there are at most
+    # _RCSB_PROBE_LIMIT of them, against an HTTP call.
+    return copy.deepcopy(
+        _resolve_contacts(cache_key, cached, max_contact_structures)
+    )
 
-    processed = [dict(entry) for entry in to_process]
 
-    def _worker(idx: int, entry: dict) -> None:
-        residues = _fetch_and_compute_contacts(
-            entry["pdb_id"], entry["antigen_chain"], entry["ab_chains"]
-        )
-        processed[idx]["contact_residues"] = residues
+def cached_binders(uniprot_id: str) -> Optional[list]:
+    """Binders for *uniprot_id* if this worker already has them, else ``None``.
 
-    threads = [
-        threading.Thread(target=_worker, args=(i, entry), daemon=True)
-        for i, entry in enumerate(to_process)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=20)
+    A read of ``_CACHE`` and nothing else: no RCSB search, no SAbDab summary,
+    no coordinate downloads, no threads. It exists so a caller outside
+    ``anon_compute_slot`` can benefit from an interface this worker has since
+    repaired without putting a multi-upstream network call on its path --
+    ``fetch_known_binders`` on a cold worker is a 12 s search plus a 60 s
+    summary fetch plus a round of downloads, which is not something to hang off
+    a page render.
 
-    # Append remaining hits (no contact residue computation).
-    result = processed + [dict(entry) for entry in remainder]
-
-    _cache_put(cache_key, result)
-
-    return result
+    ``None`` means "this worker has not looked this accession up", NOT "no
+    binders" -- an accession with none genuinely caches ``[]``.
+    """
+    key = _valid_accession(uniprot_id)
+    if not key:
+        return None
+    with _CACHE_LOCK:
+        entries = _CACHE.get(key)
+    return None if entries is None else copy.deepcopy(entries)
 
 
 # ---------------------------------------------------------------------------

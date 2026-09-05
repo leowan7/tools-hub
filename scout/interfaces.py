@@ -122,8 +122,26 @@ def _extract_chain_names(pdb_path: str) -> dict:
             # scores a feasibility dimension on the result.
             if line.startswith("DBREF ") and len(line) > 12:
                 chain_id = line[12].strip()
-                # DBREF columns 42-67 contain the database entry name.
-                entry_name = line[42:67].strip()
+                # The entry name is the token AFTER the accession, not a fixed
+                # window. A 10-character accession overflows its 8-wide field
+                # and pushes this one right, so the old line[42:67] read
+                # "7 A0A2K5QDT7_CEBIM     1" and displayed the chain as
+                # "7 A0A2K5Qdt7". It takes an upload that carries such a
+                # DBREF and NO COMPND block to get here at all; a stock
+                # AlphaFold download has COMPND and stops at the branch
+                # above. Nothing in the repo emits that combination today
+                # (build_fixtures.py strips COMPND but only ever downloads
+                # 6-character RCSB entries), so this is a latent shape, not
+                # an observed one.
+                #
+                # split() here, where the accession read in scout/epitope_db.py
+                # uses split(" "): that one must not promote the next column
+                # into a blank accession field, while this one must skip the
+                # variable run of spaces after the accession. A blank field
+                # still labels the chain with whatever follows, as the fixed
+                # window did.
+                fields = line[33:].split()
+                entry_name = fields[1] if len(fields) > 1 else ""
                 if chain_id and entry_name and chain_id not in chain_names:
                     # Convert UniProt entry name like "CUL1_HUMAN" to readable.
                     readable = entry_name.split("_")[0].title() if "_" in entry_name else entry_name
