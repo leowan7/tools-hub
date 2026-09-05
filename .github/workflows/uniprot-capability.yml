@@ -79,25 +79,34 @@ jobs:
 
       # Scoped to the one class on purpose: this job exists to answer "does the
       # live endpoint still behave", not to re-run a suite the PR gate already
-      # ran. `--no-header -rs` prints the skip reasons, so a run that silently
-      # collected nothing is visible as such rather than passing green.
+      # ran.
+      #
+      # The grep is the actual guard, and it asserts PASSED, not collected.
+      # pytest exits 0 on an all-skipped run, so if SCOUT_UNIPROT_LIVE ever
+      # stops reaching this step -- a typo, someone editing the env block, a
+      # rename of the variable -- all three tests would collect, all three
+      # would skip, and this job would go green having tested nothing. That is
+      # the same "guard behind an env var nobody sets" shape this workflow was
+      # added to fix, so it must not be re-introduced in the check itself.
+      #
+      # `-rs` prints the skip reason, which is what makes the failure output
+      # actionable rather than just "expected 3 passed".
       - name: Run the live capability tests
         run: |
+          set -o pipefail
           python -m pytest \
             tests/test_scout_uniprot_sequence_search.py::TestLiveCapability \
-            -v --no-header -rs -p no:cacheprovider
+            -v --no-header -rs -p no:cacheprovider | tee live.log
 
-      # A green run above with zero tests executed would be a monitor that
-      # certifies nothing -- the shape this repo has shipped before. Assert the
-      # count is exactly the three that exist.
-      - name: Guard - the live tests actually ran
-        run: |
-          COUNT=$(python -m pytest \
-            tests/test_scout_uniprot_sequence_search.py::TestLiveCapability \
-            --collect-only -q -p no:cacheprovider | grep -c '::test_' || true)
-          echo "collected live tests: $COUNT"
-          if [ "$COUNT" -ne 3 ]; then
-            echo "::error::expected 3 live capability tests, collected $COUNT."
-            echo "::error::If a test was renamed or removed, update this guard."
+          # The summary line is "===== 3 passed in 3.60s =====", so the leading
+          # "=" padding has to be allowed for. An anchored '^3 passed' matches
+          # nothing and fails every run, which is how this grep was first
+          # written and why it is exercised in both directions before shipping.
+          if ! grep -qE '^[= ]*3 passed' live.log; then
+            echo "::error::expected '3 passed' from TestLiveCapability."
+            echo "::error::A skipped run means SCOUT_UNIPROT_LIVE did not reach pytest."
+            echo "::error::A different count means a test was added, renamed or removed;"
+            echo "::error::update this guard deliberately rather than loosening it."
+            grep -iE 'skipped|SKIPPED' live.log || true
             exit 1
           fi

@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from scout import epitope_db
 from scout.flags import _CSV_COLUMNS_BASE
 
 TMP = Path("tmp")
@@ -399,6 +400,212 @@ class TestKnownBinderOverlapsAreChainScoped:
         assert resp.status_code == 200, resp.data
         assert resp.get_json()["known_binder_overlaps"] == [], (
             "chain A's known binders were reported as overlapping a chain B epitope"
+        )
+
+
+class TestAnOutageIsNotFrozenIntoTheJobOnDisk:
+    """``analyze_cache.json`` is the durable copy, so it can outlive the bug.
+
+    ``/scout/analyze`` writes the binder list to the job directory, and
+    ``_get_binder_overlaps`` reads it back much later, on a different request
+    and possibly a different worker. So a coordinate download that failed
+    during /analyze used to persist "this antibody contacts nothing" to DISK:
+    it survived the outage, survived a worker restart, survived epitope_db's
+    in-process cache healing, and only a re-analyze cleared it.
+
+    Two halves. ``scout.epitope_db`` no longer writes a placeholder ``[]`` for
+    an interface it could not compute -- the key is simply absent -- so the
+    file records "not established" rather than a fact. And the accession is
+    stored alongside, so the reader can ask epitope_db for the interface it has
+    since managed to compute.
+    """
+
+    # Read off the module, not hard-coded: the guard below reasons about
+    # "more binders than ever get an interface", which is this number.
+    _CAP = epitope_db._MAX_CONTACT_STRUCTURES
+
+    _BINDER = {
+        "pdb_id": "1ABC",
+        "binder_type": "antibody",
+        "species": "human",
+        "resolution": 2.0,
+        "affinity": "1 nM",
+    }
+
+    @staticmethod
+    def _resolves_to(monkeypatch, accession="P00001"):
+        monkeypatch.setattr(
+            "scout.epitope_db.resolve_uniprot_id",
+            lambda *a, **k: {
+                "uniprot_id": accession,
+                "protein_name": "Test",
+                "identity_pct": "100",
+            },
+        )
+
+    def _analyze_during_outage(self, client, monkeypatch) -> Path:
+        """Analyse chain A while the coordinate host is down, return the job."""
+        self._resolves_to(monkeypatch)
+        # No "contact_residues" key: epitope_db could not read the structure.
+        monkeypatch.setattr(
+            "scout.epitope_db.fetch_known_binders",
+            lambda *a, **k: [dict(self._BINDER)],
+        )
+        job_id = _upload_two_chain_job(client)
+        assert (
+            client.post(
+                "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+            ).status_code
+            == 200
+        )
+        return TMP / job_id
+
+    def test_the_file_records_an_absence_not_a_zero(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        job_dir = self._analyze_during_outage(client, monkeypatch)
+        cache = json.loads((job_dir / "analyze_cache.json").read_text())
+
+        assert "contact_residues" not in cache["known_binders"][0], (
+            "an interface that was never computed was written to disk as an "
+            "empty one; nothing downstream can tell it from a real answer"
+        )
+        assert cache["uniprot_id"] == "P00001", (
+            "without the accession, a later reader has no way to ask for the "
+            "interface that has since been computed"
+        )
+
+    def test_the_overlap_heals_once_the_download_recovers(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The end, not the means: the binder comes back into the report.
+
+        No re-analyze. Recording an absence is only worth doing if something
+        later reads it as one.
+        """
+        job_dir = self._analyze_during_outage(client, monkeypatch)
+
+        from scout.routes import _get_binder_overlaps
+
+        assert _get_binder_overlaps(job_dir, CHAIN_RESIDUES["A"], "A") == []
+
+        recovered = {**self._BINDER, "contact_residues": CHAIN_RESIDUES["A"][:3]}
+        monkeypatch.setattr(
+            "scout.epitope_db.cached_binders", lambda *a, **k: [recovered]
+        )
+
+        overlaps = _get_binder_overlaps(job_dir, CHAIN_RESIDUES["A"], "A")
+        assert overlaps, (
+            "the antibody stayed missing from the feasibility overlap after "
+            "the coordinate host recovered; the outage is frozen into the job"
+        )
+        assert overlaps[0]["pdb_id"] == "1ABC"
+        assert overlaps[0]["overlap_count"] == 3
+
+    def test_a_disk_copy_with_nothing_repairable_asks_epitope_db_nothing(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The normal path must stay a pure file read.
+
+        SIX binders, deliberately more than _MAX_CONTACT_STRUCTURES (5). Only the
+        top five are ever given an interface, so the sixth has no
+        ``contact_residues`` key permanently -- and an earlier version of this
+        guard asked "does EVERY binder have the key", which for any target with
+        more than five is unsatisfiable forever. It passed only because its
+        fixture had a single binder, so it could not fail for the reason it
+        named, while the real route asked epitope_db on every render.
+        """
+        self._resolves_to(monkeypatch)
+        resolved = [
+            {**self._BINDER, "pdb_id": f"1AB{i}",
+             "contact_residues": CHAIN_RESIDUES["A"][:3]}
+            for i in range(self._CAP)
+        ]
+        # Past the cap: no key, and no lookup will ever give it one.
+        beyond = {**self._BINDER, "pdb_id": "9ZZZ"}
+        monkeypatch.setattr(
+            "scout.epitope_db.fetch_known_binders",
+            lambda *a, **k: [*resolved, beyond],
+        )
+        job_id = _upload_two_chain_job(client)
+        client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+
+        asked = []
+        monkeypatch.setattr(
+            "scout.epitope_db.cached_binders",
+            lambda *a, **k: asked.append(a) or None,
+        )
+
+        from scout.routes import _get_binder_overlaps
+
+        overlaps = _get_binder_overlaps(TMP / job_id, CHAIN_RESIDUES["A"], "A")
+        assert len(overlaps) == self._CAP
+        assert asked == [], (
+            "a disk copy whose only missing interfaces are past the cap still "
+            "went back to epitope_db; that is every render, forever"
+        )
+
+    def test_feasibility_never_reaches_for_the_network_lookup(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The repair must not put an uncapped network call on this route.
+
+        /feasibility/analyze holds no anon_compute_slot, unlike /analyze. On a
+        cold worker ``fetch_known_binders`` is a 12 s RCSB search plus a 60 s
+        SAbDab summary fetch plus a round of coordinate downloads, against a
+        120 s gunicorn timeout and two sync workers -- so reaching for it here
+        trades a stale overlap for a route that can eat a worker. Only the
+        in-process cache read is allowed.
+        """
+        job_dir = self._analyze_during_outage(client, monkeypatch)
+
+        def _tripwire(*a, **k):
+            raise AssertionError(
+                "the feasibility path called fetch_known_binders; on a cold "
+                "worker that is a multi-upstream network call outside the "
+                "compute slot"
+            )
+
+        monkeypatch.setattr("scout.epitope_db.fetch_known_binders", _tripwire)
+
+        from scout.routes import _get_binder_overlaps
+
+        # Degrades to the disk copy rather than raising or fetching.
+        assert _get_binder_overlaps(job_dir, CHAIN_RESIDUES["A"], "A") == []
+
+    def test_a_cold_worker_degrades_to_the_disk_copy(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """``cached_binders`` returns None when this worker never looked up the
+        accession -- a restart, a deploy, or simply the other of the two worker
+        processes. That is not an error and not a zero; it means "no better
+        answer here", and the incomplete disk copy is what gets served.
+
+        Asserting the complete binder SURVIVES is the point. Returning [] for
+        everything would also "not raise", and an earlier version of this guard
+        asserted exactly that and would have passed against a repair pass that
+        threw every binder away.
+        """
+        self._resolves_to(monkeypatch)
+        good = {**self._BINDER, "pdb_id": "2GOOD",
+                "contact_residues": CHAIN_RESIDUES["A"][:3]}
+        monkeypatch.setattr(
+            "scout.epitope_db.fetch_known_binders",
+            lambda *a, **k: [good, dict(self._BINDER)],
+        )
+        job_id = _upload_two_chain_job(client)
+        client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
+
+        monkeypatch.setattr(
+            "scout.epitope_db.cached_binders", lambda *a, **k: None
+        )
+
+        from scout.routes import _get_binder_overlaps
+
+        overlaps = _get_binder_overlaps(TMP / job_id, CHAIN_RESIDUES["A"], "A")
+        assert [o["pdb_id"] for o in overlaps] == ["2GOOD"], (
+            "a cold worker dropped the binder that DID have its interface; "
+            "the fallback must be the incomplete answer, not no answer"
         )
 
 

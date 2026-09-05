@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from scout.interfaces import _extract_chain_names
+
 # Chain A: 30 residues along +x. Chain B: 12 residues laid alongside A at
 # +4.0 A in y, which puts A residues 9-22 in heavy-atom contact with B.
 _INTERFACE_RESIDUES = range(9, 23)
@@ -265,3 +267,36 @@ def test_malformed_dbref_record_does_not_break_detection(tmp_path, feasibility_r
 
     row = feasibility_row(pdb, "A", _BURIED_EPITOPE)
     assert float(row["interface_competition"]) == pytest.approx(0.1)
+
+
+def test_dbref_entry_name_survives_an_overflowing_accession(tmp_path):
+    """The chain label is the token after the accession, not a fixed window.
+
+    ``_extract_chain_names`` read the entry name at line[42:67]. A 10-character
+    accession overflows its 8-wide field and pushes that window right, so an
+    AlphaFold-derived file rendered chain A as "7 A0A2K5Qdt7" — the tail of
+    the accession, then the name. It takes a file with such a DBREF and no
+    COMPND block to reach this fallback at all, and nothing in the repo
+    emits that pairing today: a stock AlphaFold download keeps COMPND, and
+    build_fixtures.py drops COMPND but only fetches 6-character RCSB
+    entries. A latent shape, pinned here rather than left to chance.
+    """
+    pdb = tmp_path / "no_compnd.pdb"
+    pdb.write_text(
+        "HEADER    overflowing accession, no COMPND\n"
+        "DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM"
+        "     1    130\nEND\n",
+        encoding="utf-8",
+    )
+    assert _extract_chain_names(pdb) == {"A": "A0A2K5Qdt7"}
+
+
+def test_dbref_entry_name_is_unchanged_for_a_spec_width_accession(tmp_path):
+    pdb = tmp_path / "no_compnd_6char.pdb"
+    pdb.write_text(
+        "HEADER    spec-width accession, no COMPND\n"
+        "DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK"
+        "       19    147\nEND\n",
+        encoding="utf-8",
+    )
+    assert _extract_chain_names(pdb) == {"A": "Lyc"}
