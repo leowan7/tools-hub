@@ -1036,10 +1036,10 @@ class TestKnownPositive:
 
 class TestAccessionIsValidated:
     """``_extract_uniprot_from_dbref`` reads a caller-uploaded accession
-    field: eight characters from columns 33-41 of a plain DBREF line, or
-    twenty-two from columns 18-40 of a DBREF2.
+    field: on a plain DBREF the token from column 33 to the next space, and
+    on a DBREF2 twenty-two characters from columns 18-40.
 
-    With no format check those eight bytes became a lookup target and a
+    With no format check those bytes became a lookup target and a
     permanent cache key: ``ZZ9QC001`` was accepted, resolved, and cached. The
     per-target cache is the main thing making the known-binder lookup
     affordable, and one uploaded line per request defeated it.
@@ -1301,84 +1301,138 @@ class TestTheTwoLineDbrefForm:
         the lookup."""
         pdb = self._write(tmp_path, truncated)
         assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+# 10. A plain DBREF whose accession overflows the field anyway
+# ---------------------------------------------------------------------------
 
 
-class TestAlphaFoldOverflowsTheAccessionField:
-    """AlphaFold DB writes a PLAIN DBREF and lets a 10-character accession
-    overflow the 8-wide field, instead of splitting into DBREF1/DBREF2.
+class TestAccessionFieldWidth:
+    """The DBREF accession field holds 8 characters; accessions hold up to 10.
 
-    The wwPDB never does this, so the two-line support added for real
-    depositions does not reach AFDB files at all. An 8-wide slice returned
-    "A0A2K5QD", `_valid_accession` rejected it, and the model fell through to
-    the sequence-search path for an accession its own file already stated --
-    which then answered from UniProtKB's checksum index and could pick the
-    wrong organism. Every AFDB model with a 10-character accession, i.e. the
-    overwhelming majority of TrEMBL ones, went that way.
-
-    The line below is copied verbatim from AF-A0A2K5QDT7-F1-model_v6.pdb.
+    The wwPDB's own answer is the DBREF1/DBREF2 pair that section 9 covers.
+    AlphaFold DB does not use it: it writes the whole accession through the
+    8-wide field of a PLAIN DBREF and lets the entry name shift right, so
+    the two-line support above cannot reach it. Slicing columns 34-41
+    therefore truncated ``A0A2K5QDT7`` to ``A0A2K5QD``, which is not an
+    accession, so step 1 of ``resolve_uniprot_id`` failed silently and the
+    chain fell through to the sequence-search fallback. The 10-character
+    form was introduced when the 6-character space ran out, so it marks a
+    late first-assignment date, not a review status. How the two relate is
+    not measured here.
     """
 
-    # Real AFDB output. Columns 34-43 hold the accession, overrunning the
-    # spec's 34-41 field, with the entry name pushed right after it.
-    DBREF_AFDB = (
+    # The DBREF record of
+    #   https://alphafold.ebi.ac.uk/files/AF-A0A2K5QDT7-F1-model_v6.pdb
+    # byte for byte except its trailing pad to column 80. That .pdb records
+    # no model version at all: the version lives in the URL, and its TITLE
+    # "V2.0" is the pipeline. The companion .cif carries the entry id.
+    AF_TREMBL_DBREF = (
         "DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM"
-        "     1    130"
-    )
-    # The spec-conformant 6-character case, which the fixed-width slice
-    # handled correctly and which must keep working.
-    DBREF_1HEW = (
-        "DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147"
-    )
-    # A blank accession column. Tokenising from column 34 picks up the ENTRY
-    # NAME here, not an accession, so this pins that the format check is what
-    # refuses it -- the reason reading a token does not loosen the boundary.
-    DBREF_NO_ACCESSION = (
-        "DBREF  1ABC A    1   129  UNP             LYC_CHICK       19    147"
-    )
-    ATOM = (
-        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000"
-        "  1.00 20.00           C"
+        "     1    130\n"
     )
 
-    def _write(self, tmp_path, *lines):
+    def test_a_ten_character_accession_resolves(self, tmp_path):
         pdb = tmp_path / "input.pdb"
-        pdb.write_text("\n".join([*lines, self.ATOM, "END", ""]), encoding="utf-8")
-        return pdb
-
-    def test_a_ten_character_accession_on_a_plain_dbref_resolves(self, tmp_path):
-        """The bug. Kills the 8-wide slice: it yields "A0A2K5QD" -> ""."""
-        pdb = self._write(tmp_path, self.DBREF_AFDB)
+        pdb.write_text(self.AF_TREMBL_DBREF + "END\n", encoding="utf-8")
         assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "A0A2K5QDT7"
 
-    def test_the_six_character_form_is_unchanged(self, tmp_path):
-        """Kills a fixed-width widening. `line[33:43]` reads "P00698   L" here,
-        because .strip() does not remove interior spaces -- so the obvious
-        alternative fix breaks the case that already worked."""
-        pdb = self._write(tmp_path, self.DBREF_1HEW)
-        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == "P00698"
+    def test_a_blank_accession_field_does_not_promote_the_next_column(self, tmp_path):
+        """Reading to the next space must not walk past an empty field.
 
-    def test_a_blank_accession_column_is_still_refused(self, tmp_path):
-        """Reading a token rather than a field must not admit the entry name.
-
-        Asserts the mechanism as well as the answer: the token really is
-        picked up, and `_valid_accession` is what rejects it. Without the
-        second assertion this passes for the wrong reason if the parser
-        stops reading the line at all.
+        Splitting on whitespace rather than on a single space walks to the
+        next token and returns it as the accession. An entry name would
+        not expose that — the format check rejects it for its underscore,
+        so the assertion passes either way and the guard certifies false.
+        The token here is a REAL accession, which the format check waves
+        through, so only the parser can keep it out.
         """
-        assert epitope_db._valid_accession("LYC_CHICK") == ""
-        pdb = self._write(tmp_path, self.DBREF_NO_ACCESSION)
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "DBREF  1XYZ A    1   215  UNP             P00698       123    337"
+            "\nEND\n",
+            encoding="utf-8",
+        )
         assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
 
-    def test_the_overflowing_accession_does_not_leak_the_entry_name(self, tmp_path):
-        """A greedy read could return "A0A2K5QDT7 A0A2K5QDT7_CEBIM" joined, or
-        the entry name from the next column. Pin the exact token."""
-        pdb = self._write(tmp_path, self.DBREF_AFDB)
-        got = epitope_db._extract_uniprot_from_dbref(pdb, "A")
-        assert got == "A0A2K5QDT7"
-        assert "_CEBIM" not in got
-        assert " " not in got
+    def test_a_truncated_dbref_line_does_not_raise(self, tmp_path):
+        """A short DBREF line took ``line[12]`` out of range.
 
-    def test_another_chain_is_not_answered_from_this_record(self, tmp_path):
-        """Chain scoping is unaffected by how the accession is read."""
-        pdb = self._write(tmp_path, self.DBREF_AFDB)
-        assert epitope_db._extract_uniprot_from_dbref(pdb, "B") == ""
+        The caller uploads the file, so the IndexError was reachable. It did
+        not escape — the catch-all in ``scout/routes.py`` caught it and
+        answered 500, losing the whole analysis over a line whose correct
+        reading is just "no accession". ``scout/interfaces.py`` guards the
+        same read for the same reason.
+        """
+        # Exactly 12 characters, so line[12] is the first index out of
+        # range. An off-by-one in the guard (``>=`` for ``>``) still
+        # raises on this line; a shorter fixture lets that mutation live.
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "HEADER    short\nDBREF  1ABC \nEND\n",
+            encoding="utf-8",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(pdb, "A") == ""
+
+    def test_the_mmcif_branch_was_already_fine(self, tmp_path):
+        """``_struct_ref`` reads named items, not columns, so it never truncated.
+
+        Pinned rather than assumed: it is the branch the PDB one now matches.
+
+        Two refs, not one. A single-entry fixture cannot tell a chain-matched
+        answer from any file-level one, so deleting the strand-id loop would
+        leave it green. #230 has since removed the "first UNP accession in the
+        file" fallback that made that indistinguishable; two refs pin the
+        chain scoping without depending on its absence. Chain B must return
+        B's own accession.
+        """
+        pytest.importorskip("Bio.PDB.MMCIF2Dict")
+        cif = tmp_path / "input.cif"
+        cif.write_text(
+            "data_AF-A0A2K5QDT7-F1\n"
+            "loop_\n"
+            "_struct_ref.id\n"
+            "_struct_ref.db_name\n"
+            "_struct_ref.pdbx_db_accession\n"
+            "1 UNP A0A2K5QDT7\n"
+            "2 UNP P00698\n"
+            "loop_\n"
+            "_struct_ref_seq.align_id\n"
+            "_struct_ref_seq.ref_id\n"
+            "_struct_ref_seq.pdbx_strand_id\n"
+            "1 1 A\n"
+            "2 2 B\n",
+            encoding="utf-8",
+        )
+        assert epitope_db._extract_uniprot_from_dbref(cif, "A") == "A0A2K5QDT7"
+        assert epitope_db._extract_uniprot_from_dbref(cif, "B") == "P00698"
+
+    def test_the_ten_character_accession_answers_at_step_one(
+        self, tmp_path, monkeypatch
+    ):
+        """The routing claim ``resolve_uniprot_id`` makes in its own docstring.
+
+        Every other test here asserts the private extractor. What changed for
+        the caller is WHICH STEP answers: a truncated accession failed the
+        format check and fell through to the sequence search, which under
+        #220 refuses on ambiguity — so the fix turns a wrong-or-absent
+        annotation into the depositor's own. Make step 2 fatal, so reaching
+        it cannot be mistaken for success.
+        """
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(self.AF_TREMBL_DBREF + "END\n", encoding="utf-8")
+
+        def _step_two_is_fatal(_seq):
+            raise AssertionError("step 2 was reached; step 1 had the answer")
+
+        monkeypatch.setattr(
+            epitope_db, "_search_uniprot_by_sequence", _step_two_is_fatal
+        )
+        monkeypatch.setattr(
+            epitope_db, "_extract_chain_sequence", lambda *a, **k: ([1], "MKV")
+        )
+        monkeypatch.setattr(
+            epitope_db, "_fetch_uniprot_metadata",
+            lambda acc: {"protein_name": "Somatotropin", "sequence": ""},
+        )
+        result = epitope_db.resolve_uniprot_id(pdb, "A")
+        assert result["uniprot_id"] == "A0A2K5QDT7"
+        assert result["source"] == "dbref"

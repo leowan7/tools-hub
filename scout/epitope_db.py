@@ -103,10 +103,11 @@ _CONTACT_CUTOFF_ANGSTROM = 4.5
 # the 6-character and 10-character forms.
 #
 # This is a trust boundary, not a tidiness check. The accession arrives from
-# columns 33-41 of a DBREF line in a file the caller uploaded, so without it
-# any eight bytes at all become a cache key and a lookup target: `ZZ9QC001`
-# was accepted, resolved, and cached. Every entry point that can mint a cache
-# key runs a string through here first.
+# a DBREF line, or from mmCIF ``_struct_ref.pdbx_db_accession``, in a file
+# the caller uploaded, so without it any bytes at all become a cache key
+# and a lookup target: `ZZ9QC001` was accepted, resolved, and cached.
+# Every entry point that can mint a cache key runs a string through here
+# first.
 _UNIPROT_ACCESSION_RE = re.compile(
     r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$"
 )
@@ -215,9 +216,10 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
         DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
         DBREF2 5YTL A     A0A1W6VP04                         31         352
 
-    AlphaFold DB does NOT split. It emits a plain DBREF and lets a
-    10-character accession overflow the 8-wide field, so the accession is
-    read as the first token from column 34 rather than as a fixed slice:
+    AlphaFold DB does NOT split. It writes the 10-character accession
+    straight through that field on a plain DBREF and lets the entry name
+    shift right, so the accession is read to the next space rather than
+    stopping at the field edge:
         DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
 
     A plain DBREF for the chain WINS over a two-line pair. Both forms
@@ -274,32 +276,45 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
         dbref_chain = line[12].strip()
 
         if line.startswith("DBREF "):
-            # wwPDB 1-based cols 13 = chain, 27-32 = db, 34-41 = accession.
-            db_name = line[26:32].strip()
-            # Read the accession as the first whitespace-delimited TOKEN from
-            # column 34, not as the 8-wide field the spec defines. The wwPDB
-            # splits into DBREF1/DBREF2 when the accession does not fit, but
-            # AlphaFold DB does not: it emits a plain DBREF and lets the
-            # 10-character accession overflow into the next column.
+            # wwPDB 1-based cols 13 = chain, 27-32 = db, 34-41 = accession;
+            # indices 12, 26-32 and 33.. below.
             #
+            # .upper() to match the mmCIF branch, which has always had it:
+            # a lowercase "unp" must not resolve in one format and not the
+            # other. Both DBREF forms need it; see the DBREF1 branch below.
+            #
+            # The two-line form handled further down is the wwPDB's answer to
+            # an accession too wide for that 8-character field. AlphaFold DB
+            # does not use it: it writes the 10-character accession straight
+            # through the field on a PLAIN DBREF and lets the entry name shift
+            # right, which no amount of DBREF1/DBREF2 support will read:
             #   DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+            # so read to the next space rather than stopping at index 41.
+            # Split on a literal space, not on whitespace, so that a blank
+            # accession field stays blank instead of promoting the next
+            # column into it.
             #
-            # An 8-wide slice returns "A0A2K5QD", which _valid_accession
-            # rejects, so every AFDB model with a 10-character accession --
-            # the overwhelming majority of TrEMBL ones -- failed here and fell
-            # through to the sequence-search path for an answer its own file
-            # already stated.
+            # Reading it correctly also settles the precedence above in the
+            # direction the docstring already wants: such a file returns its
+            # own plain accession now, instead of falling through to a
+            # two-line pair that is usually a tag or fusion partner.
             #
-            # NOT a wider fixed slice: line[33:43] would return "P00698   L"
-            # for the 6-character case, because .strip() does not remove the
-            # interior spaces. Tokenising is what handles both widths.
+            # One shape the old fixed slice accepted is given up: an accession
+            # that does not START at index 33 — right-justified, or indented
+            # by even one column — which used to be stripped to size and now
+            # reads as empty. Unobserved: the field is a left-justified
+            # LString, and all five real plain-DBREF lines on hand
+            # (two AlphaFold, 1HEW, 3AVE x2) start the accession at index 33.
+            # Four of the five also leave index 41 blank; the fifth is the
+            # AlphaFold overflow this reads, whose accession runs through it.
             #
-            # Reading a token cannot loosen the trust boundary: a blank
-            # accession column makes this pick up the entry NAME instead
-            # (LYC_CHICK), and _valid_accession rejects that exactly as it
-            # rejected the truncation.
-            _fields = line[33:].split()
-            accession = _fields[0] if _fields else ""
+            # An accession packed against the entry name (P00698-2LYC_CHICK)
+            # is lost too, but costs nothing HERE: _valid_accession takes only
+            # the 6- and 10-character forms, so an 8-character field can only
+            # hold an isoform, which it rejected before this change as well.
+            # shared/uniprot_lookup.py allows a -\d+ tail and does pay for it.
+            db_name = line[26:32].strip().upper()
+            accession = line[33:].split(" ")[0].strip()
             if dbref_chain == chain_id and db_name in ("UNP", "SWS", "TRE"):
                 # Validated here rather than at the call site: this is the one
                 # place both the PDB and the mmCIF branch pass through, so it
@@ -311,7 +326,7 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
             # 8-character field above -- which is every 10-character A0A...
             # accession. DBREF1 is the only half that names the database,
             # so a non-UNP pair can only be refused here.
-            db_name = line[26:32].strip()
+            db_name = line[26:32].strip().upper()
             armed_chain = (
                 dbref_chain if db_name in ("UNP", "SWS", "TRE") else None
             )
@@ -341,7 +356,17 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
         chain_id: Chain identifier to look up.
 
     Returns:
-        UniProt accession string, or empty string if not found.
+        The accession for THIS chain, or "" -- when no UNP-referencing
+        _struct_ref_seq row names it (7K8M chains A and B ARE named by a row,
+        which points at db_name PDB, so they get ""), when BioPython is
+        missing, and when the file will not read or parse. A "?" or "."
+        placeholder comes back verbatim; the _valid_accession call in
+        _extract_uniprot_from_dbref scrubs it.
+
+        Not another chain's accession from a file that parses as intended.
+        Malformed input that skews the positional pairing below still can
+        mis-associate; that behaviour is older than this chain scoping and is
+        unchanged by it.
     """
     try:
         from Bio.PDB.MMCIF2Dict import MMCIF2Dict  # noqa: PLC0415
@@ -394,10 +419,27 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
             if ref_id in unp_map:
                 return unp_map[ref_id]
 
-    # If chain matching fails, return the first UNP accession found
-    if unp_map:
-        return next(iter(unp_map.values()))
-
+    # No fallback to "the first UNP accession in the file". That fallback
+    # mislabelled PRESENT chains, not only absent ones: 7K8M chains A and B
+    # are the Fab, whose _struct_ref rows carry db_name PDB and so never enter
+    # unp_map, and both answered P0DTC2 -- the antigen's accession returned
+    # for the antibody. 1IGT chain A answered with the heavy chain's P01863.
+    # resolve_uniprot_id's 70% identity gate is not a backstop: step 1 runs
+    # must_validate=False, so with no chain sequence or no UniProt reply the
+    # wrong accession ships with identity None and goes on to key the
+    # known-binder lookup.
+    # Note what the loop above does NOT do: it returns only when the row
+    # naming the chain also carries a UNP ref_id. 7K8M A and 1IGT A are each
+    # named by a row -- pointing at db_name PDB -- and so reached here.
+    #
+    # The cost. The fallback answered with one file-level accession rather
+    # than a chain-level one, so it was right exactly when that accession
+    # happened to be the chain's own. That says nothing about how many
+    # references the file carries: it can be right on a two-UNP-reference
+    # file, and it was wrong on the one-UNP-reference files above.
+    # Such a chain now returns "" and reaches the step-2 sequence search if
+    # a chain sequence was extractable. Guessing produced the wrong answers
+    # above, so the miss is the cheaper error.
     return ""
 
 
@@ -660,18 +702,20 @@ def resolve_uniprot_id(pdb_path, chain_id: str) -> dict:
            If validation API is unreachable, accept the DBREF accession
            anyway (DBREF is depositor-annotated and highly reliable).
         2. Fall back to an EXACT sequence match when step 1 produced no
-           accepted accession -- no reference record, an unreadable one, or one
+           accepted accession -- no reference record, one naming a non-UniProt
+           database (as 7K8M's two Fab chains do), an unreadable one, or one
            that failed validation -- provided a chain sequence was extractable
            and the match differs from the accession step 1 already rejected.
-           AlphaFold DB downloads USED to arrive here in bulk, because
-           ``_extract_uniprot_from_dbref`` read a fixed 8-char column and a
-           10-character accession such as A0A2K5QDT7 truncated to A0A2K5QD
-           and was rejected at step 1. They now resolve there, from the
-           accession their own file states. What is left for step 2 is files
-           with genuinely no usable reference record: design outputs, and
-           depositions stripped of their DBREF lines. Accepted only when the
-           sequence matches exactly one UniProt entry; see
-           ``_search_uniprot_by_sequence``.
+           AlphaFold DB downloads used to reach step 2 far more often than
+           their DBREF line suggests: ``_extract_uniprot_from_dbref`` read a
+           fixed 8-char column per the PDB spec, so a 10-char accession such
+           as A0A2K5QDT7 truncated to A0A2K5QD and was rejected at step 1.
+           That entry overflows the field rather than emitting DBREF1/DBREF2,
+           so the accession is now read to the next space and it resolves at
+           step 1. What still reaches step 2, and how it is distributed
+           between reviewed and unreviewed entries, is not measured.
+           Accepted only when the sequence matches exactly one UniProt
+           entry; see ``_search_uniprot_by_sequence``.
            The identity gate below cannot screen this path: a checksum match is
            byte-equal to the entry's canonical sequence, so it scores 1.0 by
            construction and ``must_validate`` only proves UniProt answered.
