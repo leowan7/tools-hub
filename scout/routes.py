@@ -153,15 +153,15 @@ ANON_INTAKE_LIMIT = 10
 # box is 2 sync workers x 600 s ~= 1,200 CPU-s.
 #
 #   adversarial /progress  ~9 CPU-s   (run_pipeline at the 8 MB upload cap)
-#   adversarial /analyze   ~5 CPU-s   (binder lookup ~4.2, network-bound)
+#   adversarial /analyze   ~5 CPU-s   (binder lookup ~4.2)
 #   adversarial analysis  ~14 CPU-s   (the pair)
 #
-# /analyze was ~6 until 2026-09-04, when ~1 CPU-s of PPI interface detection
-# came out of it. That call ran on every analysis inside the slot and the
-# browser discarded the result: the renderer had no call site. Measured at
-# 130 ms on static/example/3ave_igg1_fc_dimer.pdb, ~0.9 s extrapolated to the
-# 8 MB cap. Only the wasted call went -- the detector is still live, and
-# run_feasibility_pipeline still scores interface_competition with it.
+# /analyze was ~6 until 2026-09-04, when Phase 0's ~1 for PPI interface
+# detection came out of it. That call ran on every analysis inside the slot
+# and the browser discarded the result: the renderer had no call site. The
+# other rows are Phase 0's as measured; only the row that stopped being spent
+# was touched. The detector itself is still live -- run_feasibility_pipeline
+# still scores interface_competition with it.
 #
 #   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
 #           so ~7 addresses saturate the fleet, and 5 analyses per worker.
