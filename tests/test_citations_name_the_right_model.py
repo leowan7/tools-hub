@@ -190,22 +190,26 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "iggm": ("2024.09.19.613838", "TencentAI4S/IgGM"),
     "mpnn": ("science.add2187", "dauparas/ProteinMPNN"),
     "opendde": ("2607.03787", "aurekaresearch/OpenDDE"),
-    # Both must say complexa. The base model lives at .../genair/proteina/ and
-    # in a different repository.
+    # Both halves were WEAKER than the rest of this map: the pair read
+    # ("proteina-complexa", "proteina-complexa"), and neither is a DOI nor an
+    # owner/repo pair. That let a GitHub link pasted into paper_url pass, and
+    # any fork of the repo name pass as the repo.
     #
-    # These two tokens are WEAKER than the rest of this map -- neither is a
-    # DOI nor an owner/repo pair, so a GitHub link pasted into paper_url would
-    # pass, as would any fork of the repo name.
+    # The paper token is now the OpenReview forum id, because the project page
+    # meta.py used to link publishes TWO works -- didi2026scaling, the ICLR
+    # method paper this tool runs, and didi2026invitro, the wet-lab campaign.
+    # They share a first author and a year, so FIRST_AUTHOR and PAPER_YEAR
+    # both pass on either one. The url is the only surface that can separate
+    # them, and until it carried an identifier, nothing here could.
     #
-    # KNOWN TRAP, left in place rather than half-fixed. The upstream repo
-    # moved: NVIDIA-Digital-Bio/proteina-complexa 301s to
-    # NVIDIA-BioNeMo/Proteina-Complexa -- new owner AND new casing. The
-    # assertion below is a case-sensitive substring test, so this lowercase
-    # token already goes RED the day someone corrects meta.py to the canonical
-    # URL, and pinning the owner would do the same. It is the only github_url
-    # in this repo that redirects. Fix meta.py and this token in one change;
-    # touching either alone turns a correct value into a failure.
-    "proteina": ("proteina-complexa", "proteina-complexa"),
+    # The repo token is now the owner/repo pair, and this one was a TRAP while
+    # it stayed lowercase: NVIDIA-Digital-Bio/proteina-complexa 301s to
+    # NVIDIA-BioNeMo/Proteina-Complexa, a new owner AND new casing, and the
+    # assertion below is a case-sensitive substring test. So the old token
+    # would have gone red the day anyone corrected meta.py to the canonical
+    # URL -- the guard pinning the stale value, which is the failure this
+    # file's docstring records twice. meta.py and the token moved together.
+    "proteina": ("qmCpJtFZra", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
     "rfantibody": ("2024.03.14.585103", "RosettaCommons/RFantibody"),
     "rfdiffusion": ("s41586-023-06415-8", "RosettaCommons/RFdiffusion"),
@@ -297,6 +301,24 @@ FOREIGN_SIGNATURES: dict[str, tuple[str, ...]] = {
     # becomes deliberate, drop that one string from this tuple rather than
     # deleting the entry.
     "esmfold2_design": ("EvolutionaryScale", "evolutionaryscale"),
+    # The base backbone generator's citation form. Proteina-Complexa is Didi
+    # et al.; the work that carries this one is "Proteina: Scaling Flow-based
+    # Protein Structure Generative Models", and meta.py's paper_citation was
+    # it. The mistake reached the citation constant, so FIRST_AUTHOR caught
+    # that copy -- this entry is for the other surfaces, which is where the
+    # same defect landed on esmfold2_design: an <option> description on the
+    # form, twenty-two lines from the list it described.
+    #
+    # THE BAR IS THE "et al" FORM, NOT THE BARE SURNAME, and the difference is
+    # load-bearing here rather than stylistic: Geffner is a co-author on this
+    # tool's OWN paper, and meta.py names him as such. Barring the surname
+    # would forbid a true sentence.
+    #
+    # It also catches what PAPER_YEAR cannot. The upstream README lists a
+    # third work, La-Proteina -- same first author, ICLR, and 2026, the same
+    # year as this tool's paper. Crediting the tool to that one is the same
+    # defect and passes every year assertion in this file.
+    "proteina": ("Geffner et al",),
 }
 
 # A DENYLIST, not an allowlist. The first version listed the suffixes to scan

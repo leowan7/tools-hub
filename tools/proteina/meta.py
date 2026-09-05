@@ -75,21 +75,38 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "validate": {"typical_minutes": "1 to 3"},
 }
 
-# THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This read
-# "Geffner et al., NVIDIA (2025)", which is `geffner2025proteina` -- "Proteina:
-# Scaling Flow-based Protein Structure Generative Models", ICLR 2025 -- the
-# BASE backbone generator, which the upstream README lists separately as prior
-# work. The paper for the thing this tool actually runs is `didi2026scaling`,
-# "Scaling Atomistic Protein Binder Design with Generative Pretraining and
-# Test-Time Compute", ICLR 2026; Geffner is its seventh author. Same mix-up the
-# github_url comment below warns about, made two lines above it.
+# THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This field
+# once credited the BASE backbone generator — `geffner2025proteina`,
+# "Proteina: Scaling Flow-based Protein Structure Generative Models", ICLR
+# 2025 — which the upstream README lists separately as prior work. What this
+# tool actually runs is `didi2026scaling`, "Scaling Atomistic Protein Binder
+# Design with Generative Pretraining and Test-Time Compute", ICLR 2026, where
+# Geffner is seventh of fourteen authors. The wrong string is not reproduced
+# here: tests/test_citations_name_the_right_model.py bars its citation form
+# under tools/proteina/, so writing it back turns the suite red.
+#
+# THE LINK IS THE ONLY THING THAT SAYS WHICH PAPER. It used to point at
+# research.nvidia.com/labs/genair/proteina-complexa/, which is the right
+# project but publishes TWO works: the method paper above, and
+# `didi2026invitro` ("Latent Generative Search Unlocks de novo Design of
+# Untapped Biomolecular Interactions at Scale"), the wet-lab campaign. Same
+# first author, same year, one page — so neither the citation string nor its
+# year can tell them apart. The OpenReview id can, and it is the url
+# `didi2026scaling`'s own BibTeX entry gives.
 paper_citation: str = "Didi et al., ICLR 2026"
-paper_url: str = "https://research.nvidia.com/labs/genair/proteina-complexa/"
+paper_url: str = "https://openreview.net/forum?id=qmCpJtFZra"
 # The binder/ligand/AME search code, configs, reward stack, and weights live in
 # the Proteina-Complexa repo (branch ``dev``), NOT the base ``proteina`` backbone
 # generator — the module name ``proteinfoundation`` is shared between the two,
 # which is an easy mix-up. Pinned commit: 916eaaedce5b07c205efb6ef32370c01d366591e.
-github_url: str = "https://github.com/NVIDIA-Digital-Bio/proteina-complexa"
+#
+# The owner is NVIDIA-BioNeMo, which is where the repo lives now; the older
+# NVIDIA-Digital-Bio path 301s to it. That was a transfer rather than a
+# rename — the two orgs have distinct GitHub ids, and a rename keeps the id.
+# Dockerfile.modal still clones the old path DELIBERATELY: git follows the
+# redirect, the clone is pinned to the commit above, and editing that file
+# rebuilds the GPU image. Do not align it with this line.
+github_url: str = "https://github.com/NVIDIA-BioNeMo/Proteina-Complexa"
 
 # NVIDIA Open Model License notice — surfaced verbatim on the tool page + repo.
 model_license_notice: str = (
