@@ -216,6 +216,12 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
         DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
         DBREF2 5YTL A     A0A1W6VP04                         31         352
 
+    AlphaFold DB does NOT split. It writes the 10-character accession
+    straight through that field on a plain DBREF and lets the entry name
+    shift right, so the accession is read to the next space rather than
+    stopping at the field edge:
+        DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+
     A plain DBREF for the chain WINS over a two-line pair. Both forms
     appear together on ~0.5% of entries, and there the pair is typically
     an expression tag or fusion partner covering a short N-terminal

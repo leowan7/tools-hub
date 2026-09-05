@@ -190,7 +190,8 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr("scout.pipeline.run_pipeline", _run)
     monkeypatch.setattr(
         "scout.epitope_db.resolve_uniprot_id",
-        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
     )
     monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
     monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])
@@ -325,7 +326,8 @@ class TestDerivedFilesAreChainScopedToo:
         monkeypatch.setattr("scout.pipeline.run_pipeline", _run)
         monkeypatch.setattr(
             "scout.epitope_db.resolve_uniprot_id",
-            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
         )
         monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
         monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])
@@ -376,7 +378,8 @@ class TestKnownBinderOverlapsAreChainScoped:
         )
         monkeypatch.setattr(
             "scout.epitope_db.resolve_uniprot_id",
-            lambda *a, **k: {"uniprot_id": "P1", "protein_name": "x", "identity_pct": "100"},
+            lambda *a, **k: {"uniprot_id": "P1", "protein_name": "x", "identity_pct": "100",
+             "source": "dbref"},
         )
         client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
 
@@ -440,6 +443,7 @@ class TestAnOutageIsNotFrozenIntoTheJobOnDisk:
                 "uniprot_id": accession,
                 "protein_name": "Test",
                 "identity_pct": "100",
+                "source": "dbref",
             },
         )
 
@@ -861,6 +865,7 @@ class TestEveryGuardFailsWhenItIsRemoved:
                 "uniprot_id": "P00001",
                 "protein_name": "Test",
                 "identity_pct": "100",
+                "source": "dbref",
             },
         )
         job_id = _upload_two_chain_job(client)
@@ -1008,7 +1013,8 @@ class TestEmptyRunsAndChainIdBounds:
         monkeypatch.setattr("scout.pipeline.run_pipeline", _run_nothing)
         monkeypatch.setattr(
             "scout.epitope_db.resolve_uniprot_id",
-            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
         )
         monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
         monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])
@@ -1144,7 +1150,8 @@ class TestNothingFromThePreviousChainSurvives:
             monkeypatch.setattr(target, _run_ok)
         monkeypatch.setattr(
             "scout.epitope_db.resolve_uniprot_id",
-            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+            lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
         )
         monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
         monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])
