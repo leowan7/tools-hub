@@ -34,10 +34,16 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "scfv": {"typical_minutes": "~12"},
 }
 
-paper_citation: str = "Chan Zuckerberg Biohub, 2026"
-paper_url: str = "https://biohub.ai/papers/esm_protein.pdf"
+# Candido, S. is sequence="first" in Crossref and the leading author on
+# the bioRxiv record: "Language Modeling Materializes a World Model of
+# Protein Biology", posted 2026-06-04, Crossref relation {} -- no journal
+# version yet, so bioRxiv is still the venue. paper_url is the exact
+# target biohub.ai/papers/esm_protein.pdf 301s to, so the DOI sits in the
+# link itself rather than behind a marketing path that identifies nothing.
+paper_citation: str = "Candido et al., bioRxiv 2026"
+paper_url: str = "https://www.biorxiv.org/content/10.64898/2026.06.03.729735"
 github_url: str = (
-    "https://github.com/evolutionaryscale/esm/blob/main/cookbook/"
+    "https://github.com/Biohub/esm/blob/main/cookbook/"
     "tutorials/binder_design.ipynb"
 )
 comparison_one_liner: str = (
@@ -64,8 +70,8 @@ about: dict = {
         "designed together, which no other tool here does. Designs from "
         "this method have been taken to the bench against PDGFRB, EGFR, "
         "PD-L1, CD45 and CTLA4, reaching nanomolar affinity and "
-        "functional activity. ESMFold2 design, Chan Zuckerberg Biohub "
-        "2026, built on the ESMC protein language model."
+        "functional activity. ESMFold2 design, Candido et al., "
+        "bioRxiv 2026, built on the ESMC protein language model."
     ),
     "when_to_use": [
         (
