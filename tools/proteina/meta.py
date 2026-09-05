@@ -76,33 +76,37 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 }
 
 # THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This field
-# once credited the BASE backbone generator — `geffner2025proteina`,
-# "Proteina: Scaling Flow-based Protein Structure Generative Models", ICLR
-# 2025 — which the upstream README lists separately as prior work. What this
-# tool actually runs is `didi2026scaling`, "Scaling Atomistic Protein Binder
-# Design with Generative Pretraining and Test-Time Compute", ICLR 2026, where
-# Geffner is seventh of fourteen authors. The wrong string is not reproduced
-# here: tests/test_citations_name_the_right_model.py bars its citation form
-# under tools/proteina/, so writing it back turns the suite red.
+# once credited `geffner2025proteina`, "Proteina: Scaling Flow-based Protein
+# Structure Generative Models" — an earlier, separate work that this one is
+# named after, and not its base model either: the upstream repo describes
+# Proteina-Complexa as built on La-Proteina. What this tool actually runs is
+# `didi2026scaling`, "Scaling Atomistic Protein Binder Design with Generative
+# Pretraining and Test-Time Compute", ICLR 2026, where Geffner is seventh of
+# fourteen authors. The wrong string is not reproduced here:
+# tests/test_citations_name_the_right_model.py bars its citation form under
+# tools/proteina/, so writing it back turns the suite red.
 #
-# THE LINK IS THE ONLY THING THAT SAYS WHICH PAPER. It used to point at
-# research.nvidia.com/labs/genair/proteina-complexa/, which is the right
-# project but publishes TWO works: the method paper above, and
-# `didi2026invitro` ("Latent Generative Search Unlocks de novo Design of
-# Untapped Biomolecular Interactions at Scale"), the wet-lab campaign. Same
-# first author, same year, one page — so neither the citation string nor its
-# year can tell them apart. The OpenReview id can, and it is the url
-# `didi2026scaling`'s own BibTeX entry gives.
+# THE LINK HAS TO NAME THE PAPER, and this one went through three candidates.
+# research.nvidia.com/labs/genair/proteina-complexa/ is the right project but
+# publishes both the method paper and `didi2026invitro`, the wet-lab campaign
+# — same first author, same year — so it named neither outright. The
+# OpenReview record that `didi2026scaling`'s own BibTeX gives is the canonical
+# one, but openreview.net answered a bot check rather than the work for every
+# client tried here, including a real browser, and a citation link that does
+# not open is worse than a vague one. arXiv serves the same work, resolves,
+# and carries an id, which is what lets the guard pin it.
 paper_citation: str = "Didi et al., ICLR 2026"
-paper_url: str = "https://openreview.net/forum?id=qmCpJtFZra"
+paper_url: str = "https://arxiv.org/abs/2603.27950"
 # The binder/ligand/AME search code, configs, reward stack, and weights live in
-# the Proteina-Complexa repo (branch ``dev``), NOT the base ``proteina`` backbone
+# the Proteina-Complexa repo (branch ``dev``), NOT the ``proteina`` backbone
 # generator — the module name ``proteinfoundation`` is shared between the two,
 # which is an easy mix-up. Pinned commit: 916eaaedce5b07c205efb6ef32370c01d366591e.
 #
 # The owner is NVIDIA-BioNeMo, which is where the repo lives now; the older
-# NVIDIA-Digital-Bio path 301s to it. That was a transfer rather than a
-# rename — the two orgs have distinct GitHub ids, and a rename keeps the id.
+# NVIDIA-Digital-Bio path 301s to it, and the API resolves both to one
+# repository id. The ORG moved rather than being renamed — the two have
+# distinct GitHub ids (188633561 and 287038291) and a rename keeps the id —
+# while the repo's own name changed only in case.
 # Dockerfile.modal still clones the old path DELIBERATELY: git follows the
 # redirect, the clone is pinned to the commit above, and editing that file
 # rebuilds the GPU image. Do not align it with this line.
