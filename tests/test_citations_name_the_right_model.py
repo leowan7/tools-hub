@@ -164,6 +164,19 @@ _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 # actually end a URL in HTML and prose.
 _URL_RE = re.compile(r"""https?://[^\s"'<>)]+""")
 
+# The markers that make a line one a YEAR is read off, for the scan below.
+#
+# "paper" alone was the first version, because that is what the observed
+# esmfold2_design defect said. It left a whole class unread: a citation that
+# does not use the word. ``tools/proteina/meta.py`` renders "Proteina-Complexa,
+# Didi et al., ICLR 2026." in its About copy -- user-facing, and the same
+# surface the shipped defect was on -- with no "paper" on the line, so nothing
+# checked its year. Adding "et al" flags a wrong year there.
+#
+# It is a free widening, not a trade: over all fourteen tools it produces no
+# new hits, so it barred nothing that was already written.
+_CITATION_MARKERS = ("paper", "et al")
+
 # slug -> (token required in paper_url, token required in github_url or None
 # where the tool declares no repository). A DOI or an owner/repo pair, because
 # those are what actually identify a work -- a citation string can name the
@@ -190,22 +203,33 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "iggm": ("2024.09.19.613838", "TencentAI4S/IgGM"),
     "mpnn": ("science.add2187", "dauparas/ProteinMPNN"),
     "opendde": ("2607.03787", "aurekaresearch/OpenDDE"),
-    # Both must say complexa. The base model lives at .../genair/proteina/ and
-    # in a different repository.
+    # Both halves were WEAKER than the rest of this map: the pair read
+    # ("proteina-complexa", "proteina-complexa"), and neither half identified
+    # a particular thing. A GitHub link pasted into paper_url passed it, and
+    # so would any fork of the repo name.
     #
-    # These two tokens are WEAKER than the rest of this map -- neither is a
-    # DOI nor an owner/repo pair, so a GitHub link pasted into paper_url would
-    # pass, as would any fork of the repo name.
+    # The paper token is now the arXiv id. The project page meta.py used to
+    # link publishes both the ICLR method paper this tool runs and the wet-lab
+    # campaign, which share a first author and a year, so the old token named
+    # neither -- see meta.py for why arXiv rather than the OpenReview record
+    # the paper's own BibTeX gives.
     #
-    # KNOWN TRAP, left in place rather than half-fixed. The upstream repo
-    # moved: NVIDIA-Digital-Bio/proteina-complexa 301s to
-    # NVIDIA-BioNeMo/Proteina-Complexa -- new owner AND new casing. The
-    # assertion below is a case-sensitive substring test, so this lowercase
-    # token already goes RED the day someone corrects meta.py to the canonical
-    # URL, and pinning the owner would do the same. It is the only github_url
-    # in this repo that redirects. Fix meta.py and this token in one change;
-    # touching either alone turns a correct value into a failure.
-    "proteina": ("proteina-complexa", "proteina-complexa"),
+    # THAT PINS THE LINK AND NOT THE CITATION, which is worth stating because
+    # the two read as one fix and are not. Nothing in this file reads a
+    # paper's TITLE, and the two works share a first author and a year, so
+    # swapping ``paper_citation`` to the wet-lab one goes green: mutating it
+    # to "Didi et al., bioRxiv 2026" leaves every case here passing. What the
+    # identifier buys is that the link can no longer be right about the
+    # project while being silent about which paper.
+    #
+    # The repo token is now the owner/repo pair, and this one was a TRAP while
+    # it stayed lowercase: NVIDIA-Digital-Bio/proteina-complexa 301s to
+    # NVIDIA-BioNeMo/Proteina-Complexa, a new owner AND new casing, and the
+    # assertion below is a case-sensitive substring test. So the old token
+    # would have gone red the day anyone corrected meta.py to the canonical
+    # URL -- the guard pinning the stale value, which is the failure this
+    # file's docstring records twice. meta.py and the token moved together.
+    "proteina": ("2603.27950", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
     "rfantibody": ("2024.03.14.585103", "RosettaCommons/RFantibody"),
     "rfdiffusion": ("s41586-023-06415-8", "RosettaCommons/RFdiffusion"),
@@ -297,6 +321,33 @@ FOREIGN_SIGNATURES: dict[str, tuple[str, ...]] = {
     # becomes deliberate, drop that one string from this tuple rather than
     # deleting the entry.
     "esmfold2_design": ("EvolutionaryScale", "evolutionaryscale"),
+    # The citation form of Proteina, the earlier and separate work this tool
+    # is named after. Proteina-Complexa is Didi et al.; this string belongs to
+    # "Proteina: Scaling Flow-based Protein Structure Generative Models", and
+    # it is what meta.py's paper_citation said (c03aa1d, corrected in
+    # 819bf13). FIRST_AUTHOR covers that one field. This entry is for every
+    # other surface under the tool, which is where the same defect sat on
+    # esmfold2_design: not in the citation constant at all, but in an
+    # <option> description on its form.
+    #
+    # THE BAR IS THE "et al" FORM, NOT THE BARE SURNAME, and the difference is
+    # load-bearing here rather than stylistic: Geffner is a co-author on this
+    # tool's OWN paper, and meta.py names him as such. Barring the surname
+    # would forbid a true sentence.
+    #
+    # THE COST of that choice, stated because a guard hiding its blind spot is
+    # worse than none: two words on one line are reflow-fragile in a way the
+    # single-token bars above are not. A wrap between the surname and "et al"
+    # defeats it, and so does writing "Geffner, et al." -- and the
+    # CONTEXT_BARS comment above records a copy pass doing exactly that reflow
+    # to a live misattribution, by accident.
+    #
+    # It reaches a case PAPER_YEAR cannot, too. Upstream lists La-Proteina,
+    # whose first author is that same surname, at the same venue and the same
+    # 2026 as this tool's paper -- so crediting the tool to it in this form is
+    # caught here while every year assertion stays green. Written without the
+    # "et al", it is caught by neither.
+    "proteina": ("Geffner et al",),
 }
 
 # A DENYLIST, not an allowlist. The first version listed the suffixes to scan
@@ -472,11 +523,16 @@ def test_no_tool_page_dates_its_own_paper_wrong(
     LIMITS, stated because a guard that hides its blind spot is worse than
     none:
 
-    * It reads lines that say "paper", because that is what the observed
-      defect said. "The Biohub 2025 release" is the same error and passes.
-      NOT "the EvolutionaryScale 2025 release" -- that one is caught, by
-      FOREIGN_SIGNATURES, over these same files. An earlier draft of this
-      docstring used it as the example of what slips, which the repo refutes.
+    * It reads only lines carrying a marker in ``_CITATION_MARKERS``, so a
+      year beside neither word passes: "The Biohub 2025 release" is the same
+      error and is not read. NOT "the EvolutionaryScale 2025 release" -- that
+      one is caught, by FOREIGN_SIGNATURES, over these same files. An earlier
+      draft of this docstring used it as the example of what slips, which the
+      repo refutes.
+    * Naming a DIFFERENT model with the right year is not this test's job and
+      is not caught by it: "Proteina, Didi et al., ICLR 2026" in the About
+      copy passes here. FOREIGN_SIGNATURES is what reads names, and it holds
+      citation forms rather than bare model names.
     * It is line-scoped, so a wrap between the year and the word hides the
       error. The shipped defect was one word from invisible already: it read
       "used in the" / "EvolutionaryScale 2025 paper." across two lines.
@@ -495,7 +551,8 @@ def test_no_tool_page_dates_its_own_paper_wrong(
         except (UnicodeDecodeError, OSError):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            if "paper" not in line.lower():
+            low = line.lower()
+            if not any(marker in low for marker in _CITATION_MARKERS):
                 continue
             for year in _YEAR_RE.findall(_URL_RE.sub("", line)):
                 if year in allowed:
@@ -554,7 +611,12 @@ def test_the_links_point_at_this_tools_own_work(
         )
         return
     assert repo_token in meta.github_url, (
-        "tools/%s/meta.py github_url is %r, which does not contain %r"
+        "tools/%s/meta.py github_url is %r, which does not contain %r. If the "
+        "repository genuinely moved -- proteina's has, once, owner and casing "
+        "together -- read the new owner/repo off the GitHub API and change the "
+        "URL and this token in one commit. Do NOT restore the old URL to get "
+        "green: a moved repo still 301s, so the stale link resolves and "
+        "nothing else here will ever flag it."
         % (slug, meta.github_url, repo_token)
     )
 
