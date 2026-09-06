@@ -32,6 +32,7 @@ otherwise the scan has gone blind and everything above it is vacuous.
 from __future__ import annotations
 
 import base64
+import html
 import json
 import statistics
 import re
@@ -1293,6 +1294,93 @@ class TestExampleNumbersComeFromThePayload:
             "test is measuring nothing"
         )
         assert not offenders, offenders
+
+    def test_narration_does_not_cite_a_score_the_table_never_shows(
+        self, tools_app,
+    ):
+        """A score named in the prose must be a column the table renders.
+
+        The sibling test below does this for INPUT field names. Scores
+        needed their own, and not hypothetically: the bindcraft narration
+        was first written around ``Target_RMSD`` 0.38 -- the number that
+        says AlphaFold rebuilt the known target correctly, and so the one
+        most worth teaching, given that scoring a design against a
+        MISFOLDED target is exactly what was wrong with RFdiffusion
+        before the September 2026 fix. It is in the payload and it is not
+        in bindcraft's column list, so the page never showed it. The
+        prose sent the reader hunting for a column that is not there.
+
+        The obvious version of this scrapes the rendered <th> text and
+        was written first. It is unsound twice over and both showed up
+        immediately: a header carries a DISPLAY LABEL, not a key, so
+        proteina's ``total_reward`` renders as "Reward" and read as
+        missing; and the <th> regex swallowed a page-local <style>
+        block, quietly promoting every CSS word to a column name. The
+        declared column list is the actual source of truth, so use it.
+
+        Scope, stated rather than assumed: only the tools in
+        ``_TOOL_RESULT_COLUMNS`` are checked, since a tool absent from it
+        has no declared list to compare against. And it matches the key,
+        not paraphrases of it -- the same bad draft also said "interface
+        pAE column" for ``i_pAE``, which this would not catch. Prose has
+        no compiler; this narrows the gap, it does not close it.
+        """
+        from shared.result_columns import _TOOL_RESULT_COLUMNS
+
+        # Numeric keys that are not scores.
+        NOT_A_SCORE = {"rank", "idx", "seed", "id", "index", "length",
+                       "runtime_seconds"}
+
+        _, slugs = tools_app
+        offenders = {}
+        checked = []
+        for slug, example in sorted(_examples(slugs).items()):
+            if not example:
+                continue
+            declared = _TOOL_RESULT_COLUMNS.get(slug)
+            if not declared:
+                continue
+            path = (REPO / "tools" / slug.replace("-", "_")
+                    / "example" / "result.json")
+            if not path.exists():
+                continue
+            result = json.loads(path.read_text(encoding="utf-8"))
+            rows = result.get("candidates") or result.get("designs") or []
+            if not rows or not isinstance(rows[0], dict):
+                continue
+            scores = rows[0].get("scores")
+            if not isinstance(scores, dict):
+                scores = rows[0]
+
+            shown = {c.lower() for c in declared}
+            prose = " ".join(str(v) for v in example.values()).lower()
+            prose_tokens = " " + " ".join(
+                re.findall("[a-z0-9]+", prose)) + " "
+
+            for key, val in sorted(scores.items()):
+                if not isinstance(val, (int, float)) or isinstance(val, bool):
+                    continue
+                if key.lower() in shown or key.lower() in NOT_A_SCORE:
+                    continue
+                checked.append((slug, key))
+                # Token phrase, not a substring: 'ptm' must not match
+                # inside 'iptm'. A word-boundary regex is a trap here --
+                # the escapes did not survive the tools that write this
+                # file, and a mangled anchor fails OPEN. Tokens need no
+                # escapes.
+                phrase = " " + " ".join(
+                    re.findall("[a-z0-9]+", key.lower())) + " "
+                if phrase in prose_tokens:
+                    offenders.setdefault(slug, []).append(key)
+
+        assert len(checked) >= 5, (
+            f"only {len(checked)} undisplayed score keys examined "
+            f"({checked}); this guard is measuring almost nothing"
+        )
+        assert not offenders, (
+            "worked-example prose names a score that is not in that "
+            f"tool's declared result columns: {offenders}"
+        )
 
     def test_input_field_names_exist_on_the_form(self, tools_app):
         """``inputs_used`` names a form field and the value put in it, and
