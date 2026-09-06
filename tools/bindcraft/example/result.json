@@ -1,0 +1,38 @@
+{
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "pdb_key": "designs/design_001.pdb",
+      "rank": 1,
+      "scores": {
+        "Hotspot_RMSD": 2.48,
+        "RMSD": 3.04,
+        "SAP": 0.29,
+        "Target_RMSD": 0.38,
+        "i_pAE": 0.27,
+        "ipTM": 0.75,
+        "pLDDT": 0.81,
+        "pTM": 0.83,
+        "shape_complementarity": 0.64
+      }
+    },
+    {
+      "pdb_key": "designs/design_002.pdb",
+      "rank": 2,
+      "scores": {
+        "Hotspot_RMSD": 2.38,
+        "RMSD": 2.96,
+        "SAP": 0.3,
+        "Target_RMSD": 0.38,
+        "i_pAE": 0.26,
+        "ipTM": 0.76,
+        "pLDDT": 0.81,
+        "pTM": 0.83,
+        "shape_complementarity": 0.6
+      }
+    }
+  ],
+  "next_steps": "Recommend experimental validation: SPR or BLI binding assay for top candidates, followed by counter-screen for specificity. Consider yeast display library construction for affinity maturation of the best hits.",
+  "runtime_minutes": 19.5,
+  "total_designs_requested": 2
+}
