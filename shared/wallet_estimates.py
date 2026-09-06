@@ -216,6 +216,38 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "rfdiffusion": ToolSpec(
         slug="rfdiffusion",
         gpu_class="A100-40GB",
+        # KNOWN LOW BY ~2.3x AND DELIBERATELY NOT CHANGED HERE. Measured
+        # 2026-09-04 on job 25471e07: 2220 GPU-seconds for 8 designs = 277.5
+        # per design, against the 120/design this encodes. The value predates
+        # the September 2026 RFdiffusion container update, which roughly
+        # tripled the AlphaFold stage -- it now fetches a real MSA for the
+        # target instead of folding it single-sequence. 2775.0 is the
+        # like-for-like replacement.
+        #
+        # WHY IT IS STILL 1200. This field is not only an estimate input. It
+        # also sizes campaign CHUNKS and the single-container design ceiling,
+        # so raising it re-plans every rfdiffusion campaign: setting it to
+        # 2775.0 turns 14 tests red across test_compute_campaigns,
+        # test_compute_campaign_routes, test_cushioned_hold,
+        # test_target_multi_launch_routes and test_unlimited_design_caps --
+        # chunk counts, container ceilings, cushioned holds and the refusal
+        # copy that quotes them. Those are not assertions to re-baseline in
+        # passing; a smaller chunk is arguably the CORRECT consequence of a
+        # slower per-design cost, but it changes how campaigns are split and
+        # what they hold, and that decision deserves its own change and its own
+        # review rather than riding in behind a copy fix.
+        #
+        # The live estimate is less exposed than this number suggests:
+        # estimated_cost_for_tool prefers a 30-day p90 from tool_jobs_p90 and
+        # only falls back here below MIN_HISTORICAL_RUNS, so it self-corrects
+        # as post-update runs accumulate. The chunking does not.
+        #
+        # RELATED, ALSO UNFIXED: PRESET_CAPS ("rfdiffusion", "pilot") in
+        # gpu/modal_client.py is 1800, and that is what sizes the
+        # pre-authorisation hold -- 1800 * rate * markup = $2.1849, exactly
+        # what job 25471e07 held against an actual $2.6946, with the balance
+        # taken at completion. It has never been a true upper bound either
+        # (the pilot accepts 1 to 1000 designs under one flat cap).
         expected_gpu_seconds=1200.0,
         designs_per_run_baseline=10,
         scaling_param="num_designs",

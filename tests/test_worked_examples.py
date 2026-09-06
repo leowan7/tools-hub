@@ -1239,6 +1239,61 @@ class TestExampleNumbersComeFromThePayload:
         assert "The higher score is the one you must not order." in read
         assert "0.02 difference in ipTM is noise" in read
 
+    def test_no_example_warns_that_its_own_scores_are_not_measurements(
+        self, tools_app,
+    ):
+        """An example must not carry an era notice about itself.
+
+        components/score_era_notice.html renders whenever
+        score_legends.score_era_caveat cannot tell WHEN a run happened, and
+        that unknown-date case over-warns on purpose -- the pooled target page
+        has no per-row date and still needs the warning. A worked example is
+        rendered through a STUB job, so if that stub carries no ``created_at``
+        the notice fires on every example that has an era caveat registered
+        for its tool, printing "these scores are not measurements" directly
+        above the numbers the page exists to teach.
+
+        components/worked_example.html passes ``ex.ran_on`` into the stub for
+        exactly this reason. This is what keeps it there: delete that line and
+        the RFdiffusion example starts disclaiming itself.
+
+        Asserted for every tool, not just RFdiffusion, because the next tool
+        to get an era caveat inherits the same trap and nothing else would
+        catch it.
+        """
+        from shared.score_legends import SCORE_LEGENDS
+
+        dated = {
+            tool for (tool, _col), legend in SCORE_LEGENDS.items()
+            if legend.get("caveat_before")
+        }
+        assert dated, (
+            "no legend carries caveat_before any more, so this check cannot "
+            "fire; re-point it rather than leave it passing"
+        )
+
+        app, slugs = tools_app
+        offenders = {}
+        checked = []
+        with app.test_client() as client:
+            for slug, example in _examples(slugs).items():
+                if not example or slug not in dated:
+                    continue
+                checked.append(slug)
+                assert example.get("ran_on"), (
+                    f"{slug} has an era caveat and a worked example but no "
+                    f"'ran_on', so the stub job has no date and the notice "
+                    f"cannot be gated"
+                )
+                page = client.get(f"/tools/{slug}").get_data(as_text=True)
+                if "data-score-era-notice" in page:
+                    offenders[slug] = "renders the era banner over its example"
+        assert checked, (
+            "no tool has BOTH an era caveat and a worked example, so this "
+            "test is measuring nothing"
+        )
+        assert not offenders, offenders
+
     def test_input_field_names_exist_on_the_form(self, tools_app):
         """``inputs_used`` names a form field and the value put in it, and
         it renders directly below that form. A name the form does not use

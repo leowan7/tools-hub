@@ -91,6 +91,92 @@ BARRED_IN_CITATION: dict[str, tuple[str, ...]] = {
     "rfantibody": ("Improving de novo protein binder design",),
 }
 
+# slug -> every year its paper_citation may name, and no others.
+#
+# EXACT, not "at least". An added year is the same defect as a substituted
+# one: "Candido et al., bioRxiv 2026 (2025 preprint)" dates a paper that does
+# not exist, and a contains-check would pass it.
+#
+# af2 is the only two-year entry, deliberately: it cites AF2 and ColabFold
+# together because the tool runs AF2 through ColabFold.
+#
+# Every year here was read off a PRIMARY source, never off the citation string
+# it guards: Crossref published/posted for the eleven tools with a journal or
+# bioRxiv DOI, arXiv's citation_date for opendde (2026/07/04), and the
+# upstream README's own BibTeX for proteina (didi2026scaling, year={2026})
+# and iggm (wang2025iggm, year={2025}).
+#
+# iggm is the one to look at twice before "correcting" it: its preprint DOI is
+# 2024 and its citation is ICLR 2025. Both are right. A DOI year is not a
+# citation year, which is why URLs are stripped before years are read.
+# slug -> years that may ALSO appear in this tool's prose, because a line
+# there genuinely cites a DIFFERENT work.
+#
+# Empty today: no tool page dates a second paper. It exists so a CORRECT
+# sentence has somewhere to go -- esmfold2_design prose reading "successor to
+# the ESMFold paper (Lin et al., Science 2023)" is true, and without this map
+# the scan below would demand deleting the year from it. That is the pinned-
+# error shape this file has already recorded three times, so the escape hatch
+# ships with the guard rather than after the first false positive.
+PROSE_ALSO_CITES: dict[str, tuple[str, ...]] = {}
+
+PAPER_YEAR: dict[str, tuple[str, ...]] = {
+    "af2": ("2021", "2022"),
+    "bindcraft": ("2024",),
+    "boltz2": ("2025",),
+    "boltzgen": ("2025",),
+    "colabfold": ("2022",),
+    "esmfold": ("2023",),
+    "esmfold2_design": ("2026",),
+    "iggm": ("2025",),
+    "mpnn": ("2022",),
+    "opendde": ("2026",),
+    "proteina": ("2026",),
+    "pxdesign": ("2023",),
+    "rfantibody": ("2024",),
+    "rfdiffusion": ("2023",),
+}
+
+# 1900-2099, narrow on purpose: a bare \d{4} matches page and volume numbers.
+# tools/pxdesign/meta.py cites "Nature Communications 14, 2625" and
+# tools/rfdiffusion/meta.py "Nature 620, 1089 to 1100", so a loose pattern
+# would read 2625, 1089 and 1100 as years and fail both tools.
+#
+# This pattern cannot rot unnoticed, which is worth knowing before anyone
+# "simplifies" it. test_paper_citation_carries_the_right_year compares an
+# EXACT set, so a pattern that stops matching years yields () for all 14
+# tools and turns them all red -- it is the positive control for the prose
+# scan below, which on its own would just find nothing and pass. Measured:
+# replacing the word-boundary anchors with the literal backspace character an
+# escaping slip produces gives "14 failed, 53 passed", not a green vacuous
+# run. (The first draft of this very comment contained that byte.)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# A URL's year is not a citation's year: a bioRxiv DOI embeds the posting date,
+# which is why 6 of the 14 paper_url values carry one, and iggm's genuinely
+# disagrees with its citation. Strip URLs before reading years out of a line.
+#
+# The character class matters. \S+ runs to the next SPACE, so in real markup
+# it swallows the text after the URL along with it:
+#     <a href="https://x/y">2025</a> paper   ->   <a href=" paper
+# and the wrong year vanishes instead of being caught. That is the exact shape
+# of the template the shipped defect lived in, so stop at the delimiters that
+# actually end a URL in HTML and prose.
+_URL_RE = re.compile(r"""https?://[^\s"'<>)]+""")
+
+# The markers that make a line one a YEAR is read off, for the scan below.
+#
+# "paper" alone was the first version, because that is what the observed
+# esmfold2_design defect said. It left a whole class unread: a citation that
+# does not use the word. ``tools/proteina/meta.py`` renders "Proteina-Complexa,
+# Didi et al., ICLR 2026." in its About copy -- user-facing, and the same
+# surface the shipped defect was on -- with no "paper" on the line, so nothing
+# checked its year. Adding "et al" flags a wrong year there.
+#
+# It is a free widening, not a trade: over all fourteen tools it produces no
+# new hits, so it barred nothing that was already written.
+_CITATION_MARKERS = ("paper", "et al")
+
 # slug -> (token required in paper_url, token required in github_url or None
 # where the tool declares no repository). A DOI or an owner/repo pair, because
 # those are what actually identify a work -- a citation string can name the
@@ -117,22 +203,33 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "iggm": ("2024.09.19.613838", "TencentAI4S/IgGM"),
     "mpnn": ("science.add2187", "dauparas/ProteinMPNN"),
     "opendde": ("2607.03787", "aurekaresearch/OpenDDE"),
-    # Both must say complexa. The base model lives at .../genair/proteina/ and
-    # in a different repository.
+    # Both halves were WEAKER than the rest of this map: the pair read
+    # ("proteina-complexa", "proteina-complexa"), and neither half identified
+    # a particular thing. A GitHub link pasted into paper_url passed it, and
+    # so would any fork of the repo name.
     #
-    # These two tokens are WEAKER than the rest of this map -- neither is a
-    # DOI nor an owner/repo pair, so a GitHub link pasted into paper_url would
-    # pass, as would any fork of the repo name.
+    # The paper token is now the arXiv id. The project page meta.py used to
+    # link publishes both the ICLR method paper this tool runs and the wet-lab
+    # campaign, which share a first author and a year, so the old token named
+    # neither -- see meta.py for why arXiv rather than the OpenReview record
+    # the paper's own BibTeX gives.
     #
-    # KNOWN TRAP, left in place rather than half-fixed. The upstream repo
-    # moved: NVIDIA-Digital-Bio/proteina-complexa 301s to
-    # NVIDIA-BioNeMo/Proteina-Complexa -- new owner AND new casing. The
-    # assertion below is a case-sensitive substring test, so this lowercase
-    # token already goes RED the day someone corrects meta.py to the canonical
-    # URL, and pinning the owner would do the same. It is the only github_url
-    # in this repo that redirects. Fix meta.py and this token in one change;
-    # touching either alone turns a correct value into a failure.
-    "proteina": ("proteina-complexa", "proteina-complexa"),
+    # THAT PINS THE LINK AND NOT THE CITATION, which is worth stating because
+    # the two read as one fix and are not. Nothing in this file reads a
+    # paper's TITLE, and the two works share a first author and a year, so
+    # swapping ``paper_citation`` to the wet-lab one goes green: mutating it
+    # to "Didi et al., bioRxiv 2026" leaves every case here passing. What the
+    # identifier buys is that the link can no longer be right about the
+    # project while being silent about which paper.
+    #
+    # The repo token is now the owner/repo pair, and this one was a TRAP while
+    # it stayed lowercase: NVIDIA-Digital-Bio/proteina-complexa 301s to
+    # NVIDIA-BioNeMo/Proteina-Complexa, a new owner AND new casing, and the
+    # assertion below is a case-sensitive substring test. So the old token
+    # would have gone red the day anyone corrected meta.py to the canonical
+    # URL -- the guard pinning the stale value, which is the failure this
+    # file's docstring records twice. meta.py and the token moved together.
+    "proteina": ("2603.27950", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
     "rfantibody": ("2024.03.14.585103", "RosettaCommons/RFantibody"),
     "rfdiffusion": ("s41586-023-06415-8", "RosettaCommons/RFdiffusion"),
@@ -224,6 +321,33 @@ FOREIGN_SIGNATURES: dict[str, tuple[str, ...]] = {
     # becomes deliberate, drop that one string from this tuple rather than
     # deleting the entry.
     "esmfold2_design": ("EvolutionaryScale", "evolutionaryscale"),
+    # The citation form of Proteina, the earlier and separate work this tool
+    # is named after. Proteina-Complexa is Didi et al.; this string belongs to
+    # "Proteina: Scaling Flow-based Protein Structure Generative Models", and
+    # it is what meta.py's paper_citation said (c03aa1d, corrected in
+    # 819bf13). FIRST_AUTHOR covers that one field. This entry is for every
+    # other surface under the tool, which is where the same defect sat on
+    # esmfold2_design: not in the citation constant at all, but in an
+    # <option> description on its form.
+    #
+    # THE BAR IS THE "et al" FORM, NOT THE BARE SURNAME, and the difference is
+    # load-bearing here rather than stylistic: Geffner is a co-author on this
+    # tool's OWN paper, and meta.py names him as such. Barring the surname
+    # would forbid a true sentence.
+    #
+    # THE COST of that choice, stated because a guard hiding its blind spot is
+    # worse than none: two words on one line are reflow-fragile in a way the
+    # single-token bars above are not. A wrap between the surname and "et al"
+    # defeats it, and so does writing "Geffner, et al." -- and the
+    # CONTEXT_BARS comment above records a copy pass doing exactly that reflow
+    # to a live misattribution, by accident.
+    #
+    # It reaches a case PAPER_YEAR cannot, too. Upstream lists La-Proteina,
+    # whose first author is that same surname, at the same venue and the same
+    # 2026 as this tool's paper -- so crediting the tool to it in this form is
+    # caught here while every year assertion stays green. Written without the
+    # "et al", it is caught by neither.
+    "proteina": ("Geffner et al",),
 }
 
 # A DENYLIST, not an allowlist. The first version listed the suffixes to scan
@@ -246,6 +370,39 @@ _SKIP_DIRS = {
 
 def _meta(slug: str):
     return importlib.import_module("tools.%s.meta" % slug)
+
+
+def _tool_files(slug: str) -> list[pathlib.Path]:
+    """A tool's own files: its package, plus its form and results templates.
+
+    The templates are in here because the esmfold2_design defect lived in one --
+    an ``<option>`` description on the form -- where a ``tools/<slug>/``-scoped
+    scan could not see it.
+
+    LIMIT, stated because a guard that hides its blind spot is worse than none:
+    this is the tool's OWN two templates, not ``templates/`` generally. The
+    same string moved to another tool's form, to a shared component, or to
+    ``templates/help/`` still slips. Callers that bar a model NAME cannot
+    simply widen to the whole tree either -- ``FOREIGN_SIGNATURES["boltzgen"]``
+    bars "jwohlwend" and ``tools/boltz2/meta.py`` links jwohlwend/boltz
+    legitimately, so a repo-wide sweep of those tuples fails on correct code.
+    """
+    files = [
+        p
+        for p in (REPO / "tools" / slug).rglob("*")
+        if p.is_file() and p.suffix.lower() not in _SKIP_SUFFIXES
+    ]
+    assert files, "no files scanned for %s -- this guard would vacuously pass" % slug
+
+    templates = sorted((REPO / "templates" / "tools").glob("%s_*.html" % slug))
+    assert templates, (
+        "no templates/tools/%s_*.html matched. Every tool here has a form and "
+        "a results template, so an empty glob means the naming convention "
+        "moved and this half of the scan covers nothing. It floors at zero "
+        "only -- losing one of a tool's two templates still passes."
+        % slug
+    )
+    return files + templates
 
 
 def _text_files():
@@ -276,6 +433,7 @@ def test_every_tool_meta_is_covered_here() -> None:
     assert on_disk, "found no tools/*/meta.py -- this guard would vacuously pass"
     for name, mapping in (
         ("FIRST_AUTHOR", FIRST_AUTHOR),
+        ("PAPER_YEAR", PAPER_YEAR),
         ("REQUIRED_URL_TOKENS", REQUIRED_URL_TOKENS),
     ):
         assert on_disk == set(mapping), (
@@ -330,6 +488,97 @@ def test_paper_citation_names_this_tools_own_paper(slug: str, expected: str) -> 
         )
 
 
+@pytest.mark.parametrize("slug,expected", sorted(PAPER_YEAR.items()))
+def test_paper_citation_carries_the_right_year(
+    slug: str, expected: tuple[str, ...]
+) -> None:
+    """The half of the esmfold2_design defect that nothing here read.
+
+    Its form credited the presets to "the EvolutionaryScale 2025 paper" -- the
+    wrong organisation AND the wrong year. FIRST_AUTHOR covered the
+    organisation. Nothing looked at the year, so "the Biohub 2025 paper" would
+    have passed every assertion in this file.
+    """
+    cited = _meta(slug).paper_citation
+    found = tuple(sorted(set(_YEAR_RE.findall(_URL_RE.sub("", cited)))))
+    assert found == tuple(sorted(expected)), (
+        "tools/%s/meta.py paper_citation is %r, which carries the years %s. "
+        "PAPER_YEAR says %s. If the work genuinely moved -- a preprint reaching "
+        "a journal is the usual reason -- re-read the year off a PRIMARY source "
+        "and change both together. Note that a DOI year is NOT a citation year: "
+        "iggm is correctly 2024 in its URL and 2025 in its citation."
+        % (slug, cited, list(found), sorted(expected))
+    )
+
+
+@pytest.mark.parametrize("slug,expected", sorted(PAPER_YEAR.items()))
+def test_no_tool_page_dates_its_own_paper_wrong(
+    slug: str, expected: tuple[str, ...]
+) -> None:
+    """The citation string is not the only place a year is written down.
+
+    The wrong year that shipped was in prose on the form, not in
+    ``paper_citation``, so checking the constant alone would have missed it.
+
+    LIMITS, stated because a guard that hides its blind spot is worse than
+    none:
+
+    * It reads only lines carrying a marker in ``_CITATION_MARKERS``, so a
+      year beside neither word passes: "The Biohub 2025 release" is the same
+      error and is not read. NOT "the EvolutionaryScale 2025 release" -- that
+      one is caught, by FOREIGN_SIGNATURES, over these same files. An earlier
+      draft of this docstring used it as the example of what slips, which the
+      repo refutes.
+    * Naming a DIFFERENT model with the right year is not this test's job and
+      is not caught by it: "Proteina, Didi et al., ICLR 2026" in the About
+      copy passes here. FOREIGN_SIGNATURES is what reads names, and it holds
+      citation forms rather than bare model names.
+    * It is line-scoped, so a wrap between the year and the word hides the
+      error. The shipped defect was one word from invisible already: it read
+      "used in the" / "EvolutionaryScale 2025 paper." across two lines.
+      3ec66b9 did exactly this to a live misattribution elsewhere in the
+      repo, by accident, in a copy pass -- see the CONTEXT_BARS comment.
+    * pxdesign and rfdiffusion carry no year-bearing "paper" line at all, so
+      2 of these 14 parametrisations currently assert over nothing. Their
+      years are still covered by the citation test above, which is why this
+      is recorded rather than floored.
+    """
+    allowed = set(expected) | set(PROSE_ALSO_CITES.get(slug, ()))
+    hits: list[str] = []
+    for path in _tool_files(slug):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            low = line.lower()
+            if not any(marker in low for marker in _CITATION_MARKERS):
+                continue
+            for year in _YEAR_RE.findall(_URL_RE.sub("", line)):
+                if year in allowed:
+                    continue
+                hits.append(
+                    "%s:%d dates it %s, but %s's paper is %s: %s"
+                    % (
+                        path.relative_to(REPO).as_posix(),
+                        lineno,
+                        year,
+                        slug,
+                        "/".join(sorted(allowed)),
+                        line.strip()[:100],
+                    )
+                )
+    assert not hits, (
+        "a line about %s's paper carries a year that is not its paper's. If "
+        "this tool's paper genuinely moved, fix PAPER_YEAR and the citation "
+        "together against a primary source. If the line deliberately cites a "
+        "DIFFERENT work, add that work's year to PROSE_ALSO_CITES[%r] -- "
+        "naming the work in the sentence does not help, the year is still on "
+        "the line:\n  %s"
+        % (slug, slug, "\n  ".join(hits))
+    )
+
+
 @pytest.mark.parametrize("slug,tokens", sorted(REQUIRED_URL_TOKENS.items()))
 def test_the_links_point_at_this_tools_own_work(
     slug: str, tokens: tuple[str, str | None]
@@ -362,7 +611,12 @@ def test_the_links_point_at_this_tools_own_work(
         )
         return
     assert repo_token in meta.github_url, (
-        "tools/%s/meta.py github_url is %r, which does not contain %r"
+        "tools/%s/meta.py github_url is %r, which does not contain %r. If the "
+        "repository genuinely moved -- proteina's has, once, owner and casing "
+        "together -- read the new owner/repo off the GitHub API and change the "
+        "URL and this token in one commit. Do NOT restore the old URL to get "
+        "green: a moved repo still 301s, so the stale link resolves and "
+        "nothing else here will ever flag it."
         % (slug, meta.github_url, repo_token)
     )
 
@@ -492,34 +746,7 @@ def test_no_neighbouring_models_name_leaks_into_a_tool(
         % slug
     )
 
-    files = [
-        p
-        for p in (REPO / "tools" / slug).rglob("*")
-        if p.is_file() and p.suffix.lower() not in _SKIP_SUFFIXES
-    ]
-    assert files, "no files scanned for %s -- this guard would vacuously pass" % slug
-
-    # The tool's own templates too. Scoping this to tools/<slug>/ is why "the
-    # EvolutionaryScale 2025 paper" survived: it was an <option> description on
-    # the form itself, and no check here could see the file it lived in.
-    #
-    # LIMIT, stated because a guard that hides its blind spot is worse than
-    # none: this adds the tool's OWN two templates, not templates/ generally.
-    # The same string moved to another tool's form, to a shared component, or
-    # to templates/help/ still slips. It cannot simply go repo-wide, because
-    # these tuples are scoped BY CONSTRUCTION -- boltzgen bars "jwohlwend",
-    # and tools/boltz2/meta.py links jwohlwend/boltz legitimately, so a
-    # repo-wide sweep of these tuples fails on correct code. Widening this
-    # means per-tool name sets, not a wider walk.
-    templates = sorted((REPO / "templates" / "tools").glob("%s_*.html" % slug))
-    assert templates, (
-        "no templates/tools/%s_*.html matched. Every tool here has a form and "
-        "a results template, so an empty glob means the naming convention "
-        "moved and this half of the scan covers nothing. It floors at zero "
-        "only -- losing one of a tool's two templates still passes."
-        % slug
-    )
-    files += templates
+    files = _tool_files(slug)
 
     hits: list[str] = []
     for path in files:
