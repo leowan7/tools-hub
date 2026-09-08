@@ -11,7 +11,7 @@ Shapes
                          ``typical_minutes`` is a human-readable range (e.g.
                          ``"45"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
-    paper_url         — bioRxiv permalink for the BindCraft paper.
+    paper_url         — Nature permalink for the BindCraft paper.
     github_url        — upstream repository.
     comparison_one_liner — what you have / what you get, plus
                            which sibling tool to use instead.
@@ -31,8 +31,20 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "pilot": {"typical_minutes": "45"},
 }
 
-paper_citation: str = "Pacesa et al., bioRxiv 2024"
-paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.09.30.615802v1"
+# THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE: Nature 646, 483-492,
+# DOI 10.1038/s41586-025-09429-6. Unlike RFantibody's, this Crossref record
+# carries NO relation back to the bioRxiv posting this field used to hold,
+# in EITHER direction -- checked from both DOIs. What ties them instead is a
+# 29-author list with the same first author on each record, plus a title
+# whose words were reordered on the way in: "BindCraft: one-shot design of
+# functional protein binders" became "One-shot design of functional protein
+# binders with BindCraft". Worth knowing before anyone tries to sweep for
+# stale preprints by relation alone.
+#
+# Online-first and issue dates fall in the same year here, so the number
+# below is not the judgement call its RFantibody counterpart is.
+paper_citation: str = "Pacesa et al., Nature 2025"
+paper_url: str = "https://www.nature.com/articles/s41586-025-09429-6"
 github_url: str = "https://github.com/martinpacesa/BindCraft"
 
 seo_faq: list[dict] = [
@@ -86,8 +98,8 @@ about: dict = {
         "bind the residues you named — then assigns a real sequence "
         "with ProteinMPNN and refolds every candidate to check the "
         "answer survives. What reaches you has already been filtered on "
-        "interface confidence and fold quality. BindCraft, Pacesa et "
-        "al., bioRxiv 2024."
+        "interface confidence and fold quality. "
+        "BindCraft, Pacesa et al., Nature 2025."
     ),
     "when_to_use": [
         (

@@ -1526,7 +1526,7 @@ def test_a_model_that_cannot_do_multi_chain_is_refused_before_funding(client):
 
 
 def test_a_container_that_cannot_do_multi_chain_is_refused_too(client):
-    """bindcraft's MODEL can (Pacesa 2024) but its image is unverified — it is
+    """bindcraft's MODEL can (Pacesa 2025) but its image is unverified — it is
     the one binder tool with no smoke tier, so clearing it costs a full paid
     pilot. The refusal has to name the image, not the model."""
     _login(client)

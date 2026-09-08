@@ -69,9 +69,9 @@ about: dict = {
         "single-chain antibody fragment) with all six binding loops "
         "designed together, which no other tool here does. Designs from "
         "this method have been taken to the bench against PDGFRB, EGFR, "
-        "PD-L1, CD45 and CTLA4, reaching nanomolar affinity and "
-        "functional activity. ESMFold2 design, Candido et al., "
-        "bioRxiv 2026, built on the ESMC protein language model."
+        "PD-L1, CD45 and CTLA4, reaching nanomolar affinity. "
+        "ESMFold2 design, Candido et al., bioRxiv 2026, built on "
+        "the ESMC protein language model."
     ),
     "when_to_use": [
         (

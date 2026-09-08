@@ -71,7 +71,7 @@ GLOSSARY: dict[str, dict] = {
             "interaction. Lower is better."
         ),
         "good_range": "< 10 Å passes; < 6 Å strong",
-        "citation": "Bennett et al., bioRxiv 2024 (RFantibody)",
+        "citation": "Bennett et al., Nature 2026 (RFantibody)",
     },
     "i_pAE": {
         "label": "i_pAE (Å)",

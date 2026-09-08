@@ -202,8 +202,8 @@ class ToolRules:
 #
 #   - Watson et al. 2023 (RFdiffusion, Nature): training distribution
 #     50-400 aa, designs against >700 aa targets (TfR, hemagglutinin).
-#   - Pacesa et al. 2024 (BindCraft): default-settings examples up to
-#     ~500 aa target on A100-80GB.
+#   - Pacesa et al. 2025 (BindCraft, Nature): default-settings examples
+#     up to ~500 aa target on A100-80GB.
 #   - Adaptyv 2024 community designs: HER2 ECD ~620 aa via BindCraft +
 #     RFdiffusion.
 #
@@ -282,7 +282,7 @@ _RFDIFFUSION = ToolRules(
 _BINDCRAFT = ToolRules(
     slug="bindcraft",
     gpu="A100-80GB",
-    multi_chain_supported=True,      # Pacesa 2024 takes multi-chain target settings
+    multi_chain_supported=True,      # Pacesa 2025 takes multi-chain target settings
     # Still UNVERIFIED as of the 2026-08-05 GPU session that cleared
     # rfdiffusion / boltzgen / pxdesign. It could not be cleared the same way:
     # bindcraft is the one binder tool with no smoke tier, so the only way to
@@ -300,13 +300,13 @@ _BINDCRAFT = ToolRules(
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=500,      # Week 2: 350 → 500 (Pacesa 2024)
+        hard_cap_target_aa=500,      # Week 2: 350 → 500 (Pacesa 2025)
         soft_warn_target_aa=300,
         hard_cap_combined_aa=600,
         runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
         runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
         runtime_baseline_designs=10, # bindcraft default trajectories
-        cap_basis="literature",      # Pacesa 2024 default-settings examples
+        cap_basis="literature",      # Pacesa 2025 default-settings examples
     ),
     gap=GapThresholds(
         warn_length=10,

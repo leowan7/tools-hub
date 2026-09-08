@@ -244,7 +244,7 @@ informative terminal state; 1 gave the size-cap data point we needed;
    misattribution. See the 2026-06-10 correction above.
 
 2. **All size caps were too conservative.** Literature (Watson 2023,
-   Pacesa 2024, Adaptyv 2024) plus the rfantibody 412aa success show
+   Pacesa 2025, Adaptyv 2024) plus the rfantibody 412aa success show
    400-500aa targets are routinely designed against on A100 GPUs.
    Updated caps:
 

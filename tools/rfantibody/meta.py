@@ -12,7 +12,7 @@ Shapes
                          ``typical_minutes`` is a human-readable range (e.g.
                          ``"15-60"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
-    paper_url         — bioRxiv permalink for the RFantibody paper.
+    paper_url         — Nature permalink for the RFantibody paper.
     github_url        — upstream RosettaCommons repo.
     comparison_one_liner — what you have / what you get, plus
                            which sibling tool to use instead.
@@ -31,8 +31,24 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "pilot": {"typical_minutes": "15 to 60"},
 }
 
-paper_citation: str = "Bennett et al., bioRxiv 2024"
-paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2"
+# THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE, and the publisher
+# is what ties the two together rather than a title match: the Crossref
+# record for Nature 649, 183-193 (DOI 10.1038/s41586-025-09721-5) carries a
+# ``has-preprint`` relation naming the exact bioRxiv DOI this field used to
+# hold, and the preprint's own record carries the matching ``is-preprint-of``
+# back, so this pair resolves from either end. BindCraft's does not resolve
+# from either -- see its meta.py before relying on the relation for a sweep.
+# Both fields moved to the journal version in one commit.
+#
+# THE ISSUE YEAR AND THE ONLINE YEAR DISAGREE HERE, which is why the number
+# below is worth a note rather than a glance. nature.com's own "Cite this
+# article" block reads "Nature 649, 183-193 (2026)"; the DOI's CSL rendering
+# dates it to the online-first posting instead, one year earlier. The
+# publisher's own instruction is what this follows. Do not realign it to a
+# reference manager's output -- PAPER_YEAR records the same tiebreak, so
+# changing one of them alone turns the suite red.
+paper_citation: str = "Bennett et al., Nature 2026"
+paper_url: str = "https://www.nature.com/articles/s41586-025-09721-5"
 github_url: str = "https://github.com/RosettaCommons/RFantibody"
 comparison_one_liner: str = (
     "You have a target structure and want nanobodies — "
@@ -55,7 +71,7 @@ about: dict = {
         "Nanobodies are the format that carries most easily into yeast "
         "display, mammalian display and hybridoma workflows, which is "
         "the usual reason to pick this over a de novo mini-protein. "
-        "RFantibody, Bennett et al., bioRxiv 2024."
+        "RFantibody, Bennett et al., Nature 2026."
     ),
     "when_to_use": [
         (
