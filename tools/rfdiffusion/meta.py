@@ -51,8 +51,8 @@ seo_faq: list[dict] = [
         "q": "How much does one RFdiffusion run cost?",
         "a": (
             "Billing is by the second of dedicated GPU time. A pilot run "
-            "(~15 to 30 minutes on an A100) typically clears for under a "
-            "few dollars from your wallet. New accounts start with a "
+            "(~25 minutes on an A100 for four designs) typically clears for "
+            "under a few dollars from your wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} balance, which covers a first "
             "small-target run."
         ),
@@ -87,11 +87,26 @@ example_output_id: str | None = None
 # Runtime + cost reference rendered as a table on the form page.
 # Values mirror the ``Preset`` tuples in ``__init__.py`` and the
 # ``PRESET_CAPS`` map in ``gpu/modal_client.py``.
+# MEASURED, not estimated, and re-measured after the September 2026 container
+# update roughly TRIPLED it. Job 25471e07 (4ZQK chain A, 8 designs) ran 2220
+# GPU-seconds / 37 wall-clock minutes; the same shape of job before that update
+# took 804. The AlphaFold re-score now fetches a real MSA for the target
+# instead of folding it single-sequence, and that is where the time goes.
+#
+# Wall-clock and GPU-seconds are ~1:1 here (one GPU, one job), and the run
+# splits into a fixed ~700 s of diffusion + MPNN plus ~190 s per design in AF2.
+# So four designs is ~1460 s (~25 min) and eight is ~2220 s (~37 min), which is
+# the band below.
+#
+# THREE PLACES ON ONE PAGE QUOTE THIS and they must agree -- this row, the
+# "runtime_table" entry in the about-panel below, and the FAQ answer above.
+# tools/boltzgen/meta.py carries the same warning because that page once
+# quoted three different runtimes for one run.
 preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
-        "runtime": "15 to 30 min",
+        "runtime": "25 to 40 min (4 to 8 designs)",
         "target": "Your uploaded target",
     },
 )
@@ -159,7 +174,9 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15 to 30 min"},
+        # Must match preset_runtime_rows above and the cost FAQ. See the
+        # measurement note there.
+        {"preset": "pilot", "typical": "25 to 40 min (4 to 8 designs)"},
     ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, i_pAE, and downloadable "
@@ -227,4 +244,110 @@ PILOT: dict | None = {
 # already example-safe — the guard lives in the two shared macros, not
 # here — so nothing else needs touching.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+# ---------------------------------------------------------------------------
+# Worked example
+# ---------------------------------------------------------------------------
+# Captured from job 25471e07 (2026-09-04). Every figure below is a recorded
+# fact about THAT run -- read back off the payload and the wallet ledger, not
+# estimated and not rounded to a number someone liked. The payload lives in
+# example/result.json and is merged in by blueprints/tools._example_context.
+#
+# The target is a PUBLISHED structure and is named for that reason: 4ZQK is
+# the human PD-1/PD-L1 complex and chain A is PD-L1. The publishing rule for
+# these pages is scores and published references only, which is why the
+# candidates carry rank and scores and nothing else -- the container also
+# returns a designed `sequence` and a `pdb_key` per candidate, and both were
+# dropped on capture.
+#
+# WHY THIS RUN AND NOT AN EARLIER ONE. Every RFdiffusion run before the
+# September 2026 container update scored its designs against a target
+# AlphaFold had rebuilt without an MSA, so their numbers are not measurements
+# -- see RFDIFFUSION_SCORE_ERA_BOUNDARY in shared/score_legends.py. Publishing
+# one of those would teach the tool backwards, which is the failure mode
+# scripts/capture_example_result.py warns about in its own docstring. This is
+# the first run on the fixed container.
+EXAMPLE: dict | None = {
+    "target": (
+        "Human PD-L1, the IgV domain, taken as chain A of "
+        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
+        "Hotspots Ile54, Tyr56 and Met115."
+    ),
+    "why_this_target": (
+        "Chain B of the same file is PD-1, the natural partner, so the three "
+        "hotspots are not a guess &mdash; they are residues a real binding "
+        "protein is known to cover. It is also the target the BoltzGen "
+        "worked example uses, so the two pages can be read against each "
+        "other: the same epitope, two different generators."
+    ),
+    "inputs_used": [
+        (
+            "Target PDB",
+            "the 4ZQK file, uploaded whole",
+            "Both chains, exactly as it downloads from the PDB. No trimming "
+            "and no renumbering, so chain A keeps its crystal numbering "
+            "18-132 &mdash; which is the numbering the hotspot field "
+            "expects.",
+        ),
+        (
+            "Target chain",
+            "A",
+            "This is what restricts the design to PD-L1. Chain B in the same "
+            "file is PD-1, and the run ignores it &mdash; otherwise the "
+            "model would be designing into an occupied site.",
+        ),
+        (
+            "Hotspot residues",
+            "54, 56, 115",
+            "Ile54, Tyr56 and Met115 in the file's own numbering. Three is a "
+            "normal number: enough to aim the binder at one patch, few "
+            "enough that you have not drawn the interface yourself.",
+        ),
+        (
+            "Binder length (residues)",
+            "55 to 65",
+            "A window rather than a fixed number &mdash; RFdiffusion samples "
+            "a length inside it. The default window, left alone.",
+        ),
+        (
+            "Number of designs",
+            "8",
+            "A pilot-sized batch. Enough to tell whether the target and "
+            "hotspots are workable before committing to 100+, which is what "
+            "this preset is for.",
+        ),
+    ],
+    "what_came_back": (
+        "Eight designs, <strong>two of them above the bar</strong>. The best "
+        "scores ipTM 0.88 with an interface pAE of 3.65 &Aring; and pLDDT "
+        "95.5; the second is ipTM 0.82. The other six fall away from 0.46 to "
+        "0.19."
+    ),
+    "how_to_read_it": (
+        "Sort by ipTM: 0.65 or more is a credible binder, 0.75 or more is "
+        "strong. Then read i_pAE beside it, because the two agreeing is what "
+        "makes either believable &mdash; here the two passing designs sit "
+        "under 4.3 &Aring; while everything below ipTM 0.5 is above 13 "
+        "&Aring;, and that gap is the real separation in this table. "
+        "<strong>Look at the spread, not only the top row.</strong> A run "
+        "whose eight designs all score within a whisker of each other is "
+        "usually telling you something went wrong upstream rather than that "
+        "you have eight equally good binders; a run that fans out from 0.88 "
+        "to 0.19 is one where the scoring actually discriminated."
+    ),
+    "what_we_did_next": (
+        "Kept the two passing designs and dropped the other six. For those "
+        "two the next step is an independent re-fold against the same target "
+        "&mdash; a different model, so it is a real second opinion rather "
+        "than the same one twice &mdash; and then SPR or BLI if they survive "
+        "it. One pilot is a screen, not a result: two hits out of eight is "
+        "roughly the yield this tool is scoped for, and the point of the "
+        "pilot is to earn the bigger run."
+    ),
+    "cost_usd": "2.69",
+    "runtime": "37 minutes",
+    # Read by components/worked_example.html into the stub job's created_at,
+    # so an era notice gated on the run date knows this run postdates the
+    # container fix and stays silent. Without it the example warns about
+    # itself.
+    "ran_on": "2026-09-04T18:33:54Z",
+}

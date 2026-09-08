@@ -1396,6 +1396,7 @@ def tool_preflight(tool: str):
     uploaded = request.files.get("target_pdb")
     pdb_bytes: Optional[bytes] = None
     source_label: str = ""
+    needs_cif_convert = False
 
     if af_accession:
         fetched = _fetch_alphafold_bytes(af_accession)
@@ -1418,28 +1419,32 @@ def tool_preflight(tool: str):
         source_label = f"AF-{af_accession}"
     elif uploaded and uploaded.filename:
         pdb_bytes = uploaded.read()
-        # If the upload is CIF, convert before preflight (the
-        # downstream pipeline_normalize assumes PDB-or-CIF, but the
-        # normalizer's extension routing keys off filename; safer to
-        # convert here once so the preflight matches the submit-side
-        # cleanup pass exactly).
-        fname_lower = (uploaded.filename or "").lower()
-        if fname_lower.endswith((".cif", ".mmcif")):
-            try:
-                pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
-            except CifConversionError as exc:
-                return ({
-                    "kind": "needs_fix", "ok": False,
-                    "tool_slug": adapter.slug,
-                    "reason": str(exc),
-                    "suggested_fix": (
-                        "Save the structure as PDB format and re-upload."
-                    ),
-                    "cleanup_items": [],
-                    "hotspots": {"surviving": [], "dropped": []},
-                    "alphafold": None,
-                }, 200)
         source_label = uploaded.filename
+        # DO NOT CONVERT HERE. The conversion now happens below the
+        # inspection gate, and that order is the entire defect this
+        # comment replaces.
+        #
+        # inspect_pdb_bytes picks its parser off the FILENAME EXTENSION
+        # (shared/pdb_inspect.py). Converting first left source_label as
+        # the user's own `.cif` name while pdb_bytes had already become
+        # PDB text, so MMCIFParser was handed PDB and raised on the first
+        # token. EVERY cif upload came back "Could not parse the uploaded
+        # file as mmCIF. Error: ValueError." on all SEVEN tools in
+        # PREFLIGHT_TOOLS. Eight forms mount this panel; iggm is not in
+        # that set, so the route returns READY above without ever reading
+        # the upload and its panel inspects nothing at all.
+        #
+        # Meanwhile tool_submit inspects raw and converts after, so it
+        # accepted the same bytes and ran the job: the panel refused
+        # targets the gate was happy to run.
+        #
+        # tool_submit (below) and pdb_intake.resolve_target_upload are the
+        # two existing implementations of the correct order; this is the
+        # third. convert_cif_to_pdb_bytes' own docstring states that it
+        # runs "after inspect_pdb_bytes has already validated".
+        needs_cif_convert = source_label.lower().endswith(
+            (".cif", ".mmcif")
+        )
     else:
         return ({
             "kind": "needs_fix", "ok": False,
@@ -1451,7 +1456,9 @@ def tool_preflight(tool: str):
             "alphafold": None,
         }, 200)
 
-    # Cheap inspection first — catches "this isn't a PDB at all".
+    # Cheap inspection first — catches "this isn't a PDB at all". Runs on
+    # the bytes AS UPLOADED under the name they arrived with, so the parser
+    # this picks always matches the content it is handed.
     inspection = inspect_pdb_bytes(pdb_bytes, filename=source_label)
     if not inspection.ok:
         return ({
@@ -1465,6 +1472,36 @@ def tool_preflight(tool: str):
             "hotspots": {"surviving": [], "dropped": []},
             "alphafold": None,
         }, 200)
+
+    # CONVERT ONLY NOW, AND ONLY BEFORE preflight_for_tool. That function
+    # has no CIF handling whatsoever: it scans raw ATOM/HETATM columns and
+    # says so in its own docstring.
+    #
+    # MEASURED, and the obvious guess is wrong in both directions --
+    # nothing raises out of the route, and nothing passes cleanly either.
+    # Handed mmCIF the gate refuses with a sentence that blames the user's
+    # file for our own mistake: six of the seven report "Couldn't
+    # pre-flight your upload (IndexError). The file may be malformed." and
+    # boltz2 reports "Antigen chain 'A' has no protein residues in this
+    # PDB." What every one of them has in common is a residue count of 0,
+    # which is why the test pins the COUNT and not the verdict.
+    # Conversion belongs between the inspection above and the
+    # gate below, and nowhere else.
+    if needs_cif_convert:
+        try:
+            pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, source_label)
+        except CifConversionError as exc:
+            return ({
+                "kind": "needs_fix", "ok": False,
+                "tool_slug": adapter.slug,
+                "reason": str(exc),
+                "suggested_fix": (
+                    "Save the structure as PDB format and re-upload."
+                ),
+                "cleanup_items": [],
+                "hotspots": {"surviving": [], "dropped": []},
+                "alphafold": None,
+            }, 200)
 
     binder_max_aa, num_designs = _parse_preflight_size_params(request.form)
     verdict = preflight_for_tool(

@@ -30,10 +30,15 @@ name: UniProt capability (scout sequence search)
 # A failure here means one of two things, and the run log distinguishes them:
 #   - UniProt changed something. Read the assertion; the fix is in
 #     `_search_uniprot_by_sequence`.
-#   - UniProt is transiently down. Two of the three tests fail on an outage
-#     (verified by pointing the endpoint at a dead path). That is deliberate:
-#     a monitor that goes quiet when its own subject breaks is the failure
-#     mode this exists to prevent. Re-run the job to distinguish.
+#   - UniProt is transiently down. Five of the six tests fail on an outage.
+#     Re-measured 2026-09-08 by making every rest.uniprot.org request raise,
+#     which is broader than the older note's "pointing the endpoint at a dead
+#     path" -- these tests reach UniProt by more than one route, so redirecting
+#     the search endpoint alone no longer simulates an outage for all of them.
+#     The survivor is the refusal test, which
+#     an outage satisfies for the WRONG reason. That is deliberate: a monitor
+#     that goes quiet when its own subject breaks is the failure mode this
+#     exists to prevent. Re-run the job to distinguish.
 #
 # No secrets needed -- the UniProt REST API is public and unauthenticated.
 
@@ -55,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # The only thing that un-skips TestLiveCapability. Without it the three
+      # The only thing that un-skips TestLiveCapability. Without it the six
       # tests below are skipped, which is what makes them safe to keep in the
       # default suite.
       SCOUT_UNIPROT_LIVE: '1'
@@ -84,13 +89,13 @@ jobs:
       # The grep is the actual guard, and it asserts PASSED, not collected.
       # pytest exits 0 on an all-skipped run, so if SCOUT_UNIPROT_LIVE ever
       # stops reaching this step -- a typo, someone editing the env block, a
-      # rename of the variable -- all three tests would collect, all three
+      # rename of the variable -- all six tests would collect, all six
       # would skip, and this job would go green having tested nothing. That is
       # the same "guard behind an env var nobody sets" shape this workflow was
       # added to fix, so it must not be re-introduced in the check itself.
       #
       # `-rs` prints the skip reason, which is what makes the failure output
-      # actionable rather than just "expected 3 passed".
+      # actionable rather than just "expected 6 passed".
       - name: Run the live capability tests
         run: |
           set -o pipefail
@@ -98,12 +103,18 @@ jobs:
             tests/test_scout_uniprot_sequence_search.py::TestLiveCapability \
             -v --no-header -rs -p no:cacheprovider | tee live.log
 
-          # The summary line is "===== 3 passed in 3.60s =====", so the leading
-          # "=" padding has to be allowed for. An anchored '^3 passed' matches
+          # The summary line is "===== 6 passed in 3.60s =====", so the leading
+          # "=" padding has to be allowed for. An anchored '^6 passed' matches
           # nothing and fails every run, which is how this grep was first
           # written and why it is exercised in both directions before shipping.
-          if ! grep -qE '^[= ]*3 passed' live.log; then
-            echo "::error::expected '3 passed' from TestLiveCapability."
+          #
+          # SIX, not three: the same-organism tie change adds three live tests
+          # -- one asserting a real tie resolves, one checking the tie fixtures
+          # still match the live index, and one pinning that the shipped
+          # `fields` value still carries entryType. The count is deliberate --
+          # raise it when a live test is added, never loosen the grep.
+          if ! grep -qE '^[= ]*6 passed' live.log; then
+            echo "::error::expected '6 passed' from TestLiveCapability."
             echo "::error::A skipped run means SCOUT_UNIPROT_LIVE did not reach pytest."
             echo "::error::A different count means a test was added, renamed or removed;"
             echo "::error::update this guard deliberately rather than loosening it."

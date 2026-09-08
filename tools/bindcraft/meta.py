@@ -214,4 +214,136 @@ PILOT: dict | None = {
 # already example-safe — the guard lives in the two shared macros, not
 # here — so nothing else needs touching.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+# ---------------------------------------------------------------------------
+# Worked example
+# ---------------------------------------------------------------------------
+# Captured from job 1c4d5803 (2026-05-28) with
+# scripts/capture_example_result.py. Every figure is read back off that run:
+# the scores from the payload in example/result.json, the runtime from the
+# job row (1170 GPU-seconds, 19m57s wall clock), and the cost from the wallet
+# ledger -- a $4.3697 hold with $2.325 released as surplus, so $2.0447 was
+# actually charged. That reconciles with the rate card exactly:
+# 1170 s * $0.001028 (A100-80GB) * 1.70 markup = $2.0447.
+#
+# The target is a PUBLISHED structure and is named for that reason: 4ZQK is
+# the human PD-1/PD-L1 complex and chain A is PD-L1. This is the same target,
+# chain and hotspots as the RFdiffusion and BoltzGen examples, deliberately.
+# The publishing rule for these pages is scores and published references
+# only, which is why the candidates carry rank and scores and nothing else.
+#
+# ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. shared/result_columns.py
+# gives bindcraft ["ipTM", "pLDDT", "RMSD", "shape_complementarity", "SAP"],
+# so Target_RMSD, Hotspot_RMSD, pTM and i_pAE are in the payload and NOT on
+# the page. A first draft of this narration leaned on Target_RMSD 0.38 as the
+# did-the-target-refold sanity check -- which is the single most diagnostic
+# number here, given that scoring against a misfolded target is exactly what
+# was wrong with RFdiffusion before the September 2026 fix -- and pointed at
+# an "interface pAE column" that does not exist. Both sent the reader hunting
+# for a column that is not rendered. tests/test_worked_examples.py has that
+# guard for INPUT field names and no equivalent for score columns.
+#
+# SAP IS NOT NARRATED, ON PURPOSE. The payload stores it as 0.29 and 0.30
+# while this tool's legend calls "< 5 favourable", so the column reads
+# favourable whatever the design does. That is the shape of the pxdesign pAE
+# note in shared/score_legends.py -- a bar on one scale reading a value on
+# another -- and it is why bindcraft has no GATE_COLUMNS entry to be wrong
+# about. Teaching a reader to trust that column would be teaching them the
+# bug, so the narration below stays off it. Fixing the scale is its own
+# change; it is a threshold question, not a copy question.
+EXAMPLE: dict | None = {
+    "target": (
+        "Human PD-L1, the IgV domain, taken as chain A of "
+        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
+        "Hotspots Ile54, Tyr56 and Met115."
+    ),
+    "why_this_target": (
+        "The same target, chain and hotspots as the RFdiffusion and BoltzGen "
+        "examples on this site, and that is the point &mdash; three different "
+        "generators aimed at one epitope, so the three pages can be read "
+        "against each other. Chain B of the same file is PD-1, the natural "
+        "partner, so the hotspots are residues a real binding protein is "
+        "known to cover rather than a guess."
+    ),
+    "inputs_used": [
+        (
+            "Target PDB",
+            "the 4ZQK file, uploaded whole",
+            "Both chains, exactly as it downloads from the PDB. No trimming "
+            "and no renumbering, so chain A keeps its crystal numbering "
+            "18-132 &mdash; which is the numbering the hotspot field "
+            "expects.",
+        ),
+        (
+            "Target chain",
+            "A",
+            "This is what restricts the design to PD-L1. Chain B in the same "
+            "file is PD-1, and the run ignores it &mdash; otherwise the model "
+            "would be designing into an already occupied site.",
+        ),
+        (
+            "Hotspot residues",
+            "54, 56, 115",
+            "Ile54, Tyr56 and Met115 in the file's own numbering. Three is a "
+            "normal number: enough to aim the binder at one patch, few enough "
+            "that you have not drawn the interface yourself.",
+        ),
+        (
+            "Binder length (min)",
+            "50",
+            "The bottom of the default window. BindCraft picks a length "
+            "inside the range rather than being told one.",
+        ),
+        (
+            "Binder length (max)",
+            "100",
+            "The top of the default window, left alone.",
+        ),
+        (
+            "Number of designs",
+            "2",
+            "Small even for a pilot, and that is this tool rather than "
+            "impatience: BindCraft optimises each design individually instead "
+            "of sampling a batch, so two of them cost about what eight cost "
+            "on the diffusion tools. It is also why this run took 20 minutes "
+            "against the ~45 the runtime table above quotes &mdash; that row "
+            "is for the form's default of four.",
+        ),
+    ],
+    "what_came_back": (
+        "Two designs, landing in almost the same place: ipTM "
+        "<strong>0.75</strong> and <strong>0.76</strong>, pLDDT 81 for both, "
+        "shape complementarity 0.64 and 0.60, and a refolding RMSD of "
+        "3.04 and 2.96 &Aring;."
+    ),
+    "how_to_read_it": (
+        "Read ipTM first: 0.75 is this tool's bar for a credible binder, so "
+        "both designs sit <em>on</em> that bar rather than above it, and "
+        "pLDDT 81 clears its own bar of 80 by about as little. Then read the "
+        "two columns that stop you over-reading those. Shape complementarity "
+        "wants 0.65 for an antibody-grade fit and both designs are under it; "
+        "refolding RMSD wants to be inside 1.5 &Aring; and both are close to "
+        "3. Put together: <strong>the interface is plausible, the fit is "
+        "loose, and neither design rebuilds quite the backbone it was drawn "
+        "as</strong>. That is a normal pilot result and it is worth more to "
+        "you than a single headline number would be. "
+        "<strong>Do not read the ranking as an ipTM sort.</strong> Design 2 "
+        "has the marginally higher ipTM and still ranks second, because "
+        "BindCraft ranks on a composite that includes the fit &mdash; and "
+        "design 1 wins there, 0.64 against 0.60."
+    ),
+    "what_we_did_next": (
+        "Treated this as a screen that came back amber rather than green. Two "
+        "designs sitting exactly on the bar with a sub-par fit is a reason to "
+        "run more of them, not a reason to order peptides. The next step is "
+        "the same target and the same hotspots at a higher design count, then "
+        "an independent re-fold on whatever clears the bar properly, and SPR "
+        "or BLI only after that. A two-design pilot can tell you the target "
+        "and hotspots are workable; it cannot tell you which binder to make."
+    ),
+    "cost_usd": "2.04",
+    "runtime": "20 minutes",
+    # Read by components/worked_example.html into the stub job's created_at,
+    # so a date-gated era notice knows when this ran. This is the job's
+    # created_at, matching the rfdiffusion example's convention.
+    "ran_on": "2026-05-28T18:30:54Z",
+}

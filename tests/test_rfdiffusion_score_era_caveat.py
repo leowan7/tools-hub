@@ -3,7 +3,10 @@
 WHY THIS FILE EXISTS. RFdiffusion's container scored every design against a
 target AlphaFold had rebuilt without an MSA, so the stored ipTM, pLDDT and
 i_pAE are not readings of the design. llm-proteinDesigner#23 (squash-merged as
-e976f32; image build finished 2026-09-04T16:45:37Z) fixed it. tools-hub renders
+e976f32) fixed it. The fix reached this repo's Modal app when that commit's
+"Deploy rfdiffusion to main" job finished at 2026-09-04T16:30:46Z -- NOT when
+the registry image build finished at 16:45:37Z, which serves the separate
+RunPod path; see RFDIFFUSION_SCORE_ERA_BOUNDARY. tools-hub renders
 whatever a job STORED, so every earlier run still shows those numbers, and #216
 now DERIVES a visible pass/fail verdict from exactly the three of them.
 
@@ -115,6 +118,30 @@ def test_an_unknown_date_over_warns(unknown):
     are not equal: a sentence too many costs a sentence, a sentence too few
     lets a non-measurement render as a measurement."""
     assert caveat_applies(_rfd_legend(), "A", unknown) is True
+
+
+def test_the_boundary_is_the_modal_deploy_not_the_registry_build():
+    """Pin the literal, because nothing else can.
+
+    The suite passing is not evidence for this value -- every gate test here
+    works off BEFORE/AFTER dates chosen relative to whatever it is set to, so
+    a wrong instant is invisible to all of them. This assert exists so that
+    changing it is a deliberate act with the provenance in front of you.
+
+    Provenance: llm-proteinDesigner Actions run 33895498649 ("Deploy Modal
+    apps", commit e976f32), job "Deploy rfdiffusion to main", completed_at
+    2026-09-04T16:30:46Z. NOT run 33895498838 ("Build and Push RFdiffusion
+    Docker", 16:45:37Z) -- that image is pulled by RunPod, and tools-hub calls
+    the Modal app.
+    """
+    assert RFDIFFUSION_SCORE_ERA_BOUNDARY == "2026-09-04T16:30:46Z", (
+        "the era boundary changed. It is the completion of the 'Deploy "
+        "rfdiffusion to main' job for llm-proteinDesigner e976f32, because "
+        "that app copies run_pipeline.py in at deploy time. If you are "
+        "setting it to 16:45:37Z you are reading the registry image build, "
+        "which serves RunPod and not this repo -- that mistake has been made "
+        "and corrected once already."
+    )
 
 
 def test_the_boundary_itself_is_exclusive():

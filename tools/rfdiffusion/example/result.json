@@ -1,0 +1,87 @@
+{
+  "candidate_count": 8,
+  "candidates": [
+    {
+      "rank": 1,
+      "scores": {
+        "complex_pLDDT": 95.89,
+        "filter_status": "pass",
+        "i_pAE": 3.65,
+        "ipTM": 0.88,
+        "pLDDT": 95.45
+      }
+    },
+    {
+      "rank": 2,
+      "scores": {
+        "complex_pLDDT": 95.35,
+        "filter_status": "pass",
+        "i_pAE": 4.25,
+        "ipTM": 0.82,
+        "pLDDT": 94.64
+      }
+    },
+    {
+      "rank": 3,
+      "scores": {
+        "complex_pLDDT": 80.88,
+        "filter_status": "below threshold",
+        "i_pAE": 13.19,
+        "ipTM": 0.46,
+        "pLDDT": 63.34
+      }
+    },
+    {
+      "rank": 4,
+      "scores": {
+        "complex_pLDDT": 74.59,
+        "filter_status": "below threshold",
+        "i_pAE": 14.88,
+        "ipTM": 0.35,
+        "pLDDT": 60.82
+      }
+    },
+    {
+      "rank": 5,
+      "scores": {
+        "complex_pLDDT": 77.9,
+        "filter_status": "below threshold",
+        "i_pAE": 15.51,
+        "ipTM": 0.29,
+        "pLDDT": 59.29
+      }
+    },
+    {
+      "rank": 6,
+      "scores": {
+        "complex_pLDDT": 83.96,
+        "filter_status": "below threshold",
+        "i_pAE": 15.41,
+        "ipTM": 0.29,
+        "pLDDT": 78.8
+      }
+    },
+    {
+      "rank": 7,
+      "scores": {
+        "complex_pLDDT": 82.25,
+        "filter_status": "below threshold",
+        "i_pAE": 16.99,
+        "ipTM": 0.23,
+        "pLDDT": 75.28
+      }
+    },
+    {
+      "rank": 8,
+      "scores": {
+        "complex_pLDDT": 82.15,
+        "filter_status": "below threshold",
+        "i_pAE": 17.51,
+        "ipTM": 0.19,
+        "pLDDT": 73.01
+      }
+    }
+  ],
+  "gpu_seconds": 2220,
+  "tier": "pilot"
+}

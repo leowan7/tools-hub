@@ -13,8 +13,11 @@
         replaces in-place when the user attaches a file or clicks the
         AlphaFold-fallback button.
 
-   The submit button (#tool-submit-btn) is enabled / disabled based on
-   the verdict's `ok` field (preflight.js handles the toggle).
+   The submit button (#tool-submit-btn) is enabled / disabled from the
+   UNION of this verdict's `ok` field and the wallet estimate's own block.
+   Two scripts own that button, so each keeps a `data-block-*` flag on it
+   and neither can clear the other's refusal: static/js/preflight.js and
+   templates/wallet/_partials.html hold the two halves.
 
    Macro args:
      verdict       — dict with keys: kind, ok, target_chain, cleanup_items,

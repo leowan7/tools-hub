@@ -971,3 +971,493 @@ def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client
     }, {})
     assert err is None, err
     assert inputs["target_chain"] == "H L", inputs["target_chain"]
+
+
+# ---------------------------------------------------------------------------
+# A .cif upload, which nothing in this repo had ever sent through the web tier
+# ---------------------------------------------------------------------------
+#
+# tool_preflight converted CIF -> PDB and THEN called inspect_pdb_bytes with
+# the ORIGINAL `.cif` filename. inspect_pdb_bytes picks its parser off the
+# extension (shared/pdb_inspect.py), so MMCIFParser was handed PDB text and
+# raised on the first token. Every CIF upload, on all eight forms that mount
+# the panel, came back:
+#
+#     Could not parse the uploaded file as mmCIF. Error: ValueError.
+#
+# while tool_submit -- which inspects raw and converts after -- accepted the
+# same bytes and ran the job. The panel refused targets the gate was happy to
+# run, and the run went ahead anyway because of the button defect below.
+#
+# SEVEN tools, not the eight forms that mount the panel: iggm mounts it and
+# is not in PREFLIGHT_TOOLS, so the route answers READY before it ever reads
+# the upload. Proved by test_iggm_mounts_the_panel_and_inspects_nothing
+# rather than asserted here.
+#
+# Nothing caught it because no test fed a `.cif` through a TOOLS route --
+# scout has its own upload path and does, via _cif_two_chains in
+# tests/test_scout_chain_scoped_results.py -- named rather than given a line
+# number, because the line moved within hours of this being written -- and
+# tests/test_pdb_inspect.py never passes `filename=`
+# at all, so the is_cif branch it selects on was unexercised in both
+# directions.
+
+def _as_cif(pdb: bytes) -> bytes:
+    """The same structure, re-expressed as real mmCIF.
+
+    Round-tripped through Biopython rather than hand-written, so these bytes
+    are by construction what MMCIFParser accepts and the two uploads below
+    differ in container format and in nothing else. A hand-rolled fixture
+    could drift into something only one of the two parsers likes, which is the
+    failure mode this whole section is about.
+    """
+    from Bio.PDB import MMCIFIO, PDBParser
+
+    structure = PDBParser(QUIET=True).get_structure(
+        "t", io.StringIO(pdb.decode())
+    )
+    out = io.StringIO()
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(out)
+    return out.getvalue().encode()
+
+
+# Small enough to sit inside every tool's cap, so neither upload is refused
+# for its size and the comparison below is about the container format alone.
+_CIF_TWIN_CHAIN_A_AA = 40
+_CIF_TWIN_PDB = _pdb({
+    "A": list(range(1, _CIF_TWIN_CHAIN_A_AA + 1)),
+    "B": list(range(1, 41)),
+})
+
+
+def _preflight_upload(client, slug, data_bytes, filename, **extra):
+    data = {"target_chain": "A", "hotspot_residues": ""}
+    data.update(extra)
+    data["target_pdb"] = (io.BytesIO(data_bytes), filename)
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()):
+        resp = client.post(
+            f"/tools/{slug}/preflight", data=data,
+            content_type="multipart/form-data",
+        )
+    assert resp.status_code == 200, f"{slug} {filename}: {resp.status_code}"
+    return resp.get_json()
+
+
+# THE SEVEN THE ROUTE ACTUALLY INSPECTS, not the eight that render the
+# panel. iggm mounts it and is not in PREFLIGHT_TOOLS, so tool_preflight
+# returns an unconditional {"kind": "ready"} before it ever reads the
+# upload -- its panel inspects nothing at all. Parametrizing over the
+# eight added one case that compared "ready" with "ready" about a file
+# nothing had opened, and it was the one case that passed with the fix
+# reverted. The exclusion is proved rather than asserted, two tests down.
+from shared.pdb_preflight import PREFLIGHT_TOOLS as _CIF_SLUGS
+
+
+# pytest turns an EMPTY parametrize into one silent skip and a green suite, so
+# the size of the set is asserted rather than trusted.
+assert len(_CIF_SLUGS) == 7, sorted(_CIF_SLUGS)
+
+
+@pytest.mark.parametrize("slug", sorted(_CIF_SLUGS))
+def test_a_cif_upload_gets_the_same_verdict_as_its_own_pdb_twin(client, slug):
+    """THE BUG, on every form whose panel reads the upload.
+
+    Compared against the PDB twin rather than asserted to be READY, because
+    the per-tool rules differ -- some of these refuse a two-chain target, some
+    want hotspots -- and none of that is the subject. Whatever a tool decides
+    about this structure it must decide identically whichever container the
+    same coordinates arrive in.
+
+    ONE REAL EXCEPTION, and the fixture avoids it deliberately. The
+    AlphaFold swap offer comes from DBREF records, which Biopython's
+    PDBIO does not emit, so a PDB carrying DBREF can return
+    ready_with_fallback where its converted CIF twin returns ready.
+    Measured: extract_uniprot_map finds P25779 in the PDB and {} in the
+    round trip. That is pre-existing -- an mmCIF never carried a DBREF to
+    lose -- and it applies equally to the submit gate, so panel and gate
+    still agree. _pdb() emits no DBREF, so it cannot reach this test. If
+    you add one to the fixture, expect this to fail and fix the offer,
+    not the assertion.
+
+    TWO LEGS, and they fail for different reasons. Dropping either one leaves
+    a shipped defect green:
+
+      * the parse refusal is absent -- the reported symptom.
+      * the residue COUNT matches -- the reorder going the WRONG way.
+        shared/pdb_preflight.py has no CIF handling at all: it scans raw
+        ATOM/HETATM columns. MEASURED, and the guess most people make is
+        wrong: nothing raises out of the route and nothing passes either.
+        Every tool refuses with a sentence blaming the user's file --
+        "Couldn't pre-flight your upload (IndexError)" for six of them,
+        "Antigen chain 'A' has no protein residues" for boltz2 -- and all
+        of them size the target at 0. The count is the one thing they
+        share, so the count is what this asserts.
+    """
+    _login(client)
+    pdb_body = _preflight_upload(client, slug, _CIF_TWIN_PDB, "twin.pdb")
+    cif_body = _preflight_upload(
+        client, slug, _as_cif(_CIF_TWIN_PDB), "twin.cif",
+    )
+
+    assert "Could not parse" not in (cif_body.get("reason") or ""), (
+        f"{slug}: a valid mmCIF was refused as unparseable — {cif_body!r}"
+    )
+    assert cif_body["kind"] == pdb_body["kind"], (
+        f"{slug}: same coordinates, different verdict. "
+        f"cif={cif_body['kind']!r} pdb={pdb_body['kind']!r} "
+        f"cif_reason={cif_body.get('reason')!r}"
+    )
+
+    counted = cif_body.get("residues_kept_on_target_chain")
+    expected = pdb_body.get("residues_kept_on_target_chain")
+    assert counted == expected, (
+        f"{slug}: cif sized {counted!r}, pdb sized {expected!r}"
+    )
+
+
+# boltz2 has no TOOL_RULES entry, so preflight_for_tool hands it the
+# defensive no-op READY with an empty CleanupSummary: its count is 0 on BOTH
+# containers -- equal, and equally uninformative. Its parameter still earns
+# its place on the parse-refusal leg, which it did fail before the fix, but
+# it is the weakest of the seven. So the count leg gets its own test below,
+# with a real number in it, on a tool that counts. Do not read the
+# parametrized test alone as covering the ordering.
+def test_the_cif_target_is_sized_at_its_real_residue_count(client):
+    """The wrong-side reorder, pinned to a literal.
+
+    shared/pdb_preflight.py has no CIF handling: it scans raw ATOM/HETATM
+    columns (:1178, :1295, :1940) and states the assumption in its docstring
+    at :414.
+
+    Handed mmCIF, rfdiffusion surfaces "Couldn't pre-flight your upload
+    (IndexError). The file may be malformed." -- a refusal that blames the
+    file for the route's own mistake -- and sizes the target at 0. boltz2
+    says something different and equally wrong for the same reason. Since
+    EVERY tool refuses, no test can catch the wrong order from the verdict
+    alone; the count is the symptom they share, and this is the only leg
+    that states the RIGHT number rather than merely a different one.
+    """
+    _login(client)
+    body = _preflight_upload(
+        client, "rfdiffusion", _as_cif(_CIF_TWIN_PDB), "twin.cif",
+    )
+    assert body["residues_kept_on_target_chain"] == _CIF_TWIN_CHAIN_A_AA, (
+        f"chain A of the twin is {_CIF_TWIN_CHAIN_A_AA} residues; the CIF "
+        f"upload was sized at {body['residues_kept_on_target_chain']!r}"
+    )
+
+
+def test_the_route_inspects_what_it_holds_and_converts_before_the_gate(client):
+    """THE ORDER ITSELF, pinned in both directions.
+
+    The test above proves the outcome; this one proves the mechanism, so a
+    future edit that restores the inversion fails here by name instead of
+    somewhere downstream.
+
+      inspect_pdb_bytes  <- the RAW upload, under the name it arrived with.
+                            Inverting this is the shipped bug: a `.cif` name
+                            over PDB bytes selects MMCIFParser.
+      preflight_for_tool <- the CONVERTED bytes. Inverting THIS trades the
+                            loud wrong error for a silent one.
+    """
+    import blueprints.tools as bp
+
+    _login(client)
+    cif = _as_cif(_CIF_TWIN_PDB)
+    order: list = []
+    seen: dict = {}
+
+    real_inspect = bp.inspect_pdb_bytes
+    real_convert = bp.convert_cif_to_pdb_bytes
+    real_gate = bp.preflight_for_tool
+
+    def inspect(data, filename=""):
+        order.append("inspect")
+        seen["inspect"] = (data, filename)
+        return real_inspect(data, filename=filename)
+
+    def convert(data, filename="input.cif"):
+        order.append("convert")
+        seen["convert"] = (data, filename)
+        return real_convert(data, filename)
+
+    def gate(slug, pdb_bytes, **kw):
+        order.append("gate")
+        seen["gate"] = pdb_bytes
+        return real_gate(slug, pdb_bytes, **kw)
+
+    with patch.object(bp, "inspect_pdb_bytes", inspect), \
+            patch.object(bp, "convert_cif_to_pdb_bytes", convert), \
+            patch.object(bp, "preflight_for_tool", gate):
+        body = _preflight_upload(client, "rfdiffusion", cif, "twin.cif")
+
+    assert order == ["inspect", "convert", "gate"], (
+        f"expected inspect -> convert -> gate, got {order!r}. "
+        f"verdict was {body.get('reason')!r}"
+    )
+
+    inspected_bytes, inspected_name = seen["inspect"]
+    assert inspected_bytes == cif, (
+        "inspect_pdb_bytes was handed converted bytes; it selects its parser "
+        "off the filename, so this is the shipped defect returning."
+    )
+    assert inspected_name.endswith(".cif"), inspected_name
+
+    assert seen["convert"][0] == cif
+    assert seen["gate"] != cif, (
+        "preflight_for_tool was handed raw mmCIF. It scans ATOM/HETATM "
+        "columns and will size the target at zero without raising."
+    )
+    assert b"ATOM  " in seen["gate"], seen["gate"][:120]
+
+
+# ---------------------------------------------------------------------------
+# One button, two scripts
+# ---------------------------------------------------------------------------
+#
+# preflight.js takes #tool-submit-btn; templates/wallet/_partials.html takes
+# the same element via button[type="submit"]:not([data-gate-button]). Both
+# assigned `.disabled` outright, with no shared state, so the later response
+# won. Uploading a file fires both: a FAILING preflight is the fastest answer
+# the route can give, so it disabled the button and the 250ms-debounced wallet
+# estimate then re-enabled it -- a red refusal above a live Submit button.
+# It broke the other way too, a ready verdict clearing a wallet hard block.
+#
+# Each side now owns one dataset flag and both recompute from the union. This
+# repo has no JS runner, so the pairing is read out of the source.
+#
+# HOW FAR THE COMMENT STRIPPING ACTUALLY GOES, because the first version of
+# this section overclaimed it. `_lex` is defeated by a REGEX LITERAL and
+# preflight.js has several inside escapeHtml, so nothing after them is
+# stripped -- `_SLASHES` is non-empty, which is the lexer's own documented
+# tell. The assertions below therefore never search a whole file for a name.
+# They read the right-hand side of each `submitBtn.disabled =` assignment,
+# which in both files sits well before the first regex literal, and they
+# compare extracted IDENTIFIERS rather than substrings.
+
+_WALLET_PATH = _ROOT / "templates" / "wallet" / "_partials.html"
+_WALLET_SOURCE = _WALLET_PATH.read_text(encoding="utf-8")
+# One block, asserted rather than assumed: rindex would silently pick the
+# last of several and quietly stop covering the rest.
+assert _WALLET_SOURCE.count("<script>") == 1, "wallet partial gained a script"
+_WALLET_JS, _WALLET_SLASHES = _lex(
+    _WALLET_SOURCE[
+        _WALLET_SOURCE.index("<script>"):_WALLET_SOURCE.index("</script>")
+    ]
+)
+
+_DISABLED_RHS = re.compile(r"submitBtn\.disabled\s*=\s*([^;]+);")
+_DATASET_FLAG = re.compile(r"dataset\.([A-Za-z_][A-Za-z0-9_]*)")
+_DATASET_WRITTEN = re.compile(
+    r"dataset\.([A-Za-z_][A-Za-z0-9_]*)\s*=|"
+    r"delete\s+\w+\.dataset\.([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+# The pairing, named once. Compared by set EQUALITY, never containment:
+# "blockWallet" is a substring of "blockWalletV2", so a containment test let
+# a one-sided rename through with the whole suite green -- which is exactly
+# the failure these guards exist to stop, and it was found in review.
+_GATE_FLAGS = frozenset({"blockPreflight", "blockWallet"})
+
+
+def _flags_each_disabled_write_reads(source: str) -> list:
+    """One set of dataset identifiers per `submitBtn.disabled =` in src."""
+    return [
+        set(_DATASET_FLAG.findall(rhs))
+        for rhs in _DISABLED_RHS.findall(source)
+    ]
+
+
+@pytest.mark.parametrize("label", [
+    "static/js/preflight.js",
+    "templates/wallet/_partials.html",
+])
+def test_neither_writer_of_the_submit_button_ignores_the_other(label):
+    """Every assignment, not just the one each file is 'about'.
+
+    Asserting that the two flag names merely APPEAR in a file would pass on a
+    file that names them in one branch and clobbers the button in another, so
+    this reads the right-hand side of each assignment and requires both.
+    """
+    source = _JS if label.endswith("preflight.js") else _WALLET_JS
+    per_write = _flags_each_disabled_write_reads(source)
+    assert per_write, (
+        f"{label} no longer assigns submitBtn.disabled at all. If the "
+        f"button moved, move this guard with it rather than deleting it."
+    )
+    for flags in per_write:
+        assert flags == set(_GATE_FLAGS), (
+            f"{label} has a submitBtn.disabled assignment reading "
+            f"{sorted(flags)}, not {sorted(_GATE_FLAGS)}. Two scripts own "
+            f"this button; an assignment that ignores the other one's flag "
+            f"silently clears its refusal."
+        )
+
+
+def test_the_wallet_hidden_branch_still_keys_off_the_wallet_alone():
+    """The counterpart, and it is a real trap.
+
+    `blocked` in _partials.html feeds BOTH the disabled write and the
+    show/hide of the top-up gate. Folding the preflight flag into `blocked` to
+    satisfy the guard above would make an unparseable PDB hide the Submit
+    button and show a top-up prompt to someone whose wallet is fine.
+    """
+    assert "var blocked = ceiling || hard;" in _WALLET_JS
+    assert "if (insufficient && !blocked)" in _WALLET_JS
+
+
+def test_both_files_agree_on_the_two_attribute_names():
+    """A rename on ONE side leaves both scripts running and the pairing dead.
+
+    Two assertions, because a rename lands on one of two halves and they
+    fail differently. Renaming what preflight.js READS makes the two files
+    disagree. Renaming what _partials.html WRITES leaves them agreeing about
+    a flag nothing sets. A containment test caught neither: both renames
+    kept the whole suite green when this was written with `in`.
+    """
+    js_reads = set().union(*_flags_each_disabled_write_reads(_JS))
+    wallet_reads = set().union(*_flags_each_disabled_write_reads(_WALLET_JS))
+    assert js_reads == wallet_reads, (
+        f"the two writers no longer read the same flags: preflight.js "
+        f"{sorted(js_reads)} vs _partials.html {sorted(wallet_reads)}"
+    )
+
+    written = set()
+    for src in (_JS, _WALLET_JS):
+        for a, b in _DATASET_WRITTEN.findall(src):
+            written.add(a or b)
+    orphans = js_reads - written
+    assert not orphans, (
+        f"the submit gate reads {sorted(orphans)}, which neither file ever "
+        f"sets or deletes -- so that half of the pairing is dead and the "
+        f"refusal it was carrying is silently gone."
+    )
+
+def test_iggm_mounts_the_panel_and_inspects_nothing(client):
+    """Why the CIF test runs over PREFLIGHT_TOOLS and not over the eight
+    forms that render the panel.
+
+    Stated as behaviour rather than as set membership, because the reason
+    the iggm parameter was vacuous is that the route returns before it
+    opens the file -- and only a file the route WOULD refuse can show
+    that. If iggm ever joins PREFLIGHT_TOOLS this fails, which is the
+    signal to add it to _CIF_SLUGS rather than to delete this.
+    """
+    assert 'iggm' in _PANEL_TOOLS, 'iggm stopped mounting the panel'
+    assert 'iggm' not in _CIF_SLUGS
+
+    _login(client)
+    body = _preflight_upload(
+        client, 'iggm', b'this is not a structure file at all', 'x.pdb',
+    )
+    assert body['kind'] == 'ready', (
+        'iggm now reads the upload, so it belongs in the CIF test above: '
+        f'{body!r}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Three ways the union could wedge Run, all found in review, none in the wild
+# ---------------------------------------------------------------------------
+#
+# Making the two writers respect each other removed an accidental safety net:
+# the wallet estimate used to overwrite `disabled` unconditionally every 250ms,
+# so ANY stuck refusal cleared itself within a beat. Three paths relied on that
+# without anyone knowing, and each now needs its own answer. All three were
+# deletable with this file still green until these tests existed.
+
+
+def test_a_superseded_preflight_response_cannot_decide_the_button():
+    """Attach the wrong file, notice, attach the right one: two requests are
+    in flight and nothing cancels the first. If the slow one lands last its
+    stale needs_fix disables Run for a file that is no longer attached.
+
+    BOTH branches must drop a superseded response. Guarding only the success
+    path leaves the catch free to re-enable the button for a request the user
+    has already replaced."""
+    checks = _JS.count("mine !== preflightSeq")
+    assert checks >= 2, (
+        f"preflight.js compares the response sequence {checks} time(s); the "
+        f"resolve AND the reject branch of postPreflight both need it."
+    )
+    assert "const mine = ++preflightSeq;" in _JS, (
+        "postPreflight no longer takes a sequence number, so 'superseded' "
+        "cannot mean anything."
+    )
+
+
+def test_a_verdict_of_no_known_kind_leaves_run_usable():
+    """`renderVerdict` builds html only for the kinds it knows. A body of any
+    other shape leaves it empty -- and that is reachable without touching the
+    network catch, because tool_preflight answers an unknown OR DISABLED tool
+    with ({"error": "Unknown tool"}, 404), which fetch does not reject and
+    r.json() parses. Blanking the panel over a button showLoading() has
+    already disabled is the wedge."""
+    assert "if (!html) {" in _JS, (
+        "renderVerdict no longer handles a verdict of no known kind; an "
+        "unrecognised body blanks the panel and leaves Run dead."
+    )
+    assert _JS.count("renderUnavailable()") >= 2, (
+        "renderUnavailable should be reached from BOTH the network catch and "
+        "the unknown-kind branch."
+    )
+    # It must ENABLE. A fallback that disables is the defect with nicer copy.
+    # The whole function, bounded by the next top-level declaration rather
+    # than by a brace count -- this file lexes JavaScript, it does not parse it.
+    fallback = _JS.split("function renderUnavailable", 1)[1]
+    fallback = fallback.split("  function ", 1)[0]
+    assert "setSubmitEnabled(true)" in fallback, (
+        "renderUnavailable must re-enable Run: the server-side gate in "
+        "tool_submit is the authority, and a panel that cannot judge must "
+        "not be what stops someone submitting."
+    )
+
+
+def test_the_server_s_own_refusal_is_seeded_into_the_union():
+    """THE THIRD REFUSAL, and it has no script behind it.
+
+    After a POST whose preflight failed, the form templates re-render with the
+    button already `disabled`. Neither flag is set, so the wallet's first
+    estimate computes false || false and re-enables a button the SERVER
+    refused -- and clears only the property, leaving the server's
+    aria-disabled="true" behind on a live control.
+
+    Seeded in the wallet partial rather than preflight.js because that script
+    is inline and runs at parse time while preflight.js is deferred: it is the
+    last moment the button's `disabled` is still exactly what the server sent.
+    """
+    written_here = set()
+    for a, b in _DATASET_WRITTEN.findall(_WALLET_JS):
+        written_here.add(a or b)
+    assert "blockPreflight" in written_here, (
+        "_partials.html no longer seeds blockPreflight, so the first wallet "
+        "estimate silently clears a server-rendered refusal."
+    )
+    assert "if (submitBtn && submitBtn.disabled)" in _WALLET_JS, (
+        "the seed must read the button's own initial disabled state; anything "
+        "else is guessing at why the server refused."
+    )
+
+    # And the property alone is not enough. The server emits
+    # aria-disabled="true" beside disabled, so a writer that clears one
+    # without the other leaves assistive tech announcing a live button as
+    # disabled -- which is how this defect reached a screen reader.
+    assert "aria-disabled" in _WALLET_JS, (
+        "_partials.html writes .disabled without mirroring aria-disabled"
+    )
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_TOOLS))
+def test_every_panel_form_really_does_render_that_refusal(slug):
+    """The seed above is only worth having if the templates produce what it
+    reads. Asserted per form so a new tool that forgets the conditional shows
+    up here rather than as a button that re-enables itself."""
+    src = (_ROOT / "templates" / "tools" / f"{slug}_form.html").read_text(
+        encoding="utf-8",
+    )
+    assert "preflight_verdict and not preflight_verdict.ok" in src, (
+        f"{slug}_form.html no longer disables the button on a failed "
+        f"submit-time verdict."
+    )

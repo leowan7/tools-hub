@@ -73,10 +73,31 @@
     form.appendChild(reuseTokenInput);
   }
 
+  // TWO SCRIPTS OWN THIS BUTTON, so neither may assign `disabled`
+  // outright. templates/wallet/_partials.html grabs the same element
+  // (its button[type="submit"]:not([data-gate-button]) selector matches
+  // #tool-submit-btn) and wrote `disabled = ceiling || hard` on every
+  // debounced estimate. A FAILING preflight is the fastest response this
+  // route can give -- inspect_pdb_bytes throws on the first token and the
+  // route returns before preflight_for_tool -- so it landed first,
+  // disabled the button, and the estimate 250ms later re-enabled it: a red
+  // "Can't run this target as-is" panel sitting above a live Submit
+  // button. It broke the other way too, a ready verdict re-enabling a
+  // button the wallet had blocked.
+  //
+  // Each side now owns one flag and both recompute from the union, so
+  // neither has to load first and neither can clear the other's refusal.
+  // Keep the two attribute names in step with the wallet twin.
   function setSubmitEnabled(enabled) {
     if (!submitBtn) return;
-    submitBtn.disabled = !enabled;
-    submitBtn.setAttribute("aria-disabled", String(!enabled));
+    if (enabled) {
+      delete submitBtn.dataset.blockPreflight;
+    } else {
+      submitBtn.dataset.blockPreflight = "1";
+    }
+    submitBtn.disabled = submitBtn.dataset.blockPreflight === "1" ||
+                         submitBtn.dataset.blockWallet === "1";
+    submitBtn.setAttribute("aria-disabled", String(submitBtn.disabled));
   }
 
   function showLoading(label) {
@@ -229,9 +250,45 @@
       }
       html += `</div>`;
     }
+    // A BODY MATCHING NEITHER KIND LEAVES html EMPTY, and this is
+    // reachable without going anywhere near the network catch:
+    // tool_preflight answers an unknown OR DISABLED tool with
+    // ({"error": "Unknown tool"}, 404), fetch does not reject a 404, and
+    // r.json() parses that body happily. Rendering it would blank the
+    // panel and, since showLoading() has already disabled Run and the
+    // wallet no longer clears a preflight flag, leave a dead button under
+    // an empty box. A panel that cannot judge must never be the thing
+    // that stops someone submitting.
+    if (!html) {
+      renderUnavailable();
+      return;
+    }
     panel.innerHTML = html;
     setSubmitEnabled(!!v.ok);
     wireAfButtons();
+  }
+
+  // No usable verdict: a network error, or a body of a kind we do not
+  // know. Both say the same thing to the user and both must ENABLE Run,
+  // because blueprints/tools.py::tool_submit re-gates server-side and is
+  // the authority. Copy unchanged from the network branch it was lifted
+  // out of.
+  function renderUnavailable() {
+    panel.className = "preflight-panel preflight-panel--needs_fix";
+    panel.setAttribute("data-kind", "needs_fix");
+    panel.setAttribute("data-ok", "0");
+    panel.innerHTML = `
+      <div class="preflight-header preflight-header--block">
+        <span class="preflight-icon" aria-hidden="true">✗</span>
+        <strong>Preflight failed</strong>
+      </div>
+      <div class="preflight-body">
+        <p class="preflight-reason">
+          We couldn't pre-check your PDB. Refresh and try again, or
+          submit anyway — the server-side gate will catch real issues.
+        </p>
+      </div>`;
+    setSubmitEnabled(true);
   }
 
   function escapeHtml(s) {
@@ -301,8 +358,22 @@
     if (bmax) fd.append("binder_length_max", String(bmax));
   }
 
+  // ONLY THE NEWEST RESPONSE MAY DECIDE THE BUTTON.
+  //
+  // Two preflights are in flight whenever someone attaches the wrong
+  // file, notices, and attaches another. Nothing here cancels the first,
+  // and it can land second. That used to be self-correcting by accident:
+  // the wallet estimate re-enabled the button a quarter second later, so
+  // a stale refusal cleared itself. Now that the two writers respect each
+  // other that accidental reset is gone, and a late needs_fix for a file
+  // the user has already replaced would leave Run dead with nothing on
+  // screen saying why -- recoverable only by re-uploading or touching
+  // another field. Found in review, not in the wild.
+  let preflightSeq = 0;
+
   function postPreflight(formData) {
     showLoading();
+    const mine = ++preflightSeq;
     return fetch(`/tools/${encodeURIComponent(toolSlug)}/preflight`, {
       method: "POST",
       body: formData,
@@ -310,28 +381,14 @@
     })
       .then((r) => r.json())
       .then((v) => {
+        if (mine !== preflightSeq) return v;  // superseded; see above
         renderVerdict(v);
         return v;
       })
       .catch((err) => {
+        if (mine !== preflightSeq) return;  // superseded; see above
         console.warn("preflight: network error", err);
-        panel.className = "preflight-panel preflight-panel--needs_fix";
-        panel.setAttribute("data-kind", "needs_fix");
-        panel.setAttribute("data-ok", "0");
-        panel.innerHTML = `
-          <div class="preflight-header preflight-header--block">
-            <span class="preflight-icon" aria-hidden="true">✗</span>
-            <strong>Preflight failed</strong>
-          </div>
-          <div class="preflight-body">
-            <p class="preflight-reason">
-              We couldn't pre-check your PDB. Refresh and try again, or
-              submit anyway — the server-side gate will catch real issues.
-            </p>
-          </div>`;
-        // Don't block the user if the network ate our request — let the
-        // server gate fire.
-        setSubmitEnabled(true);
+        renderUnavailable();
       });
   }
 
