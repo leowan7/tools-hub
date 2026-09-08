@@ -442,11 +442,11 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
 # UniProt stores at that length. Above it a length floor is the wrong lever,
 # because wrong answers reach well past 300 residues under BOTH designs: a
 # reviewed-only count returns a lone wrong organism at 346 aa (Q6ZSG1, shared
-# with 14 other primates) and 544 aa (Q5VTE6), and the uniqueness rule below
-# still does at 337 aa -- 9P0K_D and 8GGA_B, human G-protein beta-1 answered
-# as Bos taurus. No threshold reaches that class. The uniqueness rule reaches
-# it only where the siblings are genuinely tied, which is why the query counts
-# all of UniProtKB.
+# with 14 other primates) and 544 aa (Q5VTE6), and the rule below still does
+# at 337 aa -- 9P0K_D and 8GGA_B, human G-protein beta-1 answered
+# as Bos taurus. No threshold reaches that class. The rule below reaches it
+# only where the siblings are genuinely tied AND disagree about organism,
+# which is why the query counts all of UniProtKB.
 #
 # 20 admits the short fully-modelled chains this function handles best: 1ACW_A
 # -> P56215 at 29 aa and 1AGT_A -> P46111 at 38 aa, both returning the file's
@@ -455,40 +455,157 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
 # they bound the function, not the path.
 _MIN_SEARCHABLE_LENGTH = 20
 
+# How many rows to pull for a checksum hit, and so the largest tie this
+# function will look at. Organism is compared ACROSS a tie's members, so a tie
+# is only resolvable when every one of its members is in hand; above this the
+# total in the header refuses it and the extra rows are never fetched.
+#
+# Probed against the live API 2026-09-04: all nine same-organism ties looked
+# at are TWO entries -- IL-6, HER2, APP, ApoE, transthyretin, IL-10, and the
+# SARS-CoV-2 spike, nucleoprotein and replicase 1ab -- so 25 is better than ten
+# times the observed need. Nine is a probe set and NOT a census: the recovery
+# figures in the docstring imply substantially more, and the rest were never
+# sized, so this bounds the cases seen and not every case.
+#
+# The large ties looked at were all the cross-species kind, and those stay
+# refused whatever this is set to: NRAS is 95 entries across 91 organisms, and
+# histone H4 reports 845 entries with 480 distinct organisms in the first 500
+# rows alone. That is two examples and not a survey, and wasted rows are not
+# the only cost of the value -- see the ponytail note below.
+#
+# HARD CEILING 500. UniProt answers `size` above 500 with HTTP 400, which
+# this function reports as "no match" -- so setting this to 501 does not widen
+# anything, it silently returns "" for EVERY sequence and restores the dead
+# lookup this file exists to prevent. Verified live 2026-09-04: 500 resolves,
+# 501 logs "returned HTTP 400" and answers nothing. The hermetic fake honours
+# any size, so only the cadence job would notice; _MAX_TIE_ROWS_CEILING below
+# is what actually holds the line.
+#
+# ponytail: one page, no cursor paging. Raising it matters in two ways the
+# earlier comment missed -- a same-organism tie above the value stops being
+# refused and starts being answered (a recall change worth measuring), and
+# above 500 the lookup dies outright.
+_MAX_TIE_ROWS = 25
+
+# UniProt rejects a larger page with HTTP 400, and this function reports that
+# as "no match" -- so exceeding it is not a wider net, it is a dead lookup.
+_MAX_TIE_ROWS_CEILING = 500
+assert 1 < _MAX_TIE_ROWS <= _MAX_TIE_ROWS_CEILING, (
+    "_MAX_TIE_ROWS must be 2..%d: at 1 the full-page guard below refuses "
+    "every header-less lookup, lone hits included, and above the ceiling "
+    "UniProt answers HTTP 400 and every sequence resolves to nothing"
+    % _MAX_TIE_ROWS_CEILING
+)
+
+# UniProt's own wording for a curated entry. COMPARED, never queried: putting
+# `reviewed:true` in the query deletes the entries that constitute a tie and is
+# forbidden below, while reading the field off rows the organism gate has
+# already accepted only decides which of them to name.
+_UNIPROT_REVIEWED = "UniProtKB reviewed (Swiss-Prot)"
+
 
 def _search_uniprot_by_sequence(sequence: str) -> str:
     """Resolve a chain sequence to a UniProt accession by exact-sequence match.
 
     Asks UniProtKB for every entry whose CRC64 checksum equals this
-    sequence's, and accepts the answer ONLY when exactly one exists.
+    sequence's, and accepts a lone entry, or a TIE whose members all name the
+    same organism. It refuses a tie that spans two organisms or more, and
+    refuses one too large to fit in a single page of ``_MAX_TIE_ROWS`` rows,
+    because a member it never saw could be the one that disagrees.
 
-    Refusing on ambiguity is the whole point. One sequence is often carried by
-    several species' entries -- haemoglobin subunit beta is identical in human,
-    bonobo and chimpanzee -- and nothing in the sequence chooses between them.
-    Returning one anyway produced a confident wrong answer that the caller's
-    identity check cannot catch, because identical sequences score 100%; for
-    that case it also silently zeroed the known-binder lookup, because P68872
-    indexes no PDB entries at all.
+    Refusing a CROSS-ORGANISM tie is the whole point. One sequence is often
+    carried by several species' entries -- haemoglobin subunit beta is
+    identical in human, bonobo and chimpanzee -- and nothing in the sequence
+    chooses between them. Returning one anyway produced a confident wrong
+    answer that the caller's identity check cannot catch, because identical
+    sequences score 100%; for that case it also silently zeroed the
+    known-binder lookup, because P68872 indexes no PDB entries at all.
+
+    A SAME-organism tie carries none of that risk. If nothing in the tie
+    disagrees about organism, there is no organism to be wrong about: its
+    members differ in accession and curation status, not in species, so the
+    one thing this refusal protects is identical whichever member is returned.
+    Nine such ties were probed against the live API on 2026-09-04 -- IL-6,
+    HER2, APP, ApoE, transthyretin, IL-10, and the SARS-CoV-2 spike,
+    nucleoprotein and replicase 1ab -- and every one is exactly TWO entries, a
+    reviewed Swiss-Prot record plus one unreviewed duplicate, reviewed row
+    first. That is a probe set and not a census: the recovery figures below
+    imply at least nineteen such ties exist, and the sizes of the others were
+    never enumerated. The ties that are genuinely large
+    are all the cross-species kind and stay refused: NRAS is 95 entries across
+    91 organisms, and histone H4 reports 845 entries with 480 distinct
+    organisms in the first 500 rows alone.
+
+    Do NOT replace the organism comparison with "prefer the reviewed entry
+    when the tie has exactly one reviewed member". It reads as the same idea
+    and is the ``reviewed:true`` filter below in another spelling: chimpanzee
+    VHL is a five-entry tie with exactly one reviewed member, so that rule
+    returns human P40337 for a chimpanzee chain, which is verbatim the bug
+    this refusal exists to prevent. All 35 of the random-human losses have
+    exactly one reviewed member, so on the very population it claims to fix
+    the alternative is indistinguishable from the filter.
+
+    Which member of a resolved tie is returned is the reviewed one, and the
+    first row when no member is reviewed. That pick is made only after the
+    organism comparison has ACCEPTED, on rows already proven to name one
+    organism, so it cannot change species: it is a tie-break among equals,
+    never a reason to accept. Hoisting it above the comparison turns it into
+    the alternative forbidden above.
+
+    It is not cosmetic. Reviewed and unreviewed members of one organism are
+    not interchangeable downstream: the caller keys ``fetch_known_binders``
+    on whatever comes back, and for the transthyretin tie P02766 indexes
+    hundreds of PDB entries -- 491 by this module's own probe with the cap
+    lifted, 459 cross-references by UniProt's own count -- while its
+    unreviewed twin E9KL36 indexes none, which the binder cache then stores
+    as an unexpiring "no known binders". So the cost of the wrong member is
+    the same zeroed panel that P68872 causes above, minus only the wrong
+    species. (An earlier draft of this paragraph said "40", which is not a
+    property of the accession at all: it is ``_RCSB_PROBE_LIMIT`` saturating,
+    the cap production applies to its own probe.)
+
+    That reasoning does NOT reach step 1, and this change does not fix it
+    there. A file whose own reference record names the unreviewed twin
+    resolves at step 1 and never enters this function: AlphaFold DB serves
+    AF-E9KL36-F1 carrying ``DBREF ... UNP E9KL36`` (fetched 2026-09-08), so
+    uploading it still keys the binder lookup on the zero-structure
+    accession. Covering that would mean overriding a depositor-annotated
+    accession, a different decision from breaking a tie among equals, and it
+    is deliberately not made here.
+
+    In all nine probed ties UniProt already returned the reviewed row first,
+    so the pick changes none of those nine. The ties behind the other
+    recoveries were never sized, so their row order was never looked at
+    either and the pick may well change one of them. What it removes is the
+    dependency on that ordering, which UniProt does not document and can
+    change without notice: before it, row order alone decided between those
+    491 structures and a permanently cached zero. The live capability suite
+    still asserts the transthyretin accession against the real index, so
+    fixture drift stays visible either way.
 
     The count is deliberately taken over ALL of UniProtKB, unreviewed and
     fragment entries included. Do NOT add ``reviewed:true`` or
     ``fragment:false`` here: those filters delete the entries that constitute
     the tie, so a sequence several organisms share comes back as a unique
     match and the wrong organism is asserted at "100.0% identity". Human VHL
-    P40337 is the worked case -- five entries carry that sequence, four of them
-    chimpanzee or bonobo, and the filtered query returns exactly one of them.
+    P40337 is the worked case -- five entries carry that sequence, three of
+    them chimpanzee or bonobo and two of them human, and the filtered query
+    returns exactly one of the five.
     ``TestLiveCapability`` checks it against the live API, but those tests are
     opt-in behind ``SCOUT_UNIPROT_LIVE=1``; what runs by default is the
     hermetic assertion on the query this function puts on the wire.
 
     The cost is a trade, and the measurement does not flatter it. Over 5271
     random PDB chains (163 checksum hits, 132 with DBREF ground truth) a
-    filtered pick-first query answered 89 times at 15% error; this rule
-    answers 59 times at 17%. Those intervals overlap, so on that population
-    the uniqueness rule buys NO measurable precision -- it answers 34% less
-    often at the same error rate, refusing 44 of 76 previously correct
-    answers (57.9%, CI 47-68%). Two narrower frames agree on the size: 36.5%
-    over random reviewed human entries, 40.5% over named therapeutic targets.
+    filtered pick-first query answered 89 times at 15% error; refusing every
+    tie answered 59 times at 17%. Those intervals overlap, so on that
+    population refusing every tie bought NO measurable precision -- it
+    answered 34% less often at the same error rate, refusing 44 of 76
+    previously correct answers (57.9%, CI 47-68%). Two narrower frames agree
+    on the size: 36.5% over random reviewed human entries, 40.5% over named
+    therapeutic targets. Those three figures measure the SUPERSEDED rule;
+    resolving same-organism ties gives part of it back, quantified below, and
+    that frame has not been re-measured end to end.
 
     Read that against the population it came from. Ground truth exists only
     for a chain that HAS a DBREF -- and such a chain resolves at step 1 and
@@ -500,11 +617,24 @@ def _search_uniprot_by_sequence(sequence: str) -> str:
     specific failure on the traffic that gets here, NOT a general precision
     win, and this docstring should not be read as claiming one. Recovering
     the recall belongs to a narrower rule -- resolve a tie whose members all
-    share one organism -- not to restoring the filters.
+    share one organism -- not to restoring the filters. That rule is what
+    this function now does; the recovery it bought is measured two paragraphs
+    below.
 
     Dropping the filters also ADMITS wrong answers the filters excluded: 6 of
     the 10 wrong answers in that sample had no filtered match at all, two of
     them at 337 aa. Not one-sided in either direction.
+
+    Resolving same-organism ties gives back a third to a half of the
+    refusals on the two narrower frames above -- 19 of those 50 losses
+    combined: 12 of the 35 random-human losses (34%)
+    and 7 of the 15 named-target losses (47%) -- IL-6, HER2, APP, ApoE,
+    transthyretin, SARS-CoV-2 spike and IL-10 -- which restores 37 of the 51
+    antibody and nanobody complexes the named-target frame had dropped from
+    the known-binder panel (73%), including its three largest contributors.
+    What stays refused is the cross-organism tie, the case the rule was built
+    for: TNF-alpha is 6 entries across 4 organisms, keeps refusing, and its 9
+    structures are part of the 14 not recovered.
 
     The rule is not complete, and the gap that fires is not the obvious one. A
     length-truncated or fragmentary entry can be the unique match while every
@@ -543,7 +673,12 @@ def _search_uniprot_by_sequence(sequence: str) -> str:
             ``_MIN_SEARCHABLE_LENGTH`` returns "" without a request.
 
     Returns:
-        UniProt accession string, or "" if there is no unambiguous match.
+        UniProt accession string, or "" if there is no match this function is
+        willing to stand behind. Chiefly: no hit, a tie spanning more than one
+        organism, or a tie too large to have been seen in full. Also, and not
+        exhaustively: a tie whose rows name no organism at all, a header that
+        disagrees with the body, a malformed accession, an HTTP or transport
+        failure, and a missing crc64.
     """
 
     if not sequence or len(sequence) < _MIN_SEARCHABLE_LENGTH:
@@ -574,11 +709,26 @@ def _search_uniprot_by_sequence(sequence: str) -> str:
                 # Filtering here hides the ties this function exists to detect.
                 "query": f"(checksum:{checksum})",
                 "format": "json",
-                # Two rows because the header-missing fallback below counts
-                # ROWS. Never lower this: at size=1 a tie returns one row, and
-                # a missing header would then read as a unique match.
-                "size": "2",
-                "fields": "accession",
+                # A whole tie, not a sample of one: the organism comparison
+                # below is only evidence if every member is present. The
+                # header-missing fallback counts ROWS, so a FULL page is
+                # treated as possibly-truncated rather than as a complete tie.
+                "size": str(_MAX_TIE_ROWS),
+                # organism_name is what resolves a same-organism tie. Dropping
+                # it fails CLOSED -- every row then reads as organism "" and
+                # every tie refuses -- so a careless edit here costs recall,
+                # never correctness.
+                #
+                # entryType is NOT listed here and must NOT be added, even
+                # though the reviewed pick below reads it. It is not a valid
+                # fields value: UniProt answers a request naming it with HTTP
+                # 400 ("Invalid fields parameter value 'entryType'"), and this
+                # function reports 400 as "no match", so adding it would kill
+                # every lookup rather than harden one. Measured live
+                # 2026-09-08. It arrives on every row regardless of fields,
+                # which is what the pick relies on; a live test asserts that
+                # coupling so it cannot lapse into a silent revert to row 0.
+                "fields": "accession,organism_name",
             },
             timeout=_REQUEST_TIMEOUT_SEC,
         )
@@ -597,23 +747,111 @@ def _search_uniprot_by_sequence(sequence: str) -> str:
         try:
             total = int(resp.headers.get("x-total-results", ""))
         except (TypeError, ValueError):
+            # No usable header, so the rows are all there is to go on -- and
+            # `size` caps those. A FULL page is indistinguishable from a
+            # truncated one, so it cannot be read as a complete tie.
+            if len(results) >= _MAX_TIE_ROWS:
+                logger.info(
+                    "Sequence matched a full page of %d UniProt entries with "
+                    "no total header; refusing to guess between them.",
+                    len(results),
+                )
+                return ""
             total = len(results)
 
-        # len(results) too: a header saying 1 while the body carries two rows
-        # is a disagreement, and trusting the header alone would accept it.
-        if total != 1 or len(results) != 1:
-            if total > 1:
-                # "at least" because the fallback above is row-capped.
+        if total < 1:
+            # Zero beside a non-empty body is a disagreement, not a miss, and
+            # it was the only refusal here that logged nothing -- the shape
+            # that reads in a log exactly like "this protein is not in
+            # UniProt". A genuine miss (no rows either) stays quiet.
+            if results:
                 logger.info(
-                    "Sequence matches at least %d UniProt entries; "
-                    "refusing to guess between them.", total,
+                    "UniProt reported a total of %d but returned %d rows; "
+                    "refusing to guess between them.", total, len(results),
                 )
             return ""
 
+        # Every tied entry has to be in hand before organisms can be compared.
+        # A body that disagrees with the header is either a page that capped
+        # a tie bigger than _MAX_TIE_ROWS, or a plain disagreement -- and it
+        # runs both ways, so this compares rather than bounds: a header of 1
+        # beside TWO rows is the second kind, and trusting the header alone
+        # would accept it.
+        if total != len(results):
+            logger.info(
+                "Sequence matches %d UniProt entries but %d were returned; "
+                "refusing to guess between them.", total, len(results),
+            )
+            return ""
+
+        # A tie whose members all name ONE organism has no organism to be
+        # wrong about, so it resolves. Anything else is the wrong-species
+        # answer this function exists to refuse.
+        #
+        # Curation status does NOT decide that. "Prefer the reviewed entry
+        # when the tie has exactly one reviewed member" is the reviewed:true
+        # filter in another spelling and returns human P40337 for a chimpanzee
+        # VHL chain. The reviewed-first pick below runs only AFTER this gate
+        # has accepted, on rows already proven to name one organism; hoisting
+        # it above the gate reinstates exactly that bug. See the docstring.
+        chosen = results[0]
+        if total > 1:
+            organisms = {
+                (row.get("organism") or {}).get("scientificName", "")
+                for row in results
+            }
+            if len(organisms) != 1:
+                logger.info(
+                    "Sequence matches %d UniProt entries across %d organisms; "
+                    "refusing to guess between them.", total, len(organisms),
+                )
+                return ""
+            # Compared by display NAME, not taxonId, which rides along in the
+            # same payload unread. One name covering two taxon ids would
+            # resolve where it should refuse; 200-row samples of the two
+            # broadest placeholder names in UniProt ("Bacillus sp.", 686
+            # entries; "uncultured bacterium", 1820) each map to exactly one
+            # taxonId, so no live instance was found. Switch to taxonId if one
+            # ever is -- the names are what the refusal message prints, not
+            # what it has to compare.
+
+            # Agreeing on nothing is not agreement. A blank, whitespace-only
+            # or non-string name collapses to a one-element set and would pass
+            # a bare length check -- and blank is what EVERY row reads if
+            # `organism_name` ever leaves the fields parameter, so this is the
+            # branch that makes that edit fail closed. It gets its own message
+            # because the count-based one above would report "across 1
+            # organisms; refusing", naming the wrong cause for an operator.
+            named = next(iter(organisms))
+            if not isinstance(named, str) or not named.strip():
+                logger.info(
+                    "Sequence matches %d UniProt entries, none of which names "
+                    "an organism; refusing to guess between them. Is "
+                    "organism_name still in the fields parameter?", total,
+                )
+                return ""
+
+            # One organism on every row by now, so this cannot change species.
+            # It decides only WHICH of two identical-sequence entries is
+            # named, and they are not interchangeable downstream: the caller
+            # keys fetch_known_binders on the answer, and an unreviewed twin
+            # commonly cross-references no PDB entry at all, which that cache
+            # stores as an unexpiring "no known binders". Falls back to the
+            # first row when nothing in the tie is reviewed, so UniProt's
+            # order still decides where curation status cannot.
+            chosen = next(
+                (row for row in results
+                 if row.get("entryType") == _UNIPROT_REVIEWED),
+                chosen,
+            )
+
         # Format-check for the same reason the DBREF path does: the accession
         # is interpolated into a UniProtKB URL path and becomes a _CACHE key,
-        # and it arrives over the network.
-        return _valid_accession(results[0].get("primaryAccession", ""))
+        # and it arrives over the network. Note it runs on the PICK: a
+        # malformed accession on the reviewed row drops the whole tie rather
+        # than falling back to row 0, which costs recall on a payload UniProt
+        # does not emit. Closed is the right direction for that trade.
+        return _valid_accession(chosen.get("primaryAccession", ""))
     except Exception:
         logger.debug("UniProt sequence search failed.", exc_info=True)
 
@@ -708,12 +946,16 @@ def resolve_uniprot_id(pdb_path, chain_id: str) -> dict:
            so the accession is now read to the next space and it resolves at
            step 1. What still reaches step 2, and how it is distributed
            between reviewed and unreviewed entries, is not measured.
-           Accepted only when the sequence matches exactly one UniProt
-           entry; see ``_search_uniprot_by_sequence``.
+           Accepted only when the match is unambiguous ABOUT ORGANISM --
+           a lone entry, or a tie whose members all name the same organism;
+           see ``_search_uniprot_by_sequence``.
            The identity gate below cannot screen this path: a checksum match is
            byte-equal to the entry's canonical sequence, so it scores 1.0 by
            construction and ``must_validate`` only proves UniProt answered.
-           Uniqueness is the sole correctness check on a step-2 result.
+           What protects a step-2 result is therefore the acceptance rule in
+           that function, not this gate: a lone exact match stands on being
+           the only entry in UniProtKB carrying the sequence, and a tie stands
+           on its members agreeing about organism.
 
     Args:
         pdb_path: Path to the uploaded PDB or mmCIF file.
