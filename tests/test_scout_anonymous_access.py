@@ -135,7 +135,8 @@ def stub_scoring(monkeypatch):
     """
     monkeypatch.setattr(
         "scout.epitope_db.resolve_uniprot_id",
-        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown"},
+        lambda *a, **k: {"uniprot_id": "", "protein_name": "", "identity_pct": "unknown",
+         "source": ""},
     )
     monkeypatch.setattr("scout.epitope_db.fetch_known_binders", lambda *a, **k: [])
     monkeypatch.setattr("scout.interfaces.detect_interfaces", lambda *a, **k: [])
@@ -257,7 +258,7 @@ class TestAnonymousCanRunScout:
             "scout.epitope_db.resolve_uniprot_id",
             lambda *a, **k: {
                 "uniprot_id": "P00698", "protein_name": "Lysozyme C",
-                "identity_pct": "100",
+                "identity_pct": "100", "source": "dbref",
             },
         )
         monkeypatch.setattr(

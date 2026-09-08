@@ -442,7 +442,15 @@
         infoEl.appendChild(uniprotLink);
         var infoTail = '';
         if (data.uniprot_name) infoTail += ' \u2014 ' + data.uniprot_name;
-        if (data.sequence_identity_pct && data.sequence_identity_pct !== 'unknown') {
+        // A sequence-matched accession is a different claim from one the
+        // uploaded file states, so it must not read the same. It was found by
+        // matching this chain's sequence against UniProtKB, which cannot tell
+        // apart organisms carrying an identical sequence, and the server
+        // suppresses the identity figure on that path because it is 100% by
+        // construction there rather than by agreement.
+        if (data.uniprot_source === 'sequence_search') {
+          infoTail += ' (sequence match, organism not confirmed)';
+        } else if (data.sequence_identity_pct && data.sequence_identity_pct !== 'unknown') {
           infoTail += ' (identity: ' + data.sequence_identity_pct + ')';
         }
         if (infoTail) infoEl.appendChild(document.createTextNode(infoTail));
