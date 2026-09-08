@@ -109,6 +109,18 @@ BARRED_IN_CITATION: dict[str, tuple[str, ...]] = {
 # iggm is the one to look at twice before "correcting" it: its preprint DOI is
 # 2024 and its citation is ICLR 2025. Both are right. A DOI year is not a
 # citation year, which is why URLs are stripped before years are read.
+#
+# rfantibody is the one of those ELEVEN that Crossref did not settle, and
+# the exception is recorded because the sentence above would otherwise read
+# as covering it. opendde and proteina were never Crossref's to decide
+# either -- their sources are named above, and neither is affected here.
+# Its Nature version went online in one year and to a print issue in the
+# next, so the two sources disagree by one: nature.com's own "Cite this
+# article" block gives the issue year, which is what meta.py and this entry
+# follow, while the DOI's CSL rendering gives the earlier online date. Both
+# describe the same article. Changing this to match a reference manager
+# means changing meta.py in the same commit, and vice versa.
+
 # slug -> years that may ALSO appear in this tool's prose, because a line
 # there genuinely cites a DIFFERENT work.
 #
@@ -122,7 +134,7 @@ PROSE_ALSO_CITES: dict[str, tuple[str, ...]] = {}
 
 PAPER_YEAR: dict[str, tuple[str, ...]] = {
     "af2": ("2021", "2022"),
-    "bindcraft": ("2024",),
+    "bindcraft": ("2025",),
     "boltz2": ("2025",),
     "boltzgen": ("2025",),
     "colabfold": ("2022",),
@@ -133,7 +145,7 @@ PAPER_YEAR: dict[str, tuple[str, ...]] = {
     "opendde": ("2026",),
     "proteina": ("2026",),
     "pxdesign": ("2023",),
-    "rfantibody": ("2024",),
+    "rfantibody": ("2026",),
     "rfdiffusion": ("2023",),
 }
 
@@ -184,7 +196,7 @@ _CITATION_MARKERS = ("paper", "et al")
 # IgGM defect survived.
 REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "af2": ("s41586-021-03819-2", "sokrypton/ColabFold"),
-    "bindcraft": ("2024.09.30.615802", "martinpacesa/BindCraft"),
+    "bindcraft": ("s41586-025-09429-6", "martinpacesa/BindCraft"),
     # v1 SPECIFICALLY. The field pointed at ...659707v2, which bioRxiv does
     # not have -- it redirects to biorxiv.org/node/ and the citation rendered
     # as a dead link. If a real v2 is ever posted, check it resolves and then
@@ -231,7 +243,12 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     # file's docstring records twice. meta.py and the token moved together.
     "proteina": ("2603.27950", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
-    "rfantibody": ("2024.03.14.585103", "RosettaCommons/RFantibody"),
+    # This and the bindcraft entry above were both bioRxiv DOIs, and both
+    # preprints have since been published in Nature. Each token moved with
+    # its own meta.py in ONE commit: a DOI pinned here while the field
+    # carries the journal link is this file's recorded worst failure -- the
+    # guard forcing the stale value back.
+    "rfantibody": ("s41586-025-09721-5", "RosettaCommons/RFantibody"),
     "rfdiffusion": ("s41586-023-06415-8", "RosettaCommons/RFdiffusion"),
 }
 
@@ -249,6 +266,34 @@ MODEL_LABEL_AUTHOR: dict[str, str] = {
     "ProteinMPNN": "Dauparas",
     "RFantibody": "Bennett",
     "RFdiffusion": "Watson",
+}
+
+# The same labels -> the year that model's paper carries. MODEL_LABEL_AUTHOR
+# shipped without this, so a glossary citation naming the right author beside
+# the wrong year passed: "Bennett et al., bioRxiv 2024 (RFantibody)" survived
+# that work's publication in Nature and was still live here afterwards. An
+# author is stable across a preprint and its journal version; a year is not,
+# which is exactly why the year is the half that rots.
+#
+# Read off Crossref for all but RFantibody -- see the PAPER_YEAR note above
+# for why that one follows the publisher's own citation block instead.
+#
+# LIMIT, stated because a guard that hides its blind spot is worse than none:
+# this reads GLOSSARY only, exactly like its sibling. The same wrong pairing
+# in ordinary prose is not seen -- shared/pdb_preflight_rules.py carried
+# "Pacesa et al. 2024 (BindCraft)" in a comment, in this shape, and no
+# assertion here reached it. CONTEXT_BARS is the repo-wide matcher.
+MODEL_LABEL_YEAR: dict[str, str] = {
+    "AlphaFold-Multimer": "2021",
+    "AlphaFold2": "2021",
+    "AF2": "2021",
+    "BindCraft": "2025",
+    "Boltz-2": "2025",
+    "BoltzGen": "2025",
+    "ColabFold": "2022",
+    "ProteinMPNN": "2022",
+    "RFantibody": "2026",
+    "RFdiffusion": "2023",
 }
 
 # A line naming the KEY must not also carry one of its VALUES: those belong to
@@ -538,10 +583,18 @@ def test_no_tool_page_dates_its_own_paper_wrong(
       "used in the" / "EvolutionaryScale 2025 paper." across two lines.
       3ec66b9 did exactly this to a live misattribution elsewhere in the
       repo, by accident, in a copy pass -- see the CONTEXT_BARS comment.
-    * pxdesign and rfdiffusion carry no year-bearing "paper" line at all, so
-      2 of these 14 parametrisations currently assert over nothing. Their
-      years are still covered by the citation test above, which is why this
-      is recorded rather than floored.
+    * pxdesign carries no year-bearing marker line at all, so 1 of these 14
+      parametrisations asserts over nothing: its citation constant spans
+      several source lines, and the year lands on one carrying neither
+      marker. The test above reads that constant as a VALUE rather than by
+      line and does cover it, which is why this is recorded rather than
+      floored.
+
+      This bullet said 2 and named rfdiffusion too, until it was replayed
+      over the tree: that tool carries two such lines, meta.py:8 and its
+      About copy, at this commit and at the base. Re-measure rather than
+      trusting the number -- it was already stale when this branch
+      inherited it.
     """
     allowed = set(expected) | set(PROSE_ALSO_CITES.get(slug, ()))
     hits: list[str] = []
@@ -621,13 +674,41 @@ def test_the_links_point_at_this_tools_own_work(
     )
 
 
-def test_a_glossary_citation_names_the_author_of_the_model_it_labels() -> None:
+def test_a_glossary_citation_names_the_right_paper_for_the_model_it_labels() -> None:
     """The third defect, and the one nothing guarded until now: reverting
     ``shared/metric_glossary.py`` to its original wrong citation left the whole
-    suite green. The entries carry a parenthetical model label beside an author,
-    and "Bennett et al., Nat Commun 2023 (BindCraft)" is the two disagreeing.
+    suite green. The entries carry a parenthetical model label beside an author
+    and a year, and "Bennett et al., Nat Commun 2023 (BindCraft)" is all three
+    disagreeing at once.
+
+    BOTH HALVES ARE CHECKED HERE, and the year is the half that was missing.
+    An author survives a work moving from a preprint to a journal; the year
+    does not. "Bennett et al., bioRxiv 2024 (RFantibody)" sat in this glossary
+    naming the correct first author beside a year that work had already left
+    behind, and every assertion in this file passed over it.
+
+    LIMITS, stated because a guard that hides its blind spot is worse than
+    none:
+
+    * It reads GLOSSARY only. The same wrong pairing in ordinary prose is not
+      seen: shared/pdb_preflight_rules.py carried a comment reading
+      "Pacesa et al. 2024 (BindCraft)" -- this exact shape, the same stale
+      year -- and nothing here reached it. CONTEXT_BARS is the repo-wide
+      matcher, and it holds names rather than years.
+    * A citation with NO parenthetical label is invisible to both halves.
+      GLOSSARY has FOUR today, two of which name a model this platform
+      serves: "Stark et al., bioRxiv 2025." (BoltzGen) and "Aureka AI
+      Research, OpenDDE-Preview 2026" (opendde). The other two cite method
+      papers that have no model label to give. Counted by running the
+      matcher, not estimated -- an earlier draft of this bullet said one.
     """
     assert GLOSSARY, "the glossary is empty -- this guard would vacuously pass"
+    assert set(MODEL_LABEL_AUTHOR) == set(MODEL_LABEL_YEAR), (
+        "MODEL_LABEL_AUTHOR and MODEL_LABEL_YEAR disagree about which labels "
+        "exist: %r. A label in one map but not the other is guarded on half "
+        "its citation and reports PASSED for the other half."
+        % sorted(set(MODEL_LABEL_AUTHOR) ^ set(MODEL_LABEL_YEAR))
+    )
     checked = 0
     for key, entry in GLOSSARY.items():
         cited = entry.get("citation") or ""
@@ -641,10 +722,22 @@ def test_a_glossary_citation_names_the_author_of_the_model_it_labels() -> None:
                 "different papers."
                 % (key, cited, label, author)
             )
+            year = MODEL_LABEL_YEAR[label]
+            found = set(_YEAR_RE.findall(_URL_RE.sub("", cited)))
+            assert found == {year}, (
+                "GLOSSARY[%r] is cited as %r, and %s is dated %s. EXACT, not "
+                "at least: an added year dates a paper that does not exist. "
+                "Read the year off the publication, never off another "
+                "citation string in this repo -- and where a work has moved "
+                "from a preprint to a journal, this map, PAPER_YEAR and "
+                "REQUIRED_URL_TOKENS move in the SAME commit as the copy."
+                % (key, cited, label, year)
+            )
     assert checked, (
         "no glossary citation carries a recognised model label, so this guard "
-        "checked nothing. Add the label to MODEL_LABEL_AUTHOR, or this test is "
-        "passing over the entries it exists to read."
+        "checked nothing. Add the label to MODEL_LABEL_AUTHOR and "
+        "MODEL_LABEL_YEAR, or this test is passing over the entries it exists "
+        "to read."
     )
 
 
