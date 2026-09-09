@@ -8,8 +8,8 @@ contributed no atoms, and a HETATM-spelled one could not appear in
 gives those a blank hetflag. 1CC1's SEC 492 is deposited that way.)
 
 There are two such lists and they differ: ``_compute_contacts``' is user-facing
-only, while ``detect_interfaces``' is both rendered and unioned into the scored
-contact set. For the second, the residue was absent from a scored input.
+only, while ``detect_interfaces``' is unioned into the scored contact set. For
+the second, the residue was absent from a scored input.
 
 Fourth site of the same root cause, after #187, #190 and #195. The full gate
 inventory is in the commit message, including two gates in scout/pipeline.py

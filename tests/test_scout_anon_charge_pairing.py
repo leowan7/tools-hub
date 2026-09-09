@@ -538,7 +538,7 @@ class TestTheChargeCannotBeEvaded:
         ``results.csv`` behind, which sends the paired ``/analyze`` down the
         finalise path. Spend it on a DIFFERENT job and that ``/analyze`` finds
         no results and runs the entire pipeline itself — so one charge would
-        buy a stream AND a full pipeline, ~24 CPU-s instead of ~15.
+        buy a stream AND a full pipeline, ~23 CPU-s instead of ~14.
         """
         paid_job = client.get("/scout/example").get_json()["job_id"]
         other_job = client.get("/scout/example").get_json()["job_id"]
@@ -550,7 +550,7 @@ class TestTheChargeCannotBeEvaded:
         assert _ip_charges() == 2, (
             "a credit bought on one job paid for the analysis of another; "
             "that /analyze runs the whole pipeline itself when results.csv "
-            "is missing, so the charge would buy ~24 CPU-s, not ~15"
+            "is missing, so the charge would buy ~23 CPU-s, not ~14"
         )
 
         # ...and the credit it could not divert is still there for its own job.
@@ -656,7 +656,7 @@ class TestTheMeterAndTheViewReadTheSameJobId:
     and that is where the defect lived: the meter read the query string first
     and ``/scout/analyze`` read the body, so ``POST /scout/analyze?job_id=A``
     carrying ``{"job_id": "B"}`` keyed the credit on A and ran the pipeline on
-    B. One charge, two full pipeline runs, ~24 CPU-s instead of ~15.
+    B. One charge, two full pipeline runs, ~23 CPU-s instead of ~14.
 
     Two mutations survived QC green in that gap — swapping the sources to
     body-first, and dropping ``.strip()``. Every test here moves EXACTLY ONE
@@ -710,7 +710,7 @@ class TestTheMeterAndTheViewReadTheSameJobId:
         exercises the body-size bound *for diversion*. Make that bound fail
         OPEN — oversize body, so fall back to ``request.args`` — and the whole
         of the exploit above comes back: one charge, two full pipeline runs,
-        ~24 CPU-s instead of ~15. QC applied exactly that mutation and measured
+        ~23 CPU-s instead of ~14. QC applied exactly that mutation and measured
         all 5,160 tests staying green while it ran.
 
         So the bound is not only a cost control; it is the last thing standing

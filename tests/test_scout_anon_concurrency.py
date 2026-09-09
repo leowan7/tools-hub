@@ -10,7 +10,7 @@ one-line change instead of a redesign.
 
 The queue is the other half. Shedding the instant the last slot is taken
 refuses a caller who would have waited two seconds — the typical analysis is
-~2 CPU-s, not the ~15 worst case. But an UNBOUNDED queue is a slower way to
+~2 CPU-s, not the ~14 worst case. But an UNBOUNDED queue is a slower way to
 fall over, so it has a ceiling and sheds past it.
 
 The tests below drive real threads through the real Condition rather than
@@ -351,7 +351,7 @@ class TestSlotAccounting:
 
     def test_the_shipped_wait_is_bounded(self):
         """A queue that parks a browser for minutes is not a queue, it is a
-        hang. Two worst-case pipelines interleave for ~28 s before the first
+        hang. Two worst-case pipelines interleave for ~26 s before the first
         slot frees, so waiting much past that cannot help."""
         assert 0 < ANON_QUEUE_WAIT_SEC <= 60
         assert 0 < ANON_MAX_QUEUED_RUNS <= 16
@@ -359,16 +359,21 @@ class TestSlotAccounting:
     def test_slots_are_sized_for_a_gil_bound_process(self):
         """More slots do not drain the queue sooner — under a GIL, concurrent
         CPU-bound pipelines interleave and all finish LATE together, so the
-        first free slot arrives later the more slots there are. At ~15 CPU-s
+        first free slot arrives later the more slots there are. At ~14 CPU-s
         adversarial and ~1.07 effective cores, four slots would put the first
-        release at ~56 s, past any wait a browser should hold, and the queue
+        release at ~52 s, past any wait a browser should hold, and the queue
         could never be served under load at all.
         """
         assert ANON_MAX_CONCURRENT_RUNS <= 2, (
             "raising the slot count buys no throughput and pushes the first "
             "free slot past ANON_QUEUE_WAIT_SEC — see scout/ratelimit.py"
         )
-        worst_case_cpu_s = 15.0
+        # The worst case for ONE slot, not the pair: a bare POST /analyze holds
+        # the slot across run_pipeline, the binder lookup and the second parse
+        # in a single hold (scout/routes.py). It went 15 -> 14 when the dead PPI
+        # detection came out; the assertion held either way, which is why
+        # nothing here went red.
+        worst_case_cpu_s = 14.0
         effective_cores = 1.07
         first_free = ANON_MAX_CONCURRENT_RUNS * worst_case_cpu_s / effective_cores
         assert first_free > ANON_QUEUE_WAIT_SEC, (
