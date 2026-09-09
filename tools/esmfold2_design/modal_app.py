@@ -29,10 +29,14 @@ So the 1-6 bound is plausible, not verified: the pre-deploy GPU run
 should be scfv at batch_size=6, which is the only size that actually
 tests the cap.
 
-``use_scaling_critics`` adds a 15-checkpoint ensemble on the HOST (upstream
-loads scaling critics with ``device="cpu"``), which does not fit the 10 GB
-``memory=`` below. That path is untested here; the four hero critics load
-on GPU regardless of the flag.
+The four hero critics load on GPU and are the only critics loaded:
+``run_pipeline.py`` calls ``designer.load(False)`` unconditionally. A
+``use_scaling_critics`` flag used to make that argument user-settable, adding
+a 15-checkpoint ensemble on the HOST (upstream loads scaling critics with
+``device="cpu"``, recommending 60 GB host RAM) which does not fit the 10 GB
+``memory=`` below. Since no scaling row is ever read, that bought a host-RAM
+OOM and no change to any score, so the flag was removed. Restoring it means
+raising ``memory=`` first.
 
 Raw capture: ``run_pipeline.py`` tars its COMPLETE work tree to
 ``/tmp/raw_archive.tgz`` before the container dies; ``_park_raw_archive``
@@ -556,7 +560,6 @@ def _aggregate(
     binder_name = template.get("binder_name", "")
     binder_label = template.get("binder_label", "")
     is_antibody = bool(template.get("is_antibody", False))
-    use_scaling_critics = bool(template.get("use_scaling_critics", False))
 
     all_candidates: list[dict] = []
     all_designs: list[dict] = []
@@ -682,7 +685,6 @@ def _aggregate(
         "designs_total": designs_total,
         "designs_completed": designs_completed,
         "n_failures": n_failures_total,
-        "use_scaling_critics": use_scaling_critics,
         "best_sequence": best_seq,
         "designs": all_designs,
         "candidates": all_candidates,

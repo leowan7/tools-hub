@@ -29,7 +29,6 @@ PAYLOAD = {
         "is_antibody": False,
         "seed": 0,
         "batch_size": 1,
-        "use_scaling_critics": False,
         "target": {},
         "parameters": {},
     },

@@ -2,12 +2,15 @@
 
 ``_shape_designs`` used to select the distogram proxies with
 ``CRITIC_SCALING_PROXY in critic_name``, where CRITIC_SCALING_PROXY was
-``"ESMFold2-Experimental-Fast-base"``. That string is not a substring of any
-critic name the pinned upstream emits, so the branch never fired,
-``cdr_distogram_iptm_proxy`` stayed None, and ``_classify`` — which gates
-antibodies on that field alone — returned ``drop`` for every scFv design ever
-run. Reproduced 2026-08-23 against ``ranomics-esmfold2-design-prod``: 13
-designs on two targets, 13 dropped, real iPTM 0.621-0.949.
+``"ESMFold2-Experimental-Fast-base"``. That string DOES match upstream names —
+it is upstream's own scaling-critic detector, and the scaling checkpoints are
+``f"ESMFold2-Experimental-Fast-base{size}-step{step}k"`` — but it matches
+scaling rows and only scaling rows, and the scaling ensemble was off by
+default. So on the default path no row matched, ``cdr_distogram_iptm_proxy``
+stayed None, and ``_classify`` — which gates antibodies on that field alone —
+returned ``drop`` for every scFv design ever run. Reproduced 2026-08-23 against
+``ranomics-esmfold2-design-prod``: 13 designs on two targets, 13 dropped, real
+iPTM 0.621-0.949.
 
 The critic names and CDR proxy values below are the real rows from that run
 (``results/raw/critic_results.json``, one representative design). Runs fully
@@ -158,3 +161,82 @@ def test_empty_critic_results_is_not_reported_as_a_rename(caplog):
     with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
         assert _shape_designs([], is_antibody=True) == []
     assert CRITIC_REAL_IPTM not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The tripwire, and the flag whose removal it outlived.
+# ---------------------------------------------------------------------------
+
+
+def test_blank_proxy_is_logged_even_when_the_critic_is_named_correctly(caplog):
+    """The case a critic-NAME check cannot see, i.e. the original bug.
+
+    ``_warn_if_scores_missing`` replaced an ``_assert_critic_present`` that
+    checked only whether CRITIC_REAL_IPTM appeared among the row names. Through
+    all 13 prod drops that critic was present and correctly named; what was
+    missing was the proxy, because it was being sourced off scaling rows. A
+    name check stays silent here. Checking the shaped output does not.
+    """
+    no_proxy = [
+        dict(row, cdr_distogram_iptm_proxy=None) for row in SCFV_ROWS
+    ]
+    with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
+        (design,) = _shape_designs(no_proxy, is_antibody=True)
+    assert design["iptm"] is not None, "iPTM still sourced; only the proxy went"
+    assert design["filter_status"] == "drop"
+    assert "cdr_distogram_iptm_proxy" in caplog.text
+    assert CRITIC_REAL_IPTM in caplog.text
+
+
+def test_rows_that_shape_no_designs_are_logged(caplog):
+    """Upstream renaming designed_sequence yields COMPLETED with 0 designs."""
+    renamed_key = [
+        {k: v for k, v in row.items() if k != "designed_sequence"}
+        for row in SCFV_ROWS
+    ]
+    with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
+        assert _shape_designs(renamed_key, is_antibody=True) == []
+    assert "shaped 0 designs" in caplog.text
+
+
+def test_a_minibinder_run_does_not_false_alarm_on_the_cdr_proxy(caplog):
+    """Only the proxy the preset gates on is checked.
+
+    Upstream emits the CDR proxy as NaN on minibinder runs, so it is
+    legitimately None for every design there. Checking both proxies would log
+    an error on every healthy minibinder run and teach everyone to ignore it.
+    """
+    rows = [
+        {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": SEQ,
+         "distogram_iptm_proxy": 0.62, "cdr_distogram_iptm_proxy": float("nan"),
+         "iptm": 0.81, "final_loss": 0.29, "complex": None},
+    ]
+    with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
+        designs = _shape_designs(rows, is_antibody=False)
+    assert designs and designs[0]["cdr_distogram_iptm_proxy"] is None
+    assert designs[0]["distogram_iptm_proxy"] == 0.62
+    assert caplog.text == ""
+
+
+def test_no_reachable_path_loads_the_scaling_ensemble():
+    """The 15-checkpoint ensemble is never loaded, and cannot be switched on.
+
+    It loads on the host with device="cpu" against a 10 GB ``memory=``, and
+    since every score is read off a hero critic its rows are never consulted:
+    ticking it bought an OOM risk and no change to any number. If someone
+    reintroduces the toggle, ``memory=`` has to be raised in the same change.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pipeline = (root / "tools" / "esmfold2_design" / "run_pipeline.py").read_text(
+        encoding="utf-8"
+    )
+    assert "designer.load(False)" in pipeline
+    # Any argument other than the literal False means something can flip it.
+    assert "designer.load(use_scaling_critics)" not in pipeline
+
+    form = (
+        root / "templates" / "tools" / "esmfold2_design_form.html"
+    ).read_text(encoding="utf-8")
+    assert 'name="use_scaling_critics"' not in form

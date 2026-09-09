@@ -24,7 +24,6 @@ job_spec keys:
     is_antibody           bool
     seed                  int
     batch_size            int   1-6
-    use_scaling_critics   bool
 
 Output shape (``/tmp/smoke_results.json``)::
 
@@ -40,7 +39,6 @@ Output shape (``/tmp/smoke_results.json``)::
       "designs_total": 1,
       "designs_completed": 1,
       "n_failures": 0,
-      "use_scaling_critics": false,
       "trajectory_steps": 150,
       "best_sequence": "AEKV...",
       "designs": [
@@ -156,20 +154,23 @@ STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 # Fast-base" in critic_name``), and the 15 scaling checkpoints are named
 # f"ESMFold2-Experimental-Fast-base{size}-step{step}k". Copying that substring
 # as a *source selector* is what broke: it matches scaling rows and only
-# scaling rows, ``use_scaling_critics`` defaults to False, so on the default
+# scaling rows, and the scaling ensemble was off by default, so on the default
 # path no matching row exists, both proxies stayed None, and since _classify
 # gates scFvs on the CDR proxy alone EVERY antibody design came back ``drop``
-# regardless of quality (13/13 on a 2026-08-23 prod run). Ticking the box did
-# populate it -- which is why the tool looked fine to whoever tested that way.
+# regardless of quality (13/13 on a 2026-08-23 prod run). Loading the ensemble
+# did populate it -- which is why the tool looked fine to whoever tested that
+# way.
 #
 # The proxies were never actually missing. Upstream calls
 # compute_distogram_iptm_proxy once per critic and spreads the result into
 # EVERY row, hero critics included, so the value was always sitting on the row
 # this file already read the iPTM off. Sourcing it there removes the second
 # name to keep in sync and makes every number in a results row one model's
-# opinion. Consequence worth knowing: scaling-critic rows are now never read,
-# so use_scaling_critics changes nothing about the output.
-# _assert_critic_present makes a future upstream rename loud in the logs
+# opinion. It also left the scaling ensemble reading nowhere, which is why the
+# ``use_scaling_critics`` toggle that used to sit on this job spec was removed
+# outright rather than left as a paid no-op: see the ``designer.load(False)``
+# call in _run.
+# _warn_if_scores_missing makes a future upstream rename loud in the logs
 # instead of silently zeroing the gate again.
 CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
 
@@ -360,25 +361,58 @@ def _finite(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
-def _assert_critic_present(critic_results: list[dict]) -> None:
-    """Log loudly when the scoring critic is absent from the upstream rows.
+def _warn_if_scores_missing(
+    designs: list[dict], is_antibody: bool, critic_results: list[dict],
+) -> None:
+    """Log loudly when a whole run came back with no critic-sourced scores.
 
-    Every score this pipeline reports is read off CRITIC_REAL_IPTM. If bumping
-    ``_ESM_GIT_SHA`` renames it, every field silently goes None and _classify
-    drops the entire run — which is precisely how the scFv gate stayed dead.
-    This cannot repair such a run, only put the cause in the Modal logs instead
-    of making it cost another H100 to find.
+    Every critic-sourced field (iPTM, both proxies, final_loss, the complex) is
+    read off CRITIC_REAL_IPTM; only the pI is computed locally. Three upstream
+    changes reach this: renaming that critic (blanks all of them), dropping a
+    scored key from its row (blanks that one), or moving the proxies onto other
+    critics (blanks the proxy — exactly how the scFv gate stayed dead).
+
+    This checks the SHAPED OUTPUT rather than the critic names, because a name
+    check sees only the first of those three. The bug this file exists to fix
+    left CRITIC_REAL_IPTM present and correctly named the whole time, so a name
+    check would have stayed silent through all 13 of the drops it caused.
+    Checking the output sees the first and third, and the second whenever the
+    dropped key is iptm or the proxy this preset actually gates on; a dropped
+    final_loss or complex still passes, neither being worth a false alarm.
+
+    This cannot repair the run, only put the cause in the Modal logs instead of
+    making it cost another H100 to find. The logs are the only place it lands:
+    modal_app.py returns stderr_tail="", so nothing surfaces on the job page.
     """
-    if not critic_results:
-        # A run that produced no rows at all is a different failure, already
-        # reported by the caller. Claiming a rename here would spend the one
-        # log line whose whole job is to be believed.
-        return
     names = sorted({str(row.get("critic_name", "")) for row in critic_results})
-    if CRITIC_REAL_IPTM not in names:
+    if not designs:
+        if critic_results:
+            # Rows arrived but none shaped: upstream renamed designed_sequence,
+            # so every row hit the ``seq is None`` skip above. The job still
+            # reports COMPLETED with zero designs, which reads as "the target
+            # is undesignable" rather than as a wiring fault.
+            logger.error(
+                "%d critic rows shaped 0 designs: upstream likely renamed "
+                "designed_sequence. Critics seen: %s",
+                len(critic_results),
+                names,
+            )
+        return
+    # Only the proxy this preset gates on. Upstream emits the other as NaN
+    # (compute_distogram_iptm_proxy: "otherwise the CDR score is NaN"), which
+    # _finite turns to None, so checking both would false-alarm on every run.
+    proxy_key = (
+        "cdr_distogram_iptm_proxy" if is_antibody else "distogram_iptm_proxy"
+    )
+    blank = [
+        key for key in ("iptm", proxy_key)
+        if all(design.get(key) is None for design in designs)
+    ]
+    if blank:
         logger.error(
-            "critic %r absent from critic_results: every score will be None "
-            "and every design will classify as drop. Critics seen: %s",
+            "no design has a value for %s: every critic-sourced score is None. "
+            "Expected them on critic %r. Critics seen: %s",
+            ", ".join(blank),
             CRITIC_REAL_IPTM,
             names,
         )
@@ -407,7 +441,6 @@ def _shape_designs(
     Storage namespace. The orchestrator sets it to ``seed{N}_`` per
     child; single-seed runs leave it empty.
     """
-    _assert_critic_present(critic_results)
     by_sequence: dict[str, dict] = {}
     for row in critic_results:
         seq = row.get("designed_sequence")
@@ -495,6 +528,10 @@ def _shape_designs(
     for rank, d in enumerate(designs):
         d["rank"] = rank
         d["name"] = f"{pdb_prefix}design_{rank}"
+    # After shaping, not before: the check reads the values that actually
+    # landed on the designs, which is the only view that catches a proxy
+    # sourced off the wrong critic.
+    _warn_if_scores_missing(designs, is_antibody, critic_results)
     return designs
 
 
@@ -759,7 +796,6 @@ def _run() -> int:
     is_antibody = bool(job_spec.get("is_antibody", preset == "scfv"))
     seed = int(job_spec.get("seed", 0))
     batch_size = int(job_spec.get("batch_size", 1))
-    use_scaling_critics = bool(job_spec.get("use_scaling_critics", False))
     # pdb_prefix is set by the multi-seed orchestrator in modal_app.py
     # so each child run uses a unique Storage key for its PDB output;
     # single-seed runs receive an empty string and behave as before.
@@ -767,7 +803,7 @@ def _run() -> int:
 
     logger.info(
         "ESMFold2 design start: job=%s tier=%s preset=%s target=%s "
-        "binder=%s seed=%d batch_size=%d scaling=%s",
+        "binder=%s seed=%d batch_size=%d",
         job_id,
         tier,
         preset,
@@ -775,7 +811,6 @@ def _run() -> int:
         binder_name,
         seed,
         batch_size,
-        use_scaling_critics,
     )
 
     # Import the upstream module. /opt is on sys.path via the top of
@@ -818,7 +853,15 @@ def _run() -> int:
         # load() reads it as a module global, so it must be set before it.
         bd.REUSE_ESMC = True
         designer = bd.ESMFold2Design()
-        designer.load(use_scaling_critics)
+        # Hero critics only, always. The 15-checkpoint scaling ensemble this
+        # argument used to switch on loads with device="cpu" and
+        # cache_esmc=False -- 15 more checkpoints, 5 of them 6B, each carrying
+        # its own ESMC copy, against the 10 GB ``memory=`` in modal_app.py.
+        # Upstream recommends 60 GB host RAM for it. Since _shape_designs reads
+        # every score off CRITIC_REAL_IPTM, a hero critic, those rows are never
+        # read and the ensemble changed no reported number: it was a host-RAM
+        # OOM waiting to be ticked, in exchange for nothing.
+        designer.load(False)
     except Exception as exc:
         logger.error("Failed to load ESMFold2Design: %s\n%s", exc, traceback.format_exc())
         _write_result(
@@ -863,7 +906,6 @@ def _run() -> int:
                 "designs_completed": 0,
                 "n_failures": 1,
                 "designs": [],
-                "use_scaling_critics": use_scaling_critics,
                 "runtime_seconds": int(time.time() - start),
                 "provider_job_id": job_id,
             }
@@ -924,7 +966,6 @@ def _run() -> int:
         "designs_total": batch_size,
         "designs_completed": len(designs),
         "n_failures": max(0, batch_size - len(designs)),
-        "use_scaling_critics": use_scaling_critics,
         "trajectory_steps": len(trajectory) if trajectory is not None else None,
         # NOT ``best_seq`` from design(): upstream returns its own top pick
         # with no knowledge of our strict-pass gate. It survives only as the

@@ -169,17 +169,6 @@ about: dict = {
                 "when you already know the target gives clean hits."
             ),
         },
-        {
-            "name": "Use scaling critics",
-            "explanation": (
-                "Optional. Loads the 15-checkpoint ESMFold2 scaling "
-                "ensemble. It does NOT add the distogram iPTM proxy — "
-                "upstream computes that for every critic, and this tool "
-                "reads it off the same hero critic as the real iPTM "
-                "whether or not this is ticked. Roughly doubles host "
-                "memory; off by default."
-            ),
-        },
     ],
     "runtime_table": [
         {"preset": "minibinder", "typical": "~10 min/design"},
