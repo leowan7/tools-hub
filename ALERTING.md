@@ -780,16 +780,14 @@ from production.** GitHub's failure email carries no log body, so open the run.
      clean one.
      Table row 1 above records a push deploying normally on 2026-08-24.
 
-   **`gh run rerun` on this guard's own run will not help:** it re-runs the
-   drift check, which re-fails while production is still stale. But the check
-   that gated the skip is not this guard — `synthetic-smoke.yml` has no push
-   trigger, so it had not run for that commit when Railway decided. Find the
-   run that actually failed and re-run THAT in place; per the Wait-for-CI
-   section above, that can flip its own conclusion, and it is the cheapest
-   move when the failure is flaky. (Whether Railway then re-evaluates an
-   already-`SKIPPED` deployment is unrecorded either way: no run on `395c523`
-   was ever re-run in place — all six are `run_attempt=1` — so that worked
-   example cannot answer it.)
+   **If the red run is this guard's own, `gh run rerun` will not help:** it
+   re-runs the drift check, which re-fails while production is still stale.
+   Which check gated the skip is not something this file can answer — "latest
+   suite, or any suite?" above is still open — so look at what is actually red,
+   and read the deadlock paragraph below before acting on it. (Whether Railway
+   then re-evaluates an already-`SKIPPED` deployment is unrecorded either way:
+   no run on `395c523` was ever re-run in place — all six are
+   `run_attempt=1` — so that worked example cannot answer it.)
 
    Whichever you try, confirm with `/health` that `build` moved and record the
    result. Redeploy on a `SKIPPED` entry is untested, like the rollback row
