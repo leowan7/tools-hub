@@ -39,9 +39,10 @@ def guard_step(workflow: dict) -> dict:
 
 
 def test_the_guard_is_its_own_job_not_a_step_before_the_smoke(workflow: dict):
-    """Five of its seven paths exit 1; as a step each would abort before the smoke.
+    """Five of its seven paths exit 1. The pre-review draft ran them as a step
+    ahead of the smoke.
 
-    A /health blip therefore deleted the deep end-to-end signal entirely, and
+    A /health blip would therefore have deleted the deep end-to-end signal, and
     the guard's own message told the reader to compare against "the smoke
     below" -- a result its placement guaranteed would not exist.
     """
@@ -234,22 +235,42 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
         "the drift branch no longer emits an ::error:: annotation"
     )
     tail = run[run.index("::error::DEPLOY DRIFT"):]
-    # Every line that can terminate the step, comments excluded. Two weaker
-    # forms were tried and both leak. Asserting on the LAST line misses an
-    # early exit spliced above it; asserting `"exit 0" not in tail` misses
-    # `exit  0`, `exit $?`, `exit ${RC:-0}` and a bare `exit` -- which takes
-    # $? from the `git log` above it, i.e. 0 -- while ALSO false-failing on a
-    # comment that merely mentions exit 0, the same hazard `_if_block` below
-    # exists to dodge. Any of those prints DEPLOY DRIFT into a GREEN job: no
-    # failure, no email, no signal, which is the outage this guard is for.
+    # TWO properties, because each misses what the other catches and a repair
+    # that swapped one for the other lost real coverage.
+    #
+    # Composition: exactly one exit-bearing line, and it says `exit 1`. This
+    # catches what `"exit 0" not in tail` could not -- `exit  0`, `exit $?`,
+    # `exit ${RC:-0}`, `true && exit 0`, and a bare `exit`, which takes $?
+    # from the `git log` above it, i.e. 0.
+    #
+    # Position: that line is also the LAST thing in the step. Composition
+    # alone cannot tell a reachable `exit 1` from an unreachable one --
+    # wrapping it in `if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then ... fi`
+    # leaves the composition untouched while the step falls through and
+    # exits 0 on workflow_dispatch, which is the trigger the runbook tells
+    # the operator to use right after a deploy.
+    #
+    # Either way the job goes GREEN after printing DEPLOY DRIFT: no failure,
+    # no email, no signal, which is the outage this guard exists to catch.
+    #
+    # The comment skip below is only for `#` lines. It does not make this
+    # immune to prose: an `echo "about to exit 1"` here would false-fail.
+    # That is loud and obvious, unlike the silent misses above, so it is the
+    # side to err on -- but it is a trade, not a solved problem.
     terminators = [
         ln.strip() for ln in tail.splitlines()
         if not ln.lstrip().startswith("#") and re.search(r"\bexit\b", ln)
     ]
     assert terminators == ["exit 1"], (
-        "the drift branch must end at exactly one `exit 1`, with nothing "
-        "terminating the step before it, or detecting drift does not FAIL "
-        f"the job and nobody is emailed. Found: {terminators}"
+        "the drift branch must contain exactly one exit, `exit 1`, or "
+        "detecting drift does not FAIL the job and nobody is emailed. "
+        f"Found: {terminators}"
+    )
+    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    assert lines[-1] == "exit 1", (
+        "the drift branch does not END at `exit 1`, so that exit may not be "
+        "reached at all -- a conditional around it leaves the composition "
+        f"check above satisfied while the job exits 0. Last line: {lines[-1]!r}"
     )
 
 
@@ -313,15 +334,16 @@ def test_every_stated_exit_path_count_matches_the_script(guard_step: dict):
     nonzero = sum(1 for code in exits if code != "0")
 
     claims = []
-    for source in (_WORKFLOW, Path(__file__)):
+    for source in (_WORKFLOW, _ALERTING, Path(__file__)):
         for said, n, m in _stated_path_counts(source.read_text(encoding="utf-8")):
             claims.append((source.name, said, n, m))
     assert len(claims) == _EXPECTED_CLAIM_SITES, (
         f"expected {_EXPECTED_CLAIM_SITES} sites stating this count, found "
         f"{len(claims)}: {[(w, said) for w, said, _, _ in claims]}. A site "
         f"that stops matching goes UNSCANNED while the others keep this test "
-        f"green -- the same shape as the defect it exists to catch. If a site "
-        f"was deliberately added or removed, update _EXPECTED_CLAIM_SITES."
+        f"green -- the same shape as the defect it exists to catch. Before "
+        f"changing _EXPECTED_CLAIM_SITES, check the claim did not simply move "
+        f"somewhere this does not scan; if it did, scan there instead."
     )
 
     wrong = [
