@@ -17,8 +17,8 @@ name: Synthetic smoke (Platform API)
 # step ahead of the smoke, and the two do not depend on each other -- neither
 # declares `needs:`, so they run in PARALLEL and both report. That is
 # deliberate: five of its seven paths exit non-zero, and as a step every one
-# of them ran BEFORE the smoke, so a /health blip deleted the deep end-to-end
-# signal entirely.
+# of them would abort the job BEFORE the smoke ran, so a /health blip deleted
+# the deep end-to-end signal entirely.
 # See the comment above the `deploy-drift` job for the reasoning, and do not
 # "restore consistency" by folding it back into a step.
 #
@@ -94,10 +94,11 @@ permissions:
 
 jobs:
   # Its own job, not a step ahead of the smoke. Five of its seven paths exit 1;
-  # as a step all five ran BEFORE the smoke, so a /health blip deleted the deep
-  # end-to-end signal entirely -- and its own message told the reader to compare
-  # against "the smoke below", a result its placement guaranteed would not
-  # exist. Separate jobs run independently and both report.
+  # as a step each of those would abort the job BEFORE the smoke ran, so a
+  # /health blip deleted the deep end-to-end signal entirely -- and its own
+  # message told the reader to compare against "the smoke below", a result its
+  # placement guaranteed would not exist. Separate jobs run independently and
+  # both report.
   deploy-drift:
     name: Production is running current code
     runs-on: ubuntu-latest

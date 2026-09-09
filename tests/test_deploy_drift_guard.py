@@ -39,7 +39,7 @@ def guard_step(workflow: dict) -> dict:
 
 
 def test_the_guard_is_its_own_job_not_a_step_before_the_smoke(workflow: dict):
-    """Five of its seven paths exit 1; as a step all five ran ahead of the smoke.
+    """Five of its seven paths exit 1; as a step each would abort before the smoke.
 
     A /health blip therefore deleted the deep end-to-end signal entirely, and
     the guard's own message told the reader to compare against "the smoke
@@ -234,15 +234,22 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
         "the drift branch no longer emits an ::error:: annotation"
     )
     tail = run[run.index("::error::DEPLOY DRIFT"):]
-    assert "exit 0" not in tail, (
-        "an `exit 0` sits between the DEPLOY DRIFT error and the end of the "
-        "step, so the guard short-circuits to a PASS after announcing drift. "
-        "Asserting only on the last line cannot see this."
-    )
-    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
-    assert lines[-1] == "exit 1", (
-        "the drift branch does not end in `exit 1`, so detecting drift does "
-        f"not FAIL the job and nobody is emailed. Tail was: {lines[-1]!r}"
+    # Every line that can terminate the step, comments excluded. Two weaker
+    # forms were tried and both leak. Asserting on the LAST line misses an
+    # early exit spliced above it; asserting `"exit 0" not in tail` misses
+    # `exit  0`, `exit $?`, `exit ${RC:-0}` and a bare `exit` -- which takes
+    # $? from the `git log` above it, i.e. 0 -- while ALSO false-failing on a
+    # comment that merely mentions exit 0, the same hazard `_if_block` below
+    # exists to dodge. Any of those prints DEPLOY DRIFT into a GREEN job: no
+    # failure, no email, no signal, which is the outage this guard is for.
+    terminators = [
+        ln.strip() for ln in tail.splitlines()
+        if not ln.lstrip().startswith("#") and re.search(r"\bexit\b", ln)
+    ]
+    assert terminators == ["exit 1"], (
+        "the drift branch must end at exactly one `exit 1`, with nothing "
+        "terminating the step before it, or detecting drift does not FAIL "
+        f"the job and nobody is emailed. Found: {terminators}"
     )
 
 
@@ -250,6 +257,22 @@ _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
+
+# How many places state this count. Pinned, because a global "did we find any"
+# check cannot see ONE site drop out of the scan: the survivors keep the
+# assertion green while the unscanned one rots. That is precisely the shape of
+# the defect this test exists to stop, so it must not be reproducible here.
+_EXPECTED_CLAIM_SITES = 3
+
+
+def _as_int(word: str) -> "int | None":
+    """Number words or digits.
+
+    Silently dropping a digit-form claim would un-scan the site that used it.
+    """
+    if word.isdigit():
+        return int(word)
+    return _NUMBER_WORDS.get(word.lower())
 
 
 def _stated_path_counts(text: str) -> list[tuple[str, int, int]]:
@@ -262,8 +285,8 @@ def _stated_path_counts(text: str) -> list[tuple[str, int, int]]:
     flat = re.sub(r"\s*\n\s*#?\s*", " ", text)
     found = []
     for said_n, said_m in re.findall(r"(\w+) of (?:its )?(\w+) paths", flat):
-        n = _NUMBER_WORDS.get(said_n.lower())
-        m = _NUMBER_WORDS.get(said_m.lower())
+        n = _as_int(said_n)
+        m = _as_int(said_m)
         if n is not None and m is not None:
             found.append((f"{said_n} of {said_m}", n, m))
     return found
@@ -293,10 +316,12 @@ def test_every_stated_exit_path_count_matches_the_script(guard_step: dict):
     for source in (_WORKFLOW, Path(__file__)):
         for said, n, m in _stated_path_counts(source.read_text(encoding="utf-8")):
             claims.append((source.name, said, n, m))
-    assert claims, (
-        "no exit-path claim found in either file. If the prose was reworded to "
-        "drop the count, delete this test; otherwise the pattern has drifted "
-        "and the next stale number ships unseen, which is how this one did."
+    assert len(claims) == _EXPECTED_CLAIM_SITES, (
+        f"expected {_EXPECTED_CLAIM_SITES} sites stating this count, found "
+        f"{len(claims)}: {[(w, said) for w, said, _, _ in claims]}. A site "
+        f"that stops matching goes UNSCANNED while the others keep this test "
+        f"green -- the same shape as the defect it exists to catch. If a site "
+        f"was deliberately added or removed, update _EXPECTED_CLAIM_SITES."
     )
 
     wrong = [

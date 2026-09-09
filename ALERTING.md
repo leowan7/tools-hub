@@ -744,21 +744,31 @@ from production.** GitHub's failure email carries no log body, so open the run.
 2. Railway dashboard → project `tools-hub` → service `web` → Deployments, and
    set the toggle so skipped deploys are visible (it should read "Hide
    Skipped"). The missing commit is in one of three states. They look similar
-   on the dashboard and take **opposite** remedies, so identify it before
+   on the dashboard and do not take the same remedy, so identify it before
    acting.
 
    **a. A `SKIPPED` entry exists.** Wait for CI gated it — see
    [A variable change is not deploying (Railway "Wait for CI")](#a-variable-change-is-not-deploying-railway-wait-for-ci).
-   **Redeploy is the remedy here**, not the trap described in (b): ⋮ →
-   **Redeploy** on that entry acts on an entry for the commit you actually
-   want, so it ships the right code. This is the state observed on 2026-08-24.
+   The remedy known to work is (b)'s: push a fresh commit to `main`. Its suite
+   is new, so Wait for CI has nothing to hold it on.
+
+   ⋮ → **Redeploy** on the skipped entry itself looks like the shorter route,
+   and may be, but **nobody has tested it.** The single Redeploy observation
+   in this file (2026-08-24, in the section linked above) was on the ACTIVE
+   deployment, picking up a service-variable change on the commit already
+   running — not on a skipped entry for a commit that never built. Whether
+   Redeploy is even offered on a skipped card, and whether it clears the CI
+   gate, is unestablished, exactly like the rollback row there. If you try it,
+   confirm with `/health` that `build` moved, and record the result here.
 
    **b. No entry of any kind.** The deploy event was dropped — the 2026-08-20
    case above. There is nothing to fix in the repo. **Do not reach for Redeploy
-   here:** with no entry for the missing commit, Redeploy acts on the newest
-   entry, which is the stale commit, so it rebuilds what is already running and
-   the guard just fires again in 6h. What you need is something that makes
-   Railway deploy the MISSING commit: push a fresh commit to `main` (an empty
+   here:** Redeploy acts on an EXISTING deployment and rebuilds the commit
+   that deployment was for — and with no entry for the missing commit, every
+   entry you can click is for older code, so it rebuilds what is already
+   running and the guard just fires again in 6h. What you need is something
+   that makes Railway deploy the MISSING commit: push a fresh commit to `main`
+   (an empty
    one is enough — `git commit --allow-empty -m "chore: retrigger deploy" &&
    git push`), then confirm with `curl -s https://tools.ranomics.com/health`
    that `build` moved. If it did not, the drop is not a one-off and the deploy
@@ -773,7 +783,8 @@ when production is stale on commit X, which is exactly when someone needs X
 deployed. Clearing the suite with `gh run rerun` will NOT break the loop: the
 guard cannot go green until production is actually redeployed, so it re-fails
 and the suite is red again. Break it at the deploy (2a or 2b above), never at
-the check. When Wait for CI is what skipped it, 2a is the fast path.
+the check. When Wait for CI is what skipped it, 2a says what is known and
+what is not.
 
 **One red herring, recorded so it is not chased twice.** The `railway-app` check
 suite on a GitHub commit sits at `status=queued, conclusion=null` indefinitely.
