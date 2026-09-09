@@ -377,8 +377,16 @@ def _warn_if_scores_missing(
     left CRITIC_REAL_IPTM present and correctly named the whole time, so a name
     check would have stayed silent through all 13 of the drops it caused.
     Checking the output sees the first and third, and the second whenever the
-    dropped key is iptm or the proxy this preset actually gates on; a dropped
-    final_loss or complex still passes, neither being worth a false alarm.
+    dropped key is iptm or the proxy upstream populates for this preset; a
+    dropped final_loss or complex still passes, neither being worth a false
+    alarm.
+
+    Neither message may assert a cause it cannot distinguish. An all-blank
+    iPTM is equally a run where every fold diverged and a critic that stopped
+    carrying the field, and zero shaped designs is equally failed folds and a
+    renamed key. Naming one is a confident misdiagnosis, which sends the next
+    reader somewhere there is nothing to find -- the same failure mode as the
+    ``drop`` this file exists to fix, one layer up.
 
     This cannot repair the run, only put the cause in the Modal logs instead of
     making it cost another H100 to find. The logs are the only place it lands:
@@ -387,20 +395,26 @@ def _warn_if_scores_missing(
     names = sorted({str(row.get("critic_name", "")) for row in critic_results})
     if not designs:
         if critic_results:
-            # Rows arrived but none shaped: upstream renamed designed_sequence,
-            # so every row hit the ``seq is None`` skip above. The job still
-            # reports COMPLETED with zero designs, which reads as "the target
-            # is undesignable" rather than as a wiring fault.
+            # Rows arrived but every one hit the ``seq is None`` skip above.
+            # Two causes reach that skip and this cannot tell them apart: a
+            # renamed key, or folds that failed and carry designed_sequence
+            # None. Either way the job reports COMPLETED with zero designs,
+            # which reads as "the target is undesignable".
             logger.error(
-                "%d critic rows shaped 0 designs: upstream likely renamed "
-                "designed_sequence. Critics seen: %s",
+                "%d critic rows shaped 0 designs: every row had a null "
+                "designed_sequence. Either those folds failed, or upstream "
+                "renamed the key. Critics seen: %s",
                 len(critic_results),
                 names,
             )
         return
-    # Only the proxy this preset gates on. Upstream emits the other as NaN
-    # (compute_distogram_iptm_proxy: "otherwise the CDR score is NaN"), which
-    # _finite turns to None, so checking both would false-alarm on every run.
+    # The proxy upstream POPULATES for this preset, which is not the same as
+    # the one the preset gates on: _classify reads the CDR proxy alone for
+    # antibodies, but minibinders gate on iptm and pI and never read their
+    # proxy at all. The selection is about which one carries a number --
+    # upstream emits the other as NaN (compute_distogram_iptm_proxy:
+    # "otherwise the CDR score is NaN"), which _finite turns to None, so
+    # checking both would false-alarm on every healthy run.
     proxy_key = (
         "cdr_distogram_iptm_proxy" if is_antibody else "distogram_iptm_proxy"
     )
@@ -409,10 +423,17 @@ def _warn_if_scores_missing(
         if all(design.get(key) is None for design in designs)
     ]
     if blank:
+        # Name only the fields actually blank, and offer both readings. The
+        # earlier wording said "every critic-sourced score is None" whatever
+        # was missing, which is false on a diverged run whose proxies came
+        # through, and it accused a critic the same line lists as present.
         logger.error(
-            "no design has a value for %s: every critic-sourced score is None. "
-            "Expected them on critic %r. Critics seen: %s",
+            "no design carries a value for %s across all %d shaped design(s). "
+            "Either every fold diverged (upstream emits NaN, dropped here), or "
+            "critic %r -- which every one of these fields is read off -- "
+            "stopped carrying them. Critics seen: %s",
             ", ".join(blank),
+            len(designs),
             CRITIC_REAL_IPTM,
             names,
         )

@@ -240,3 +240,51 @@ def test_no_reachable_path_loads_the_scaling_ensemble():
         root / "templates" / "tools" / "esmfold2_design_form.html"
     ).read_text(encoding="utf-8")
     assert 'name="use_scaling_critics"' not in form
+
+
+def test_diverged_run_is_not_reported_as_a_missing_critic(caplog):
+    """The alarm may not assert a cause it cannot distinguish.
+
+    Every fold diverged (upstream emits NaN iPTM) but the proxies came through
+    fine. The blank field is iptm and iptm only. An earlier wording said "every
+    critic-sourced score is None" regardless of what was actually missing --
+    false here, with proxies at 0.62 and 0.71 on the shaped designs -- and then
+    named a critic that the very same line lists under "Critics seen". Pointing
+    at a healthy critic sends the reader to look for a rename that did not
+    happen, which is the confident misdiagnosis this guard exists to replace.
+    """
+    rows = [
+        {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": seq,
+         "iptm": float("nan"), "distogram_iptm_proxy": proxy,
+         "cdr_distogram_iptm_proxy": float("nan"),
+         "final_loss": float("nan"), "complex": None}
+        for seq, proxy in (("T|AAAA", 0.62), ("T|CCCC", 0.71))
+    ]
+    with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
+        designs = _shape_designs(rows, is_antibody=False)
+
+    assert [d["distogram_iptm_proxy"] for d in designs] == [0.62, 0.71]
+    assert all(d["iptm"] is None for d in designs)
+
+    assert "iptm" in caplog.text
+    # The proxies are populated, so no claim that everything is blank.
+    assert "every critic-sourced score is None" not in caplog.text
+    # Both readings offered, neither asserted.
+    assert "diverged" in caplog.text
+    assert "Either" in caplog.text
+
+
+def test_null_sequences_are_not_reported_as_a_rename(caplog):
+    """``seq is None`` catches failed folds too, not only a renamed key."""
+    rows = [
+        {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": None,
+         "iptm": 0.9, "distogram_iptm_proxy": 0.6,
+         "cdr_distogram_iptm_proxy": float("nan"), "final_loss": 0.2,
+         "complex": None},
+    ]
+    with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
+        assert _shape_designs(rows, is_antibody=False) == []
+    assert "shaped 0 designs" in caplog.text
+    assert "Either those folds failed" in caplog.text
+    # "likely renamed" asserted a cause the skip cannot distinguish.
+    assert "likely renamed" not in caplog.text
