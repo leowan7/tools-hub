@@ -423,13 +423,56 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "antibody-grade fit; above 0.75 is excellent."
         ),
     },
-    ("bindcraft", "SAP"): {
-        "good": 10,
-        "excellent": 5,
+    # THIS COLUMN WAS CALLED "SAP" AND IT IS NOT SAP. BindCraft computes no
+    # Spatial Aggregation Propensity anywhere: the image installs
+    # FreeBindCraft with --no-pyrosetta (docker/bindcraft/Dockerfile.modal)
+    # and neither scoring path has a SAP term. Both write an apolar/aromatic
+    # share of the binder on 0-1 under ``surface_hydrophobicity``, and the two
+    # are NOT the same quantity -- an AREA fraction on the free path that
+    # ships (hydrophobic-residue SASA / binder monomer SASA,
+    # functions/pr_alternative_utils.py) and a surface-RESIDUE-COUNT fraction
+    # on the PyRosetta path (functions/pyrosetta_utils.py). Same name, same
+    # range, neither one SAP. The container's _METRIC_MAP maps
+    # Average_Surface_Hydrophobicity onto the key "SAP"
+    # (docker/bindcraft/run_pipeline.py), so a 0-1 fraction arrived under a
+    # name whose bars were 10 and 5 and read better-than-excellent by
+    # construction: 0.29 against a bar of 5.
+    #
+    # THOSE BARS ARE NOT CHENNAMSETTY'S. This repo's old glossary entry
+    # attributed "< 5 favourable; > 10 developability concern" to Chennamsetty
+    # PNAS 2009. That paper introduces SAP as a per-atom value mapped onto a
+    # structure; it is not the source of a 5/10 split, and nothing here cites
+    # it for one now. Describing the removed bars by the paper's name would
+    # repeat the misattribution inside the note correcting it.
+    #
+    # NO ``good`` AND NO ``excellent``, and not because the real bar is
+    # unknown. It is 0.35 (settings_filters/default_filters.json,
+    # Average_Surface_Hydrophobicity, higher=false). A pilot applies that file
+    # and candidates are globbed from Accepted/ only, so a pilot row has
+    # already passed it -- upstream's own 101 accepted PD-L1 designs top out
+    # at 0.34. A bar the delivered values cannot fail is the defect this entry
+    # exists to remove, not a repair of it.
+    #
+    # WHICH IS WHY THE EXPLANATION DESCRIBES THE FILTER AND NOT THIS TABLE.
+    # 0.35 is upstream's default filter value; this legend renders on every
+    # bindcraft page there will ever be. "Every design here is already under
+    # that", the first draft's wording, promises the rows on screen instead.
+    #
+    # ``i_pAE`` is in this tool's payload (0.26, 0.27 on the worked example)
+    # and deliberately has NO legend. It is a normalised interface pAE on 0-1
+    # whose own filter bar is 0.35, NOT the angstrom quantity rfdiffusion and
+    # rfantibody judge at 10/6. It also holds its key only by dict insertion
+    # order -- _METRIC_MAP lists Average_Binder_pAE, an intra-binder value,
+    # first and lets later entries win -- so a FreeBindCraft that stopped
+    # writing Average_i_pAE would substitute a different quantity silently.
+    # Copying an angstrom legend onto it is this same defect again;
+    # tests/test_worked_examples.py::TestABarAndItsValuesShareAScale fails
+    # the moment anyone does.
+    ("bindcraft", "surface_hydrophobicity"): {
         "direction": "lower_is_better",
         "explanation": (
-            "Spatial Aggregation Propensity. Below 10 is acceptable; "
-            "below 5 is favourable for biomanufacturing."
+            "Share of the binder's own surface that is hydrophobic. "
+            "BindCraft's standard filters reject anything above 0.35."
         ),
     },
 
@@ -1274,6 +1317,12 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     # spellings. "pAE" below is NOT aliased to it: a global PAE is a different
     # measurement and must not answer the interface bar.
     "ipAE": ("ipAE", "ipae", "i_pae"),
+    # "SAP" is a STORAGE spelling here and nothing more. The bindcraft
+    # container writes its surface-hydrophobicity fraction under that key
+    # (see the bindcraft legend above for why the name is wrong), so every
+    # job already in the table holds it there. Renaming the display column
+    # without this alias would blank the cell on every past run.
+    "surface_hydrophobicity": ("surface_hydrophobicity", "SAP"),
 }
 
 

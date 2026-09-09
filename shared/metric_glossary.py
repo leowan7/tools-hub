@@ -159,14 +159,27 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "> 0.65 good; > 0.75 excellent (antibody–antigen avg ~0.64)",
         "citation": "Lawrence & Colman, J Mol Biol 1993",
     },
-    "SAP": {
-        "label": "SAP score",
+    # Was "SAP", labelled "SAP score", defined as Spatial Aggregation
+    # Propensity and cited to Chennamsetty et al., PNAS 2009. BindCraft
+    # computes none of that; what it reports is the fraction below, and
+    # the bindcraft legend in shared/score_legends.py carries the full
+    # account. The citation is empty rather than repointed: this is a
+    # quantity BindCraft defines in its own code, not one a paper named,
+    # and a plausible-looking substitute would be the same error again.
+    #
+    # ``good_range`` is dropped for the same reason the legend carries no
+    # ``good``. The header tooltip stacks this Range onto the legend text
+    # only while the tool's legend states a bar, so with none stated the
+    # 0.35 filter is said once, in the legend, where it is true.
+    "surface_hydrophobicity": {
+        "label": "Surface hydrophobicity",
         "definition": (
-            "Spatial Aggregation Propensity. Predicts hydrophobic patch exposure "
-            "that correlates with aggregation risk during biomanufacturing."
+            "Fraction of the designed binder's own solvent-accessible surface "
+            "contributed by apolar and aromatic residues, measured on the "
+            "binder alone. A proxy for aggregation risk, not a SAP score."
         ),
-        "good_range": "< 5 favourable; > 10 developability concern",
-        "citation": "Chennamsetty et al., PNAS 2009",
+        "good_range": "",
+        "citation": "",
     },
     # Replaces a "filter_status" entry that defined the WORD a pipeline
     # stamped. No word is stored now; this column is computed when the page
@@ -272,7 +285,7 @@ _FORMAT: dict[str, str] = {
     "refolding_rmsd": ".2f",
     "RMSD": ".2f",
     "shape_complementarity": ".3f",
-    "SAP": ".2f",
+    "surface_hydrophobicity": ".2f",
     "against_bar": "str",
     "n_hotspot_contacts": ".0f",
     "epitope_contacts": ".0f",

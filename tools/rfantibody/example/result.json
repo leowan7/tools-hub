@@ -1,0 +1,212 @@
+{
+  "candidate_count": 20,
+  "candidates": [
+    {
+      "pdb_key": "designs/design_001.pdb",
+      "rank": 1,
+      "scores": {
+        "filter_status": "pass",
+        "ipAE": 3.72,
+        "pAE": 2.68,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_002.pdb",
+      "rank": 2,
+      "scores": {
+        "filter_status": "pass",
+        "ipAE": 4.33,
+        "pAE": 2.9,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_003.pdb",
+      "rank": 3,
+      "scores": {
+        "filter_status": "pass",
+        "ipAE": 5.26,
+        "pAE": 3.42,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_004.pdb",
+      "rank": 4,
+      "scores": {
+        "filter_status": "pass",
+        "ipAE": 5.31,
+        "pAE": 3.39,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_005.pdb",
+      "rank": 5,
+      "scores": {
+        "filter_status": "pass",
+        "ipAE": 7.69,
+        "pAE": 4.74,
+        "pLDDT": 89.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_006.pdb",
+      "rank": 6,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 12.56,
+        "pAE": 7.11,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_007.pdb",
+      "rank": 7,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 12.76,
+        "pAE": 7.31,
+        "pLDDT": 89.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_008.pdb",
+      "rank": 8,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 12.77,
+        "pAE": 7.15,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_009.pdb",
+      "rank": 9,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 12.9,
+        "pAE": 7.25,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_010.pdb",
+      "rank": 10,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 13.29,
+        "pAE": 7.42,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_011.pdb",
+      "rank": 11,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 13.4,
+        "pAE": 7.45,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_012.pdb",
+      "rank": 12,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 13.71,
+        "pAE": 7.77,
+        "pLDDT": 89.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_013.pdb",
+      "rank": 13,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 14.06,
+        "pAE": 7.85,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_014.pdb",
+      "rank": 14,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 14.24,
+        "pAE": 7.99,
+        "pLDDT": 90.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_015.pdb",
+      "rank": 15,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 14.26,
+        "pAE": 7.87,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_016.pdb",
+      "rank": 16,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 14.49,
+        "pAE": 8.04,
+        "pLDDT": 91.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_017.pdb",
+      "rank": 17,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 14.85,
+        "pAE": 8.36,
+        "pLDDT": 89.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_018.pdb",
+      "rank": 18,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 16.07,
+        "pAE": 9.13,
+        "pLDDT": 88.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_019.pdb",
+      "rank": 19,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 16.46,
+        "pAE": 9.3,
+        "pLDDT": 87.0
+      }
+    },
+    {
+      "pdb_key": "designs/design_020.pdb",
+      "rank": 20,
+      "scores": {
+        "filter_status": "below threshold",
+        "ipAE": 17.48,
+        "pAE": 9.84,
+        "pLDDT": 88.0
+      }
+    }
+  ],
+  "cdr_lengths": "H1:8,H2:7,H3:10-16",
+  "framework": "VHH",
+  "next_steps": "Recommend experimental validation: yeast display screening for top candidates, followed by SPR/BLI for binding kinetics. RFantibody designs have shown 78 nM affinity with 1.45 A RMSD to cryo-EM structures in published benchmarks.",
+  "passing_filters": 5,
+  "rf2_scored": 20,
+  "runtime_minutes": 13.9,
+  "total_designs": 4
+}

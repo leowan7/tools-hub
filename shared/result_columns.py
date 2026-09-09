@@ -23,7 +23,7 @@ from typing import Optional
 # in shared.compute_campaigns.SUPPORTED_TOOLS reach the campaign results page.
 _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
     "rfdiffusion": ["ipTM", "pLDDT", "i_pAE", "against_bar"],
-    "bindcraft": ["ipTM", "pLDDT", "RMSD", "shape_complementarity", "SAP"],
+    "bindcraft": ["ipTM", "pLDDT", "RMSD", "shape_complementarity", "surface_hydrophobicity"],
     "boltzgen": ["ipTM", "pLDDT", "refolding_rmsd", "against_bar"],
     "pxdesign": ["ipTM", "pLDDT", "pAE", "against_bar"],
     "rfantibody": ["ipAE", "pLDDT", "pAE", "against_bar"],

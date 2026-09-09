@@ -1,0 +1,496 @@
+{
+  "antigen_chain": "A",
+  "antigen_length": 129,
+  "artifact_keys": [
+    "artifacts/design_0.fasta",
+    "artifacts/design_1.fasta",
+    "artifacts/design_10.fasta",
+    "artifacts/design_11.fasta",
+    "artifacts/design_12.fasta",
+    "artifacts/design_13.fasta",
+    "artifacts/design_14.fasta",
+    "artifacts/design_15.fasta",
+    "artifacts/design_16.fasta",
+    "artifacts/design_17.fasta",
+    "artifacts/design_18.fasta",
+    "artifacts/design_19.fasta",
+    "artifacts/design_2.fasta",
+    "artifacts/design_20.fasta",
+    "artifacts/design_21.fasta",
+    "artifacts/design_22.fasta",
+    "artifacts/design_23.fasta",
+    "artifacts/design_24.fasta",
+    "artifacts/design_25.fasta",
+    "artifacts/design_26.fasta",
+    "artifacts/design_27.fasta",
+    "artifacts/design_28.fasta",
+    "artifacts/design_29.fasta",
+    "artifacts/design_3.fasta",
+    "artifacts/design_30.fasta",
+    "artifacts/design_31.fasta",
+    "artifacts/design_32.fasta",
+    "artifacts/design_33.fasta",
+    "artifacts/design_34.fasta",
+    "artifacts/design_35.fasta",
+    "artifacts/design_36.fasta",
+    "artifacts/design_37.fasta",
+    "artifacts/design_38.fasta",
+    "artifacts/design_39.fasta",
+    "artifacts/design_4.fasta",
+    "artifacts/design_5.fasta",
+    "artifacts/design_6.fasta",
+    "artifacts/design_7.fasta",
+    "artifacts/design_8.fasta",
+    "artifacts/design_9.fasta"
+  ],
+  "designs": [
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "000_design_0",
+      "pdb_key": "000_design_0.pdb",
+      "rank": 0
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "001_design_1",
+      "pdb_key": "001_design_1.pdb",
+      "rank": 1
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "002_design_10",
+      "pdb_key": "002_design_10.pdb",
+      "rank": 2
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "003_design_11",
+      "pdb_key": "003_design_11.pdb",
+      "rank": 3
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "004_design_12",
+      "pdb_key": "004_design_12.pdb",
+      "rank": 4
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "005_design_13",
+      "pdb_key": "005_design_13.pdb",
+      "rank": 5
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "006_design_14",
+      "pdb_key": "006_design_14.pdb",
+      "rank": 6
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "007_design_15",
+      "pdb_key": "007_design_15.pdb",
+      "rank": 7
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "008_design_16",
+      "pdb_key": "008_design_16.pdb",
+      "rank": 8
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "009_design_17",
+      "pdb_key": "009_design_17.pdb",
+      "rank": 9
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65,
+        67,
+        68,
+        73,
+        74,
+        75
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 6,
+      "name": "010_design_18",
+      "pdb_key": "010_design_18.pdb",
+      "rank": 10
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73,
+        74
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 2,
+      "name": "011_design_19",
+      "pdb_key": "011_design_19.pdb",
+      "rank": 11
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "012_design_2",
+      "pdb_key": "012_design_2.pdb",
+      "rank": 12
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "013_design_20",
+      "pdb_key": "013_design_20.pdb",
+      "rank": 13
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "014_design_21",
+      "pdb_key": "014_design_21.pdb",
+      "rank": 14
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "015_design_22",
+      "pdb_key": "015_design_22.pdb",
+      "rank": 15
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "016_design_23",
+      "pdb_key": "016_design_23.pdb",
+      "rank": 16
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "017_design_24",
+      "pdb_key": "017_design_24.pdb",
+      "rank": 17
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        67,
+        68,
+        73,
+        74,
+        75
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 5,
+      "name": "018_design_25",
+      "pdb_key": "018_design_25.pdb",
+      "rank": 18
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65,
+        67,
+        73,
+        74,
+        75
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 5,
+      "name": "019_design_26",
+      "pdb_key": "019_design_26.pdb",
+      "rank": 19
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73,
+        74
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 2,
+      "name": "020_design_27",
+      "pdb_key": "020_design_27.pdb",
+      "rank": 20
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65,
+        67,
+        68,
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 4,
+      "name": "021_design_28",
+      "pdb_key": "021_design_28.pdb",
+      "rank": 21
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "022_design_29",
+      "pdb_key": "022_design_29.pdb",
+      "rank": 22
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "023_design_3",
+      "pdb_key": "023_design_3.pdb",
+      "rank": 23
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "024_design_30",
+      "pdb_key": "024_design_30.pdb",
+      "rank": 24
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "025_design_31",
+      "pdb_key": "025_design_31.pdb",
+      "rank": 25
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "026_design_32",
+      "pdb_key": "026_design_32.pdb",
+      "rank": 26
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "027_design_33",
+      "pdb_key": "027_design_33.pdb",
+      "rank": 27
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "028_design_34",
+      "pdb_key": "028_design_34.pdb",
+      "rank": 28
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        74
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "029_design_35",
+      "pdb_key": "029_design_35.pdb",
+      "rank": 29
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "030_design_36",
+      "pdb_key": "030_design_36.pdb",
+      "rank": 30
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        65,
+        74
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 2,
+      "name": "031_design_37",
+      "pdb_key": "031_design_37.pdb",
+      "rank": 31
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "032_design_38",
+      "pdb_key": "032_design_38.pdb",
+      "rank": 32
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "033_design_39",
+      "pdb_key": "033_design_39.pdb",
+      "rank": 33
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "034_design_4",
+      "pdb_key": "034_design_4.pdb",
+      "rank": 34
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "035_design_5",
+      "pdb_key": "035_design_5.pdb",
+      "rank": 35
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "036_design_6",
+      "pdb_key": "036_design_6.pdb",
+      "rank": 36
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [
+        73
+      ],
+      "n_epitope": 9,
+      "n_epitope_contacts": 1,
+      "name": "037_design_7",
+      "pdb_key": "037_design_7.pdb",
+      "rank": 37
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "038_design_8",
+      "pdb_key": "038_design_8.pdb",
+      "rank": 38
+    },
+    {
+      "antigen_chain": "A",
+      "contacted_positions": [],
+      "n_epitope": 9,
+      "n_epitope_contacts": 0,
+      "name": "039_design_9",
+      "pdb_key": "039_design_9.pdb",
+      "rank": 39
+    }
+  ],
+  "designs_completed": 40,
+  "designs_total": 40,
+  "epitope_pdb_resnums": [
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    73,
+    74,
+    75
+  ],
+  "epitope_positions": [
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    73,
+    74,
+    75
+  ],
+  "run_task": "design",
+  "runtime_seconds": 720,
+  "tier": "cdr_design"
+}

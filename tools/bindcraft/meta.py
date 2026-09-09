@@ -244,24 +244,29 @@ PILOT: dict | None = {
 # only, which is why the candidates carry rank and scores and nothing else.
 #
 # ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. shared/result_columns.py
-# gives bindcraft ["ipTM", "pLDDT", "RMSD", "shape_complementarity", "SAP"],
-# so Target_RMSD, Hotspot_RMSD, pTM and i_pAE are in the payload and NOT on
-# the page. A first draft of this narration leaned on Target_RMSD 0.38 as the
-# did-the-target-refold sanity check -- which is the single most diagnostic
-# number here, given that scoring against a misfolded target is exactly what
-# was wrong with RFdiffusion before the September 2026 fix -- and pointed at
-# an "interface pAE column" that does not exist. Both sent the reader hunting
-# for a column that is not rendered. tests/test_worked_examples.py has that
-# guard for INPUT field names and no equivalent for score columns.
+# gives bindcraft ["ipTM", "pLDDT", "RMSD", "shape_complementarity",
+# "surface_hydrophobicity"], so Target_RMSD, Hotspot_RMSD, pTM and i_pAE are
+# in the payload and NOT on the page. A first draft of this narration leaned
+# on Target_RMSD 0.38 as the did-the-target-refold sanity check -- which is
+# the single most diagnostic number here, given that scoring against a
+# misfolded target is exactly what was wrong with RFdiffusion before the
+# September 2026 fix -- and pointed at an "interface pAE column" that does
+# not exist. Both sent the reader hunting for a column that is not rendered.
+# tests/test_worked_examples.py has that guard for INPUT field names and no
+# equivalent for score columns.
 #
-# SAP IS NOT NARRATED, ON PURPOSE. The payload stores it as 0.29 and 0.30
-# while this tool's legend calls "< 5 favourable", so the column reads
-# favourable whatever the design does. That is the shape of the pxdesign pAE
-# note in shared/score_legends.py -- a bar on one scale reading a value on
-# another -- and it is why bindcraft has no GATE_COLUMNS entry to be wrong
-# about. Teaching a reader to trust that column would be teaching them the
-# bug, so the narration below stays off it. Fixing the scale is its own
-# change; it is a threshold question, not a copy question.
+# THE FIFTH COLUMN IS NARRATED NOW, AND IT WAS NOT WHEN THIS PAGE SHIPPED.
+# It was called SAP then, and the note here said the narration stayed off it
+# because the payload stored 0.29 and 0.30 against a legend reading "< 5
+# favourable" -- a column that read favourable whatever the design did. That
+# was correct about the symptom and wrong about the cause: it is not a
+# threshold question. BindCraft computes no SAP at all and the container was
+# mapping its surface-hydrophobicity fraction onto the name. The column now
+# says what it measures, states BindCraft's own 0.35 reject line, and claims
+# no bar of its own, so it can be read aloud honestly -- see the legend in
+# shared/score_legends.py for the whole account. The narration below says
+# only what that column supports: the number, and the fact that passing it
+# was a precondition of the design existing rather than a result.
 EXAMPLE: dict | None = {
     "target": (
         "Human PD-L1, the IgV domain, taken as chain A of "
@@ -324,8 +329,8 @@ EXAMPLE: dict | None = {
     "what_came_back": (
         "Two designs, landing in almost the same place: ipTM "
         "<strong>0.75</strong> and <strong>0.76</strong>, pLDDT 81 for both, "
-        "shape complementarity 0.64 and 0.60, and a refolding RMSD of "
-        "3.04 and 2.96 &Aring;."
+        "shape complementarity 0.64 and 0.60, a refolding RMSD of "
+        "3.04 and 2.96 &Aring;, and surface hydrophobicity of 0.29 and 0.30."
     ),
     "how_to_read_it": (
         "Read ipTM first: 0.75 is this tool's bar for a credible binder, so "
@@ -341,7 +346,18 @@ EXAMPLE: dict | None = {
         "<strong>Do not read the ranking as an ipTM sort.</strong> Design 2 "
         "has the marginally higher ipTM and still ranks second, because "
         "BindCraft ranks on a composite that includes the fit &mdash; and "
-        "design 1 wins there, 0.64 against 0.60."
+        "design 1 wins there, 0.64 against 0.60. "
+        "<strong>The last column is not a result.</strong> Surface "
+        "hydrophobicity 0.29 and 0.30 were always going to be under 0.35: "
+        "BindCraft throws out anything above that line before a design "
+        "reaches you, so clearing it is a precondition of being on this "
+        "page rather than something these two achieved. Do not read them as "
+        "<em>low</em> &mdash; on the 101 accepted designs FreeBindCraft "
+        "publishes for this same target the median is 0.26 and the maximum "
+        "0.34, so roughly three-quarters of accepted designs sit below "
+        "these two, nearer that line than most designs that pass. It is a "
+        "property of the shortlist, and a poor way to choose between "
+        "designs inside it."
     ),
     "what_we_did_next": (
         "Treated this as a screen that came back amber rather than green. Two "

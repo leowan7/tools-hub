@@ -236,12 +236,33 @@ def test_a_tool_that_states_a_bar_still_gets_the_global_range():
     assert _GLOBAL_IPTM_RANGE in tooltip, tooltip
 
 
-def test_boltzgen_is_the_only_legend_without_a_bar():
-    """Pins the blast radius of the three template conditions. If a second
+BINDCRAFT_SURFACE_HYDROPHOBICITY = ("bindcraft", "surface_hydrophobicity")
+
+
+def test_the_barless_legends_are_the_two_declared_here():
+    """Pins the blast radius of the three template conditions. If a further
     legend ever drops its bar, that tool's surfaces change too — which may be
-    right, but it should be a decision, not a surprise."""
+    right, but it should be a decision, not a surprise.
+
+    THE SECOND ENTRY IS A DECISION AND HERE IS THE DECISION. bindcraft's
+    surface hydrophobicity had ``good`` 10 / ``excellent`` 5 while it was
+    called SAP -- bars meant for a Spatial Aggregation Propensity, which
+    BindCraft does not compute. (The old glossary entry attributed those two
+    numbers to Chennamsetty PNAS 2009; that paper is not the source of a
+    5/10 split, so do not repeat the attribution here either.) The container
+    writes a 0-1 area fraction into that key instead, so every design read
+    better-than-excellent at 0.29. The bar came off for BoltzGen's reason --
+    the wrong ruler -- and it was not replaced by BindCraft's own 0.35 reject
+    line, because a pilot applies that same filter file and takes candidates
+    from Accepted/ only, so 0.35 could not be failed either.
+    shared/score_legends.py carries the full account.
+
+    A barless legend cannot silently become a gate leg: test_derived_verdicts
+    ::test_every_gate_column_has_a_legend requires a numeric ``good`` on
+    every column in GATE_COLUMNS, and bindcraft declares none at all.
+    """
     barless = {k for k, v in SCORE_LEGENDS.items() if "good" not in v}
-    assert barless == {BOLTZGEN_IPTM}, barless
+    assert barless == {BOLTZGEN_IPTM, BINDCRAFT_SURFACE_HYDROPHOBICITY}, barless
 
 
 def test_the_form_page_does_not_quote_the_band_to_a_boltzgen_user(_app_client):

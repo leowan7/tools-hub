@@ -1128,7 +1128,7 @@ def test_columns_are_empty_multi_tool_and_the_tools_own_when_single(
     # no row carries a preset chip it does not need.
     assert single["split_tools"] == []
     assert single["columns"] == [
-        "ipTM", "pLDDT", "RMSD", "shape_complementarity", "SAP",
+        "ipTM", "pLDDT", "RMSD", "shape_complementarity", "surface_hydrophobicity",
     ]
 
     both = solo + [
