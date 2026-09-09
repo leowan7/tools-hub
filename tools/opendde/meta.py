@@ -141,4 +141,129 @@ PILOT: dict | None = None
 # already example-safe — the guard lives in the two shared macros, not
 # here — so nothing else needs touching.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+# ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
+# shared/result_columns.py and none in shared/score_legends.py either, so
+# there are no per-tool bars to quote and nothing to call a pass. The columns
+# the partial renders are Ranking score, pTM, ipTM and pLDDT; all four are
+# used below and no threshold is asserted for any of them, because this tool
+# genuinely has none. The narration compares the four predictions to each
+# other instead, which is what the run actually supports.
+#
+# WHY FOUR SEEDS AND ONE SAMPLE PER SEED. Samples-per-seed was tried first,
+# at 4 samples x 2 seeds, and the eight predictions came back with only TWO
+# distinct score sets -- one per seed, repeated across that seed's samples.
+# The structures were all different (eight distinct md5s); the SCORES were
+# shared, because _read_score_json in tools/opendde/run_pipeline.py falls
+# back to the first *.json it finds beside the structure when no filename
+# matches the sample stem, and OpenDDE writes one score file per seed
+# directory. One sample per seed sidesteps it: each seed dir holds one
+# structure and one score file, so the pairing cannot go wrong. The fallback
+# is still live for any multi-sample run and is filed separately -- do not
+# raise "Samples / seed" in this example until it is fixed.
+EXAMPLE: dict | None = {
+    "target": (
+        "Bovine trypsin with benzamidine bound &mdash; chain A of "
+        "<strong>PDB 3PTB</strong>, 220 residues, plus the ligand "
+        "<code>CCD_BEN</code>."
+    ),
+    "why_this_target": (
+        "OpenDDE is for complexes that are not all protein, so an all-protein "
+        "example would be demonstrating the one case it is not for. This is "
+        "the textbook protein-plus-small-molecule pair: benzamidine sitting "
+        "in the trypsin S1 pocket, solved in 1974 and used to check docking "
+        "methods ever since. It is also a deliberate correction. The first "
+        "run this page ever showed folded a single ubiquitin chain, which has "
+        "no second entity at all &mdash; its ipTM of 0 was arithmetically "
+        "correct and told you nothing, because there was no interface to "
+        "score."
+    ),
+    "inputs_used": [
+        (
+            "Protein chains (FASTA)",
+            "the 220-residue trypsin chain",
+            "One record. The <code>&gt;A</code> header is optional &mdash; "
+            "chain ids are auto-assigned when you leave them off.",
+        ),
+        (
+            "Ligands (one per line)",
+            "CCD_BEN",
+            "Benzamidine, by its three-letter Chemical Component Dictionary "
+            "code. A bare SMILES string works too, but a CCD code names one "
+            "unambiguous molecule and needs no interpretation.",
+        ),
+        (
+            "Samples / seed",
+            "1",
+            "One prediction per seed. All of the variation in this run comes "
+            "from the seeds instead.",
+        ),
+        (
+            "Seeds",
+            "4",
+            "Four independent starting points, so four predictions. This is "
+            "the input that matters most here, and the results below are the "
+            "argument for it: the spread across seeds is much wider than any "
+            "single prediction would let you guess.",
+        ),
+        (
+            "Diffusion steps",
+            "200",
+            "The upstream default, left alone. More steps trade compute for "
+            "quality; nothing about this run suggested it was step-limited.",
+        ),
+        (
+            "Recycles",
+            "10",
+            "Also the default. Worth raising on a complex that comes back "
+            "geometrically incoherent, which this one did not.",
+        ),
+    ],
+    "what_came_back": (
+        "Four predictions in about three and a half minutes. Ranking score "
+        "runs <strong>0.45 to 0.63</strong>, ipTM 0.421 to 0.652, pTM "
+        "0.524 to 0.557, and pLDDT 48.8 to 52.3."
+    ),
+    "how_to_read_it": (
+        "Two of these columns move together and two do not. "
+        "The ranking score is an ipTM sort in all but name. It reads 0.63, "
+        "0.53, 0.53, 0.45 down the table &mdash; the middle two are a tie at "
+        "the precision shown &mdash; and ipTM breaks that tie in the same "
+        "order it sets the rest: 0.652, 0.536, 0.533, 0.421. What the model "
+        "is ranking on is its "
+        "confidence in the protein-ligand contact. pTM barely moves at all "
+        "(0.52 to 0.56), which is what you would expect: the trypsin fold is "
+        "not the uncertain part, only where the benzamidine sits. "
+        "<strong>pLDDT is the column to be careful with.</strong> It sits "
+        "between 48.8 and 52.3 for every prediction and it does <em>not</em> "
+        "follow the ranking. The prediction with the highest pLDDT is the one "
+        "ranked <em>last</em>: 52.3, with the worst ipTM of the four at "
+        "0.421. Sort this table by pLDDT, take the top row, and you have "
+        "picked the worst-docked of the four. Near 50 is low in absolute "
+        "terms as well, and it stays near 50 whatever the seed, so treat it "
+        "as a standing reason to look at the pose rather than as something "
+        "that separates these four. "
+        "<strong>Then the case for running more than one.</strong> The "
+        "default is a single seed, seed 1 &mdash; and seed 1 is the top row "
+        "here, ipTM 0.652. Run this once and you would have come away "
+        "believing 0.65. The other three seeds say 0.536, 0.533 and 0.421. "
+        "The "
+        "honest summary of this target is the spread, not its best member."
+    ),
+    "what_we_did_next": (
+        "Took the spread as the result. Four predictions that disagree this "
+        "much are telling you the pose is not settled, so the next move is "
+        "not to pick the winner &mdash; it is to look at whether the top two "
+        "or three put the ligand in the same pocket at all, which is a "
+        "question for the 3D viewer rather than for any column here. If they "
+        "agree on the pocket and disagree on the detail, the prediction is "
+        "usable and worth more seeds. If they disagree on the pocket, no "
+        "number in this table would have told you, and the run has still "
+        "earned its cost by saying so."
+    ),
+    "cost_usd": "0.78",
+    "runtime": "3.5 minutes",
+    # Read by components/worked_example.html into the stub job's created_at so
+    # a date-gated era notice knows when this ran. Job created_at, matching
+    # the other examples' convention.
+    "ran_on": "2026-09-09T15:52:57Z",
+}
