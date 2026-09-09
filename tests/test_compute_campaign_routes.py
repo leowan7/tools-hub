@@ -76,7 +76,8 @@ def test_estimate_ok(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ok"] is True
-    assert data["total_subjobs"] == 2
+    # 24 designs over rfdiffusion's 10-design chunk: 10+10+4.
+    assert data["total_subjobs"] == 3
     assert float(data["budget_usd"]) > 0
     # Fund-and-drain: the start gate is the first wave, surfaced to the UI.
     assert float(data["first_wave_usd"]) > 0
@@ -109,9 +110,16 @@ def test_estimate_unsupported_tool(client):
 # printed as "$2.62". The rounding now happens in Decimal on the server: a cost
 # rounds UP, a balance rounds DOWN.
 #
-# rfdiffusion at 24 designs is the cohort throughout: 2 sub-jobs, and both the
-# budget (4.0202) and the first wave (5.2438) round differently to nearest than
-# to ceiling, so the direction is observable rather than assumed.
+# rfantibody at 20 designs is the display cohort: 2 sub-jobs, and both the
+# budget (80.4020) and the first wave (104.8722) round differently to nearest
+# than to ceiling, so the direction is observable rather than assumed.
+#
+# Was rfdiffusion@24. rfdiffusion can no longer observe the direction at ANY
+# design count from 2 to 149: correcting its expected_gpu_seconds 1200 -> 2775
+# pushed its cushioned hold onto the $5.00 per-chunk hard cap, so first_wave is
+# a whole multiple of $5.00 and lands on exact cents, where ceiling and nearest
+# agree. The balance test below keeps rfdiffusion -- its precondition is on the
+# balance fixture, not on the tool.
 # ---------------------------------------------------------------------------
 
 _COST_KEYS = ("budget_usd", "first_wave_usd", "per_chunk_usd")
@@ -132,13 +140,13 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
     from decimal import ROUND_CEILING, ROUND_HALF_EVEN, Decimal
 
     _login(client)
-    data = _estimate_json(client, "tool=rfdiffusion&requested_designs=24")
+    data = _estimate_json(client, "tool=rfantibody&requested_designs=20")
     assert data["ok"] is True
 
     # Precondition, asserted rather than assumed: if ceiling and nearest agree
     # on a figure, every assertion about it passes with the direction reversed
     # and pins nothing. Only two of the three keys can observe it -- the
-    # per-chunk price is 1.7479, which is 1.75 either way -- so that is stated
+    # per-chunk price is 34.9574, which is 34.96 either way -- so that is stated
     # here rather than quietly relied on.
     for key in ("budget_usd", "first_wave_usd"):
         exact = Decimal(data[key])
@@ -156,8 +164,8 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
             Decimal("0.01"), rounding=ROUND_CEILING
         )
     # The figure the checkbox refers to, spelled out so the regression is named.
-    assert data["first_wave_usd"] == "5.2438"
-    assert data["first_wave_usd_display"] == "5.25"
+    assert data["first_wave_usd"] == "104.8722"
+    assert data["first_wave_usd_display"] == "104.88"
 
 
 def test_the_estimate_never_overstates_the_balance(client):

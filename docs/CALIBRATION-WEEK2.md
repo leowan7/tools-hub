@@ -111,7 +111,7 @@ Cost ceilings on **pilot tier** per `gpu/modal_client.py PRESET_CAPS`:
 | Tool | Cap (s) | Est. $ |
 |---|---|---|
 | rfantibody | 1800 | $5-8 |
-| rfdiffusion | 1800 | $5-8 |
+| rfdiffusion | 3600 | $5-8 |
 | bindcraft | 7200 | $20-30 |
 | boltzgen | 3600 | $10-15 |
 | **Total** | | **$40-60** |
