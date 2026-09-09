@@ -365,7 +365,7 @@ def _assert_critic_present(critic_results: list[dict]) -> None:
 
     Every score this pipeline reports is read off CRITIC_REAL_IPTM. If bumping
     ``_ESM_GIT_SHA`` renames it, every field silently goes None and _classify
-    drops the entire run — which is precisely how the scFv gate stayed dead.
+    drops the entire run â€” which is precisely how the scFv gate stayed dead.
     This cannot repair such a run, only put the cause in the Modal logs instead
     of making it cost another H100 to find.
     """
@@ -417,7 +417,8 @@ def _shape_designs(
             seq,
             {
                 "designed_sequence": seq,
-                "_scored": False,
+                "_claimed": False,
+                "_has_score": False,
                 "iptm": None,
                 "distogram_iptm_proxy": None,
                 "cdr_distogram_iptm_proxy": None,
@@ -426,21 +427,59 @@ def _shape_designs(
             },
         )
         critic_name = str(row.get("critic_name", ""))
-        if critic_name == CRITIC_REAL_IPTM and not bucket["_scored"]:
-            # The FIRST scoring row wins every field. Scores used to be
-            # assigned unconditionally (last row won) while complex and
-            # final_loss were first-wins, so two rows sharing a sequence --
-            # which batch_size > 1 makes possible, and which the REUSE_ESMC
-            # half of this change is what finally allows -- handed the user
-            # one row's PDB underneath another row's numbers.
-            bucket["_scored"] = True
-            bucket["iptm"] = _finite(row.get("iptm"))
-            bucket["distogram_iptm_proxy"] = _finite(
-                row.get("distogram_iptm_proxy")
-            )
-            bucket["cdr_distogram_iptm_proxy"] = _finite(
-                row.get("cdr_distogram_iptm_proxy")
-            )
+        iptm = _finite(row.get("iptm"))
+        proxy = _finite(row.get("distogram_iptm_proxy"))
+        cdr_proxy = _finite(row.get("cdr_distogram_iptm_proxy"))
+        # "Carries a score" means any number this tool REPORTS, not the iPTM
+        # specifically. Electing on the iPTM is wrong in scFv mode, where
+        # _classify gates on cdr_distogram_iptm_proxy ALONE and never reads
+        # iptm: a diverged row with a real 0.85 CDR proxy is a strict_pass,
+        # and letting a scored-but-failing row evict it hands _pick_best a
+        # design the tool's own filter rejects. The complex is deliberately
+        # NOT counted -- coordinates are not a score, and a row with nothing
+        # but coordinates should not hold the slot against real numbers.
+        row_has_score = (
+            iptm is not None or proxy is not None or cdr_proxy is not None
+        )
+        if critic_name == CRITIC_REAL_IPTM and (
+            not bucket["_claimed"]
+            or (not bucket["_has_score"] and row_has_score)
+        ):
+            # One row wins every field, and a row carrying scores outranks one
+            # carrying none.
+            #
+            # Scores used to be assigned unconditionally (last row won) while
+            # complex and final_loss were first-wins, so two rows sharing a
+            # sequence -- which batch_size > 1 makes possible, and which the
+            # REUSE_ESMC half of the #242 change is what finally allows --
+            # handed the user one row's PDB underneath another row's numbers.
+            # #242 fixed that by letting the FIRST CRITIC_REAL_IPTM row win
+            # outright, holes included. Holes are the problem: a diverged fold
+            # emits NaN, and on a locked scFv framework only the CDRs vary, so
+            # two batch elements converging on one designed_sequence is
+            # ordinary. The blank row claimed the bucket and DISCARDED the real
+            # fold behind it -- that design ranked LAST with iptm None, no
+            # complex (so no PDB written, no download, no NGL viewer) and no
+            # final_loss. Users RANK these designs; the ordering and the
+            # numbers are the product.
+            #
+            # So the first row claims the bucket provisionally, and a later row
+            # REPLACES it wholesale once -- only when the incumbent carries no
+            # score at all and the challenger carries one. Replacement can
+            # happen at most once, since it requires _has_score False and sets
+            # it True.
+            #
+            # Coherence survives: every field is overwritten together from one
+            # row, so no results line mixes two folds. The trade that buys it
+            # is real and worth naming -- replacing DISCARDS the incumbent's
+            # complex and final_loss. It is only ever paid by a row that had no
+            # score to show for them, which is the one case where preferring
+            # the numbers is clearly right.
+            bucket["_claimed"] = True
+            bucket["_has_score"] = row_has_score
+            bucket["iptm"] = iptm
+            bucket["distogram_iptm_proxy"] = proxy
+            bucket["cdr_distogram_iptm_proxy"] = cdr_proxy
             bucket["complex"] = row.get("complex")
             bucket["final_loss"] = _finite(row.get("final_loss"))
 
