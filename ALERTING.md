@@ -782,10 +782,13 @@ from production.** GitHub's failure email carries no log body, so open the run.
 
    **If the red run is this guard's own, `gh run rerun` will not help:** it
    re-runs the drift check, which re-fails while production is still stale.
-   Which check gated the skip is not something this file can answer — "latest
-   suite, or any suite?" above is still open — so look at what is actually red,
-   and read the deadlock paragraph below before acting on it. (Whether Railway
-   then re-evaluates an already-`SKIPPED` deployment is unrecorded either way:
+   `deploy-drift` and the Platform API smoke are two jobs in ONE workflow run,
+   so a red `Synthetic smoke` run does not tell you which of them failed —
+   open the run and look. Which check gated the skip is not something this
+   file can answer ("latest suite, or any suite?" above is still open), so
+   read the deadlock paragraph below before acting on whatever you find.
+   (Whether Railway then re-evaluates an already-`SKIPPED` deployment is
+   unrecorded either way:
    no run on `395c523` was ever re-run in place — all six are
    `run_attempt=1` — so that worked example cannot answer it.)
 
