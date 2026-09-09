@@ -131,10 +131,20 @@
 
    One deliberate divergence from ``_classify``. It returns "drop" when the
    metric its gate needs is missing; this does not. An absent measurement is
-   UNJUDGED, never failed, per #216 — and it is not hypothetical here: the
-   CDR distogram proxy is not produced at all when the scaling critics are
-   off, which is the default, so every design in such a run would otherwise
-   be narrated as having failed a bar that nothing measured it against. #}
+   UNJUDGED, never failed, per #216.
+
+   The reason given here used to be that the CDR distogram proxy "is not
+   produced at all when the scaling critics are off". That was wrong, and it
+   described a symptom rather than the cause. Upstream computes the proxy for
+   EVERY critic and spreads it into every row; what was broken was
+   ``_shape_designs``, which selected the proxy with upstream's scaling-critic
+   detector and so read it only off scaling rows — none of which exist on the
+   default path. Fixed in #242: the proxy is now sourced by name off the same
+   hero critic as the real iPTM, so a stock scFv run does populate it.
+
+   Keep the divergence anyway. It is now rare rather than universal, but a
+   design can still reach here unmeasured, and narrating that as a failure
+   would be the same lie in a quieter voice. #}
 {% set _bar  = 0.50 if is_antibody else 0.75 %}
 {% set _band = 0.10 if is_antibody else 0.05 %}
 {% set _tier = namespace(strict=[], borderline=[], offerable=[]) %}
@@ -281,7 +291,7 @@
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
       ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
-      are the ones worth ordering. {% if use_scaling_critics %}The 15-checkpoint scaling-critic ensemble was used — expect calibrated proxy scores.{% else %}The scaling critics were not used — only the real iPTM is calibrated; the proxy is informative only.{% endif %}
+      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.{% if use_scaling_critics %} The scaling-critic ensemble was loaded for this run but does not feed these scores — every number here comes from one hero critic.{% endif %}
     </div>
   </div>
 </div>

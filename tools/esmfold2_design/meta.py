@@ -173,9 +173,11 @@ about: dict = {
             "name": "Use scaling critics",
             "explanation": (
                 "Optional. Loads the 15-checkpoint ESMFold2 scaling "
-                "ensemble for stricter ranking. Adds the distogram "
-                "iPTM proxy alongside the real iPTM. Roughly doubles "
-                "host memory; off by default."
+                "ensemble. It does NOT add the distogram iPTM proxy — "
+                "upstream computes that for every critic, and this tool "
+                "reads it off the same hero critic as the real iPTM "
+                "whether or not this is ticked. Roughly doubles host "
+                "memory; off by default."
             ),
         },
     ],

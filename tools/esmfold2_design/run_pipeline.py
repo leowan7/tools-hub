@@ -102,6 +102,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -144,9 +145,33 @@ STRICT_IPTM = 0.75
 STRICT_CDR_IPTM_PROXY = 0.50
 STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 
-# Critic name strings used by upstream binder_design.py.
+# Critic name string used by upstream binder_design.py. Every scored field —
+# the real iPTM and BOTH distogram proxies — is read off this one critic's row,
+# so every number in a results row comes from the same model.
+#
+# There was a second constant here, CRITIC_SCALING_PROXY =
+# "ESMFold2-Experimental-Fast-base", matched by substring for the proxies.
+# That string is NOT dead upstream -- it is upstream's own test for whether a
+# critic is a scaling critic (``is_scaling_critic = "ESMFold2-Experimental-
+# Fast-base" in critic_name``), and the 15 scaling checkpoints are named
+# f"ESMFold2-Experimental-Fast-base{size}-step{step}k". Copying that substring
+# as a *source selector* is what broke: it matches scaling rows and only
+# scaling rows, ``use_scaling_critics`` defaults to False, so on the default
+# path no matching row exists, both proxies stayed None, and since _classify
+# gates scFvs on the CDR proxy alone EVERY antibody design came back ``drop``
+# regardless of quality (13/13 on a 2026-08-23 prod run). Ticking the box did
+# populate it -- which is why the tool looked fine to whoever tested that way.
+#
+# The proxies were never actually missing. Upstream calls
+# compute_distogram_iptm_proxy once per critic and spreads the result into
+# EVERY row, hero critics included, so the value was always sitting on the row
+# this file already read the iPTM off. Sourcing it there removes the second
+# name to keep in sync and makes every number in a results row one model's
+# opinion. Consequence worth knowing: scaling-critic rows are now never read,
+# so use_scaling_critics changes nothing about the output.
+# _assert_critic_present makes a future upstream rename loud in the logs
+# instead of silently zeroing the gate again.
 CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
-CRITIC_SCALING_PROXY = "ESMFold2-Experimental-Fast-base"
 
 
 def _write_result(payload: dict[str, Any]) -> None:
@@ -314,6 +339,51 @@ def _save_complex_pdb(
     return key
 
 
+def _finite(value: Any) -> Optional[float]:
+    """None for anything that is not a finite number.
+
+    Upstream sets ``cdr_distogram_iptm_proxy`` to ``float("nan")`` for every
+    non-antibody design (``compute_distogram_iptm_proxy``: "otherwise the CDR
+    score is NaN"). That NaN never surfaced while the proxy branch was dead,
+    so un-deadening it is what makes this reachable. ``json.dump`` writes NaN
+    as a bare ``NaN`` literal, which is not valid JSON and which the results
+    page's ``JSON.parse`` rejects outright; NaN also compares False against
+    every threshold, so it would read as a confident drop rather than as the
+    absent measurement it is.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _assert_critic_present(critic_results: list[dict]) -> None:
+    """Log loudly when the scoring critic is absent from the upstream rows.
+
+    Every score this pipeline reports is read off CRITIC_REAL_IPTM. If bumping
+    ``_ESM_GIT_SHA`` renames it, every field silently goes None and _classify
+    drops the entire run — which is precisely how the scFv gate stayed dead.
+    This cannot repair such a run, only put the cause in the Modal logs instead
+    of making it cost another H100 to find.
+    """
+    if not critic_results:
+        # A run that produced no rows at all is a different failure, already
+        # reported by the caller. Claiming a rename here would spend the one
+        # log line whose whole job is to be believed.
+        return
+    names = sorted({str(row.get("critic_name", "")) for row in critic_results})
+    if CRITIC_REAL_IPTM not in names:
+        logger.error(
+            "critic %r absent from critic_results: every score will be None "
+            "and every design will classify as drop. Critics seen: %s",
+            CRITIC_REAL_IPTM,
+            names,
+        )
+
+
 def _shape_designs(
     critic_results: list[dict],
     is_antibody: bool,
@@ -325,10 +395,11 @@ def _shape_designs(
 
     The upstream critic_results is a list of dicts with keys including
     critic_name, iptm, distogram_iptm_proxy, cdr_distogram_iptm_proxy,
-    final_loss, designed_sequence, complex. Multiple critics emit rows
-    for the same design — we group on designed_sequence and pull the
-    real iPTM from the Cutoff2025 critic, the proxy from any Fast-base
-    critic.
+    final_loss, designed_sequence, complex. Several critics emit a row
+    for the same design, each with its own proxy value — we group on
+    designed_sequence and take every score from the CRITIC_REAL_IPTM
+    row, so the iPTM and the proxy a user compares side by side are
+    one model's opinion rather than two models'.
 
     ``pdb_prefix`` namespaces PDB filenames so multi-seed fan-out jobs
     (where the orchestrator spawns N children, each running this
@@ -336,6 +407,7 @@ def _shape_designs(
     Storage namespace. The orchestrator sets it to ``seed{N}_`` per
     child; single-seed runs leave it empty.
     """
+    _assert_critic_present(critic_results)
     by_sequence: dict[str, dict] = {}
     for row in critic_results:
         seq = row.get("designed_sequence")
@@ -345,6 +417,7 @@ def _shape_designs(
             seq,
             {
                 "designed_sequence": seq,
+                "_scored": False,
                 "iptm": None,
                 "distogram_iptm_proxy": None,
                 "cdr_distogram_iptm_proxy": None,
@@ -353,19 +426,23 @@ def _shape_designs(
             },
         )
         critic_name = str(row.get("critic_name", ""))
-        if critic_name == CRITIC_REAL_IPTM:
-            bucket["iptm"] = row.get("iptm")
-            if bucket["complex"] is None:
-                bucket["complex"] = row.get("complex")
-            if bucket["final_loss"] is None:
-                bucket["final_loss"] = row.get("final_loss")
-        elif CRITIC_SCALING_PROXY in critic_name:
-            if is_antibody:
-                bucket["cdr_distogram_iptm_proxy"] = row.get(
-                    "cdr_distogram_iptm_proxy"
-                )
-            else:
-                bucket["distogram_iptm_proxy"] = row.get("distogram_iptm_proxy")
+        if critic_name == CRITIC_REAL_IPTM and not bucket["_scored"]:
+            # The FIRST scoring row wins every field. Scores used to be
+            # assigned unconditionally (last row won) while complex and
+            # final_loss were first-wins, so two rows sharing a sequence --
+            # which batch_size > 1 makes possible, and which the REUSE_ESMC
+            # half of this change is what finally allows -- handed the user
+            # one row's PDB underneath another row's numbers.
+            bucket["_scored"] = True
+            bucket["iptm"] = _finite(row.get("iptm"))
+            bucket["distogram_iptm_proxy"] = _finite(
+                row.get("distogram_iptm_proxy")
+            )
+            bucket["cdr_distogram_iptm_proxy"] = _finite(
+                row.get("cdr_distogram_iptm_proxy")
+            )
+            bucket["complex"] = row.get("complex")
+            bucket["final_loss"] = _finite(row.get("final_loss"))
 
     designs: list[dict] = []
     for rank, (seq, bucket) in enumerate(by_sequence.items()):
@@ -726,6 +803,20 @@ def _run() -> int:
     # Modal container, so we use ESMFold2Design rather than the
     # ESMFold2DesignModal wrapper class.
     try:
+        # Share the one ESM-C 6B trunk the inversion models already hold
+        # instead of loading a second fp32 copy for the LM head (~24 GB).
+        # Upstream ships this False and measures 51 GB -> 27 GB VRAM with it
+        # True, on exactly the scfv config this tool exposes, noting it is
+        # what "enables increasing batch size up to 6". The 1-6 bound in
+        # __init__.py is that same figure -- so shipping False under it took
+        # the cap from one branch and the setting from the other, and every
+        # batch_size > 1 scfv run OOMed an 80 GB H100 for zero designs
+        # (default batch_size is 3, so that was the default web path).
+        # CAVEAT: the shared trunk is not the fp32 one this replaces, so the
+        # LM-loss term is not bit-identical to prior runs. Upstream flags the
+        # same thing ("testing this setting in silico").
+        # load() reads it as a module global, so it must be set before it.
+        bd.REUSE_ESMC = True
         designer = bd.ESMFold2Design()
         designer.load(use_scaling_critics)
     except Exception as exc:
