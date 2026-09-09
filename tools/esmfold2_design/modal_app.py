@@ -14,10 +14,17 @@ wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
 GPU: H100. The 150-step gradient run takes ~10-15 min per design on a
-warm container; weights pull is ~30 GB on a cold Volume. Memory is sized
-for the default ``REUSE_ESMC=False`` path (27 GB VRAM); flip the
-``use_scaling_critics`` env var to load the 15-checkpoint ensemble and
-bump memory to 60 GB host RAM.
+warm container; weights pull is ~30 GB on a cold Volume. VRAM is ~27 GB
+because ``run_pipeline.py`` sets upstream's ``REUSE_ESMC = True`` before
+``ESMFold2Design.load()``; upstream's own default of False costs ~51 GB
+and cannot hold the 1-6 ``batch_size`` this tool offers. (This block used
+to claim 27 GB for the False path -- that was the True figure, and the
+mismatch is what shipped a batch cap the container could not honour.)
+
+``use_scaling_critics`` adds a 15-checkpoint ensemble on the HOST (upstream
+loads scaling critics with ``device="cpu"``), which does not fit the 10 GB
+``memory=`` below. That path is untested here; the four hero critics load
+on GPU regardless of the flag.
 
 Raw capture: ``run_pipeline.py`` tars its COMPLETE work tree to
 ``/tmp/raw_archive.tgz`` before the container dies; ``_park_raw_archive``
@@ -251,6 +258,14 @@ image = (
         "HF_XET_HIGH_PERFORMANCE": "1",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "utf-8",
+        # Both observed OOM messages recommended this verbatim, and at
+        # batch_size=2 the run died needing 20-38 MiB with ~1.4 GB sitting
+        # reserved-but-unallocated -- i.e. lost to fragmentation, which is
+        # exactly what expandable_segments reclaims. Set on the image, not in
+        # _build_run_env: it is a container constant, not payload-derived, and
+        # _merged_environment seeds itself from os.environ so run_pipeline.py
+        # inherits it. Lands on the .env layer, so pip/micromamba stay cached.
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     })
     .workdir("/opt")
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
