@@ -160,29 +160,61 @@ PILOT: dict | None = None
 # structure and one score file, so the pairing cannot go wrong. The fallback
 # is still live for any multi-sample run and is filed separately -- do not
 # raise "Samples / seed" in this example until it is fixed.
+# ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
+# shared/result_columns.py and none in shared/score_legends.py either, so
+# there are no per-tool bars to quote and nothing to call a pass. The columns
+# the partial renders are Ranking score, pTM, ipTM and pLDDT; all four are
+# used below and no threshold is asserted for any of them. Numbers are quoted
+# at the precision the TABLE prints (ranking 2dp, ipTM/pTM 3dp, pLDDT 1dp),
+# so every figure in the prose can be checked against the row above it.
+#
+# THIS IS THE SECOND CAPTURE, AND THE FIRST ONE TAUGHT A FALSE LESSON.
+# The first run used a 220-residue sequence that was NOT 3PTB chain A: three
+# residues were missing at PDB positions 184A, 187 and 221A, two of them
+# insertion-coded, which is what a sequence extracted while ignoring
+# insertion codes looks like. On that corrupted input pTM barely moved,
+# pLDDT sat flat near 50 and ANTI-correlated with the ranking, and seed 1 was
+# the best of four. Every one of those reverses on the real chain: pTM ranges
+# 0.433-0.625, pLDDT ranges 42.8-52.9 and tracks the ranking, and seed 1 is
+# the WORST of the four. Do not restore the old narration.
+#
+# WHY FOUR SEEDS AND ONE SAMPLE PER SEED. Samples-per-seed was tried at
+# 4 samples x 2 seeds and the eight predictions came back with only TWO
+# distinct score sets, one per seed. The structures were all different (eight
+# distinct md5s); the SCORES were shared, because _read_score_json in
+# tools/opendde/run_pipeline.py falls back to the first *.json beside the
+# structure when no filename matches the sample stem, and OpenDDE writes one
+# score file per seed directory. One sample per seed sidesteps it. The
+# fallback is still live for any multi-sample run and is filed separately --
+# do not raise "Samples / seed" in this example until it is fixed.
 EXAMPLE: dict | None = {
     "target": (
         "Bovine trypsin with benzamidine bound &mdash; chain A of "
-        "<strong>PDB 3PTB</strong>, 220 residues, plus the ligand "
+        "<strong>PDB 3PTB</strong>, 223 residues, plus the ligand "
         "<code>CCD_BEN</code>."
     ),
     "why_this_target": (
         "OpenDDE is for complexes that are not all protein, so an all-protein "
         "example would be demonstrating the one case it is not for. This is "
         "the textbook protein-plus-small-molecule pair: benzamidine sitting "
-        "in the trypsin S1 pocket, deposited in 1982 and used to check docking "
-        "methods ever since. It is also a deliberate correction. The first "
-        "run this page ever showed folded a single ubiquitin chain, which has "
-        "no second entity at all &mdash; its ipTM of 0 was arithmetically "
-        "correct and told you nothing, because there was no interface to "
-        "score."
+        "in the trypsin S1 pocket, deposited in 1982 and used to check "
+        "docking methods ever since. It is also a deliberate correction. The "
+        "first run this page ever showed folded a single ubiquitin chain, "
+        "which has no second entity at all &mdash; its ipTM of 0 was "
+        "arithmetically correct and told you nothing, because there was no "
+        "interface to score."
     ),
     "inputs_used": [
         (
             "Protein chains (FASTA)",
-            "the 220-residue trypsin chain",
-            "One record. The <code>&gt;A</code> header is optional &mdash; "
-            "chain ids are auto-assigned when you leave them off.",
+            "the 223-residue trypsin chain",
+            "One record. Worth a moment if you are preparing this yourself: "
+            "3PTB is numbered in the chymotrypsin convention, so the chain "
+            "carries insertion-coded positions like 184A and 221A. A script "
+            "that reads residue numbers and ignores the insertion letter "
+            "silently drops them and hands the model a protein three "
+            "residues short &mdash; which is exactly what happened on our "
+            "first attempt at this example.",
         ),
         (
             "Ligands (one per line)",
@@ -202,8 +234,7 @@ EXAMPLE: dict | None = {
             "4",
             "Four independent starting points, so four predictions. This is "
             "the input that matters most here, and the results below are the "
-            "argument for it: the spread across seeds is much wider than any "
-            "single prediction would let you guess.",
+            "argument for it.",
         ),
         (
             "Diffusion steps",
@@ -219,52 +250,45 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "Four predictions in about three minutes. Ranking score "
-        "runs <strong>0.45 to 0.63</strong>, ipTM 0.421 to 0.652, pTM "
-        "0.524 to 0.557, and pLDDT 48.8 to 52.3."
+        "Four predictions in about three and a half minutes, and they split "
+        "cleanly <strong>two and two</strong>. The top pair scores 0.67 and "
+        "0.66 on the ranking; the bottom pair 0.48 and 0.47. ipTM runs 0.471 "
+        "to 0.689, pTM 0.433 to 0.625, and pLDDT 42.8 to 52.9."
     ),
     "how_to_read_it": (
-        "Two of these columns move together and two do not. "
-        "The ranking score is an ipTM sort in all but name. It reads 0.63, "
-        "0.53, 0.53, 0.45 down the table &mdash; the middle two are a tie at "
-        "the precision shown &mdash; and ipTM breaks that tie in the same "
-        "order it sets the rest: 0.652, 0.536, 0.533, 0.421. What the model "
-        "is ranking on is its "
-        "confidence in the protein-ligand contact. pTM barely moves at all "
-        "(0.524 to 0.557), which is what you would expect: the trypsin fold "
-        "is not the uncertain part, only where the benzamidine sits. "
-        "<strong>pLDDT is the column to be careful with.</strong> It sits "
-        "between 48.8 and 52.3 for every prediction and it does <em>not</em> "
-        "follow the ranking. The prediction with the highest pLDDT is the one "
-        "ranked <em>last</em>: 52.3, with the worst ipTM of the four at "
-        "0.421. Sort this table by pLDDT, take the top row, and you have "
-        "picked the worst-docked of the four. Near 50 is low in absolute "
-        "terms as well, and it stays near 50 whatever the seed, so treat it "
-        "as a standing reason to look at the pose rather than as something "
-        "that separates these four. "
-        "<strong>Then the case for running more than one.</strong> The "
-        "default is a single seed, seed 1 &mdash; and seed 1 is the top row "
-        "here, ipTM 0.652. Run this once and you would have come away "
-        "believing 0.652. The other three seeds say 0.536, 0.533 and "
-        "0.421. "
-        "The "
-        "honest summary of this target is the spread, not its best member."
+        "<strong>The useful thing here is that all four columns agree.</strong> "
+        "Ranking, ipTM, pTM and pLDDT each draw the same line between the "
+        "same two pairs: the top two are 0.689 and 0.670 on ipTM with pLDDT "
+        "51.4 and 52.9, the bottom two are 0.493 and 0.471 with pLDDT 42.8 "
+        "and 44.4. Nothing crosses over. That agreement is worth more than "
+        "any single value, because the columns measure different things "
+        "&mdash; ipTM the protein-ligand contact, pTM the whole complex, "
+        "pLDDT the per-atom detail &mdash; and when a co-folding model is "
+        "genuinely unsure they tend to disagree with each other. Here they do "
+        "not, so the split is a real one and not an artefact of one metric. "
+        "<strong>Now the part that should change how you run this tool.</strong> "
+        "The form defaults to a single seed, and that seed is the one ranked "
+        "<em>last</em> here: 0.47 on the ranking, ipTM 0.471, pLDDT 44.4. Run "
+        "this target once, with the defaults, and you would have concluded it "
+        "does not co-fold with its ligand &mdash; when half the seeds say "
+        "0.67 and put the model's confidence in the same place. One "
+        "prediction on this tool is not a small version of four. It is a "
+        "coin flip you cannot see the result of."
     ),
     "what_we_did_next": (
-        "Took the spread as the result. Four predictions that disagree this "
-        "much are telling you the pose is not settled, so the next move is "
-        "not to pick the winner &mdash; it is to look at whether the top two "
-        "or three put the ligand in the same pocket at all, which is a "
-        "question for the 3D viewer rather than for any column here. If they "
-        "agree on the pocket and disagree on the detail, the prediction is "
-        "usable and worth more seeds. If they disagree on the pocket, no "
-        "number in this table would have told you, and the run has still "
-        "earned its cost by saying so."
+        "Kept the top pair and threw the rest away, then asked the only "
+        "question the table cannot answer: do those two put the benzamidine "
+        "in the same pocket? That is a job for the 3D viewer, not a column "
+        "&mdash; two predictions can agree on every score and still dock a "
+        "ligand in different places. If they agree on the pocket, the pose is "
+        "worth taking forward and more seeds will sharpen it. If they "
+        "disagree, the scores were telling you about the fold and not about "
+        "the binding site, and the run has still earned its cost by saying so."
     ),
-    "cost_usd": "0.78",
-    "runtime": "3 minutes",
+    "cost_usd": "0.86",
+    "runtime": "3.5 minutes",
     # Read by components/worked_example.html into the stub job's created_at so
     # a date-gated era notice knows when this ran. Job created_at, matching
     # the other examples' convention.
-    "ran_on": "2026-09-09T15:52:57Z",
+    "ran_on": "2026-09-09T17:40:13Z",
 }
