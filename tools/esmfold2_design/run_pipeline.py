@@ -42,24 +42,49 @@ Output shape (``/tmp/smoke_results.json``)::
       "n_failures": 0,
       "use_scaling_critics": false,
       "trajectory_steps": 150,
-      "best_sequence": "MAEK...",
+      "best_sequence": "AEKV...",
       "designs": [
         {
           "rank": 0,
           "name": "design_0",
           "pdb_key": "design_0_complex.pdb",
-          "designed_sequence": "MAEK...",
+          "designed_sequence": "MAEK...|AEKV...",
+          "sequence": "AEKV...",
           "iptm": 0.74,
           "distogram_iptm_proxy": 0.62,
           "cdr_distogram_iptm_proxy": null,
           "final_loss": 0.31,
           "isoelectric_point": 5.4,
-          "filter_status": "strict_pass"
+          "filter_status": "strict_pass",
+          "scores": {"iptm": 0.74, "...": "the six keys above, nested"}
+        }
+      ],
+      "candidates": [
+        {
+          "rank": 0,
+          "name": "design_0",
+          "pdb_key": "design_0_complex.pdb",
+          "designed_sequence": "MAEK...|AEKV...",
+          "sequence": "AEKV...",
+          "scores": {
+            "ipTM": 0.74,
+            "iPTM_proxy": 0.62,
+            "final_loss": 0.31,
+            "pI": 5.4,
+            "filter_status": "strict_pass"
+          }
         }
       ],
       "runtime_seconds": 612,
       "provider_job_id": "<job_id>"
     }
+
+``designed_sequence`` is ``target|binder`` concatenated; ``sequence`` is the
+binder alone, and it is what ``best_sequence``, export.fasta and the results
+panel's order-form block all mean. ``candidates[]`` is the capitalized,
+nested-``scores`` view the web tier reads; ``designs[]`` keeps the flat
+lowercase keys. Both are emitted, and the results template consumes whichever
+is present.
 
 Raw capture: the summary above is a *view*, not the record. The complete
 work tree (``/tmp/results``, including the untouched critic rows dumped
@@ -383,12 +408,44 @@ def _shape_designs(
             }
         )
 
-    # Sort by iPTM desc with None at the bottom.
-    designs.sort(key=lambda d: (-1 if d["iptm"] is None else -d["iptm"]))
+    # Sort by iPTM desc with None at the bottom. The sentinel has to be
+    # +inf, not -1: iPTM lives in [0, 1], so -1 is the negation of a PERFECT
+    # score and sorted an unmeasured design above every measured one, which
+    # is what this comment always claimed it did not do.
+    designs.sort(
+        key=lambda d: (float("inf") if d["iptm"] is None else -d["iptm"])
+    )
     for rank, d in enumerate(designs):
         d["rank"] = rank
         d["name"] = f"{pdb_prefix}design_{rank}"
     return designs
+
+
+# Filter tiers in preference order. Anything else ("drop", missing) is only
+# reached when no tier above it has a single design.
+_FILTER_TIERS = ("strict_pass", "borderline")
+
+
+def _pick_best(designs: list[dict]) -> Optional[dict]:
+    """Best design by filter tier first, iPTM second.
+
+    ``designs`` is already sorted by iPTM desc, so the first design of the
+    best non-empty tier wins. Ranking on iPTM alone hands the user a record
+    the tool's own filter rejected: a pI ~12 poly-Arg hallucination can
+    outscore every clean design, and best_sequence is what the results page
+    offers up for peptide synthesis.
+
+    Tier first, iPTM second -- in BOTH modes. In scFv mode ``_classify``
+    decides the tier on the CDR distogram proxy while this ordering stays
+    iPTM, so the winner is the highest-iPTM design among those the proxy let
+    through, not the highest-proxy one. Deliberate: iPTM is the calibrated
+    quantity and the proxy is a gate.
+    """
+    for tier in _FILTER_TIERS:
+        for d in designs:
+            if d.get("filter_status") == tier:
+                return d
+    return designs[0] if designs else None
 
 
 # ===========================================================================
@@ -733,13 +790,16 @@ def _run() -> int:
         job_token,
         pdb_prefix=pdb_prefix,
     )
+    best_design = _pick_best(designs)
     runtime = int(time.time() - start)
 
-    # The Flask CSV/FASTA exporters + summarize_top_score read
     # ``job.result["candidates"]`` with ``scores`` as a nested dict and
-    # capitalized keys (ipTM, iPTM_proxy, pI). Build that canonical view
-    # alongside the ``designs`` shape the results template already
-    # consumes, so we don't have to rewrite either.
+    # capitalized keys (ipTM, iPTM_proxy, pI) is what the web tier reads:
+    # shared/exports.py (CSV + FASTA), shared/email.py::_top_candidate_summary
+    # and blueprints/jobs.py::_top_score_for_share. Build that canonical view
+    # alongside the ``designs`` shape the results template already consumes,
+    # so we don't have to rewrite either. (This comment used to name a
+    # ``summarize_top_score``, which has never existed in this repo.)
     candidates = [
         {
             "rank": d["rank"],
@@ -775,7 +835,15 @@ def _run() -> int:
         "n_failures": max(0, batch_size - len(designs)),
         "use_scaling_critics": use_scaling_critics,
         "trajectory_steps": len(trajectory) if trajectory is not None else None,
-        "best_sequence": _extract_binder_sequence(best_seq) if best_seq else None,
+        # NOT ``best_seq`` from design(): upstream returns its own top pick
+        # with no knowledge of our strict-pass gate. It survives only as the
+        # fallback for a run that shaped nothing to choose from -- or whose
+        # chosen design has an empty binder half, which would otherwise make
+        # the results panel vanish rather than degrade.
+        "best_sequence": (
+            (best_design or {}).get("sequence")
+            or (_extract_binder_sequence(best_seq) if best_seq else None)
+        ),
         "designs": designs,
         "candidates": candidates,
         "runtime_seconds": runtime,
