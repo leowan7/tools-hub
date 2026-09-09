@@ -47,6 +47,126 @@ def test_dbref_non_unp_skipped():
     assert extract_uniprot_map(pdb) == {}
 
 
+def _dbref(db_name: str, accession: str = "P00698") -> bytes:
+    """One DBREF line carrying ``db_name`` in its cols 27-32 field.
+
+    The prefix is 26 characters, so the field starts at index 26, and
+    ``ljust(7)`` pads it to those 6 columns plus the separator -- putting
+    the accession at index 33, where both readers look for it.
+    """
+    assert len(db_name) <= 6, "cols 27-32 is 6 wide; a longer name is truncated"
+    line = b"DBREF  1ABC A    1   129  " + db_name.ljust(7).encode()
+    line += accession.ljust(9).encode() + b"LYC_CHICK      1    129"
+    return b"HEADER    db-name\n" + line + b"\nEND\n"
+
+
+@pytest.mark.parametrize("db_name", ["UNP", "unp", "Unp", "uNp"])
+def test_db_name_case_is_folded(db_name):
+    """A lowercase ``unp`` must resolve here exactly as it does in scout.
+
+    scout/epitope_db.py has upper-cased every DBREF database-name read
+    since #230. This reader compared the raw field, so a file could
+    resolve on the scout path and not on the preflight one purely
+    because of how it spelled UNP.
+    """
+    assert lookup_uniprot_for_chain(_dbref(db_name), "A") == "P00698"
+
+
+@pytest.mark.parametrize("db_name", ["SWS", "sws", "TRE", "tre"])
+def test_sws_and_tre_are_accepted(db_name):
+    """The gate takes the same three names scout/epitope_db.py takes.
+
+    These two are carried for parity, not because anything here has seen
+    one: the only DBREF records this repo tracks are 3, across 2
+    fixtures, and all 3 say UNP -- far too small a sample to argue from
+    in either direction, and this module cannot see upstream to check
+    whether the legacy names still occur. What is worth pinning is that
+    the two readers take the same list -- the parity test below -- not
+    that the list is exhaustive. It is not: see the TREMBL test.
+    """
+    assert lookup_uniprot_for_chain(_dbref(db_name), "A") == "P00698"
+
+
+def test_trembl_spelled_in_full_is_still_missed():
+    """Pins the gap the gate's comment admits to, so that prose stays true.
+
+    The database field is 6 columns wide, so a record naming TrEMBL in
+    full strips to "TREMBL" and never equals "TRE". scout/epitope_db.py
+    has the identical gap; closing it belongs in both readers at once,
+    and this test is what goes red when someone does.
+    """
+    header = len(b"HEADER    db-name") + 1
+    assert _dbref("TREMBL")[header + 26:header + 32] == b"TREMBL"
+    assert lookup_uniprot_for_chain(_dbref("TREMBL"), "A") is None
+
+
+@pytest.mark.parametrize("db_name", ["GB", "PDB", "REF", "EMBL", "NORINE"])
+def test_non_uniprot_database_names_still_skipped(db_name):
+    """Widening the gate must not admit databases that are not UniProt.
+
+    P00698 is a well-formed accession, so nothing downstream of the gate
+    would reject these lines -- only the database name does.
+    """
+    assert extract_uniprot_map(_dbref(db_name)) == {}
+
+
+@pytest.mark.parametrize(
+    "db_name",
+    ["UNP", "unp", "Unp", "SWS", "sws", "TRE", "TREMBL", "GB", "PDB", "REF"],
+)
+def test_agrees_with_the_scout_reader_on_the_database_name(db_name, tmp_path):
+    """The two DBREF readers must accept the same database names.
+
+    Pinned against the other reader rather than against a copy of its
+    list, so the two cannot drift apart silently.
+
+    What it catches: removing UNP, SWS or TRE from either allowlist, and
+    adding TREMBL, GB, PDB or REF to one side only. What it MISSES:
+    adding a name that is in neither allowlist and not in the ten below
+    -- both readers refuse it, so they agree and this stays green. Widen
+    the parametrize list whenever either allowlist grows.
+
+    Scoped to the database-name field, which is the only thing the
+    change aligned. The two readers still answer differently on other
+    axes -- accession case, the ``-N`` isoform tail, the DBREF1/DBREF2
+    pair, a line under 41 columns, and a malformed accession on the
+    first matching record -- so the fixture is deliberately a plain
+    uppercase 6-character accession on one full-width line, where none
+    of those can register. A green run here says the two readers take
+    the same database names, and nothing more than that.
+    """
+    from scout.epitope_db import _extract_uniprot_from_dbref
+
+    f = tmp_path / "probe.pdb"
+    f.write_bytes(_dbref(db_name))
+
+    scout_answer = _extract_uniprot_from_dbref(str(f), "A") or None
+    assert lookup_uniprot_for_chain(_dbref(db_name), "A") == scout_answer
+
+
+def test_a_legacy_record_can_outrank_a_later_unp_one_for_the_same_chain():
+    """First DBREF wins, so widening can CHANGE an accession, not just add one.
+
+    Before the widening the SWS record was invisible and the UNP record
+    below it took the chain. Now the SWS record is admitted, matches
+    first, and the chain resolves to ITS accession instead.
+
+    That is the intended direction -- scout/epitope_db.py has always
+    answered Q12345 for this file, so the change converges the two --
+    but it is the only shape in this delta where an existing file's
+    answer CHANGES rather than merely appears, which makes it the one
+    worth pinning. Downstream that is a different protein offered in the
+    preflight panel's AlphaFold suggestion, not just one more suggestion.
+    """
+    pdb = (
+        b"HEADER    first-wins\n"
+        b"DBREF  1ABC A    1   129  SWS    Q12345   LEG_X          1    129\n"
+        b"DBREF  1ABC A    1   129  UNP    P00698   LYC_CHICK      1    129\n"
+        b"END\n"
+    )
+    assert lookup_uniprot_for_chain(pdb, "A") == "Q12345"
+
+
 def test_invalid_accession_skipped():
     """A malformed UniProt accession isn't returned."""
     pdb = (
@@ -174,7 +294,7 @@ def test_a_newly_admitted_line_never_carries_a_residue_range(shape, dbref, acces
     NOT a claim that moved columns are never read. A line whose accession
     does sit in its field is read exactly as it always was, wrong reads
     included; see ``extract_uniprot_map``'s docstring. The guarantee is
-    about lines this change newly admits, nothing wider.
+    about lines the overflow read newly admits, nothing wider.
     """
     rec = extract_uniprot_map(b"HEADER    " + shape.encode() + b"\n" + dbref + b"\nEND\n")["A"]
     assert rec.uniprot_accession == accession, shape

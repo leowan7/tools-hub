@@ -55,16 +55,18 @@ class ChainUniProtMap:
 def extract_uniprot_map(data: bytes) -> dict[str, ChainUniProtMap]:
     """Walk DBREF records in the PDB bytes and return a chain→UniProt map.
 
-    Returns at most one entry per chain (the first DBREF for that chain
-    referencing UNP wins). Chains without a UniProt-typed DBREF are
-    absent from the dict.
+    Returns at most one entry per chain: the first DBREF for that chain
+    that clears every check below -- database name, accession format,
+    and the two integer columns -- wins, and any later record for the
+    same chain is ignored. Chains with no such record are absent.
 
     DBREF format (PDB v3.3, fixed-width):
         cols  1-6   "DBREF "
         col   13    chain ID
         cols 15-18  PDB seq begin (int)
         cols 21-24  PDB seq end (int)
-        cols 27-32  database name (UNP for UniProt, GB, REF, etc.)
+        cols 27-32  database name. Matched case-insensitively against
+                    UNP/SWS/TRE; GB, REF and the rest are skipped.
         cols 34-..  database accession (e.g. P12345), read to the next space
         cols 56-60  database seq begin (optional)
         cols 63-67  database seq end (optional)
@@ -92,9 +94,10 @@ def extract_uniprot_map(data: bytes) -> dict[str, ChainUniProtMap]:
     sizes. An accession that does not start at column 34 is no longer found
     at all, so its line yields NO RECORD where the old reader gave one. An
     accession that overflows the field does yield a record, with the
-    accession corrected -- which is the point of this change -- but without
-    a range: Q12345-12 is nine characters, so the old reader truncated it to
-    Q12345-1 and read a range off columns it had already mislocated.
+    accession corrected -- which is the point of the overflow read -- but
+    without a range: Q12345-12 is nine characters, so the old reader
+    truncated it to Q12345-1 and read a range off columns it had already
+    mislocated.
 
     No production code reads either field — ``_maybe_alphafold`` in
     shared/pdb_preflight.py takes only the accession — but
@@ -121,8 +124,29 @@ def extract_uniprot_map(data: bytes) -> dict[str, ChainUniProtMap]:
         if len(line) < 41:
             continue
         chain = line[12] if len(line) > 12 else " "
-        db = line[26:32].strip() if len(line) >= 32 else ""
-        if db != "UNP":
+        # Case-folded, and the same three names scout/epitope_db.py takes,
+        # so this one field is read the same way on both paths. That is
+        # the whole of the claim. The two readers still answer
+        # differently on plenty of files: the docstring above names the
+        # widest cause -- scout reads the DBREF1/DBREF2 pair and this
+        # module does not -- and there are at least four more. A
+        # lowercase accession (scout upper-cases it, this matches raw).
+        # A -N isoform tail (this allows it, scout takes only the 6- and
+        # 10-character forms). A line under 41 columns, which this skips
+        # and scout, needing only 13, reads. And a malformed accession on
+        # the first record matching the chain, which scout returns on
+        # while this one carries on to the next record.
+        #
+        # SWS and TRE are carried to keep the two name lists identical,
+        # not because either is evidenced here: the only DBREF records
+        # this repo tracks are 3, across 2 fixtures, and all 3 say UNP --
+        # far too small a sample to argue from in either direction. A
+        # record spelling TrEMBL out in full still misses, because the
+        # field is 6 columns and strips to "TREMBL", never "TRE";
+        # epitope_db.py has that same gap, so closing it belongs in both
+        # readers at once.
+        db = line[26:32].strip().upper() if len(line) >= 32 else ""
+        if db not in ("UNP", "SWS", "TRE"):
             continue
         # Split on a literal space, not on whitespace: a blank accession
         # field must stay blank rather than promote the entry name into it.
@@ -155,9 +179,10 @@ def extract_uniprot_map(data: bytes) -> dict[str, ChainUniProtMap]:
         # Detecting a real shift needs each field's intended width, which
         # the bytes do not carry.
         #
-        # What it does buy is that a line this change NEWLY admits carries
-        # no range at all. Ungated, an accession under-padded by two columns
-        # records 19..447 where the line's own columns say 1119..1447.
+        # What it does buy is that a line the overflow read NEWLY admits
+        # carries no range at all. Ungated, an accession under-padded by
+        # two columns records 19..447 where the line's own columns say
+        # 1119..1447.
         uni_begin: Optional[int] = None
         uni_end: Optional[int] = None
         if line[33:41].strip() == accession:
