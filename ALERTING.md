@@ -773,18 +773,21 @@ from production.** GitHub's failure email carries no log body, so open the run.
    * Push a fresh commit to `main`, as in (b). **Try this first.** Of the
      eight workflows here, only `pytest.yml` runs on an empty commit: the
      other three with a push trigger are `paths:`-filtered, and
-     `synthetic-smoke.yml` — the usual source of a red suite on this path,
-     since it re-attaches to `main`'s HEAD every six hours — is `schedule`
-     and `workflow_dispatch` only. So unless a deterministic `pytest.yml`
+     `synthetic-smoke.yml` is `schedule` and `workflow_dispatch` only, though
+     its cron re-attaches a run to `main`'s HEAD every six hours, so a commit
+     that deploys cleanly can still go red later. So unless a deterministic
+     `pytest.yml`
      failure is what reddened the suite, the new commit carries a clean one.
      Table row 1 above records a push deploying normally on 2026-08-24.
 
-   `gh run rerun` on the red run touches neither `main` nor the dashboard, so
-   it is worth trying when the failure looks flaky. Whether Railway then
-   re-evaluates an already-`SKIPPED` deployment is not recorded here: no run on
-   `395c523` was ever re-run in place (all six are `run_attempt=1`), so that
-   worked example cannot answer it. If the suite goes green and the deployment
-   stays skipped, fall back to pushing a commit.
+   **`gh run rerun` will not help here.** By the time you are reading this the
+   drift job has failed, and it shares a workflow run with the smoke, so the
+   suite on `main`'s HEAD is red *because of this guard* — rerunning it just
+   re-fails while production is still stale. See the deadlock paragraph below.
+   (Whether Railway would re-evaluate a `SKIPPED` deployment after a suite
+   flipped green is unrecorded either way: no run on `395c523` was ever re-run
+   in place — all six are `run_attempt=1` — so that worked example cannot
+   answer it.)
 
    Whichever you try, confirm with `/health` that `build` moved and record the
    result. Redeploy on a `SKIPPED` entry is untested, like the rollback row

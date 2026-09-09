@@ -194,7 +194,7 @@ jobs:
             exit 0
           fi
 
-          echo "::error::DEPLOY DRIFT -- production is running ${DEPLOYED:0:7} but ${BAR:0:7} landed on main $(git log -1 --format=%cr "$BAR") and never shipped. What fixes it depends on what Railway's deployment history shows for that commit, and Redeploy is wrong for the commonest case -- follow 'Deploy drift detected' in ALERTING.md before touching the dashboard."
+          echo "::error::DEPLOY DRIFT -- production is running ${DEPLOYED:0:7} but ${BAR:0:7} landed on main $(git log -1 --format=%cr "$BAR") and never shipped. What fixes it depends on what Railway's deployment history shows for that commit -- follow 'Deploy drift detected' in ALERTING.md before touching the dashboard."
           echo "Merged but NOT in production:"
           git log --oneline --no-decorate "${DEPLOYED}..${MAIN_REF}"
           exit 1
