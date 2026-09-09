@@ -15,11 +15,19 @@ wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 
 GPU: H100. The 150-step gradient run takes ~10-15 min per design on a
 warm container; weights pull is ~30 GB on a cold Volume. VRAM is ~27 GB
-because ``run_pipeline.py`` sets upstream's ``REUSE_ESMC = True`` before
-``ESMFold2Design.load()``; upstream's own default of False costs ~51 GB
-and cannot hold the 1-6 ``batch_size`` this tool offers. (This block used
-to claim 27 GB for the False path -- that was the True figure, and the
+AT batch_size=1 because ``run_pipeline.py`` sets upstream's
+``REUSE_ESMC = True`` before ``ESMFold2Design.load()``; upstream's own
+default of False costs ~51 GB at that same size. (This block used to
+claim 27 GB for the False path -- that was the True figure, and the
 mismatch is what shipped a batch cap the container could not honour.)
+
+Both figures are upstream's, measured at batch_size=1 on cd45 plus
+trastuzumab. "Enables increasing batch size up to 6" is upstream's
+assertion, not upstream's measurement -- every upstream entrypoint runs
+batch_size=1 -- and BATCH_SIZE_MAX here was lifted from that sentence.
+So the 1-6 bound is plausible, not verified: the pre-deploy GPU run
+should be scfv at batch_size=6, which is the only size that actually
+tests the cap.
 
 ``use_scaling_critics`` adds a 15-checkpoint ensemble on the HOST (upstream
 loads scaling critics with ``device="cpu"``), which does not fit the 10 GB

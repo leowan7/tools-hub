@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -124,14 +125,27 @@ STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 # so every number in a results row comes from the same model.
 #
 # There was a second constant here, CRITIC_SCALING_PROXY =
-# "ESMFold2-Experimental-Fast-base", matched by substring for the proxies. That
-# string is not a substring of any critic the pinned upstream actually emits
-# (ESMFold2-Experimental{,-Fast}{,-Cutoff2025}), so both proxies stayed None,
-# and since _classify gates scFvs on the CDR proxy alone, EVERY antibody design
-# came back ``drop`` regardless of quality (13/13 on a 2026-08-23 prod run).
-# Sourcing the proxies from the row that already supplies the iPTM removes the
-# second name to keep in sync; _assert_critic_present makes a future upstream
-# rename loud in the logs instead of silently zeroing the gate again.
+# "ESMFold2-Experimental-Fast-base", matched by substring for the proxies.
+# That string is NOT dead upstream -- it is upstream's own test for whether a
+# critic is a scaling critic (``is_scaling_critic = "ESMFold2-Experimental-
+# Fast-base" in critic_name``), and the 15 scaling checkpoints are named
+# f"ESMFold2-Experimental-Fast-base{size}-step{step}k". Copying that substring
+# as a *source selector* is what broke: it matches scaling rows and only
+# scaling rows, ``use_scaling_critics`` defaults to False, so on the default
+# path no matching row exists, both proxies stayed None, and since _classify
+# gates scFvs on the CDR proxy alone EVERY antibody design came back ``drop``
+# regardless of quality (13/13 on a 2026-08-23 prod run). Ticking the box did
+# populate it -- which is why the tool looked fine to whoever tested that way.
+#
+# The proxies were never actually missing. Upstream calls
+# compute_distogram_iptm_proxy once per critic and spreads the result into
+# EVERY row, hero critics included, so the value was always sitting on the row
+# this file already read the iPTM off. Sourcing it there removes the second
+# name to keep in sync and makes every number in a results row one model's
+# opinion. Consequence worth knowing: scaling-critic rows are now never read,
+# so use_scaling_critics changes nothing about the output.
+# _assert_critic_present makes a future upstream rename loud in the logs
+# instead of silently zeroing the gate again.
 CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
 
 
@@ -300,6 +314,27 @@ def _save_complex_pdb(
     return key
 
 
+def _finite(value: Any) -> Optional[float]:
+    """None for anything that is not a finite number.
+
+    Upstream sets ``cdr_distogram_iptm_proxy`` to ``float("nan")`` for every
+    non-antibody design (``compute_distogram_iptm_proxy``: "otherwise the CDR
+    score is NaN"). That NaN never surfaced while the proxy branch was dead,
+    so un-deadening it is what makes this reachable. ``json.dump`` writes NaN
+    as a bare ``NaN`` literal, which is not valid JSON and which the results
+    page's ``JSON.parse`` rejects outright; NaN also compares False against
+    every threshold, so it would read as a confident drop rather than as the
+    absent measurement it is.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _assert_critic_present(critic_results: list[dict]) -> None:
     """Log loudly when the scoring critic is absent from the upstream rows.
 
@@ -309,6 +344,11 @@ def _assert_critic_present(critic_results: list[dict]) -> None:
     This cannot repair such a run, only put the cause in the Modal logs instead
     of making it cost another H100 to find.
     """
+    if not critic_results:
+        # A run that produced no rows at all is a different failure, already
+        # reported by the caller. Claiming a rename here would spend the one
+        # log line whose whole job is to be believed.
+        return
     names = sorted({str(row.get("critic_name", "")) for row in critic_results})
     if CRITIC_REAL_IPTM not in names:
         logger.error(
@@ -352,6 +392,7 @@ def _shape_designs(
             seq,
             {
                 "designed_sequence": seq,
+                "_scored": False,
                 "iptm": None,
                 "distogram_iptm_proxy": None,
                 "cdr_distogram_iptm_proxy": None,
@@ -360,16 +401,23 @@ def _shape_designs(
             },
         )
         critic_name = str(row.get("critic_name", ""))
-        if critic_name == CRITIC_REAL_IPTM:
-            bucket["iptm"] = row.get("iptm")
-            bucket["distogram_iptm_proxy"] = row.get("distogram_iptm_proxy")
-            bucket["cdr_distogram_iptm_proxy"] = row.get(
-                "cdr_distogram_iptm_proxy"
+        if critic_name == CRITIC_REAL_IPTM and not bucket["_scored"]:
+            # The FIRST scoring row wins every field. Scores used to be
+            # assigned unconditionally (last row won) while complex and
+            # final_loss were first-wins, so two rows sharing a sequence --
+            # which batch_size > 1 makes possible, and which the REUSE_ESMC
+            # half of this change is what finally allows -- handed the user
+            # one row's PDB underneath another row's numbers.
+            bucket["_scored"] = True
+            bucket["iptm"] = _finite(row.get("iptm"))
+            bucket["distogram_iptm_proxy"] = _finite(
+                row.get("distogram_iptm_proxy")
             )
-            if bucket["complex"] is None:
-                bucket["complex"] = row.get("complex")
-            if bucket["final_loss"] is None:
-                bucket["final_loss"] = row.get("final_loss")
+            bucket["cdr_distogram_iptm_proxy"] = _finite(
+                row.get("cdr_distogram_iptm_proxy")
+            )
+            bucket["complex"] = row.get("complex")
+            bucket["final_loss"] = _finite(row.get("final_loss"))
 
     designs: list[dict] = []
     for rank, (seq, bucket) in enumerate(by_sequence.items()):
@@ -412,8 +460,11 @@ def _shape_designs(
             }
         )
 
-    # Sort by iPTM desc with None at the bottom.
-    designs.sort(key=lambda d: (-1 if d["iptm"] is None else -d["iptm"]))
+    # Sort by iPTM desc, unscored last. The old key returned a bare -1 for
+    # None, and iPTM is in [0, 1] so every real key is in [-1, 0] -- -1 sorted
+    # BELOW all of them and put the unscored designs at the TOP of the table,
+    # the exact opposite of the comment that sat here.
+    designs.sort(key=lambda d: (d["iptm"] is None, -(d["iptm"] or 0.0)))
     for rank, d in enumerate(designs):
         d["rank"] = rank
         d["name"] = f"{pdb_prefix}design_{rank}"
