@@ -231,7 +231,7 @@ EXAMPLE: dict | None = {
         "order it sets the rest: 0.652, 0.536, 0.533, 0.421. What the model "
         "is ranking on is its "
         "confidence in the protein-ligand contact. pTM barely moves at all "
-        "(0.52 to 0.56), which is what you would expect: the trypsin fold is "
+        "(0.524 to 0.557), which is what you would expect: the trypsin fold "
         "not the uncertain part, only where the benzamidine sits. "
         "<strong>pLDDT is the column to be careful with.</strong> It sits "
         "between 48.8 and 52.3 for every prediction and it does <em>not</em> "
@@ -245,7 +245,8 @@ EXAMPLE: dict | None = {
         "<strong>Then the case for running more than one.</strong> The "
         "default is a single seed, seed 1 &mdash; and seed 1 is the top row "
         "here, ipTM 0.652. Run this once and you would have come away "
-        "believing 0.65. The other three seeds say 0.536, 0.533 and 0.421. "
+        "believing 0.652. The other three seeds say 0.536, 0.533 and "
+        "0.421. "
         "The "
         "honest summary of this target is the spread, not its best member."
     ),
