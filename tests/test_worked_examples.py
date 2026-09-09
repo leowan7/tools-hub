@@ -34,6 +34,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import math
 import statistics
 import re
 from pathlib import Path
@@ -41,6 +42,7 @@ from pathlib import Path
 import pytest
 
 from shared.metric_glossary import plddt_on_100
+from shared.score_legends import SCORE_LEGENDS, _resolve_state
 from shared.tool_meta import meta_for
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -522,6 +524,77 @@ class TestExampleNumbersComeFromThePayload:
         assert not example.get("cost_usd")
         # No structure_file: static/example/ carries no 1YCR.
         assert not example.get("structure_file")
+
+    def test_bindcraft_narration_matches_its_result_json(self, tools_app):
+        """The surface-hydrophobicity column, whose figures went into the
+        narration only once the column stopped claiming to be SAP.
+
+        Pinned because that column is the one a reader is most likely to
+        misread: it is narrated as a PRECONDITION -- BindCraft's own 0.35
+        reject line, already passed by everything on the page -- and the
+        two claims that make that reading true are the values themselves
+        and the 0.35. If a recapture moves the values, this fails rather
+        than leaving prose asserting the old ones.
+        """
+        _, slugs = tools_app
+        example = _examples(slugs)["bindcraft"]
+        result = json.loads(
+            (REPO / "tools" / "bindcraft" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+        rows = result["candidates"]
+        assert len(rows) == 2
+        # Still stored under the container's own key. shared/score_legends
+        # aliases it; the narration must match what is actually in the file.
+        assert all("SAP" in (r.get("scores") or {}) for r in rows), (
+            "the example payload no longer stores this column under "
+            "the container key 'SAP'. If the container was renamed "
+            "and the example re-captured, update these reads and the "
+            "_COLUMN_ALIASES comment together."
+        )
+        stored = [r["scores"]["SAP"] for r in rows]
+        assert stored == [0.29, 0.30]
+        # FIGURE BY FIGURE, not as one joined phrase. "0.29 and 0.30" failed
+        # on bolding either numeral -- which the same sentence already does
+        # to ipTM -- and on "0.29 / 0.30" and on reordering. The file's own
+        # boltz2 test pins figures individually for this reason; a guard that
+        # fails on a presentational copy-edit teaches people to loosen it.
+        blurb = example["what_came_back"]
+        for figure in ("0.29", "0.30", "surface hydrophobicity"):
+            assert figure in blurb.lower(), f"{figure} missing from blurb"
+        reading = example["how_to_read_it"]
+        assert "0.35" in reading, "the reject line the reading depends on"
+        assert "precondition" in reading
+        # Every stored value must actually be under the line the prose
+        # says they were pre-filtered by, or the reading is false.
+        assert all(v < 0.35 for v in stored)
+        # AND IT MUST CARRY THE CORRECTION, NOT MERELY OMIT THE ERROR. On the
+        # 101 accepted designs FreeBindCraft publishes for this same target
+        # the median is 0.26 and the max 0.34, so roughly three-quarters of
+        # accepted designs sit below 0.29/0.30 -- nearer the reject line than
+        # most designs that pass. An earlier draft said "are low", which
+        # reads as a developability all-clear and is backwards.
+        #
+        # BOTH DIRECTIONS, because neither alone holds. A draft asserted only
+        # `"are low" not in reading`; "is low" walks past it. The draft after
+        # that replaced it with the positive pins below and DROPPED the
+        # negative, which is strictly worse: appending "Both are low." then
+        # satisfies every positive pin, and the earlier draft would at least
+        # have caught that one. Substring checks cannot bound what else the
+        # prose says, so this asserts what must be present AND excludes the
+        # phrasing actually written once.
+        assert "0.26" in reading and "0.34" in reading, (
+            "the reading no longer carries the reference distribution that "
+            "stops a reader taking 0.29 for a good score"
+        )
+        assert "three-quarters" in reading, (
+            "the reading carries the reference figures but no longer draws "
+            "the comparison, which is the half that corrects the error"
+        )
+        assert "are low" not in reading and "is low" not in reading, (
+            "the reading calls these values low again. They are upper-"
+            "quartile among accepted designs; see the comment above"
+        )
 
 
     # Phrases that OWN an all-failed banner. Every one is a universal
@@ -1658,3 +1731,356 @@ class TestNoUnclearedSequenceReachesAPublicPage:
         blob = base64.b64encode(pdb.encode()).decode()
         found = list(_published_sequences({"pdb_b64": blob}))
         assert found == [("pdb_b64", "structure", "L" * 40)]
+
+
+# Every real captured run, keyed by the tool that produced it, is a set of
+# readings on the SAME scale a legend bar claims to judge. That pairing is
+# what makes the guard below possible.
+_CANDIDATE_LIST_KEYS = ("candidates", "designs", "sequences")
+
+# How far past its own strict bar every design in a captured run may sit
+# before the column stops being able to discriminate. Not tuned to one
+# instance: measured over every worked example, the busiest legitimate column
+# is boltz2's hotspot count and the defect this guard was written for --
+# bindcraft's surface hydrophobicity against a bar meant for a Spatial
+# Aggregation Propensity -- sat more than six times further out. Anything in
+# between is a column nobody can fail, which is the same fact whether the
+# cause is a scale mismatch or a bar set where the data never goes.
+#
+# BOUNDED ON BOTH SIDES BY test_the_threshold_sits_between_the_two_populations
+# below. A ceiling alone let this be relaxed to 16.0 with every test green --
+# a 3.2x silent weakening, found by mutation. The floor is the measured
+# legitimate margin; the ceiling is the defect's.
+#
+# The narrowest real headroom is boltz2's hotspot count, and it is the one
+# margin set by a USER INPUT rather than by physics: the column counts
+# contacted hotspots against a fixed bar of 5, so a future capture on a large
+# epitope where every design contacts 25+ would trip this guard on a correct
+# legend. The higher-is-better columns whose bar shares their value's scale
+# need an unreachable reading to trip (pLDDT would need 450) -- but that is a
+# fact about those bars, not about bounded columns in general: a
+# lower-is-better margin is bar/worst and grows without limit as the readings
+# approach zero, which is how a bounded 0-1 column produced the 16.67x this
+# guard exists for.
+_MAX_MARGIN_OVER_BAR = 5.0
+
+
+def _example_rows(payload):
+    """The per-design records in a worked-example payload."""
+    for key in _CANDIDATE_LIST_KEYS:
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def _example_margins(payloads):
+    """``{(tool, column): (margin, bar, worst, n)}`` over every barred legend.
+
+    ONE COPY, DELIBERATELY. The sweep and the threshold-band test below both
+    need this and were first written as two hand-copied loops. They had
+    already drifted apart on the divide-by-zero branch -- one returned
+    ``inf`` where the other returned ``0.0`` -- which is a disagreement about
+    the single number both tests exist to reason about. A guard whose two
+    halves compute their subject differently cannot be trusted about either.
+
+    ``margin`` is how far past its own strict bar the WORST design in a
+    captured run sits. A legend stating no bar is skipped, as is a column
+    the resolver finds nothing for.
+    """
+    out = {}
+    for slug, payload in payloads.items():
+        rows = _example_rows(payload)
+        for (tool, column), legend in SCORE_LEGENDS.items():
+            if tool != slug:
+                continue
+            bar = legend.get("excellent", legend.get("good"))
+            if bar is None:              # a legend may state no bar
+                continue
+            # _resolve_state is the SAME resolution the table and the verdict
+            # use, aliases and the pLDDT rescale included, so this compares
+            # the number a reader is actually shown.
+            values = [
+                value
+                for value, state in (
+                    _resolve_state(row, tool, column) for row in rows
+                )
+                if state == "ok"
+            ]
+            if not values:
+                continue
+            if legend["direction"] == "lower_is_better":
+                worst = max(values)
+                margin = (bar / worst) if worst else float("inf")
+            else:
+                worst = min(values)
+                margin = (worst / bar) if bar else float("inf")
+            out[(tool, column)] = (margin, bar, worst, len(values))
+    return out
+
+
+class TestABarAndItsValuesShareAScale:
+    """A legend bar and the values it judges must be the same quantity.
+
+    THE DEFECT THIS REPLACES, IN FULL. bindcraft stored a 0-1 surface
+    hydrophobicity fraction under the key "SAP" and shared/score_legends.py
+    judged it at 10 and 5, bars meant for a Spatial Aggregation Propensity --
+    a quantity BindCraft never computes. 0.29 against a bar of 5 is "better
+    than excellent" by construction, so the column read favourable for every
+    design that ever ran. The GATE_COLUMNS block in shared/score_legends.py
+    had already named the shape -- "a leg that can silently pass everything
+    is worse than no leg" -- five days earlier, in 16735f5 (#216). Days, not
+    years: the gap this guard closes is between naming a defect and enforcing
+    against it, and that gap is short and still real.
+
+    WHY A MARGIN AND NOT A UNIT CHECK. The obvious guard is to declare each
+    column's units and compare. That is a second copy of the same guess: the
+    legend author who picked the wrong bar would have declared the wrong
+    unit beside it, and the test would agree with them. The observed values
+    are not a guess -- they came off a billed GPU -- so the check runs
+    against those. Deriving the unit from the glossary LABEL was rejected
+    for the same reason: a label is rendering, not a declaration.
+
+    WHAT IT DOES NOT CATCH. The three known instances of the shape in this
+    repo, against this guard. bindcraft's bar of 5 and boltzgen's of 0.8 are
+    the bars as they stood when each was a defect; pxdesign's 3.0 is live:
+
+      bindcraft SAP    bar 5     worst 0.30    16.67x   caught
+      pxdesign pAE     bar 3.0   worst 28.36    0.11x   NOT caught
+      boltzgen ipTM    bar 0.8   worst 0.538    0.67x   NOT caught
+
+    pxdesign's is the dual-scale column and its worked example stores the
+    angstrom form, so nothing here can see the other scale. boltzgen's sat
+    on the far side: this guard fires only when a bar cannot be FAILED, and
+    that one could not be MET.
+
+    Beyond those: a bar wrong by less than the threshold, and a column whose
+    worked example holds even one poor design, since one value inside the
+    bar makes the column look discriminating. Barred legends the sweep never
+    reaches at all are enumerated in the positive control below, beside the
+    assertion that checks them. Mutation shows what that costs: af2's
+    payload stores ``mean_plddt``, no alias reaches it, and moving af2's
+    plddt bar from 80/90 to 0.8/0.9 -- the same 0-1-against-0-100 mistake
+    this repo has a memory file about -- leaves this guard green.
+
+    So it is a floor and a narrow one.
+    """
+
+    def test_no_legend_bar_is_unfailable_on_its_own_worked_example(
+        self, tools_app,
+    ):
+        _app, slugs = tools_app
+        payloads = _example_payloads(slugs)
+        margins = _example_margins(payloads)
+        checked = sorted(margins)
+        offenders = [
+            f"{tool}.{column}: every one of {n} designs beats its bar of "
+            f"{bar:g} by {margin:.1f}x (worst reading {worst:g})"
+            for (tool, column), (margin, bar, worst, n) in margins.items()
+            if margin >= _MAX_MARGIN_OVER_BAR
+        ]
+
+        assert not offenders, (
+            "a legend bar no shipped design can fail is judging a different "
+            "quantity than the one stored, or sits where the data never "
+            "goes. Check what the container actually writes into this key "
+            "before touching the bar: " + "; ".join(offenders)
+        )
+        # Positive control. The loop above is vacuous if nothing resolves --
+        # a renamed column key or a payload shape change would empty it
+        # silently and leave every assertion above passing on zero rows.
+        #
+        # AN EXACT LITERAL OF (tool, column) PAIRS, and both halves of that
+        # are load-bearing. A set derived from _example_rows -- the call the
+        # sweep itself makes -- equals what the sweep found by construction,
+        # so it passes under any mutation rather than merely the one below:
+        # every pair that leaves the sweep leaves the expectation with it,
+        # and the control then vouches only for what it still sees. Drop
+        # "candidates" from _CANDIDATE_LIST_KEYS to watch that happen.
+        # And a control over TOOLS cannot tell "checked" from "skipped":
+        # drop bindcraft's shape_complementarity from the payload and a
+        # per-tool control still passes, because bindcraft's other three
+        # columns cover for it, while this one names the pair that went
+        # dark. Both were found by mutation, not by reading.
+        #
+        # DO NOT cite af2's plddt bar here as the motivating mutation. It is
+        # a genuine hole -- see the class docstring -- but it survives BOTH
+        # controls, so it is not evidence for this one. A draft cited it and
+        # was falsified by running it under both.
+        #
+        # Adding a legend or a worked example SHOULD fail here: that is the
+        # notification that the guard's reach changed, which is the one
+        # thing a floor must not do quietly.
+        #
+        # The barred legends the sweep never reaches, and why:
+        #
+        #   colabfold iptm / plddt / ptm    payload carries no per-design rows
+        #   esmfold plddt                   payload carries no per-design rows
+        #   af2 plddt                       stored as mean_plddt, no alias
+        #   af2 iptm                        key present, every value null
+        #   rfdiffusion RMSD                no RMSD key in scores
+        #   iggm epitope_contacts           stored at the RECORD ROOT as
+        #                                   n_epitope_contacts; shared/
+        #                                   result_columns lifts it via
+        #                                   _ROOT_METRIC_ALIASES, which
+        #                                   _resolve_state does not apply
+        #
+        # rfantibody and iggm were in this list as "no worked example at all"
+        # until #235 shipped one for each. That is what the exact-set control
+        # is for: it FIRED on the rebase naming the three rfantibody pairs as
+        # newly reached, rather than absorbing them silently. iggm stayed dark
+        # for a different reason, which is why its line moved rather than
+        # disappearing.
+        expect = {
+            ("af2", "ptm"),
+            ("rfantibody", "ipAE"), ("rfantibody", "pAE"),
+            ("rfantibody", "pLDDT"),
+            ("bindcraft", "ipTM"), ("bindcraft", "pLDDT"),
+            ("bindcraft", "RMSD"), ("bindcraft", "shape_complementarity"),
+            ("boltz2", "ipTM"), ("boltz2", "pTM"), ("boltz2", "pLDDT"),
+            ("boltz2", "n_hotspot_contacts"),
+            ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
+            ("esmfold2-design", "ipTM"),
+            ("mpnn", "recovery"), ("mpnn", "score"),
+            ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"), ("pxdesign", "pAE"),
+            ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),
+            ("rfdiffusion", "i_pAE"),
+        }
+        assert set(checked) == expect, (
+            "the set of (tool, column) pairs this guard actually resolves "
+            "has changed. Gone dark (was checked, now skipped): "
+            f"{sorted(expect - set(checked))}. Newly reached: "
+            f"{sorted(set(checked) - expect)}. A pair going dark means the "
+            "guard silently stopped covering it; update this literal only "
+            "once you know which it is."
+        )
+
+    def test_the_margin_check_fires_on_the_defect_it_replaces(self):
+        """The bug as it shipped, reconstructed: the real captured
+        readings against the bar that used to judge them."""
+        rows = json.loads(
+            (REPO / "tools" / "bindcraft" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )["candidates"]
+        assert all("SAP" in (r.get("scores") or {}) for r in rows), (
+            "the example payload no longer stores this column under "
+            "the container key 'SAP'. If the container was renamed "
+            "and the example re-captured, update these reads and the "
+            "_COLUMN_ALIASES comment together."
+        )
+        stored = [r["scores"]["SAP"] for r in rows]
+        assert stored == [0.29, 0.30]
+        assert min(5 / v for v in stored) >= _MAX_MARGIN_OVER_BAR, (
+            "the SAP bar of 5 no longer looks unfailable against the "
+            "values it judged, so this guard would not have caught the "
+            "defect it was written for"
+        )
+
+    def test_the_threshold_sits_between_the_two_populations(self, tools_app):
+        """_MAX_MARGIN_OVER_BAR needs a FLOOR, not just a ceiling.
+
+        The test above only asserts the defect's 16.67x still exceeds the
+        threshold, so the constant could be relaxed anywhere up to 16.6 with
+        every test green. Mutation confirmed it: 16.0 passed the whole file,
+        a 3.2x silent weakening of the only thing this guard measures.
+
+        The floor is the largest margin a CORRECT legend reaches on real
+        captured data, recomputed here rather than quoted, so a re-captured
+        example moves the evidence and this fails instead of going stale.
+        """
+        _app, slugs = tools_app
+        payloads = _example_payloads(slugs)
+        # FINITE ONLY. The shared helper returns inf when a column's worst
+        # reading is 0.0, which is right for the sweep -- a bar nothing can
+        # fail -- and wrong here, where ``legitimate`` means "the largest
+        # margin a CORRECT legend reaches". A parser default of 0.0 in any
+        # payload would otherwise make this test report "a correct legend
+        # now reaches infx" and advise raising the threshold, which cannot
+        # help. The sweep still fails on that payload, clearly.
+        margins = {
+            k: v[0] for k, v in _example_margins(payloads).items()
+            if math.isfinite(v[0])
+        }
+
+        legitimate = max(margins.values())
+        assert legitimate < _MAX_MARGIN_OVER_BAR, (
+            f"a correct legend now reaches {legitimate:.2f}x, at or past the "
+            f"threshold of {_MAX_MARGIN_OVER_BAR}. The guard would fail on "
+            "it. Raising the threshold is only right if that column really "
+            f"cannot discriminate: {max(margins, key=margins.get)}"
+        )
+
+        # THE DEFECT'S WORST READING IS READ OFF THE PAYLOAD. A draft wrote
+        # ``5 / 0.30`` here; re-capturing the example with SAP [0.29, 0.62]
+        # then left this test certifying a threshold its own criterion
+        # rejects, because the stale 0.30 kept the midpoint at 6.58 when the
+        # real one was 4.58. The bar of 5 stays a literal on purpose: it is
+        # a historical fact about a legend this change deleted, not
+        # something the payload can tell us.
+        #
+        # RESOLVED THROUGH THE ALIAS, not by indexing "SAP" directly, so the
+        # planned container rename does not turn this into a bare KeyError.
+        rows = json.loads(
+            (REPO / "tools" / "bindcraft" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )["candidates"]
+        worst = max(
+            _resolve_state(r, "bindcraft", "surface_hydrophobicity")[0]
+            for r in rows
+        )
+        defect = 5 / worst
+
+        # NOT merely "somewhere between the two". That was the first fix here
+        # and it did not work: 16.0 sits between 2.60 and 16.67, so it passed
+        # while making the guard catch its own motivating defect by 4% and
+        # miss a 10x one entirely. Sensitivity was the thing being lost, and
+        # a band that wide does not measure it.
+        #
+        # The threshold must sit at or below the GEOMETRIC MIDPOINT of the
+        # gap. That is not the most sensitive placement available -- anything
+        # just above the largest correct margin cannot false-positive on
+        # today's data, and a draft claiming otherwise had it backwards, the
+        # midpoint being this band's CEILING. It is the placement that keeps
+        # equal ratio headroom on both sides, so a correct legend drifting
+        # upward has room before it trips. Above it the threshold is nearer
+        # the defect than the data, which is a deliberate loss of reach.
+        midpoint = (legitimate * defect) ** 0.5
+        assert _MAX_MARGIN_OVER_BAR <= midpoint, (
+            f"the threshold {_MAX_MARGIN_OVER_BAR} sits above the midpoint "
+            f"{midpoint:.2f}x between the worst correct legend "
+            f"({legitimate:.2f}x) and the defect ({defect:.2f}x). It still "
+            "catches that one defect, but it has been relaxed toward it and "
+            "will miss milder cases of the same shape."
+        )
+
+    def test_the_alias_that_carries_every_stored_bindcraft_row(self):
+        """The rename's load-bearing half, which nothing else pins.
+
+        The display column is ``surface_hydrophobicity``; every bindcraft job
+        already in the table stores it as ``SAP``. Deleting "SAP" from the
+        _COLUMN_ALIASES tuple blanks that cell on every past run -- exactly
+        the damage the comment above the alias says it exists to prevent --
+        and it survived the whole suite, because the column declares no bar
+        so the margin sweep skips it and the column-name pins never read a
+        value. This is the one assertion that fails.
+        """
+        stored_the_old_way = {"scores": {"SAP": 0.29}}
+        assert _resolve_state(
+            stored_the_old_way, "bindcraft", "surface_hydrophobicity",
+        ) == (0.29, "ok"), (
+            "a stored bindcraft row no longer resolves under the display "
+            "column, so every historical job renders an em-dash there"
+        )
+        # BOTH SPELLINGS, because the alias is a tuple and the first draft
+        # pinned only the legacy half of it. Reducing the tuple to ("SAP",)
+        # survived the whole suite: harmless today, since nothing writes the
+        # new name yet, but it is exactly the half that has to work when the
+        # container is renamed. Synthetic values on purpose -- a re-captured
+        # example must not be able to move this test.
+        stored_the_new_way = {"scores": {"surface_hydrophobicity": 0.31}}
+        assert _resolve_state(
+            stored_the_new_way, "bindcraft", "surface_hydrophobicity",
+        ) == (0.31, "ok"), (
+            "a row written under the canonical name does not resolve, so a "
+            "container renamed to match this column would render nothing"
+        )
