@@ -39,7 +39,7 @@ def guard_step(workflow: dict) -> dict:
 
 
 def test_the_guard_is_its_own_job_not_a_step_before_the_smoke(workflow: dict):
-    """As a step it exited 1 on four of five paths ahead of the smoke.
+    """Five of its seven paths exit 1; as a step all five ran ahead of the smoke.
 
     A /health blip therefore deleted the deep end-to-end signal entirely, and
     the guard's own message told the reader to compare against "the smoke
@@ -184,6 +184,10 @@ def _if_block(run: str, gate: str, label: str) -> str:
     """
     lines = run.splitlines()
     for i, line in enumerate(lines):
+        # This file quotes its own commands in prose constantly. A comment
+        # doing that would match first and fail a perfectly correct gate.
+        if line.lstrip().startswith("#"):
+            continue
         if re.search(gate, line):
             assert line.lstrip().startswith("if ! "), (
                 f"the {label} gate is no longer negated: {line.strip()!r}. "
@@ -230,10 +234,78 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
         "the drift branch no longer emits an ::error:: annotation"
     )
     tail = run[run.index("::error::DEPLOY DRIFT"):]
+    assert "exit 0" not in tail, (
+        "an `exit 0` sits between the DEPLOY DRIFT error and the end of the "
+        "step, so the guard short-circuits to a PASS after announcing drift. "
+        "Asserting only on the last line cannot see this."
+    )
     lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
     assert lines[-1] == "exit 1", (
         "the drift branch does not end in `exit 1`, so detecting drift does "
         f"not FAIL the job and nobody is emailed. Tail was: {lines[-1]!r}"
+    )
+
+
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def _stated_path_counts(text: str) -> list[tuple[str, int, int]]:
+    """Every "<n> of [its] <m>" exit-path claim in a file, with wraps rejoined.
+
+    Rejoining is the whole trick. The second claim in the workflow wrapped
+    mid-phrase -- `four of` ending one line, `# five paths` opening the next --
+    so a line-scoped grep found only the first, and the stale one shipped.
+    """
+    flat = re.sub(r"\s*\n\s*#?\s*", " ", text)
+    found = []
+    for said_n, said_m in re.findall(r"(\w+) of (?:its )?(\w+) paths", flat):
+        n = _NUMBER_WORDS.get(said_n.lower())
+        m = _NUMBER_WORDS.get(said_m.lower())
+        if n is not None and m is not None:
+            found.append((f"{said_n} of {said_m}", n, m))
+    return found
+
+
+def test_every_stated_exit_path_count_matches_the_script(guard_step: dict):
+    """The comments justify the separate job with a COUNT, and counts rot.
+
+    Three sites carried a stale one. It was true of the version QC round 1
+    read, and wrong the moment that same round's repair added the on-main gate
+    as a fifth non-zero exit -- the repair the sentence exists to justify is
+    what invalidated its number. It shipped, and nothing could see it.
+
+    So stop restating the number and derive it. A reader checks the claim
+    against the script in front of them; this does exactly that, and covers
+    the docstrings in this file too, since one of the three sites was here.
+    """
+    exits = re.findall(r"^\s*exit\s+(\d+)\s*$", guard_step["run"], re.MULTILINE)
+    assert exits, (
+        "no `exit N` lines found in the guard step -- the pattern has drifted "
+        "from the script, so this test is asserting over nothing"
+    )
+    total = len(exits)
+    nonzero = sum(1 for code in exits if code != "0")
+
+    claims = []
+    for source in (_WORKFLOW, Path(__file__)):
+        for said, n, m in _stated_path_counts(source.read_text(encoding="utf-8")):
+            claims.append((source.name, said, n, m))
+    assert claims, (
+        "no exit-path claim found in either file. If the prose was reworded to "
+        "drop the count, delete this test; otherwise the pattern has drifted "
+        "and the next stale number ships unseen, which is how this one did."
+    )
+
+    wrong = [
+        f"{where} says {said!r}" for where, said, n, m in claims
+        if (n, m) != (nonzero, total)
+    ]
+    assert not wrong, (
+        f"the guard exits non-zero on {nonzero} of {total} exit statements, "
+        f"but: {wrong}"
     )
 
 
