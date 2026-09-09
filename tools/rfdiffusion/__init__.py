@@ -157,7 +157,7 @@ adapter = ToolAdapter(
                 "Start with a small batch (4 designs, ~25 min) to "
                 "confirm your target and hotspots, then scale to 100+ "
                 "once the small batch looks reasonable. Results emailed "
-                "when complete; A100-80GB."
+                "when complete; A100-40GB."
             ),
             requires_pdb=True,
             long_running=True,

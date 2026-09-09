@@ -34,7 +34,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 def test_single_container_ceiling_matches_chunk_size():
     # The ceiling IS the campaign chunk size: above it, a single job needs
     # more than one container and must fan out.
-    assert cc.single_container_ceiling("rfdiffusion") == 12
+    assert cc.single_container_ceiling("rfdiffusion") == 10
     assert cc.single_container_ceiling("bindcraft") == 16
     assert cc.single_container_ceiling("boltzgen") == cc.BOLTZGEN_DESIGNS_PER_JOB
     for tool in ("rfdiffusion", "bindcraft", "boltzgen"):
@@ -95,7 +95,7 @@ def _ctx(user_id="u-1"):
 
 
 def _over_ceiling_form():
-    # rfdiffusion ceiling is 12; 100 must reroute. Valid otherwise so validate
+    # rfdiffusion ceiling is 10; 100 must reroute. Valid otherwise so validate
     # passes and the backstop (not a validation error) is what returns.
     return {
         "preset": "pilot",
@@ -155,7 +155,7 @@ def test_form_render_wires_client_reroute(app):
 
     body = resp.get_data(as_text=True)
     assert resp.status_code == 200
-    assert 'data-campaign-ceiling="12"' in body
+    assert 'data-campaign-ceiling="10"' in body
     assert 'id="campaign-reroute-notice"' in body
     # Dedicated campaign CTA: type="button" so the single-job wallet gate never
     # disables it (over-ceiling requests are bounded by the campaign preauth).
@@ -165,7 +165,7 @@ def test_form_render_wires_client_reroute(app):
 
 
 def test_at_ceiling_single_job_not_rerouted(app):
-    # 12 == ceiling: NOT over, so the backstop must not fire. It should fall
+    # 10 == ceiling: NOT over, so the backstop must not fire. It should fall
     # through to the normal single-job path (which then needs a PDB upload).
     client = app.test_client()
     with client.session_transaction() as sess:
@@ -173,7 +173,7 @@ def test_at_ceiling_single_job_not_rerouted(app):
         sess["user_email"] = "u@example.com"
 
     form = _over_ceiling_form()
-    form["num_designs"] = "12"
+    form["num_designs"] = "10"
     with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
         "shared.idempotency.load_user_context", return_value=None
     ), patch("blueprints.tools.tool_enabled", return_value=True), patch(
