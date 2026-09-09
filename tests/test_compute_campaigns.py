@@ -35,6 +35,7 @@ from shared.compute_campaigns import (
     read_campaign,
     sanitize_shared_params,
 )
+from shared.wallet_estimates import get_tool_spec
 
 # The docstring above is only true with this fixture. The fake client is bound
 # to ``cc.get_service_client``, but ``plan_chunks`` prices through
@@ -54,8 +55,8 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 
 def test_chunk_size_per_tool():
-    # rfdiffusion: 120 gpu_s/design, pilot cap 1800s, 0.8 util -> 12.
-    assert _chunk_size_for("rfdiffusion") == 12
+    # rfdiffusion: 277.5 gpu_s/design, pilot cap 3600s, 0.8 util -> 10.
+    assert _chunk_size_for("rfdiffusion") == 10
     # bindcraft: 1800 gpu_s/design, campaign container 36000s, 0.8 util -> 16.
     assert _chunk_size_for("bindcraft") == 16
     # boltzgen: budget-based, fixed 200-pool -> 50 delivered/job.
@@ -66,11 +67,55 @@ def test_chunk_size_per_tool():
     assert _chunk_size_for("rfantibody") == 16
 
 
+def test_campaign_container_fits_the_chunk_it_is_given():
+    # The invariant the (chunk size, container seconds) pairing exists to
+    # hold: one container must actually fit the designs the planner puts in
+    # it, at the spec's own per-design rate. Asserting the chunk VALUE cannot
+    # catch a violation, because the sizer derives that value FROM the
+    # container -- the two move together and agree by construction.
+    #
+    # Without this, PRESET_CAPS ("rfdiffusion", "pilot") is untested. At the
+    # previous 1800 the derivation gives int(1800 * 0.8 / 277.5) = 5, which
+    # max(size, designs_per_run_baseline) floors straight back to 10, so the
+    # chunk reads 10 either way and mutating the cap stays green -- while
+    # every chunk overruns its container by 54%.
+    #
+    # Compared against the USABLE container (the 0.8 utilisation the sizer
+    # itself applies), not the raw cap -- asserting the raw cap would leave a
+    # blind window from 2775 to 3468 where the chunk plans to consume the
+    # cold-start headroom _CONTAINER_UTILIZATION exists to reserve.
+    #
+    # Four of the seven SUPPORTED_TOOLS are excluded, for two reasons.
+    # boltzgen, pxdesign and proteina are in _FIXED_CONTAINER_TOOLS, where
+    # expected_gpu_seconds divided by designs_per_run_baseline is not a
+    # per-design rate at all, so the ratio is meaningless for them (boltzgen
+    # and pxdesign "overrun" the usable container by 43x and 15x on paper).
+    # iggm is excluded for a different reason: it has no ("iggm", "pilot")
+    # row in PRESET_CAPS, so _campaign_container_seconds returns 0 and the
+    # invariant is undefined rather than violated.
+    #
+    # Only rfdiffusion is load-bearing here. Its derived size EQUALS its
+    # baseline (10), so the max() floor is what a bad cap would trip;
+    # rfantibody and bindcraft derive 16 against a baseline of 2, where
+    # chunk*per <= usable holds by truncation and cannot fail.
+    for tool in ("rfdiffusion", "rfantibody", "bindcraft"):
+        spec = get_tool_spec(tool)
+        per_design = spec.expected_gpu_seconds / spec.designs_per_run_baseline
+        chunk = _chunk_size_for(tool)
+        needed = chunk * per_design
+        container_s = cc._campaign_container_seconds(tool)
+        usable_s = container_s * cc._CONTAINER_UTILIZATION
+        assert usable_s >= needed, (
+            f"{tool}: a {chunk}-design chunk needs {needed:.0f} GPU-s but its "
+            f"container gives {usable_s:.0f} usable of {container_s} s"
+        )
+
+
 @pytest.mark.parametrize(
     "tool,requested,expected_subjobs",
     [
-        ("rfdiffusion", 24, 2),
-        ("rfdiffusion", 25, 3),   # 12+12+1
+        ("rfdiffusion", 20, 2),   # 10+10, an exact multiple of the chunk
+        ("rfdiffusion", 21, 3),   # 10+10+1, one design over it
         ("bindcraft", 40, 3),   # 16+16+8
         ("boltzgen", 100, 2),
         ("boltzgen", 101, 3),
@@ -479,13 +524,14 @@ def test_create_and_get_campaign(fake_client):
         user_id="user-1",
         tool="rfdiffusion",
         params={"target_chain": "A", "num_designs": 12, "_workspace": {"x": 1}},
-        requested_designs=24,
+        requested_designs=20,
         name="HER2 run",
         target_name="HER2",
     )
     assert camp is not None
     assert camp.status == "draft"
     assert camp.tool == "rfdiffusion"
+    # 20 designs over the 10-design chunk: 2 sub-jobs.
     assert camp.total_subjobs == 2
     assert camp.budget_usd > 0
     # params sanitized on the way in.
@@ -1512,8 +1558,8 @@ def test_an_unrenderable_required_amount_falls_back_instead_of_500ing(bad):
 
 @pytest.mark.parametrize("exact,shown", [
     ("573.6736", "573.68"),   # the reported case: nearest would say 573.67
-    ("2.0101", "2.02"),        # rfdiffusion@12 budget
-    ("2.6219", "2.63"),        # rfdiffusion@12 first wave
+    ("2.0101", "2.02"),        # a hair over 2.01: nearest would say 2.01
+    ("2.6219", "2.63"),        # a hair over 2.62: nearest would say 2.62
     ("0.0001", "0.01"),        # a hold of a hundredth of a cent still holds a cent
     ("30.0000", "30.00"),      # already whole cents: unchanged, not bumped
     ("0", "0.00"),

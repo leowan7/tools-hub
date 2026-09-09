@@ -10,9 +10,10 @@ display (PR #49).
 The per-job hold equals the **point estimate** (`estimated_cost_for_tool` =
 `min(marked_up_gpu_seconds, scaled_hard_cap)`, using p90 GPU-seconds once a tool
 has 20+ runs, else the spec default). On the canary that estimate ran about 55%
-of actual (rfdiffusion validates AF2 on an A100-80GB the spec under-prices), so
-`actual > hold` and settle took the variance-charge branch instead of releasing
-surplus. The money was correct; the ledger looked like an extra charge.
+of actual (the spec under-counted the GPU-seconds rfdiffusion's AF2
+validation costs), so `actual > hold` and settle took the variance-charge
+branch instead of releasing surplus. The money was correct; the ledger
+looked like an extra charge.
 
 Fix: make the hold a **cushioned** amount so actual usually lands under it and
 settle **releases** (clean ledger). Keep a separate point estimate for the

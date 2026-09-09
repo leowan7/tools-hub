@@ -264,7 +264,27 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("boltzgen", "pilot"):          3600,
     ("boltzgen", "full"):           7200,
     ("pxdesign", "pilot"):          3600,
-    ("rfdiffusion", "pilot"):       1800,
+    # rfdiffusion pilot: an upper bound for the 10-design single-container
+    # ceiling at the 277.5 GPU-s/design measured 2026-09-04 (job 25471e07 =
+    # 2220 GPU-s for 8 designs), with headroom. The previous 1800 sat BELOW
+    # that one observed run, so it was not an upper bound at all.
+    #
+    # This row does NOT size the hold, despite 1800 * rate * markup having
+    # equalled job 25471e07's $2.1849 hold exactly -- that is arithmetic
+    # coincidence (1800 == 1200 * HOLD_CUSHION_MULTIPLIER). The hold comes from
+    # ``cushioned_hold_usd`` off ``ToolSpec.expected_gpu_seconds``; ``submit``
+    # only checks this row is non-zero, and the ``gpu_seconds_cap`` it returns
+    # reaches no consumer and is absent from the Modal payload. On the request
+    # path the one value-carrying reader is
+    # ``compute_campaigns._campaign_container_seconds``, where 3600 makes the
+    # chunk DERIVE 10 designs rather than be clamped up to 10 from 5 against a
+    # container it would overrun by 54%. Off that path there is one more:
+    # scripts/calibration/poll_results.py scores a finished run fast or slow
+    # against 0.8 * this value.
+    #
+    # ("rfdiffusion", "full") is unreachable -- tools/rfdiffusion/__init__.py
+    # rejects every preset but "pilot" -- and is left at its planning value.
+    ("rfdiffusion", "pilot"):       3600,
     ("rfdiffusion", "full"):        3600,
     # Proteina-Complexa de novo binder search on A100-80GB, run as a
     # fund-and-drain campaign of one-shard-per-container jobs. The preset IS

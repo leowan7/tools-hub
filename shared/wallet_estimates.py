@@ -216,39 +216,50 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "rfdiffusion": ToolSpec(
         slug="rfdiffusion",
         gpu_class="A100-40GB",
-        # KNOWN LOW BY ~2.3x AND DELIBERATELY NOT CHANGED HERE. Measured
-        # 2026-09-04 on job 25471e07: 2220 GPU-seconds for 8 designs = 277.5
-        # per design, against the 120/design this encodes. The value predates
-        # the September 2026 RFdiffusion container update, which roughly
-        # tripled the AlphaFold stage -- it now fetches a real MSA for the
-        # target instead of folding it single-sequence. 2775.0 is the
-        # like-for-like replacement.
+        # 277.5 GPU-s per design, measured 2026-09-04 on job 25471e07: 2220
+        # GPU-seconds for 8 designs. The container llm-proteinDesigner#23
+        # shipped that day made the AlphaFold re-score fetch a real MSA for the
+        # target instead of folding it single-sequence, which roughly tripled
+        # the run (804 GPU-s before, 2220 after, same job shape). The previous
+        # 1200.0 encoded the pre-update 120 s/design.
         #
-        # WHY IT IS STILL 1200. This field is not only an estimate input. It
-        # also sizes campaign CHUNKS and the single-container design ceiling,
-        # so raising it re-plans every rfdiffusion campaign: setting it to
-        # 2775.0 turns 14 tests red across test_compute_campaigns,
-        # test_compute_campaign_routes, test_cushioned_hold,
-        # test_target_multi_launch_routes and test_unlimited_design_caps --
-        # chunk counts, container ceilings, cushioned holds and the refusal
-        # copy that quotes them. Those are not assertions to re-baseline in
-        # passing; a smaller chunk is arguably the CORRECT consequence of a
-        # slower per-design cost, but it changes how campaigns are split and
-        # what they hold, and that decision deserves its own change and its own
-        # review rather than riding in behind a copy fix.
+        # This field is not only an estimate input. ``_chunk_size_for`` divides
+        # it by ``designs_per_run_baseline`` to size campaign chunks and the
+        # single-container ceiling, which move from 12 designs to 10 -- the
+        # tool's own validated pilot size. That is what lets a campaign budget
+        # cover its compute: at 1200.0 a 100-design campaign planned $18.09
+        # against ~$33.68 of real cost, so fund-and-drain stalled part way.
         #
-        # The live estimate is less exposed than this number suggests:
-        # estimated_cost_for_tool prefers a 30-day p90 from tool_jobs_p90 and
-        # only falls back here below MIN_HISTORICAL_RUNS, so it self-corrects
-        # as post-update runs accumulate. The chunking does not.
+        # ``estimated_cost_for_tool`` prefers a 30-day p90 from tool_jobs_p90
+        # and only falls back here below MIN_HISTORICAL_RUNS, so the live price
+        # self-corrects as post-update runs accumulate. The chunking does not.
         #
-        # RELATED, ALSO UNFIXED: PRESET_CAPS ("rfdiffusion", "pilot") in
-        # gpu/modal_client.py is 1800, and that is what sizes the
-        # pre-authorisation hold -- 1800 * rate * markup = $2.1849, exactly
-        # what job 25471e07 held against an actual $2.6946, with the balance
-        # taken at completion. It has never been a true upper bound either
-        # (the pilot accepts 1 to 1000 designs under one flat cap).
-        expected_gpu_seconds=1200.0,
+        # ONE CONSEQUENCE, AND ITS LIMITS. WHILE THIS FALLBACK IS IN FORCE
+        # the cushion (1.5x) exceeds the scaled cap by ~1.05% at every design
+        # count, so the hold clamps AT the scaled cap. ``settle_hold``
+        # caps the actual charge with the same ``compute_hard_cap`` on the same
+        # num_designs, so charge <= hold and 0017_wallet.sql's variance-debit
+        # and absorbed_variance branches stay shut. At 1200.0 the reverse held:
+        # an ordinary 8-design run reserved $2.1849, settled $2.6946, and took
+        # a $0.51 true-up that Ranomics absorbed whenever the balance was short.
+        #
+        # IT MAY NOT SURVIVE THE p90 HANDOVER described in the paragraph
+        # above, and which way it goes is UNDETERMINED -- do not read the
+        # paragraph above as a standing property of the tool. The clamp needs
+        # a p90 at or above ~2746 GPU-s, and the repo's two runtime models for
+        # a 10-design chunk STRADDLE that: 2775 s at the flat 277.5 rate (the
+        # clamp holds) against 2600 s on meta.py's fixed ~700 s + ~190 s per
+        # design (it goes, holding $4.73 against a $5.00 cap). The handover
+        # itself needs MIN_HISTORICAL_RUNS succeeded runs inside one rolling
+        # 30-day window, and tool_jobs_p90 takes a 90th percentile, so it sits
+        # near the TOP of the observed spread rather than at the smallest job.
+        # tests/test_cushioned_hold.py pins both branches so whichever way it
+        # lands is visible rather than silent.
+        #
+        # Nor is a clamped settle always a release: 0017_wallet.sql writes a
+        # zero-amount 'charge' row when v_diff = 0, which is exactly what an
+        # actual at or above the cap produces.
+        expected_gpu_seconds=2775.0,
         designs_per_run_baseline=10,
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("5.00"),
