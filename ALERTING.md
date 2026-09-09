@@ -750,9 +750,11 @@ from production.** GitHub's failure email carries no log body, so open the run.
    `synthetic-smoke.yml`) before it calls drift, so a card in that state means
    wait, not act — do not stack another build on top of it.
 
-   Otherwise the commit is in one of the three states below. They look similar
-   on the dashboard, and (a) and (b) share a first action, but which one you
-   are in tells you whether Wait for CI is involved.
+   Otherwise the commit is usually in one of the three states below. They look
+   similar on the dashboard, and telling them apart matters: (b) rules out
+   Redeploy, which (a) leaves open. If instead an entry exists and SUCCEEDED
+   while production is still stale, you are most likely looking at a rollback
+   — see the rollback row in the Wait-for-CI section above; it is untested.
 
    **a. A `SKIPPED` entry exists.** Wait for CI gated it — see
    [A variable change is not deploying (Railway "Wait for CI")](#a-variable-change-is-not-deploying-railway-wait-for-ci).
@@ -765,16 +767,21 @@ from production.** GitHub's failure email carries no log body, so open the run.
      Redeploy is offered there at all, and whether it clears the CI gate, is
      untested.
    * Push a fresh commit to `main`, as in (b). The new commit gets its own
-     suite — but an empty commit has an identical tree, so a deterministic
-     failure in `pytest.yml`, `contracts-drift.yml`, `vendored-drift.yml` or
-     `deploy-modal.yml` (all `on: push:` to `main`) fails the same way and
-     Railway skips the new commit too. This is also the mechanism that
-     produced no deployment at all on 2026-08-20, in (b).
+     suite, and whether that suite is red again depends on which workflow
+     failed. `pytest.yml` runs on every push to `main`, so a deterministic
+     pytest failure recurs and Railway skips the new commit too. The other
+     push-triggered workflows are `paths:`-filtered, so an empty commit does
+     not re-run them at all.
 
    If the red suite is flaky rather than a real failure, `gh run rerun` on
-   that run is the smallest fix and touches neither `main` nor the dashboard.
+   that run touches neither `main` nor the dashboard — but whether Railway
+   re-evaluates a skipped deployment once its suite flips green is not
+   established here either, and the `395c523` datum above (five later
+   successes did not clear one failure) points the other way.
+
    Whichever you try, confirm with `/health` that `build` moved and record the
-   result here — this is the second untested gap on this path.
+   result. Redeploy on a `SKIPPED` entry is the second untested gap on this
+   path, after the rollback row above.
 
    **b. No entry of any kind.** The deploy event was dropped — the 2026-08-20
    case above. There is nothing to fix in the repo. **Do not reach for Redeploy

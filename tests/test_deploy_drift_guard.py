@@ -39,11 +39,12 @@ def guard_step(workflow: dict) -> dict:
 
 
 def test_the_guard_is_its_own_job_not_a_step_before_the_smoke(workflow: dict):
-    """Five of its seven paths exit 1. The pre-review draft ran them as a step
-    ahead of the smoke.
+    """Five of its seven paths exit 1. The pre-review draft -- four of five,
+    and a step ahead of the smoke -- is recorded in
+    docs/qc/deploy-drift-guard-round1.md.
 
     A /health blip would therefore have deleted the deep end-to-end signal, and
-    the guard's own message told the reader to compare against "the smoke
+    that draft's own message told the reader to compare against "the smoke
     below" -- a result its placement guaranteed would not exist.
     """
     jobs = workflow["jobs"]
@@ -240,8 +241,9 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
     #
     # Composition: exactly one exit-bearing line, and it says `exit 1`. This
     # catches what `"exit 0" not in tail` could not -- `exit  0`, `exit $?`,
-    # `exit ${RC:-0}`, `true && exit 0`, and a bare `exit`, which takes $?
-    # from the `git log` above it, i.e. 0.
+    # `exit ${RC:-0}`, and a bare `exit`, which takes $? from the `git log`
+    # above it, i.e. 0. (It also catches `true && exit 0`, but so did the
+    # substring form; that one is not evidence for this change.)
     #
     # Position: that line is also the LAST thing in the step. Composition
     # alone cannot tell a reachable `exit 1` from an unreachable one --
@@ -253,10 +255,12 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
     # Either way the job goes GREEN after printing DEPLOY DRIFT: no failure,
     # no email, no signal, which is the outage this guard exists to catch.
     #
-    # The comment skip below is only for `#` lines. It does not make this
-    # immune to prose: an `echo "about to exit 1"` here would false-fail.
-    # That is loud and obvious, unlike the silent misses above, so it is the
-    # side to err on -- but it is a trade, not a solved problem.
+    # Both scans skip `#` lines, or a trailing comment would false-fail the
+    # position check on a perfectly correct script -- and its message would
+    # blame unreachability, which would not be the problem. Neither scan is
+    # immune to prose on a CODE line: an `echo "about to exit 1"` would
+    # false-fail. That is loud and obvious, unlike the silent misses above, so
+    # it is the side to err on -- but it is a trade, not a solved problem.
     terminators = [
         ln.strip() for ln in tail.splitlines()
         if not ln.lstrip().startswith("#") and re.search(r"\bexit\b", ln)
@@ -266,7 +270,8 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
         "detecting drift does not FAIL the job and nobody is emailed. "
         f"Found: {terminators}"
     )
-    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in tail.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
     assert lines[-1] == "exit 1", (
         "the drift branch does not END at `exit 1`, so that exit may not be "
         "reached at all -- a conditional around it leaves the composition "
@@ -341,9 +346,10 @@ def test_every_stated_exit_path_count_matches_the_script(guard_step: dict):
         f"expected {_EXPECTED_CLAIM_SITES} sites stating this count, found "
         f"{len(claims)}: {[(w, said) for w, said, _, _ in claims]}. A site "
         f"that stops matching goes UNSCANNED while the others keep this test "
-        f"green -- the same shape as the defect it exists to catch. Before "
-        f"changing _EXPECTED_CLAIM_SITES, check the claim did not simply move "
-        f"somewhere this does not scan; if it did, scan there instead."
+        f"green -- the same shape as the defect it exists to catch. If a site "
+        f"was deliberately added or removed, update _EXPECTED_CLAIM_SITES. "
+        f"But first check the claim did not simply MOVE somewhere this does "
+        f"not scan; if it did, scan there instead of lowering the count."
     )
 
     wrong = [
