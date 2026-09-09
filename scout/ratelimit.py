@@ -238,8 +238,8 @@ def _session_key() -> str:
 #   credit, so that ``/analyze`` takes the cheap finalise path. Without the
 #   job id a charge on a bogus or abandoned job would fund a free
 #   ``/analyze`` on a DIFFERENT job, and that ``/analyze`` runs the whole
-#   pipeline itself when ``results.csv`` is missing: one charge would buy ~24
-#   CPU-s instead of ~15.
+#   pipeline itself when ``results.csv`` is missing: one charge would buy ~23
+#   CPU-s instead of ~14.
 #
 #   That is exactly what shipped for one commit, WITH the job id in the key,
 #   because this module guessed the id from the query string while
@@ -262,9 +262,10 @@ _FOLLOWUP: dict[tuple[str, str, str], float] = {}
 # How long a credit stays redeemable.
 #
 # It only has to survive from the start of the SSE stream to the POST the
-# browser fires when the stream reports "done". Phase 1 sized the served
-# worst case of that stream at ~43 s (15 s queued + ~28 s of adversarial
-# compute), so 120 s carries it with ~3x margin while keeping the table small.
+# browser fires when the stream reports "done". The served worst case of that
+# stream is ~41 s (15 s queued + ~26 s of adversarial compute) -- derived from
+# the pair cost below, not quoted from Phase 1, which never states it -- so
+# 120 s carries it with ~3x margin while keeping the table small.
 # A credit that expires first costs the caller one extra charge — the
 # behaviour they had before this existed — and costs the box nothing.
 FOLLOWUP_TTL_SECONDS = 120.0
@@ -506,14 +507,14 @@ def reset() -> None:
 # mean "the queue drains sooner", it means NOBODY finishes until N x cost has
 # elapsed, so the first slot to free frees LATER the more slots there are.
 #
-# Adversarial cost is ~15 CPU-s per anonymous analysis at the 8 MB upload cap
-# — 9.0 in run_pipeline, ~4.2 in the known-binder lookup, ~1 in interface
-# detection, ~0.8 in the second structure parse. (Not 9.0: that covered
-# run_pipeline alone. The third parse in the route is gone, see
-# scout/routes.py.)
+# Adversarial cost is ~14 CPU-s per anonymous analysis at the 8 MB upload cap
+# — 9.0 in run_pipeline, ~4.2 in the known-binder lookup, ~0.8 in the second
+# structure parse. (Not 9.0: that covered run_pipeline alone. The third parse
+# in the route is gone, and so is the ~1 for interface detection -- it ran on
+# every analysis for a renderer that had no call site. See scout/routes.py.)
 #
-#     N=2  ->  first slot frees at ~28 s worst case, ~4 s typical
-#     N=4  ->  ~56 s worst case: longer than any wait a browser should hold,
+#     N=2  ->  first slot frees at ~26 s worst case, ~4 s typical
+#     N=4  ->  ~52 s worst case: longer than any wait a browser should hold,
 #              so a queued caller could never be served at all under
 #              adversarial load. The queue would be decoration.
 #
@@ -526,7 +527,7 @@ def reset() -> None:
 #
 # Without a queue this semaphore sheds instantly: the next concurrent caller
 # is refused even though a slot frees a second or two later, because the
-# typical analysis is ~2 CPU-s, not the ~15 worst case. That turns an ordinary
+# typical analysis is ~2 CPU-s, not the ~14 worst case. That turns an ordinary
 # burst — a lab meeting, a workshop, everyone trying it after the same
 # seminar, which is exactly the audience this tool is for — into a wall of
 # errors.
@@ -546,11 +547,11 @@ ANON_MAX_QUEUED_RUNS = 2
 # The case the queue exists for is the ordinary burst, where two typical
 # analyses (~2 CPU-s each) clear in ~4 s — so 15 s carries it with over 3x
 # margin. Under genuinely adversarial load the first slot does not free for
-# ~28 s and this expires first, which is the honest outcome: an immediate
+# ~26 s and this expires first, which is the honest outcome: an immediate
 # "busy, try again" beats a browser held for a minute and then refused
 # anyway. Phase 5 turns that refusal into a signup prompt.
 #
-# Served worst case is therefore bounded at 15 + ~28 = ~43 s.
+# Served worst case is therefore bounded at 15 + ~26 = ~41 s.
 ANON_QUEUE_WAIT_SEC = 15.0
 
 _INFLIGHT = 0
