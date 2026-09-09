@@ -128,38 +128,12 @@ PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE — one real past run of this tool, rendered by
+# templates/components/worked_example.html above the tool's own results
+# partial. Captured from job 4a3e3203 on 2026-09-09; example/result.json
+# is that job's payload with the provider id stripped, unchanged
+# otherwise. scripts/capture_example_result.py is how it was pulled.
 # ---------------------------------------------------------------------------
-# ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
-# shared/result_columns.py and none in shared/score_legends.py either, so
-# there are no per-tool bars to quote and nothing to call a pass. The columns
-# the partial renders are Ranking score, pTM, ipTM and pLDDT; all four are
-# used below and no threshold is asserted for any of them, because this tool
-# genuinely has none. The narration compares the four predictions to each
-# other instead, which is what the run actually supports.
-#
-# WHY FOUR SEEDS AND ONE SAMPLE PER SEED. Samples-per-seed was tried first,
-# at 4 samples x 2 seeds, and the eight predictions came back with only TWO
-# distinct score sets -- one per seed, repeated across that seed's samples.
-# The structures were all different (eight distinct md5s); the SCORES were
-# shared, because _read_score_json in tools/opendde/run_pipeline.py falls
-# back to the first *.json it finds beside the structure when no filename
-# matches the sample stem, and OpenDDE writes one score file per seed
-# directory. One sample per seed sidesteps it: each seed dir holds one
-# structure and one score file, so the pairing cannot go wrong. The fallback
-# is still live for any multi-sample run and is filed separately -- do not
-# raise "Samples / seed" in this example until it is fixed.
 # ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
 # shared/result_columns.py and none in shared/score_legends.py either, so
 # there are no per-tool bars to quote and nothing to call a pass. The columns
@@ -263,9 +237,8 @@ EXAMPLE: dict | None = {
         "and 44.4. Nothing crosses over. That agreement is worth more than "
         "any single value, because the columns measure different things "
         "&mdash; ipTM the protein-ligand contact, pTM the whole complex, "
-        "pLDDT the per-atom detail &mdash; and when a co-folding model is "
-        "genuinely unsure they tend to disagree with each other. Here they do "
-        "not, so the split is a real one and not an artefact of one metric. "
+        "pLDDT the per-atom detail &mdash; so the split does not depend on "
+        "which column you read. "
         "<strong>Now the part that should change how you run this tool.</strong> "
         "The form defaults to a single seed, and that seed is the one ranked "
         "<em>last</em> here: 0.47 on the ranking, ipTM 0.471, pLDDT 44.4. Run "
@@ -276,14 +249,15 @@ EXAMPLE: dict | None = {
         "coin flip you cannot see the result of."
     ),
     "what_we_did_next": (
-        "Kept the top pair and threw the rest away, then asked the only "
-        "question the table cannot answer: do those two put the benzamidine "
-        "in the same pocket? That is a job for the 3D viewer, not a column "
-        "&mdash; two predictions can agree on every score and still dock a "
-        "ligand in different places. If they agree on the pocket, the pose is "
-        "worth taking forward and more seeds will sharpen it. If they "
-        "disagree, the scores were telling you about the fold and not about "
-        "the binding site, and the run has still earned its cost by saying so."
+        "Nothing &mdash; this run was captured for this page and stopped "
+        "here. What it would take next is the one thing the table cannot "
+        "show: whether the top two put the benzamidine in the same pocket. "
+        "Two predictions can agree on every score and still dock a ligand "
+        "in different places, so that question needs the structures "
+        "themselves, which every row carries on a run of your own. "
+        "Agreement on the pocket means more seeds will sharpen the pose; "
+        "disagreement means the scores were telling you about the fold and "
+        "not about the binding site."
     ),
     "cost_usd": "0.86",
     "runtime": "3.5 minutes",
