@@ -149,19 +149,24 @@ ANON_INTAKE_LIMIT = 10
 # scout/ratelimit.py. Until 2026-08-18 they were billed separately, so this
 # number bought HALF as many analyses as it reads.
 #
-# THE CPU ARITHMETIC, from Phase 0's measurements. A 10-minute window on this
-# box is 2 sync workers x 600 s ~= 1,200 CPU-s.
+# THE CPU ARITHMETIC. The ~9 is Phase 0's; the /analyze decomposition is
+# Phase 1's, which corrected it -- docs/qc/anon-ratelimit-phase-1.md 4.2.
+# A 10-minute window on this box is 2 sync workers x 600 s ~= 1,200 CPU-s.
 #
 #   adversarial /progress  ~9 CPU-s   (run_pipeline at the 8 MB upload cap)
-#   adversarial /analyze   ~5 CPU-s   (binder lookup ~4.2)
+#   adversarial /analyze   ~5 CPU-s   (binder lookup ~4.2 + 2nd parse ~0.8)
 #   adversarial analysis  ~14 CPU-s   (the pair)
 #
-# /analyze was ~6 until 2026-09-04, when Phase 0's ~1 for PPI interface
-# detection came out of it. That call ran on every analysis inside the slot
-# and the browser discarded the result: the renderer had no call site. The
-# other rows are Phase 0's as measured; only the row that stopped being spent
-# was touched. The detector itself is still live -- run_feasibility_pipeline
-# still scores interface_competition with it.
+# /analyze was ~6 until 2026-09-04, when the ~1 for PPI interface detection
+# came out of it. That call ran on every analysis inside the slot and the
+# browser discarded the result: the renderer had no call site. Only the row
+# that stopped being spent was touched. The detector itself is still live --
+# run_feasibility_pipeline still scores interface_competition with it.
+#
+# That ~1 is Phase 1's 0.64 on 1FFK scaled ~1.5x to the cap, NOT a Phase 0
+# figure -- Phase 0 measured detect_interfaces at 0.012 CPU-s and called it
+# negligible (docs/qc/anon-load-baseline.md). They measured different
+# structures; this block has always priced it from Phase 1.
 #
 #   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
 #           so ~7 addresses saturate the fleet, and 5 analyses per worker.
@@ -242,7 +247,7 @@ ANON_INTAKE_LIMIT = 10
 # applies to ANON_INTAKE_LIMIT's "ELEVENTH refused here" note above.
 #
 # The CPU rows further up are FLEET-WIDE. The saturation figure is unaffected
-# either way — addresses = (W x 600) / (W x C x 15) = 40 / C, in which the
+# either way — addresses = (W x 600) / (W x C x 14) = ~43 / C, in which the
 # worker count cancels, so raising WEB_CONCURRENCY does NOT lower the number of
 # addresses it takes to saturate the box.
 #

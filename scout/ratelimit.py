@@ -238,8 +238,8 @@ def _session_key() -> str:
 #   credit, so that ``/analyze`` takes the cheap finalise path. Without the
 #   job id a charge on a bogus or abandoned job would fund a free
 #   ``/analyze`` on a DIFFERENT job, and that ``/analyze`` runs the whole
-#   pipeline itself when ``results.csv`` is missing: one charge would buy ~24
-#   CPU-s instead of ~15.
+#   pipeline itself when ``results.csv`` is missing: one charge would buy ~23
+#   CPU-s instead of ~14.
 #
 #   That is exactly what shipped for one commit, WITH the job id in the key,
 #   because this module guessed the id from the query string while
@@ -506,14 +506,14 @@ def reset() -> None:
 # mean "the queue drains sooner", it means NOBODY finishes until N x cost has
 # elapsed, so the first slot to free frees LATER the more slots there are.
 #
-# Adversarial cost is ~15 CPU-s per anonymous analysis at the 8 MB upload cap
-# — 9.0 in run_pipeline, ~4.2 in the known-binder lookup, ~1 in interface
-# detection, ~0.8 in the second structure parse. (Not 9.0: that covered
-# run_pipeline alone. The third parse in the route is gone, see
-# scout/routes.py.)
+# Adversarial cost is ~14 CPU-s per anonymous analysis at the 8 MB upload cap
+# — 9.0 in run_pipeline, ~4.2 in the known-binder lookup, ~0.8 in the second
+# structure parse. (Not 9.0: that covered run_pipeline alone. The third parse
+# in the route is gone, and so is the ~1 for interface detection -- it ran on
+# every analysis for a renderer that had no call site. See scout/routes.py.)
 #
-#     N=2  ->  first slot frees at ~28 s worst case, ~4 s typical
-#     N=4  ->  ~56 s worst case: longer than any wait a browser should hold,
+#     N=2  ->  first slot frees at ~26 s worst case, ~4 s typical
+#     N=4  ->  ~52 s worst case: longer than any wait a browser should hold,
 #              so a queued caller could never be served at all under
 #              adversarial load. The queue would be decoration.
 #
@@ -526,7 +526,7 @@ def reset() -> None:
 #
 # Without a queue this semaphore sheds instantly: the next concurrent caller
 # is refused even though a slot frees a second or two later, because the
-# typical analysis is ~2 CPU-s, not the ~15 worst case. That turns an ordinary
+# typical analysis is ~2 CPU-s, not the ~14 worst case. That turns an ordinary
 # burst — a lab meeting, a workshop, everyone trying it after the same
 # seminar, which is exactly the audience this tool is for — into a wall of
 # errors.

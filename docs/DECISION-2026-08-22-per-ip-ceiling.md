@@ -146,6 +146,14 @@ browser discarded -- the renderer had no call site -- and removing it took
 280 is still four addresses, and the lever in the same comment still lands
 under the old ~180 (at ~170) rather than on it exactly.
 
+Every other figure in this document that derives from the ~15 pair or the ~300
+ceiling is the PRE-CHANGE one and is left as written: section 4's `40 / C`
+(which is `600 / 15`, and is `~43 / C` on the new row), the `~300` two
+paragraphs below, R3's table, and R4's gloss calling the lever a restoration of
+~180. This is a decision record, so they stay; subtract ~7% wherever the pair
+cost is the input. The conclusions they support are unchanged -- the ceiling
+still exceeds what the budget can honour.
+
 Budget is 2 sync workers x 600 s = **1,200 CPU-s** per window. At the current
 ceiling of 10 the worst-case per-IP demand is already ~300 CPU-s, so **four
 addresses saturate the fleet** — four *distinct* addresses, which is what this
