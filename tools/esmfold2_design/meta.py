@@ -16,8 +16,8 @@ Shapes
 
 Open thread
 -----------
-    Strict-pass thresholds (minibinder ``iptm > 0.75``, scfv
-    ``cdr_distogram_iptm_proxy > 0.5``) are conservative starting points,
+    Strict-pass thresholds (minibinder ``iptm >= 0.75``, scfv
+    ``cdr_distogram_iptm_proxy >= 0.5``) are conservative starting points,
     not paper-derived. Tune after the first 8-seed sweep against PD-L1
     surfaces real ipTM distributions on each preset. Minibinder iPTM
     was raised from 0.55 on 2026-06-03 after early runs showed real
@@ -173,9 +173,11 @@ about: dict = {
             "name": "Use scaling critics",
             "explanation": (
                 "Optional. Loads the 15-checkpoint ESMFold2 scaling "
-                "ensemble for stricter ranking. Adds the distogram "
-                "iPTM proxy alongside the real iPTM. Roughly doubles "
-                "host memory; off by default."
+                "ensemble. It does NOT add the distogram iPTM proxy — "
+                "upstream computes that for every critic, and this tool "
+                "reads it off the same hero critic as the real iPTM "
+                "whether or not this is ticked. Roughly doubles host "
+                "memory; off by default."
             ),
         },
     ],
@@ -188,9 +190,9 @@ about: dict = {
         "proxy (or CDR distogram iPTM proxy for scFvs), final loss, "
         "isoelectric point, source seed, and predicted complex PDB. "
         "Strict-pass classification surfaces designs worth ordering "
-        "(minibinder: <code>iptm &gt; 0.75</code> AND "
+        "(minibinder: <code>iptm &ge; 0.75</code> AND "
         "<code>pI &lt; 6</code>; scfv: "
-        "<code>cdr_distogram_iptm_proxy &gt; 0.5</code>). Sweep mode "
+        "<code>cdr_distogram_iptm_proxy &ge; 0.5</code>). Sweep mode "
         "(<strong>Seeds to run</strong> &gt; 1) merges every seed's "
         "designs into one globally-ranked table."
     ),

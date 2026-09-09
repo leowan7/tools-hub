@@ -7,6 +7,9 @@ the displayed price and the value the child stores as estimate_usd.
 """
 
 from decimal import Decimal
+from unittest.mock import patch
+
+import pytest
 
 from shared.compute_campaigns import child_hold_usd, estimate_child_cost
 from shared.wallet_estimates import (
@@ -17,17 +20,36 @@ from shared.wallet_estimates import (
 )
 
 
+# Money tests must not price against the live tool_jobs_p90 view: without
+# this the estimate path reads production history through the service-role
+# key in the repo-root .env. The two p90 tests below stub the lookup
+# explicitly, but the other six in this file relied on the ambient absence
+# of a client -- an assumption, not a guarantee, until now.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
+
 def _pilot(n):
     return {"num_designs": n, "preset": "pilot"}
 
 
 def test_cushion_below_cap_is_multiplier_times_point():
-    # rfdiffusion at 12 designs: 1.5x the point estimate sits under the cap,
-    # so the hold is exactly the cushion.
-    params = _pilot(12)
-    point = estimated_cost_for_tool(None, "rfdiffusion", params)
-    cap = compute_hard_cap("rfdiffusion", params)
-    hold = cushioned_hold_usd(None, "rfdiffusion", params)
+    # rfantibody at its 2-design baseline: 1.5x the point estimate ($4.3697 ->
+    # $6.5546) sits under the $13.00 cap, so the hold is exactly the cushion.
+    #
+    # Was rfdiffusion@12, which LEFT this branch when expected_gpu_seconds was
+    # corrected 1200 -> 2775 against the measured 277.5 s/design: its point
+    # estimate rose to $4.0420 at n=12 and 1.5x that now exceeds the scaled
+    # $6.00 cap, so rfdiffusion clamps and can no longer witness "cushion below
+    # cap". Note the failure surfaced on the PRECONDITION below, not on the
+    # cushion assertion -- re-pointing it at a smaller design count would have
+    # kept it green while testing the clamp branch its sibling already covers.
+    # rfantibody is the nearest equivalent: a campaign tool on the same GPU
+    # class, and one of the specs with no worst_case_gpu_seconds floor to blur
+    # what is being pinned (see the sibling test's note on af2/proteina/opendde).
+    params = _pilot(2)
+    point = estimated_cost_for_tool(None, "rfantibody", params)
+    cap = compute_hard_cap("rfantibody", params)
+    hold = cushioned_hold_usd(None, "rfantibody", params)
     assert HOLD_CUSHION_MULTIPLIER * point <= cap  # precondition: under cap
     assert abs(hold - HOLD_CUSHION_MULTIPLIER * point) < Decimal("0.001")
     assert hold > point            # a real cushion above the point estimate
@@ -59,6 +81,48 @@ def test_cushion_clamped_to_cap_for_expensive_tool():
     assert HOLD_CUSHION_MULTIPLIER * point > cap  # precondition: cushion over cap
     assert hold == cap
     assert point < hold <= cap     # still a cushion, up to the cap
+
+
+def test_rfdiffusion_hold_sits_on_its_cap_while_the_spec_fallback_holds():
+    # Pins a BRANCH, not a standing property of the tool. While the spec
+    # fallback is in force the cushion (1.5x) exceeds the scaled cap by
+    # ~1.05% at every design count, so the hold clamps AT the cap -- and
+    # because settle_hold caps the charge with the same compute_hard_cap on
+    # the same num_designs, charge <= hold and 0017_wallet.sql's variance
+    # branches stay shut. The sibling test below asserts only hold <= cap,
+    # which passed before expected_gpu_seconds was corrected too.
+    #
+    # The p90 is STUBBED rather than left to the environment. Tests have no
+    # Supabase client, so the fallback is what runs here anyway -- but then
+    # this test would pin that branch BY ACCIDENT and stay green after the
+    # handover moved the behaviour underneath it. Naming the branch is the
+    # difference between pinning a property and pinning a coincidence.
+    with patch("shared.wallet_estimates._historical_p90_seconds", return_value=None):
+        for n in (1, 8, 10, 12, 100):
+            params = _pilot(n)
+            hold = cushioned_hold_usd(None, "rfdiffusion", params)
+            cap = compute_hard_cap("rfdiffusion", params)
+            assert hold == cap, f"n={n}: hold {hold} != cap {cap}"
+
+
+def test_rfdiffusion_hold_leaves_its_cap_if_the_p90_lands_below_2746():
+    # The other half, and the half that costs money: IF the 30-day p90 lands
+    # below ~2746 GPU-s, estimated_cost_for_tool prefers it, the hold drops
+    # under the cap, and the variance-debit / absorbed_variance branches
+    # reopen. 2220 is the one measured post-update run (job 25471e07).
+    #
+    # Whether that actually happens is undetermined and this test does not
+    # claim it does -- the repo's two runtime models for a 10-design chunk
+    # straddle the threshold (2775 flat, 2600 on meta.py's fixed+per-design).
+    # It is pinned so that "the variance path is closed for rfdiffusion"
+    # cannot be read as unconditional: it is a property of the bootstrap
+    # constant, and this is the condition that ends it.
+    params = _pilot(8)
+    with patch("shared.wallet_estimates._historical_p90_seconds", return_value=2220.0):
+        hold = cushioned_hold_usd(None, "rfdiffusion", params)
+    cap = compute_hard_cap("rfdiffusion", params)
+    assert hold == Decimal("4.0419")
+    assert hold < cap
 
 
 def test_hold_never_exceeds_hard_cap_across_tools():
