@@ -15,8 +15,26 @@
        pipeline's strict_pass / borderline / drop word is not carried over
        either: it is a verdict, and a stored verdict goes stale.
 
-   The pipeline returns a single best_sequence (the top design from the
-   gradient run) plus a per-critic results table. Both are surfaced. #}
+   ONE EXCEPTION, and it is worth stating plainly because the paragraph above
+   reads as an absolute. The best-design panel below DOES put a tier word on
+   screen ("borderline", "rejected"), because that panel offers a specific
+   sequence for synthesis and an unqualified one is the expensive mistake.
+   That word is derived here, per render, from the measurements in the table
+   — it is never the stored one, and no stored verdict is read. The table
+   itself still shows no verdict column.
+
+   The consequence is that this page now decides a bar that judge() and
+   tool_has_bar() do not know about, so the campaign count, the target
+   ranking table, the completion email, the share card and the FASTA export
+   all still treat every design here as a keeper. Closing that means giving
+   the tool a real mode-aware bar in shared/score_legends; the mode is
+   already on every job result, so it does NOT need a GPU rebuild, whatever
+   score_legends' own upgrade note says.
+
+   The pipeline returns a single best_sequence plus a per-critic results
+   table. The table is surfaced as-is; the headline sequence is re-derived
+   from the table's own measurements rather than taken from that field, for
+   the reasons written out above the derivation below. #}
 
 {% from "components/results_shell.html" import results_panel %}
 
@@ -26,7 +44,6 @@
 {% set target_label       = output.get('target_label') or output.get('target_name') or 'target' %}
 {% set binder_label       = output.get('binder_label') or output.get('binder_name') or '—' %}
 {% set raw_designs        = output.get('designs', []) %}
-{% set best_sequence      = output.get('best_sequence') %}
 {% set trajectory_steps   = output.get('trajectory_steps') %}
 {% set tier               = output.get('tier') %}
 {% set runtime_seconds    = output.get('runtime_seconds') %}
@@ -51,6 +68,11 @@
   {% set candidates = [] %}
   {% for d in raw_designs %}
     {% set _proxy = d.get('cdr_distogram_iptm_proxy') if is_antibody else d.get('distogram_iptm_proxy') %}
+    {# ``_sort_iptm``: sorting on scores.ipTM directly raises TypeError — and
+       500s the whole results page — the moment ONE design has a null iPTM
+       and another has a number, which happens whenever the real-iPTM critic
+       row is missing for a single design. Sort on a defaulted mirror
+       instead, with unmeasured last. #}
     {% set _ = candidates.append({
         '_source_index': loop.index0,
         'rank': d.get('rank'),
@@ -62,10 +84,139 @@
           'final_loss': d.get('final_loss'),
           'pI': d.get('isoelectric_point') if not is_antibody else none,
         },
+        'sequence': d.get('sequence'),
         'designed_sequence': d.get('designed_sequence'),
+        '_sort_iptm': d.get('iptm') if d.get('iptm') is number else -1,
     }) %}
   {% endfor %}
-  {% set candidates = candidates | sort(attribute='scores.ipTM', reverse=True) %}
+  {% set candidates = candidates | sort(attribute='_sort_iptm', reverse=True) %}
+{% endif %}
+
+{# The best design is the top-iPTM design INSIDE the best non-empty quality
+   tier, never the top-iPTM design overall, and it is DERIVED here from the
+   candidates' own measurements rather than read from output.best_sequence.
+
+   Two separate reasons it cannot be the stored value:
+
+   1. The pipeline used to pick it on iPTM alone. On real job 2b917b54 that
+      is the pI 11.95 poly-Arg design at iPTM 0.9556 — a hallucination the
+      tool's own bar rejects — placed ahead of the pI 5.67 design at 0.9354
+      that clears it. The sequence in this panel is what gets pasted into an
+      order form, so leading with the reject is the expensive failure.
+   2. A stored pick is a frozen verdict, and #216 removed those from this
+      page for the reason that applies here exactly: fixing the pipeline
+      cannot reach a single job that has already run. Deriving does.
+
+   The arithmetic is run_pipeline._classify's, duplicated rather than
+   imported because run_pipeline.py is the one file copied into the GPU
+   image and it cannot import shared/. The two STRICT bars are written into
+   the prose in the panel below, so a drift in those shows on the page; the
+   borderline band widths are not on the page and a drift there is silent.
+
+   ``iPTM_proxy`` and ``pI`` are already mode-resolved by the orchestrator
+   and by the reshape above, so only one shape is read here.
+
+   candidates is iPTM-sorted, so the first member of a tier is its
+   HIGHEST-iPTM member. In scFv mode the tier is decided on the CDR
+   distogram proxy while the ordering stays iPTM, so first-of-tier is not
+   highest-proxy-of-tier. That split is deliberate and matches both
+   pipelines: the mode-specific metric is the GATE, iPTM is the RANK,
+   because iPTM is the calibrated number and the panel below calls the
+   proxy "informative only" whenever the scaling critics are off.
+
+   Only a candidate we can quote a BINDER for is eligible to be the pick:
+   choosing one we then cannot render would just empty the panel, and
+   ``designed_sequence`` — ``target|binder`` concatenated — must never reach
+   the box below whole.
+
+   One deliberate divergence from ``_classify``. It returns "drop" when the
+   metric its gate needs is missing; this does not. An absent measurement is
+   UNJUDGED, never failed, per #216.
+
+   The reason given here used to be that the CDR distogram proxy "is not
+   produced at all when the scaling critics are off". That was wrong, and it
+   described a symptom rather than the cause. Upstream computes the proxy for
+   EVERY critic and spreads it into every row; what was broken was
+   ``_shape_designs``, which selected the proxy with upstream's scaling-critic
+   detector and so read it only off scaling rows — none of which exist on the
+   default path. Fixed in #242: the proxy is now sourced by name off the same
+   hero critic as the real iPTM, so a stock scFv run does populate it.
+
+   Keep the divergence anyway. It is now rare rather than universal, but a
+   design can still reach here unmeasured, and narrating that as a failure
+   would be the same lie in a quieter voice. #}
+{% set _bar  = 0.50 if is_antibody else 0.75 %}
+{% set _band = 0.10 if is_antibody else 0.05 %}
+{% set _tier = namespace(strict=[], borderline=[], offerable=[]) %}
+{% for c in candidates %}
+  {% set _s = c.get('scores') or {} %}
+  {% set _score = _s.get('iPTM_proxy') if is_antibody else _s.get('ipTM') %}
+  {% set _pi = _s.get('pI') %}
+  {# The binder half, by the SAME rule modal_app._binder_only used to write
+     the stored field: prefer ``sequence``, else split ``designed_sequence``
+     on the first separator, else take it whole. Gating on ``sequence``
+     alone made the two halves of this fix disagree about which candidates
+     exist, and the page then narrated a bar failure about a design it had
+     silently excluded. #}
+  {% set _dseq = c.get('designed_sequence') or '' %}
+  {% set _seq = c.get('sequence') or (_dseq.split('|', 1)[1] if '|' in _dseq else _dseq) %}
+  {# Judged only when the gate's own metrics are actually present. #}
+  {% set _judged = _score is number and (is_antibody or _pi is number) %}
+  {% if _seq %}
+    {% set _entry = [_seq, c, _judged] %}
+    {% set _tier.offerable = _tier.offerable + [_entry] %}
+    {% if _judged %}
+      {# In minibinder mode pI is a HARD gate applied before the score
+         bands: an undisplayable scaffold is a reject at any iPTM. #}
+      {% if is_antibody or _pi < 6.0 %}
+        {% if _score >= _bar %}
+          {% set _tier.strict = _tier.strict + [_entry] %}
+        {% elif _score >= _bar - _band %}
+          {% set _tier.borderline = _tier.borderline + [_entry] %}
+        {% endif %}
+      {% endif %}
+    {% endif %}
+  {% endif %}
+{% endfor %}
+
+{# {% if %} is not a scoping construct in Jinja, so these persist below. #}
+{% if _tier.strict %}
+  {% set _best = _tier.strict | first %}
+  {% set best_tier = 'strict pass' %}
+{% elif _tier.borderline %}
+  {% set _best = _tier.borderline | first %}
+  {% set best_tier = 'borderline' %}
+{% elif _tier.offerable %}
+  {% set _best = _tier.offerable | first %}
+  {# "rejected" only on evidence it FELL SHORT; an unjudged design gets no
+     tier word, and the panel says it has not been checked. #}
+  {% set best_tier = 'rejected' if _best[2] else none %}
+{% else %}
+  {% set _best = none %}
+  {% set best_tier = none %}
+{% endif %}
+
+{% if _best %}
+  {% set best_sequence = _best[0] %}
+  {% set best_candidate = _best[1] %}
+{% else %}
+  {% set best_candidate = none %}
+  {# Nothing on this record carries a binder-only sequence, so fall back to
+     the stored pick — whose tier is then UNKNOWN. Labelling it from a
+     candidate we did not choose would be a mislabel, which is worse than
+     the bug this panel exists to fix.
+
+     The stored value has to be split: modal_app wrote it as
+     ``sequence or designed_sequence``, so on exactly the records that reach
+     this branch it is the concatenation, and rendering it whole would paste
+     the target into the order form. #}
+  {% set _stored = output.get('best_sequence') %}
+  {% if _stored and '|' in _stored %}
+    {% set best_sequence = _stored.split('|', 1)[1] %}
+  {% else %}
+    {% set best_sequence = _stored %}
+  {% endif %}
+  {% set best_tier = none %}
 {% endif %}
 
 {# Add a seed column only when this run actually swept multiple seeds —
@@ -139,20 +290,68 @@
     <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
-      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&gt;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
+      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
       are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.{% if use_scaling_critics %} The scaling-critic ensemble was loaded for this run but does not feed these scores — every number here comes from one hero critic.{% endif %}
     </div>
   </div>
 </div>
 
-{# Best-sequence callout — the top design's sequence is short enough to
-   render inline. Useful for copy-paste into Twist / IDT order forms. #}
+{# Best-sequence callout — the chosen design's sequence is short enough to
+   render inline. Useful for copy-paste into Twist / IDT order forms, which
+   is exactly why an unqualified sequence here is the costly mistake: the
+   caution has to be read BEFORE the box, not under it. #}
 {% if best_sequence %}
   <div class="panel" style="margin-top:1rem;">
     <div class="panel-header">
       <span class="panel-title">Best design — sequence</span>
+      {% if best_tier and best_tier != 'strict pass' %}
+        <span class="panel-badge" style="background:rgba(248,113,113,.18);color:#fca5a5;border-color:rgba(248,113,113,.4);">{{ best_tier }}</span>
+      {% endif %}
     </div>
     <div class="panel-body">
+      {% if best_tier != 'strict pass' %}
+        <div style="color:#fca5a5; font-size: 0.82rem; margin-bottom: 0.6rem; max-width: 84ch;">
+          {% if best_tier %}
+            No design in this run clears the bar stated above — this is the
+            best of what is left, and it is {{ best_tier }}. Read the
+            per-design numbers below before ordering it{% if not is_antibody %}; a high iPTM at pI&nbsp;&ge;&nbsp;6 is
+            typically an insoluble, non-specific scaffold rather than a
+            binder{% endif %}.
+          {% else %}
+            {# Covers both unjudged cases: a candidate whose gate metrics are
+               missing, and the stored fallback when no candidate could be
+               quoted at all. Saying "rejected" for either would be asserting
+               a bar failure nothing measured. #}
+            This design has not been checked against the bar — the
+            measurements it needs are not on this record.
+            {%- if candidates %} Read the per-design numbers below before
+            ordering it.{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+      {# WHICH design this is. Without it the panel silently shows a sequence
+         that need not be the table's top row, and a reader cross-checking
+         the two concludes they match.
+
+         Formats are the ones components/candidate_table.html applies in
+         SINGLE-tool mode: %.3f for ipTM, %.2f for everything else. Not
+         format_metric_value — that global is only wired up for the
+         multi-tool table, and its glossary has no entry for iPTM_proxy or
+         pI, so both fell to a .3f default and printed "pI 5.669" beside a
+         table cell reading "5.67". Numbers a reader is invited to compare
+         have to be produced the same way. #}
+      {% if best_candidate %}
+        {% set _bs = best_candidate.get('scores') or {} %}
+        <div style="color: var(--text-tertiary); font-size: 0.78rem; margin-bottom: 0.4rem; font-family: var(--font-mono);">
+          {{ best_candidate.get('name') or 'design' }}
+          {%- if _bs.get('ipTM') is number %} &middot; iPTM {{ '%.3f' | format(_bs.get('ipTM')) }}{% endif %}
+          {%- if _bs.get('iPTM_proxy') is number %} &middot; proxy {{ '%.2f' | format(_bs.get('iPTM_proxy')) }}{% endif %}
+          {%- if _bs.get('pI') is number %} &middot; pI {{ '%.2f' | format(_bs.get('pI')) }}{% endif %}
+          {%- if candidates and best_candidate is not sameas (candidates | first) %}
+            &middot; <span style="color:#fca5a5;">not the top row below</span>
+          {%- endif %}
+        </div>
+      {% endif %}
       <div style="font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.6; word-break: break-all; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.75rem 1rem; max-width: 84ch;">
         {{ best_sequence }}
       </div>

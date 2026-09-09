@@ -572,8 +572,6 @@ def _aggregate(
     designs_total = 0
     designs_completed = 0
     inner_failures = 0
-    best_iptm: float | None = None
-    best_seq: str | None = None
 
     for seed, child_ret in successes:
         smoke = (child_ret or {}).get("smoke_result") or {}
@@ -587,13 +585,6 @@ def _aggregate(
             scores["seed"] = seed
             tagged["scores"] = scores
             all_candidates.append(tagged)
-            iptm = scores.get("ipTM")
-            if isinstance(iptm, (int, float)):
-                if best_iptm is None or iptm > best_iptm:
-                    best_iptm = float(iptm)
-                    best_seq = tagged.get("sequence") or tagged.get(
-                        "designed_sequence"
-                    )
         for d in smoke.get("designs", []) or []:
             tagged = dict(d)
             tagged["seed"] = seed
@@ -605,16 +596,71 @@ def _aggregate(
         total_gpu_seconds += child_runtime
         wall_clock_seconds = max(wall_clock_seconds, child_runtime)
 
+    # Descending iPTM with UNMEASURED LAST. -1.0 was the sentinel, which is
+    # the negation of iPTM 1.0 and therefore sorts a design with no iPTM at
+    # all to the TOP, ahead of every measured one -- the opposite of what the
+    # comment on run_pipeline's matching sort claims. The table led with the
+    # blanks, and so did anything reading candidates[0].
     def _cand_sort_key(c: dict) -> float:
         iptm = (c.get("scores") or {}).get("ipTM")
-        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+        return float("inf") if not isinstance(iptm, (int, float)) else -float(iptm)
 
     def _design_sort_key(d: dict) -> float:
         iptm = d.get("iptm")
-        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+        return float("inf") if not isinstance(iptm, (int, float)) else -float(iptm)
 
     all_candidates.sort(key=_cand_sort_key)
     all_designs.sort(key=_design_sort_key)
+
+    # Best = top iPTM WITHIN the best non-empty filter tier, not top iPTM
+    # overall. A design the tool's own filter dropped can lead the table
+    # (real job 2b917b54: ipTM 0.9556 at pI 11.95 outscored a strict_pass at
+    # 0.9354), and best_sequence reads as the one to order.
+    #
+    # The results template no longer trusts this value -- it re-derives the
+    # pick from the candidates' own measurements, because a stored pick is a
+    # frozen verdict and every job that ran before this fix carries a wrong
+    # one. That does not make picking correctly here optional: this is the
+    # root cause, and the derivation falls back to this field on records
+    # whose candidates carry no binder-only ``sequence`` to choose from.
+    #
+    # all_candidates is iPTM-sorted, so the first member of a tier is its
+    # highest-iPTM member. In scFv mode the TIER is decided on the CDR
+    # distogram proxy while the RANK stays iPTM; that split is deliberate,
+    # because iPTM is the calibrated number and the proxy is a gate the
+    # panel itself calls "informative only" when the scaling critics are off.
+    def _tier_of(c: dict | None) -> str:
+        return str(((c or {}).get("scores") or {}).get("filter_status") or "")
+
+    def _binder_only(c: dict | None) -> str | None:
+        """The binder half alone, which is what ``best_sequence`` means.
+
+        ``designed_sequence`` is ``target|binder`` concatenated. Returning it
+        whole puts the target into the panel the results page offers for a
+        synthesis order. (Only that panel: export.fasta reads each
+        candidate's own ``sequence``, not this field.) Mirrors
+        run_pipeline._extract_binder_sequence -- duplicated, not imported,
+        because this function runs on the orchestrator container, which has
+        neither run_pipeline.py nor shared/ on its path.
+        """
+        seq = (c or {}).get("sequence")
+        if seq:
+            return str(seq)
+        concat = str((c or {}).get("designed_sequence") or "")
+        if not concat:
+            return None
+        return concat.split("|", 1)[1] if "|" in concat else concat
+
+    # Only a candidate we can quote a binder for is eligible to BE the best;
+    # picking one we then cannot render just empties the panel.
+    offerable = [c for c in all_candidates if _binder_only(c)]
+    best_pool = (
+        [c for c in offerable if _tier_of(c) == "strict_pass"]
+        or [c for c in offerable if _tier_of(c) == "borderline"]
+        or offerable
+    )
+    best = best_pool[0] if best_pool else None
+    best_seq = _binder_only(best) if best else None
 
     for rank, c in enumerate(all_candidates):
         c["rank"] = rank
