@@ -30,6 +30,25 @@ from tools.esmfold2_design.run_pipeline import (
 
 SEQ = "TARGETSEQ|QVQLVQSGGGGGSGGGSGGGSGGGSDIQMTQ"
 
+_LOGGER = "esmfold2_design_pipeline"
+
+
+def _records(caplog):
+    """Only this pipeline's records, so an unrelated logger cannot mask one."""
+    return [r for r in caplog.records if r.name == _LOGGER]
+
+
+def _blank_fields(caplog):
+    """The joined blank-field list as PASSED, not as rendered.
+
+    Text assertions cannot pin this field: ``"iptm"`` is a substring of both
+    ``"distogram_iptm_proxy"`` and ``"cdr_distogram_iptm_proxy"``, so a message
+    that over-claims BOTH fields blank satisfies ``"iptm" in caplog.text``.
+    Two such mutants walked through the text assertions this replaced.
+    """
+    (record,) = _records(caplog)
+    return record.args[0]
+
 # Every critic emits its own proxy for the same design, hence the bug report's
 # warning that a fix must NAME the critic it reads rather than take whichever
 # row happens to sort first.
@@ -158,9 +177,17 @@ def test_unscored_designs_rank_below_scored_ones():
 
 
 def test_empty_critic_results_is_not_reported_as_a_rename(caplog):
+    """A run with no rows at all is a different failure, reported by the caller.
+
+    Asserting only ``CRITIC_REAL_IPTM not in caplog.text`` defanged this: the
+    zero-designs branch never names the critic, so deleting the
+    ``if critic_results`` guard left the test green while an empty run logged a
+    spurious ERROR. Mutation-confirmed. Assert the silence itself.
+    """
     with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
         assert _shape_designs([], is_antibody=True) == []
     assert CRITIC_REAL_IPTM not in caplog.text
+    assert _records(caplog) == []
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +211,9 @@ def test_blank_proxy_is_logged_even_when_the_critic_is_named_correctly(caplog):
         (design,) = _shape_designs(no_proxy, is_antibody=True)
     assert design["iptm"] is not None, "iPTM still sourced; only the proxy went"
     assert design["filter_status"] == "drop"
-    assert "cdr_distogram_iptm_proxy" in caplog.text
+    # The proxy alone. iPTM came through, so claiming it blank would be the
+    # same over-claim in the other direction.
+    assert _blank_fields(caplog) == "cdr_distogram_iptm_proxy"
     assert CRITIC_REAL_IPTM in caplog.text
 
 
@@ -266,7 +295,10 @@ def test_diverged_run_is_not_reported_as_a_missing_critic(caplog):
     assert [d["distogram_iptm_proxy"] for d in designs] == [0.62, 0.71]
     assert all(d["iptm"] is None for d in designs)
 
-    assert "iptm" in caplog.text
+    # EXACTLY iptm. Not "contains iptm" -- that is satisfied by the substring
+    # inside "distogram_iptm_proxy", which is how an over-claiming mutant
+    # survives a text assertion here.
+    assert _blank_fields(caplog) == "iptm"
     # The proxies are populated, so no claim that everything is blank.
     assert "every critic-sourced score is None" not in caplog.text
     # Both readings offered, neither asserted.
@@ -284,6 +316,8 @@ def test_null_sequences_are_not_reported_as_a_rename(caplog):
     ]
     with caplog.at_level(logging.ERROR, logger="esmfold2_design_pipeline"):
         assert _shape_designs(rows, is_antibody=False) == []
+    # One record, not one-or-more: the blank-score branch must not also fire.
+    assert len(_records(caplog)) == 1
     assert "shaped 0 designs" in caplog.text
     assert "Either those folds failed" in caplog.text
     # "likely renamed" asserted a cause the skip cannot distinguish.
