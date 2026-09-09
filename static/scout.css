@@ -55,9 +55,9 @@
    ========================================================================== */
 
 :root {
-  /* Informational accent — used by the PPI interface and binder-overlap
-     badges. The only token from the source stylesheet the hub does not
-     already define. */
+  /* Informational accent — used by the binder-overlap badge. The only token
+     from the source stylesheet the hub does not already define. (It also fed
+     the PPI interface badge until that renderer was deleted.) */
   --info: #4A8EC2;
 }
 

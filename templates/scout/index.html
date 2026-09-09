@@ -339,7 +339,7 @@
       var label = document.getElementById('progress-label');
       document.getElementById('progress-container').hidden = false;
       bar.style.width = '97%';
-      label.textContent = 'Resolving UniProt and detecting interfaces\u2026';
+      label.textContent = 'Resolving UniProt and finding known binders\u2026';
       try {
         var resp = await fetch('/scout/analyze', {
           method: 'POST',
@@ -447,7 +447,7 @@
     }
 
     // -----------------------------------------------------------------------
-    // 3D viewer — large
+    // 3D viewer — large, with epitope overlays
     // -----------------------------------------------------------------------
     async function renderViewer(pdbUrl, pdbFormat, chain, epitopes) {
       const container = document.getElementById('viewer-container');

@@ -165,8 +165,8 @@ ANON_INTAKE_LIMIT = 10
 #
 # That ~1 is Phase 1's 0.64 on 1FFK scaled ~1.5x to the cap, NOT a Phase 0
 # figure -- Phase 0 measured detect_interfaces at 0.012 CPU-s and called it
-# negligible (docs/qc/anon-load-baseline.md). They measured different
-# structures; this block has always priced it from Phase 1.
+# negligible (docs/qc/anon-load-baseline.md). Why they disagree by ~50x is
+# not established here; this block has always priced it from Phase 1.
 #
 #   before: 20 hits/IP fleet-wide, all aimed at /progress = ~180 CPU-s/IP,
 #           so ~7 addresses saturate the fleet, and 5 analyses per worker.

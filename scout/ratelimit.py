@@ -262,9 +262,10 @@ _FOLLOWUP: dict[tuple[str, str, str], float] = {}
 # How long a credit stays redeemable.
 #
 # It only has to survive from the start of the SSE stream to the POST the
-# browser fires when the stream reports "done". Phase 1 sized the served
-# worst case of that stream at ~43 s (15 s queued + ~28 s of adversarial
-# compute), so 120 s carries it with ~3x margin while keeping the table small.
+# browser fires when the stream reports "done". The served worst case of that
+# stream is ~41 s (15 s queued + ~26 s of adversarial compute) -- derived from
+# the pair cost below, not quoted from Phase 1, which never states it -- so
+# 120 s carries it with ~3x margin while keeping the table small.
 # A credit that expires first costs the caller one extra charge — the
 # behaviour they had before this existed — and costs the box nothing.
 FOLLOWUP_TTL_SECONDS = 120.0
@@ -546,11 +547,11 @@ ANON_MAX_QUEUED_RUNS = 2
 # The case the queue exists for is the ordinary burst, where two typical
 # analyses (~2 CPU-s each) clear in ~4 s — so 15 s carries it with over 3x
 # margin. Under genuinely adversarial load the first slot does not free for
-# ~28 s and this expires first, which is the honest outcome: an immediate
+# ~26 s and this expires first, which is the honest outcome: an immediate
 # "busy, try again" beats a browser held for a minute and then refused
 # anyway. Phase 5 turns that refusal into a signup prompt.
 #
-# Served worst case is therefore bounded at 15 + ~28 = ~43 s.
+# Served worst case is therefore bounded at 15 + ~26 = ~41 s.
 ANON_QUEUE_WAIT_SEC = 15.0
 
 _INFLIGHT = 0

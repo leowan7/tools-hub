@@ -368,9 +368,11 @@ class TestSlotAccounting:
             "raising the slot count buys no throughput and pushes the first "
             "free slot past ANON_QUEUE_WAIT_SEC — see scout/ratelimit.py"
         )
-        # Mirrors the adversarial pair in scout/routes.py's CPU block. It went
-        # 15 -> 14 when the dead PPI interface detection came out of /analyze;
-        # this assertion held either way, which is why nothing here went red.
+        # The worst case for ONE slot, not the pair: a bare POST /analyze holds
+        # the slot across run_pipeline, the binder lookup and the second parse
+        # in a single hold (scout/routes.py). It went 15 -> 14 when the dead PPI
+        # detection came out; the assertion held either way, which is why
+        # nothing here went red.
         worst_case_cpu_s = 14.0
         effective_cores = 1.07
         first_free = ANON_MAX_CONCURRENT_RUNS * worst_case_cpu_s / effective_cores
