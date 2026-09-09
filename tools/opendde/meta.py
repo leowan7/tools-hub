@@ -170,7 +170,7 @@ EXAMPLE: dict | None = {
         "OpenDDE is for complexes that are not all protein, so an all-protein "
         "example would be demonstrating the one case it is not for. This is "
         "the textbook protein-plus-small-molecule pair: benzamidine sitting "
-        "in the trypsin S1 pocket, solved in 1974 and used to check docking "
+        "in the trypsin S1 pocket, deposited in 1982 and used to check docking "
         "methods ever since. It is also a deliberate correction. The first "
         "run this page ever showed folded a single ubiquitin chain, which has "
         "no second entity at all &mdash; its ipTM of 0 was arithmetically "
@@ -219,7 +219,7 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "Four predictions in about three and a half minutes. Ranking score "
+        "Four predictions in about three minutes. Ranking score "
         "runs <strong>0.45 to 0.63</strong>, ipTM 0.421 to 0.652, pTM "
         "0.524 to 0.557, and pLDDT 48.8 to 52.3."
     ),
@@ -232,7 +232,7 @@ EXAMPLE: dict | None = {
         "is ranking on is its "
         "confidence in the protein-ligand contact. pTM barely moves at all "
         "(0.524 to 0.557), which is what you would expect: the trypsin fold "
-        "not the uncertain part, only where the benzamidine sits. "
+        "is not the uncertain part, only where the benzamidine sits. "
         "<strong>pLDDT is the column to be careful with.</strong> It sits "
         "between 48.8 and 52.3 for every prediction and it does <em>not</em> "
         "follow the ranking. The prediction with the highest pLDDT is the one "
@@ -262,7 +262,7 @@ EXAMPLE: dict | None = {
         "earned its cost by saying so."
     ),
     "cost_usd": "0.78",
-    "runtime": "3.5 minutes",
+    "runtime": "3 minutes",
     # Read by components/worked_example.html into the stub job's created_at so
     # a date-gated era notice knows when this ran. Job created_at, matching
     # the other examples' convention.
