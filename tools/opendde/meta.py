@@ -131,8 +131,10 @@ PILOT: dict | None = None
 # EXAMPLE — one real past run of this tool, rendered by
 # templates/components/worked_example.html above the tool's own results
 # partial. Captured from job 4a3e3203 on 2026-09-09; example/result.json
-# is that job's payload with the provider id stripped, unchanged
-# otherwise. scripts/capture_example_result.py is how it was pulled.
+# is that job's payload as scripts/capture_example_result.py wrote it:
+# the script scrubs its SENSITIVE_KEYS list, provider_job_id among
+# them, and trims structure blobs. Every field the table reads is
+# untouched.
 # ---------------------------------------------------------------------------
 # ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
 # shared/result_columns.py and none in shared/score_legends.py either, so
@@ -186,9 +188,10 @@ EXAMPLE: dict | None = {
             "3PTB is numbered in the chymotrypsin convention, so the chain "
             "carries insertion-coded positions like 184A and 221A. A script "
             "that reads residue numbers and ignores the insertion letter "
-            "silently drops them and hands the model a protein three "
-            "residues short &mdash; which is exactly what happened on our "
-            "first attempt at this example.",
+            "silently drops those positions. Our first attempt at this "
+            "example came back three residues short &mdash; two of them "
+            "insertion-coded &mdash; and handed the model a different "
+            "protein.",
         ),
         (
             "Ligands (one per line)",
@@ -234,14 +237,19 @@ EXAMPLE: dict | None = {
         "Ranking, ipTM, pTM and pLDDT each draw the same line between the "
         "same two pairs: the top two are 0.689 and 0.670 on ipTM with pLDDT "
         "51.4 and 52.9, the bottom two are 0.493 and 0.471 with pLDDT 42.8 "
-        "and 44.4. Nothing crosses over. That agreement is worth more than "
-        "any single value, because the columns measure different things "
-        "&mdash; ipTM the protein-ligand contact, pTM the whole complex, "
-        "pLDDT the per-atom detail &mdash; so the split does not depend on "
-        "which column you read. "
+        "and 44.4. Nothing crosses over. The columns measure different "
+        "things &mdash; ipTM the interface, pTM the whole complex, pLDDT "
+        "the per-atom detail &mdash; and here they rank the four the same "
+        "way. Read that as a ranking among these four and nothing more: "
+        "every one of them sits in the 40s or low 50s on pLDDT, so the "
+        "split says which prediction to look at first, not that any of "
+        "them is a good structure. "
         "<strong>Now the part that should change how you run this tool.</strong> "
         "The form defaults to a single seed, and that seed is the one ranked "
-        "<em>last</em> here: 0.47 on the ranking, ipTM 0.471, pLDDT 44.4. Run "
+        "<em>last</em> here &mdash; the bottom row, 0.47 on the ranking, "
+        "ipTM 0.471, pLDDT 44.4. (The table ranks the predictions without "
+        "naming their seeds; the run's own file is where that pairing "
+        "lives.) Run "
         "this target once, with the defaults, and you would have concluded it "
         "does not co-fold with its ligand &mdash; when half the seeds say "
         "0.67 and put the model's confidence in the same place. One "
@@ -254,7 +262,8 @@ EXAMPLE: dict | None = {
         "show: whether the top two put the benzamidine in the same pocket. "
         "Two predictions can agree on every score and still dock a ligand "
         "in different places, so that question needs the structures "
-        "themselves, which every row carries on a run of your own. "
+        "themselves, which every row carries on a run of your own, where the "
+        "viewer puts both poses on screen at once. "
         "Agreement on the pocket means more seeds will sharpen the pose; "
         "disagreement means the scores were telling you about the fold and "
         "not about the binding site."

@@ -976,10 +976,17 @@ class TestExampleNumbersComeFromThePayload:
         assert "32 to 44 &Aring;" in reading
         ci = col("af2_iptm", copies)
         assert 0.086 <= min(ci) and max(ci) <= 0.098
-        # The prose quotes what the CELLS read, not this range: the
-        # column renders two decimals, so 0.086 appears nowhere on
-        # the page the sentence is sitting on.
-        assert "0.09 or 0.10 in the table" in reading
+        # The prose may not quote this range: the column renders two
+        # decimals, so 0.086 is on no row of the table the sentence sits
+        # above. It may not quote the PRINTED values either -- six of
+        # these rows print exactly 0.10, which contradicts the "under
+        # 0.10" clause four lines further down the same paragraph, and
+        # the "thirteen rows" count only reproduces against the RAW
+        # column (printed, it is 7 or 14). This paragraph is payload-
+        # scoped end to end; the bound is the one figure that is true
+        # both ways and printed on the page.
+        assert max(ci) < 0.10
+        assert "all twelve under 0.10" in reading
 
         # ... against the rest of the shard.
         rest = [c for c in cands if c not in copies]
@@ -2096,7 +2103,10 @@ class TestABarAndItsValuesShareAScale:
 # Narration numerals against the rendered table
 # ---------------------------------------------------------------------------
 
-_SCORE_NUMERAL = re.compile(r"(?<![\w.])\d+\.\d+(?![\w])")
+# Signed, because proteina's leading column (total_reward) is negative
+# throughout. An unsigned pattern could never match any of its 153 printable
+# entries, so the prose could misquote that column freely.
+_SCORE_NUMERAL = re.compile(r"(?<![\w.])-?\d+\.\d+(?![\w])")
 
 # The two fields that describe the rows. ``what_we_did_next`` is about a
 # later run and ``why_this_target`` about the input, so neither is a claim
@@ -2110,13 +2120,25 @@ _TABLE_PROSE_FIELDS = ("what_came_back", "how_to_read_it")
 _NOT_QUOTING_A_ROW = {
     ("bindcraft", "how_to_read_it", "0.26"):
         "FreeBindCraft's published median across ITS OWN accepted designs "
-        "for this target -- an outside comparator that happens to land on "
-        "the same two decimals as a cell",
+        "for this target. It is in scope only because design 2 stores "
+        "i_pAE 0.26, and i_pAE is not one of bindcraft's rendered columns "
+        "-- so this is a collision with a row field the page never prints, "
+        "not with a cell",
 }
 
 
 def _row_floats(obj, in_row=False):
-    """Every float that reaches a candidate row, and nothing else."""
+    """Every float that reaches a candidate row, and nothing else.
+
+    Row keys are ``_CANDIDATE_LIST_KEYS``, the same three the margin sweep
+    uses. A float elsewhere in a payload -- a per-residue array, a run-level
+    total -- is not a cell, so quoting it is not the claim being pinned.
+
+    NOTE this sweeps every field of a row, including ones the tool does not
+    render. That is deliberate -- the rendered set is per-tool and opendde
+    declares none at all, which would zero its coverage -- but it is why an
+    allowlist entry can exist for a value no cell prints.
+    """
     if isinstance(obj, dict):
         for key, val in obj.items():
             yield from _row_floats(val, in_row or key in _CANDIDATE_LIST_KEYS)
@@ -2127,72 +2149,114 @@ def _row_floats(obj, in_row=False):
         yield obj
 
 
-def _printable_roundings(payload) -> set[str]:
-    """Every string a table could print for a value the rows hold.
+def _quotable_row_values(payload) -> set[str]:
+    """Numeral strings that would read as "the value in the row above".
 
     Two to four decimals always. One decimal ONLY at 10 and above, which is
     the pLDDT-style scale: one decimal on a sub-unit score would sweep in
     every threshold in the prose, and "aim above 0.7" is not a claim about a
-    cell. That single restriction is what keeps this test off the thirty-odd
-    thresholds, published comparators and cross-row statistics the narrations
-    legitimately carry.
+    cell. That single restriction is what keeps this off the thirty-odd
+    thresholds, published comparators and cross-row statistics the
+    narrations legitimately carry.
+
+    Sub-unit values are ALSO offered on the 0-100 scale through the shared
+    ``plddt_on_100``. proteina and boltz2 store pLDDT 0-1 and render it
+    x100, so without this the most-quoted column on those pages is
+    unguarded: six figures that ARE printed cells sat out of scope.
     """
     out: set[str] = set()
     for val in _row_floats(payload):
         out.update(f"{val:.{places}f}" for places in (2, 3, 4))
         if abs(val) >= 10:
             out.add(f"{val:.1f}")
+        if 0 < val <= 1:
+            scaled = plddt_on_100(val)
+            out.update(f"{scaled:.{places}f}" for places in (1, 2))
     return out
 
 
-def _visible_text(markup: str) -> str:
+def _printed_numbers(markup: str) -> set[float]:
+    """Every number the rendered partial actually prints, as floats.
+
+    Floats, not strings, on purpose. A substring test cannot tell "0.88
+    quoted against a cell reading 0.880" -- the same number, trailing zero
+    -- from "0.47 quoted against a cell reading 0.471", a different number
+    that happens to share a prefix. Comparing numerically accepts the first
+    and rejects the second. A string test accepted both, which left the
+    round-DOWN half of the precision defect uncaught.
+    """
     without_code = re.sub(
         r"<(script|style)[^>]*>.*?</\1>", " ", markup, flags=re.S | re.I,
     )
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", without_code))
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", without_code))
+    return {float(tok) for tok in _SCORE_NUMERAL.findall(text)}
+
+
+def _quoted_row_values(flask_app, slugs):
+    """``(checked, flagged)`` over every shipped example.
+
+    ``checked`` lists the numerals in scope; ``flagged`` are the ones the
+    table does not print.
+    """
+    checked: list[tuple[str, str, str]] = []
+    flagged: set[tuple[str, str, str]] = set()
+    for slug, payload in _example_payloads(slugs).items():
+        printed = _printed_numbers(_render_partial(
+            flask_app, slug, job_id="example", example=True, result=payload,
+        ))
+        quotable = _quotable_row_values(payload)
+        example = meta_for(slug).EXAMPLE
+        for field in _TABLE_PROSE_FIELDS:
+            prose = re.sub(r"<[^>]+>", " ", example.get(field) or "")
+            for numeral in dict.fromkeys(_SCORE_NUMERAL.findall(prose)):
+                if numeral not in quotable:
+                    continue
+                checked.append((slug, field, numeral))
+                if float(numeral) not in printed:
+                    flagged.add((slug, field, numeral))
+    return checked, flagged
 
 
 class TestNarrationQuotesTheTable:
-    """A measurement quoted in the prose has to be findable in the row it
-    describes.
+    """A row value quoted in the prose must be a number the table prints.
 
-    This is the check that has been run by hand on every example so far, and
-    it caught a real defect twice -- most recently prose reading 0.086 above
-    a cell printing 0.09, and 0.76 above cells printing 0.758 and 0.756. Both
-    times the number was true of the payload and absent from the page, which
-    is the whole failure: the reader is told a figure and then cannot find
-    it. Nothing stopped the third one.
+    READ THE SCOPE BEFORE TRUSTING THIS. An adversarial pass established
+    what it does and does not do by mutation, and the gap is wide enough
+    that a reviewer who reads only the class name will over-trust it.
 
-    The rule is narrow on purpose. A blanket "every numeral in the prose must
-    appear in the table" flags thirty-five figures across the fourteen tools,
-    nearly all of them legitimate -- thresholds, published comparators,
-    statistics taken across rows. So a numeral is required to appear only
-    when it is a rounding of a value a row actually holds. That is precisely
-    the sentence "this is the number above", and precisely the one that can
-    be wrong.
+    WHAT IT ENFORCES. A decimal numeral in ``what_came_back`` or
+    ``how_to_read_it`` that is a rounding of a float held by a candidate
+    row must equal a number the rendered results partial prints. That is
+    the precision-drift defect: prose quoting 0.086 above a cell reading
+    0.09, or 0.76 above cells reading 0.758 and 0.756. Both of those
+    shipped, both were caught by hand, and this is what stops the third.
+
+    WHAT IT DOES NOT ENFORCE -- each demonstrated by mutation, not assumed:
+
+    * A FABRICATED figure passes. A numeral that is not a rounding of any
+      row value is skipped before any check, so replacing opendde's top
+      pair with an invented 0.911 / 0.872 leaves the suite green. Four
+      tools -- opendde, rfantibody, rfdiffusion, iggm -- have no other
+      numeric pin anywhere in this file, so for them nothing guards
+      against a figure that was never measured.
+    * The ROW and the COLUMN are not checked. The comparison is against
+      every number on the page, so pTM values sold as ipTM pass, and so
+      does handing the losing pair the winning pair's figures.
+    * Integers are out of scope entirely: "223 residues", "thirteen rows",
+      "ranks 51 to 64" are unguarded.
+    * Three of the fourteen tools are exempt because they render no
+      candidate table at all -- colabfold and esmfold are single-structure,
+      and iggm's narration carries no decimal numeral.
+
+    The rule is narrow on purpose. A blanket "every prose numeral must
+    appear in the table" flags 32 figures across the fourteen tools, and
+    nearly all are legitimate: thresholds, published comparators, and
+    statistics taken across rows.
     """
 
-    def test_every_quoted_row_value_is_printed_at_that_precision(
-        self, tools_app,
-    ):
+    def test_every_quoted_row_value_is_printed(self, tools_app):
         flask_app, slugs = tools_app
-        checked = 0
-        flagged = set()
-        for slug, payload in _example_payloads(slugs).items():
-            rendered = _visible_text(_render_partial(
-                flask_app, slug, job_id="example", example=True,
-                result=payload,
-            ))
-            printable = _printable_roundings(payload)
-            example = meta_for(slug).EXAMPLE
-            for field in _TABLE_PROSE_FIELDS:
-                prose = re.sub(r"<[^>]+>", " ", example.get(field) or "")
-                for numeral in dict.fromkeys(_SCORE_NUMERAL.findall(prose)):
-                    if numeral not in printable:
-                        continue
-                    checked += 1
-                    if numeral not in rendered:
-                        flagged.add((slug, field, numeral))
+        _checked, flagged = _quoted_row_values(flask_app, slugs)
 
         unlisted = sorted(flagged - set(_NOT_QUOTING_A_ROW))
         assert not unlisted, (
@@ -2211,21 +2275,20 @@ class TestNarrationQuotesTheTable:
 
     def test_the_sweep_is_not_vacuous(self, tools_app):
         """The rule above skips any numeral that is not a row value, so a
-        regex or key-name slip makes it pass over an empty set in total
-        silence. Eighty-two numerals are in scope today.
+        regex or key-name slip makes it pass over an empty set in silence.
+
+        Both floors matter. The total alone is not enough: opendde supplies
+        20 of the 87, and bindcraft plus rfdiffusion are another 22, so one
+        tool losing all of its coverage can hide under a total-only bound.
         """
         flask_app, slugs = tools_app
-        checked = 0
-        for slug, payload in _example_payloads(slugs).items():
-            printable = _printable_roundings(payload)
-            example = meta_for(slug).EXAMPLE
-            for field in _TABLE_PROSE_FIELDS:
-                prose = re.sub(r"<[^>]+>", " ", example.get(field) or "")
-                checked += sum(
-                    1 for n in dict.fromkeys(_SCORE_NUMERAL.findall(prose))
-                    if n in printable
-                )
-        assert checked >= 60, (
-            f"only {checked} narration numerals resolve to a row value; the "
-            "sweep above is close to testing nothing"
+        checked, _flagged = _quoted_row_values(flask_app, slugs)
+        assert len(checked) >= 80, (
+            f"only {len(checked)} narration numerals resolve to a row "
+            "value; the sweep above is close to testing nothing"
+        )
+        covered = {slug for slug, _field, _numeral in checked}
+        assert len(covered) >= 11, (
+            f"only {len(covered)} tools contribute a checked numeral "
+            f"({sorted(covered)}); one of them has gone silent"
         )
