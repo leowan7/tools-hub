@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 
 from tools.esmfold2_design.run_pipeline import (
     CRITIC_REAL_IPTM,
@@ -39,11 +38,8 @@ def _records(caplog):
     return [r for r in caplog.records if r.name == _LOGGER]
 
 
-_BLANK_RE = re.compile(r"value for (.+?) across")
-
-
 def _blank_fields(caplog):
-    """The blank-field list this record actually reported.
+    """The blank-field list as PASSED to the log call.
 
     NOT a bare substring test. ``"iptm"`` is a substring of both
     ``"distogram_iptm_proxy"`` and ``"cdr_distogram_iptm_proxy"``, so
@@ -51,27 +47,24 @@ def _blank_fields(caplog):
     fields blank. Two such mutants walked through the text assertions this
     replaced.
 
-    Two readings, because each survives churn the other does not:
+    This reads ``args[0]`` rather than the rendered string, so WHICH fields
+    were named is pinned independently of how the sentence around them is
+    worded. The surrounding claim is a separate property and has its own
+    assertions in the tests below -- deliberately text-based, so that
+    rewording the diagnostic does fail and does get re-read by a human.
 
-    ``record.args[0]`` is the value as PASSED, so it is immune to any
-    rewording of the format string -- and this file has already reworded these
-    messages once. But an f-string logging call empties ``record.args`` to
-    ``()`` (verified, not assumed), which would make this an IndexError rather
-    than a result.
-
-    So fall back to the rendered message, anchored between ``value for`` and
-    `` across`` rather than searched bare. An over-claim renders
-    ``value for iptm, distogram_iptm_proxy across``, whose ``, <other field>``
-    falls INSIDE the capture, so the comparison fails in either ordering.
-    The anchor is what does the work; it also tolerates a change to the
-    joiner, which must not matter for a single-field message.
+    An earlier version also fell back to parsing the rendered message, because
+    an f-string logging call empties ``record.args`` to ``()``. That is true
+    (verified) but unreachable here: this repo has no lint config, no lint
+    step in CI, and zero ``logger.<level>(f"...")`` calls in the tree, so
+    nothing would perform that conversion. Dropped rather than carried. If a
+    lint config ever lands and rewrites these calls, this raises IndexError --
+    loudly, in the test that guards the diagnostic -- and whoever added it can
+    switch to an anchored capture of ``value for (.+?) across``, which was
+    measured to catch the same over-claims in both field orderings.
     """
     (record,) = _records(caplog)
-    if record.args:
-        return record.args[0]
-    match = _BLANK_RE.search(record.getMessage())
-    assert match, f"cannot read the blank-field list from {record.getMessage()!r}"
-    return match.group(1)
+    return record.args[0]
 
 
 # Every critic emits its own proxy for the same design, hence the bug report's
