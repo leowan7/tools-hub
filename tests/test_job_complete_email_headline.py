@@ -17,8 +17,10 @@ example:
 ``shared/email.py::_top_candidate_summary`` took ``result["candidates"][0]``
 blind and captioned it from the first scored column with a registered legend,
 so the mail sent "ipTM 0.956" above "0.75 or more is a credible designed
-interface" -- about a poly-Leu/Arg scaffold at pI ~12 that is insoluble and
-non-specific, and that the run itself dropped.
+interface" -- about the design the run's own ``filter_status`` marks ``drop``,
+on a pI the tool's legend calls "usually an insoluble, non-specific scaffold".
+(That legend sentence is generic; nothing in the repo measures solubility for
+this design, and its sequence does not survive example capture.)
 
 THE FIXTURE IS THE SHIPPED EXAMPLE PAYLOAD, read off disk, not a transcription
 of its numbers. The class is about what a real container stored, and a copy is
@@ -27,8 +29,10 @@ shape. ``test_the_example_payload_still_carries_the_defect`` asserts the
 premise, so an example that stops carrying it fails loudly here instead of
 leaving every assertion below hollow.
 
-EVERY CHECK GOES THROUGH ``send_job_complete_email`` WITH THE TRANSPORT
-CAPTURED and reads the two bodies a customer receives. The defect lived in the
+EVERY BEHAVIOURAL CHECK GOES THROUGH ``send_job_complete_email`` WITH THE
+TRANSPORT CAPTURED and reads the two bodies a customer receives. (The premise
+test is the exception: its subject is the fixture, so it reads the JSON off disk
+and calls ``judge`` directly.) The defect lived in the
 wiring, not in any one function: the record is chosen in ``shared.jobs``, judged
 in ``shared.score_legends``, assembled in ``shared.email`` and formatted in two
 templates. A function-level test of the chooser stays green while the context
@@ -49,7 +53,9 @@ from shared.jobs import ToolJob
 from shared.score_legends import judge
 
 # The email path never touches Supabase, but ``shared.jobs`` imports the client
-# module; blanking the env keeps that honest, as every sibling suite does.
+# module; blanking the env keeps that honest. NOT a repo-wide convention: 51 of
+# 177 test files take this fixture, and test_jobs_compare_headline.py -- the
+# #248 suite for this same defect class -- does not.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 _EXAMPLE = (
@@ -58,9 +64,10 @@ _EXAMPLE = (
 )
 
 # As ``_top_candidate_summary`` formats them ("%.3f"), which is what a search of
-# the delivered body has to look for. The reject and the design that clears the
-# bar differ in the THIRD DECIMAL of the same column, so a shorter needle would
-# match both and the assertions below would span the defect and its fix.
+# the delivered body has to look for. Same column, same run, parting at the
+# SECOND decimal (0.9556 / 0.9354), so these are transcriptions of the fixture
+# rather than facts about it -- and the premise test pins both renderings, or a
+# re-captured example would silently make every negative assertion vacuous.
 DROP_IPTM = "0.956"
 PASS_IPTM = "0.935"
 DROP_PDB = "seed0_design_0_complex.pdb"
@@ -76,11 +83,12 @@ def _example_result() -> dict:
     return json.loads(_EXAMPLE.read_text("utf-8"))
 
 
-def _job(*, preset: str = RUN_MODE, result: dict | None = None) -> ToolJob:
+def _job(*, preset: str = RUN_MODE, result: dict | None = None,
+         tool: str = "esmfold2-design") -> ToolJob:
     return ToolJob.from_row({
         "id": "2b917b54-0871-44af-a3d1-5d07ea5dcaeb",
         "user_id": str(uuid.uuid4()),
-        "tool": "esmfold2-design",
+        "tool": tool,
         "preset": preset,
         "status": "succeeded",
         "inputs": {},
@@ -169,6 +177,16 @@ def test_the_example_payload_still_carries_the_defect():
     assert judge("esmfold2-design", cands[0], preset=RUN_MODE).verdict == "below"
     assert judge("esmfold2-design", cands[1], preset=RUN_MODE).verdict == "meets"
 
+    # THE NEEDLES ARE TRANSCRIPTIONS, so pin them here or the negative
+    # assertions elsewhere go vacuous in silence. An example re-captured on a
+    # newer container -- defect intact, seed0 merely rescored to 0.9700 -- leaves
+    # `DROP_IPTM not in body` trivially true, and nothing else in the file
+    # notices.
+    assert "%.3f" % first["ipTM"] == DROP_IPTM, first["ipTM"]
+    assert "%.3f" % second["ipTM"] == PASS_IPTM, second["ipTM"]
+    assert cands[0]["pdb_key"] == DROP_PDB, cands[0]["pdb_key"]
+    assert cands[1]["pdb_key"] == PASS_PDB, cands[1]["pdb_key"]
+
     # The mode is a fact ON THE RESULT. It is what lets this mail resolve a bar
     # at all for a tool deliberately absent from GATE_COLUMNS.
     assert result["is_antibody"] is False
@@ -212,6 +230,21 @@ def test_the_mail_states_the_bar_the_leading_design_meets():
         # the leading design is here for.
         assert "pI 6" in body, f"the {part} body's bar drops its pI leg"
         assert "ipTM 0.75" in body, f"the {part} body's bar drops its ipTM leg"
+        # AND NOT THE SHORTFALL FRAMING. Without this, weakening the guard in
+        # shared/email.py from `verdict.verdict == "below"` to a bare truthiness
+        # test leaves this whole file green while the mail says "Nothing in this
+        # run clears the bar — Meets pI 6 and ipTM 0.75" in one sentence.
+        assert "clears the bar" not in body, (
+            f"the {part} body tells a customer whose design MEETS the bar that "
+            f"nothing in the run clears it: {body!r}"
+        )
+        # The judgement belongs in the callout it qualifies, not loose in the
+        # footer: the callout is the endorsement frame ("Top design", a green
+        # rule) that the sentence exists to correct.
+        assert body.index("Meets") < body.index("View results"), (
+            f"the {part} body renders the judgement after the call to action, "
+            f"outside the callout whose framing it is there to qualify"
+        )
 
 
 def test_the_mode_comes_off_the_result_not_the_stored_preset():
@@ -262,15 +295,71 @@ def test_when_nothing_clears_the_bar_the_mail_says_so():
         )
 
 
+def test_the_mode_falls_back_to_the_preset_when_the_result_omits_it():
+    """The OTHER half of ``result_mode(...) or job.preset``, which nothing else
+    here reaches.
+
+    Every other fixture in this file either records the mode on the result or
+    carries a preset that resolves to no bar, and
+    ``gate_columns("esmfold2-design", None) == gate_columns(..., "pilot") ==
+    ()`` -- so the two branches are observationally identical across the whole
+    suite and deleting ``or getattr(job, "preset", None)`` leaves it green.
+
+    It is not a hypothetical branch. ``result_mode``'s own docstring says it
+    "Returns None rather than guessing when the flag is absent", precisely so a
+    caller can fall back to the preset; a row rebuilt by ``shared/job_recovery``
+    or written before the flag existed is exactly that shape. Without the
+    fallback such a run is judged against no bar and mails the reject again.
+    """
+    result = _example_result()
+    del result["is_antibody"]
+    bodies = _bodies(_sent(_job(preset=RUN_MODE, result=result)))
+    for part, body in bodies.items():
+        assert PASS_IPTM in body, (
+            f"the {part} body lost the preset fallback, so a result that does "
+            f"not record its mode is judged against no bar"
+        )
+        assert DROP_IPTM not in body, body
+        assert "Meets" in body, f"the {part} body resolved no bar"
+
+
+def test_an_unmeasured_leg_is_disclosed_not_dropped():
+    """Why ``verdict_text`` and not ``"; ".join(verdict.shortfalls)``.
+
+    On this fixture the two are byte-identical, so the docstring's stated reason
+    for using the single renderer -- that it also carries the ``unmeasured`` and
+    ``unusable`` clauses -- is unexercised, and a hand-join passes. Here pI is
+    absent, which makes the record ``unjudged`` with an ``unmeasured`` leg: the
+    headline is then the ipTM 0.956 reject (an unjudged record is eligible, by
+    design), and the ONLY thing qualifying it is the clause a hand-join drops.
+    """
+    result = _example_result()
+    for cand in result["candidates"]:
+        cand["scores"].pop("pI")
+    bodies = _bodies(_sent(_job(result=result)))
+    for part, body in bodies.items():
+        assert "Not measured: pI" in body, (
+            f"the {part} body headlines a design whose pI was never measured "
+            f"and says nothing about it: {body!r}"
+        )
+        assert "Meets" not in body, body
+
+
 def test_an_unresolved_mode_asserts_no_bar_at_all():
     """The counterweight: silence when the bar cannot be named.
 
-    A preset that matches no entry in ``MODE_GATE_COLUMNS`` on a result that
-    records no mode leaves the run unjudged, and ``verdict_text`` returns "" --
-    so the mail states nothing rather than the bare word "Meets", which is the
-    shape a mis-keyed slug once put in every cell of this tool's results page.
-    A sentence that appeared regardless of whether a bar exists would be
-    furniture.
+    A preset matching no entry in ``MODE_GATE_COLUMNS``, on a result recording
+    no mode, leaves ``gate_columns`` empty -- so ``judge`` returns ``unjudged``
+    and ``verdict_text`` falls through to its final ``return ""``. The mail
+    states nothing, and a sentence that appeared regardless of whether a bar
+    exists would be furniture.
+
+    NOT the "refuses to render a bare Meets" branch, which an earlier version of
+    this docstring claimed. That branch is unreachable from here: ``judge`` and
+    ``verdict_text`` are handed the SAME ``mode``, and with no gate columns
+    ``judge`` cannot return ``meets`` in the first place. It defends against a
+    caller that judges under one preset and renders under another, which
+    ``_top_candidate_summary`` never does.
     """
     bodies = _bodies(_sent(_job(preset="pilot", result={
         "candidates": [{
@@ -285,3 +374,63 @@ def test_an_unresolved_mode_asserts_no_bar_at_all():
             f"the {part} body asserts a bar that could not be resolved"
         )
         assert "clears the bar" not in body, body
+
+
+def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
+    """The regression this fix nearly shipped, caught in review.
+
+    Reading ``candidate_records`` instead of ``result["candidates"]`` also picks
+    up ``designs[]`` -- and af2, colabfold and esmfold store their ``batch``
+    preset there, one record per INDEPENDENTLY SUBMITTED target, in submission
+    order (``"rank": rec_info["index"]``). None of the three declares a bar, so
+    ``headline_candidate`` cannot re-pick and ``verdict_text`` renders nothing.
+    The callout therefore named whichever sequence the customer pasted first as
+    the "Top design" and captioned it with what a GOOD value looks like -- this
+    module's own defect, recreated on three tools, in the pushed surface.
+
+    Measured before the gate: an af2 batch holding ptm 0.40 and 0.95 mailed
+    "Top design: ptm 0.400 (seqA.pdb)" above "Above 0.7 is a credible model".
+
+    The rule is the SHAPE or the BAR, and gating on the bar alone is wrong:
+    bindcraft declares no bar yet stores a ranked ``candidates[]``, so that rule
+    would delete a callout it has always had. ``test_a_ranked_candidates_list_
+    still_renders_without_a_bar`` holds that other side.
+    """
+    bodies = _bodies(_sent(_job(tool="af2", preset="batch", result={"designs": [
+        {"rank": 0, "pdb_key": "seqA.pdb", "ptm": 0.40},
+        {"rank": 1, "pdb_key": "seqB.pdb", "ptm": 0.95},
+    ]})))
+    for part, body in bodies.items():
+        assert "Top design" not in body, (
+            f"the {part} body claims a top design over a list nothing ranked "
+            f"and no bar can re-pick within: {body!r}"
+        )
+        assert "0.400" not in body and "seqA" not in body, body
+        # The mail is still sent, and still counts the run.
+        assert "2 candidates returned" in body, body
+
+
+def test_a_ranked_candidates_list_still_renders_without_a_bar():
+    """The other side of that gate, so it cannot be tightened into a deletion.
+
+    bindcraft stores a container-ranked ``candidates[]`` and declares no bar
+    (``gate_columns("bindcraft") == ()``). Its callout predates this change and
+    must survive it -- a gate keyed on "has a bar" alone would silently remove
+    it, which is why the gate asks about the SHAPE first.
+    """
+    from shared.score_legends import gate_columns
+
+    assert gate_columns("bindcraft") == (), (
+        "bindcraft has grown a bar; this test's premise -- a ranked list with "
+        "no bar -- no longer holds, so re-point it rather than leave it passing"
+    )
+    bodies = _bodies(_sent(_job(tool="bindcraft", preset="pilot", result={
+        "candidates": [
+            {"rank": 0, "pdb_key": "bc_0.pdb", "scores": {"ipTM": 0.88}},
+        ],
+    })))
+    for part, body in bodies.items():
+        assert "Top design" in body, (
+            f"the {part} body dropped the callout for a ranked candidate list"
+        )
+        assert "0.880" in body, body
