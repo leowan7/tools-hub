@@ -39,10 +39,12 @@ def guard_step(workflow: dict) -> dict:
 
 
 def test_the_guard_is_its_own_job_not_a_step_before_the_smoke(workflow: dict):
-    """As a step it exited 1 on four of five paths ahead of the smoke.
+    """Five of its seven paths exit 1. The pre-review draft -- four of five,
+    and a step ahead of the smoke -- is recorded in
+    docs/qc/deploy-drift-guard-round1.md.
 
-    A /health blip therefore deleted the deep end-to-end signal entirely, and
-    the guard's own message told the reader to compare against "the smoke
+    A /health blip would therefore have deleted the deep end-to-end signal, and
+    that draft's own message told the reader to compare against "the smoke
     below" -- a result its placement guaranteed would not exist.
     """
     jobs = workflow["jobs"]
@@ -184,6 +186,10 @@ def _if_block(run: str, gate: str, label: str) -> str:
     """
     lines = run.splitlines()
     for i, line in enumerate(lines):
+        # This file quotes its own commands in prose constantly. A comment
+        # doing that would match first and fail a perfectly correct gate.
+        if line.lstrip().startswith("#"):
+            continue
         if re.search(gate, line):
             assert line.lstrip().startswith("if ! "), (
                 f"the {label} gate is no longer negated: {line.strip()!r}. "
@@ -230,10 +236,129 @@ def test_the_drift_branch_actually_fails_the_job(guard_step: dict):
         "the drift branch no longer emits an ::error:: annotation"
     )
     tail = run[run.index("::error::DEPLOY DRIFT"):]
-    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    # TWO properties, because each misses what the other catches and a repair
+    # that swapped one for the other lost real coverage.
+    #
+    # Composition: exactly one exit-bearing line, and it says `exit 1`. This
+    # catches what `"exit 0" not in tail` could not -- `exit  0`, `exit $?`,
+    # `exit ${RC:-0}`, and a bare `exit`, which takes $? from the `git log`
+    # above it, i.e. 0. (It also catches `true && exit 0`, but so did the
+    # substring form; that one is not evidence for this change.)
+    #
+    # Position: that line is also the LAST thing in the step. Composition
+    # alone cannot tell a reachable `exit 1` from an unreachable one --
+    # wrapping it in `if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then ... fi`
+    # leaves the composition untouched while the step falls through and
+    # exits 0 on workflow_dispatch, which is the trigger the runbook tells
+    # the operator to use right after a deploy.
+    #
+    # Either way the job goes GREEN after printing DEPLOY DRIFT: no failure,
+    # no email, no signal, which is the outage this guard exists to catch.
+    #
+    # Both scans skip `#` lines, or a trailing comment would false-fail the
+    # position check on a perfectly correct script -- and its message would
+    # blame unreachability, which would not be the problem. Neither scan is
+    # immune to prose on a CODE line: an `echo "about to exit 1"` would
+    # false-fail. That is loud and obvious, unlike the silent misses above, so
+    # it is the side to err on -- but it is a trade, not a solved problem.
+    terminators = [
+        ln.strip() for ln in tail.splitlines()
+        if not ln.lstrip().startswith("#") and re.search(r"\bexit\b", ln)
+    ]
+    assert terminators == ["exit 1"], (
+        "the drift branch must contain exactly one exit, `exit 1`, or "
+        "detecting drift does not FAIL the job and nobody is emailed. "
+        f"Found: {terminators}"
+    )
+    lines = [ln.strip() for ln in tail.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
     assert lines[-1] == "exit 1", (
-        "the drift branch does not end in `exit 1`, so detecting drift does "
-        f"not FAIL the job and nobody is emailed. Tail was: {lines[-1]!r}"
+        "the drift branch does not END at `exit 1`, so that exit may not be "
+        "reached at all -- a conditional around it leaves the composition "
+        f"check above satisfied while the job exits 0. Last line: {lines[-1]!r}"
+    )
+
+
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+# How many places state this count. Pinned, because a global "did we find any"
+# check cannot see ONE site drop out of the scan: the survivors keep the
+# assertion green while the unscanned one rots. That is precisely the shape of
+# the defect this test exists to stop, so it must not be reproducible here.
+_EXPECTED_CLAIM_SITES = 3
+
+
+def _as_int(word: str) -> "int | None":
+    """Number words or digits.
+
+    Silently dropping a digit-form claim would un-scan the site that used it.
+    """
+    if word.isdigit():
+        return int(word)
+    return _NUMBER_WORDS.get(word.lower())
+
+
+def _stated_path_counts(text: str) -> list[tuple[str, int, int]]:
+    """Every "<n> of [its] <m>" exit-path claim in a file, with wraps rejoined.
+
+    Rejoining is the whole trick. The second claim in the workflow wrapped
+    mid-phrase -- `four of` ending one line, `# five paths` opening the next --
+    so a line-scoped grep found only the first, and the stale one shipped.
+    """
+    flat = re.sub(r"\s*\n\s*#?\s*", " ", text)
+    found = []
+    for said_n, said_m in re.findall(r"(\w+) of (?:its )?(\w+) paths", flat):
+        n = _as_int(said_n)
+        m = _as_int(said_m)
+        if n is not None and m is not None:
+            found.append((f"{said_n} of {said_m}", n, m))
+    return found
+
+
+def test_every_stated_exit_path_count_matches_the_script(guard_step: dict):
+    """The comments justify the separate job with a COUNT, and counts rot.
+
+    Three sites carried a stale one. It was true of the version QC round 1
+    read, and wrong the moment that same round's repair added the on-main gate
+    as a fifth non-zero exit -- the repair the sentence exists to justify is
+    what invalidated its number. It shipped, and nothing could see it.
+
+    So stop restating the number and derive it. A reader checks the claim
+    against the script in front of them; this does exactly that, and covers
+    the docstrings in this file too, since one of the three sites was here.
+    """
+    exits = re.findall(r"^\s*exit\s+(\d+)\s*$", guard_step["run"], re.MULTILINE)
+    assert exits, (
+        "no `exit N` lines found in the guard step -- the pattern has drifted "
+        "from the script, so this test is asserting over nothing"
+    )
+    total = len(exits)
+    nonzero = sum(1 for code in exits if code != "0")
+
+    claims = []
+    for source in (_WORKFLOW, _ALERTING, Path(__file__)):
+        for said, n, m in _stated_path_counts(source.read_text(encoding="utf-8")):
+            claims.append((source.name, said, n, m))
+    assert len(claims) == _EXPECTED_CLAIM_SITES, (
+        f"expected {_EXPECTED_CLAIM_SITES} sites stating this count, found "
+        f"{len(claims)}: {[(w, said) for w, said, _, _ in claims]}. A site "
+        f"that stops matching goes UNSCANNED while the others keep this test "
+        f"green -- the same shape as the defect it exists to catch. If a site "
+        f"was deliberately added or removed, update _EXPECTED_CLAIM_SITES. "
+        f"But first check the claim did not simply MOVE somewhere this does "
+        f"not scan; if it did, scan there instead of lowering the count."
+    )
+
+    wrong = [
+        f"{where} says {said!r}" for where, said, n, m in claims
+        if (n, m) != (nonzero, total)
+    ]
+    assert not wrong, (
+        f"the guard exits non-zero on {nonzero} of {total} exit statements, "
+        f"but: {wrong}"
     )
 
 
