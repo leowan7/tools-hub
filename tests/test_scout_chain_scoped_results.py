@@ -1776,6 +1776,38 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"{resp.get_data(as_text=True)[:200]}"
         )
 
+    def test_the_downloaded_filename_names_the_chain(self, client, reap_jobs):
+        """Two chains must not land in Downloads under one name.
+
+        The whole branch is about not confusing one chain's scores for
+        another's; a user who downloads both and cannot tell the files apart
+        without opening them has the same problem one layer out.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "B", [60, 61])
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}?chain=B")
+        assert resp.status_code == 200, resp.data
+        disposition = resp.headers["Content-Disposition"]
+        assert "chainB" in disposition, (
+            f"the download does not name the chain it carries: {disposition}"
+        )
+
+    def test_the_page_does_not_override_the_servers_filename(self, client):
+        """A hard-coded download="" on the anchor silently undoes the above.
+
+        It overrides Content-Disposition for same-origin, and it also forces a
+        download for a non-2xx — which is how this route's JSON refusals used
+        to be saved to disk as a .csv instead of being shown.
+        """
+        _login(client)
+        page = client.get("/scout/feasibility").get_data(as_text=True)
+        anchor = page.split('id="download-link"', 1)[1].split(">", 1)[0]
+        assert "download=" not in anchor, (
+            f"the download anchor hard-codes a filename again: {anchor}"
+        )
+
     def test_the_refusal_names_the_files_chain_not_the_callers_string(self, client, reap_jobs):
         """Same reason as test_the_feasibility_404_names_the_chain above.
 
