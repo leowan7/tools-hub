@@ -111,13 +111,11 @@ _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 #     _CLASSES). It now completes and bills. That is the point of the change —
 #     the user gets designs instead of nothing — but it is a charge where
 #     there was none.
-#   * The 1-seed HOLD rises $14.79 -> $15.00, which is EXACTLY
-#     shared/wallet.SIGNUP_CREDIT_USD. Headroom against the free credit goes
-#     to zero: a new user who has spent any part of it is refused this tool
-#     and asked to top up. shared/wallet.py:100 already named esmfold2-design
-#     "the one to watch, H100-priced with the least headroom"; this spends the
-#     last of it. Raising SIGNUP_CREDIT_USD is the fix and is a pricing call,
-#     deliberately NOT made here.
+#   * The 1-seed HOLD rises $14.79 -> $15.00, which was EXACTLY the old
+#     shared/wallet.SIGNUP_CREDIT_USD, taking headroom against the free credit
+#     to zero. SIGNUP_CREDIT_USD was raised to $20.00 in the same change to
+#     restore it; see the sizing rule there, which this bug corrected (the
+#     credit must clear the largest 1-unit HOLD, not the largest PRICE).
 #   * Unbilled H100 on a failed child rises 3600 s -> 5400 s ($8.70 -> $13.05
 #     raw), and a full-session seed now recovers cost at an effective 1.15x
 #     rather than the intended 1.70x markup. Revenue crosses below raw Modal
