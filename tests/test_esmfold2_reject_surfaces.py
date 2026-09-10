@@ -150,6 +150,25 @@ def _headers(body: str) -> list[str]:
     return [ln for ln in body.splitlines() if ln.startswith(">")]
 
 
+def test_no_campaign_tool_needs_a_mode():
+    """Two comments in blueprints/campaigns.py rest on this and neither can
+    check it: the campaign FASTA export passes no preset, and the quality
+    card's docstring says threading one "changes nothing for any tool
+    campaigns can currently run". Both are true only while no moded tool is
+    campaign-able. Adding one to SUPPORTED_TOOLS is a one-line change in
+    another file, and it would leave those two sentences asserting something
+    false about a card a customer reads.
+
+    A moded tool arriving here fails safe -- no mode means no bar, which is
+    what those surfaces show today -- so this fails as a prompt to update the
+    prose and the export, not as a report of a live defect.
+    """
+    from shared.compute_campaigns import SUPPORTED_TOOLS
+    from shared.score_legends import MODE_GATE_COLUMNS
+
+    assert not (set(SUPPORTED_TOOLS) & set(MODE_GATE_COLUMNS))
+
+
 class TestShareCard:
     def test_the_og_title_names_the_design_that_clears_the_bar(
         self, flask_app, monkeypatch,

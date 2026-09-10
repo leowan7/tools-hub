@@ -269,8 +269,14 @@ def jobs_compare():
         # resolves it in. Reading job.preset alone reads the other way round
         # from every other surface: the stored preset can be the default
         # string while the result records what the run actually did.
+        #
+        # THIS EXPRESSION WAS WRITTEN INLINE HERE FIRST and is now
+        # score_legends.resolve_mode, which every surface in this class calls.
+        # Same answer for every tool -- the added guard only stops a tool-blind
+        # is_antibody read reaching a tool that is not moded, and `mode` here
+        # equalled `j.preset` for those anyway.
         records = candidate_records(j.result)
-        mode = score_legends.result_mode(j.result) or j.preset
+        mode = score_legends.resolve_mode(j.tool or "", j.result, j.preset)
         top, top_verdict = headline_candidate(records, j.tool, preset=mode)
         # Its POSITION in the stored order, so the page can say "row 7 of 12"
         # rather than a bare "not rank 1" pointing at a row the 3-row table

@@ -934,12 +934,13 @@ def _campaign_export(campaign_id: str, fmt: str):
         )
     if fmt == "fasta":
         # NO PRESET. A campaign's envelope carries the tool but not the
-        # preset, and every campaign tool's bar is a property of the tool
-        # (shared.score_legends.GATE_COLUMNS), where the preset is ignored
-        # anyway. esmfold2-design -- the only tool whose bar needs a mode --
-        # is not in compute_campaigns.SUPPORTED_TOOLS, so no run that reaches
-        # here has one; a moded tool arriving later would read no bar and get
-        # no notes, which is the answer it gives today.
+        # preset, and no campaign tool needs one: the intersection of
+        # compute_campaigns.SUPPORTED_TOOLS and score_legends.MODE_GATE_COLUMNS
+        # is EMPTY (four of the seven declare a tool-wide bar in GATE_COLUMNS,
+        # which ignores a preset by construction, and bindcraft, proteina and
+        # iggm declare no bar at all). A moded tool added to that list later
+        # would read no bar here and get no notes -- the same answer it gives
+        # everywhere else that cannot name a run.
         body = candidates_to_fasta(candidates, tool=agg.get("tool")) or (
             "# No sequences found in this campaign's output.\n"
         )
