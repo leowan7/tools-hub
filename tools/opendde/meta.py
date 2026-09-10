@@ -178,11 +178,14 @@ PILOT: dict | None = None
 # "_summary_confidence" between the base name and the sample index, so
 # "opendde_job_sample_0" is not a substring of
 # "opendde_job_summary_confidence_sample_0" and every read fell through to
-# the alphabetical pick. These figures are sound because with one sample
-# per seed that pick had exactly one candidate -- not because it was
-# bypassed. A "full_data" file in the same directory sorts ahead of the
-# confidence one and carries no ranking_score, so the same shape would
-# have returned nothing. #245 is what removes the dependence on luck.
+# the alphabetical pick. These figures are sound because that pick landed
+# on the right file anyway, not because it was bypassed: run_pipeline.py
+# asks upstream for atom-level "full_data" only when told to, and nothing
+# here ever tells it to, so the summary-confidence JSON was the only
+# candidate. That is the provable part. Had a "full_data" file been
+# written it would sort ahead of the confidence one and carries no
+# ranking_score, so the same shape would have returned nothing. #245 is
+# what removes the dependence on that.
 EXAMPLE: dict | None = {
     "target": (
         "Bovine trypsin with benzamidine bound &mdash; chain A of "

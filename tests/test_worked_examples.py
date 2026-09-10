@@ -2190,9 +2190,12 @@ def _quotable_row_values(payload) -> set[str]:
     which is the exact move this test exists to catch in narration.
 
     What the gate does buy is a real hazard that no payload has yet.
-    proteina's af2_iptm runs 0.086 to 0.098 and scales to 8.6-9.8, so a
-    prose threshold anywhere in 8.6-9.8 would enter scope on that tool and
-    be flagged as an unprinted row value. ``plddt_on_100`` is also not
+    proteina's af2_iptm spans 0.0861 to 0.8906, and its fourteen lowest
+    rows sit in 0.0861-0.0977, scaling to 8.6-9.8 -- so a prose threshold
+    anywhere in that band would enter scope on that tool and be flagged as
+    an unprinted row value. (An earlier version of this sentence gave
+    0.086-0.098 as the whole column's range. That is the low fourteen
+    rows only, and the page itself quotes a best design at ipTM 0.89.) ``plddt_on_100`` is also not
     idempotent at or below 0.01: 0.005 scales to 0.5 and 0.01 to 1.0, both
     back inside the 0-1 window, which is why BOTH scaled forms are gated
     and not just the one-decimal one. Gating only the one-decimal form left
@@ -2215,22 +2218,45 @@ def _quotable_row_values(payload) -> set[str]:
 
 
 class _DataCellText(HTMLParser):
-    """Character data inside <td>/<th>, and nothing else.
+    """Character data inside a table's <td>/<th>, and nothing else.
 
     A parser rather than a regex, after four separate ways the regex it
-    replaced could be defeated: a raw ">" inside a cell attribute ended the
-    start tag early and promoted attribute text to cell text; "</td >" and
-    an unclosed <td> both matched nothing; a nested table swallowed the
-    outer cell's tail; and widening the pattern by six characters admitted
-    every full-precision data-val attribute without one test going red.
-    stdlib handles all of them, so none of them needs a guard.
+    replaced was shown to be defeatable: a raw ">" inside a cell attribute
+    ended the start tag early and promoted attribute text to cell text;
+    "</td >" and an unclosed <td> both matched nothing; a nested table
+    swallowed the outer cell's tail; and widening the pattern by six
+    characters admitted every full-precision data-val attribute without a
+    single test going red.
 
-    <th> counts. Header cells hold column labels today -- no partial renders
-    a decimal in one -- but a score promoted to <th scope="row">, which is
-    the correct markup for a row header, is still a printed cell. Excluding
-    it made that ordinary accessibility fix turn this suite red with a
-    message telling the author to invent a source for a value the table was
-    plainly showing.
+    IT IS CHECKED AGAINST A BROWSER, not against intuition. On all fourteen
+    shipped partials this agrees exactly with Chrome's
+    querySelectorAll("td,th") innerText, and with the regex it replaced.
+    Two of the rules below exist only because that comparison disagreed
+    with a hand-written parser first:
+
+    * A cell counts only inside an open <table>. A bare <td> in body
+      context is a parse error that browsers discard, so collecting it
+      would invent a cell the reader never sees.
+    * <tr> and <table> restore the depth they opened at, which is the
+      implied close HTMLParser does not perform. Without it an unclosed
+      <td> -- valid HTML, the end tag is optional -- stays open for the
+      rest of the document and hands every later number on the page to the
+      guard as a printed cell. That is the guard failing OPEN, silently,
+      which is the direction that matters; the regex failed closed here.
+
+    KNOWN DIVERGENCES FROM A BROWSER, both involving malformed <script> in
+    a cell, neither present on any partial: a self-closed <script/> opens a
+    skip this parser never closes in the browser's model, and an unclosed
+    <script> makes this parser drop every later cell where the browser
+    keeps them. The first over-collects, the second under-collects and is
+    noisy rather than silent. Neither is guarded, because inventing a case
+    no page produces is how the last four rounds of this file went wrong.
+
+    <th> counts. Header cells hold column labels today -- no partial
+    renders a decimal in one, verified -- but a score promoted to
+    <th scope="row">, the correct markup for a row header, is still a value
+    the table prints, and excluding it turned that ordinary accessibility
+    fix into a red suite telling the author to invent a source.
     """
 
     _CELLS = {"td", "th"}
@@ -2238,19 +2264,34 @@ class _DataCellText(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
+        self._tables = 0
         self._depth = 0
         self._skip = 0
+        self._marks: list[int] = []
         self.chunks: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         if tag in self._SKIP:
             self._skip += 1
-        elif tag in self._CELLS:
+        elif tag == "table":
+            self._tables += 1
+            self._marks.append(self._depth)
+        elif tag == "tr":
+            self._marks.append(self._depth)
+        elif tag in self._CELLS and self._tables:
             self._depth += 1
 
     def handle_endtag(self, tag):
         if tag in self._SKIP and self._skip:
             self._skip -= 1
+        elif tag == "table":
+            if self._tables:
+                self._tables -= 1
+            if self._marks:
+                self._depth = self._marks.pop()
+        elif tag == "tr":
+            if self._marks:
+                self._depth = self._marks.pop()
         elif tag in self._CELLS and self._depth:
             self._depth -= 1
 
@@ -2413,24 +2454,61 @@ class TestNarrationQuotesTheTable:
         payload has one -- so every other test here stays green whichever
         way _printed_numbers reads. This is the one that does not.
 
-        It also pins the three ways the regex this replaced could be
-        defeated, each of which was demonstrated rather than imagined: a
-        raw ">" inside a cell attribute promoted attribute text to cell
-        text, a nested table swallowed the outer cell's tail, and a score
-        promoted to <th scope="row"> -- correct markup for a row header --
-        dropped out of scope and turned the sweep red with a message
-        telling the author to invent a source for a visible value.
+        It also pins every way the regex this replaced was shown to fail,
+        and one way the parser that replaced it failed in turn. Each was
+        demonstrated, not imagined:
+
+        * a raw ">" inside a cell attribute ended the start tag early and
+          promoted attribute text to cell text, so 0.9111 must NOT appear;
+        * "</td >" with a space matched nothing, so 1.22 must appear;
+        * an unclosed <td> matched nothing, so 1.33 and 1.44 must appear;
+        * a nested table swallowed the outer cell's tail, so 0.77 must
+          appear alongside 0.66;
+        * the first parser here treated that unclosed <td> as open for the
+          rest of the document, handing every later number on the page to
+          the guard as a printed cell -- failing OPEN. 0.88 sits after the
+          unclosed cell and must NOT appear;
+        * and it counted a bare <td> outside any <table>, which browsers
+          discard as a parse error, so 1.66 must NOT appear either.
+
+        <script> and <style> inside a cell are skipped, so 0.99 and 0.73
+        must not appear while the text beside them, 1.11 and 1.55, must.
+        The style value is written bare rather than as "0.7300px": a CSS
+        unit makes the numeral pattern miss it, which made an earlier
+        version of this case pin nothing at all. A stray </td> before any
+        cell opens must not drive the depth counter negative and swallow
+        the page.
+
+        <th> is not on the defeat list, because the regex never looked at
+        header cells at all. It counts here because a score promoted to
+        <th scope="row">, the correct markup for a row header, is still a
+        value the table prints.
+
+        WHAT THIS DOES NOT PIN. That the parser agrees with a browser on
+        the fourteen real partials -- that was verified by hand against
+        Chrome's own DOM and is not re-checked here, because none of the
+        adversarial shapes above occurs on any of them. Gross breakage is
+        still caught: if this function returned nothing, every one of the
+        89 checked numerals would flag and the test above would go red.
+        Subtle breakage on real markup would not be.
         """
         markup = (
             "<table><tr>"
             "<td title='drop anything > 0.9111'>0.4400</td>"
             "<th scope='row'>0.5500</th>"
             "<td><table><tr><td>0.6600</td></tr></table>0.7700</td>"
-            "</tr></table>"
-            "<p>a 0.8800 threshold in body copy</p>"
+            "<td>1.2200</td >"
             "<td><script>var x = 0.9900;</script>1.1100</td>"
+            "<td><style>i{opacity:0.7300}</style>1.5500</td>"
+            "</tr></table>"
+            "<table><tr><td>1.3300<td>1.4400</tr></table>"
+            "<td>1.6600</td>"
+            "</td>"
+            "<p>a 0.8800 threshold in body copy</p>"
         )
-        assert _printed_numbers(markup) == {0.44, 0.55, 0.66, 0.77, 1.11}
+        assert _printed_numbers(markup) == {
+            0.44, 0.55, 0.66, 0.77, 1.11, 1.22, 1.33, 1.44, 1.55,
+        }
 
     def test_the_sweep_is_not_vacuous(self, tools_app):
         """The rule above skips any numeral that is not a row value, so a
