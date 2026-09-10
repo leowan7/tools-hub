@@ -1316,8 +1316,13 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
         still holds the handle (WinError 32), and it turned the SSE stream into
         an error event instead of delivering results.
         """
+        import scout.routes as routes
+
         real_unlink = Path.unlink
-        derived = {"epitopes.csv", "epitopes_annotated.csv", "results_annotated.csv"}
+        # Read off the module, not restated here: a hard-coded set silently
+        # stops covering the next file added to the cleanup, and the WinError 32
+        # this guards against applies to every one of them.
+        derived = set(routes._DERIVED_RESULT_FILES)
 
         def _boom(self, missing_ok=False):
             if self.name in derived:
@@ -1364,6 +1369,13 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
 class TestFeasibilityCsvNamesItsChain:
     """/scout/feasibility/download takes no chain parameter, so the file itself
     is the only thing that can say which chain it describes.
+
+    That stamp is the weaker half of the fix: it makes a stale delivery legible
+    to whoever opens the CSV, it does not stop one. Deleting the file when
+    results.csv is rewritten is the other half, pinned by
+    ``TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch`` below. Both are
+    load-bearing — a chain-B request that stops at the results gate never
+    reaches run_pipeline, so no cleanup runs and the stamp is all that is left.
     """
 
     def test_the_column_list_carries_chain_id(self):
@@ -1410,6 +1422,169 @@ class TestFeasibilityCsvNamesItsChain:
             f"columns-only={set(pipeline.FEASIBILITY_CSV_COLUMNS) - keys}"
         )
         assert "chain_id" in keys, "the feasibility CSV stopped stamping its chain"
+
+
+class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
+    """The last file in the job dir that outlived the chain it describes.
+
+    ``feasibility_results.csv`` was written by its own pipeline and deleted by
+    nobody, and ``/scout/feasibility/download`` gates on ``exists()`` with no
+    chain parameter — the same shape as the ``/scout/analyze`` bug this file is
+    named for. Scoring chain A's feasibility, then analysing chain B, left the
+    download handing back chain A's row at HTTP 200.
+    """
+
+    @staticmethod
+    def _stub_feasibility(monkeypatch):
+        """Write a real, route-readable feasibility CSV stamped with its chain.
+
+        run_feasibility_pipeline cannot execute here (freesasa is absent from
+        this venv), and the route reads its numeric columns straight back out,
+        so the stub has to produce the whole declared column set rather than
+        the handful this test asserts on.
+        """
+        def _run(pdb_path, chain_id, epitope_residues, progress_callback=None):
+            from scout.pipeline import FEASIBILITY_CSV_COLUMNS
+
+            out = Path(pdb_path).parent / "feasibility_results.csv"
+            row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
+            row.update({
+                "epitope_id": "1",
+                "chain_id": chain_id,
+                # The residue numbers are the only honest evidence of which
+                # chain was scored; the route echoes `chain` back from the
+                # request either way. See CHAIN_RESIDUES.
+                "residues": ",".join(f"ALA{r}" for r in epitope_residues),
+                "residue_count": str(len(epitope_residues)),
+                "tier": "Moderate",
+            })
+            with out.open("w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
+                writer.writeheader()
+                writer.writerow(row)
+            return out
+
+        monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", _run)
+
+    def _score_feasibility(self, client, job_id, chain):
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={
+                "job_id": job_id,
+                "chain": chain,
+                "epitope_residues": CHAIN_RESIDUES[chain],
+            },
+        )
+        assert resp.status_code == 200, resp.data
+        # Read the fixture's own output off DISK, never through the download
+        # route: send_file keeps the handle open, and on Windows that makes the
+        # very unlink under test fail with WinError 32 — a test artefact, not
+        # the behaviour. Same reason as the top-3 test above.
+        csv_path = TMP / job_id / "feasibility_results.csv"
+        assert f"ALA{CHAIN_RESIDUES[chain][0]}" in csv_path.read_text(), (
+            f"the fixture never wrote chain {chain}'s feasibility row"
+        )
+        return csv_path
+
+    def test_analysing_another_chain_invalidates_the_feasibility_download(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The live bug: chain A's feasibility row served after chain B ran."""
+        self._stub_feasibility(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        self._score_feasibility(client, job_id, "A")
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "B"}
+        ).status_code == 200
+        assert stub_pipeline == ["A", "B"], (
+            f"pipeline ran for {stub_pipeline}; chain B never rescored, so the "
+            "cleanup this test is about never had a reason to run"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        body = resp.get_data(as_text=True) if resp.status_code == 200 else ""
+        for residue in CHAIN_RESIDUES["A"]:
+            assert f"ALA{residue}" not in body, (
+                f"the feasibility download served chain A's residue {residue} "
+                f"after chain B was analysed: {resp.status_code} {body[:200]}"
+            )
+        # And whatever it does serve must not claim to be chain A.
+        for row in csv.DictReader(body.splitlines()):
+            assert row.get("chain_id") != "A", (
+                f"chain A's feasibility row leaked into the download: {row}"
+            )
+
+    def test_rescoring_the_same_chain_drops_it_too(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """Deliberate, and the half that is a behaviour change — pin it.
+
+        /scout/progress calls run_pipeline UNCONDITIONALLY, so a re-run of the
+        chain the feasibility row already describes invalidates it as well.
+        That re-run rewrites results.csv and can renumber its epitopes, and the
+        feasibility row records only ``epitope_id: 1`` — it cannot say which
+        epitope of the NEW numbering it belongs to. Keeping it would rebuild
+        the same wrong-chain bug one level down, as a wrong-EPITOPE one.
+        """
+        self._stub_feasibility(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        csv_path = self._score_feasibility(client, job_id, "A")
+
+        resp = client.get(
+            "/scout/progress", query_string={"job_id": job_id, "chain": "A"}
+        )
+        assert "done" in resp.get_data(as_text=True), resp.data
+        assert stub_pipeline == ["A", "A"], (
+            f"progress ran for {stub_pipeline}; it must rescore unconditionally"
+        )
+        assert not csv_path.exists(), (
+            "a rescore of the same chain left a feasibility row that predates it"
+        )
+
+    def test_a_cache_hit_leaves_the_feasibility_result_alone(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The reassuring half: this is not "nuked on every click".
+
+        /scout/analyze reaches run_pipeline only on a cache MISS, so returning
+        to a chain already scored — the ordinary way a user gets back to the
+        results table — does not run the cleanup. Invalidating unconditionally
+        at the route instead would break the normal analyze -> feasibility ->
+        back -> download flow, which is a worse bug than the one being fixed.
+        """
+        self._stub_feasibility(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        csv_path = self._score_feasibility(client, job_id, "A")
+        before = csv_path.read_bytes()
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        assert stub_pipeline == ["A"], (
+            f"pipeline ran for {stub_pipeline}; the results cache stopped working, "
+            "so this test is no longer measuring a cache hit"
+        )
+        assert csv_path.read_bytes() == before, (
+            "a cached re-analyze of the same chain destroyed its feasibility result"
+        )
+
+
 class TestTheChainIsThreadedThroughEveryCallSite:
     """The functions were tested; the WIRING between them was not.
 

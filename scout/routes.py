@@ -685,9 +685,10 @@ def _results_csv_for_chain(job_dir: Path, chain_id: str) -> "Path | None":
     mismatch turns that into a cache miss, which costs a rescore and nothing
     else.
 
-    Route every chain-resolving reader through here. ``download()`` is the
-    deliberate exception — it takes no chain at all, and is kept honest from the
-    other end by ``_remove_derived_result_files``.
+    Route every chain-resolving reader through here. ``download()`` and
+    ``feasibility_download()`` are the deliberate exceptions — they take no
+    chain at all, and are kept honest from the other end by
+    ``_remove_derived_result_files``.
 
     A CSV with no ``chain_id`` column (written before this stamp existed) and
     one with no data rows are both misses: neither can name its chain.
@@ -697,24 +698,50 @@ def _results_csv_for_chain(job_dir: Path, chain_id: str) -> "Path | None":
     return job_dir / "results.csv"
 
 
-def _remove_derived_result_files(job_dir: Path) -> None:
-    """Invalidate the three DOWNLOADABLE files derived from ``results.csv``.
+# Read by the cleanup below AND by the test proving a failed unlink cannot take
+# a successful run down with it. One tuple, so a name can never be invalidated
+# without anything having proved it is safe to fail on.
+_DERIVED_RESULT_FILES = (
+    "epitopes.csv",
+    "epitopes_annotated.csv",
+    "results_annotated.csv",
+    "feasibility_results.csv",
+)
 
-    Once results.csv is rewritten for another chain these three describe a chain
-    that is no longer there, and ``/scout/download`` takes no chain parameter,
-    so it hands back whatever it finds. ``analyze_cache.json`` is excluded on
-    purpose: it stamps its own chain and ``_get_binder_overlaps`` checks it.
+
+def _remove_derived_result_files(job_dir: Path) -> None:
+    """Invalidate every DOWNLOADABLE file describing the chain being replaced.
+
+    Once results.csv is rewritten for another chain these describe a chain that
+    is no longer there, and neither ``/scout/download`` nor
+    ``/scout/feasibility/download`` takes a chain parameter, so each hands back
+    whatever it finds. ``analyze_cache.json`` is excluded on purpose: it stamps
+    its own chain and ``_get_binder_overlaps`` checks it.
+
+    ``feasibility_results.csv`` is not derived from results.csv the way the
+    other three are — its own pipeline writes it from an epitope's residues —
+    but it has the same lifetime and the same chainless route, so it is
+    invalidated here for the same reason.
 
     **Call this immediately after every ``run_pipeline``** — at the rewrite, not
     at the readers, because run_pipeline has TWO callers and ``/scout/progress``
     is the one that actually executes the pipeline and hands the browser a
     download_url.
 
+    Binding it to the rewrite also means /scout/progress, which runs the
+    pipeline UNCONDITIONALLY, drops the feasibility CSV when it rescores the
+    SAME chain. That is intended: the rescore can renumber results.csv's
+    epitopes, and the feasibility row records only ``epitope_id: 1``, so it
+    cannot say which epitope of the new numbering it describes — keeping it
+    would trade a wrong-chain answer for a wrong-epitope one. /scout/analyze
+    reaches run_pipeline only on a cache miss, so returning to an
+    already-scored chain leaves its feasibility result in place.
+
     Best-effort: a file that will not delete must not take a successful scoring
     run down with it. Windows raises WinError 32 whenever a preceding
-    /scout/download still holds the handle open.
+    /scout/download or /scout/feasibility/download still holds the handle open.
     """
-    for name in ("epitopes.csv", "epitopes_annotated.csv", "results_annotated.csv"):
+    for name in _DERIVED_RESULT_FILES:
         _unlink_quietly(job_dir / name)
 
 
