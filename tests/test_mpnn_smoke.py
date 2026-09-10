@@ -572,6 +572,13 @@ def test_export_fasta_serializes_mpnn_sequence_schema(
     mpnn_job = SimpleNamespace(
         id="mpnn-job-1",
         tool="mpnn",
+        # ``preset`` is a non-optional field of the real ToolJob and the value
+        # this tool's own form posts (a hidden input, asserted above). It was
+        # omitted here until the export route began resolving the run's mode
+        # from it, at which point a stand-in leaner than the dataclass it
+        # stands in for raised AttributeError on a path production cannot
+        # reach. mpnn declares no bar, so nothing is judged either way.
+        preset="standalone",
         status="succeeded",
         inputs={},
         result={

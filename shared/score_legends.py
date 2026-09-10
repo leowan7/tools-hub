@@ -1829,10 +1829,12 @@ def tool_has_bar(tool: str, preset: Optional[str] = None) -> bool:
     resolves the mode PER RUN, from that run's own result
     (:func:`resolve_mode`), so a cohort total is a sum of per-run counts each
     taken against its own run's bar. That is what ``passed_total`` already is
-    across TOOLS -- bindcraft's bar and boltzgen's bar summed into one number
-    on every target page -- so a mixed-mode esmfold2-design cohort is not a
-    new kind of mixing. What stays true is the sentence above it: a caller
-    that cannot name a run still gets False and still reads no bar.
+    across TOOLS: a target carrying a boltzgen campaign and a pxdesign one
+    already sums designs judged on pLDDT-and-refolding-RMSD with designs
+    judged on ipTM-and-pLDDT, into one number. A mixed-mode esmfold2-design
+    cohort is therefore not a new kind of mixing. What stays true is the
+    sentence above it: a caller that cannot name a run still gets False and
+    still reads no bar.
     """
     return bool(gate_columns(tool, preset))
 

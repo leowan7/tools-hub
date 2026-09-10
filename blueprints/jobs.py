@@ -123,9 +123,13 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     tests/test_esmfold2_reject_surfaces.py.
 
     ``candidate_records`` rather than ``result["candidates"]``: the
-    designs-only shape and the legacy ``result["output"]`` wrapper were
-    invisible to the old read, so those jobs silently produced no clause at
-    all.
+    designs-only pipelines (boltz2, af2, colabfold, esmfold, iggm, opendde and
+    esmfold2-design's legacy rows) persist under ``designs``, and the old read
+    saw nothing there, so every one of those jobs silently produced no clause.
+    The legacy ``result["output"]`` wrapper is NOT part of that --
+    ``ToolJob.from_row`` normalises it away (shared/jobs.py:368) before a job
+    ever reaches this function, so both reads are flat by the time they get
+    here.
     """
     if getattr(job, "status", None) != "succeeded":
         return None
@@ -447,9 +451,11 @@ def job_status(job_id: str):
         # ``resolve_mode`` has nothing to read; and the streamed partials
         # carry no pI at all, so the minibinder bar could not be answered even
         # with the mode in hand (``bar_is_answerable`` takes no preset for the
-        # same reason). "N delivered so far", which is what the template says,
-        # stays the honest live answer -- unlike the finished surfaces, it
-        # never presents a delivered count AS a count of keepers.
+        # same reason). The template branches on ``has_bar`` and renders
+        # "... returned so far" rather than "... meeting the quality bar so
+        # far" (templates/job_detail.html), so the live line stays honest:
+        # unlike the finished surfaces this class is about, it never presents
+        # a delivered count AS a count of keepers.
         passed = len(rows)
     elif score_legends.bar_is_answerable(job.tool, rows):
         passed = sum(

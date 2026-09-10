@@ -302,11 +302,14 @@ def count_candidates_meeting_bar(
 
     So a total over several runs is a sum of per-run counts, each taken
     against its own run's bar. That is what this number already was across
-    TOOLS -- a target's ``passed_total`` sums bindcraft's bar and boltzgen's
-    bar into one figure -- and mixing two MODES of one tool is the same
-    operation, not a new one. What it is NOT is a single bar resolved for a
-    whole cohort, which is the thing ``tool_has_bar``'s docstring refused and
-    still refuses.
+    TOOLS: a target's ``passed_total`` already adds designs judged on
+    boltzgen's bar to designs judged on pxdesign's. Those two share an
+    identical pLDDT leg and otherwise gate on different columns -- a
+    refolding RMSD against an ipTM -- so the sum is already over unlike
+    conjunctions.
+    Mixing two MODES of one tool is the same operation, not a new one. What it
+    is NOT is a single bar resolved for a whole cohort, which is the thing
+    ``tool_has_bar``'s docstring refused and still refuses.
 
     THIS RE-LABELS DELIVERED WORK on esmfold2-design. Before, the tool
     declared no bar and every delivered record counted; a minibinder run now

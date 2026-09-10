@@ -933,9 +933,11 @@ def _target_export(target_id: str, fmt: str):
         )
     if fmt == "fasta":
         # NO SCALAR tool/preset, deliberately: these rows are merged across
-        # every run on the target, so one pair would be wrong for most of
-        # them. Each row carries its own ``_source_tool`` / ``_source_preset``
-        # (the latter holding the run's MODE for a moded tool) and
+        # every run on the target, so any single pair would be wrong for every
+        # row that came from a different tool or mode -- and a target with two
+        # tools on it is the ordinary case this page exists for. Each row
+        # carries its own ``_source_tool`` / ``_source_preset`` (the latter
+        # holding the run's MODE for a moded tool) and
         # ``shared.exports._bar_scope`` reads them per record.
         body = candidates_to_fasta(candidates)
         if not body:
