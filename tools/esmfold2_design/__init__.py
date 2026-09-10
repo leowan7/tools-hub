@@ -200,10 +200,15 @@ def validate(
             "batch_size": batch_size,
             "target": " + ".join(label_bits),
             # n_seeds * batch_size = total designs returned. n_seeds fans
-            # out to parallel Modal children (same wall-clock as one
-            # seed), batch_size runs N designs inside one gradient pass.
-            # The wallet estimator treats each design as one billable
-            # unit so cost scales linearly with both axes.
+            # out to parallel Modal children (roughly one seed's wall
+            # clock); batch_size runs N designs inside one child, so it
+            # adds no container and roughly multiplies that child's wall
+            # clock. Cost therefore scales with n_seeds ONLY -- the spec's
+            # scaling_param is "n_seeds" (shared/wallet_estimates.py), not
+            # n_designs_total. This comment used to say cost "scales
+            # linearly with both axes", which is wrong in both halves:
+            # batch_size moves time, not cost. n_designs_total is stamped
+            # for the job record; it does not move the hold.
             "parameters": {"n_designs_total": n_seeds * batch_size},
         },
         None,
