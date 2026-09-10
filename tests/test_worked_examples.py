@@ -423,7 +423,10 @@ class TestEveryPartialIsExampleSafe:
         # page. #251 guarded the partial, left the panel, and added
         # nothing here, so the half it fixed could come back in silence
         # and the half it missed shipped. Registering the phrase rather
-        # than either sentence catches both, and any third.
+        # than either sentence catches both, and any third that uses the
+        # same words -- matching is an exact substring (line 438), so a
+        # REWORDED promise passes. Verified: "Each structure is yours to
+        # download, or open in the 3D viewer" is not caught.
         "Download each structure",
         # RETIRED WORDINGS. af2 and colabfold said these directly above
         # example pages that render no download at all: af2's controls are
@@ -2621,8 +2624,12 @@ class TestNarrationQuotesTheTable:
         test_only_data_cells_count_as_printed, which sits directly above
         and renders a hardcoded markup literal -- that one is structurally
         incapable of reacting to any template change. What this adds is the
-        MESSAGE: it names the slug and points at the template, where the
-        others report a narration mismatch and leave you hunting.
+        MESSAGE: it names the SLUG. The other two fail on the parser's
+        markup refusal, which already points at the template and says to
+        close the </td> and </tr> -- they simply do not say which template.
+        An earlier version of this sentence said they "report a narration
+        mismatch and leave you hunting", which this docstring itself
+        contradicts three paragraphs above.
         """
         flask_app, slugs = tools_app
         for slug, payload in _example_payloads(slugs).items():
