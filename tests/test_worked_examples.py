@@ -978,22 +978,26 @@ class TestExampleNumbersComeFromThePayload:
         assert 0.086 <= min(ci) and max(ci) <= 0.098
         # The prose may not quote this range: the column renders two
         # decimals, so 0.086 is on no row of the table the sentence sits
-        # above. It may not quote the PRINTED values either -- six of
-        # these rows print exactly 0.10, which contradicts the "under
-        # 0.10" clause four lines further down the same paragraph, and
-        # the "thirteen rows" count only reproduces against the RAW
-        # column (printed, it is 7 or 14). This paragraph is payload-
-        # scoped end to end; the bound is the one figure that is true
-        # both ways and printed on the page.
+        # above. Nor may it say "under 0.10" unqualified -- true of the
+        # payload, max 0.0977, and false of the PAGE, where five of these
+        # twelve cells print exactly 0.10.
+        #
+        # Two rounds shipped a version of this line: one quoting the raw
+        # bound, one quoting the printed values, each repairing the
+        # other's fault and reintroducing its own. What settles it is
+        # quoting the cells here AND marking the selection rule four
+        # lines below as raw, so the two clauses stop competing.
         assert max(ci) < 0.10
-        assert "all twelve under 0.10" in reading
+        assert sorted({f"{v:.2f}" for v in ci}) == ["0.09", "0.10"]
+        assert "the twelve print 0.09 or 0.10" in reading
+        assert "under 0.10 before rounding" in reading
 
         # ... against the rest of the shard.
         rest = [c for c in cands if c not in copies]
         assert round(statistics.median(col("binder_scrmsd", rest)), 1) == 2.0
         assert "median of 2.0 &Aring;" in reading
         assert round(statistics.median(col("af2_iptm", rest)), 2) == 0.67
-        assert "0.67 median" in reading
+        assert "0.67 median for the rest" in reading
 
         # "total_reward sends all twelve to ranks 51 to 64"
         assert min(c["rank"] for c in copies) >= 51
@@ -2134,10 +2138,19 @@ def _row_floats(obj, in_row=False):
     uses. A float elsewhere in a payload -- a per-residue array, a run-level
     total -- is not a cell, so quoting it is not the claim being pinned.
 
-    NOTE this sweeps every field of a row, including ones the tool does not
-    render. That is deliberate -- the rendered set is per-tool and opendde
-    declares none at all, which would zero its coverage -- but it is why an
-    allowlist entry can exist for a value no cell prints.
+    NOTE this sweeps every field of a row, including ones the tool does
+    not render, and the reason first given for that was simply false. It
+    said opendde declares no columns and would lose all its coverage.
+    opendde's partial declares four, and restricting the sweep to them
+    leaves its count at 21 either way -- measured, not assumed.
+
+    The real reason to sweep everything is that "rendered" has no single
+    source: opendde has no shared/result_columns.py entry, so its column
+    list exists only inside the template. The real cost is that an
+    unrendered field can collide with a legitimate non-row numeral, which
+    is the entire reason _NOT_QUOTING_A_ROW exists. Narrowing the sweep to
+    the rendered columns would retire that allowlist. It is a fair trade
+    and it is deliberately not taken here.
     """
     if isinstance(obj, dict):
         for key, val in obj.items():
@@ -2152,17 +2165,28 @@ def _row_floats(obj, in_row=False):
 def _quotable_row_values(payload) -> set[str]:
     """Numeral strings that would read as "the value in the row above".
 
-    Two to four decimals always. One decimal ONLY at 10 and above, which is
-    the pLDDT-style scale: one decimal on a sub-unit score would sweep in
-    every threshold in the prose, and "aim above 0.7" is not a claim about a
-    cell. That single restriction is what keeps this off the thirty-odd
-    thresholds, published comparators and cross-row statistics the
-    narrations legitimately carry.
+    Two to four decimals always. One decimal ONLY at 10 and above, on the
+    scaled path as well as the raw one: one decimal on a sub-unit score
+    would sweep in every threshold in the prose, and "aim above 0.7" is not
+    a claim about a cell. That single restriction is what keeps this off
+    the thirty-odd thresholds, published comparators and cross-row
+    statistics the narrations legitimately carry.
 
     Sub-unit values are ALSO offered on the 0-100 scale through the shared
-    ``plddt_on_100``. proteina and boltz2 store pLDDT 0-1 and render it
-    x100, so without this the most-quoted column on those pages is
-    unguarded: six figures that ARE printed cells sat out of scope.
+    ``plddt_on_100``, because several tools store a 0-1 score and render it
+    x100 -- proteina and boltz2 for pLDDT, bindcraft too, and the branch
+    applies to every sub-unit row float on every tool, not to a named list.
+    Without it the most-quoted column on those pages is unguarded: six
+    figures that ARE printed cells sat out of scope.
+
+    The >= 10 gate on the scaled path is load-bearing and was missing.
+    proteina's af2_iptm runs 0.086 to 0.098, scaling to 8.6-9.8, so an
+    ordinary "9.0 A" cutoff in that tool's prose was pulled into scope and
+    flagged as an unprinted row value -- a false alarm on a numeral that
+    was never a cell. ``plddt_on_100`` is also not idempotent below 0.01:
+    a row value of 0.005 scales to 0.5, back inside the 0-1 window. No
+    shipped payload holds one today; the gate keeps that from mattering if
+    one ever does.
     """
     out: set[str] = set()
     for val in _row_floats(payload):
@@ -2171,12 +2195,23 @@ def _quotable_row_values(payload) -> set[str]:
             out.add(f"{val:.1f}")
         if 0 < val <= 1:
             scaled = plddt_on_100(val)
-            out.update(f"{scaled:.{places}f}" for places in (1, 2))
+            out.add(f"{scaled:.2f}")
+            if scaled >= 10:
+                out.add(f"{scaled:.1f}")
     return out
 
 
+_TABLE_CELL = re.compile(r"<td\b[^>]*>(.*?)</td>", re.S | re.I)
+
+
 def _printed_numbers(markup: str) -> set[float]:
-    """Every number the rendered partial actually prints, as floats.
+    """Every number the partial prints IN A DATA CELL, as floats.
+
+    Data cells only, and that is the second thing this got wrong. Reading
+    the whole partial let the page's own explanatory copy stand in for a
+    cell: esmfold2-design's partial carries a literal ``iptm &ge; 0.75``
+    and a glossary range, so prose quoting 0.75 passed while no row
+    printed it. A class named for the table has to mean the table.
 
     Floats, not strings, on purpose. A substring test cannot tell "0.88
     quoted against a cell reading 0.880" -- the same number, trailing zero
@@ -2188,8 +2223,11 @@ def _printed_numbers(markup: str) -> set[float]:
     without_code = re.sub(
         r"<(script|style)[^>]*>.*?</\1>", " ", markup, flags=re.S | re.I,
     )
-    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", without_code))
-    return {float(tok) for tok in _SCORE_NUMERAL.findall(text)}
+    out: set[float] = set()
+    for cell in _TABLE_CELL.findall(without_code):
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", cell))
+        out.update(float(tok) for tok in _SCORE_NUMERAL.findall(text))
+    return out
 
 
 def _quoted_row_values(flask_app, slugs):
@@ -2218,18 +2256,22 @@ def _quoted_row_values(flask_app, slugs):
 
 
 class TestNarrationQuotesTheTable:
-    """A row value quoted in the prose must be a number the table prints.
+    """A row value quoted in the prose must be a number a data cell prints.
 
-    READ THE SCOPE BEFORE TRUSTING THIS. An adversarial pass established
+    READ THE SCOPE BEFORE TRUSTING THIS. Two adversarial passes established
     what it does and does not do by mutation, and the gap is wide enough
-    that a reviewer who reads only the class name will over-trust it.
+    that a reviewer who reads only the class name will over-trust it. The
+    second pass found five sentences of this docstring wrong; they are
+    corrected below rather than quietly dropped, because the wrong version
+    is the reason nobody looked again.
 
     WHAT IT ENFORCES. A decimal numeral in ``what_came_back`` or
     ``how_to_read_it`` that is a rounding of a float held by a candidate
-    row must equal a number the rendered results partial prints. That is
-    the precision-drift defect: prose quoting 0.086 above a cell reading
-    0.09, or 0.76 above cells reading 0.758 and 0.756. Both of those
-    shipped, both were caught by hand, and this is what stops the third.
+    row must equal a number printed in a ``<td>`` of the rendered results
+    partial. That is the precision-drift defect: prose quoting 0.086 above
+    a cell reading 0.09, or 0.76 above cells reading 0.758 and 0.756. Both
+    of those shipped, both were caught by hand, and this is what stops the
+    third.
 
     WHAT IT DOES NOT ENFORCE -- each demonstrated by mutation, not assumed:
 
@@ -2238,20 +2280,42 @@ class TestNarrationQuotesTheTable:
       pair with an invented 0.911 / 0.872 leaves the suite green. Four
       tools -- opendde, rfantibody, rfdiffusion, iggm -- have no other
       numeric pin anywhere in this file, so for them nothing guards
-      against a figure that was never measured.
+      against a figure that was never measured. That is not theoretical:
+      pxdesign's shipped narration quotes five Angstrom figures whose only
+      source in the entire repository is the sentence containing them.
+    * A MIS-ROUNDED figure passes too, in one direction. Round-DOWN drift
+      is caught -- 0.47 against a cell reading 0.471 fails. Round-UP past
+      halfway is not: 0.88 against a cell reading 0.874 is a rounding of
+      nothing, so it is skipped exactly like a fabrication. Whether any
+      given mis-rounding is caught is payload luck.
     * The ROW and the COLUMN are not checked. The comparison is against
-      every number on the page, so pTM values sold as ipTM pass, and so
-      does handing the losing pair the winning pair's figures.
+      every data cell on the page, so pTM values sold as ipTM pass, and so
+      does handing the losing pair the winning pair's figures. Measured
+      cost: 689 of 1773 quotable numerals, 38.9%, are printed somewhere in
+      the table and so cannot fail whatever they are attached to. It runs
+      92.2% for rfantibody and 87.2% for pxdesign, whose pins therefore
+      count toward the vacuity floor while being nearly unable to fire.
     * Integers are out of scope entirely: "223 residues", "thirteen rows",
       "ranks 51 to 64" are unguarded.
-    * Three of the fourteen tools are exempt because they render no
-      candidate table at all -- colabfold and esmfold are single-structure,
-      and iggm's narration carries no decimal numeral.
+    * Three of the fourteen tools contribute nothing, for two different
+      reasons. colabfold and esmfold are single-structure and render no
+      candidate table. iggm DOES render one -- an earlier version of this
+      list said it did not -- but every value in its rows is an int, so
+      ``_row_floats`` yields nothing for it.
+    * Both floors in the vacuity test count numerals in scope, not pins
+      that can fail, so padding prose with values copied out of the same
+      tool's own table satisfies them for free.
 
     The rule is narrow on purpose. A blanket "every prose numeral must
-    appear in the table" flags 32 figures across the fourteen tools, and
+    appear in the table" flags 38 figures across the fourteen tools, and
     nearly all are legitimate: thresholds, published comparators, and
     statistics taken across rows.
+
+    That count has moved three times and the movement is the lesson: 32
+    under a substring test over the whole partial, 33 once the comparison
+    became numeric, 38 once it was narrowed to data cells. Each was right
+    when written and stale one commit later, and each sat here being read
+    as current. Re-measure it before you cite it.
     """
 
     def test_every_quoted_row_value_is_printed(self, tools_app):
@@ -2278,17 +2342,30 @@ class TestNarrationQuotesTheTable:
         regex or key-name slip makes it pass over an empty set in silence.
 
         Both floors matter. The total alone is not enough: opendde supplies
-        20 of the 87, and bindcraft plus rfdiffusion are another 22, so one
+        21 of the 89, and bindcraft plus rfdiffusion are another 22, so one
         tool losing all of its coverage can hide under a total-only bound.
+
+        KNOWN SLACK, measured rather than guessed. The total floor sits 9
+        below the current count, so nine real pins can be deleted in
+        silence; the per-tool floor sits at exactly the current 11, so it
+        has none at all. mpnn and pxdesign contribute two numerals each,
+        which means an ordinary copy edit on either trips this. That is
+        intended -- it is a prompt to re-read, not an accusation -- and the
+        messages say so, because a guard that reads like a bug report when
+        it is not is a guard someone quietly lowers.
         """
         flask_app, slugs = tools_app
         checked, _flagged = _quoted_row_values(flask_app, slugs)
         assert len(checked) >= 80, (
             f"only {len(checked)} narration numerals resolve to a row "
-            "value; the sweep above is close to testing nothing"
+            "value; the sweep above is close to testing nothing. If this is "
+            "a deliberate copy edit, lower the floor in the same commit and "
+            "say which pins went"
         )
         covered = {slug for slug, _field, _numeral in checked}
         assert len(covered) >= 11, (
             f"only {len(covered)} tools contribute a checked numeral "
-            f"({sorted(covered)}); one of them has gone silent"
+            f"({sorted(covered)}); a tool that used to quote its own table "
+            "has stopped. Fine if you meant it -- lower the floor and name "
+            "the tool -- but check it was not an accident first"
         )

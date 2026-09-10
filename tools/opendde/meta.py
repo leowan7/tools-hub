@@ -133,8 +133,10 @@ PILOT: dict | None = None
 # partial. Captured from job 4a3e3203 on 2026-09-09; example/result.json
 # is that job's payload as scripts/capture_example_result.py wrote it:
 # the script scrubs its SENSITIVE_KEYS list, provider_job_id among
-# them, and trims structure blobs. Every field the table reads is
-# untouched.
+# them, and trims inline structure blobs. Neither touched these rows:
+# opendde emits no SENSITIVE_KEYS member per design and no inline blob
+# (the rows carry a pdb_key reference), so the scrub had nothing to take.
+# Checked against the shipped payload, not asserted.
 # ---------------------------------------------------------------------------
 # ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
 # shared/result_columns.py and none in shared/score_legends.py either, so
@@ -146,9 +148,13 @@ PILOT: dict | None = None
 #
 # THIS IS THE SECOND CAPTURE, AND THE FIRST ONE TAUGHT A FALSE LESSON.
 # The first run used a 220-residue sequence that was NOT 3PTB chain A: three
-# residues were missing at PDB positions 184A, 187 and 221A, two of them
-# insertion-coded, which is what a sequence extracted while ignoring
-# insertion codes looks like. On that corrupted input pTM barely moved,
+# residues were missing at PDB positions 184A, 188A and 221A -- every
+# insertion-coded position in the chain and nothing else -- which is what
+# a sequence extracted while ignoring insertion codes looks like. Verified
+# against the deposited file: chain A is 223 residues in both SEQRES and
+# ATOM, those three are its only insertion codes, and collapsing them
+# leaves exactly 220. An earlier version of this comment named 187 as the
+# third and called two of the three insertion-coded; both were wrong. On that corrupted input pTM barely moved,
 # pLDDT sat flat near 50 and ANTI-correlated with the ranking, and seed 1 was
 # the best of four. Every one of those reverses on the real chain: pTM ranges
 # 0.433-0.625, pLDDT ranges 42.8-52.9 and tracks the ranking, and seed 1 is
@@ -160,9 +166,13 @@ PILOT: dict | None = None
 # distinct md5s); the SCORES were shared, because _read_score_json in
 # tools/opendde/run_pipeline.py falls back to the first *.json beside the
 # structure when no filename matches the sample stem, and OpenDDE writes one
-# score file per seed directory. One sample per seed sidesteps it. The
-# fallback is still live for any multi-sample run and is filed separately --
-# do not raise "Samples / seed" in this example until it is fixed.
+# score file per seed directory. One sample per seed sidesteps it.
+# FIXED SINCE THIS RUN: #245 (main 30f6116) replaced that glob with an
+# exact per-sample lookup that records no score rather than borrowing a
+# neighbour's. This example still runs one sample per seed because that is
+# what was captured, not because the bug is live -- and the figures below
+# are unaffected either way, since a one-sample-per-seed run never took
+# the fallback.
 EXAMPLE: dict | None = {
     "target": (
         "Bovine trypsin with benzamidine bound &mdash; chain A of "
@@ -186,12 +196,13 @@ EXAMPLE: dict | None = {
             "the 223-residue trypsin chain",
             "One record. Worth a moment if you are preparing this yourself: "
             "3PTB is numbered in the chymotrypsin convention, so the chain "
-            "carries insertion-coded positions like 184A and 221A. A script "
-            "that reads residue numbers and ignores the insertion letter "
-            "silently drops those positions. Our first attempt at this "
-            "example came back three residues short &mdash; two of them "
-            "insertion-coded &mdash; and handed the model a different "
-            "protein.",
+            "carries three insertion-coded positions &mdash; 184A, 188A and "
+            "221A. A script that reads residue numbers and ignores the "
+            "insertion letter silently drops all three. Our first attempt at "
+            "this example came back 220 residues instead of 223 for exactly "
+            "that reason, and handed the model a different protein. Count "
+            "what you extract against the deposited length before you "
+            "submit it.",
         ),
         (
             "Ligands (one per line)",
@@ -233,14 +244,17 @@ EXAMPLE: dict | None = {
         "to 0.689, pTM 0.433 to 0.625, and pLDDT 42.8 to 52.9."
     ),
     "how_to_read_it": (
-        "<strong>The useful thing here is that all four columns agree.</strong> "
+        "<strong>The useful thing here is where all four columns agree.</strong> "
         "Ranking, ipTM, pTM and pLDDT each draw the same line between the "
         "same two pairs: the top two are 0.689 and 0.670 on ipTM with pLDDT "
         "51.4 and 52.9, the bottom two are 0.493 and 0.471 with pLDDT 42.8 "
         "and 44.4. Nothing crosses over. The columns measure different "
         "things &mdash; ipTM the interface, pTM the whole complex, pLDDT "
-        "the per-atom detail &mdash; and here they rank the four the same "
-        "way. Read that as a ranking among these four and nothing more: "
+        "the per-residue confidence &mdash; and all four put the same two "
+        "predictions on top. Only the split is that robust: within each pair "
+        "pTM and pLDDT both invert the ranking's order, lifting the second "
+        "row over the first and the fourth over the third. "
+        "Read the split as a ranking among these four and nothing more: "
         "every one of them sits in the 40s or low 50s on pLDDT, so the "
         "split says which prediction to look at first, not that any of "
         "them is a good structure. "
@@ -251,8 +265,9 @@ EXAMPLE: dict | None = {
         "naming their seeds; the run's own file is where that pairing "
         "lives.) Run "
         "this target once, with the defaults, and you would have concluded it "
-        "does not co-fold with its ligand &mdash; when half the seeds say "
-        "0.67 and put the model's confidence in the same place. One "
+        "does not co-fold with its ligand &mdash; when half the seeds land "
+        "at 0.67 and 0.66 and put the model's confidence in the same "
+        "place. One "
         "prediction on this tool is not a small version of four. It is a "
         "coin flip you cannot see the result of."
     ),
@@ -262,8 +277,10 @@ EXAMPLE: dict | None = {
         "show: whether the top two put the benzamidine in the same pocket. "
         "Two predictions can agree on every score and still dock a ligand "
         "in different places, so that question needs the structures "
-        "themselves, which every row carries on a run of your own, where the "
-        "viewer puts both poses on screen at once. "
+        "themselves, which every row carries on a run of your own. The "
+        "viewer opens per row and two rows can be open at once, but each "
+        "shows a single structure and nothing superposes them &mdash; the "
+        "comparison is yours to make by eye. "
         "Agreement on the pocket means more seeds will sharpen the pose; "
         "disagreement means the scores were telling you about the fold and "
         "not about the binding site."
