@@ -408,34 +408,54 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         slug="esmfold2-design",
         gpu_class="H100",
         # ESMFold2 binder design fans out on n_seeds: EACH seed is a separate
-        # H100 container (modal_app run_tool .spawn per seed), while batch_size
-        # (1-6) runs its designs inside ONE gradient pass at the SAME wall-clock.
-        # So COST scales with n_seeds, NOT n_designs_total (= n_seeds * batch_size);
-        # scaling on n_designs_total would UNDER-hold up to 6x when batch_size<6.
-        # Bootstrap 2400 s/seed so the 1.5x cushioned hold equals the container's
-        # physical max (3600 s H100 * rate * 1.70 markup ~= $14.79/seed): the hold
-        # never under-covers a worst-case seed and settle refunds the surplus.
-        # base_hard_cap ($15) sits just above that per-seed max; absolute_cap
-        # ($1000) covers the N_SEEDS_MAX=64 submit (~$946). Historical p90 refines
-        # the displayed estimate down after >=20 runs. WAS UNREGISTERED -> the
-        # atomic tier fell to the $0.10 / $10 no-spec default and under-held ~64x
-        # on a max multi-seed run.
+        # H100 container (modal_app run_tool .spawn per seed), and one container
+        # is one session-capped bill. batch_size (1-6) packs its designs into
+        # that SAME container, so it adds no container to pay for. THAT is why
+        # COST scales with n_seeds and not with n_designs_total (= n_seeds *
+        # batch_size): against designs_per_run_baseline=1, scaling on
+        # n_designs_total multiplies the hold by batch_size for containers that
+        # do not exist — a measured 6x OVER-hold at batch_size=6 ($90 vs $15).
         #
-        # worst_case_gpu_seconds=3600 (=_MAX_SESSION_S in
-        # tools/esmfold2_design/modal_app.py) FLOORS the cushioned hold at the
-        # per-seed physical max ($14.79) once p90 pulls the estimate below the 2400 s
-        # bootstrap. Unlike proteina/af2 this is a FAN-OUT tool (one H100 container
-        # per seed, run_tool .spawn per seed), and the single job-level hold covers
-        # ALL n_seeds containers, so worst_case_scales_with_param=True makes the
-        # floor scale by n_seeds — a flat per-seed floor would cover only ONE seed
-        # and a p90-shrunk multi-seed job would still under-hold. Scaled floor at
-        # n_seeds seeds = n_seeds * $14.79, clamped to the n_seeds-scaled hard cap.
+        # This block used to justify that from a FALSE premise — that batch_size
+        # 1-6 "runs its designs inside ONE gradient pass at the SAME wall-clock",
+        # and that scaling on n_designs_total would UNDER-hold. Wall clock is
+        # roughly linear in batch size (3185 s and 3233 s at batch_size=6 against
+        # a ~450 s batch_size=1 figure; docs/VALIDATION-LOG.md), and the
+        # baseline above makes the second backwards. The container COUNT, which
+        # is what this spec prices, was never the thing in question. Where the
+        # false premise did damage was the container CEILING sized from it: see
+        # tools/esmfold2_design/modal_app.py:_MAX_SESSION_S, now 5400 s.
+        #
+        # Bootstrap 2400 s/seed = $9.86 displayed; x1.5 cushion = $14.79, which
+        # the worst-case floor below then raises to the $15.00 cap. base_hard_cap
+        # ($15) is the per-seed ceiling settle clamps the CHARGE at, reached at
+        # ~3650 s of a 5400 s session — so past that point a seed bills flat and
+        # Ranomics absorbs the rest. absolute_cap ($1000) still exceeds the
+        # N_SEEDS_MAX=64 job ceiling (64 x $15 = $960). Historical p90 refines
+        # the displayed estimate down after >=20 runs. WAS UNREGISTERED -> the
+        # atomic tier fell to the $0.10 / $10 no-spec default and under-held on
+        # a max multi-seed run.
+        #
+        # worst_case_gpu_seconds TRACKS _MAX_SESSION_S and must be edited with
+        # it; tests/test_worst_case_hold_floor.py pins the pair, because a stale
+        # value here prices a ceiling the container no longer has. It floors the
+        # cushioned hold once p90 pulls the estimate below the bootstrap. Unlike
+        # proteina/af2 this is a FAN-OUT tool, and the single job-level hold
+        # covers ALL n_seeds containers, so worst_case_scales_with_param=True
+        # scales the floor by n_seeds — a flat per-seed floor would cover only
+        # ONE seed and a p90-shrunk multi-seed job would still under-hold.
+        #
+        # Moving it 3600 -> 5400 DID move money, which an earlier draft of this
+        # comment denied: the 1-seed hold and the per-seed max charge both go
+        # $14.79 -> $15.00. $15.00 is also shared/wallet.SIGNUP_CREDIT_USD
+        # exactly, so a new user who has spent any of the free credit is now
+        # refused this tool. See the cost note on _MAX_SESSION_S.
         expected_gpu_seconds=2400.0,
         designs_per_run_baseline=1,
         scaling_param="n_seeds",
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("1000.00"),
-        worst_case_gpu_seconds=3600.0,
+        worst_case_gpu_seconds=5400.0,
         worst_case_scales_with_param=True,
     ),
     "opendde": ToolSpec(

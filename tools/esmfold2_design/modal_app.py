@@ -13,8 +13,14 @@ invokes the gradient-descent loop from the upstream
 wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
-GPU: H100. The 150-step gradient run takes ~10-15 min per design on a
-warm container; weights pull is ~30 GB on a cold Volume. VRAM is ~27 GB
+GPU: H100. Two runs on a warm Volume put the 150-step gradient run at
+3185 s and 3233 s at batch_size=6 (docs/VALIDATION-LOG.md, with job ids).
+The batch_size=1 figure those are compared against, ~450 s, is asserted in
+that file's prose but has NO run row behind it, so "scales roughly linearly
+with batch size" is the shape of one measured point against one unsourced
+one — enough to retire the old "~10-15 min per design", not enough to
+predict a size nobody has run. Weights pull is ~30-40 GB on a cold Volume,
+which the repo records at 15-30 min; see _MAX_SESSION_S. VRAM is ~27 GB
 AT batch_size=1 because ``run_pipeline.py`` sets upstream's
 ``REUSE_ESMC = True`` before ``ESMFold2Design.load()``; upstream's own
 default of False costs ~51 GB at that same size. (This block used to
@@ -75,12 +81,56 @@ _GPU = "H100"
 # up until someone re-creates that repo under the old owner. The old name is
 # barred by tests/test_citations_name_the_right_model.py, so it is not here.
 _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
-# 60 min ceiling per H100 worker — covers the worst-case scfv preset
-# with batch_size=6 plus weight-load tail latency on a cold container.
-_MAX_SESSION_S = 60 * 60
-# Orchestrator waits for the slowest child; 75 min gives a 15 min margin
-# over the worker timeout to absorb spawn overhead + aggregation.
-_ORCHESTRATOR_TIMEOUT_S = 75 * 60
+# 90 min ceiling per H100 worker. The 60 min it replaces claimed to cover "the
+# worst-case scfv preset with batch_size=6 plus weight-load tail latency on a
+# cold container". scfv / cd45 / trastuzumab_framework_vhvl at batch_size=6,
+# n_seeds=1 then ran 3185 s and 3233 s (docs/VALIDATION-LOG.md) — 10-12% under
+# that ceiling on a WARM Volume, with steps degrading ~19.5 s -> ~22.9 s inside
+# one run. Both runs were warm, so they do not by themselves disprove the
+# cold-container half of the old claim; what disproves it is the warm figure
+# PLUS this repo's own 15-30 min for the cold weights pull
+# (scripts/prewarm_esmfold2_design.py). 3233 + 900 already overruns 3600. A
+# worker timeout returns NOTHING after a full hour of H100 — the same
+# charged-for-nothing class as the OOM #242 fixed.
+#
+# 5400 s leaves the measured warm worst case 40% headroom and covers a cold
+# pull at the 15 min end. It does NOT comfortably cover the 30 min end
+# (3233 + 1800 = 5033 s, ~7% left), and that combination is UNMEASURED: making
+# the shared prod Volume ranomics-esmfold2-models cold would degrade live runs.
+# Keep the cold path off the user path instead — run
+# scripts/prewarm_esmfold2_design.py after anything that resets that Volume.
+#
+# WHAT THIS COSTS, stated plainly, because the first draft of this comment got
+# it wrong by claiming it was free:
+#   * The per-seed CHARGE ceiling rises $14.79 -> $15.00. settle clamps at the
+#     scaled base_hard_cap_usd ($15/seed, shared/wallet_estimates.py), and a
+#     seed only reaches that clamp at ~3650 s — which no measured run has hit
+#     (3185, 3233), but which is now reachable where it previously was not.
+#   * A run between 3600 s and 5400 s used to hit the worker timeout and be
+#     FULLY REFUNDED (no_progress_timeout is in shared/jobs._REFUNDED_FAILURE
+#     _CLASSES). It now completes and bills. That is the point of the change —
+#     the user gets designs instead of nothing — but it is a charge where
+#     there was none.
+#   * The 1-seed HOLD rises $14.79 -> $15.00, which is EXACTLY
+#     shared/wallet.SIGNUP_CREDIT_USD. Headroom against the free credit goes
+#     to zero: a new user who has spent any part of it is refused this tool
+#     and asked to top up. shared/wallet.py:100 already named esmfold2-design
+#     "the one to watch, H100-priced with the least headroom"; this spends the
+#     last of it. Raising SIGNUP_CREDIT_USD is the fix and is a pricing call,
+#     deliberately NOT made here.
+#   * Unbilled H100 on a failed child rises 3600 s -> 5400 s ($8.70 -> $13.05
+#     raw), and a full-session seed now recovers cost at an effective 1.15x
+#     rather than the intended 1.70x markup. Revenue crosses below raw Modal
+#     cost at 6206 s, so 5400 stays the right side of that line.
+#
+# Two values move WITH this one: ToolSpec.worst_case_gpu_seconds (else the
+# wallet hold prices a ceiling this container no longer has) and
+# _ORCHESTRATOR_TIMEOUT_S below, which derives from it rather than restating
+# it. Both couplings are pinned in tests/test_worst_case_hold_floor.py.
+_MAX_SESSION_S = 5400
+# Orchestrator waits for the slowest child; 15 min over the worker timeout
+# absorbs spawn overhead + aggregation.
+_ORCHESTRATOR_TIMEOUT_S = _MAX_SESSION_S + 15 * 60
 _PYTHON = "python3"
 
 # Raw run artifacts get their OWN Volume, never the weights Volume: a weights
@@ -367,7 +417,7 @@ def _run_one_seed(payload: Any) -> dict:
     finally:
         # Unconditional, and in a finally: not gated on exit_code, on
         # smoke_result, or on what got uploaded. subprocess.run raises
-        # TimeoutExpired on a 60 min H100 run — the path where this function
+        # TimeoutExpired on a full-session H100 run — the path where this function
         # never returns a dict at all, so the raw pointer never reaches the hub
         # and the deterministic name is the only way back to the tree. Parking
         # it there anyway is the difference between a recoverable timeout and a
