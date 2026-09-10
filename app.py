@@ -585,8 +585,8 @@ def create_app() -> Flask:
     # of copy quoting it move together. It was hardcoded as "$5" in ~18
     # templates including legal/terms.html, which is how copy drifts away
     # from the amount actually granted.
-    #   signup_credit()      -> "15" for prose ("start with $15 in your wallet")
-    #   signup_credit(True)  -> "15.00" where an exact figure reads better
+    #   signup_credit()      -> "20" for prose ("start with $20 in your wallet")
+    #   signup_credit(True)  -> "20.00" where an exact figure reads better
     def _signup_credit(exact: bool = False) -> str:
         from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
 

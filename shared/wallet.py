@@ -96,16 +96,50 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # $12.58, boltzgen $8.74 -> $6.07). esmfold2-design's pilot is $9.86, under
 # both. opendde is the one expensive tool with no PILOT at all ($14.79 a run;
 # see the note in tools/opendde/meta.py for why it publishes no pilot card).
-# Any tool that gains a pilot above $15, or any rate change that lifts one
-# past it, needs this constant raised with it -- esmfold2-design is the one to
-# watch, H100-priced with the least headroom.
+# (That paragraph is kept for the history. Its SIZING RULE was wrong -- see
+# below.)
+#
+# Raised 15.00 -> 20.00 (2026-09-10), together with esmfold2-design's session
+# ceiling going 3600 -> 5400 s, which exposed the error.
+#
+# The rule above sized the credit against the displayed PILOT PRICE. What
+# ultimately admits a job is the CUSHIONED HOLD, which for any tool with a
+# worst-case floor sits far above the price -- esmfold2-design displays $9.86
+# (at bootstrap; less once p90 has history) and holds $15.00. So a credit that
+# "clears the priciest pilot" can still refuse those tools outright.
+#
+# Both values gate, in this order (shared/wallet_guard.py): wallet_preflight
+# runs FIRST on the point estimate, then ``cushioned_hold_usd`` is reserved and
+# the SQL refuses on ``balance < hold`` (0020_wallet_corrections.sql:114). Only
+# then does the guard re-preflight against the held amount to render an honest
+# deficit. So the price gate is real but never binding -- the hold is strictly
+# larger -- and sizing against the price is what left the hole below.
+#
+# At 3600 s esmfold2-design held $14.79 against a $15.00 credit: 21 cents of
+# headroom, which is why this went unnoticed. At 5400 s the floor reaches the
+# $15/seed hard cap and the hold IS $15.00, exactly the old credit, so a user
+# who had spent a single cent was refused a tool the page quoted at $9.86.
+#
+# THE RULE, and its limit: this constant must clear the largest hold of any
+# tool's SMALLEST REAL RUN -- one unit of its scaling parameter, a new user's
+# first action. That maximum is $15.00 (proteina at bootstrap, esmfold2-design
+# once p90 shrinks the estimate onto the floor), so 20.00 leaves $5.00.
+# ``tests/test_signup_credit_covers_smallest_run.py`` enforces exactly this and
+# will fail if a spec change lifts any 1-unit hold past the credit.
+#
+# It deliberately does NOT promise to cover a scaled-up submit, and no credit
+# could: af2's batch takes up to MAX_BATCH=50 records and holds $39.32 there,
+# and even 14 records holds $21.00. Past one unit, topping up is the intended
+# path. Note the panel quotes the PRICE ($7.34 at 14 records) while the hold
+# ($21.00) is what refuses -- a pre-existing price/hold split in
+# blueprints/wallet.py:373, not something this constant can fix.
 #
 # This number is user-visible in ~18 places. Do NOT hardcode it in copy:
 # templates read it through the ``signup_credit`` jinja global and Python
 # callers import this constant, both sourced from here. There is no env
 # override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
 # changed only the welcome email, never the grant.
-SIGNUP_CREDIT_USD = Decimal("15.00")
+SIGNUP_CREDIT_USD = Decimal("20.00")
 
 # Send the low-balance email when balance drops below this.
 LOW_BALANCE_EMAIL_THRESHOLD = Decimal("5.00")

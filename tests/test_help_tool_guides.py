@@ -328,10 +328,15 @@ def test_help_index_step_count_matches_the_guide(app):
 def test_signup_credit_actually_covers_every_pilot(app):
     """Step 4 claims the signup credit "covers every pilot on the site".
 
-    The credit is $15 and the dearest pilot (proteina) is $12.59 — true,
-    but only by $2.41, and both numbers move independently: #151/#153
+    The credit is $20 (raised from $15 on 2026-09-10) and the dearest pilot
+    (proteina) is $12.59, and both numbers move independently: #151/#153
     changed the credit, and every pilot price is derived from live GPU
-    rates over the recipe's params. Neither side knows about this
+    rates over the recipe's params. Note PRICE is the weaker of the two
+    tests — what actually admits a job is the cushioned HOLD, which sits
+    above the price on any tool with a worst-case floor. That is the
+    subject of tests/test_signup_credit_covers_smallest_run.py, and it is
+    the check that would have caught esmfold2-design's hold landing exactly
+    on the old credit. Neither side knows about this
     sentence.
     """
     import re as _re  # noqa: PLC0415

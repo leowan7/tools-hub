@@ -447,9 +447,10 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         #
         # Moving it 3600 -> 5400 DID move money, which an earlier draft of this
         # comment denied: the 1-seed hold and the per-seed max charge both go
-        # $14.79 -> $15.00. $15.00 is also shared/wallet.SIGNUP_CREDIT_USD
-        # exactly, so a new user who has spent any of the free credit is now
-        # refused this tool. See the cost note on _MAX_SESSION_S.
+        # $14.79 -> $15.00. $15.00 was also shared/wallet.SIGNUP_CREDIT_USD
+        # exactly, which would have refused this tool to any new user who had
+        # spent a cent of the free credit; that constant was raised to $20.00
+        # in the same change. See the cost note on _MAX_SESSION_S.
         expected_gpu_seconds=2400.0,
         designs_per_run_baseline=1,
         scaling_param="n_seeds",
