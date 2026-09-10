@@ -739,9 +739,8 @@ class TestChainIdIsValidatedAtTheBoundary:
         chain", so it falls through to the results.csv heuristic.
 
         The job is given a servable CSV so the empty case reaches that
-        fallthrough and returns 200. Without it the route 404s at the missing
-        file and the assertion passes without exercising anything — dropping
-        ``or None`` would then flip that case from serve to refuse unseen.
+        fallthrough and returns 200, rather than 404ing at the missing file
+        without exercising it.
         """
         _login(client)
         job_id = _upload_two_chain_job(client)
