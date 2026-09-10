@@ -2226,36 +2226,44 @@ def _quotable_row_values(payload) -> set[str]:
 class _DataCellText(HTMLParser):
     """Character data inside a table's <td>/<th>, or a refusal to guess.
 
-    A parser rather than a regex, after four ways the regex was shown to be
-    defeatable. Three review rounds then found the parser defeatable in ten
-    more, every one of them fail-OPEN: it silently collected body text as
-    though a row had printed it. The shape was always identical -- markup
-    this parser cannot model, guessed at instead of refused.
+    READ THE LIMIT BEFORE TRUSTING THIS. Four review rounds were spent
+    making this browser-accurate and it is still not, so the limit is
+    stated first and the history second.
 
-    So it refuses. If the document ends with a cell, a row or a table
-    still open, ``_printed_numbers`` raises rather than returning a set it
-    cannot stand behind. <tbody>/<thead>/<tfoot> are deliberately NOT
-    tracked: handling them was tried and changed nothing either way --
-    balanced markup stays balanced and the malformed cases are refused
-    regardless -- so it was a rule no mutation could pin.
+    WHAT IT IS EXACT ON: the fourteen partials this repo ships. All
+    fourteen parse balanced, and every one returns a set identical to
+    Chrome's own querySelectorAll("td,th") text -- verified independently
+    by three reviewers. ``test_every_partial_parses_balanced`` pins that,
+    and it is the only property here that a template change can actually
+    break.
 
-    Refusing converts every structural defeat found so far into a loud
-    failure, and it matters because </td>, </tr> and </tbody>
-    are OPTIONAL end tags in HTML: browsers close them implicitly, this
-    parser does not, and any minifier with removeOptionalTags emits exactly
-    that shape. Patching the cases one at a time was tried for three
-    rounds and each patch was itself defective.
+    WHAT IT IS NOT EXACT ON: malformed table markup in general, INCLUDING
+    the common case. Omit only </td> -- the most frequently omitted
+    optional end tag in HTML -- and the document still ends balanced, so
+    the refusal below never fires, while a value the browser foster-parents
+    OUT of the table is collected as though a cell printed it. A structural
+    sweep of 17,370 accepted documents found 95 such disagreements with
+    Chrome, the shortest five tags long, all of them fail-OPEN. <template>
+    and <noscript> hide a whole table from the browser and not from this.
+    A self-closed <script/>, and a </ script> with a space, both leave the
+    skip open in the browser's model and closed here.
 
-    Costs nothing on the pages that ship: all fourteen partials parse
-    balanced and return byte-identical sets, checked against Chrome's own
-    querySelectorAll("td,th") innerText as well as against the regex.
+    NONE OF THAT IS FIXED, ON PURPOSE. Rounds four through seven each
+    patched the previously-found shapes and each patch was defeated by the
+    next round. Every defect found in all four rounds was on markup this
+    repo does not contain: stripping every optional end tag from all
+    fourteen partials admits exactly zero numerals. A hand-rolled reader
+    will keep losing to a browser, and the way to stop losing is to stop
+    playing -- pin what ships, state what is not covered, and let a real
+    parser be someone's deliberate decision rather than this test's
+    accident.
 
-    WHAT IT STILL GETS WRONG, measured against a browser rather than
-    reasoned: a self-closed <script/>, and a </ script> with a space after
-    the slash, both leave the skip open in the browser's model and closed
-    here, so a cell's text is collected where Chrome shows none. Neither is
-    handled. No partial contains either, and building machinery for markup
-    no page produces is how the previous rounds went wrong.
+    WHAT THE REFUSAL STILL BUYS: if the document ends with a cell, a row or
+    a table open, ``_printed_numbers`` raises rather than returning a set
+    it cannot stand behind. That catches the shapes where the leak runs to
+    the end of the page -- the ones that would hand a footnote threshold to
+    the guard as a row value -- and it converts them from silent to loud.
+    It does not catch the within-row case above.
 
     <th> counts. Header cells hold column labels today -- no partial
     renders a decimal in one -- but a score promoted to <th scope="row">,
@@ -2265,7 +2273,6 @@ class _DataCellText(HTMLParser):
     """
 
     _CELLS = {"td", "th"}
-    _SECTIONS = {"tr"}
     _SKIP = {"script", "style"}
 
     def __init__(self) -> None:
@@ -2282,12 +2289,14 @@ class _DataCellText(HTMLParser):
         elif tag == "table":
             self._tables += 1
             self._marks.append(self._depth)
-        elif tag in self._SECTIONS:
+        elif tag == "tr":
             self._marks.append(self._depth)
         elif tag in self._CELLS and self._tables > 0:
-            # > 0, not truthiness: a stray </table> can drive the counter
-            # negative, and -1 is truthy, which would admit a cell that has
-            # no table around it at all.
+            # "> 0" is defence in depth, not a live fix: the decrement
+            # below is guarded, so _tables cannot currently go negative
+            # (measured over 9,348 generated documents: never). An earlier
+            # comment here claimed the negative case was reachable and it
+            # is not.
             self._depth += 1
 
     def handle_endtag(self, tag):
@@ -2298,7 +2307,7 @@ class _DataCellText(HTMLParser):
                 self._tables -= 1
             if self._marks:
                 self._depth = self._marks.pop()
-        elif tag in self._SECTIONS:
+        elif tag == "tr":
             if self._marks:
                 self._depth = self._marks.pop()
         elif tag in self._CELLS and self._depth:
@@ -2310,7 +2319,7 @@ class _DataCellText(HTMLParser):
 
     @property
     def left_open(self) -> int:
-        """Nonzero if the parse ended inside a cell, table or section."""
+        """Nonzero if the parse ended inside a cell, row or table."""
         return self._depth or self._tables or len(self._marks)
 
 
@@ -2341,13 +2350,13 @@ def _printed_numbers(markup: str) -> set[float]:
     parser.feed(markup)
     parser.close()
     assert not parser.left_open, (
-        "this markup ends with a table cell or section still open, so "
+        "this markup ends with a table cell, row or table still open, so "
         "_DataCellText will not read it and will not guess. Guessing is "
         "how this comparison failed open twice: it collects the rest of "
         "the document as cell text, and a threshold in a footnote then "
-        "satisfies a claim about a row. </td>, </tr> and </tbody> are "
-        "optional in HTML and browsers close them implicitly. Close them "
-        "in the template, or teach the parser."
+        "satisfies a claim about a row. Close the </td> and </tr> in the "
+        "template -- those two are what this counts; </tbody> is not "
+        "tracked and adding one will not clear this."
     )
     return {
         float(tok) for tok in _SCORE_NUMERAL.findall(" ".join(parser.chunks))
@@ -2476,30 +2485,35 @@ class TestNarrationQuotesTheTable:
         payload has one -- so every other test here stays green whichever
         way _printed_numbers reads. This is the one that does not.
 
-        Each value below pins a specific rule, and each pairing was
-        established by mutating that rule and watching this test fail. The
-        list is what was MEASURED, not what looked plausible -- an earlier
-        version of it claimed three pins that pinned nothing, and one case
-        was written "0.7300px", where the CSS unit made the numeral pattern
-        miss it so the assertion could never fire:
+        Each bullet below names the mutation that a value is known to
+        catch, established by running that mutation. Two earlier versions
+        of this list were wrong -- one claimed three pins that pinned
+        nothing, one wrote a case as "0.7300px" where the CSS unit made
+        the numeral pattern miss it so the assertion could never fire --
+        so what is NOT pinned is listed too:
 
-        * 0.9111 must NOT appear -- a raw ">" inside a cell attribute once
-          ended the start tag early and promoted attribute text to cell
-          text.
-        * 0.55 pins <th>. A score promoted to <th scope="row">, correct
-          markup for a row header, is still a value the table prints.
-        * 0.77 pins the depth marks: without them a nested table's
-          </table> closes the OUTER cell and swallows its tail.
-        * 1.66 must NOT appear -- it pins the open-<table> requirement and
-          both restores. A bare <td> in body context is a parse error that
-          browsers discard, so collecting it invents a cell.
-        * 0.99 and 0.73 must NOT appear, while 1.11 and 1.55 must: the
-          <script> and <style> skips.
-        * 1.77 pins convert_charrefs -- it is written "1&#46;7700", which
-          the page renders as a number and a byte comparison would miss.
-        * 0.88 must NOT appear: body copy is not a cell, which is the
-          whole point, and it also pins the guard that stops the depth
-          counter going negative on a stray </td>.
+        * 0.55 catches dropping <th> from the cell set. A score promoted
+          to <th scope="row">, correct markup for a row header, is still a
+          value the table prints.
+        * 0.77 catches deleting either depth mark: without them a nested
+          table's </table> closes the OUTER cell and swallows its tail.
+        * 1.66 catches dropping the open-<table> requirement. A bare <td>
+          in body context is a parse error browsers discard, so collecting
+          it invents a cell.
+        * 0.99 and 0.73 catch dropping the <script> and <style> skips, and
+          1.11 and 1.55 catch a skip that opens and never closes.
+        * 1.77 catches convert_charrefs=False -- it is written
+          "1&#46;7700", which the page renders as a number and a byte
+          comparison would miss.
+        * 0.88 catches dropping the depth term from handle_data.
+
+        NOT PINNED BY ANY VALUE HERE, measured rather than assumed: 0.9111,
+        0.44 and 1.22 move under no mutation of any current rule -- they
+        are regression pins against the regex this replaced, not against
+        the parser. And the mark-restore and negative-counter guards are
+        caught by the REFUSAL raising, not by a value comparison, so an
+        earlier claim that 1.66 and 0.88 pinned them was wrong: under those
+        mutations the assertion never reaches the set.
         """
         markup = (
             "<table><tbody><tr>"
@@ -2519,14 +2533,56 @@ class TestNarrationQuotesTheTable:
             0.44, 0.55, 0.66, 0.77, 1.11, 1.22, 1.55, 1.77,
         }
 
+    def test_every_partial_parses_balanced(self, tools_app):
+        """The one property here that a template edit can actually break.
+
+        _DataCellText is exact on these fourteen pages and inexact on
+        malformed table markup in general -- read its docstring, the gap is
+        wide and deliberate. So the thing worth pinning is not
+        browser-equivalence in the abstract; it is that the pages this repo
+        ships stay inside the subset it reads correctly.
+
+        If a template starts omitting </td> or </tr>, or a minifier is
+        added to the build, this says so in one clear failure -- before
+        _printed_numbers begins refusing every render and the whole
+        narration sweep errors out with a message about markup rather than
+        about narration.
+        """
+        flask_app, slugs = tools_app
+        for slug, payload in _example_payloads(slugs).items():
+            markup = _render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=payload,
+            )
+            parser = _DataCellText()
+            parser.feed(markup)
+            parser.close()
+            assert not parser.left_open, (
+                f"{slug}'s results partial ends with a cell, row or table "
+                f"still open ({parser.left_open}), so _printed_numbers "
+                "refuses it and this tool's narration is no longer checked "
+                "against anything. Close the </td> and </tr> in that "
+                "template."
+            )
+
     @pytest.mark.parametrize(
         "markup",
         [
             "<table><tr><td>1.11<tr><td>2.22</table><p>3.33</p>",
             "<table><tbody><tr><td>1.11</tbody><p>2.22</p></table>",
             "<table><tr><td>1.11<tr><td>2.22<tr><td>3.33</table><p>4.44</p>",
+            # left_open has three terms and the three above all trip the
+            # same one. These two trip the other two on their own: the
+            # first ends with only _depth set, the second with only
+            # _tables. Without them, two thirds of the refusal condition
+            # could be deleted in silence.
+            "<table></tr><td>1.11</table><p>2.22</p>",
+            "<table></tr>1.11",
         ],
-        ids=["two-rows", "tbody-closes-a-cell", "three-rows"],
+        ids=[
+            "two-rows", "tbody-closes-a-cell", "three-rows",
+            "depth-term-only", "tables-term-only",
+        ],
     )
     def test_markup_it_cannot_read_is_refused(self, markup):
         """Markup the parser cannot model must fail loudly, not quietly.
