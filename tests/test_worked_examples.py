@@ -425,6 +425,21 @@ class TestEveryPartialIsExampleSafe:
         # and the half it missed shipped. Registering the phrase rather
         # than either sentence catches both, and any third.
         "Download each structure",
+        # RETIRED WORDINGS. af2 and colabfold said these directly above
+        # example pages that render no download at all: af2's controls are
+        # double-gated on `not is_example` AND `pdb_b64`
+        # (af2_results.html:241,245) and NEITHER example payload carries a
+        # blob, so both pages instructed a download they did not offer.
+        # Both are reworded now, which means -- unlike the three entries
+        # above -- these are written nowhere, so the control test below
+        # cannot vouch for them. They block a return, nothing more.
+        #
+        # The full phrase, not a bare "Download PDB": esmfold's example
+        # page carries a REAL working download button by that name
+        # (esmfold_results.html:193, live because its example payload does
+        # hold a pdb_b64), so the short form flags it falsely.
+        "Download PDB or PAE matrix",
+        "Download as PDB or PAE matrix",
     )
 
     def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
@@ -451,6 +466,17 @@ class TestEveryPartialIsExampleSafe:
         assert "shortlist button above" in html, (
             "the phrase is gone from the real results page as well, so the "
             "example-side assertion no longer proves anything"
+        )
+        # Same control for the opendde entry, which the register gained
+        # without one. Deleting that sentence outright rather than guarding
+        # it left the block scanning for text nobody writes, and every test
+        # stayed green -- the exact vacuity this method exists to catch.
+        odd = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+        )
+        assert "Download each structure" in odd, (
+            "opendde's real results page no longer offers the download, so "
+            "blocking that phrase on the example page proves nothing"
         )
 
 
