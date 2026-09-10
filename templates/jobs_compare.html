@@ -7,7 +7,21 @@
 {% block content %}
   <div class="hero">
     <h1>Compare runs</h1>
-    <p class="subtitle">{{ columns|length }} jobs side-by-side. Top candidate per job shown first; click the job ID for the full results page.</p>
+    {# "Top candidate" used to mean candidates[0], which is the container's
+       ranking key and not its bar.
+
+       THREE DRAFTS OF THIS SENTENCE WERE WRONG, each in a new way, so the
+       claim is gone rather than reworded a fourth time. It cannot say "best"
+       (headline_candidate does not re-rank); it cannot say each job leads
+       with a design "not shown to fall short of the tool's bar" (on a run
+       where everything falls short it leads with one that is, and 8 of the 14
+       registered tools declare no bar at all); and it cannot promise the Design
+       row names anything, because that row lives inside the shared-metrics
+       table, which does not render when the jobs share no numeric metric --
+       the ordinary cross-tool case this page exists for.
+       Every one of those facts is per-column, and the Design row is the only
+       place that knows them. The subtitle says what the page IS. #}
+    <p class="subtitle">{{ columns|length }} jobs side-by-side, in each run's own stored order; click the job ID for the full results page.</p>
   </div>
 
   {% if columns|length < 2 %}
@@ -20,8 +34,7 @@
     <div style="display: grid; grid-template-columns: repeat({{ columns|length }}, minmax(0, 1fr)); gap: 1rem; overflow-x: auto;">
       {% for col in columns %}
         {% set job = col.job %}
-        {% set result = job.result or {} %}
-        {% set candidates = result.get('candidates', []) %}
+        {% set candidates = col.candidates %}
         <div class="panel" style="min-width: 240px;">
           <div class="panel-header">
             <span class="panel-title" style="font-size: 0.9rem;">
@@ -36,7 +49,13 @@
             </div>
             <div style="margin-bottom: 0.75rem;">
               <div style="color: var(--text-secondary);">Preset</div>
-              <div>{{ job.preset }}</div>
+              {# The STORED preset, and the mode the bar was applied under
+                 when they differ. The bar resolves the mode from the result
+                 (is_antibody) and falls back to the preset, deliberately --
+                 so a row whose preset says "minibinder" can be judged as an
+                 scFv. Printing only the preset put those two facts on one
+                 panel with nothing reconciling them. #}
+              <div>{{ job.preset }}{% if col.mode and col.mode != job.preset %} <span style="color: var(--text-secondary);">(judged as {{ col.mode }})</span>{% endif %}</div>
             </div>
             {% if job.inputs %}
               <div style="margin-bottom: 0.75rem;">
@@ -59,21 +78,45 @@
             <hr style="border: none; border-top: 1px solid var(--border); margin: 0.85rem 0;">
             <div style="color: var(--text-secondary); margin-bottom: 0.4rem;">Top candidates ({{ candidates|length }} total)</div>
             {% if candidates %}
+              {# THE ROWS STAY IN THE PIPELINE'S ORDER and the bar is shown
+                 beside them, rather than the table being re-sorted. A
+                 container ranks on its ranking key, which is not its bar, so
+                 rank 1 can be a design the tool drops -- on esmfold2-design
+                 job 2b917b54 it is, at ipTM 0.9556 and pI 11.95. A bare ipTM
+                 column repeats that ranking with nothing to contradict it,
+                 which on a screen whose whole purpose is ranking is the
+                 misleading part. The Bar cell carries the number AND the
+                 threshold it missed ("pI 11.95, above 6"), so the gating
+                 column shows up here even when it has no column of its own --
+                 and it does that for every tool without this page having to
+                 know which columns gate which. #}
               <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
                 <thead>
                   <tr style="color: var(--text-secondary); text-align: left;">
                     <th style="padding: 0.25rem 0.3rem;">#</th>
                     <th style="padding: 0.25rem 0.3rem;">ipTM</th>
                     <th style="padding: 0.25rem 0.3rem;">pLDDT</th>
+                    <th style="padding: 0.25rem 0.3rem;">Bar</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for cand in candidates[:3] %}
-                    {% set scores = cand.get('scores', {}) %}
+                    {% set verdict = judge_design(job.tool, cand, preset=col.mode) %}
                     <tr style="border-top: 1px solid var(--border);">
-                      <td style="padding: 0.25rem 0.3rem;">{{ cand.get('rank', loop.index) }}</td>
                       <td style="padding: 0.25rem 0.3rem;">
-                        {% set iptm = scores.get('ipTM') or scores.get('iptm') %}
+                        {{ cand.get('rank', loop.index) }}
+                        {#- The star's tooltip must not promise a location. The
+                            Shared metrics table renders only the first FOUR
+                            columns, so on a 5-job comparison the starred
+                            design has no row "below" at all. #}
+                        {%- if cand is sameas col.top %} <span title="The design this run leads with" style="color: var(--accent);">&#9733;</span>{% endif %}
+                      </td>
+                      <td style="padding: 0.25rem 0.3rem;">
+                        {# raw_metric, not scores.get: it resolves the same
+                           aliases and the same scores-then-root fallback the
+                           verdict beside it resolved, so this cell cannot
+                           read "—" next to a sentence quoting a number. #}
+                        {% set iptm = raw_metric(cand, 'ipTM') %}
                         {% if iptm is number %}{{ '%.2f'|format(iptm) }}{% else %}—{% endif %}
                       </td>
                       <td style="padding: 0.25rem 0.3rem;">
@@ -81,8 +124,22 @@
                            is the one place a 0-1 row and a 0-100 row are read
                            against each other directly. Normalise or the
                            comparison is meaningless. #}
-                        {% set plddt = plddt_on_100(scores.get('pLDDT') or scores.get('plddt')) %}
+                        {% set plddt = plddt_on_100(raw_metric(cand, 'pLDDT')) %}
                         {% if plddt is number %}{{ '%.1f'|format(plddt) }}{% else %}—{% endif %}
+                      </td>
+                      {# verdict_text, NOT a hand-rolled join of shortfalls.
+                         It is the single renderer for a judgement and it says
+                         so in its own docstring, having already been split in
+                         two once. This cell joined ``shortfalls`` and dropped
+                         the other two halves, so a row that fell short on one
+                         leg AND carried a declared placeholder on another
+                         printed only the shortfall -- a confident sentence
+                         about a design whose second metric was never
+                         measured, which is the exact harm the derived-verdict
+                         design exists to prevent. #}
+                      {% set bar_text = verdict_text(job.tool, verdict, preset=col.mode) %}
+                      <td style="padding: 0.25rem 0.3rem; font-size: 0.78rem;{% if verdict.verdict == 'below' %} color:#fca5a5;{% elif verdict.verdict == 'meets' %} color: var(--accent);{% else %} color: var(--text-secondary);{% endif %}">
+                        {{ bar_text or '—' }}
                       </td>
                     </tr>
                   {% endfor %}
@@ -97,41 +154,66 @@
     </div>
 
     {# ------------------------------------------------------------------
-       Shared metrics table: intersection of top-candidate score keys
-       across all selected jobs, restricted to the priority list and
-       normalized for lowercase variants.
+       Shared metrics table: intersection of headline-candidate score keys
+       across all selected jobs, restricted to the priority list. Storage
+       aliases are resolved by ``raw_metric``; the hand-written lowercase
+       map this line used to describe is gone.
        ------------------------------------------------------------------ #}
-    {% set priority_keys = ['ipTM', 'pLDDT', 'pAE', 'pTM', 'refolding_rmsd', 'sc_score', 'sap_score'] %}
-    {% set lowercase_aliases = {'ipTM': 'iptm', 'pLDDT': 'plddt', 'pAE': 'pae', 'pTM': 'ptm'} %}
+    {# ``pI`` is here because it is esmfold2-design's gating column in
+       minibinder mode, and a row can only appear in this table under a key it
+       is listed by. Without it the page compared two designs on ipTM alone
+       and put the one the tool drops on pI 11.95 first -- exactly the ranking
+       the Bar column above now contradicts. It is a single-tool column, so
+       the all-columns-have-it rule below surfaces it only when every job
+       being compared is that tool, which is the only comparison in which it
+       means anything. pI is also ONE quantity under both of its storage
+       spellings, which is what makes it safe here.
+
+       ``iPTM_proxy`` WAS ADDED HERE AND WAS REMOVED, because it is not. That
+       column holds the CDR proxy on an scFv run and the whole-interface proxy
+       on a minibinder one, and this table's "shared" rule asks only whether
+       every column has a NUMBER, never whether they are the same measurement.
+       Comparing an scFv job against a minibinder job would therefore have
+       printed the two side by side as one row, unlabelled -- the exact
+       confusion MODE_GATE_COLUMNS exists to refuse, reintroduced one line
+       lower down. "Would have": the shared-metric rule drops a column whose
+       value is not numeric, and the proxy is blank on every stored run, so
+       the row was reachable rather than observed.
+       A metric belongs in this list only if its meaning is fixed across every
+       job that can appear in a column. #}
+    {% set priority_keys = ['ipTM', 'pLDDT', 'pAE', 'pTM', 'refolding_rmsd', 'sc_score', 'sap_score', 'pI'] %}
     {% set visible_columns = columns[:4] %}
 
-    {# Build per-column top-candidate scores dict, tolerating missing shapes. #}
-    {% set ns = namespace(per_col_scores=[], tools=[]) %}
+    {# The headline candidate the route derived, NOT candidates[0]. This table
+       is the side-by-side itself, so leading it with a design the tool's own
+       bar rejects is the one thing it must not do. #}
+    {% set ns = namespace(per_col_top=[]) %}
     {% for col in visible_columns %}
-      {% set result = col.job.result or {} %}
-      {% set cands = result.get('candidates', []) %}
-      {% set top = cands[0] if cands else {} %}
-      {% set _ = ns.per_col_scores.append(top.get('scores', {}) if top else {}) %}
-      {% set _ = ns.tools.append(col.job.tool) %}
+      {% set _ = ns.per_col_top.append(col.top or {}) %}
     {% endfor %}
 
-    {# A metric is "shared" if every column has a numeric value for it
-       (under either its canonical key or its lowercase alias). #}
+    {# A metric is "shared" if every column has a numeric value for it.
+       ``raw_metric`` resolves the storage aliases (ipTM/iptm, pLDDT/plddt/
+       complex_pLDDT, ...) and the scores-then-root fallback, which is the
+       same resolution the judge uses -- the hand-written lowercase-alias map
+       that used to sit here covered four keys and only the ``scores`` half,
+       so a record keyed at its root read as having no metrics at all. #}
     {% set shared_ns = namespace(keys=[]) %}
     {% for key in priority_keys %}
-      {% set alias = lowercase_aliases.get(key) %}
       {% set present_ns = namespace(all=true) %}
-      {% for scores in ns.per_col_scores %}
-        {% set val = scores.get(key) %}
-        {% if val is none and alias %}{% set val = scores.get(alias) %}{% endif %}
-        {% if val is not number %}{% set present_ns.all = false %}{% endif %}
+      {% for top in ns.per_col_top %}
+        {% if raw_metric(top, key) is not number %}{% set present_ns.all = false %}{% endif %}
       {% endfor %}
       {% if present_ns.all and visible_columns|length > 0 %}
         {% set _ = shared_ns.keys.append(key) %}
       {% endif %}
     {% endfor %}
 
-    {% set unique_tools = ns.tools|unique|list %}
+    {# Over EVERY column, not the four this table renders. The sentence below
+       says "All {{ columns|length }} jobs ran X", and ns.tools holds only
+       visible_columns -- so with five or more jobs selected the page asserted
+       a fact about jobs it had not looked at. #}
+    {% set unique_tools = columns | map(attribute='job.tool') | unique | list %}
     {% set all_same_tool = unique_tools|length == 1 %}
 
     <div class="panel" style="margin-top: 1.5rem;">
@@ -168,15 +250,78 @@
               </tr>
             </thead>
             <tbody>
+              {# WHICH DESIGN EACH COLUMN IS, before any of its numbers. The
+                 row below need not be the run's rank 1 -- that is the whole
+                 point of deriving it -- and a reader cross-checking this
+                 table against the one above would otherwise conclude they
+                 disagree about the same design. Says so outright when they
+                 differ, and carries the shortfall when nothing in the run
+                 clears the bar and the fallback had to be a reject. #}
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 0.5rem 0.4rem; color: var(--text-secondary);">Design</td>
+                {% for col in visible_columns %}
+                  {% set top = col.top or {} %}
+                  <td style="padding: 0.5rem 0.4rem; font-size: 0.78rem;">
+                    <span style="font-family: var(--font-mono);">{{ top.get('name') or top.get('pdb_key') or '—' }}</span>
+                    {% if col.candidates and col.top is not sameas (col.candidates | first) %}
+                      {# POSITION IN THE LIST, AND NEVER THE WORD "RANK".
+                         The # column beside this prints the design's STORED
+                         rank, and the base is not uniform: af2, boltz2,
+                         esmfold2-design and iggm number from 0 (so job
+                         2b917b54 itself), while bindcraft, boltzgen,
+                         proteina, pxdesign, rfantibody and rfdiffusion number
+                         from 1. Measured off each tool's example payload.
+
+                         NO CENSUS OF THE REST. Three drafts of this aside
+                         tried to say how many tools rank nothing and each got
+                         it wrong, because "registered adapters", "tools with
+                         an example payload" and "tools that write a rank" are
+                         three different populations and the sentence kept
+                         mixing them. The named ten are the ones this rule was
+                         measured on; that is all it needs to say. Saying "not
+                         rank 1" about a row the table above labels "1" is a
+                         confident contradiction on the very job this page was
+                         fixed for -- and it read that way only because the
+                         test fixture used 1-based ranks the tool does not
+                         write. Row position is unambiguous in both bases. #}
+                      <div style="color: var(--text-secondary);">not the first design listed &mdash; row {{ col.top_index + 1 }} of {{ col.candidates | length }}</div>
+                    {% endif %}
+                    {# ONE RENDERER, FOUR STATES. This branched four ways and
+                       hand-built two of the sentences, which is how the
+                       "below" case came to print its shortfall and swallow
+                       its ``unusable`` half. verdict_text already composes
+                       every state -- shortfalls, plus "not measured" and
+                       "not usable" clauses when they apply -- so the only
+                       decision left here is the colour and the lead-in. #}
+                    {% set top_text = verdict_text(col.job.tool, col.top_verdict, preset=col.mode) %}
+                    {% if top_text and col.top_verdict.verdict == 'below' %}
+                      <div style="color:#fca5a5;">nothing in this run clears the bar &mdash; {{ top_text }}</div>
+                    {% elif top_text and col.top_verdict.verdict == 'meets' %}
+                      <div style="color: var(--accent);">{{ top_text }}</div>
+                    {% elif top_text %}
+                      <div style="color: var(--text-secondary);">{{ top_text }}</div>
+                    {% endif %}
+                  </td>
+                {% endfor %}
+              </tr>
               {% for key in shared_ns.keys %}
-                {% set alias = lowercase_aliases.get(key) %}
                 <tr style="border-bottom: 1px solid var(--border);">
                   <td style="padding: 0.5rem 0.4rem;"><strong>{{ key }}</strong></td>
-                  {% for scores in ns.per_col_scores %}
-                    {% set val = scores.get(key) %}
-                    {% if val is none and alias %}{% set val = scores.get(alias) %}{% endif %}
+                  {% for top in ns.per_col_top %}
+                    {# pLDDT is normalised here for the same reason it is in
+                       the per-job tables above -- this row exists to be read
+                       ACROSS tools, and a 0-1 reading against a 0-100 one is
+                       not a comparison. It was rendered raw, so the two
+                       tables on this page printed different numbers for the
+                       same measurement.
+
+                       format_metric_value, not a flat %.3f: the glossary's
+                       precision is the one score_legends compares at, so a
+                       cell and a verdict quoting it cannot disagree in the
+                       last digit. #}
+                    {% set val = plddt_on_100(raw_metric(top, key)) if key in PLDDT_COLUMNS else raw_metric(top, key) %}
                     <td style="padding: 0.5rem 0.4rem;">
-                      {% if val is number %}{{ '%.3f'|format(val) }}{% else %}—{% endif %}
+                      {% if val is number %}{{ format_metric_value(key, val) }}{% else %}—{% endif %}
                     </td>
                   {% endfor %}
                 </tr>

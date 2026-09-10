@@ -19,6 +19,7 @@ from shared.jobs import candidate_meets_bar, count_candidates_meeting_bar
 from shared.score_legends import (
     GATE_COLUMNS,
     IMPLAUSIBLE_VALUES,
+    MODE_GATE_COLUMNS,
     SCORE_LEGENDS,
     gate_bar_text,
     get_legend,
@@ -29,24 +30,60 @@ from shared.score_legends import (
 
 REPO = Path(__file__).resolve().parents[1]
 
+# EVERY declared gate leg, from both maps. The mode-scoped legs are legs: they
+# decide what a page says about a design, so every structural guard below has
+# to see them. Keying the guards on GATE_COLUMNS alone would exempt the newer
+# map from the checks written precisely because a silently disabled bar on
+# this same tool cost the whole feature once already.
+ALL_GATE_LEGS = sorted(
+    {(t, c) for t, cols in GATE_COLUMNS.items() for c in cols}
+    | {
+        (t, c)
+        for t, modes in MODE_GATE_COLUMNS.items()
+        for cols in modes.values()
+        for c in cols
+    }
+)
+
+
+def _leg_id(leg):
+    return f"{leg[0]}/{leg[1]}"
+
+
+def test_the_two_gate_maps_are_disjoint():
+    """A tool may declare a tool-wide bar or a mode-scoped one, never both.
+
+    ``gate_columns`` consults MODE_GATE_COLUMNS FIRST and returns ``()`` for a
+    moded tool given no preset. So adding a mode entry for a tool that already
+    sits in GATE_COLUMNS would flip ``tool_has_bar`` to False for every caller
+    that cannot supply a mode -- shared/ranking, the campaign counts, the job
+    detail page, the results table -- from a one-line map edit, with no test
+    naming the tool that lost its bar.
+    """
+    both = sorted(set(GATE_COLUMNS) & set(MODE_GATE_COLUMNS))
+    assert not both, (
+        f"{both} declare a bar in BOTH maps; MODE_GATE_COLUMNS wins in "
+        "gate_columns(), so every unmoded caller silently reads no bar"
+    )
+
 
 # --------------------------------------------------------------------------
 # The declaration is complete and self-consistent
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("tool", sorted(GATE_COLUMNS))
-def test_every_gate_column_has_a_legend(tool):
+@pytest.mark.parametrize("leg", ALL_GATE_LEGS, ids=_leg_id)
+def test_every_gate_column_has_a_legend(leg):
     """A gate column carries no bar unless the legend for it exists.
 
     judge() degrades a legend-less gate column to "unmeasured", which is safe
     but silently drops a leg -- a tool could lose half its bar and every design
     would still read plausibly. This is the check that stops that.
     """
-    for column in GATE_COLUMNS[tool]:
-        legend = get_legend(tool, column)
-        assert legend is not None, f"{tool}/{column} is gated on with no legend"
-        assert legend["direction"] in ("higher_is_better", "lower_is_better")
-        assert isinstance(legend["good"], (int, float))
+    tool, column = leg
+    legend = get_legend(tool, column)
+    assert legend is not None, f"{tool}/{column} is gated on with no legend"
+    assert legend["direction"] in ("higher_is_better", "lower_is_better")
+    assert isinstance(legend["good"], (int, float))
 
 
 def test_every_tool_key_is_a_registered_slug():
@@ -69,7 +106,11 @@ def test_every_tool_key_is_a_registered_slug():
 
     assert _REGISTRY, "the adapter registry is empty, so this checks nothing"
     slugs = set(_REGISTRY)
-    keyed = {t for t, _c in SCORE_LEGENDS} | set(GATE_COLUMNS)
+    keyed = (
+        {t for t, _c in SCORE_LEGENDS}
+        | set(GATE_COLUMNS)
+        | set(MODE_GATE_COLUMNS)
+    )
     # af2 / colabfold / esmfold / mpnn are predictors with legends and no bar;
     # all four are registered tools, so nothing here is exempt.
     unknown = sorted(keyed - slugs)
@@ -133,6 +174,25 @@ CONTAINER_GATES = {
     ("boltz2", "n_hotspot_contacts"): (
         "local", "boltz2", "STRICT_HOTSPOT_CONTACTS_MIN", 1.0,
     ),
+    # esmfold2-design's MODE-scoped minibinder legs (MODE_GATE_COLUMNS),
+    # checked here the same way as every tool-scoped one.
+    #
+    # SCOPE OF THIS GUARD, stated exactly because a comment here claimed more:
+    # it holds TWO copies of the bar together, run_pipeline.py's constant and
+    # this module's legend. The bar is duplicated a THIRD time in
+    # templates/tools/esmfold2_design_results.html (run_pipeline.py is copied
+    # into the GPU image and cannot import shared/), and nothing in this file
+    # reads that template — test_esmfold2_design_best_sequence.py drives it
+    # instead. Do not read "all three copies" into these entries.
+    #
+    # NO STRICT_CDR_IPTM_PROXY ENTRY: the scFv leg it belonged to was removed
+    # (see SCORE_LEGENDS), so the constant is no longer mirrored here.
+    ("esmfold2-design", "ipTM"): (
+        "local", "esmfold2_design", "STRICT_IPTM", 1.0,
+    ),
+    ("esmfold2-design", "pI"): (
+        "local", "esmfold2_design", "STRICT_PI", 1.0,
+    ),
 }
 
 # The divergences the comment above GATE_COLUMNS claims are the complete set.
@@ -175,7 +235,7 @@ def _pipeline_bar(where, tool, const, scale):
 def test_every_gate_leg_is_mapped_to_its_pipeline_constant():
     """The map above covers every leg, so the divergence check cannot miss one
     by simply not knowing about it."""
-    legs = {(t, c) for t, cols in GATE_COLUMNS.items() for c in cols}
+    legs = set(ALL_GATE_LEGS)
     assert legs == set(CONTAINER_GATES), sorted(legs ^ set(CONTAINER_GATES))
     # AND EVERY LEG IS TAGGED FOR ONE OF THE TWO HALVES. The divergence check
     # was split so the local legs run in CI, and each half filters on this tag;
@@ -910,9 +970,7 @@ _STRICT_WORDS = ("above ", "below ", "greater than ", "less than ",
                  "more than ")
 
 
-@pytest.mark.parametrize("leg", sorted(
-    (t, c) for t, cols in GATE_COLUMNS.items() for c in cols
-))
+@pytest.mark.parametrize("leg", ALL_GATE_LEGS, ids=_leg_id)
 def test_a_gate_legs_prose_is_inclusive_like_its_comparison(leg):
     """``judge`` compares >= and <=; the legends said "Above 80" and
     "Below 1.5".
