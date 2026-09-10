@@ -85,5 +85,6 @@
   "seeds_succeeded": 2,
   "target_label": "PD-L1",
   "target_name": "pd-l1",
-  "tier": "minibinder"
+  "tier": "minibinder",
+  "use_scaling_critics": false
 }

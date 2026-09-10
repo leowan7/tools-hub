@@ -33,10 +33,13 @@ The four hero critics load on GPU and are the only critics loaded:
 ``run_pipeline.py`` calls ``designer.load(False)`` unconditionally. A
 ``use_scaling_critics`` flag used to make that argument user-settable, adding
 a 15-checkpoint ensemble on the HOST (upstream loads scaling critics with
-``device="cpu"``, recommending 60 GB host RAM) which does not fit the 10 GB
-``memory=`` below. Since no scaling row is ever read, that bought a host-RAM
-OOM and no change to any score, so the flag was removed. Restoring it means
-raising ``memory=`` first.
+``device="cpu"``, recommending 60 GB host RAM) against the 10 GB ``memory=``
+below. Since no scaling row is ever read, that bought six times the documented
+host-RAM requirement and no change to any score, so the flag was removed.
+Restoring it means raising ``memory=`` first. Note the bare integer form is a
+Modal SOFT limit, not a hard cap, so the failure mode there is unproven --
+throttling and an OOM kill are both consistent with it, and the path never ran
+in prod.
 
 Raw capture: ``run_pipeline.py`` tars its COMPLETE work tree to
 ``/tmp/raw_archive.tgz`` before the container dies; ``_park_raw_archive``

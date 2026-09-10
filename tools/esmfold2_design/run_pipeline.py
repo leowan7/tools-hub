@@ -880,8 +880,14 @@ def _run() -> int:
         # its own ESMC copy, against the 10 GB ``memory=`` in modal_app.py.
         # Upstream recommends 60 GB host RAM for it. Since _shape_designs reads
         # every score off CRITIC_REAL_IPTM, a hero critic, those rows are never
-        # read and the ensemble changed no reported number: it was a host-RAM
-        # OOM waiting to be ticked, in exchange for nothing.
+        # read and the ensemble changed no reported number.
+        #
+        # Deliberately not calling that an OOM: a bare integer ``memory=`` is
+        # a Modal soft limit ("How much memory to request, in MiB. This is a
+        # soft limit." -- modal/image.py), so the ensemble may have been
+        # throttled rather than killed. Untested either way, because the path
+        # never ran in prod. What IS certain is the trade: six times the
+        # documented host-RAM requirement, for no change to any number.
         designer.load(False)
     except Exception as exc:
         logger.error("Failed to load ESMFold2Design: %s\n%s", exc, traceback.format_exc())
