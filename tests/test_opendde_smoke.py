@@ -19,6 +19,8 @@ Mirrors ``tests/test_esmfold_smoke.py``:
 10. QC-hardening regressions from the adversarial review.
 11. ``run_pipeline.archive_raw_outputs`` — the destination resolves on call, and
     the function honours its documented "never raises" contract.
+12. ``run_pipeline._read_score_json`` binds each sample to ITS OWN confidence
+    file, and records no score rather than borrowing a neighbour's.
 
 Runs fully offline — no Modal, no Supabase, no GPU.
 """
@@ -761,3 +763,144 @@ class TestRawArchiveNeverRaises:
         assert not dest.exists(), (
             "the partial tar survived a failed capture; the wrapper would park an "
             "archive that reports success and cannot be read")
+
+
+# ---------------------------------------------------------------------------
+# 12 — _read_score_json binds each sample to ITS OWN confidence file
+# ---------------------------------------------------------------------------
+
+
+def _seed_tree(
+    root, seed: int, scores: list[dict], name: str = "opendde_job", suffix: str = ".cif"
+):
+    """Reproduce upstream ``runner/dumper.py``'s layout for one seed.
+
+    ``base/<name>/seed_<n>/predictions/`` holding, per sample k, the structure
+    ``<name>_sample_<k><suffix>``, its ``<name>_summary_confidence_sample_<k>.json``,
+    and the ``<name>_full_data_sample_<k>.json`` that ``_save_confidence`` also
+    writes under ``need_atom_confidence``.
+
+    That third file is not decoration. It is the only OTHER file upstream puts in
+    this dir carrying the same ``_sample_<k>`` token, and it sorts BEFORE the
+    summary ("f" < "s"), so it is what makes a substring or glob-first match
+    measurably wrong. Without it an INDEX-SCOPED matcher (``*_sample_<k>*``,
+    sorted first) picks the right file by pure lexicographic luck —
+    ``_sample_1.json`` sorts before ``_sample_10.json`` because "." (0x2E) <
+    "0" (0x30) — and passes while pinning nothing.
+    """
+    preds = root / name / f"seed_{seed}" / "predictions"
+    preds.mkdir(parents=True)
+    out = []
+    for k, score in enumerate(scores):
+        structure = preds / f"{name}_sample_{k}{suffix}"
+        structure.write_text("data_x\n")
+        (preds / f"{name}_summary_confidence_sample_{k}.json").write_text(json.dumps(score))
+        # Atom-level arrays, no ranking_score — matching upstream's full_data.
+        (preds / f"{name}_full_data_sample_{k}.json").write_text(
+            json.dumps({"atom_plddt": [50.0, 51.0], "token_asym_id": [0, 0]})
+        )
+        out.append(structure)
+    return out
+
+
+def _score(v: float) -> dict:
+    return {"ranking_score": v, "ptm": v, "iptm": v, "plddt": v}
+
+
+class TestReadScoreJson:
+    def test_every_sample_gets_its_own_scores(self, tmp_path):
+        """The regression: 4 samples x 2 seeds returned 2 distinct score sets.
+
+        One ``predictions/`` dir per seed holds every sample of that seed, so a
+        lookup that falls back to "any JSON in this dir" hands all four samples
+        the same file — and the caller ranks on the result.
+        """
+        cifs = _seed_tree(tmp_path, 1, [_score(0.10), _score(0.20), _score(0.30), _score(0.40)])
+        cifs += _seed_tree(tmp_path, 2, [_score(0.50), _score(0.60), _score(0.70), _score(0.80)])
+
+        got = [rp._read_score_json(c).get("ranking_score") for c in cifs]
+
+        assert got == [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+        assert len(set(got)) == len(cifs), f"samples share scores: {got}"
+
+    def test_missing_confidence_file_records_no_score(self, tmp_path):
+        """Absent beats borrowed: no_score sorts last and renders as such.
+
+        The victim is named LITERALLY, not via ``rp._confidence_path``. Deriving
+        it with the code under test makes the test agree with whatever that code
+        says and blind to a defect in the derivation itself (an off-by-one
+        ``_confidence_path`` kept this green). It also means upstream renaming
+        the file fails this test loudly, on the unlink.
+        """
+        cifs = _seed_tree(tmp_path, 1, [_score(0.10), _score(0.20)])
+        (cifs[1].parent / "opendde_job_summary_confidence_sample_1.json").unlink()
+
+        assert rp._read_score_json(cifs[1]) == {}
+
+    def test_does_not_reach_outside_the_predictions_dir(self, tmp_path):
+        """A sibling seed's file is never a candidate, whatever it is named."""
+        cifs = _seed_tree(tmp_path, 1, [_score(0.10)])
+        (cifs[0].parent / "opendde_job_summary_confidence_sample_0.json").unlink()
+        (cifs[0].parent.parent / "ranking_scores.json").write_text(json.dumps(_score(0.99)))
+        (cifs[0].parent / "aaa_other.json").write_text(json.dumps(_score(0.98)))
+
+        assert rp._read_score_json(cifs[0]) == {}
+
+    def test_unparseable_confidence_file_is_not_fatal(self, tmp_path):
+        cifs = _seed_tree(tmp_path, 1, [_score(0.10)])
+        (cifs[0].parent / "opendde_job_summary_confidence_sample_0.json").write_text(
+            "{ truncated"
+        )
+
+        assert rp._read_score_json(cifs[0]) == {}
+
+    def test_non_dict_confidence_json_is_ignored(self, tmp_path):
+        """A list at the top level must not reach ``_first`` as a dict."""
+        cifs = _seed_tree(tmp_path, 1, [_score(0.10)])
+        (cifs[0].parent / "opendde_job_summary_confidence_sample_0.json").write_text(
+            "[1, 2, 3]"
+        )
+
+        assert rp._read_score_json(cifs[0]) == {}
+
+    @pytest.mark.parametrize("suffix", [".pdb", ".mmcif"])
+    def test_non_cif_structures_resolve_their_score(self, tmp_path, suffix):
+        """``_confidence_path`` keys off ``.stem``, so any suffix resolves.
+
+        OpenDDE 1.0.0 emits .cif only — one structure writer, no format flag — so
+        these suffixes can only reach here via OUR defensive glob in
+        ``collect_structures``, never from an upstream mode. Pinned anyway: a
+        .cif-only derivation would return {} for every row, silently, the day
+        that glob does catch something.
+        """
+        made = _seed_tree(tmp_path, 1, [_score(0.42)], suffix=suffix)
+
+        assert rp._read_score_json(made[0]).get("ranking_score") == 0.42
+
+    def test_structure_without_a_sample_index_yields_no_score(self, tmp_path):
+        odd = tmp_path / "predictions"
+        odd.mkdir()
+        stray = odd / "unexpected_name.cif"
+        stray.write_text("data_x\n")
+        (odd / "opendde_job_summary_confidence_sample_0.json").write_text(json.dumps(_score(0.99)))
+
+        assert rp._read_score_json(stray) == {}
+
+    def test_sample_index_is_matched_whole_not_by_prefix(self, tmp_path):
+        """``_sample_1`` must not resolve to sample 10's or 11's file.
+
+        The full_data decoy sorts ahead of the summary ("f" < "s") and carries no
+        ranking_score, so every glob-first and substring matcher lands on it and
+        the score assertion alone fails them. The name assertion is belt and
+        braces: it pins ``_confidence_path``'s output against literals rather
+        than re-deriving it.
+        """
+        cifs = _seed_tree(tmp_path, 1, [_score(float(i) / 100) for i in range(12)])
+
+        got = [rp._read_score_json(c).get("ranking_score") for c in cifs]
+        names = [rp._confidence_path(c).name for c in cifs]
+
+        assert got == [float(i) / 100 for i in range(12)]
+        assert names == [
+            f"opendde_job_summary_confidence_sample_{i}.json" for i in range(12)
+        ]
