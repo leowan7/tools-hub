@@ -713,10 +713,15 @@ class TestResultsTemplate:
         assert CAUTION not in _flat(html)
 
     def test_an_unmeasured_design_is_unjudged_not_rejected(self, flask_app):
-        """scFv runs produce no CDR proxy at all unless the scaling critics
-        are on, and they are off by default. Every design in such a run was
-        being narrated as having failed a bar nothing measured it against.
-        Unmeasured is unjudged, never failed."""
+        """A design can still arrive with no CDR proxy measured, and every one
+        in such a run was being narrated as having failed a bar nothing
+        measured it against. Unmeasured is unjudged, never failed.
+
+        This used to say the proxy was absent "unless the scaling critics are
+        on, and they are off by default". Wrong twice over: #242 established
+        that upstream puts the proxy on the hero critic's row, so the ensemble
+        never governed it, and the toggle that sentence describes no longer
+        exists. The case it guards is real regardless of cause."""
         html = _render(
             flask_app,
             self._stored_result(

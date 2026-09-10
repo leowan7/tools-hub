@@ -631,7 +631,7 @@ def _aggregate(
     # highest-iPTM member. In scFv mode the TIER is decided on the CDR
     # distogram proxy while the RANK stays iPTM; that split is deliberate,
     # because iPTM is the calibrated number and the proxy is a gate the
-    # panel itself calls "informative only" when the scaling critics are off.
+    # panel itself calls "informative only".
     def _tier_of(c: dict | None) -> str:
         return str(((c or {}).get("scores") or {}).get("filter_status") or "")
 

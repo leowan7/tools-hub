@@ -19,8 +19,10 @@ offline: ``_shape_designs`` is a pure function once ``complex`` is None.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+from pathlib import Path
 
 from tools.esmfold2_design.run_pipeline import (
     CRITIC_REAL_IPTM,
@@ -272,16 +274,48 @@ def test_no_reachable_path_loads_the_scaling_ensemble():
     since every score is read off a hero critic its rows are never consulted:
     ticking it bought an OOM risk and no change to any number. If someone
     reintroduces the toggle, ``memory=`` has to be raised in the same change.
-    """
-    from pathlib import Path
 
+    Checked over the AST, not the source text. Substring assertions cannot
+    express this: the literal ``designer.load(False)`` also appears in a
+    COMMENT in that file, so ``"designer.load(False)" in source`` stays true
+    with the real call deleted, and a negative grep for one identifier only
+    pins one SPELLING -- reintroducing the toggle as ``use_ensemble`` passed
+    the substring version with the control fully back on the form.
+
+    The load argument is the binding invariant, which is why the form is the
+    weaker half of this test. A control that does not reach ``load`` cannot
+    switch the ensemble on whatever it is named; a literal ``False`` here
+    makes any such control inert.
+    """
     root = Path(__file__).resolve().parents[1]
-    pipeline = (root / "tools" / "esmfold2_design" / "run_pipeline.py").read_text(
-        encoding="utf-8"
-    )
-    assert "designer.load(False)" in pipeline
-    # Any argument other than the literal False means something can flip it.
-    assert "designer.load(use_scaling_critics)" not in pipeline
+    pipeline_path = root / "tools" / "esmfold2_design" / "run_pipeline.py"
+    tree = ast.parse(pipeline_path.read_text(encoding="utf-8"))
+
+    # Serialisation helpers also spell a method ``load`` and legitimately take
+    # a non-constant argument. Nothing else may.
+    serialisers = {"json", "pickle", "yaml", "tomllib", "tomli"}
+    loads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "load"
+        and getattr(node.func.value, "id", None) not in serialisers
+    ]
+    # Without this the guard passes vacuously if the call is renamed away.
+    assert loads, "no model .load() call found in run_pipeline.py: this test is pinning nothing"
+
+    for call in loads:
+        where = f"{pipeline_path.name}:{call.lineno}"
+        assert not call.keywords, f"{where}: .load() takes a keyword; expected the literal False"
+        assert len(call.args) == 1, f"{where}: .load() takes {len(call.args)} args; expected 1"
+        arg = call.args[0]
+        assert isinstance(arg, ast.Constant) and arg.value is False, (
+            f"{where}: .load() argument is not the literal False. Anything else "
+            "is a switch, and the scaling ensemble loads on the host against "
+            "memory=10*1024 where upstream recommends 60 GB. Reintroducing it "
+            "means raising memory= in the same change."
+        )
 
     form = (
         root / "templates" / "tools" / "esmfold2_design_form.html"
