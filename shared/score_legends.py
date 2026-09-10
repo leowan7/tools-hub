@@ -756,19 +756,148 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     # PILOT card that silently did not render. tests/test_derived_verdicts.py
     # now asserts every tool key here is in tools.base._REGISTRY.
     #
-    # This is a TOOLTIP ONLY. esmfold2-design declares no gate columns; see the
-    # note in GATE_COLUMNS for why its bar cannot be a uniform conjunction.
+    # A GATE LEG IN MINIBINDER MODE ONLY, via MODE_GATE_COLUMNS; it was a
+    # tooltip and nothing else until then. esmfold2-design still declares no
+    # entry in GATE_COLUMNS, so ``judge`` called without a preset reads no bar
+    # here -- see the note above MODE_GATE_COLUMNS for why the bar is keyed on
+    # the run's mode rather than on the tool alone.
     # The number is the pipeline's own STRICT_IPTM, raised there from 0.55 on
     # 2026-06-03 after three runs returned 0.83 / 0.83 / 0.95.
     ("esmfold2-design", "ipTM"): {
         "good": 0.75,
         "excellent": 0.85,
         "direction": "higher_is_better",
+        # "0.75 OR MORE", not "above 0.75". _classify gates on ``>=`` and #241
+        # corrected the same slip in meta.py and in the results template; this
+        # copy was missed because it is English in a Python dict rather than
+        # an HTML entity, so that commit's regex could not see it. It matters
+        # more now than it did as a tooltip: this column is a gate leg in
+        # minibinder mode, and judge() is inclusive at exactly 0.75.
         "explanation": (
-            "Interface pTM from the ESMFold2 critic re-score. Above 0.75 "
-            "is a credible designed interface; above 0.85 is strong."
+            "Interface pTM from the ESMFold2 critic re-score. 0.75 or more "
+            "is a credible designed interface; 0.85 or more is strong."
         ),
     },
+    # The other half of the minibinder bar, and the reason an ipTM-only bar
+    # was refused here: on job 2b917b54 the HIGHEST-ipTM design (0.956) is a
+    # 158 aa poly-Leu/Arg run at pI 11.95 that the pipeline drops. A bar that
+    # cannot see pI prints "meets" on the one design the page tells you not
+    # to order.
+    #
+    # NULL BY CONSTRUCTION IN SCFV MODE (run_pipeline.py writes
+    # ``"pI": None if is_antibody``), which is exactly why this leg is scoped
+    # to one mode: as a plain GATE_COLUMNS entry it would leave every antibody
+    # design permanently unjudged.
+    #
+    # BOUNDARY: the pipeline gates on ``pi < STRICT_PI`` (strict), and ``judge``
+    # compares ``<= good`` for a lower-is-better column, so the two disagree at
+    # the bar -- this reads "meets" where _classify reads "drop".
+    #
+    # IT IS A WINDOW, NOT A POINT, and calling it "exactly pI 6.00 and nowhere
+    # else" was wrong. ``judge`` compares ``shown_value``, the DISPLAYED
+    # number, and this column displays at ".2f" -- so EVERY reading that is at
+    # or above 6.0 and still renders "6.00" meets the bar here while the
+    # pipeline drops it. The ipTM leg has the same window at ".3f". No numeric
+    # interval is written down for it on purpose: where the rounding turns
+    # over is a float-representation detail, and a literal would pin trivia.
+    # That is inherent to comparing what the page shows (see ``shown_value``
+    # for why it must), and it errs toward "meets" on a design the pipeline
+    # dropped, which is the direction that matters here.
+    #
+    # THE DIVERGENCE IS VISIBLE BETWEEN TWO WEB PAGES, not only against the
+    # container: the tool's own results template applies ``_pi < 6.0``, so a
+    # design stored at pI 6.000 is "rejected" there and "Meets pI 6 and
+    # ipTM 0.75" on /jobs/compare. The cause is the OPERATOR above, not the
+    # rounding -- at exactly 6.000 the raw and displayed values are the same
+    # number and the two still disagree. (An earlier draft here blamed
+    # raw-vs-displayed, which is a second, wider effect, not this one.)
+    # Reconciling them is a decision about the results template, which #241's
+    # tests pin, and it is NOT made here.
+    #
+    # The bar stays the legend's ``good`` by decision (see the note above
+    # GATE_COLUMNS); 5.99 would invent precision the pipeline does not have.
+    # Pinned at both edges by tests/test_jobs_compare_headline.py -- NOT by
+    # test_derived_verdicts.py, whose drift check compares the two NUMBERS
+    # (6.0 == STRICT_PI) and structurally cannot see an operator difference.
+    #
+    # THE WORDING BELOW IS ALSO A TOOLTIP ON THE TOOL'S OWN RESULTS PAGE
+    # (components/candidate_table.html renders every legend that way), and
+    # that page's panel prose states the bar as "pI < 6". So "6 or less" and
+    # "pI < 6" sit on one screen. Both are accurate about their own side --
+    # the tooltip describes what judge() does, the prose what _classify does
+    # -- and the inclusive wording here is required by the prose guard in
+    # tests/test_derived_verdicts.py, which exists because a strict word
+    # beside an inclusive comparison is the worse error. Noted rather than
+    # reconciled: reconciling means changing the results template's operator,
+    # which is #241's territory.
+    ("esmfold2-design", "pI"): {
+        "good": 6.0,
+        "direction": "lower_is_better",
+        # ONE LINE, and kept under the corpus's existing peak (185, boltzgen
+        # ipTM) on purpose: this field is the completion email's whole caption
+        # slot, bounded by _SLOT_LIMIT in
+        # tests/test_job_complete_email_caption.py. Staying under the peak
+        # means this entry cannot be the one that re-dates that ceiling's
+        # justification -- which, separately, already cites a stale figure.
+        # "6 OR LESS", NOT "BELOW 6". judge counts a value exactly on the bar
+        # as meeting it, and test_derived_verdicts' prose guard forbids strict
+        # wording on a gate leg for exactly that reason. The first draft of
+        # this line read "Below 6" -- the same defect this very commit fixed
+        # by hand in the ipTM legend above -- and shipped only because that
+        # guard was keyed on GATE_COLUMNS and could not see a mode-scoped leg.
+        # It iterates ALL_GATE_LEGS now.
+        "explanation": (
+            "Isoelectric point of the designed binder. 6 or less is what "
+            "downstream display needs; a high-pI design is usually an "
+            "insoluble, non-specific scaffold."
+        ),
+    },
+    # THERE IS DELIBERATELY NO ("esmfold2-design", "iPTM_proxy") ENTRY, AND AN
+    # scFv GATE LEG WAS REMOVED WITH IT. Both were added by the change that
+    # introduced MODE_GATE_COLUMNS and both were wrong, for a reason worth
+    # keeping so the next author does not re-add them.
+    #
+    # THE BAR CAN BE MODE-SCOPED; A LEGEND CANNOT. MODE_GATE_COLUMNS is keyed
+    # on (tool, mode), but SCORE_LEGENDS is keyed on (tool, column) and
+    # ``score_legends_for(tool)`` hands the whole set out with no mode in
+    # sight. Two surfaces read it that way:
+    #
+    #   * components/candidate_table.html renders ``legend_text`` as the
+    #     column's tooltip on the tool's OWN results page, which lists
+    #     iPTM_proxy in BOTH modes.
+    #   * shared/email.py::_top_candidate_summary picks the first scored
+    #     column that HAS a legend, so adding one put this column one numeric
+    #     reading away from being the completion mail's whole caption. It
+    #     never actually fired -- that chooser also requires a number, and the
+    #     proxy was blank in every production run -- so this half is a hazard
+    #     that was closed, not a bug that shipped. The results-page tooltip
+    #     below IS the one that shipped.
+    #
+    # A legend saying "CDR distogram proxy from the scFv critic, 0.50 or more
+    # is the strict-pass bar" is therefore displayed on minibinder runs, where
+    # the column holds ``distogram_iptm_proxy`` -- a DIFFERENT quantity -- and
+    # where _classify gates on iptm and pI only, never on this. Two false
+    # sentences, to a customer, on the page the change cited as its sibling.
+    # No wording fixes that: one string cannot be true of two quantities.
+    #
+    # THE LEGEND ARGUMENT ABOVE IS THE WHOLE REASON, and it is enough on its
+    # own. An earlier draft of this note propped it up with two further claims
+    # that are false, recorded here so they are not resurrected:
+    #
+    #   * "the proxy is informative only, never calibrated". That is the
+    #     results page's copy about the MINIBINDER proxy. run_pipeline's
+    #     _classify gates the scFv branch on cdr_distogram_iptm_proxy at
+    #     STRICT_CDR_IPTM_PROXY, so the tool does judge an antibody on it.
+    #   * "blank through all 13 production drops -- the scaling-critic rows it
+    #     was read from are gone". The 13 drops are #243's own figure and are
+    #     historical: since #242 the proxy is sourced off the hero critic, and
+    #     a stock scFv run DOES populate it.
+    #
+    # So the leg was not free to remove for want of data; it was removed
+    # because SCORE_LEGENDS cannot express a per-mode meaning and the legend
+    # is what the customer reads. scFv runs have NO bar here, which is what
+    # they had before. Restoring the leg means giving the mode a column whose
+    # meaning does not change with it, or teaching the legend map about modes.
 
     ("iggm", "epitope_contacts"): {
         "good": 3,
@@ -1240,15 +1369,97 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
     # An ipTM-only bar was tried and is worse than nothing here. This tool's
     # worked example exists to teach that its HIGHEST-ipTM design (0.956) was
     # rejected on pI 11.95, so an ipTM-only bar prints "meets" on the one
-    # design the copy beside it tells you not to order. Saying nothing is the
-    # honest answer until a record carries its own mode.
+    # design the copy beside it tells you not to order.
     #
-    # THE UPGRADE PATH: stamp the mode onto each record in
-    # tools/esmfold2_design/run_pipeline.py -- a mode is a FACT about the run,
-    # so storing it is what this change endorses, not what it forbids -- then
-    # declare a gate set per mode. That edit rebuilds the GPU images, which is
-    # why it is not bundled here.
+    # This note used to close "saying nothing is the honest answer until a
+    # record carries its own mode". That conclusion is superseded and the
+    # condition in it was never met: no record carries a mode even now. See
+    # MODE_GATE_COLUMNS below, which keys the bar on the RUN's mode instead.
+    #
+    # THE UPGRADE PATH WAS TAKEN, one step short of what this note predicted:
+    # see MODE_GATE_COLUMNS below. Every objection above is an objection to a
+    # bar keyed on the TOOL, and all three survive intact; the bar is keyed on
+    # (tool, mode) instead. The mode does not need stamping onto each record
+    # and so does NOT rebuild the GPU images, because ``is_antibody`` is
+    # already on every job result -- a fact about the run, which is the level
+    # the mode belongs at anyway. This entry stays absent so that
+    # ``tool_has_bar("esmfold2-design")`` is still False and every caller that
+    # cannot supply a mode keeps reading no bar rather than the wrong one.
 }
+
+
+# The bar for a tool whose gate is a property of the RUN's mode, not of the
+# tool. ``{tool: {mode: gate columns}}``, and it is consulted only when a
+# caller supplies the mode -- ``gate_columns(tool)`` with no preset returns
+# empty for a tool keyed here, which is what keeps ``tool_has_bar`` and every
+# unmoded consumer (the campaign counts, the target ranking table,
+# shared/ranking) reading exactly what they read before this map existed.
+#
+# WHY NOT JUST PUT IT IN GATE_COLUMNS. Each of the three objections in the
+# note above is an objection to a UNIFORM conjunction and none of them is an
+# objection to this:
+#
+#   * pI is null by construction on an scFv run, so as a tool-wide leg it
+#     leaves every antibody design permanently unjudged. Here it is a
+#     minibinder leg and an scFv design is never measured against it.
+#   * iPTM_proxy holds a different quantity in each mode and has a defensible
+#     bar in only one. It is not a leg here AT ALL, for a stronger reason
+#     found in review: a mode-scoped BAR cannot carry a mode-scoped LEGEND,
+#     and the legend is what reaches the customer. See SCORE_LEGENDS.
+#   * Picking between them from whichever columns happen to be populated is
+#     the original defect wearing a new name. Nothing here reads a populated
+#     column: the mode comes from ``result_mode``, off ``is_antibody``.
+#
+# The legs are the pipeline's own _classify, whose STRICT_IPTM and STRICT_PI
+# are checked against these legends by tests/test_derived_verdicts.py the same
+# way every GATE_COLUMNS leg is. STRICT_CDR_IPTM_PROXY is NOT mirrored here --
+# nothing gates on that column any more, so nothing holds it to the pipeline.
+# ORDER IS THE BAR'S READING ORDER, and pI leads deliberately: it is a hard
+# gate in the pipeline, checked before the iPTM bands, so a shortfall sentence
+# that names it first says what the pipeline decided first.
+MODE_GATE_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
+    "esmfold2-design": {
+        "minibinder": ("pI", "ipTM"),
+        # NO "scfv" ENTRY. An iPTM_proxy leg was here and was removed; see the
+        # block where its legend would be, in SCORE_LEGENDS above, for why a
+        # mode-scoped BAR cannot carry a mode-scoped LEGEND and why gating on
+        # that column bought nothing. A mode absent here resolves to no bar,
+        # which is the same answer the tool gave before this map existed.
+    },
+}
+
+
+def result_mode(result: object) -> Optional[str]:
+    """Which of a moded tool's bars a JOB RESULT calls for, or None.
+
+    Reads ``is_antibody``, which every esmfold2-design run stores on its
+    summary. A fact about the run, recorded by the pipeline -- not an
+    inference from which score columns came back populated, which is the
+    defect the note above MODE_GATE_COLUMNS exists to refuse.
+
+    Returns None rather than guessing when the flag is absent or is not a
+    bool, so a caller falls back to the preset the way
+    templates/tools/esmfold2_design_results.html already does
+    (``output.get('is_antibody', preset == 'scfv')``). Both routes must agree:
+    resolving from the preset FIRST reads the other way round from every other
+    surface, because a job's stored preset can be the default string while the
+    result records what the run actually did.
+
+    Tolerates the legacy wrapped result shape (``result["output"]``), which is
+    still on rows written before ``_interpret_pipeline_return`` unwrapped;
+    ``shared.jobs.candidate_records`` normalises the candidate list for those
+    rows, and the mode has to survive the same trip or a wrapped row gets its
+    candidates read against no bar at all.
+    """
+    if not isinstance(result, dict):
+        return None
+    flag = result.get("is_antibody")
+    if not isinstance(flag, bool):
+        nested = result.get("output")
+        flag = nested.get("is_antibody") if isinstance(nested, dict) else None
+    if not isinstance(flag, bool):
+        return None
+    return "scfv" if flag else "minibinder"
 
 
 # Values that are a placeholder rather than a measurement, per (tool, column).
@@ -1323,6 +1534,22 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     # job already in the table holds it there. Renaming the display column
     # without this alias would blank the cell on every past run.
     "surface_hydrophobicity": ("surface_hydrophobicity", "SAP"),
+    # "isoelectric_point" is the STORAGE spelling on esmfold2-design's
+    # ``designs[]`` rows; the orchestrator's ``candidates[]`` view renames it
+    # to "pI". Both shapes reach the web tier -- shared.jobs.candidate_records
+    # falls through to ``designs[]`` for the legacy/single-seed rows that
+    # pre-dated the candidates contract, and for those the pI leg resolved to
+    # nothing, every record came back ``unjudged``, and /jobs/compare led with
+    # the pI 11.95 reject again with no bar shown. A gate leg that silently
+    # evaporates on one of the two shapes its own tool writes is worse than no
+    # leg. One quantity, two spellings, same as ipAE below.
+    #
+    # THE PROXY IS NOT ALIASED HERE AND MUST NOT BE. Its ``designs[]``
+    # spellings are ``cdr_distogram_iptm_proxy`` and ``distogram_iptm_proxy``,
+    # which are two DIFFERENT quantities chosen by the run's mode; an alias
+    # list is mode-blind, so it would let a minibinder reading answer an scFv
+    # bar. That column no longer gates anything anyway -- see SCORE_LEGENDS.
+    "pI": ("pI", "isoelectric_point"),
 }
 
 
@@ -1465,42 +1692,68 @@ def _join_bar(tool: str, columns) -> str:
     return ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
-def gate_columns(tool: str) -> tuple[str, ...]:
-    """Columns whose conjunction is ``tool``'s bar; empty when it has none."""
+def gate_columns(tool: str, preset: Optional[str] = None) -> tuple[str, ...]:
+    """Columns whose conjunction is ``tool``'s bar; empty when it has none.
+
+    ``preset`` is the run's MODE and it refines nothing except a tool keyed in
+    :data:`MODE_GATE_COLUMNS`. Two properties this signature is chosen for:
+
+    * A moded tool with NO preset returns ``()``. That is not a shrug, it is
+      the only honest answer -- its legs are not comparable across modes, and
+      it keeps every caller that cannot supply a mode reading exactly what it
+      read before the map existed.
+    * A tool keyed in ``GATE_COLUMNS`` IGNORES ``preset`` entirely. Its bar is
+      a property of the tool, so passing a mode in must not be able to shrink
+      or move it; a caller that hands every column its job's preset therefore
+      changes nothing for boltzgen, pxdesign or the rest.
+    """
+    modes = MODE_GATE_COLUMNS.get(tool or "")
+    if modes is not None:
+        return modes.get(preset or "", ())
     return GATE_COLUMNS.get(tool or "", ())
 
 
-def tool_has_bar(tool: str) -> bool:
+def tool_has_bar(tool: str, preset: Optional[str] = None) -> bool:
     """Does this tool declare a quality bar at all?
 
     A PROPERTY OF THE TOOL, not of what one result happened to store, and that
     is the whole point. The regime used to be inferred per cohort from whether
     any row carried a ``filter_status``, which made it depend on which
     container version ran and on whether job recovery had rebuilt the row.
+
+    A moded tool answers False without a ``preset`` and True with one. Callers
+    that count designs across a whole campaign deliberately do not pass one:
+    "N of M meet the bar" over a mixed cohort would be summing two different
+    bars.
     """
-    return bool(gate_columns(tool))
+    return bool(gate_columns(tool, preset))
 
 
-def gate_bar_text(tool: str) -> str:
+def gate_bar_text(tool: str, preset: Optional[str] = None) -> str:
     """The tool's WHOLE bar as a sentence fragment.
 
     Every leg, which is right for a tooltip explaining what the bar is. It is
     NOT right for a sentence asserting something about designs -- use
     :func:`shortfall_bar_text` there.
     """
-    return _join_bar(tool, gate_columns(tool))
+    return _join_bar(tool, gate_columns(tool, preset))
 
 
-def shortfall_bar_text(tool: str, columns) -> str:
+def shortfall_bar_text(tool: str, columns, preset: Optional[str] = None) -> str:
     """The bar restricted to ``columns``: what a banner may safely assert.
 
     A leg nobody measured cannot be a leg anything failed to reach. Pass the
     union of the rows' ``Judgement.shortfall_columns`` and the sentence names
     only legs the page has evidence about. Bar order is preserved, so the
     banner reads the same way the tooltip does.
+
+    ``preset`` must be the SAME mode the judgements were produced under, or
+    the filter drops every leg and the banner quietly loses its bar.
     """
     wanted = set(columns or ())
-    return _join_bar(tool, [c for c in gate_columns(tool) if c in wanted])
+    return _join_bar(
+        tool, [c for c in gate_columns(tool, preset) if c in wanted]
+    )
 
 
 def _resolve_state(record: object, tool: str, column: str):
@@ -1657,7 +1910,9 @@ def is_fabricated(record: object) -> bool:
     return bool(_FABRICATED_RE.search(str(marker or "")))
 
 
-def verdict_text(tool: str, verdict: "Judgement") -> str:
+def verdict_text(
+    tool: str, verdict: "Judgement", preset: Optional[str] = None
+) -> str:
     """One judgement as the one sentence every surface shows for it.
 
     THE ONLY RENDERER, and there used to be two. The results table branched on
@@ -1670,8 +1925,19 @@ def verdict_text(tool: str, verdict: "Judgement") -> str:
     itself about invented numbers is the exact harm this whole change exists
     to remove, and it took one un-mirrored branch.
 
-    Returns "" only when the tool declares no bar, which is the one case with
-    nothing to say.
+    Returns "" when there is no bar to name: either the tool declares none, or
+    it declares a MODE-scoped one and the caller omitted the mode. The second
+    case is the "meets" branch below refusing to render the bare word "Meets",
+    and this sentence used to say "only when the tool declares no bar" -- true
+    until mode-scoped bars existed, and falsified by the branch six lines
+    down.
+
+    ``preset`` MUST be the mode the judgement was produced under, for a tool
+    in :data:`MODE_GATE_COLUMNS`. Without it the "meets" branch composes its
+    sentence from a bar that resolves to nothing and renders the bare word
+    "Meets" -- the same shape as the empty "Not measured:" that a mis-keyed
+    slug once put in every cell on this tool's page. The branch refuses to
+    assert a bar it cannot name rather than trusting the caller.
     """
     if verdict.verdict == "below":
         parts = ["; ".join(verdict.shortfalls)]
@@ -1681,7 +1947,8 @@ def verdict_text(tool: str, verdict: "Judgement") -> str:
             parts.append(", ".join(verdict.unusable) + " not usable")
         return "; ".join(parts)
     if verdict.verdict == "meets":
-        return "Meets " + gate_bar_text(tool)
+        bar = gate_bar_text(tool, preset)
+        return "Meets " + bar if bar else ""
     if verdict.unusable:
         text = "Not usable: " + ", ".join(verdict.unusable)
         if verdict.unmeasured:
@@ -1723,13 +1990,22 @@ def bar_is_answerable(tool: str, records) -> bool:
     )
 
 
-def judge(tool: str, record: object) -> Judgement:
+def judge(
+    tool: str, record: object, preset: Optional[str] = None
+) -> Judgement:
     """Compare ONE record's measurements against ``tool``'s bar, right now.
 
     The only place in this repo that decides whether a design meets a bar.
     Call it at render time and throw the answer away; never persist it.
+
+    ``preset`` is the run's mode, and it only means anything for a tool in
+    :data:`MODE_GATE_COLUMNS`; see :func:`gate_columns`. Resolve it with
+    :func:`result_mode` off the job RESULT, falling back to the job's stored
+    preset -- never from the preset alone, which reads the other way round
+    from every other surface. Omit it and a moded tool is ``unjudged``, which
+    is the answer it gave before modes existed.
     """
-    columns = gate_columns(tool)
+    columns = gate_columns(tool, preset)
     if not columns:
         return Judgement("unjudged", (), ())
 
