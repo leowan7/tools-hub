@@ -1439,11 +1439,17 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 
 
 # The bar for a tool whose gate is a property of the RUN's mode, not of the
-# tool. ``{tool: {mode: gate columns}}``, and it is consulted only when a
-# caller supplies the mode -- ``gate_columns(tool)`` with no preset returns
-# empty for a tool keyed here, which is what keeps ``tool_has_bar`` and every
-# unmoded consumer (the campaign counts, the target ranking table,
-# shared/ranking) reading exactly what they read before this map existed.
+# tool. ``{tool: {mode: gate columns}}``, consulted only when a caller
+# supplies the mode -- ``gate_columns(tool)`` with no preset returns empty for
+# a tool keyed here, so a caller with no run in hand still reads no bar.
+#
+# THE CONSUMERS THIS COMMENT ONCE LISTED AS UNCHANGED NOW SUPPLY A MODE. It
+# read "which is what keeps ``tool_has_bar`` and every unmoded consumer (the
+# campaign counts, the target ranking table, shared/ranking) reading exactly
+# what they read before this map existed". True when written, false now: the
+# counts and the ranking table resolve the run's mode through
+# :func:`resolve_mode` and pass it. ``tool_has_bar(tool)`` with no argument is
+# still False, which is the property that sentence was really about.
 #
 # WHY NOT JUST PUT IT IN GATE_COLUMNS. Each of the three objections in the
 # note above is an objection to a UNIFORM conjunction and none of them is an
@@ -1510,6 +1516,40 @@ def result_mode(result: object) -> Optional[str]:
     if not isinstance(flag, bool):
         return None
     return "scfv" if flag else "minibinder"
+
+
+def resolve_mode(
+    tool: str, result: object, preset: Optional[str] = None
+) -> Optional[str]:
+    """The mode to judge one RUN under: the RESULT first, the preset second.
+
+    THE ORDER IS THE WHOLE POINT and it is written down once, here, because
+    every consumer needs it and reversing it is silent. A job's stored preset
+    can be a default string while the result records what the run actually
+    did, so ``result_mode`` leads and ``preset`` is the fallback -- the same
+    order ``templates/tools/esmfold2_design_results.html`` resolves
+    ``is_antibody`` in (``output.get('is_antibody', preset == 'scfv')``).
+    ``blueprints/jobs.py::jobs_compare`` wrote it inline first; this is that
+    expression with one guard added.
+
+    THE GUARD: for a tool NOT in :data:`MODE_GATE_COLUMNS` this returns
+    ``preset`` untouched and never reads the result at all. ``result_mode`` is
+    tool-blind by design -- it reads an ``is_antibody`` key off any dict it is
+    handed -- and one consumer uses the answer as a COHORT KEY
+    (``shared.target_results._candidate_rows`` stamps it as
+    ``_source_preset``, which ``shared.ranking.cohort_key_for`` reads). A tool
+    that starts writing that key for its own reasons would split its own
+    percentile denominator in half with nothing raising. Only esmfold2-design
+    writes ``is_antibody`` today; the guard is what keeps that a fact about
+    the present rather than a dependency.
+
+    Passing the answer to a tool keyed in ``GATE_COLUMNS`` changes nothing
+    either way -- ``gate_columns`` ignores ``preset`` for those -- so callers
+    do not branch on the tool before calling this.
+    """
+    if (tool or "") not in MODE_GATE_COLUMNS:
+        return preset
+    return result_mode(result) or preset
 
 
 # Values that are a placeholder rather than a measurement, per (tool, column).
@@ -1779,10 +1819,20 @@ def tool_has_bar(tool: str, preset: Optional[str] = None) -> bool:
     any row carried a ``filter_status``, which made it depend on which
     container version ran and on whether job recovery had rebuilt the row.
 
-    A moded tool answers False without a ``preset`` and True with one. Callers
-    that count designs across a whole campaign deliberately do not pass one:
-    "N of M meet the bar" over a mixed cohort would be summing two different
-    bars.
+    A moded tool answers False without a ``preset`` and True with one.
+
+    THE COUNTERS DO PASS ONE NOW, and this docstring used to say the opposite
+    -- "callers that count designs across a whole campaign deliberately do not
+    pass one: 'N of M meet the bar' over a mixed cohort would be summing two
+    different bars". The objection was to resolving ONE mode for a whole
+    cohort, which nothing does. ``shared.jobs.count_candidates_meeting_bar``
+    resolves the mode PER RUN, from that run's own result
+    (:func:`resolve_mode`), so a cohort total is a sum of per-run counts each
+    taken against its own run's bar. That is what ``passed_total`` already is
+    across TOOLS -- bindcraft's bar and boltzgen's bar summed into one number
+    on every target page -- so a mixed-mode esmfold2-design cohort is not a
+    new kind of mixing. What stays true is the sentence above it: a caller
+    that cannot name a run still gets False and still reads no bar.
     """
     return bool(gate_columns(tool, preset))
 

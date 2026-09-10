@@ -239,7 +239,9 @@ def headline_candidate(
     return measured_fallback or fallback
 
 
-def candidate_meets_bar(tool: str, cand: object) -> bool:
+def candidate_meets_bar(
+    tool: str, cand: object, preset: Optional[str] = None
+) -> bool:
     """True iff ``cand``'s measurements meet every leg of ``tool``'s bar.
 
     Evidence of meeting the bar, which is not the same as absence of evidence
@@ -257,11 +259,19 @@ def candidate_meets_bar(tool: str, cand: object) -> bool:
 
     ``tool`` leads the signature because it decides which bar applies at all;
     a record carries no opinion about that any more.
+
+    ``preset`` is the RUN's mode for a tool in
+    ``score_legends.MODE_GATE_COLUMNS`` and inert for every other tool. A
+    record does not carry one -- a mode is a property of the run, not of the
+    design -- so the caller resolves it once per result and hands it down;
+    :func:`count_candidates_meeting_bar` is the caller that does.
     """
-    return score_legends.judge(tool, cand).verdict == "meets"
+    return score_legends.judge(tool, cand, preset=preset).verdict == "meets"
 
 
-def count_candidates_meeting_bar(result: Optional[dict], tool: str) -> int:
+def count_candidates_meeting_bar(
+    result: Optional[dict], tool: str, preset: Optional[str] = None
+) -> int:
     """How many of a job's designs meet ``tool``'s bar. Shape-tolerant across
     the ``candidates[]`` / ``designs[]`` split.
 
@@ -282,13 +292,35 @@ def count_candidates_meeting_bar(result: Optional[dict], tool: str) -> int:
 
     Keeps the campaign total equal to the sum of what each child's own job
     page shows.
+
+    A MODED TOOL'S REGIME IS RESOLVED FROM THIS RESULT, not from the cohort
+    the result is being summed into. ``result`` IS one run, and a mode is a
+    property of a run, so ``score_legends.resolve_mode`` can answer here even
+    though ``tool_has_bar(tool)`` alone cannot. ``preset`` is only the
+    fallback for a result that does not record its own mode; pass the job's or
+    the campaign's stored preset.
+
+    So a total over several runs is a sum of per-run counts, each taken
+    against its own run's bar. That is what this number already was across
+    TOOLS -- a target's ``passed_total`` sums bindcraft's bar and boltzgen's
+    bar into one figure -- and mixing two MODES of one tool is the same
+    operation, not a new one. What it is NOT is a single bar resolved for a
+    whole cohort, which is the thing ``tool_has_bar``'s docstring refused and
+    still refuses.
+
+    THIS RE-LABELS DELIVERED WORK on esmfold2-design. Before, the tool
+    declared no bar and every delivered record counted; a minibinder run now
+    counts only designs meeting pI and ipTM, so real job 2b917b54 reports 1
+    where it used to report 2. scfv runs are unchanged: no scfv entry exists
+    in ``MODE_GATE_COLUMNS``, so that mode still resolves to no bar.
     """
     records = candidate_records(result)
     if not records:
         return 0
-    if not score_legends.tool_has_bar(tool):
+    mode = score_legends.resolve_mode(tool, result, preset)
+    if not score_legends.tool_has_bar(tool, mode):
         return len(records)
-    return sum(1 for c in records if candidate_meets_bar(tool, c))
+    return sum(1 for c in records if candidate_meets_bar(tool, c, mode))
 
 
 @dataclass(frozen=True)

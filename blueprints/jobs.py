@@ -39,6 +39,7 @@ from shared.jobs import (
     complete_job,
     create_job,
     get_job,
+    headline_candidate,
     list_campaign_labels_for_user,
     list_jobs_paginated,
     mark_failed,
@@ -96,20 +97,53 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     """Pull a formatted top-candidate score for the share og_title.
 
     Returns None when the job has no candidate scores to surface (a
-    failed run, a sequence-design tool, a job without a result yet).
-    The caller composes ``og_title`` without the trailing score clause
-    when this returns None.
+    failed run, a sequence-design tool, a job without a result yet),
+    and ALSO when the design this would speak for does not clear the
+    tool's bar. The caller composes ``og_title`` without the trailing
+    score clause when this returns None.
+
+    THE PICK IS DERIVED, NOT ``candidates[0]``. The stored order is the
+    container's ranking key and not its bar: esmfold2-design job 2b917b54
+    stores a pI 11.95 poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67
+    design at 0.9354 that clears the bar, so a blind read put the reject's
+    number in an og:title on a PUBLIC share URL. Same mechanism the compare
+    page uses (``shared.jobs.headline_candidate``), and the mode comes off the
+    RESULT first with the stored preset only as a fallback
+    (``score_legends.resolve_mode``).
+
+    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. Every other surface prints
+    a shortfall beside the figure it shows; an og:title is read with no page
+    around it and has nowhere to put one, so a design the bar rejects gets no
+    clause rather than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
+    the widening is intended: any run of any gating tool whose every design
+    fell short now shares a bare title where it used to publish the least-bad
+    number. A tool that declares no bar is unaffected -- its records are
+    ``unjudged``, which is not ``below`` -- and so is a run with one design
+    that clears. Both halves are driven through this route by
+    tests/test_esmfold2_reject_surfaces.py.
+
+    ``candidate_records`` rather than ``result["candidates"]``: the
+    designs-only shape and the legacy ``result["output"]`` wrapper were
+    invisible to the old read, so those jobs silently produced no clause at
+    all.
     """
     if getattr(job, "status", None) != "succeeded":
         return None
-    result = getattr(job, "result", None) or {}
-    if not isinstance(result, dict):
+    result = getattr(job, "result", None)
+    records = candidate_records(result)
+    if not records:
         return None
-    candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    tool = getattr(job, "tool", None) or ""
+    mode = score_legends.resolve_mode(
+        tool, result, getattr(job, "preset", None)
+    )
+    top, verdict = headline_candidate(records, tool, preset=mode)
+    if top is None:
         return None
-    top = candidates[0]
-    if not isinstance(top, dict):
+    # shared.ranking's predicate, verbatim: a record can be BOTH "below" and
+    # carrying a declared placeholder, and either one disqualifies it from
+    # speaking for the run unqualified.
+    if verdict.verdict == "below" or verdict.unusable:
         return None
     scores = top.get("scores")
     if not isinstance(scores, dict):
@@ -398,9 +432,18 @@ def job_status(job_id: str):
     rows = [c for c in partials if isinstance(c, dict)]
     if not score_legends.tool_has_bar(job.tool):
         # No bar to meet, so this is a delivered count and the template says
-        # so. It must NOT be described as meeting a bar: esmfold2-design has
-        # no bar, and its own worked example turns on a design that folds
+        # so. It must NOT be described as meeting a bar: esmfold2-design reads
+        # no bar here, and its own worked example turns on a design that folds
         # beautifully and must not be ordered.
+        #
+        # NO MODE IS PASSED HERE AND THAT IS NOT AN OVERSIGHT. This endpoint
+        # runs while the job is still going, so ``job.result`` is None and
+        # ``resolve_mode`` has nothing to read; and the streamed partials
+        # carry no pI at all, so the minibinder bar could not be answered even
+        # with the mode in hand (``bar_is_answerable`` takes no preset for the
+        # same reason). "N delivered so far", which is what the template says,
+        # stays the honest live answer -- unlike the finished surfaces, it
+        # never presents a delivered count AS a count of keepers.
         passed = len(rows)
     elif score_legends.bar_is_answerable(job.tool, rows):
         passed = sum(
@@ -869,8 +912,15 @@ def export_fasta(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     result = job.result or {}
+    # The tool and the RUN'S MODE, so a design this tool's own bar rejects
+    # says so in its own record rather than sitting at rank1 unmarked. Mode
+    # off the result first, stored preset as the fallback -- the order every
+    # other surface on this tool resolves it in.
     body = candidates_to_fasta(
-        candidate_records(job.result), sequences=result.get("sequences", []),
+        candidate_records(job.result),
+        sequences=result.get("sequences", []),
+        tool=job.tool,
+        preset=score_legends.resolve_mode(job.tool or "", job.result, job.preset),
     )
     if not body:
         body = "# No sequences found in this job's output.\n"

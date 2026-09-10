@@ -932,6 +932,11 @@ def _target_export(target_id: str, fmt: str):
             },
         )
     if fmt == "fasta":
+        # NO SCALAR tool/preset, deliberately: these rows are merged across
+        # every run on the target, so one pair would be wrong for most of
+        # them. Each row carries its own ``_source_tool`` / ``_source_preset``
+        # (the latter holding the run's MODE for a moded tool) and
+        # ``shared.exports._bar_scope`` reads them per record.
         body = candidates_to_fasta(candidates)
         if not body:
             # "No sequences found" is a claim about the target. Under `partial`
