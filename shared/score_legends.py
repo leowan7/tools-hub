@@ -902,7 +902,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     #   * "the proxy is informative only, never calibrated". That is the
     #     results page's copy about the MINIBINDER proxy. run_pipeline's
     #     _classify gates the scFv branch on cdr_distogram_iptm_proxy at
-    #     STRICT_CDR_IPTM_PROXY, so the tool does judge an antibody on it.
+    #     STRICT_CDR_IPTM_PROXY -- one of TWO legs since 2026-09-10, the
+    #     other being iPTM -- so the tool does judge an antibody on it.
     #   * "blank through all 13 production drops -- the scaling-critic rows it
     #     was read from are gone". The 13 drops are #243's own figure and are
     #     historical: since #242 the proxy is sourced off the hero critic, and
@@ -1408,7 +1409,7 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
     # esmfold2-design is ABSENT, and that is a decision rather than the
     # oversight it looks like. Its bar is genuinely mode-dependent: the
     # pipeline's own classifier judges an scFv on the CDR distogram proxy
-    # alone, and a minibinder on ipTM AND pI < 6, since an undisplayable
+    # AND ipTM, and a minibinder on ipTM AND pI < 6, since an undisplayable
     # scaffold is a drop however well it folds. Neither can join a uniform
     # conjunction. pI is null by construction in scFv mode, so a pI leg leaves
     # every antibody design permanently unjudged; the proxy column holds a
@@ -1469,7 +1470,9 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 # The legs are the pipeline's own _classify, whose STRICT_IPTM and STRICT_PI
 # are checked against these legends by tests/test_derived_verdicts.py the same
 # way every GATE_COLUMNS leg is. STRICT_CDR_IPTM_PROXY is NOT mirrored here --
-# nothing gates on that column any more, so nothing holds it to the pipeline.
+# the PIPELINE still gates every scFv on it, but no leg in this map does, so
+# nothing here holds that constant to the pipeline. That is a gap in the drift
+# guard, not a statement that the constant is unused.
 # ORDER IS THE BAR'S READING ORDER, and pI leads deliberately: it is a hard
 # gate in the pipeline, checked before the iPTM bands, so a shortfall sentence
 # that names it first says what the pipeline decided first.
@@ -1481,6 +1484,44 @@ MODE_GATE_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
         # mode-scoped BAR cannot carry a mode-scoped LEGEND and why gating on
         # that column bought nothing. A mode absent here resolves to no bar,
         # which is the same answer the tool gave before this map existed.
+        #
+        # STILL NO ENTRY AFTER 2026-09-10, when _classify gained an ipTM leg
+        # for scFvs (run_pipeline.py). ``("ipTM",)`` is now writable here and
+        # would need no new legend, which is exactly what makes it tempting.
+        # It is refused because it is a SUBSET of that gate: it cannot see
+        # the proxy leg -- the one whose legend cannot be written -- so by
+        # construction it CAN print "meets" on a design the pipeline drops
+        # for a low proxy. Whether such a design actually occurs is
+        # unobserved: of the 12 scFv designs in docs/VALIDATION-LOG.md, none
+        # clears the ipTM bar while failing the proxy bar -- which is the one
+        # direction that would make an ipTM-only entry disagree with the
+        # pipeline. (The reverse DOES occur, at proxy 0.618 / ipTM 0.436, and
+        # is the row the new leg was added for.) Refused on the direction of
+        # the error rather
+        # than its frequency -- this is the panel that offers a sequence for
+        # synthesis, and being wrong permissively there is the expensive way
+        # round.
+        #
+        # A partial bar is NOT unprecedented: the pxdesign entry in
+        # GATE_COLUMNS above omits pAE, which that container is said to gate
+        # on. So the refusal here does not rest on partiality being novel.
+        #
+        # NOR DOES IT REST ON FREQUENCY, and an earlier draft of this note
+        # claimed it did -- that the omitted proxy leg "is the one doing the
+        # rejecting on half the recorded evidence". That is false, and it
+        # contradicts the measurement fifteen lines above. Across the 12
+        # recorded scFv designs the proxy leg rejects 2, and both of those are
+        # rejected by the ipTM leg as well: the proxy leg rejects NOTHING on
+        # its own. On the recorded evidence an ipTM-only bar would agree with
+        # the pipeline on all 12.
+        #
+        # The refusal rests on the DIRECTION of the error it can make. An
+        # ipTM-only bar cannot see the proxy leg, so the disagreement it can
+        # produce is always permissive -- "meets" on a design the pipeline
+        # dropped. This is the panel that offers a sequence for synthesis, and
+        # 12 designs on one target pairing is not a basis for betting that the
+        # two columns stay correlated. A mode earns an entry when every leg of
+        # its gate has a legend true in both modes.
     },
 }
 

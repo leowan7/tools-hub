@@ -94,6 +94,16 @@ TODO (post first prod run, separate PR):
   - Send heartbeats with ``new_candidate`` events for the live UI.
   - Calibrate STRICT_IPTM / STRICT_CDR_IPTM_PROXY thresholds against
     the first 8-seed PD-L1 sweep instead of the conservative defaults.
+    STILL OPEN, and the scFv iPTM leg added on 2026-09-10 does not close it:
+    that leg reuses STRICT_IPTM rather than inventing a number, but the only
+    scFv evidence in docs/VALIDATION-LOG.md is 12 designs on cd45 +
+    trastuzumab_framework_vhvl, which is upstream's own showcase pairing.
+    What would settle BOTH bars: an 8-seed sweep on a target that is not
+    that pairing, scored against something other than the same model --
+    a Boltz/AF cofold, or interface dSASA from the binder-developability
+    pass -- so that "iPTM >= 0.75 selects real interfaces" is tested rather
+    than assumed. If good scFvs turn out to sit at iPTM ~0.6 there, what
+    changes is the scFv leg's NUMBER, not whether the leg exists.
 """
 
 from __future__ import annotations
@@ -156,8 +166,8 @@ STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 # as a *source selector* is what broke: it matches scaling rows and only
 # scaling rows, and the scaling ensemble was off by default, so on the default
 # path no matching row exists, both proxies stayed None, and since _classify
-# gates scFvs on the CDR proxy alone EVERY antibody design came back ``drop``
-# regardless of quality (13/13 on a 2026-08-23 prod run). Loading the ensemble
+# then gated scFvs on the CDR proxy alone EVERY antibody design came back
+# ``drop`` regardless of quality (13/13 on a 2026-08-23 prod run). Loading the ensemble
 # did populate it -- which is why the tool looked fine to whoever tested that
 # way.
 #
@@ -279,18 +289,141 @@ def _classify(
     cdr_distogram_iptm_proxy: Optional[float],
     pi: Optional[float],
 ) -> str:
-    """Return ``strict_pass`` | ``borderline`` | ``drop``."""
+    """Return ``strict_pass`` | ``borderline`` | ``drop``.
+
+    BOTH modes gate on iPTM, and each adds one mode-specific leg: pI for a
+    minibinder, the CDR distogram proxy for an scFv. The scFv iPTM leg was
+    added on 2026-09-10; before it, this function read the CDR proxy alone
+    for antibodies and never looked at iPTM at all.
+
+    WHY THE SCFV LEG WAS ADDED, and it is measured rather than argued. Job
+    ``verify242-bs6-1789054528`` (prod, 2026-09-10, preset scfv / cd45 /
+    trastuzumab_framework_vhvl / batch_size 6) returned a design at
+    ``cdr_distogram_iptm_proxy`` 0.618 and ``iptm`` 0.436, and this function
+    called it ``strict_pass`` -- a number the minibinder branch beside it
+    rejects outright. ``strict_pass`` is what the results page's order panel
+    offers for synthesis, so the two modes were selling different things
+    under one word. Recorded in docs/VALIDATION-LOG.md under "ESMFold2 binder
+    design".
+
+    WHY TWO LEGS RATHER THAN A HIGHER PROXY BAR. The proxy is not a weaker
+    reading of iPTM; it answers a different question, off a different head.
+    Upstream's ``compute_distogram_iptm_proxy`` takes the pair ENTROPY of the
+    distogram over CDR-to-target pairs and keeps the lowest k of them
+    (binder_design.py, "Algorithm 15 Distogram ipTM Proxy") -- how certain
+    the model is about where it is putting the CDRs. iPTM is the folding
+    model's own confidence in the interface. A design can place CDRs
+    confidently into a poor interface, which is exactly the 0.618 / 0.436
+    row. So the fix is a second leg, not a retuned first one, and
+    STRICT_CDR_IPTM_PROXY is untouched -- the module TODO to calibrate it
+    against an 8-seed PD-L1 sweep still stands, unaffected either way.
+
+    WHY STRICT_IPTM TRANSFERS UNCHANGED FROM THE MINIBINDER BRANCH. iPTM is
+    measured on the same object in both modes: upstream's
+    ``fold_and_get_distogram`` splits ``target|binder`` on the separator into
+    exactly two chains, and ``design_binder`` -- the caller -- asserts that
+    neither half contains one ("we only support single binder and target
+    chains"), so two is all it can ever be. An scFv is ONE chain here -- the vhvl prompt templates are
+    VH + GGGSGGGSGGGSGGGS + VL -- so its iPTM is the same target-to-binder
+    interface quantity a minibinder's is, on the same scale. This change
+    invents no threshold; it reuses one.
+
+    ON THE EVIDENCE AVAILABLE this leg re-tiers 2 of the 12 designs ever
+    recorded for this tool, both in the run above: 0.618/0.436 strict_pass ->
+    drop, and 0.706/0.716 strict_pass -> borderline. The six designs of job
+    ``verify242-bs6-1789012528`` (iPTM 0.794-0.912) are unaffected. Twelve
+    designs on upstream's own showcase pairing is a thin basis for a bar in
+    either direction; what would settle it is in the module TODO.
+
+    ONE CONSEQUENCE FOR ``_shape_designs``, WHICH LANDED AS #250 WHILE THIS
+    WAS IN REVIEW. An antibody design whose iPTM is absent -- a diverged fold
+    emits NaN, which ``_finite`` reads as None -- used to be a ``strict_pass``
+    whenever its CDR proxy cleared 0.50, and #250 rests on that: it elects a
+    bucket's winning critic row on "carries any score" rather than on the
+    iPTM, citing "a NaN-iPTM row with a real 0.85 CDR proxy is a strict_pass;
+    letting a scored-but-failing row evict it flips ``_pick_best`` onto a
+    design the tool's own filter rejects".
+
+    That premise is gone and its conclusion survives it. Such a row is now
+    ``borderline`` rather than ``strict_pass`` -- capped by the iPTM leg above
+    -- but ``borderline`` is still a TIER, ``_pick_best`` still prefers it to
+    a measured-and-failed design, and an iPTM-election would still evict it.
+    #250's three tests that assert the word were updated here; every property
+    they exist for (which row wins the bucket, the proxy and pdb_key that
+    survive it, and in two of them the ``_pick_best`` outcome) is unchanged
+    and still asserted. Its differential harness's "never worse than
+    origin/main" finding -- recorded in the PR #250 description rather than in
+    the branch tree -- was measured against the proxy-only classifier and does
+    not carry over unchanged.
+
+    THE FIRST CUT OF THIS LEG RETURNED ``drop`` FOR AN ABSENT iPTM, AND THAT
+    WAS A REGRESSION IN THIS FILE -- not, as an earlier version of this
+    docstring claimed, a merge interaction for another branch to settle. It is
+    reachable with no reference to #250 at all: an scFv at proxy 0.90 with no
+    iPTM lost the order-panel pick to one at proxy 0.10 / iPTM 0.20, in
+    ``_pick_best``, in ``modal_app._aggregate`` and on the results page,
+    because with no tier occupied ``_pick_best`` falls through to
+    ``designs[0]`` and that list is iPTM-sorted with the unmeasured LAST. The
+    cap above is the fix and
+    ``test_the_unmeasured_design_still_wins_the_pick`` is the guard.
+    """
     if is_antibody:
+        # The CDR proxy keeps its own bar and its own band width; neither is
+        # changed by the iPTM leg beside it. It is checked first because it is
+        # the antibody-side precondition: without it nothing says the CDRs are
+        # what does the binding, and a design that fails it is a drop at any
+        # iPTM.
         proxy = cdr_distogram_iptm_proxy
-        if proxy is not None and proxy >= STRICT_CDR_IPTM_PROXY:
+        if proxy is None or proxy < STRICT_CDR_IPTM_PROXY - 0.1:
+            return "drop"
+        # AN UNMEASURED iPTM CAPS THE TIER AT borderline; IT DOES NOT FAIL IT.
+        # "Measured at 0.436" and "never measured" are different facts and the
+        # first version of this leg conflated them, returning drop for both.
+        # #216 settled that distinction the other way for this tool, and
+        # _pick_best (below) is why it is not cosmetic: it falls through to
+        # designs[0] when no tier is occupied, and that list is iPTM-sorted
+        # with the UNMEASURED last -- so calling an unmeasured design "drop"
+        # hands the order panel the highest-iPTM design among the ones the
+        # gate actually rejected.
+        #
+        # WHAT THE CAP DOES NOT DECIDE: within-tier ORDER. A rival that clears
+        # both floors without clearing either bar (proxy 0.45 / iPTM 0.72)
+        # also lands in ``borderline``, and the iPTM sort then puts it ahead of
+        # an unmeasured design at proxy 0.90, so _pick_best offers the rival.
+        # Measured, both classify ``borderline``. Left alone deliberately: the
+        # tier is the GATE and iPTM is the RANK, and of those two the rival is
+        # the one something is actually known about -- it near-misses two bars
+        # on real numbers, where the unmeasured design's interface is simply
+        # unobserved. That is a different situation from the one this cap
+        # fixes, where the rival FAILS its proxy floor and is therefore known
+        # to be bad; offering a known-bad design over an unknown one is the
+        # defect, offering a nearly-good one over an unknown one is a
+        # judgement call. Raised in review by the session that landed #250,
+        # which reached the same conclusion independently.
+        #
+        # Measured on the pre-#252 code: an scFv at
+        # proxy 0.90 with no iPTM lost the pick to one at proxy 0.10 /
+        # iPTM 0.20, in _pick_best, in modal_app._aggregate and on the page.
+        # Capping keeps such a design out of strict_pass, which is the whole
+        # point of this leg, while leaving it ahead of a design that was
+        # measured and failed.
+        if iptm is None:
+            return "borderline" if proxy >= STRICT_CDR_IPTM_PROXY else "drop"
+        if proxy >= STRICT_CDR_IPTM_PROXY and iptm >= STRICT_IPTM:
             return "strict_pass"
-        if proxy is not None and proxy >= STRICT_CDR_IPTM_PROXY - 0.1:
+        if iptm >= STRICT_IPTM - 0.05:
             return "borderline"
+        return "drop"
+    # A minibinder with no iPTM is a drop, not a cap: its OTHER leg is pI,
+    # which says nothing about the interface, so there is no passing evidence
+    # left to preserve. The antibody cap above rests on a CDR proxy that did
+    # clear its bar. (The results template diverges from both and renders an
+    # unmeasured design UNJUDGED -- a page says things to a customer that a
+    # filter word does not.)
+    if iptm is None:
         return "drop"
     # minibinder mode. pI is a hard gate: an undisplayable scaffold is a
     # drop regardless of iPTM, so check pI before the iPTM bands.
-    if iptm is None:
-        return "drop"
     pi_ok = pi is not None and pi < STRICT_PI
     if not pi_ok:
         return "drop"
@@ -409,12 +542,13 @@ def _warn_if_scores_missing(
             )
         return
     # The proxy upstream POPULATES for this preset, which is not the same as
-    # the one the preset gates on: _classify reads the CDR proxy alone for
-    # antibodies, but minibinders gate on iptm and pI and never read their
-    # proxy at all. The selection is about which one carries a number --
-    # upstream emits the other as NaN (compute_distogram_iptm_proxy:
-    # "otherwise the CDR score is NaN"), which _finite turns to None, so
-    # checking both would false-alarm on every healthy run.
+    # the one the preset gates on: _classify reads iptm in BOTH modes and
+    # adds the CDR proxy for antibodies, while minibinders add pI and never
+    # read their proxy at all. The selection is about which one carries a
+    # number -- upstream emits the other as NaN
+    # (compute_distogram_iptm_proxy: "otherwise the CDR score is NaN"), which
+    # _finite turns to None, so checking both would false-alarm on every
+    # healthy run.
     proxy_key = (
         "cdr_distogram_iptm_proxy" if is_antibody else "distogram_iptm_proxy"
     )
@@ -485,11 +619,15 @@ def _shape_designs(
         proxy = _finite(row.get("distogram_iptm_proxy"))
         cdr_proxy = _finite(row.get("cdr_distogram_iptm_proxy"))
         # "Carries a score" means any number this tool REPORTS, not the iPTM
-        # specifically. Electing on the iPTM is wrong in scFv mode, where
-        # _classify gates on cdr_distogram_iptm_proxy ALONE and never reads
-        # iptm: a diverged row with a real 0.85 CDR proxy is a strict_pass,
-        # and letting a scored-but-failing row evict it hands _pick_best a
-        # design the tool's own filter rejects. The complex is deliberately
+        # specifically. Electing on the iPTM is wrong in scFv mode, and the
+        # reason moved on 2026-09-10 while the conclusion held. It USED to be
+        # that _classify gated on cdr_distogram_iptm_proxy alone, so a
+        # diverged row with a real 0.85 CDR proxy was a strict_pass an
+        # iPTM-election could evict. _classify now reads iPTM in both modes,
+        # so that row is ``borderline`` rather than strict_pass -- but it is
+        # still a TIER, still ahead of a measured-and-failed design in
+        # _pick_best, and an iPTM-election would still evict it. The complex
+        # is deliberately
         # NOT counted -- coordinates are not a score, and a row with nothing
         # but coordinates should not hold the slot against real numbers.
         row_has_score = (
@@ -510,8 +648,26 @@ def _shape_designs(
             # #242 fixed that by letting the FIRST CRITIC_REAL_IPTM row win
             # outright, holes included. Holes are the problem: a diverged fold
             # emits NaN, and on a locked scFv framework only the CDRs vary, so
-            # two batch elements converging on one designed_sequence is
-            # ordinary. The blank row claimed the bucket and DISCARDED the real
+            # two batch elements CAN converge on one designed_sequence.
+            #
+            # "ORDINARY" IS WHAT THIS COMMENT USED TO SAY, AND THE PRODUCTION
+            # EVIDENCE SAYS THE OPPOSITE. ``designs_completed`` is a count of
+            # DISTINCT sequences -- ``by_sequence`` is keyed on
+            # designed_sequence, ``designs`` is built one per key, and the
+            # summary sets ``designs_completed = len(designs)`` with
+            # ``n_failures = max(0, batch_size - len(designs))``. Both prod
+            # runs in docs/VALIDATION-LOG.md recorded batch_size 6,
+            # designs_completed 6/6, n_failures 0: six elements, six distinct
+            # sequences, zero convergence. Convergence would have forced
+            # designs_completed below 6. All 12 designs also carry a real
+            # iPTM, so no fold diverged either. Two runs of ONE config
+            # (cd45 / trastuzumab_framework_vhvl) cannot prove "never", but
+            # they are 100% of the record and none of it supports "ordinary".
+            #
+            # The fix below is still right -- the harm is real when it fires,
+            # and it was reproduced by execution. Read it as a latent defect
+            # with a rare or unobserved trigger, not a common one.
+            # The blank row claimed the bucket and DISCARDED the real
             # fold behind it -- that design ranked LAST with iptm None, no
             # complex (so no PDB written, no download, no NGL viewer) and no
             # final_loss. Users RANK these designs; the ordering and the
@@ -610,10 +766,19 @@ def _pick_best(designs: list[dict]) -> Optional[dict]:
     offers up for peptide synthesis.
 
     Tier first, iPTM second -- in BOTH modes. In scFv mode ``_classify``
-    decides the tier on the CDR distogram proxy while this ordering stays
-    iPTM, so the winner is the highest-iPTM design among those the proxy let
-    through, not the highest-proxy one. Deliberate: iPTM is the calibrated
-    quantity and the proxy is a gate.
+    decides the tier on the CDR distogram proxy AND iPTM while this ordering
+    stays iPTM alone, so within a tier the winner is its highest-iPTM member,
+    not its highest-proxy one. Deliberate: iPTM is the calibrated quantity,
+    and the proxy is a gate leg asking a narrower question.
+
+    THE LAST LINE IGNORES THE TIERS. When no tier is occupied this returns
+    ``designs[0]`` whatever its verdict, so "the winner cleared the gate" is
+    true of the first two branches only. That fallback is deliberate -- a run
+    where nothing passes still has to show the customer something, and the
+    results page captions it -- but it is also why ``_classify`` caps an
+    unmeasured iPTM at ``borderline`` instead of dropping it. Reaching this
+    line means the ordering below, which sorts unmeasured LAST, decides what
+    gets offered.
     """
     for tier in _FILTER_TIERS:
         for d in designs:

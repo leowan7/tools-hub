@@ -632,9 +632,11 @@ def _aggregate(
     #
     # all_candidates is iPTM-sorted, so the first member of a tier is its
     # highest-iPTM member. In scFv mode the TIER is decided on the CDR
-    # distogram proxy while the RANK stays iPTM; that split is deliberate,
-    # because iPTM is the calibrated number and the proxy is a gate the
-    # panel itself calls "informative only".
+    # distogram proxy AND iPTM (the proxy leg alone until 2026-09-10) while
+    # the RANK stays iPTM alone; that split is deliberate, because iPTM is
+    # the calibrated number and the proxy is a gate leg that asks a narrower
+    # question -- whether the CDRs are placed confidently, not whether the
+    # interface is good. See _classify in run_pipeline.py.
     def _tier_of(c: dict | None) -> str:
         return str(((c or {}).get("scores") or {}).get("filter_status") or "")
 

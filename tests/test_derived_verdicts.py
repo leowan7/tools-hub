@@ -182,8 +182,10 @@ CONTAINER_GATES = {
     # this module's legend. The bar is duplicated a THIRD time in
     # templates/tools/esmfold2_design_results.html (run_pipeline.py is copied
     # into the GPU image and cannot import shared/), and nothing in this file
-    # reads that template — test_esmfold2_design_best_sequence.py drives it
-    # instead. Do not read "all three copies" into these entries.
+    # reads that template — test_esmfold2_design_best_sequence.py and
+    # test_esmfold2_design_scfv_iptm_leg.py drive it instead, the latter
+    # comparing its rendered tier to _classify directly. Do not read "all
+    # three copies" into these entries.
     #
     # NO STRICT_CDR_IPTM_PROXY ENTRY: the scFv leg it belonged to was removed
     # (see SCORE_LEGENDS), so the constant is no longer mirrored here.
@@ -424,7 +426,7 @@ def test_boltzgen_is_not_gated_on_iptm():
 
 def test_tools_without_a_bar_are_unjudged_not_failed():
     # esmfold2-design is in this list on purpose. Its bar is mode-dependent
-    # (scFv on a CDR proxy, minibinder on ipTM AND pI) and cannot be written
+    # (scFv on a CDR proxy AND ipTM, minibinder on ipTM AND pI) and cannot be written
     # as one conjunction over its columns; an ipTM-only bar printed "meets" on
     # the high-ipTM design its own worked example exists to warn you off.
     for tool in ("bindcraft", "proteina", "iggm", "opendde", "mpnn",
