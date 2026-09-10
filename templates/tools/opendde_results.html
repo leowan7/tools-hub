@@ -100,8 +100,9 @@
     </div>
     <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
       OpenDDE co-folds all supplied entities into one complex and ranks the
-      predicted structures by its own confidence head. Download each structure or
-      view it in the browser. Higher ranking score is more confident.
+      predicted structures by its own confidence head.
+      {%- if job.id != 'example' %} Download each structure or view it in
+      the browser.{%- endif %} Higher ranking score is more confident.
     </div>
   </div>
 </div>
