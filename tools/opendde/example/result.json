@@ -1,0 +1,56 @@
+{
+  "cycle": 10,
+  "designs": [
+    {
+      "filter_status": "scored",
+      "iptm": 0.6887,
+      "name": "opendde_job_seed_4_predictions_opendde_job_sample_0",
+      "pdb_key": "opendde_job_seed_4_predictions_opendde_job_sample_0.pdb",
+      "plddt": 51.3515,
+      "ptm": 0.6137,
+      "rank": 0,
+      "ranking_score": 0.6737,
+      "runtime_seconds": 1
+    },
+    {
+      "filter_status": "scored",
+      "iptm": 0.6701,
+      "name": "opendde_job_seed_2_predictions_opendde_job_sample_0",
+      "pdb_key": "opendde_job_seed_2_predictions_opendde_job_sample_0.pdb",
+      "plddt": 52.8861,
+      "ptm": 0.6245,
+      "rank": 1,
+      "ranking_score": 0.661,
+      "runtime_seconds": 0
+    },
+    {
+      "filter_status": "scored",
+      "iptm": 0.493,
+      "name": "opendde_job_seed_3_predictions_opendde_job_sample_0",
+      "pdb_key": "opendde_job_seed_3_predictions_opendde_job_sample_0.pdb",
+      "plddt": 42.7686,
+      "ptm": 0.4328,
+      "rank": 2,
+      "ranking_score": 0.4809,
+      "runtime_seconds": 0
+    },
+    {
+      "filter_status": "scored",
+      "iptm": 0.4708,
+      "name": "opendde_job_seed_1_predictions_opendde_job_sample_0",
+      "pdb_key": "opendde_job_seed_1_predictions_opendde_job_sample_0.pdb",
+      "plddt": 44.4406,
+      "ptm": 0.4623,
+      "rank": 3,
+      "ranking_score": 0.4691,
+      "runtime_seconds": 0
+    }
+  ],
+  "designs_completed": 4,
+  "designs_total": 4,
+  "n_failures": 0,
+  "runtime_seconds": 210,
+  "sample": 1,
+  "step": 200,
+  "tier": "general"
+}

@@ -128,17 +128,181 @@ PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------
-# EXAMPLE — one real past run, rendered by
-# templates/components/worked_example.html. None here, deliberately:
-# No real completed-run payload for this tool exists anywhere on disk
-# (searched 2026-08-18: every .json in the tree, .deploy-logs/, scratch/,
-# runs/, tmp/). The fixtures in tests/ are synthetic and the stage JSONs
-# under runs/ are pipeline-stage outputs, not job results. Capture one from
-# a real run and this becomes a two-file change: example/result.json plus
-# the narration below. scripts/capture_example_result.py pulls a succeeded
-# run out of the jobs table, scrubs the customer-identifying fields, and
-# prints the figures the narration has to match. The results partial is
-# already example-safe — the guard lives in the two shared macros, not
-# here — so nothing else needs touching.
+# EXAMPLE — one real past run of this tool, rendered by
+# templates/components/worked_example.html above the tool's own results
+# partial. Captured from job 4a3e3203 on 2026-09-09; example/result.json
+# is that job's payload as scripts/capture_example_result.py wrote it:
+# the script scrubs its SENSITIVE_KEYS list, provider_job_id among
+# them, and trims inline structure blobs. Neither touched these rows:
+# opendde emits no SENSITIVE_KEYS member per design and no inline blob
+# (the rows carry a pdb_key reference), so the scrub had nothing to take.
+# Checked against the shipped payload, not asserted.
 # ---------------------------------------------------------------------------
-EXAMPLE: dict | None = None
+# ONLY NARRATE COLUMNS THE PAGE ACTUALLY SHOWS. opendde has NO entry in
+# shared/result_columns.py and none in shared/score_legends.py either, so
+# there are no per-tool bars to quote and nothing to call a pass. The columns
+# the partial renders are Ranking score, pTM, ipTM and pLDDT; all four are
+# used below and no threshold is asserted for any of them. Numbers are quoted
+# at the precision the TABLE prints (ranking 2dp, ipTM/pTM 3dp, pLDDT 1dp),
+# so every figure in the prose can be checked against the row above it.
+#
+# THIS IS THE SECOND CAPTURE, AND THE FIRST ONE TAUGHT A FALSE LESSON.
+# The first run used a 220-residue sequence that was NOT 3PTB chain A: three
+# residues were missing at PDB positions 184A, 188A and 221A -- every
+# insertion-coded position in the chain and nothing else -- which is what
+# a sequence extracted while ignoring insertion codes looks like. Verified
+# against the deposited file: chain A is 223 residues in both SEQRES and
+# ATOM, those three are its only insertion codes, and collapsing them
+# leaves exactly 220. An earlier version of this comment named 187 as the
+# third and called two of the three insertion-coded; both were wrong.
+# On that corrupted input pTM barely moved,
+# pLDDT sat flat near 50 and ANTI-correlated with the ranking, and seed 1 was
+# the best of four. Every one of those reverses on the real chain: pTM ranges
+# 0.433-0.625, pLDDT ranges 42.8-52.9 and tracks the ranking, and seed 1 is
+# the WORST of the four. Do not restore the old narration.
+#
+# WHY FOUR SEEDS AND ONE SAMPLE PER SEED. Samples-per-seed was tried at
+# 4 samples x 2 seeds and the eight predictions came back with only TWO
+# distinct score sets, one per seed. The structures were all different (eight
+# distinct md5s); the SCORES were shared, because _read_score_json in
+# tools/opendde/run_pipeline.py falls back to the first *.json beside the
+# structure when no filename matches the sample stem, and OpenDDE writes one
+# score file per seed directory. One sample per seed sidesteps it.
+# FIXED SINCE THIS RUN: #245 (main 30f6116) replaced that glob with an
+# exact per-sample lookup that records no score rather than borrowing a
+# neighbour's. This example still runs one sample per seed because that is
+# what was captured, not because the bug is live.
+#
+# Do not read that as "the figures below avoided the fallback". They did
+# not. The stem preference could never match at all: upstream interleaves
+# "_summary_confidence" between the base name and the sample index, so
+# "opendde_job_sample_0" is not a substring of
+# "opendde_job_summary_confidence_sample_0" and every read fell through to
+# the alphabetical pick. These figures are sound because that pick landed
+# on the right file anyway, not because it was bypassed. What this repo
+# can show: run_pipeline.py builds a fixed command and passes no flag
+# requesting an atom-level "full_data" dump. What it CANNOT show:
+# upstream's own default for writing one, since OpenDDE is invoked as a
+# binary and is not vendored here -- an earlier version of this comment
+# called that half provable and it is not. Had such a file been written
+# it sorts ahead of the confidence one and carries no ranking_score, so
+# the same shape would have returned nothing. #245 removes the dependence
+# either way.
+EXAMPLE: dict | None = {
+    "target": (
+        "Bovine trypsin with benzamidine bound &mdash; chain A of "
+        "<strong>PDB 3PTB</strong>, 223 residues, plus the ligand "
+        "<code>CCD_BEN</code>."
+    ),
+    "why_this_target": (
+        "OpenDDE is for complexes that are not all protein, so an all-protein "
+        "example would be demonstrating the one case it is not for. This is "
+        "the textbook protein-plus-small-molecule pair: benzamidine sitting "
+        "in the trypsin S1 pocket, deposited in 1982 and used to check "
+        "docking methods ever since. It is also a deliberate correction. The "
+        "first run this page ever showed folded a single ubiquitin chain, "
+        "which has no second entity at all &mdash; its ipTM of 0 was "
+        "arithmetically correct and told you nothing, because there was no "
+        "interface to score."
+    ),
+    "inputs_used": [
+        (
+            "Protein chains (FASTA)",
+            "the 223-residue trypsin chain",
+            "One record. Worth a moment if you are preparing this yourself: "
+            "3PTB is numbered in the chymotrypsin convention, so the chain "
+            "carries three insertion-coded positions &mdash; 184A, 188A and "
+            "221A. A script that reads residue numbers and ignores the "
+            "insertion letter silently drops all three. Our first attempt at "
+            "this example came back 220 residues instead of 223 for exactly "
+            "that reason, and handed the model a different protein. Count "
+            "what you extract against the deposited length before you "
+            "submit it.",
+        ),
+        (
+            "Ligands (one per line)",
+            "CCD_BEN",
+            "Benzamidine, by its three-letter Chemical Component Dictionary "
+            "code. A bare SMILES string works too, but a CCD code names one "
+            "unambiguous molecule and needs no interpretation.",
+        ),
+        (
+            "Samples / seed",
+            "1",
+            "One prediction per seed. All of the variation in this run comes "
+            "from the seeds instead.",
+        ),
+        (
+            "Seeds",
+            "4",
+            "Four independent starting points, so four predictions. This is "
+            "the input that matters most here, and the results below are the "
+            "argument for it.",
+        ),
+        (
+            "Diffusion steps",
+            "200",
+            "The upstream default, left alone. More steps trade compute for "
+            "quality; nothing about this run suggested it was step-limited.",
+        ),
+        (
+            "Recycles",
+            "10",
+            "Also the default. Worth raising on a complex that comes back "
+            "geometrically incoherent, which this one did not.",
+        ),
+    ],
+    "what_came_back": (
+        "Four predictions in about three and a half minutes, and they split "
+        "cleanly <strong>two and two</strong>. The top pair scores 0.67 and "
+        "0.66 on the ranking; the bottom pair 0.48 and 0.47. ipTM runs 0.471 "
+        "to 0.689, pTM 0.433 to 0.625, and pLDDT 42.8 to 52.9."
+    ),
+    "how_to_read_it": (
+        "<strong>The useful thing here is where all four columns agree.</strong> "
+        "Ranking, ipTM, pTM and pLDDT each draw the same line between the "
+        "same two pairs: the top two are 0.689 and 0.670 on ipTM with pLDDT "
+        "51.4 and 52.9, the bottom two are 0.493 and 0.471 with pLDDT 42.8 "
+        "and 44.4. Nothing crosses over. The columns measure different "
+        "things &mdash; ipTM the interface, pTM the whole complex, pLDDT "
+        "the per-residue confidence &mdash; and all four put the same two "
+        "predictions on top. Only the split is that robust: within each pair "
+        "pTM and pLDDT both invert the ranking's order. "
+        "Read the split as a ranking among these four and nothing more: "
+        "every one of them sits in the 40s or low 50s on pLDDT, so the "
+        "split says which pair to look at first, not that any of "
+        "them is a good structure. "
+        "<strong>Now the part that should change how you run this tool.</strong> "
+        "The form defaults to a single seed, and that seed is the one ranked "
+        "<em>last</em> here &mdash; the bottom row, 0.47 on the ranking, "
+        "ipTM 0.471, pLDDT 44.4. (The table ranks the predictions without "
+        "naming their seeds; the run's own file is where that pairing "
+        "lives.) Run "
+        "this target once, with the defaults, and you would have concluded it "
+        "does not co-fold with its ligand &mdash; when half the seeds land "
+        "at 0.67 and 0.66 and put the model's confidence in the same "
+        "place. One "
+        "prediction on this tool is not a small version of four. It is a "
+        "coin flip you cannot see the result of."
+    ),
+    "what_we_did_next": (
+        "Nothing &mdash; this run was captured for this page and stopped "
+        "here. What it would take next is the one thing the table cannot "
+        "show: whether the top two put the benzamidine in the same pocket. "
+        "Two predictions can agree on every score and still dock a ligand "
+        "in different places, so that question needs the structures "
+        "themselves, which every row carries on a run of your own. The "
+        "viewer opens per row and two rows can be open at once, but each "
+        "shows a single structure and nothing superposes them &mdash; the "
+        "comparison is yours to make by eye. "
+        "Agreement on the pocket means more seeds will sharpen the pose; "
+        "disagreement means the scores were telling you about the fold and "
+        "not about the binding site."
+    ),
+    "cost_usd": "0.86",
+    "runtime": "3.5 minutes",
+    # Read by components/worked_example.html into the stub job's created_at so
+    # a date-gated era notice knows when this ran. Job created_at, matching
+    # the other examples' convention.
+    "ran_on": "2026-09-09T17:40:13Z",
+}
