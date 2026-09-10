@@ -37,6 +37,7 @@ import json
 import math
 import statistics
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -2179,14 +2180,27 @@ def _quotable_row_values(payload) -> set[str]:
     Without it the most-quoted column on those pages is unguarded: six
     figures that ARE printed cells sat out of scope.
 
-    The >= 10 gate on the scaled path is load-bearing and was missing.
-    proteina's af2_iptm runs 0.086 to 0.098, scaling to 8.6-9.8, so an
-    ordinary "9.0 A" cutoff in that tool's prose was pulled into scope and
-    flagged as an unprinted row value -- a false alarm on a numeral that
-    was never a cell. ``plddt_on_100`` is also not idempotent below 0.01:
-    a row value of 0.005 scales to 0.5, back inside the 0-1 window. No
-    shipped payload holds one today; the gate keeps that from mattering if
-    one ever does.
+    The >= 10 gate on the scaled path is INERT TODAY and kept anyway.
+    Measured both ways: with the gate and without it, the sweep checks the
+    same 89 numerals and flags the same one. It removes nothing, because no
+    tool's prose happens to carry a numeral in the band it excludes. An
+    earlier version of this paragraph said an "9.0 A" cutoff in proteina's
+    prose "was pulled into scope and flagged" -- proteina's prose contains
+    no 8.x or 9.x numeral at all. That sentence was reasoned, not measured,
+    which is the exact move this test exists to catch in narration.
+
+    What the gate does buy is a real hazard that no payload has yet.
+    proteina's af2_iptm runs 0.086 to 0.098 and scales to 8.6-9.8, so a
+    prose threshold anywhere in 8.6-9.8 would enter scope on that tool and
+    be flagged as an unprinted row value. ``plddt_on_100`` is also not
+    idempotent at or below 0.01: 0.005 scales to 0.5 and 0.01 to 1.0, both
+    back inside the 0-1 window, which is why BOTH scaled forms are gated
+    and not just the one-decimal one. Gating only the one-decimal form left
+    the two-decimal form free to put "0.50", "0.65", "0.70", "0.75" and
+    "0.80" into scope off a sub-0.01 row float -- and pxdesign's prose does
+    contain 0.50, which is not a printed cell. No shipped payload holds a
+    row float below 0.01 today; the gate is what keeps that from being one
+    payload away.
     """
     out: set[str] = set()
     for val in _row_floats(payload):
@@ -2195,39 +2209,86 @@ def _quotable_row_values(payload) -> set[str]:
             out.add(f"{val:.1f}")
         if 0 < val <= 1:
             scaled = plddt_on_100(val)
-            out.add(f"{scaled:.2f}")
             if scaled >= 10:
-                out.add(f"{scaled:.1f}")
+                out.update(f"{scaled:.{places}f}" for places in (1, 2))
     return out
 
 
-_TABLE_CELL = re.compile(r"<td\b[^>]*>(.*?)</td>", re.S | re.I)
+class _DataCellText(HTMLParser):
+    """Character data inside <td>/<th>, and nothing else.
+
+    A parser rather than a regex, after four separate ways the regex it
+    replaced could be defeated: a raw ">" inside a cell attribute ended the
+    start tag early and promoted attribute text to cell text; "</td >" and
+    an unclosed <td> both matched nothing; a nested table swallowed the
+    outer cell's tail; and widening the pattern by six characters admitted
+    every full-precision data-val attribute without one test going red.
+    stdlib handles all of them, so none of them needs a guard.
+
+    <th> counts. Header cells hold column labels today -- no partial renders
+    a decimal in one -- but a score promoted to <th scope="row">, which is
+    the correct markup for a row header, is still a printed cell. Excluding
+    it made that ordinary accessibility fix turn this suite red with a
+    message telling the author to invent a source for a value the table was
+    plainly showing.
+    """
+
+    _CELLS = {"td", "th"}
+    _SKIP = {"script", "style"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._skip = 0
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip += 1
+        elif tag in self._CELLS:
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip:
+            self._skip -= 1
+        elif tag in self._CELLS and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._depth and not self._skip:
+            self.chunks.append(data)
 
 
 def _printed_numbers(markup: str) -> set[float]:
     """Every number the partial prints IN A DATA CELL, as floats.
 
-    Data cells only, and that is the second thing this got wrong. Reading
-    the whole partial let the page's own explanatory copy stand in for a
-    cell: esmfold2-design's partial carries a literal ``iptm &ge; 0.75``
-    and a glossary range, so prose quoting 0.75 passed while no row
-    printed it. A class named for the table has to mean the table.
+    Data cells only. Reading the whole partial let the page's own
+    explanatory copy stand in for a cell -- a threshold in body text or a
+    glossary line could satisfy a claim about a row.
+
+    BE PRECISE ABOUT WHAT THIS FIXED, because the first version of this
+    docstring was not. On the shipped tree the narrowing changes no
+    verdict: the collision needs a numeral that is BOTH a rounding of a
+    candidate-row float AND shown only outside a cell, and no payload here
+    has one. Three tools print a number outside a cell -- colabfold 0.62
+    and 61.05, esmfold 0.119 and 39.0, esmfold2-design 0.75 -- and not one
+    of them is quotable, so each is discarded before this function is
+    reached. What the narrowing removes is a class of future collision, not
+    a live defect, and it costs nothing: parser output matches the old
+    reading exactly on all fourteen partials.
 
     Floats, not strings, on purpose. A substring test cannot tell "0.88
     quoted against a cell reading 0.880" -- the same number, trailing zero
     -- from "0.47 quoted against a cell reading 0.471", a different number
     that happens to share a prefix. Comparing numerically accepts the first
-    and rejects the second. A string test accepted both, which left the
-    round-DOWN half of the precision defect uncaught.
+    and rejects the second. A string test accepted both, which left half of
+    the precision defect uncaught.
     """
-    without_code = re.sub(
-        r"<(script|style)[^>]*>.*?</\1>", " ", markup, flags=re.S | re.I,
-    )
-    out: set[float] = set()
-    for cell in _TABLE_CELL.findall(without_code):
-        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", cell))
-        out.update(float(tok) for tok in _SCORE_NUMERAL.findall(text))
-    return out
+    parser = _DataCellText()
+    parser.feed(markup)
+    return {
+        float(tok) for tok in _SCORE_NUMERAL.findall(" ".join(parser.chunks))
+    }
 
 
 def _quoted_row_values(flask_app, slugs):
@@ -2283,18 +2344,24 @@ class TestNarrationQuotesTheTable:
       against a figure that was never measured. That is not theoretical:
       pxdesign's shipped narration quotes five Angstrom figures whose only
       source in the entire repository is the sentence containing them.
-    * A MIS-ROUNDED figure passes too, in one direction. Round-DOWN drift
-      is caught -- 0.47 against a cell reading 0.471 fails. Round-UP past
-      halfway is not: 0.88 against a cell reading 0.874 is a rounding of
-      nothing, so it is skipped exactly like a fabrication. Whether any
-      given mis-rounding is caught is payload luck.
+    * A MIS-ROUNDED figure passes too, in EITHER direction. An earlier
+      version of this bullet said round-down was caught and only round-up
+      slipped through; that was wrong. Against a cell reading 0.689 both
+      0.68 and 0.688 pass, because neither is a correct rounding of the
+      row float at two, three or four places and anything that is not a
+      correct rounding is skipped before the check. The real rule is not
+      up-versus-down: a CORRECT rounding quoted at a precision the cell
+      does not use is caught; an INCORRECT rounding is invisible, exactly
+      like a fabrication.
     * The ROW and the COLUMN are not checked. The comparison is against
       every data cell on the page, so pTM values sold as ipTM pass, and so
       does handing the losing pair the winning pair's figures. Measured
-      cost: 689 of 1773 quotable numerals, 38.9%, are printed somewhere in
+      cost: 689 of 1759 quotable numerals, 39.2%, are printed somewhere in
       the table and so cannot fail whatever they are attached to. It runs
       92.2% for rfantibody and 87.2% for pxdesign, whose pins therefore
       count toward the vacuity floor while being nearly unable to fire.
+      (That denominator was 1773 one commit ago, before both scaled forms
+      were gated. Re-measure, do not copy.)
     * Integers are out of scope entirely: "223 residues", "thirteen rows",
       "ranks 51 to 64" are unguarded.
     * Three of the fourteen tools contribute nothing, for two different
@@ -2336,6 +2403,34 @@ class TestNarrationQuotesTheTable:
             "these _NOT_QUOTING_A_ROW entries no longer apply and are now "
             f"covering nothing: {dead}"
         )
+
+    def test_only_data_cells_count_as_printed(self):
+        """Undoing the data-cell narrowing has to fail somewhere. Here.
+
+        Nothing else in this file can see that revert. The collision the
+        narrowing prevents needs a numeral that is BOTH a rounding of a
+        candidate-row float AND shown only outside a cell, and no shipped
+        payload has one -- so every other test here stays green whichever
+        way _printed_numbers reads. This is the one that does not.
+
+        It also pins the three ways the regex this replaced could be
+        defeated, each of which was demonstrated rather than imagined: a
+        raw ">" inside a cell attribute promoted attribute text to cell
+        text, a nested table swallowed the outer cell's tail, and a score
+        promoted to <th scope="row"> -- correct markup for a row header --
+        dropped out of scope and turned the sweep red with a message
+        telling the author to invent a source for a visible value.
+        """
+        markup = (
+            "<table><tr>"
+            "<td title='drop anything > 0.9111'>0.4400</td>"
+            "<th scope='row'>0.5500</th>"
+            "<td><table><tr><td>0.6600</td></tr></table>0.7700</td>"
+            "</tr></table>"
+            "<p>a 0.8800 threshold in body copy</p>"
+            "<td><script>var x = 0.9900;</script>1.1100</td>"
+        )
+        assert _printed_numbers(markup) == {0.44, 0.55, 0.66, 0.77, 1.11}
 
     def test_the_sweep_is_not_vacuous(self, tools_app):
         """The rule above skips any numeral that is not a row value, so a

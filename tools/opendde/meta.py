@@ -154,7 +154,8 @@ PILOT: dict | None = None
 # against the deposited file: chain A is 223 residues in both SEQRES and
 # ATOM, those three are its only insertion codes, and collapsing them
 # leaves exactly 220. An earlier version of this comment named 187 as the
-# third and called two of the three insertion-coded; both were wrong. On that corrupted input pTM barely moved,
+# third and called two of the three insertion-coded; both were wrong.
+# On that corrupted input pTM barely moved,
 # pLDDT sat flat near 50 and ANTI-correlated with the ranking, and seed 1 was
 # the best of four. Every one of those reverses on the real chain: pTM ranges
 # 0.433-0.625, pLDDT ranges 42.8-52.9 and tracks the ranking, and seed 1 is
@@ -170,9 +171,18 @@ PILOT: dict | None = None
 # FIXED SINCE THIS RUN: #245 (main 30f6116) replaced that glob with an
 # exact per-sample lookup that records no score rather than borrowing a
 # neighbour's. This example still runs one sample per seed because that is
-# what was captured, not because the bug is live -- and the figures below
-# are unaffected either way, since a one-sample-per-seed run never took
-# the fallback.
+# what was captured, not because the bug is live.
+#
+# Do not read that as "the figures below avoided the fallback". They did
+# not. The stem preference could never match at all: upstream interleaves
+# "_summary_confidence" between the base name and the sample index, so
+# "opendde_job_sample_0" is not a substring of
+# "opendde_job_summary_confidence_sample_0" and every read fell through to
+# the alphabetical pick. These figures are sound because with one sample
+# per seed that pick had exactly one candidate -- not because it was
+# bypassed. A "full_data" file in the same directory sorts ahead of the
+# confidence one and carries no ranking_score, so the same shape would
+# have returned nothing. #245 is what removes the dependence on luck.
 EXAMPLE: dict | None = {
     "target": (
         "Bovine trypsin with benzamidine bound &mdash; chain A of "
@@ -252,11 +262,10 @@ EXAMPLE: dict | None = {
         "things &mdash; ipTM the interface, pTM the whole complex, pLDDT "
         "the per-residue confidence &mdash; and all four put the same two "
         "predictions on top. Only the split is that robust: within each pair "
-        "pTM and pLDDT both invert the ranking's order, lifting the second "
-        "row over the first and the fourth over the third. "
+        "pTM and pLDDT both invert the ranking's order. "
         "Read the split as a ranking among these four and nothing more: "
         "every one of them sits in the 40s or low 50s on pLDDT, so the "
-        "split says which prediction to look at first, not that any of "
+        "split says which pair to look at first, not that any of "
         "them is a good structure. "
         "<strong>Now the part that should change how you run this tool.</strong> "
         "The form defaults to a single seed, and that seed is the one ranked "
