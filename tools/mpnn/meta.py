@@ -255,7 +255,8 @@ EXAMPLE: dict | None = {
     "runtime": "24 seconds end to end, cold container included",
     "what_came_back": (
         "Two sequences, 129 residues each, recovering 53% and 50% of the "
-        "native lysozyme sequence at scores of 0.76. The archived payload "
+        "native lysozyme sequence at scores of 0.758 and 0.756. The "
+        "archived payload "
         "pre-dates the fields that record the designed chain and the "
         "sampling temperature back into the result, so those two read as "
         "em-dashes in the table below; everything else is as it was "

@@ -37,6 +37,7 @@ import json
 import math
 import statistics
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -464,13 +465,16 @@ class TestExampleNumbersComeFromThePayload:
         seqs = result["sequences"]
         assert len(seqs) == 2
         # "Two sequences, 129 residues each, recovering 53% and 50% ...
-        #  at scores of 0.76."
+        #  at scores of 0.758 and 0.756."
         assert {len(s["seq"]) for s in seqs} == {129}
         assert [round(s["recovery"] * 100) for s in seqs] == [53, 50]
-        assert {round(s["score"], 2) for s in seqs} == {0.76}
+        # THREE decimals, because that is what the table prints. This
+        # line rounded to two and the prose said 0.76 to match it, so
+        # both agreed with each other and neither agreed with the page.
+        assert [round(s["score"], 3) for s in seqs] == [0.758, 0.756]
         assert "129 residues each" in example["what_came_back"]
         assert "53% and 50%" in example["what_came_back"]
-        assert "0.76" in example["what_came_back"]
+        assert "0.758 and 0.756" in example["what_came_back"]
         assert "2" == example["inputs_used"][2][1]
 
     def test_boltz2_narration_matches_its_result_json(self, tools_app):
@@ -973,14 +977,28 @@ class TestExampleNumbersComeFromThePayload:
         assert "32 to 44 &Aring;" in reading
         ci = col("af2_iptm", copies)
         assert 0.086 <= min(ci) and max(ci) <= 0.098
-        assert "0.086 to 0.098" in reading
+        # The prose may not quote this range: the column renders two
+        # decimals, so 0.086 is on no row of the table the sentence sits
+        # above. Nor may it say "under 0.10" unqualified -- true of the
+        # payload, max 0.0977, and false of the PAGE, where five of these
+        # twelve cells print exactly 0.10.
+        #
+        # Two rounds shipped a version of this line: one quoting the raw
+        # bound, one quoting the printed values, each repairing the
+        # other's fault and reintroducing its own. What settles it is
+        # quoting the cells here AND marking the selection rule four
+        # lines below as raw, so the two clauses stop competing.
+        assert max(ci) < 0.10
+        assert sorted({f"{v:.2f}" for v in ci}) == ["0.09", "0.10"]
+        assert "the twelve print 0.09 or 0.10" in reading
+        assert "under 0.10 before rounding" in reading
 
         # ... against the rest of the shard.
         rest = [c for c in cands if c not in copies]
         assert round(statistics.median(col("binder_scrmsd", rest)), 1) == 2.0
         assert "median of 2.0 &Aring;" in reading
         assert round(statistics.median(col("af2_iptm", rest)), 2) == 0.67
-        assert "0.67 median" in reading
+        assert "0.67 median for the rest" in reading
 
         # "total_reward sends all twelve to ranks 51 to 64"
         assert min(c["rank"] for c in copies) >= 51
@@ -1941,6 +1959,15 @@ class TestABarAndItsValuesShareAScale:
             ("boltz2", "n_hotspot_contacts"),
             ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
             ("esmfold2-design", "ipTM"),
+            # NEWLY REACHED, and the exact-set control is what said so rather
+            # than absorbing it. pI became a legend with a bar when
+            # MODE_GATE_COLUMNS gave this tool a minibinder gate; its worked
+            # example carries an isoelectric point, so the sweep resolves it.
+            # ``iPTM_proxy`` is deliberately NOT here: it carries no legend
+            # at all (its scFv gate leg was removed in review), so there is no
+            # bar for the sweep to reach. The worked example also stores null
+            # for it under both of its spellings.
+            ("esmfold2-design", "pI"),
             ("mpnn", "recovery"), ("mpnn", "score"),
             ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"), ("pxdesign", "pAE"),
             ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),
@@ -2083,4 +2110,537 @@ class TestABarAndItsValuesShareAScale:
         ) == (0.31, "ok"), (
             "a row written under the canonical name does not resolve, so a "
             "container renamed to match this column would render nothing"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Narration numerals against the rendered table
+# ---------------------------------------------------------------------------
+
+# Signed, because proteina's leading column (total_reward) is negative
+# throughout. An unsigned pattern could never match any of its 153 printable
+# entries, so the prose could misquote that column freely.
+_SCORE_NUMERAL = re.compile(r"(?<![\w.])-?\d+\.\d+(?![\w])")
+
+# The two fields that describe the rows. ``what_we_did_next`` is about a
+# later run and ``why_this_target`` about the input, so neither is a claim
+# about the table underneath them.
+_TABLE_PROSE_FIELDS = ("what_came_back", "how_to_read_it")
+
+# A numeral that IS a row value and legitimately is not being quoted as one.
+# Keyed (slug, field, numeral) so an entry cannot spread past the sentence it
+# was written for, and swept for dead entries below: an exception that stops
+# applying has to fail, not linger and quietly cover something else.
+_NOT_QUOTING_A_ROW = {
+    ("bindcraft", "how_to_read_it", "0.26"):
+        "FreeBindCraft's published median across ITS OWN accepted designs "
+        "for this target. It is in scope only because design 2 stores "
+        "i_pAE 0.26, and i_pAE is not one of bindcraft's rendered columns "
+        "-- so this is a collision with a row field the page never prints, "
+        "not with a cell",
+}
+
+
+def _row_floats(obj, in_row=False):
+    """Every float that reaches a candidate row, and nothing else.
+
+    Row keys are ``_CANDIDATE_LIST_KEYS``, the same three the margin sweep
+    uses. A float elsewhere in a payload -- a per-residue array, a run-level
+    total -- is not a cell, so quoting it is not the claim being pinned.
+
+    NOTE this sweeps every field of a row, including ones the tool does
+    not render, and the reason first given for that was simply false. It
+    said opendde declares no columns and would lose all its coverage.
+    opendde's partial declares four, and restricting the sweep to them
+    leaves its count at 21 either way -- measured, not assumed.
+
+    The real reason to sweep everything is that "rendered" has no single
+    source: opendde has no shared/result_columns.py entry, so its column
+    list exists only inside the template. The real cost is that an
+    unrendered field can collide with a legitimate non-row numeral, which
+    is the entire reason _NOT_QUOTING_A_ROW exists. Narrowing the sweep to
+    the rendered columns would retire that allowlist. It is a fair trade
+    and it is deliberately not taken here.
+    """
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            yield from _row_floats(val, in_row or key in _CANDIDATE_LIST_KEYS)
+    elif isinstance(obj, list):
+        for val in obj:
+            yield from _row_floats(val, in_row)
+    elif isinstance(obj, float) and in_row:
+        yield obj
+
+
+def _quotable_row_values(payload) -> set[str]:
+    """Numeral strings that would read as "the value in the row above".
+
+    Two to four decimals always. One decimal ONLY at 10 and above, on the
+    scaled path as well as the raw one: one decimal on a sub-unit score
+    would sweep in every threshold in the prose, and "aim above 0.7" is not
+    a claim about a cell. That single restriction is what keeps this off
+    the thirty-odd thresholds, published comparators and cross-row
+    statistics the narrations legitimately carry.
+
+    Sub-unit values are ALSO offered on the 0-100 scale through the shared
+    ``plddt_on_100``, because several tools store a 0-1 score and render it
+    x100 -- proteina and boltz2 for pLDDT, bindcraft too, and the branch
+    applies to every sub-unit row float on every tool, not to a named list.
+    Without it the most-quoted column on those pages is unguarded: six
+    figures that ARE printed cells sat out of scope.
+
+    The >= 10 gate on the scaled path is INERT TODAY and kept anyway.
+    Measured both ways: with the gate and without it, the sweep checks the
+    same 89 numerals and flags the same one. It removes nothing, because no
+    tool's prose happens to carry a numeral in the band it excludes. An
+    earlier version of this paragraph said an "9.0 A" cutoff in proteina's
+    prose "was pulled into scope and flagged" -- proteina's prose contains
+    no 8.x or 9.x numeral at all. That sentence was reasoned, not measured,
+    which is the exact move this test exists to catch in narration.
+
+    What the gate does buy is a real hazard that no payload has yet.
+    proteina's af2_iptm spans 0.0861 to 0.8906, and its fourteen lowest
+    rows sit in 0.0861-0.0977, scaling to 8.6-9.8 -- so a prose threshold
+    anywhere in that band would enter scope on that tool and be flagged as
+    an unprinted row value -- specifically at one of the nine one-decimal
+    values those rows actually produce (8.6, 8.7, 9.0, and 9.3 through
+    9.8), not anywhere in the band: no row yields 8.8, 8.9, 9.1 or 9.2.
+    (Two earlier versions of this sentence were wrong in turn. One gave
+    0.086-0.098 as the whole column's range, which is the low fourteen
+    rows only -- the page itself quotes a best design at ipTM 0.89. The
+    next said "anywhere in that band".)
+
+    ``plddt_on_100`` is also not idempotent at or below 0.01: 0.005
+    scales to 0.5 and 0.01 to 1.0, both back inside the 0-1 window, which
+    is why BOTH scaled forms are gated
+    and not just the one-decimal one. Gating only the one-decimal form left
+    the two-decimal form free to put "0.50", "0.65", "0.70", "0.75" and
+    "0.80" into scope off a sub-0.01 row float -- and pxdesign's prose does
+    contain 0.50, which is not a printed cell. No shipped payload holds a
+    row float below 0.01 today; the gate is what keeps that from being one
+    payload away.
+    """
+    out: set[str] = set()
+    for val in _row_floats(payload):
+        out.update(f"{val:.{places}f}" for places in (2, 3, 4))
+        if abs(val) >= 10:
+            out.add(f"{val:.1f}")
+        if 0 < val <= 1:
+            scaled = plddt_on_100(val)
+            if scaled >= 10:
+                out.update(f"{scaled:.{places}f}" for places in (1, 2))
+    return out
+
+
+class _DataCellText(HTMLParser):
+    """Character data inside a table's <td>/<th>, or a refusal to guess.
+
+    READ THE LIMIT BEFORE TRUSTING THIS. Four review rounds were spent
+    making this browser-accurate and it is still not, so the limit is
+    stated first and the history second.
+
+    WHAT IT IS EXACT ON: the fourteen partials this repo ships. All
+    fourteen parse balanced, and every one returns a set identical to
+    Chrome's own querySelectorAll("td,th") text -- verified independently
+    by three reviewers. ``test_every_partial_parses_balanced`` pins that,
+    and it is the only property here that a template change can actually
+    break.
+
+    WHAT IT IS NOT EXACT ON: malformed table markup in general, INCLUDING
+    the common case. Omit only </td> -- the most frequently omitted
+    optional end tag in HTML -- and the document still ends balanced, so
+    the refusal below never fires, while a value the browser foster-parents
+    OUT of the table is collected as though a cell printed it. A structural
+    sweep of 17,370 accepted documents found 95 such disagreements with
+    Chrome, the shortest five tags long, all of them fail-OPEN. <template>
+    and <noscript> hide a whole table from the browser and not from this.
+    A self-closed <script/>, and a </ script> with a space, both leave the
+    skip open in the browser's model and closed here.
+
+    NONE OF THAT IS FIXED, ON PURPOSE. Rounds four through seven each
+    patched the previously-found shapes and each patch was defeated by the
+    next round. Every defect found in all four rounds was on markup this
+    repo does not contain: stripping every optional end tag from all
+    fourteen partials admits exactly zero numerals. A hand-rolled reader
+    will keep losing to a browser, and the way to stop losing is to stop
+    playing -- pin what ships, state what is not covered, and let a real
+    parser be someone's deliberate decision rather than this test's
+    accident.
+
+    WHAT THE REFUSAL STILL BUYS: if the document ends with a cell, a row or
+    a table open, ``_printed_numbers`` raises rather than returning a set
+    it cannot stand behind. That catches the shapes where the leak runs to
+    the end of the page -- the ones that would hand a footnote threshold to
+    the guard as a row value -- and it converts them from silent to loud.
+    It does not catch the within-row case above.
+
+    <th> counts. Header cells hold column labels today -- no partial
+    renders a decimal in one -- but a score promoted to <th scope="row">,
+    the correct markup for a row header, is still a value the table prints,
+    and excluding it turned that ordinary accessibility fix into a red
+    suite telling the author to invent a source for it.
+    """
+
+    _CELLS = {"td", "th"}
+    _SKIP = {"script", "style"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._tables = 0
+        self._depth = 0
+        self._skip = 0
+        self._marks: list[int] = []
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip += 1
+        elif tag == "table":
+            self._tables += 1
+            self._marks.append(self._depth)
+        elif tag == "tr":
+            self._marks.append(self._depth)
+        elif tag in self._CELLS and self._tables > 0:
+            # "> 0" is defence in depth, not a live fix: the decrement
+            # below is guarded, so _tables cannot currently go negative
+            # (measured over 9,348 generated documents: never). An earlier
+            # comment here claimed the negative case was reachable and it
+            # is not.
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip:
+            self._skip -= 1
+        elif tag == "table":
+            if self._tables:
+                self._tables -= 1
+            if self._marks:
+                self._depth = self._marks.pop()
+        elif tag == "tr":
+            if self._marks:
+                self._depth = self._marks.pop()
+        elif tag in self._CELLS and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._depth and not self._skip:
+            self.chunks.append(data)
+
+    @property
+    def left_open(self) -> int:
+        """Nonzero if the parse ended inside a cell, row or table."""
+        return self._depth or self._tables or len(self._marks)
+
+
+def _printed_numbers(markup: str) -> set[float]:
+    """Every number the partial prints IN A DATA CELL, as floats.
+
+    Data cells only. Reading the whole partial let the page's own
+    explanatory copy stand in for a cell -- a threshold in body text or a
+    glossary line could satisfy a claim about a row.
+
+    BE PRECISE ABOUT WHAT THAT FIXED, because the first version of this
+    docstring was not. On the shipped tree the narrowing changes no
+    verdict: the collision needs a numeral that is BOTH a rounding of a
+    candidate-row float AND shown only outside a cell, and no payload here
+    has one. Three tools print a number outside a cell -- colabfold 0.62
+    and 61.05, esmfold 0.119 and 39.0, esmfold2-design 0.75 -- and not one
+    is quotable, so each is discarded before this function is reached. The
+    narrowing removes a class of future collision, not a live defect.
+
+    Floats, not strings, on purpose. A substring test cannot tell "0.88
+    quoted against a cell reading 0.880" -- the same number, trailing zero
+    -- from "0.47 quoted against a cell reading 0.471", a different number
+    that happens to share a prefix. Comparing numerically accepts the first
+    and rejects the second. A string test accepted both, which left half of
+    the precision defect uncaught.
+    """
+    parser = _DataCellText()
+    parser.feed(markup)
+    parser.close()
+    assert not parser.left_open, (
+        "this markup ends with a table cell, row or table still open, so "
+        "_DataCellText will not read it and will not guess. Guessing is "
+        "how this comparison failed open twice: it collects the rest of "
+        "the document as cell text, and a threshold in a footnote then "
+        "satisfies a claim about a row. Close the </td> and </tr> in the "
+        "template -- those two are what this counts; </tbody> is not "
+        "tracked and adding one will not clear this."
+    )
+    return {
+        float(tok) for tok in _SCORE_NUMERAL.findall(" ".join(parser.chunks))
+    }
+
+
+def _quoted_row_values(flask_app, slugs):
+    """``(checked, flagged)`` over every shipped example.
+
+    ``checked`` lists the numerals in scope; ``flagged`` are the ones the
+    table does not print.
+    """
+    checked: list[tuple[str, str, str]] = []
+    flagged: set[tuple[str, str, str]] = set()
+    for slug, payload in _example_payloads(slugs).items():
+        printed = _printed_numbers(_render_partial(
+            flask_app, slug, job_id="example", example=True, result=payload,
+        ))
+        quotable = _quotable_row_values(payload)
+        example = meta_for(slug).EXAMPLE
+        for field in _TABLE_PROSE_FIELDS:
+            prose = re.sub(r"<[^>]+>", " ", example.get(field) or "")
+            for numeral in dict.fromkeys(_SCORE_NUMERAL.findall(prose)):
+                if numeral not in quotable:
+                    continue
+                checked.append((slug, field, numeral))
+                if float(numeral) not in printed:
+                    flagged.add((slug, field, numeral))
+    return checked, flagged
+
+
+class TestNarrationQuotesTheTable:
+    """A row value quoted in the prose must be a number a data cell prints.
+
+    READ THE SCOPE BEFORE TRUSTING THIS. Two adversarial passes established
+    what it does and does not do by mutation, and the gap is wide enough
+    that a reviewer who reads only the class name will over-trust it. The
+    second pass found five sentences of this docstring wrong; they are
+    corrected below rather than quietly dropped, because the wrong version
+    is the reason nobody looked again.
+
+    WHAT IT ENFORCES. A decimal numeral in ``what_came_back`` or
+    ``how_to_read_it`` that is a rounding of a float held by a candidate
+    row must equal a number printed in a ``<td>`` of the rendered results
+    partial. That is the precision-drift defect: prose quoting 0.086 above
+    a cell reading 0.09, or 0.76 above cells reading 0.758 and 0.756. Both
+    of those shipped, both were caught by hand, and this is what stops the
+    third.
+
+    WHAT IT DOES NOT ENFORCE -- each demonstrated by mutation, not assumed:
+
+    * A FABRICATED figure passes. A numeral that is not a rounding of any
+      row value is skipped before any check, so replacing opendde's top
+      pair with an invented 0.911 / 0.872 leaves the suite green. Four
+      tools -- opendde, rfantibody, rfdiffusion, iggm -- have no other
+      numeric pin anywhere in this file, so for them nothing guards
+      against a figure that was never measured. That is not theoretical:
+      pxdesign's shipped narration quotes five Angstrom figures whose only
+      source in the entire repository is the sentence containing them.
+    * A MIS-ROUNDED figure passes too, in EITHER direction. An earlier
+      version of this bullet said round-down was caught and only round-up
+      slipped through; that was wrong. Against a cell reading 0.689 both
+      0.68 and 0.688 pass, because neither is a correct rounding of the
+      row float at two, three or four places and anything that is not a
+      correct rounding is skipped before the check. The real rule is not
+      up-versus-down: a CORRECT rounding quoted at a precision the cell
+      does not use is caught; an INCORRECT rounding is invisible, exactly
+      like a fabrication.
+    * The ROW and the COLUMN are not checked. The comparison is against
+      every data cell on the page, so pTM values sold as ipTM pass, and so
+      does handing the losing pair the winning pair's figures. Measured
+      cost: 689 of 1759 quotable numerals, 39.2%, are printed somewhere in
+      the table and so cannot fail whatever they are attached to. It runs
+      92.2% for rfantibody and 87.2% for pxdesign, whose pins therefore
+      count toward the vacuity floor while being nearly unable to fire.
+      (That denominator was 1773 one commit ago, before both scaled forms
+      were gated. Re-measure, do not copy.)
+    * Integers are out of scope entirely: "223 residues", "thirteen rows",
+      "ranks 51 to 64" are unguarded.
+    * Three of the fourteen tools contribute nothing, for two different
+      reasons. colabfold and esmfold are single-structure and render no
+      candidate table. iggm DOES render one -- an earlier version of this
+      list said it did not -- but every value in its rows is an int, so
+      ``_row_floats`` yields nothing for it.
+    * Both floors in the vacuity test count numerals in scope, not pins
+      that can fail, so padding prose with values copied out of the same
+      tool's own table satisfies them for free.
+
+    The rule is narrow on purpose. A blanket "every prose numeral must
+    appear in the table" flags 38 figures across the fourteen tools, and
+    nearly all are legitimate: thresholds, published comparators, and
+    statistics taken across rows.
+
+    That count has moved three times and the movement is the lesson: 32
+    under a substring test over the whole partial, 33 once the comparison
+    became numeric, 38 once it was narrowed to data cells. Each was right
+    when written and stale one commit later, and each sat here being read
+    as current. Re-measure it before you cite it.
+    """
+
+    def test_every_quoted_row_value_is_printed(self, tools_app):
+        flask_app, slugs = tools_app
+        _checked, flagged = _quoted_row_values(flask_app, slugs)
+
+        unlisted = sorted(flagged - set(_NOT_QUOTING_A_ROW))
+        assert not unlisted, (
+            "narration quotes a row value the table never prints, so the "
+            "reader cannot find it: "
+            + "; ".join(f"{s}.{f} says {n}" for s, f, n in unlisted)
+            + " -- quote the figure at the precision the cell prints, or "
+            "add it to _NOT_QUOTING_A_ROW with the source it really came "
+            "from"
+        )
+        dead = sorted(set(_NOT_QUOTING_A_ROW) - flagged)
+        assert not dead, (
+            "these _NOT_QUOTING_A_ROW entries no longer apply and are now "
+            f"covering nothing: {dead}"
+        )
+
+    def test_only_data_cells_count_as_printed(self):
+        """Undoing the data-cell narrowing has to fail somewhere. Here.
+
+        Nothing else in this file can see that revert. The collision the
+        narrowing prevents needs a numeral that is BOTH a rounding of a
+        candidate-row float AND shown only outside a cell, and no shipped
+        payload has one -- so every other test here stays green whichever
+        way _printed_numbers reads. This is the one that does not.
+
+        Each bullet below names the mutation that a value is known to
+        catch, established by running that mutation. Two earlier versions
+        of this list were wrong -- one claimed three pins that pinned
+        nothing, one wrote a case as "0.7300px" where the CSS unit made
+        the numeral pattern miss it so the assertion could never fire --
+        so what is NOT pinned is listed too:
+
+        * 0.55 catches dropping <th> from the cell set. A score promoted
+          to <th scope="row">, correct markup for a row header, is still a
+          value the table prints.
+        * 0.77 catches deleting either depth mark: without them a nested
+          table's </table> closes the OUTER cell and swallows its tail.
+        * 1.66 catches dropping the open-<table> requirement. A bare <td>
+          in body context is a parse error browsers discard, so collecting
+          it invents a cell.
+        * 0.99 and 0.73 catch dropping the <script> and <style> skips, and
+          1.11 and 1.55 catch a skip that opens and never closes.
+        * 1.77 catches convert_charrefs=False -- it is written
+          "1&#46;7700", which the page renders as a number and a byte
+          comparison would miss.
+        * 0.88 catches dropping the depth term from handle_data.
+
+        NOT PINNED BY ANY VALUE HERE, measured rather than assumed: 0.9111,
+        0.44 and 1.22 move under no mutation of any current rule -- they
+        are regression pins against the regex this replaced, not against
+        the parser. And the mark-restore and negative-counter guards are
+        caught by the REFUSAL raising, not by a value comparison, so an
+        earlier claim that 1.66 and 0.88 pinned them was wrong: under those
+        mutations the assertion never reaches the set.
+        """
+        markup = (
+            "<table><tbody><tr>"
+            '<td title="drop anything > 0.9111">0.4400</td>'
+            '<th scope="row">0.5500</th>'
+            "<td><table><tr><td>0.6600</td></tr></table>0.7700</td>"
+            "<td>1.2200</td >"
+            "<td><script>var x = 0.9900;</script>1.1100</td>"
+            "<td><style>i{opacity:0.7300}</style>1.5500</td>"
+            "<td>1&#46;7700</td>"
+            "</tr></tbody></table>"
+            "</table></tr></td>"
+            "<td>1.6600</td>"
+            "<p>a 0.8800 threshold in body copy</p>"
+        )
+        assert _printed_numbers(markup) == {
+            0.44, 0.55, 0.66, 0.77, 1.11, 1.22, 1.55, 1.77,
+        }
+
+    def test_every_partial_parses_balanced(self, tools_app):
+        """The one property here that a template edit can actually break.
+
+        _DataCellText is exact on these fourteen pages and inexact on
+        malformed table markup in general -- read its docstring, the gap is
+        wide and deliberate. So the thing worth pinning is not
+        browser-equivalence in the abstract; it is that the pages this repo
+        ships stay inside the subset it reads correctly.
+
+        If a template starts omitting </td> or </tr>, or a minifier is
+        added to the build, this says so in one clear failure -- before
+        _printed_numbers begins refusing every render and the whole
+        narration sweep errors out with a message about markup rather than
+        about narration.
+        """
+        flask_app, slugs = tools_app
+        for slug, payload in _example_payloads(slugs).items():
+            markup = _render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=payload,
+            )
+            parser = _DataCellText()
+            parser.feed(markup)
+            parser.close()
+            assert not parser.left_open, (
+                f"{slug}'s results partial ends with a cell, row or table "
+                f"still open ({parser.left_open}), so _printed_numbers "
+                "refuses it and this tool's narration is no longer checked "
+                "against anything. Close the </td> and </tr> in that "
+                "template."
+            )
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            "<table><tr><td>1.11<tr><td>2.22</table><p>3.33</p>",
+            "<table><tbody><tr><td>1.11</tbody><p>2.22</p></table>",
+            "<table><tr><td>1.11<tr><td>2.22<tr><td>3.33</table><p>4.44</p>",
+            # left_open has three terms and the three above all trip the
+            # same one. These two trip the other two on their own: the
+            # first ends with only _depth set, the second with only
+            # _tables. Without them, two thirds of the refusal condition
+            # could be deleted in silence.
+            "<table></tr><td>1.11</table><p>2.22</p>",
+            "<table></tr>1.11",
+        ],
+        ids=[
+            "two-rows", "tbody-closes-a-cell", "three-rows",
+            "depth-term-only", "tables-term-only",
+        ],
+    )
+    def test_markup_it_cannot_read_is_refused(self, markup):
+        """Markup the parser cannot model must fail loudly, not quietly.
+
+        All three of these omit an end tag HTML makes OPTIONAL, which is
+        what a minifier with removeOptionalTags emits and what hand-written
+        table markup often looks like. A browser closes them implicitly.
+        This parser does not, and for three review rounds it responded by
+        staying inside the cell for the rest of the document -- so a
+        threshold in a footnote counted as a value a row had printed, and
+        the whole point of reading data cells was silently undone.
+
+        Each patch aimed at one of these shapes was itself defeated by the
+        next one: bounding the leak to a row missed two unclosed rows, and
+        neither touched </tbody>, which every shipped partial already uses.
+        Refusing covers the family instead of chasing its members.
+        """
+        with pytest.raises(AssertionError, match="will not guess"):
+            _printed_numbers(markup)
+
+    def test_the_sweep_is_not_vacuous(self, tools_app):
+        """The rule above skips any numeral that is not a row value, so a
+        regex or key-name slip makes it pass over an empty set in silence.
+
+        Both floors matter. The total alone is not enough: opendde supplies
+        21 of the 89, and bindcraft plus rfdiffusion are another 22, so one
+        tool losing all of its coverage can hide under a total-only bound.
+
+        KNOWN SLACK, measured rather than guessed. The total floor sits 9
+        below the current count, so nine real pins can be deleted in
+        silence; the per-tool floor sits at exactly the current 11, so it
+        has none at all. mpnn and pxdesign contribute two numerals each,
+        which means an ordinary copy edit on either trips this. That is
+        intended -- it is a prompt to re-read, not an accusation -- and the
+        messages say so, because a guard that reads like a bug report when
+        it is not is a guard someone quietly lowers.
+        """
+        flask_app, slugs = tools_app
+        checked, _flagged = _quoted_row_values(flask_app, slugs)
+        assert len(checked) >= 80, (
+            f"only {len(checked)} narration numerals resolve to a row "
+            "value; the sweep above is close to testing nothing. If this is "
+            "a deliberate copy edit, lower the floor in the same commit and "
+            "say which pins went"
+        )
+        covered = {slug for slug, _field, _numeral in checked}
+        assert len(covered) >= 11, (
+            f"only {len(covered)} tools contribute a checked numeral "
+            f"({sorted(covered)}); a tool that used to quote its own table "
+            "has stopped. Fine if you meant it -- lower the floor and name "
+            "the tool -- but check it was not an accident first"
         )

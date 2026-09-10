@@ -296,6 +296,20 @@ _FORMAT: dict[str, str] = {
     # interface pAE in Angstrom, negated. Without an entry it fell to the ".3f"
     # default and printed a third digit the underlying number does not carry.
     "total_reward": ".2f",
+    # esmfold2-design's minibinder gate leg. ".2f" because that is what
+    # components/candidate_table.html renders it at in single-tool mode (it is
+    # in none of that macro's ".3f"/".1f"/".0f" lists, so it falls to the
+    # ".2f" default), and score_legends compares at the format declared HERE:
+    # without this the verdict beside a cell reading "5.67" asserted
+    # "pI 5.669".
+    #
+    # An "iPTM_proxy" entry sat here too and is gone. That column gates
+    # nothing, carries no legend, and reaches neither reader of this map:
+    # format_metric_value renders only the MULTI-tool table, which has no
+    # esmfold2-design entry in shared/result_columns, and shown_value is only
+    # called for gate legs. A format for a key nothing formats is dead weight
+    # with a justification attached, which is worse than no entry.
+    "pI": ".2f",
 }
 
 

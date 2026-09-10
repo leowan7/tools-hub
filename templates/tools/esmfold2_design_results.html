@@ -23,13 +23,46 @@
    — it is never the stored one, and no stored verdict is read. The table
    itself still shows no verdict column.
 
-   The consequence is that this page now decides a bar that judge() and
-   tool_has_bar() do not know about, so the campaign count, the target
-   ranking table, the completion email, the share card and the FASTA export
-   all still treat every design here as a keeper. Closing that means giving
-   the tool a real mode-aware bar in shared/score_legends; the mode is
-   already on every job result, so it does NOT need a GPU rebuild, whatever
-   score_legends' own upgrade note says.
+   THE MINIBINDER BAR IS NO LONGER ONLY HERE.
+   shared/score_legends.MODE_GATE_COLUMNS declares that one gate (pI and
+   ipTM), so judge(tool, record, preset=result_mode(job.result) or
+   job.preset) answers for a minibinder run — no GPU rebuild needed, because
+   is_antibody is on every job result. /jobs/compare is wired to it.
+
+   THE scFv BAR IS STILL ONLY HERE, deliberately. A leg on the CDR proxy was
+   added there and removed in review: SCORE_LEGENDS is keyed on (tool,
+   column) with no mode, so the legend it needs renders as this page's
+   iPTM_proxy tooltip in BOTH modes — an scFv-worded bar on every minibinder
+   results page. One string cannot be true of two quantities. The tier
+   arithmetic below is mode-aware and can keep judging scFv; judge() cannot.
+
+   This block is still a SECOND copy of the arithmetic and stays one, because
+   run_pipeline.py is copied into the GPU image and cannot import shared/.
+
+   THE DRIFT GUARD DOES NOT COVER THIS FILE, AND NOTHING ELSE DOES EITHER.
+   CONTAINER_GATES in tests/test_derived_verdicts.py reads run_pipeline.py's
+   constants and compares them to the legend's ``good``, so it holds exactly
+   TWO copies together — the pipeline's and score_legends'. EVERY threshold
+   hard-coded below is held to the pipeline by NO test: 0.75 and 0.50 (the two
+   STRICT bars), 6.0 (the pI hard gate), the 0.05 and 0.10 borderline band
+   widths that mirror _classify's inline arithmetic, and the same numbers
+   again in the panel prose. The band widths are the worst of them, because
+   unlike the bars they never appear on the page, so a drift there is
+   invisible as well as unguarded.
+
+   Verified by mutation: moving STRICT_IPTM to 0.80 turns one test red, the
+   legend/constant divergence check, while this template
+   keeps 0.75 and test_esmfold2_design_best_sequence.py stays green — it pins
+   this file against literals and against _classify's OPERATOR, never against
+   its value. An earlier version of this paragraph said that test held these
+   literals, which is the reassurance a reader most needs to be true. Change
+   the bar and you must edit all three copies by hand.
+
+   STILL NOT WIRED, and each still treats every design here as a keeper: the
+   campaign count, the target ranking table, the completion email, the share
+   card and the FASTA export. tool_has_bar("esmfold2-design") is deliberately
+   still False without a mode, so none of them changed; each needs a caller
+   that can resolve the run's mode before it can pass one.
 
    The pipeline returns a single best_sequence plus a per-critic results
    table. The table is surfaced as-is; the headline sequence is re-derived
@@ -50,7 +83,6 @@
 {% set wall_clock_seconds = output.get('wall_clock_seconds') %}
 {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
 {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
-{% set use_scaling_critics = output.get('use_scaling_critics') %}
 {% set n_seeds            = output.get('n_seeds') or 1 %}
 {% set seeds_succeeded    = output.get('seeds_succeeded') %}
 {% set seeds_failed       = output.get('seeds_failed') or 0 %}
@@ -122,7 +154,7 @@
    highest-proxy-of-tier. That split is deliberate and matches both
    pipelines: the mode-specific metric is the GATE, iPTM is the RANK,
    because iPTM is the calibrated number and the panel below calls the
-   proxy "informative only" whenever the scaling critics are off.
+   proxy "informative only".
 
    Only a candidate we can quote a BINDER for is eligible to be the pick:
    choosing one we then cannot render would just empty the panel, and
@@ -291,7 +323,7 @@
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
       ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
-      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.{% if use_scaling_critics %} The scaling-critic ensemble was loaded for this run but does not feed these scores — every number here comes from one hero critic.{% endif %}
+      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.
     </div>
   </div>
 </div>
@@ -336,10 +368,13 @@
          Formats are the ones components/candidate_table.html applies in
          SINGLE-tool mode: %.3f for ipTM, %.2f for everything else. Not
          format_metric_value — that global is only wired up for the
-         multi-tool table, and its glossary has no entry for iPTM_proxy or
-         pI, so both fell to a .3f default and printed "pI 5.669" beside a
-         table cell reading "5.67". Numbers a reader is invited to compare
-         have to be produced the same way. #}
+         multi-tool table. Its glossary HAD no entry for iPTM_proxy or pI, so
+         both fell to a .3f default and printed "pI 5.669" beside a table cell
+         reading "5.67". ``pI`` is declared ".2f" there now (it became a gate
+         leg and score_legends compares at the declared format); iPTM_proxy is
+         NOT, so it still falls to .3f in that global -- which is why this
+         block keeps its own literal formats rather than trusting it. Numbers
+         a reader is invited to compare have to be produced the same way. #}
       {% if best_candidate %}
         {% set _bs = best_candidate.get('scores') or {} %}
         <div style="color: var(--text-tertiary); font-size: 0.78rem; margin-bottom: 0.4rem; font-family: var(--font-mono);">

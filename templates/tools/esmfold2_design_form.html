@@ -233,23 +233,11 @@
             </div>
           </div>
 
-          {# ----- Use scaling critics ----- #}
-          <label style="display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 1.25rem; cursor: pointer;">
-            {# ``True`` first, matching af2_form.html. validate() coerces this
-               to a Python bool before storing it, so a membership test over
-               strings alone missed every cloned job and silently turned the
-               critics back off. Found by the D3 clone sweep. #}
-            <input type="checkbox" name="use_scaling_critics" value="on" {{ 'checked' if pre_fill and pre_fill.get('use_scaling_critics') in (True, 'on', 'true', '1') else '' }} style="margin-top: 0.2rem; accent-color: var(--accent);">
-            <span>
-              <span style="color: var(--text-primary); font-weight: 500; font-size: 0.92rem;">Use scaling critics (stricter ranking)</span>
-              <span style="display: block; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.45;">
-                Loads the 15-checkpoint ESMFold2 scaling ensemble. Off by
-                default. It does not change any score reported below —
-                every number comes from one hero critic either way — so
-                leave it off unless you are comparing ensembles directly.
-              </span>
-            </span>
-          </label>
+          {# A "Use scaling critics" checkbox sat here. It loaded upstream's
+             15-checkpoint scaling ensemble, which _shape_designs never reads
+             (every score comes off CRITIC_REAL_IPTM, a hero critic), so it
+             spent host RAM to change no number on the results page. Removed
+             rather than left as a paid no-op. #}
 
           {{ field_campaign(prefilled=pre_fill) }}
 

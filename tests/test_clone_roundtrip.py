@@ -83,7 +83,6 @@ _FORM: dict[str, str] = {
     "seed": "7",
     "n_seeds": "2",
     "batch_size": "2",
-    "use_scaling_critics": "on",
     "spec_mode": "guided",
     "proteins": ">A\nMQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQ"
                 "QRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
