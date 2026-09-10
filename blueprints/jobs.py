@@ -203,7 +203,12 @@ def jobs_compare():
 
     Accepts ``ids=a,b,c`` or repeated ``ids=a&ids=b``. Owner-scoped.
     """
-    from shared.jobs import list_jobs_by_ids  # local import avoids cycle
+    # local import avoids cycle
+    from shared.jobs import (
+        candidate_records,
+        headline_candidate,
+        list_jobs_by_ids,
+    )
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -219,9 +224,39 @@ def jobs_compare():
     columns = []
     for j in jobs:
         adapter = tool_base.get(j.tool)
+        # THE HEADLINE IS DERIVED HERE, not taken as candidates[0]. A compare
+        # screen exists to rank, so it is the worst page on the site to lead
+        # with a design the tool's own bar rejects -- and the stored order is
+        # the container's ranking key, which is not its bar. See
+        # shared.jobs.headline_candidate.
+        #
+        # The mode comes off the RESULT first and the stored preset only as a
+        # fallback, which is the order templates/tools/esmfold2_design_results
+        # resolves it in. Reading job.preset alone reads the other way round
+        # from every other surface: the stored preset can be the default
+        # string while the result records what the run actually did.
+        records = candidate_records(j.result)
+        mode = score_legends.result_mode(j.result) or j.preset
+        top, top_verdict = headline_candidate(records, j.tool, preset=mode)
+        # Its POSITION in the stored order, so the page can say "row 7 of 12"
+        # rather than a bare "not rank 1" pointing at a row the 3-row table
+        # above does not show. Identity, not equality: two designs can carry
+        # equal dicts.
+        top_index = next(
+            (i for i, r in enumerate(records) if r is top), None
+        )
         columns.append({
             "job": j,
             "tool_label": adapter.label if adapter else j.tool,
+            # candidate_records, not result["candidates"]: it reads the
+            # designs[] shape too and unwraps the legacy result["output"]
+            # nesting, so the template and the headline above cannot end up
+            # describing two different lists.
+            "candidates": records,
+            "mode": mode,
+            "top": top,
+            "top_index": top_index,
+            "top_verdict": top_verdict,
         })
     return render_template("jobs_compare.html", columns=columns)
 

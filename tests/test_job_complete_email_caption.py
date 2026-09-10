@@ -44,10 +44,10 @@ with the transport captured, and hold four things:
     not only for BoltzGen's.
 
 The template used to document that slot as a "1-line interpretation of the top
-score". It never was one, for any of the 32 legends, and with the caveat
-appended it renders 516 characters — so the description was corrected rather
-than the copy. The reasoning, and the two measurements that decided it, are
-with the constants below.
+score". It is not one: the longest explanation is 185 characters on its own,
+and with the caveat appended the caption renders 567 — so the description was
+corrected rather than the copy. The reasoning, and the two measurements that
+decided it, are with the constants below.
 """
 from __future__ import annotations
 
@@ -76,11 +76,11 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 # TWO CEILINGS, BECAUSE THE SLOT HAS TWO PARTS WITH DIFFERENT EXPOSURE, and
 # the single ceiling that used to be here measured a string the template never
 # interpolates. It capped ``legend["explanation"]``; the template renders
-# ``email_caption(legend, target_chain)``. Measured: explanation 134, caveat
-# 381, rendered caption 516 — so the constant that exists to stop a second
-# paragraph landing in this slot was reading a string that had already stopped
-# being the one in it, and a review grew the caveat to ~1700 characters with
-# this whole file green.
+# ``email_caption(legend, target_chain)``. Measured on ``('boltzgen','ipTM')``:
+# explanation 185, caveat 381, rendered caption 567 — so the constant that
+# exists to stop a second paragraph landing in this slot was reading a string
+# that had already stopped being the one in it, and a review grew the caveat to
+# ~1700 characters with this whole file green.
 #
 # A CEILING HAS TO COME FROM THE SLOT, not from what is currently in it — a
 # limit computed as ``max(len(explanation) …)`` is satisfied by every corpus,
@@ -91,10 +91,31 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 #   _SLOT_LIMIT bounds ``explanation``, which is UNCONDITIONAL. It goes out in
 #   every completion mail for its tool and column, on every job, and no legend
 #   can gate it because a legend is keyed on ``(tool, column)`` and never sees
-#   one. 220 characters ≈ 1.4× the longest honest explanation today (161,
-#   ``('mpnn','score')``), roughly three rendered lines in the 13px caption
-#   block of a 560px-wide email body. Room to reword an entry, not room for a
-#   second paragraph. Unchanged, and it is the tight one on purpose.
+#   one. 220 characters is roughly three rendered lines in the 13px caption
+#   block of a 560px-wide email body — room to reword an entry, not room for a
+#   second paragraph. That is the whole derivation, and it comes from the BOX,
+#   not from the corpus.
+#
+#   IT DELIBERATELY NAMES NO ENTRY, because the version that did was wrong
+#   sixteen days later. This paragraph used to size the ceiling as "≈1.4× the
+#   longest honest explanation today (161, ``('mpnn','score')``)"; #193 then
+#   gave ``('boltzgen','ipTM')`` its ranking sentence, which made THAT the
+#   longest at 185 and took the real margin to 1.19×, with every test in this
+#   file green. A "longest today" rots every time a legend is reworded, which
+#   is exactly how that figure got there. Nothing needs to hold the peak here:
+#   the failure message in ``test_no_legend_outgrows_the_email_caption_slot``
+#   computes it at runtime, so the author who trips the ceiling is told what
+#   the rest of the corpus fits in without this comment having to know.
+#
+#   220 STAYS. Raise it for a reason drawn from the box (a wider email body, a
+#   larger caption font), never because an entry grew into it — and do not
+#   restate the margin here in any form, because the ceiling minus the peak IS
+#   the peak. Overflow goes in ``caveat``, which the mail gates on the job and
+#   the results table does not gate at all.
+#
+#   NOTHING AT RUNTIME ENFORCES IT. ``_SLOT_LIMIT`` is not imported by any
+#   shipping module: a legend that outgrows it is mailed verbatim, and this
+#   test is the only thing that objects. A review gate, not a guard.
 #
 #   _CAVEAT_LIMIT bounds the part that is CONDITIONAL — appended when the
 #   caveat's own antecedent holds for the job, which for BoltzGen's means the
@@ -111,20 +132,20 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 #   on a one-line reading, it is the body of a different message and it belongs
 #   behind the "View results" link the mail already carries.
 #
-# IS 516 HONEST IN THAT BOX? Two measurements, and the second argues against
+# IS 567 HONEST IN THAT BOX? Two measurements, and the second argues against
 # the first, so both are here.
 #
 #   FOR: it is not new exposure. ``email_caption(legend, "A,B")`` is character
 #   for character ``legend_text(legend)`` — the string that ALREADY ships as
 #   the ipTM ``<th>``'s ``title`` and as the ``title`` of every per-row Score
-#   cell (components/candidate_table.html:436,579), where the column header's
-#   ``data-tooltip`` stacks the glossary definition on top for 851 characters.
+#   cell (components/candidate_table.html:499,650), where the column header's
+#   ``data-tooltip`` stacks the glossary definition on top for 861 characters.
 #   A 560px callout is a roomier surface than either. The sentence is not too
 #   long for the slot; the slot was mis-described, and the description is what
 #   this round changed.
 #
 #   AGAINST: rendered through ``send_job_complete_email`` with the transport
-#   captured, the whole plain-text body MINUS the caption is 502 characters.
+#   captured, the whole plain-text body MINUS the caption is 510 characters.
 #   So on a multi-chain BoltzGen run the caveat-bearing caption is over half
 #   the message. That is the real cost, and it is why _CAVEAT_LIMIT is 2× and
 #   not open. It is not a reason to cut the caveat: shortening it to fit a
@@ -145,10 +166,10 @@ _MULTI_CHAIN = "A,B"
 # re-describes the slot makes the constants' justification fail instead of
 # silently outliving it.
 #
-# The old value was "1-line interpretation of the top score" and it was never
-# true — not of the caveat-bearing legend, and not of the other 31 either, whose
-# 134-161 characters are two rendered lines. The template now says what the
-# slot is; see templates/email/job_complete.html.
+# The old value was "1-line interpretation of the top score". It is not true of
+# the caveat-bearing legend, whose caption runs 567 characters, and not of the
+# long end of the corpus either — explanations alone run 82 to 185. The
+# template now says what the slot is; see templates/email/job_complete.html.
 _SLOT_CONTRACT = ("one line about the metric", "a short second paragraph")
 
 
@@ -225,7 +246,7 @@ def _bodies(payload: dict) -> dict:
 
     The HTML part is un-escaped through the parser rather than searched as
     source: ``select_autoescape`` covers .html and not .txt, so a legend with
-    an apostrophe (three of them have one) reaches the HTML body as ``&#39;``
+    an apostrophe (several have one) reaches the HTML body as ``&#39;``
     and a raw substring assertion would fail — or, worse, pass a mutation for
     an escaping reason that has nothing to do with the claim under test.
     """
@@ -533,7 +554,12 @@ def test_no_legend_outgrows_the_email_caption_slot():
     assert not over, (
         f"legend explanation(s) too long for the completion email's caption "
         f"slot ({_SLOT_LIMIT} chars): {over!r}. The rest of the corpus peaks "
-        f"at {max(n for k, n in lengths.items() if k not in over)}. Long-form "
+        # ``default`` because this message is built only when ``over`` is
+        # non-empty, and if EVERY legend is over, the generator is empty —
+        # ``max()`` would raise ValueError while FORMATTING the message and
+        # pytest would report that instead of the assertion.
+        f"at {max((n for k, n in lengths.items() if k not in over), default=0)}"
+        f". Long-form "
         f"context belongs in the optional ``caveat``, which "
         f"components/candidate_table.html renders and which reaches the email "
         f"only when that caveat's own antecedent holds for the job — and "
@@ -591,12 +617,12 @@ def test_no_legend_outgrows_the_email_caption_slot():
     #
     # Without this, ``_CAVEAT_LIMIT`` binds nothing: it appears only in the
     # arithmetic above and in that failure message, so the two parts were
-    # bounded solely as a SUM. With the shipped 134-character explanation a
-    # caveat could reach 526 — 86 over its stated ceiling and 1.96x the line
-    # it hangs off — while the caption check stayed green, and the comment at
-    # the top of this file would have kept saying _CAVEAT_LIMIT "bounds the
-    # part that is CONDITIONAL" the whole time. An independent pass caught it
-    # by growing the caveat to 441 and watching this test pass.
+    # bounded solely as a SUM — and under a sum a caveat can overrun its own
+    # ceiling by exactly the slack its explanation leaves unused, whatever
+    # that happens to be this month, while the caption check stays green and
+    # the comment at the top of this file keeps saying _CAVEAT_LIMIT "bounds
+    # the part that is CONDITIONAL" the whole time. An independent pass caught
+    # it by growing the caveat to 441 and watching this test pass.
     #
     # That is the failure this whole effort kept hitting: a justification that
     # reads correctly and was never executed. The ratio is the rule, so assert
