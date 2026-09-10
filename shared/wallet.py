@@ -159,9 +159,14 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     # wallet (fund-and-drain), not this per-shard cap. Mirrors TOOL_SPECS.
     "proteina":    Decimal("60.00"),
     # esmfold2-design: atomic H100 binder-design tool that fans out on n_seeds
-    # (one container per seed). $1000 covers the N_SEEDS_MAX=64 submit (~$946
-    # physical max) so it never clips a legit max run while still bounding a
-    # pricing bug. Mirrors TOOL_SPECS absolute_cap_usd.
+    # (one container per seed). $1000 covers the N_SEEDS_MAX=64 submit, which
+    # settle can charge at most $960 for — 64 x the $15/seed base_hard_cap, the
+    # binding clamp. Note that is a CAP-bound max, not a physical one: since
+    # _MAX_SESSION_S went to 5400 s, 64 full sessions are $1420 of marked-up
+    # compute, so the caps now sit BELOW physical and Ranomics absorbs the
+    # difference on a pathological max run rather than clipping the customer.
+    # (At the old 3600 s ceiling physical was $946 and sat under both caps.)
+    # Mirrors TOOL_SPECS absolute_cap_usd.
     "esmfold2-design": Decimal("1000.00"),
     # opendde: atomic H100 co-folding tool. One container per job, physically
     # capped at _MAX_SESSION_S=3600 s ($14.79 marked-up worst case), so $15 is
