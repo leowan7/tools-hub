@@ -106,8 +106,8 @@ about: dict = {
     ],
     "output_summary": (
         "A ranked set of predicted complexes (mmCIF/PDB) with the model's own "
-        "confidence ranking score per prediction. Download each structure or view "
-        "it in the browser."
+        "confidence ranking score per prediction. On a run of your own every "
+        "row carries its structure, to download or to open in the viewer."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

@@ -418,6 +418,13 @@ class TestEveryPartialIsExampleSafe:
     PROMISES_A_SUPPRESSED_CONTROL = (
         "shortlist button above",
         "designs above are yours to download",
+        # opendde said this in TWO places -- the results partial and
+        # about["output_summary"] -- four visible lines apart on the same
+        # page. #251 guarded the partial, left the panel, and added
+        # nothing here, so the half it fixed could come back in silence
+        # and the half it missed shipped. Registering the phrase rather
+        # than either sentence catches both, and any third.
+        "Download each structure",
     )
 
     def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
@@ -2537,7 +2544,8 @@ class TestNarrationQuotesTheTable:
         moves under no mutation of any current rule at all -- it is a
         regression pin against the regex this replaced, not against the
         parser. 0.44 and 1.22 are never the SOLE catcher of a mutation,
-        though both do move if <td> is dropped from the cell set. And the mark-restore and negative-counter guards are
+        though both do move if <td> is dropped from the cell set. And the
+        mark-restore and negative-counter guards are
         caught by the REFUSAL raising, not by a value comparison, so an
         earlier claim that 1.66 and 0.88 pinned them was wrong: under those
         mutations the assertion never reaches the set.
@@ -2580,10 +2588,15 @@ class TestNarrationQuotesTheTable:
         balanced, and the output stays correct. That is the parser being
         right on that input, not a hole here.
 
-        Detection is redundant: every mutation that fires this also fires
-        the two tests above. What it adds is the MESSAGE -- it names the
-        slug and points at the template, where the others report a
-        narration mismatch and leave you hunting for the cause.
+        Detection is redundant, but not with the neighbours you would
+        guess. Under a </tr> deletion this fires alongside
+        test_every_quoted_row_value_is_printed and
+        test_the_sweep_is_not_vacuous. It does NOT fire alongside
+        test_only_data_cells_count_as_printed, which sits directly above
+        and renders a hardcoded markup literal -- that one is structurally
+        incapable of reacting to any template change. What this adds is the
+        MESSAGE: it names the slug and points at the template, where the
+        others report a narration mismatch and leave you hunting.
         """
         flask_app, slugs = tools_app
         for slug, payload in _example_payloads(slugs).items():
