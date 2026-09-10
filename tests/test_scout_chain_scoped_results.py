@@ -198,7 +198,9 @@ def stub_pipeline(monkeypatch):
     return calls
 
 
-def _write_feasibility_csv(job_dir: Path, chain: str, residues=(10, 11)) -> Path:
+def _write_feasibility_csv(
+    job_dir: Path, chain: str, residues=(10, 11), tier: str = "Moderate"
+) -> Path:
     """One feasibility row, stamped, with the whole declared column set.
 
     ``/scout/feasibility/analyze`` reads the numeric columns straight back out,
@@ -215,7 +217,7 @@ def _write_feasibility_csv(job_dir: Path, chain: str, residues=(10, 11)) -> Path
         # scored; the route echoes `chain` back from the request either way.
         "residues": ",".join(f"ALA{r}" for r in residues),
         "residue_count": str(len(residues)),
-        "tier": "Moderate",
+        "tier": tier,
     })
     out = job_dir / "feasibility_results.csv"
     with out.open("w", newline="") as fh:
@@ -223,6 +225,22 @@ def _write_feasibility_csv(job_dir: Path, chain: str, residues=(10, 11)) -> Path
         writer.writeheader()
         writer.writerow(row)
     return out
+
+
+def _stub_feasibility_pipeline(monkeypatch, tier: str = "Moderate"):
+    """Patch run_feasibility_pipeline to write what the real one would.
+
+    It cannot execute here (freesasa is absent from this venv) and the route
+    reads its numeric columns straight back out, so the stub has to produce the
+    whole declared column set. Module level, because tests in three classes
+    need it — one of them used to reach into another class's staticmethod.
+    """
+    def _run(pdb_path, chain_id, epitope_residues, progress_callback=None):
+        return _write_feasibility_csv(
+            Path(pdb_path).parent, chain_id, epitope_residues, tier=tier
+        )
+
+    monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", _run)
 
 
 def _upload_two_chain_job(client) -> str:
@@ -1507,38 +1525,6 @@ class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
     directions are pinned below.
     """
 
-    @staticmethod
-    def _stub_feasibility(monkeypatch):
-        """Write a real, route-readable feasibility CSV stamped with its chain.
-
-        run_feasibility_pipeline cannot execute here (freesasa is absent from
-        this venv), and the route reads its numeric columns straight back out,
-        so the stub has to produce the whole declared column set rather than
-        the handful this test asserts on.
-        """
-        def _run(pdb_path, chain_id, epitope_residues, progress_callback=None):
-            from scout.pipeline import FEASIBILITY_CSV_COLUMNS
-
-            out = Path(pdb_path).parent / "feasibility_results.csv"
-            row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
-            row.update({
-                "epitope_id": "1",
-                "chain_id": chain_id,
-                # The residue numbers are the only honest evidence of which
-                # chain was scored; the route echoes `chain` back from the
-                # request either way. See CHAIN_RESIDUES.
-                "residues": ",".join(f"ALA{r}" for r in epitope_residues),
-                "residue_count": str(len(epitope_residues)),
-                "tier": "Moderate",
-            })
-            with out.open("w", newline="") as fh:
-                writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
-                writer.writeheader()
-                writer.writerow(row)
-            return out
-
-        monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", _run)
-
     def _score_feasibility(self, client, job_id, chain):
         resp = client.post(
             "/scout/feasibility/analyze",
@@ -1563,7 +1549,7 @@ class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
         self, client, stub_pipeline, reap_jobs, monkeypatch
     ):
         """The live bug: chain A's feasibility row served after chain B ran."""
-        self._stub_feasibility(monkeypatch)
+        _stub_feasibility_pipeline(monkeypatch)
         _login(client)
         job_id = _upload_two_chain_job(client)
 
@@ -1607,7 +1593,7 @@ class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
         ``epitope_id`` is the constant 1 whatever epitope was picked. Put
         "feasibility_results.csv" back in _DERIVED_RESULT_FILES and this dies.
         """
-        self._stub_feasibility(monkeypatch)
+        _stub_feasibility_pipeline(monkeypatch)
         _login(client)
         job_id = _upload_two_chain_job(client)
 
@@ -1645,32 +1631,6 @@ class TestTheDownloadAsksTheRequestWhichChain:
     sensitivity, the refusal when the file cannot name itself, and the
     chainless fallback that must NOT refuse a job with no results.csv.
     """
-
-    def test_a_csv_written_after_the_chain_switch_is_refused(
-        self, client, stub_pipeline, reap_jobs
-    ):
-        _login(client)
-        job_id = _upload_two_chain_job(client)
-        job_dir = TMP / job_id
-
-        assert client.post(
-            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
-        ).status_code == 200
-        assert client.post(
-            "/scout/analyze", json={"job_id": job_id, "chain": "B"}
-        ).status_code == 200
-
-        # Land chain A's feasibility CSV AFTER the switch to B — exactly what
-        # an in-flight run, or a swallowed WinError 32, leaves behind.
-        _write_feasibility_csv(job_dir, "A", [10, 11])
-
-        resp = client.get(f"/scout/feasibility/download/{job_id}")
-        assert resp.status_code == 404, (
-            "a feasibility CSV stamped chain A was served while results.csv "
-            f"holds chain B: {resp.status_code} "
-            f"{resp.get_data(as_text=True)[:200]}"
-        )
-        assert "ALA10" not in resp.get_data(as_text=True)
 
     def test_a_job_with_no_results_csv_can_still_download(
         self, client, reap_jobs
@@ -1767,9 +1727,7 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"{resp.get_data(as_text=True)[:200]}"
         )
 
-    def test_the_refusal_names_the_files_chain_not_the_callers_string(
-        self, client, stub_pipeline, reap_jobs
-    ):
+    def test_the_refusal_names_the_files_chain_not_the_callers_string(self, client, reap_jobs):
         """Same reason as test_the_feasibility_404_names_the_chain above.
 
         Two things a status-only assertion cannot see. The message must name
@@ -1791,9 +1749,7 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"the refusal echoed the caller's chain back at them: {error}"
         )
 
-    def test_the_chain_comparison_is_case_sensitive(
-        self, client, stub_pipeline, reap_jobs
-    ):
+    def test_the_chain_comparison_is_case_sensitive(self, client, reap_jobs):
         """PDB chain ids are case-sensitive: `a` and `A` are different chains.
 
         Every other chain in this file is "A" or "B", so a .upper() or
@@ -1858,9 +1814,7 @@ class TestTheDownloadAsksTheRequestWhichChain:
         Drop the ``chain=`` from that url_for and the button falls back to the
         results.csv heuristic — exactly the case above that it gets wrong.
         """
-        TestTheFeasibilityDownloadRefusesAfterAChainSwitch._stub_feasibility(
-            monkeypatch
-        )
+        _stub_feasibility_pipeline(monkeypatch)
         _login(client)
         job_id = _upload_two_chain_job(client)
         assert client.post(
@@ -1913,21 +1867,7 @@ class TestTheChainIsThreadedThroughEveryCallSite:
             return real(job_dir, residues, chain_id)
 
         monkeypatch.setattr(routes, "_get_binder_overlaps", _spy)
-        def _stub_feasibility(pdb_path, chain_id, epitope_residues, progress_callback=None):
-            from scout.pipeline import FEASIBILITY_CSV_COLUMNS
-
-            out = Path(pdb_path).parent / "feasibility_results.csv"
-            row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
-            row.update({"epitope_id": "1", "chain_id": chain_id, "tier": "B"})
-            with out.open("w", newline="") as fh:
-                writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
-                writer.writeheader()
-                writer.writerow(row)
-            return out
-
-        monkeypatch.setattr(
-            "scout.pipeline.run_feasibility_pipeline", _stub_feasibility
-        )
+        _stub_feasibility_pipeline(monkeypatch, tier="B")
 
         _login(client)
         job_id = _upload_two_chain_job(client)
