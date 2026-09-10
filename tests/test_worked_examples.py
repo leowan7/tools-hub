@@ -2247,15 +2247,32 @@ class _DataCellText(HTMLParser):
     break.
 
     WHAT IT IS NOT EXACT ON: malformed table markup in general, INCLUDING
-    the common case. Omit only </td> -- the most frequently omitted
-    optional end tag in HTML -- and the document still ends balanced, so
-    the refusal below never fires, while a value the browser foster-parents
-    OUT of the table is collected as though a cell printed it. A structural
-    sweep of 17,370 accepted documents found 95 such disagreements with
-    Chrome, the shortest five tags long, all of them fail-OPEN. <template>
-    and <noscript> hide a whole table from the browser and not from this.
-    A self-closed <script/>, and a </ script> with a space, both leave the
-    skip open in the browser's model and closed here.
+    malformed table markup -- but NARROWER than the version of this
+    paragraph that preceded it, and in BOTH directions. That version said
+    omitting </td> alone was enough. It is not: strip every </td> from all
+    fourteen partials and the output stays byte-identical to Chrome,
+    because after an omitted </td> the next token is either another cell
+    (both readings stay inside one) or a </tr> that restores the depth. A
+    divergence needs a SECOND malformation. Two four-tag witnesses, each
+    confirmed against a real browser:
+
+    * fail-OPEN, and it needs an untracked <tbody>:
+      "<table> 2.01 <td> 3.01 <tbody> 4.01 </table>" -- Chrome
+      foster-parents 4.01 OUT of the table; this collects it as a cell.
+    * fail-CLOSED, and it needs a mismatched end tag:
+      "<table> 2.01 <td> 3.01 </th> 4.01 </table>" -- Chrome ignores the
+      </th> inside a <td> and keeps the cell open through 4.01; this
+      treats the two as interchangeable, closes early, and MISSES a value
+      the table really prints.
+
+    The earlier "all of them fail-OPEN" was wrong on the second class, and
+    its document counts are omitted here rather than restated: they were
+    entirely dependent on which tags the generator enumerated, and an
+    independent sweep did not reproduce them.
+
+    <template> and <noscript> hide a whole table from a browser and not
+    from this. A self-closed <script/>, and a </ script> with a space,
+    both leave the skip open in the browser's model and closed here.
 
     NONE OF THAT IS FIXED, ON PURPOSE. Rounds four through seven each
     patched the previously-found shapes and each patch was defeated by the
@@ -2516,10 +2533,11 @@ class TestNarrationQuotesTheTable:
           comparison would miss.
         * 0.88 catches dropping the depth term from handle_data.
 
-        NOT PINNED BY ANY VALUE HERE, measured rather than assumed: 0.9111,
-        0.44 and 1.22 move under no mutation of any current rule -- they
-        are regression pins against the regex this replaced, not against
-        the parser. And the mark-restore and negative-counter guards are
+        NOT PINNED BY ANY VALUE HERE, measured rather than assumed: 0.9111
+        moves under no mutation of any current rule at all -- it is a
+        regression pin against the regex this replaced, not against the
+        parser. 0.44 and 1.22 are never the SOLE catcher of a mutation,
+        though both do move if <td> is dropped from the cell set. And the mark-restore and negative-counter guards are
         caught by the REFUSAL raising, not by a value comparison, so an
         earlier claim that 1.66 and 0.88 pinned them was wrong: under those
         mutations the assertion never reaches the set.
@@ -2551,11 +2569,21 @@ class TestNarrationQuotesTheTable:
         browser-equivalence in the abstract; it is that the pages this repo
         ships stay inside the subset it reads correctly.
 
-        If a template starts omitting </td> or </tr>, or a minifier is
-        added to the build, this says so in one clear failure -- before
-        _printed_numbers begins refusing every render and the whole
-        narration sweep errors out with a message about markup rather than
-        about narration.
+        If a template starts omitting </tr>, or a minifier is added to the
+        build, this says so in one clear failure -- before _printed_numbers
+        begins refusing every render and the whole narration sweep errors
+        out with a message about markup rather than about narration.
+
+        It does NOT fire on an omitted </td> alone. Measured, including
+        deleting all twelve of them from components/candidate_table.html:
+        the </tr> that follows restores the depth, the document stays
+        balanced, and the output stays correct. That is the parser being
+        right on that input, not a hole here.
+
+        Detection is redundant: every mutation that fires this also fires
+        the two tests above. What it adds is the MESSAGE -- it names the
+        slug and points at the template, where the others report a
+        narration mismatch and leave you hunting for the cause.
         """
         flask_app, slugs = tools_app
         for slug, payload in _example_payloads(slugs).items():
@@ -2580,11 +2608,12 @@ class TestNarrationQuotesTheTable:
             "<table><tr><td>1.11<tr><td>2.22</table><p>3.33</p>",
             "<table><tbody><tr><td>1.11</tbody><p>2.22</p></table>",
             "<table><tr><td>1.11<tr><td>2.22<tr><td>3.33</table><p>4.44</p>",
-            # left_open has three terms and the three above all trip the
-            # same one. These two trip the other two on their own: the
-            # first ends with only _depth set, the second with only
-            # _tables. Without them, two thirds of the refusal condition
-            # could be deleted in silence.
+            # left_open has three terms. Of the three above, only _marks
+            # is common to all of them (two also set _depth). These two
+            # isolate the other terms: the first ends with ONLY _depth
+            # set, the second with ONLY _tables. Each of the three terms
+            # is now the sole reason exactly one case refuses, so none can
+            # be deleted in silence.
             "<table></tr><td>1.11</table><p>2.22</p>",
             "<table></tr>1.11",
         ],
