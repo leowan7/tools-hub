@@ -209,7 +209,14 @@
           <div class="viewer-bar">
             <div id="viewer-legend" class="viewer-legend"></div>
             <div class="viewer-downloads">
-              <a id="download-link" class="viewer-dl-btn" style="display:none;" download="feasibility_report.csv">Download CSV</a>
+              <!-- No download="" attribute on purpose. It overrides the
+                   server's Content-Disposition for same-origin, so every
+                   chain's file landed under one name; and because it forces a
+                   download even for a non-2xx, it saved this route's JSON
+                   refusals to disk as a .csv instead of showing them. The
+                   server names the file (chain included) and a refusal is
+                   rendered. -->
+              <a id="download-link" class="viewer-dl-btn" style="display:none;">Download CSV</a>
             </div>
           </div>
         </div>

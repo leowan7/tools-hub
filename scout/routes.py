@@ -1995,6 +1995,16 @@ def feasibility_download(job_id):
     # chain the caller meant, and it cannot tell a stale bookmark about chain A
     # from a fresh one once results.csv and the file have both moved to B.
     #
+    # It is a TRADE, not a free win, and it costs a real case: score chain A on
+    # the index, run feasibility on chain B, then use a chainless link, and
+    # this refuses the chain-B file the caller actually wanted -- a 200 before
+    # this gate existed. Kept anyway, because the reported bug IS the chainless
+    # request (analyse A, score A, analyse B, download -> chain A's rows at
+    # 200), so dropping the fallback reopens it. The bug path is the ordinary
+    # one; the cost path needs feasibility deliberately scored on a chain the
+    # user did not analyse. Every link the app mints carries ?chain=, so this
+    # reaches only bookmarks, copied URLs and scripts.
+    #
     # Read once, then serve those same bytes: the writer truncates in place, so
     # re-opening the path in send_file could ship bytes this gate never saw.
     feasibility_chain = _csv_chain_id(payload)
@@ -2019,10 +2029,16 @@ def feasibility_download(job_id):
                      f"{feasibility_chain or 'unknown'}.",
         }), 404
 
+    # The chain goes in the FILENAME too. Without it a user who downloads two
+    # chains gets two files called the same thing and can only tell them apart
+    # by opening them and reading the chain_id column -- the exact confusion
+    # this route now refuses to cause over the wire. Omitted when the file
+    # cannot name its chain, rather than writing "chainNone".
+    suffix = f"_chain{feasibility_chain}" if feasibility_chain else ""
     return send_file(
         io.BytesIO(payload),
         as_attachment=True,
-        download_name=f"feasibility_{job_id[:8]}.csv",
+        download_name=f"feasibility_{job_id[:8]}{suffix}.csv",
         mimetype="text/csv",
     )
 

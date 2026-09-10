@@ -194,7 +194,7 @@ def stub_pipeline(monkeypatch):
 
 
 def _write_feasibility_csv(
-    job_dir: Path, chain: str, residues=(10, 11), tier: str = "Moderate"
+    job_dir: Path, chain: str, residues=(10, 11)
 ) -> Path:
     """One feasibility row, stamped, with the whole declared column set.
 
@@ -213,7 +213,7 @@ def _write_feasibility_csv(
         # scored; the route echoes `chain` back from the request either way.
         "residues": ",".join(f"ALA{r}" for r in residues),
         "residue_count": str(len(residues)),
-        "tier": tier,
+        "tier": "Moderate",
     })
     out = job_dir / "feasibility_results.csv"
     with out.open("w", newline="") as fh:
@@ -223,7 +223,7 @@ def _write_feasibility_csv(
     return out
 
 
-def _stub_feasibility_pipeline(monkeypatch, tier: str = "Moderate"):
+def _stub_feasibility_pipeline(monkeypatch):
     """Patch run_feasibility_pipeline to write what the real one would.
 
     It cannot execute here (freesasa is absent from this venv) and the route
@@ -233,7 +233,7 @@ def _stub_feasibility_pipeline(monkeypatch, tier: str = "Moderate"):
     """
     def _run(pdb_path, chain_id, epitope_residues, progress_callback=None):
         return _write_feasibility_csv(
-            Path(pdb_path).parent, chain_id, epitope_residues, tier=tier
+            Path(pdb_path).parent, chain_id, epitope_residues
         )
 
     monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", _run)
@@ -1579,12 +1579,9 @@ class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
             f"expected the download to refuse; got {resp.status_code} "
             f"{resp.get_data(as_text=True)[:200]}"
         )
-        body = resp.get_data(as_text=True)
-        for residue in CHAIN_RESIDUES["A"]:
-            assert f"ALA{residue}" not in body, (
-                f"the feasibility download served chain A's residue {residue} "
-                f"after chain B was analysed: {resp.status_code} {body[:200]}"
-            )
+        # No residue-loop here: a 404 body is the JSON error, which can never
+        # contain a residue, so such a loop would assert nothing. What proves
+        # chain A's rows are not served is the refusal itself.
 
     def test_rescoring_the_same_chain_keeps_the_feasibility_result(
         self, client, stub_pipeline, reap_jobs, monkeypatch
@@ -1625,6 +1622,49 @@ class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
             "the download refused a chain-A result after a chain-A rescore: "
             f"{got.status_code} {got.get_data(as_text=True)[:200]}"
         )
+
+
+class TestTheChainStampParserItself:
+    """``_csv_chain_id`` is the whole basis of the download's chain check.
+
+    Every other test in this file feeds it CSVs written by ``csv.DictWriter``,
+    which always terminates rows with CRLF — so the row shapes that only a
+    direct call can produce are unreached, and the ``newline=""`` this parser
+    depends on is otherwise pinned by nothing.
+    """
+
+    @staticmethod
+    def _chain_id(payload: bytes):
+        from scout.routes import _csv_chain_id
+
+        return _csv_chain_id(payload)
+
+    def test_a_lone_cr_terminates_a_row(self):
+        """Without ``newline=""`` csv raises here and the parser returns None.
+
+        A false None is not a safe failure: it makes the file unable to name
+        its chain, which the download then refuses for every request that
+        names one.
+        """
+        assert self._chain_id(b"epitope_id,chain_id\r1,B\r") == "B"
+
+    def test_crlf_and_lf_both_parse(self):
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,B\r\n") == "B"
+        assert self._chain_id(b"epitope_id,chain_id\n1,B\n") == "B"
+
+    def test_cannot_say_is_none_not_a_guess(self):
+        assert self._chain_id(b"") is None
+        assert self._chain_id(b"epitope_id,chain_id\r\n") is None, "header only"
+        assert self._chain_id(b"epitope_id\r\n1\r\n") is None, "no chain_id column"
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,\r\n") is None, "blank cell"
+
+    def test_undecodable_bytes_do_not_break_the_parse(self):
+        """errors="replace" can garble a VALUE but never invent a delimiter.
+
+        UTF-8 maps no byte >= 0x80 to an ASCII character, so a bad decode
+        cannot create or destroy a comma, quote or newline.
+        """
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,B\r\n\xff\xfe") == "B"
 
 
 class TestTheDownloadAsksTheRequestWhichChain:
@@ -1700,6 +1740,10 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"request for chain A: {resp.status_code} "
             f"{resp.get_data(as_text=True)[:200]}"
         )
+        # The `or "unknown"` in the message is otherwise unpinned: every other
+        # refusal test uses a file that CAN name its chain, so dropping it
+        # would ship "for chain None." to a user with the suite green.
+        assert "unknown" in resp.get_json()["error"], resp.get_json()
 
     def test_a_chainless_request_also_refuses_a_file_that_cannot_name_itself(
         self, client, stub_pipeline, reap_jobs
@@ -1872,7 +1916,7 @@ class TestTheChainIsThreadedThroughEveryCallSite:
             return real(job_dir, residues, chain_id)
 
         monkeypatch.setattr(routes, "_get_binder_overlaps", _spy)
-        _stub_feasibility_pipeline(monkeypatch, tier="B")
+        _stub_feasibility_pipeline(monkeypatch)
 
         _login(client)
         job_id = _upload_two_chain_job(client)
