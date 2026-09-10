@@ -1704,6 +1704,37 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"{resp.get_data(as_text=True)[:200]}"
         )
 
+    def test_a_chainless_request_also_refuses_a_file_that_cannot_name_itself(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """The other half of "cannot say" — and a behaviour change, so pinned.
+
+        When the REQUEST names no chain but results.csv does, an unstamped file
+        still cannot be shown to match, so it is refused. Only when nothing on
+        either side names a chain is it served
+        (test_a_job_with_no_results_csv_can_still_download).
+
+        This is the case the two refusals differed on before they were merged
+        into one comparison: the earlier form served it.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        (job_dir / "feasibility_results.csv").write_text(
+            "epitope_id,chain_id,residues\n"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 404, (
+            "a CSV that cannot name its chain was served to a chainless "
+            f"request while results.csv named one: {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+
     def test_the_chain_comparison_is_case_sensitive(
         self, client, stub_pipeline, reap_jobs
     ):

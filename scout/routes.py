@@ -774,13 +774,18 @@ def _csv_chain_id(csv_path: Path) -> "str | None":
     header-only, or written before the stamp existed. A caller must treat None
     as "cannot say", never as "some other chain".
     """
-    if not csv_path.exists():
-        return None
     try:
-        text = csv_path.read_text()
-    except (OSError, UnicodeDecodeError):
+        payload = csv_path.read_bytes()
+    except OSError:
         return None
-    return _csv_chain_id_from_text(text)
+    return _csv_chain_id_from_text(_decode_csv(payload))
+
+
+def _decode_csv(payload: bytes) -> str:
+    """One decode for both readers, so neither can disagree with the other
+    about what a file says. Every field either compares here is ASCII.
+    """
+    return payload.decode("utf-8", "replace")
 
 
 def _csv_chain_id_from_text(text: str) -> "str | None":
@@ -788,7 +793,11 @@ def _csv_chain_id_from_text(text: str) -> "str | None":
     serve the same bytes it checked does not have to open the file twice.
     """
     try:
-        first_row = next(csv_module.DictReader(io.StringIO(text)), None)
+        # newline="" for the same reason csv.reader's docs require it on a
+        # file: universal-newline translation is not the csv module's job.
+        first_row = next(
+            csv_module.DictReader(io.StringIO(text, newline="")), None
+        )
     except csv_module.Error:
         return None
     if first_row is None:
@@ -1978,11 +1987,16 @@ def feasibility_download(job_id):
     # Read once, then serve those same bytes: the writer truncates in place, so
     # re-opening the path in send_file could ship bytes this gate never saw.
     asked_for = (request.args.get("chain") or "").strip() or None
-    feasibility_chain = _csv_chain_id_from_text(payload.decode("utf-8", "replace"))
+    feasibility_chain = _csv_chain_id_from_text(_decode_csv(payload))
     if asked_for is not None:
         wanted = asked_for
     else:
         wanted = _results_csv_chain_id(job_dir)
+    # Note the asymmetry between the two Nones. A file that cannot name its
+    # chain is refused whenever ANYTHING names one -- the request or
+    # results.csv -- because "it did not contradict me" is not "it matches".
+    # Only when nothing on either side names a chain is it served, which is
+    # the job created on the feasibility page.
     if wanted is not None and feasibility_chain != wanted:
         return jsonify({
             "error": f"These feasibility results do not describe chain "
