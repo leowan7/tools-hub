@@ -701,12 +701,18 @@ def _results_csv_for_chain(job_dir: Path, chain_id: str) -> "Path | None":
 # Read by the cleanup below and by the test that proves a failed unlink cannot
 # take a successful run down with it, so the guard cannot fall behind the list.
 #
-# feasibility_results.csv is deliberately NOT here. It is served by
-# feasibility_download, which compares chains itself, and deleting it on every
-# rewrite threw away a still-correct result on every Analyze click: the browser
-# reaches /scout/analyze only via /scout/progress, which rescores
-# unconditionally. Nothing about a rescore invalidates the row -- it names the
-# residues it scored, and epitope_id is the constant 1 either way.
+# feasibility_results.csv is deliberately NOT here: it is served by
+# feasibility_download, which compares chains itself. Adding it would drop a
+# still-correct result on every Analyze click, because the browser reaches
+# /scout/analyze only via /scout/progress, which rescores unconditionally --
+# and a rescore invalidates nothing, since the row names the residues it
+# scored.
+#
+# It cannot name its EPITOPE, though: epitope_id is hard-coded to 1. The
+# epitope-scoped twin of the chain bug is therefore open and invisible to any
+# gate -- score epitope 1 then epitope 2 on one chain, and an older tab's link
+# downloads epitope 2's row at 200. Out of scope here; do NOT read the constant
+# 1 as evidence that nothing is lost.
 _DERIVED_RESULT_FILES = (
     "epitopes.csv",
     "epitopes_annotated.csv",
@@ -756,47 +762,41 @@ def _unlink_quietly(path: Path) -> None:
 def _results_csv_chain_id(job_dir: Path) -> "str | None":
     """Which chain ``results.csv`` holds, or None if it cannot say.
 
-    None covers every way the file fails to name a chain — absent, unreadable,
-    header-only, or written before the ``chain_id`` stamp existed. All of them
-    mean "no cached result for anyone", never "some other chain's result".
+    None covers every way the file fails to name a chain — absent,
+    header-only, unparseable, or written before the ``chain_id`` stamp
+    existed. All of them mean "no cached result for anyone", never "some other
+    chain's result".
 
     Kept separate from ``_results_csv_for_chain`` so ``/scout/analyze`` can tell
     a cross-chain collision (a stamp naming a DIFFERENT chain) from a run that
     simply scored nothing; those need different answers.
     """
-    return _csv_chain_id(job_dir / "results.csv")
-
-
-def _csv_chain_id(csv_path: Path) -> "str | None":
-    """Which chain the first row of *csv_path* is stamped with, or None.
-
-    None covers every way a file fails to name a chain — absent, unreadable,
-    header-only, or written before the stamp existed. A caller must treat None
-    as "cannot say", never as "some other chain".
-    """
     try:
-        payload = csv_path.read_bytes()
+        payload = (job_dir / "results.csv").read_bytes()
     except OSError:
         return None
-    return _csv_chain_id_from_text(_decode_csv(payload))
+    return _csv_chain_id(payload)
 
 
-def _decode_csv(payload: bytes) -> str:
-    """One decode for both readers, so neither can disagree with the other
-    about what a file says. Every field either compares here is ASCII.
-    """
-    return payload.decode("utf-8", "replace")
+def _csv_chain_id(payload: bytes) -> "str | None":
+    """Which chain the first row of a results-style CSV is stamped with.
 
+    Takes bytes, not a path, so ``feasibility_download`` can check the exact
+    payload it is about to serve rather than re-opening the file underneath
+    itself.
 
-def _csv_chain_id_from_text(text: str) -> "str | None":
-    """``_csv_chain_id`` for content already in hand, so a reader that must
-    serve the same bytes it checked does not have to open the file twice.
+    None means "cannot say" — header-only, unparseable, or written before the
+    stamp existed. A caller must never read it as "some other chain".
     """
     try:
-        # newline="" for the same reason csv.reader's docs require it on a
-        # file: universal-newline translation is not the csv module's job.
+        # newline="" so a lone CR still terminates a row. Without it StringIO
+        # splits on \n only and csv raises "new-line character seen in
+        # unquoted field", which this except would swallow into a false None.
         first_row = next(
-            csv_module.DictReader(io.StringIO(text, newline="")), None
+            csv_module.DictReader(
+                io.StringIO(payload.decode("utf-8", "replace"), newline="")
+            ),
+            None,
         )
     except csv_module.Error:
         return None
@@ -1963,6 +1963,19 @@ def feasibility_progress():
 @scout_bp.route("/feasibility/download/<job_id>", methods=["GET"])
 @login_required
 def feasibility_download(job_id):
+    # Validated FIRST, like every other chain this blueprint takes from a
+    # request (analyze, progress, feasibility/analyze, feasibility/progress) --
+    # at the boundary, before any work, so a bad id cannot be masked by a 404
+    # for a file that happens to be missing. Empty means "no chain named", not
+    # a bad one: that falls through to the results.csv heuristic below.
+    #
+    # The comparison further down would refuse an unsafe id anyway by
+    # mismatching, but the contract is what keeps it out of a log line or a CSV
+    # cell, and CSV formula injection is a tracked, still-open gap here.
+    asked_for = (request.args.get("chain") or "").strip() or None
+    if asked_for is not None and not _valid_chain(asked_for):
+        return jsonify({"error": "job_id and a valid chain id are required."}), 400
+
     job_dir = _resolve_job_dir(job_id)
     if job_dir is None:
         return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
@@ -1979,28 +1992,27 @@ def feasibility_download(job_id):
     #
     # Falling back to results.csv's chain is a HEURISTIC for requests that name
     # none (a bookmark, a hand-typed URL): it assumes results.csv holds the
-    # chain the caller meant. It cannot tell a stale bookmark about chain A
-    # from a fresh one once results.csv and the file have both moved to B, and
-    # it cannot check anything at all when either side names no chain -- a job
-    # created on the feasibility page never gets a results.csv.
+    # chain the caller meant, and it cannot tell a stale bookmark about chain A
+    # from a fresh one once results.csv and the file have both moved to B.
     #
     # Read once, then serve those same bytes: the writer truncates in place, so
     # re-opening the path in send_file could ship bytes this gate never saw.
-    asked_for = (request.args.get("chain") or "").strip() or None
-    feasibility_chain = _csv_chain_id_from_text(_decode_csv(payload))
-    if asked_for is not None:
-        wanted = asked_for
-    else:
-        wanted = _results_csv_chain_id(job_dir)
-    # Note the asymmetry between the two Nones. A file that cannot name its
-    # chain is refused whenever ANYTHING names one -- the request or
-    # results.csv -- because "it did not contradict me" is not "it matches".
-    # Only when nothing on either side names a chain is it served, which is
-    # the job created on the feasibility page.
+    feasibility_chain = _csv_chain_id(payload)
+    wanted = asked_for if asked_for is not None else _results_csv_chain_id(job_dir)
+    # A file that cannot name its chain is refused whenever ANYTHING names one
+    # -- the request or results.csv -- because "it did not contradict me" is
+    # not "it matches". It is served only when neither does, which is the job
+    # created on the feasibility page: that page never calls /scout/analyze, so
+    # it never gets a results.csv to compare against.
+    #
+    # The message names the FILE's chain, never the caller's string: the stamp
+    # is app-generated, and on the chainless path `wanted` is inferred, so
+    # quoting it would give advice about a chain the caller never asked for.
     if wanted is not None and feasibility_chain != wanted:
         return jsonify({
-            "error": f"These feasibility results do not describe chain "
-                     f"{wanted}. Run feasibility on that chain first.",
+            "error": "These feasibility results are for chain "
+                     f"{feasibility_chain or 'unknown'}. Run feasibility on "
+                     "the chain you want first.",
         }), 404
 
     return send_file(
