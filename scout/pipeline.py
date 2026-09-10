@@ -571,10 +571,11 @@ def run_pipeline(
 FEASIBILITY_CSV_COLUMNS = [
     "epitope_id",
     # Same reason as CSV_COLUMNS: this file is written per job dir, not per
-    # chain, and /scout/feasibility/download serves it with no chain parameter
-    # at all. A chain-B request that stops at the results gate leaves chain A's
+    # chain. A chain-B request that stops at the results gate leaves chain A's
     # file in place, so without this stamp the delivered CSV cannot say which
-    # chain it describes.
+    # chain it describes — and /scout/feasibility/download reads this stamp to
+    # decide whether the file matches the chain being asked for, so a row that
+    # loses it is refused rather than served.
     "chain_id",
     "residues",
     "residue_count",
@@ -641,9 +642,12 @@ def run_feasibility_pipeline(
     # click runs this pipeline TWICE (the /scout/feasibility/progress SSE, then
     # POST /scout/feasibility/analyze re-running it to read the numbers back),
     # so an entry-delete opens a hole on every assessment and destroys a good
-    # result whenever the second run fails. The staleness is handled where the
-    # file is READ instead -- feasibility_download compares the chain in the
-    # request against the file's own stamp.
+    # result whenever the second run fails. The CROSS-CHAIN half of that
+    # staleness is handled where the file is READ instead --
+    # feasibility_download compares the chain in the request against the file's
+    # own stamp. A same-chain run that raises does still leave the previous
+    # epitope's row on disk, and that gate passes it; re-adding an entry-delete
+    # is not the way to close it, for the reason above.
 
     def _emit(stage: str, pct: int) -> None:
         if progress_callback is not None:

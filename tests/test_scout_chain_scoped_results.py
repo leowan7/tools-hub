@@ -1431,6 +1431,22 @@ class TestFeasibilityCsvNamesItsChain:
         )
         assert "chain_id" in keys, "the feasibility CSV stopped stamping its chain"
 
+        # The VALUE, not just the key. Every route-level test stubs this
+        # pipeline out with a stub that stamps its own chain_id argument, so a
+        # real writer stamping something else — a normalised case, a label id
+        # instead of the auth id, a constant — would leave the whole suite
+        # green while the download gate compares the request's chain against a
+        # string that never matches it.
+        chain_value = next(
+            v for k, v in zip(literals[0].keys, literals[0].values)
+            if isinstance(k, ast.Constant) and k.value == "chain_id"
+        )
+        assert isinstance(chain_value, ast.Name) and chain_value.id == "chain_id", (
+            "the feasibility row no longer stamps its chain_id argument "
+            "verbatim; feasibility_download compares that value against the "
+            f"chain in the request: {ast.dump(chain_value)}"
+        )
+
 
 class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
     """The last file in the job dir that outlived the chain it describes.
@@ -1441,9 +1457,11 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
     Scoring chain A's feasibility, then analysing chain B, left the download
     handing back chain A's row at HTTP 200.
 
-    Both halves of the close are pinned here: the delete below, and the chain
-    comparison the route now makes (see
-    ``TestTheDownloadGateSurvivesADeleteThatDidNotHappen``).
+    Both halves of the close are pinned in this file: the delete below, and the
+    chain comparison the route makes (see
+    ``TestTheDownloadAsksTheRequestWhichChain``). They cover different
+    staleness — the comparison cannot see a same-chain rescore, which is what
+    the delete is for.
     """
 
     @staticmethod
@@ -1609,19 +1627,23 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
         )
 
 
-class TestTheDownloadGateSurvivesADeleteThatDidNotHappen:
-    """Deleting at the rewrite is not the guarantee; the reader gate is.
+class TestTheDownloadAsksTheRequestWhichChain:
+    """The download asks the REQUEST which chain it means, not results.csv.
 
-    ``_remove_derived_result_files`` fires on "a pipeline ran", not on "this
-    file stopped matching the chain", so it is a no-op whenever a feasibility
-    run still in flight writes its CSV AFTER a chain switch already deleted it
-    (nothing serialises them: gunicorn defaults to two sync workers and the
-    feasibility routes take no compute slot), or whenever ``_unlink_quietly``
-    swallows the WinError 32 a still-open ``send_file`` causes on Windows.
+    ``?chain=`` travels on every link the app mints, so the route can compare
+    the chain asked for against the file's own stamp instead of inferring it.
+    Covered here: that precedence, the link carrying the chain, the refusal
+    when the file cannot name itself, and the chainless fallback that must NOT
+    refuse a standalone feasibility job.
 
-    Both leave the same state on disk — a feasibility CSV stamped with a chain
-    the request is not asking about — so one test covers both: writing the file
-    after the chain switch reproduces it exactly, without needing threads.
+    Also covered: the gate holding when ``_remove_derived_result_files`` was a
+    no-op. That delete fires on "a pipeline ran", not on "this file stopped
+    matching the chain", so it misses a feasibility run still in flight when a
+    chain switch deletes the file (nothing serialises them: this repo's
+    gunicorn.conf.py defaults WEB_CONCURRENCY to 2 sync workers, and the
+    feasibility routes take no compute slot), and a ``_unlink_quietly`` that
+    swallowed WinError 32 on Windows. Both leave the same state on disk, so
+    writing the file after the chain switch reproduces either without threads.
     """
 
     def test_a_stale_csv_the_cleanup_missed_is_refused_at_the_reader(
@@ -1686,6 +1708,37 @@ class TestTheDownloadGateSurvivesADeleteThatDidNotHappen:
         assert resp.status_code == 200, (
             "the chain gate refused a standalone feasibility job that has no "
             f"results.csv to compare against: {resp.get_data(as_text=True)[:200]}"
+        )
+
+    def test_a_file_that_cannot_name_its_chain_is_refused_to_a_chain_request(
+        self, client, reap_jobs
+    ):
+        """"It did not contradict me" is not "it matches".
+
+        An unstamped, header-only or unreadable CSV cannot be shown to describe
+        the chain asked for, so it must be refused rather than served on the
+        strength of the comparison being unable to run. This is also the
+        concurrent-truncation window: `run_feasibility_pipeline` writes with
+        open("w"), so a reader can catch the file empty mid-rewrite.
+
+        Scoped to requests that NAME a chain — the chainless case has no chain
+        to fail against, and refusing it would break standalone jobs (see
+        test_a_job_with_no_results_csv_can_still_download).
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        # Header only: exactly what a reader sees mid-truncation.
+        (job_dir / "feasibility_results.csv").write_text(
+            "epitope_id,chain_id,residues\n"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert resp.status_code == 404, (
+            "a CSV that cannot name its chain was served to an explicit "
+            f"request for chain A: {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
         )
 
     def test_the_chain_asked_for_beats_the_chain_results_csv_holds(
