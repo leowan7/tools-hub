@@ -238,15 +238,23 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # "2400 s ... room for batch_size up to 6". The first prod measurements
     # falsify both: 150 steps at batch_size=6 ran 3185 s and 3233 s
     # (~21 s/step; docs/VALIDATION-LOG.md), so 2400 s was 25% UNDER a run it
-    # claimed to leave room for, and step time is a function of batch size
-    # (~3 s/step at batch_size=1) rather than a constant.
+    # claimed to leave room for. Step time is a function of batch size, not a
+    # constant. (The ~3 s/step implied at batch_size=1 is derived from a ~450 s
+    # figure carried only in VALIDATION-LOG prose, with no run row behind it --
+    # tools/esmfold2_design/modal_app.py labels it as such.)
     #
     # Corrected to 5400 to match tools/esmfold2_design/modal_app.py
     # _MAX_SESSION_S, which is the ceiling that actually bounds these runs.
-    # Nothing is repriced by this edit: per the note at the head of this map,
-    # the value reaches no consumer and never enters the Modal payload —
-    # ``submit`` only checks the row is non-zero. It is corrected so the next
-    # person sizing this tool does not reason from a falsified number.
+    #
+    # Nothing is repriced by this edit, but NOT for the reason an earlier draft
+    # gave. The note at the head of this map says these values ARE used for
+    # credit pre-authorisation, and the rfdiffusion block below names two
+    # value-carrying readers: compute_campaigns._campaign_container_seconds and
+    # scripts/calibration/poll_results.py. Both are unreachable for THIS tool in
+    # particular — each asks for preset "pilot", esmfold2-design has no "pilot"
+    # row, and it is not in compute_campaigns.SUPPORTED_TOOLS — so ``submit``'s
+    # non-zero check is the only live reader here, and the row is corrected so
+    # the next person sizing this tool does not reason from a falsified number.
     ("esmfold2-design", "minibinder"): 5400,
     ("esmfold2-design", "scfv"):       5400,
     # IgGM antibody/nanobody design (diffusion) on A100-40GB. Canary-measured:

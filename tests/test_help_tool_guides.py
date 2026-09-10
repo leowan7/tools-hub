@@ -328,8 +328,9 @@ def test_help_index_step_count_matches_the_guide(app):
 def test_signup_credit_actually_covers_every_pilot(app):
     """Step 4 claims the signup credit "covers every pilot on the site".
 
-    The credit is $20 (raised from $15 on 2026-09-10) and the dearest pilot
-    (proteina) is $12.59, and both numbers move independently: #151/#153
+    The credit is $20 (raised from $15 on 2026-09-10) and the dearest pilots
+    are proteina AND pxdesign, tied at $12.59 displayed ($12.5827 raw), and
+    both numbers move independently: #151/#153
     changed the credit, and every pilot price is derived from live GPU
     rates over the recipe's params. Note PRICE is the weaker of the two
     tests — what actually admits a job is the cushioned HOLD, which sits

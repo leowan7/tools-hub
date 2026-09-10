@@ -121,10 +121,19 @@ _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 #     rather than the intended 1.70x markup. Revenue crosses below raw Modal
 #     cost at 6206 s, so 5400 stays the right side of that line.
 #
+#   * A cancelled job, or one whose orchestrator times out, does NOT stop its
+#     children: run_tool spawns them and never reaps them, and only the
+#     orchestrator's call id is stored, so nothing downstream can either. The
+#     user is fully refunded and Ranomics absorbs the whole bill — now up to
+#     64 x 5400 s = $835 of raw H100, against $557 at 3600 s. Pre-existing;
+#     this raise makes it 1.5x worse.
+#
 # Two values move WITH this one: ToolSpec.worst_case_gpu_seconds (else the
 # wallet hold prices a ceiling this container no longer has) and
 # _ORCHESTRATOR_TIMEOUT_S below, which derives from it rather than restating
-# it. Both couplings are pinned in tests/test_worst_case_hold_floor.py.
+# it. tests/test_worst_case_hold_floor.py pins the first to EQUALITY with the
+# timeout= this container is actually handed; the second only as an inequality
+# (orchestrator > worker), with nothing asserting the derivation itself.
 _MAX_SESSION_S = 5400
 # Orchestrator waits for the slowest child; 15 min over the worker timeout
 # absorbs spawn overhead + aggregation.

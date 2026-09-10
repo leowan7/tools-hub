@@ -414,7 +414,8 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # COST scales with n_seeds and not with n_designs_total (= n_seeds *
         # batch_size): against designs_per_run_baseline=1, scaling on
         # n_designs_total multiplies the hold by batch_size for containers that
-        # do not exist — a measured 6x OVER-hold at batch_size=6 ($90 vs $15).
+        # do not exist — a 6x OVER-hold at batch_size=6 ($90 vs $15, computed
+        # by swapping the scaling_param, not observed in a run).
         #
         # This block used to justify that from a FALSE premise — that batch_size
         # 1-6 "runs its designs inside ONE gradient pass at the SAME wall-clock",
@@ -426,13 +427,18 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # false premise did damage was the container CEILING sized from it: see
         # tools/esmfold2_design/modal_app.py:_MAX_SESSION_S, now 5400 s.
         #
-        # Bootstrap 2400 s/seed = $9.86 displayed; x1.5 cushion = $14.79, which
+        # Bootstrap 2400 s/seed = $9.8614, shown as $9.87 (the panel ceils to
+        # cents); x1.5 cushion = $14.79, which
         # the worst-case floor below then raises to the $15.00 cap. base_hard_cap
         # ($15) is the per-seed ceiling settle clamps the CHARGE at, reached at
         # ~3650 s of a 5400 s session — so past that point a seed bills flat and
         # Ranomics absorbs the rest. absolute_cap ($1000) still exceeds the
-        # N_SEEDS_MAX=64 job ceiling (64 x $15 = $960). Historical p90 refines
-        # the displayed estimate down after >=20 runs. WAS UNREGISTERED -> the
+        # N_SEEDS_MAX=64 job ceiling (64 x $15 = $960). Historical p90 replaces
+        # the 2400 s bootstrap after >=20 runs. NOTE that will RAISE this
+        # tool's displayed estimate, not lower it: the only two recorded runs
+        # are 3185 s and 3233 s, both far above 2400. (The generic 'p90 refines
+        # the estimate down' framing used elsewhere in this file was written
+        # for tools whose bootstrap over-estimates; this one under-estimates.) WAS UNREGISTERED -> the
         # atomic tier fell to the $0.10 / $10 no-spec default and under-held on
         # a max multi-seed run.
         #

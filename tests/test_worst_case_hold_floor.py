@@ -39,6 +39,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # Every spec carrying ``worst_case_gpu_seconds`` must appear here; the test
 # below fails if one does not, so a new fixed-container tool cannot register a
 # floor with nothing pinning it to a container.
+# Names this file asserts against. Binding one in a form the source reader
+# cannot follow is an error here, not a silent miss.
+_GUARDED_NAMES = ("_MAX_SESSION_S", "_ORCHESTRATOR_TIMEOUT_S")
+
 _SESSION_CAP_SOURCE = {
     "af2": "af2",
     "alphafold2": "af2",  # historic alias, same container
@@ -64,33 +68,159 @@ def _max_billable(slug: str, params: dict, container_seconds: float, ratio: int)
     return min(charge, cap).quantize(Decimal("0.0001"))
 
 
-def _session_cap(slug: str) -> float:
-    """``_MAX_SESSION_S`` read out of the tool's ``modal_app.py`` source.
+def _module_constants(path: Path) -> dict[str, int]:
+    """Every module-level ``NAME = <int expression>`` in ``path``.
 
-    Read rather than imported, following the precedent in
-    ``tests/test_gpu_class_drift.py``, which reads ``_GPU`` out of these same
-    files the same way. Read structurally rather than grepped, and taking the
-    LAST module-level binding, because that is the one an import would leave
-    behind.
+    Read rather than imported, following ``tests/test_gpu_class_drift.py``,
+    which reads ``_GPU`` out of these same files: importing a Modal app runs its
+    decorators.
+
+    Any OTHER way of binding a guarded name is refused rather than ignored. A
+    reader that only recognises ``ast.Assign`` treats ``_MAX_SESSION_S += 1800``,
+    ``_MAX_SESSION_S: int = 10800``, a tuple target, a two-target chain, a
+    ``globals()[...]`` write, and any binding nested inside ``if``/``try`` as
+    INVISIBLE: the runtime value moves and the guard goes on reporting the old
+    one. Each of those was demonstrated to keep the whole suite green.
     """
-    path = _REPO_ROOT / "tools" / _SESSION_CAP_SOURCE[slug] / "modal_app.py"
-    value = None
-    for node in ast.parse(path.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name) and target.id == "_MAX_SESSION_S":
-                value = node.value
-    assert value is not None, f"{path} has no module-level _MAX_SESSION_S"
-    try:
-        seconds = ast.literal_eval(value)
-    except ValueError:  # pragma: no cover - only if someone writes `90 * 60`
-        raise AssertionError(
-            f"{path}: _MAX_SESSION_S is {ast.unparse(value)!r}. Keep it a plain "
-            "integer literal so this guard can read it without executing the "
-            "module."
-        ) from None
-    assert isinstance(seconds, int), f"{path}: _MAX_SESSION_S is not an int"
-    return float(seconds)
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    consts: dict[str, int] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            value = _eval_int(node.value, consts)
+        except ValueError:
+            continue
+        assert target.id not in _GUARDED_NAMES or target.id not in consts, (
+            f"{path}: {target.id} is assigned twice at module level. This guard "
+            f"reads source, so the second one makes it report a value the "
+            f"container may not use."
+        )
+        consts[target.id] = value
+    _refuse_unreadable_rebinds(tree, path)
+    return consts
+
+
+def _refuse_unreadable_rebinds(tree: ast.Module, path: Path) -> None:
+    """Fail if a guarded name is bound in a form :func:`_module_constants` misses."""
+    for node in ast.walk(tree):
+        names: list[str] = []
+        if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            if isinstance(node.target, ast.Name):
+                names = [node.target.id]
+        elif isinstance(node, ast.Assign):
+            nested = node not in tree.body
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    if nested or len(node.targets) > 1:
+                        names.append(t.id)
+                elif isinstance(t, ast.Tuple):
+                    names += [e.id for e in t.elts if isinstance(e, ast.Name)]
+                elif isinstance(t, ast.Subscript):
+                    key = t.slice
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        names.append(key.value)
+        clashes = sorted(set(names) & set(_GUARDED_NAMES))
+        assert not clashes, (
+            f"{path}:{getattr(node, 'lineno', '?')}: {clashes} rebound in a form "
+            f"this source reader cannot follow. Keep these as one plain "
+            f"module-level assignment, or this guard silently reads a stale value."
+        )
+
+
+def _eval_int(node: ast.AST, consts: dict[str, int]) -> int:
+    """Evaluate an int expression over already-seen module constants.
+
+    Arithmetic is allowed on purpose -- ``90 * 60`` and ``_MAX_SESSION_S + 15 * 60``
+    are both legitimate ways to write these, and ``ast.literal_eval`` rejects
+    both. ``max``/``min`` are allowed for the same reason: the subprocess budget
+    is written ``max(60, _MAX_SESSION_S - 30)``.
+
+    Names resolve ONLY out of ``consts`` and the only callables recognised are
+    the two builtins matched by name, so nothing here reaches into the module
+    under test or executes any of it.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in consts:
+        return consts[node.id]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _eval_int(node.operand, consts)
+        return value if isinstance(node.op, ast.UAdd) else -value
+    if isinstance(node, ast.BinOp):
+        left = _eval_int(node.left, consts)
+        right = _eval_int(node.right, consts)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.FloorDiv):
+            return left // right
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in ("max", "min")
+        and not node.keywords
+    ):
+        args = [_eval_int(a, consts) for a in node.args]
+        if args:
+            return max(args) if node.func.id == "max" else min(args)
+    raise ValueError("not an int expression")
+
+
+def _gpu_container_timeout(path: Path) -> int:
+    """The ``timeout=`` the GPU ``@app.function`` is actually handed.
+
+    THIS, not ``_MAX_SESSION_S``, is what bounds the container. Guarding only the
+    constant left ``@app.function(timeout=_MAX_SESSION_S * 3)`` passing the whole
+    suite -- a 3x under-hold, because the wallet floor still priced 5400 s while
+    Modal allowed 16200. The constant is read only to resolve this expression,
+    and the two must agree.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    consts = _module_constants(path)
+    timeouts: dict[str, int] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            kwargs = {kw.arg: kw.value for kw in dec.keywords}
+            if "gpu" in kwargs and "timeout" in kwargs:
+                timeouts[node.name] = _eval_int(kwargs["timeout"], consts)
+    assert timeouts, (
+        f"{path}: no @app.function passing both gpu= and timeout=; this guard "
+        f"is reading nothing."
+    )
+    distinct = set(timeouts.values())
+    assert len(distinct) == 1, (
+        f"{path}: GPU functions disagree on the session cap: {timeouts}. "
+        f"worst_case_gpu_seconds can mirror only one."
+    )
+    seconds = distinct.pop()
+    declared = consts.get("_MAX_SESSION_S")
+    assert seconds == declared, (
+        f"{path}: the GPU container is handed timeout={seconds} s while "
+        f"_MAX_SESSION_S is {declared}. Every comment and every wallet constant "
+        f"is written against _MAX_SESSION_S, so the decorator must pass it "
+        f"unmodified."
+    )
+    return seconds
+
+
+def _session_cap(slug: str) -> float:
+    """Session cap for ``slug``, taken from its GPU container's own timeout."""
+    return float(
+        _gpu_container_timeout(
+            _REPO_ROOT / "tools" / _SESSION_CAP_SOURCE[slug] / "modal_app.py"
+        )
+    )
 
 
 @pytest.fixture
@@ -222,7 +352,10 @@ def test_bootstrap_holds_unchanged_by_floor(monkeypatch):
     """
     monkeypatch.setattr(we, "_historical_p90_seconds", lambda slug: None)
     assert we.cushioned_hold_usd(None, "proteina", {"num_designs": 8}) == Decimal("15.0000")
-    assert we.cushioned_hold_usd(None, "esmfold2-design", {"n_seeds": 1}) >= Decimal("14.7920")
+    # Pinned to the post-floor value this docstring states, not to the pre-floor
+    # $14.7920: a >= against the old number passes either way and would not
+    # notice the floor ceasing to apply at all.
+    assert we.cushioned_hold_usd(None, "esmfold2-design", {"n_seeds": 1}) == Decimal("15.0000")
     assert we.cushioned_hold_usd(None, "esmfold2-design", {"n_seeds": 8}) >= Decimal("118.3363")
 
 
@@ -306,54 +439,70 @@ def test_hold_covers_a_full_session_container(slug: str, low_p90) -> None:
 
 
 def _esmfold2_timeouts() -> dict[str, int]:
-    """``{name: seconds}`` for the three nested timeouts, evaluated from source.
+    """``{name: seconds}`` for the three nested esmfold2-design timeouts.
 
-    ``_ORCHESTRATOR_TIMEOUT_S`` and the subprocess budget are both EXPRESSIONS
-    over ``_MAX_SESSION_S``, so they are compiled in a namespace holding only
-    that value — no import, and nothing else is reachable from it.
+    ``worker`` is the GPU container's own ``timeout=`` (see
+    :func:`_gpu_container_timeout`), not the constant beside it. ``orchestrator``
+    is the ``timeout=`` on the function that has no ``gpu=``. ``subprocess`` is
+    read from INSIDE ``_run_one_seed`` only.
+
+    That last scoping matters: an earlier version took whichever
+    ``subprocess.run(timeout=...)`` ``ast.walk`` reached first, which is
+    breadth-first rather than source order. A second, more deeply nested
+    ``subprocess.run`` anywhere in the file silently became "the budget" and hid
+    a real inversion.
     """
-    import ast as _ast
-
     path = _REPO_ROOT / "tools" / "esmfold2_design" / "modal_app.py"
-    tree = _ast.parse(path.read_text(encoding="utf-8"))
-    worker = _session_cap("esmfold2-design")
-    ns = {"_MAX_SESSION_S": int(worker), "max": max}
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    consts = _module_constants(path)
+
+    worker = _gpu_container_timeout(path)
 
     orchestrator = None
     for node in tree.body:
-        if (
-            isinstance(node, _ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], _ast.Name)
-            and node.targets[0].id == "_ORCHESTRATOR_TIMEOUT_S"
-        ):
-            orchestrator = eval(  # noqa: S307 - arithmetic over one pinned int
-                compile(_ast.Expression(node.value), str(path), "eval"), ns, {}
-            )
-    assert orchestrator is not None, f"{path}: no _ORCHESTRATOR_TIMEOUT_S"
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            kwargs = {kw.arg: kw.value for kw in dec.keywords}
+            if "gpu" not in kwargs and "timeout" in kwargs:
+                assert orchestrator is None, (
+                    f"{path}: more than one non-GPU @app.function passes a "
+                    f"timeout; this guard cannot tell which is the orchestrator."
+                )
+                orchestrator = _eval_int(kwargs["timeout"], consts)
+    assert orchestrator is not None, (
+        f"{path}: no CPU-only @app.function with a timeout=; the orchestrator "
+        f"bound this test claims to check is not being read."
+    )
 
-    # The subprocess budget inside _run_one_seed: the `timeout=` kwarg on the
-    # subprocess.run call. Located structurally so a moved call still resolves.
-    subprocess_budget = None
-    for node in _ast.walk(tree):
-        if (
-            isinstance(node, _ast.Call)
-            and "subprocess.run" in _ast.unparse(node.func)
-        ):
-            for kw in node.keywords:
-                if kw.arg == "timeout":
-                    subprocess_budget = eval(  # noqa: S307 - same pinned ns
-                        compile(_ast.Expression(kw.value), str(path), "eval"),
-                        ns, {},
-                    )
-    assert subprocess_budget is not None, (
-        f"{path}: no subprocess.run(timeout=...) found; this guard is reading "
-        f"nothing."
+    seed_fn = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_run_one_seed"
+        ),
+        None,
+    )
+    assert seed_fn is not None, f"{path}: no _run_one_seed; guard is reading nothing."
+    budgets = [
+        kw.value
+        for call in ast.walk(seed_fn)
+        if isinstance(call, ast.Call) and "subprocess.run" in ast.unparse(call.func)
+        for kw in call.keywords
+        if kw.arg == "timeout"
+    ]
+    assert len(budgets) == 1, (
+        f"{path}: expected exactly one subprocess.run(timeout=...) inside "
+        f"_run_one_seed, found {len(budgets)}. With more than one this guard "
+        f"cannot say which bounds the run."
     )
     return {
-        "subprocess": int(subprocess_budget),
-        "worker": int(worker),
-        "orchestrator": int(orchestrator),
+        "subprocess": _eval_int(budgets[0], consts),
+        "worker": worker,
+        "orchestrator": orchestrator,
     }
 
 
@@ -371,8 +520,15 @@ def test_esmfold2_timeouts_stay_nested() -> None:
       running and still billing, and the job returns nothing for compute the
       wallet has already charged.
 
-    Both were mutation-confirmed to pass the ENTIRE suite before this test
-    existed, and one of them reached a commit in the session that wrote it.
+    Both inversions were mutation-confirmed to pass the ENTIRE suite before this
+    test existed, as were two mutations of the DECORATOR timeouts that this file
+    now reads directly (``timeout=_MAX_SESSION_S * 3`` on the worker, and
+    ``timeout=600`` on the orchestrator).
+
+    What is pinned and what is not: the worker bound is pinned to equality with
+    ``_MAX_SESSION_S`` inside :func:`_gpu_container_timeout`. The orchestrator is
+    pinned only as an INEQUALITY -- a hardcoded ``_ORCHESTRATOR_TIMEOUT_S =
+    100000`` passes here. Nothing asserts it is derived from the worker.
     """
     t = _esmfold2_timeouts()
     assert t["subprocess"] < t["worker"], (
