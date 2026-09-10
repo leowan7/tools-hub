@@ -50,7 +50,6 @@
 {% set wall_clock_seconds = output.get('wall_clock_seconds') %}
 {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
 {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
-{% set use_scaling_critics = output.get('use_scaling_critics') %}
 {% set n_seeds            = output.get('n_seeds') or 1 %}
 {% set seeds_succeeded    = output.get('seeds_succeeded') %}
 {% set seeds_failed       = output.get('seeds_failed') or 0 %}
@@ -122,7 +121,7 @@
    highest-proxy-of-tier. That split is deliberate and matches both
    pipelines: the mode-specific metric is the GATE, iPTM is the RANK,
    because iPTM is the calibrated number and the panel below calls the
-   proxy "informative only" whenever the scaling critics are off.
+   proxy "informative only".
 
    Only a candidate we can quote a BINDER for is eligible to be the pick:
    choosing one we then cannot render would just empty the panel, and
@@ -291,7 +290,7 @@
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
       ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
-      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.{% if use_scaling_critics %} The scaling-critic ensemble was loaded for this run but does not feed these scores — every number here comes from one hero critic.{% endif %}
+      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.
     </div>
   </div>
 </div>
