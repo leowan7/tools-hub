@@ -946,7 +946,7 @@ def _public_tool_context(adapter) -> dict:
     (app.py) rebuilds it inside ``about_panel.html`` because macros are
     imported without context. Each build runs ``_pilot_context`` ->
     ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
-    an uncached Supabase SELECT on ``tool_jobs_p90``. /tools/<slug> is
+    an uncached Supabase SELECT on ``tool_jobs``. /tools/<slug> is
     publicly indexable now, so that was two network round trips per
     crawler hit for one page.
 
