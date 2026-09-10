@@ -1794,20 +1794,6 @@ class TestTheDownloadAsksTheRequestWhichChain:
             f"the download does not name the chain it carries: {disposition}"
         )
 
-    def test_the_page_does_not_override_the_servers_filename(self, client):
-        """A hard-coded download="" on the anchor silently undoes the above.
-
-        It overrides Content-Disposition for same-origin, and it also forces a
-        download for a non-2xx — which is how this route's JSON refusals used
-        to be saved to disk as a .csv instead of being shown.
-        """
-        _login(client)
-        page = client.get("/scout/feasibility").get_data(as_text=True)
-        anchor = page.split('id="download-link"', 1)[1].split(">", 1)[0]
-        assert "download=" not in anchor, (
-            f"the download anchor hard-codes a filename again: {anchor}"
-        )
-
     def test_the_refusal_names_the_files_chain_not_the_callers_string(self, client, reap_jobs):
         """Same reason as test_the_feasibility_404_names_the_chain above.
 

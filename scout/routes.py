@@ -2034,7 +2034,15 @@ def feasibility_download(job_id):
     # by opening them and reading the chain_id column -- the exact confusion
     # this route now refuses to cause over the wire. Omitted when the file
     # cannot name its chain, rather than writing "chainNone".
-    suffix = f"_chain{feasibility_chain}" if feasibility_chain else ""
+    # _valid_chain-gated: this value came out of FILE BYTES via
+    # _csv_chain_id, and on the chainless path it is compared against
+    # nothing, so without this it reaches a response header unchecked. A
+    # a CR or LF there is a 500 from werkzeug, not a stale filename.
+    suffix = (
+        f"_chain{feasibility_chain}"
+        if feasibility_chain and _valid_chain(feasibility_chain)
+        else ""
+    )
     return send_file(
         io.BytesIO(payload),
         as_attachment=True,
