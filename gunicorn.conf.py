@@ -61,7 +61,7 @@ workers = max(1, _int_env("WEB_CONCURRENCY", 2))
 #
 # WHAT gthread WOULD BUY. Exactly one thing: other routes stop queueing behind
 # anonymous Scout compute. Under sync workers one anonymous analysis — up to
-# ~15 CPU-seconds at the 8 MB upload cap — occupies a whole worker, so two
+# ~14 CPU-seconds at the 8 MB upload cap — occupies a whole worker, so two
 # concurrent ones make the entire site unresponsive, /healthz included. That
 # is a real defect and threads are the only mechanism that fixes it.
 #

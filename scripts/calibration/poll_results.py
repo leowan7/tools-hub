@@ -26,18 +26,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from dotenv import load_dotenv
 
 load_dotenv()
+from gpu.modal_client import preset_gpu_seconds
 from shared.credits import get_service_client
 DISPATCHED = REPO_ROOT / "tmp" / "calibration" / "dispatched.json"
 RESULTS = REPO_ROOT / "tmp" / "calibration" / "results.json"
-
-
-# Pilot-tier subprocess caps from gpu/modal_client.PRESET_CAPS.
-PILOT_CAP_S = {
-    "rfantibody":  1800,
-    "rfdiffusion": 1800,
-    "bindcraft":   7200,
-    "boltzgen":    3600,
-}
 
 
 def _classify(row: dict, dispatched_meta: dict) -> tuple[str, str | None]:
@@ -65,10 +57,16 @@ def _classify(row: dict, dispatched_meta: dict) -> tuple[str, str | None]:
             pass
 
     if status == "succeeded":
-        cap = PILOT_CAP_S.get(row.get("tool"), 0)
+        # Read the cap from its source. A hand-copy here went stale when
+        # ("rfdiffusion", "pilot") moved 1800 -> 3600: at the old cap the
+        # SLOW_SUCCESS threshold was 0.8 * 1800 = 1440 s, so the measured
+        # 2220 s run (job 25471e07) was flagged SLOW_SUCCESS against a
+        # container it had simply outgrown. At 3600 the threshold is 2880 s
+        # and the same run reads FAST_SUCCESS, which is the true signal.
+        cap = preset_gpu_seconds(row.get("tool") or "", "pilot")
         if wall_s and cap and wall_s >= 0.8 * cap:
             return "SLOW_SUCCESS", f"wall={wall_s}s near cap={cap}s"
-        return "FAST_SUCCESS", f"wall={wall_s}s under cap={PILOT_CAP_S.get(row.get('tool'))}s"
+        return "FAST_SUCCESS", f"wall={wall_s}s under cap={cap}s"
 
     # Failed paths — classify by error string.
     if "out of memory" in err_msg.lower() or "killed" in err_msg.lower():

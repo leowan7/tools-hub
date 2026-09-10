@@ -24,7 +24,6 @@ job_spec keys:
     is_antibody           bool
     seed                  int
     batch_size            int   1-6
-    use_scaling_critics   bool
 
 Output shape (``/tmp/smoke_results.json``)::
 
@@ -40,26 +39,50 @@ Output shape (``/tmp/smoke_results.json``)::
       "designs_total": 1,
       "designs_completed": 1,
       "n_failures": 0,
-      "use_scaling_critics": false,
       "trajectory_steps": 150,
-      "best_sequence": "MAEK...",
+      "best_sequence": "AEKV...",
       "designs": [
         {
           "rank": 0,
           "name": "design_0",
           "pdb_key": "design_0_complex.pdb",
-          "designed_sequence": "MAEK...",
+          "designed_sequence": "MAEK...|AEKV...",
+          "sequence": "AEKV...",
           "iptm": 0.74,
           "distogram_iptm_proxy": 0.62,
           "cdr_distogram_iptm_proxy": null,
           "final_loss": 0.31,
           "isoelectric_point": 5.4,
-          "filter_status": "strict_pass"
+          "filter_status": "strict_pass",
+          "scores": {"iptm": 0.74, "...": "the six keys above, nested"}
+        }
+      ],
+      "candidates": [
+        {
+          "rank": 0,
+          "name": "design_0",
+          "pdb_key": "design_0_complex.pdb",
+          "designed_sequence": "MAEK...|AEKV...",
+          "sequence": "AEKV...",
+          "scores": {
+            "ipTM": 0.74,
+            "iPTM_proxy": 0.62,
+            "final_loss": 0.31,
+            "pI": 5.4,
+            "filter_status": "strict_pass"
+          }
         }
       ],
       "runtime_seconds": 612,
       "provider_job_id": "<job_id>"
     }
+
+``designed_sequence`` is ``target|binder`` concatenated; ``sequence`` is the
+binder alone, and it is what ``best_sequence``, export.fasta and the results
+panel's order-form block all mean. ``candidates[]`` is the capitalized,
+nested-``scores`` view the web tier reads; ``designs[]`` keeps the flat
+lowercase keys. Both are emitted, and the results template consumes whichever
+is present.
 
 Raw capture: the summary above is a *view*, not the record. The complete
 work tree (``/tmp/results``, including the untouched critic rows dumped
@@ -77,6 +100,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import sys
@@ -119,9 +143,36 @@ STRICT_IPTM = 0.75
 STRICT_CDR_IPTM_PROXY = 0.50
 STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 
-# Critic name strings used by upstream binder_design.py.
+# Critic name string used by upstream binder_design.py. Every scored field —
+# the real iPTM and BOTH distogram proxies — is read off this one critic's row,
+# so every number in a results row comes from the same model.
+#
+# There was a second constant here, CRITIC_SCALING_PROXY =
+# "ESMFold2-Experimental-Fast-base", matched by substring for the proxies.
+# That string is NOT dead upstream -- it is upstream's own test for whether a
+# critic is a scaling critic (``is_scaling_critic = "ESMFold2-Experimental-
+# Fast-base" in critic_name``), and the 15 scaling checkpoints are named
+# f"ESMFold2-Experimental-Fast-base{size}-step{step}k". Copying that substring
+# as a *source selector* is what broke: it matches scaling rows and only
+# scaling rows, and the scaling ensemble was off by default, so on the default
+# path no matching row exists, both proxies stayed None, and since _classify
+# gates scFvs on the CDR proxy alone EVERY antibody design came back ``drop``
+# regardless of quality (13/13 on a 2026-08-23 prod run). Loading the ensemble
+# did populate it -- which is why the tool looked fine to whoever tested that
+# way.
+#
+# The proxies were never actually missing. Upstream calls
+# compute_distogram_iptm_proxy once per critic and spreads the result into
+# EVERY row, hero critics included, so the value was always sitting on the row
+# this file already read the iPTM off. Sourcing it there removes the second
+# name to keep in sync and makes every number in a results row one model's
+# opinion. It also left the scaling ensemble reading nowhere, which is why the
+# ``use_scaling_critics`` toggle that used to sit on this job spec was removed
+# outright rather than left as a paid no-op: see the ``designer.load(False)``
+# call in _run.
+# _warn_if_scores_missing makes a future upstream rename loud in the logs
+# instead of silently zeroing the gate again.
 CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
-CRITIC_SCALING_PROXY = "ESMFold2-Experimental-Fast-base"
 
 
 def _write_result(payload: dict[str, Any]) -> None:
@@ -289,6 +340,105 @@ def _save_complex_pdb(
     return key
 
 
+def _finite(value: Any) -> Optional[float]:
+    """None for anything that is not a finite number.
+
+    Upstream sets ``cdr_distogram_iptm_proxy`` to ``float("nan")`` for every
+    non-antibody design (``compute_distogram_iptm_proxy``: "otherwise the CDR
+    score is NaN"). That NaN never surfaced while the proxy branch was dead,
+    so un-deadening it is what makes this reachable. ``json.dump`` writes NaN
+    as a bare ``NaN`` literal, which is not valid JSON and which the results
+    page's ``JSON.parse`` rejects outright; NaN also compares False against
+    every threshold, so it would read as a confident drop rather than as the
+    absent measurement it is.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _warn_if_scores_missing(
+    designs: list[dict], is_antibody: bool, critic_results: list[dict],
+) -> None:
+    """Log loudly when a whole run came back with no critic-sourced scores.
+
+    Every critic-sourced field (iPTM, both proxies, final_loss, the complex) is
+    read off CRITIC_REAL_IPTM; only the pI is computed locally. Three upstream
+    changes reach this: renaming that critic (blanks all of them), dropping a
+    scored key from its row (blanks that one), or moving the proxies onto other
+    critics (blanks the proxy — exactly how the scFv gate stayed dead).
+
+    This checks the SHAPED OUTPUT rather than the critic names, because a name
+    check sees only the first of those three. The bug this file exists to fix
+    left CRITIC_REAL_IPTM present and correctly named the whole time, so a name
+    check would have stayed silent through all 13 of the drops it caused.
+    Checking the output sees the first and third, and the second whenever the
+    dropped key is iptm or the proxy upstream populates for this preset; a
+    dropped final_loss or complex still passes, neither being worth a false
+    alarm.
+
+    Neither message may assert a cause it cannot distinguish. An all-blank
+    iPTM is equally a run where every fold diverged and a critic that stopped
+    carrying the field, and zero shaped designs is equally failed folds and a
+    renamed key. Naming one is a confident misdiagnosis, which sends the next
+    reader somewhere there is nothing to find -- the same failure mode as the
+    ``drop`` this file exists to fix, one layer up.
+
+    This cannot repair the run, only put the cause in the Modal logs instead of
+    making it cost another H100 to find. The logs are the only place it lands:
+    modal_app.py returns stderr_tail="", so nothing surfaces on the job page.
+    """
+    names = sorted({str(row.get("critic_name", "")) for row in critic_results})
+    if not designs:
+        if critic_results:
+            # Rows arrived but every one hit the ``seq is None`` skip above.
+            # Two causes reach that skip and this cannot tell them apart: a
+            # renamed key, or folds that failed and carry designed_sequence
+            # None. Either way the job reports COMPLETED with zero designs,
+            # which reads as "the target is undesignable".
+            logger.error(
+                "%d critic rows shaped 0 designs: every row had a null "
+                "designed_sequence. Either those folds failed, or upstream "
+                "renamed the key. Critics seen: %s",
+                len(critic_results),
+                names,
+            )
+        return
+    # The proxy upstream POPULATES for this preset, which is not the same as
+    # the one the preset gates on: _classify reads the CDR proxy alone for
+    # antibodies, but minibinders gate on iptm and pI and never read their
+    # proxy at all. The selection is about which one carries a number --
+    # upstream emits the other as NaN (compute_distogram_iptm_proxy:
+    # "otherwise the CDR score is NaN"), which _finite turns to None, so
+    # checking both would false-alarm on every healthy run.
+    proxy_key = (
+        "cdr_distogram_iptm_proxy" if is_antibody else "distogram_iptm_proxy"
+    )
+    blank = [
+        key for key in ("iptm", proxy_key)
+        if all(design.get(key) is None for design in designs)
+    ]
+    if blank:
+        # Name only the fields actually blank, and offer both readings. The
+        # earlier wording said "every critic-sourced score is None" whatever
+        # was missing, which is false on a diverged run whose proxies came
+        # through, and it accused a critic the same line lists as present.
+        logger.error(
+            "no design carries a value for %s across all %d shaped design(s). "
+            "Either every fold diverged (upstream emits NaN, dropped here), or "
+            "critic %r -- which every one of these fields is read off -- "
+            "stopped carrying them. Critics seen: %s",
+            ", ".join(blank),
+            len(designs),
+            CRITIC_REAL_IPTM,
+            names,
+        )
+
+
 def _shape_designs(
     critic_results: list[dict],
     is_antibody: bool,
@@ -300,10 +450,11 @@ def _shape_designs(
 
     The upstream critic_results is a list of dicts with keys including
     critic_name, iptm, distogram_iptm_proxy, cdr_distogram_iptm_proxy,
-    final_loss, designed_sequence, complex. Multiple critics emit rows
-    for the same design — we group on designed_sequence and pull the
-    real iPTM from the Cutoff2025 critic, the proxy from any Fast-base
-    critic.
+    final_loss, designed_sequence, complex. Several critics emit a row
+    for the same design, each with its own proxy value — we group on
+    designed_sequence and take every score from the CRITIC_REAL_IPTM
+    row, so the iPTM and the proxy a user compares side by side are
+    one model's opinion rather than two models'.
 
     ``pdb_prefix`` namespaces PDB filenames so multi-seed fan-out jobs
     (where the orchestrator spawns N children, each running this
@@ -320,6 +471,7 @@ def _shape_designs(
             seq,
             {
                 "designed_sequence": seq,
+                "_scored": False,
                 "iptm": None,
                 "distogram_iptm_proxy": None,
                 "cdr_distogram_iptm_proxy": None,
@@ -328,19 +480,23 @@ def _shape_designs(
             },
         )
         critic_name = str(row.get("critic_name", ""))
-        if critic_name == CRITIC_REAL_IPTM:
-            bucket["iptm"] = row.get("iptm")
-            if bucket["complex"] is None:
-                bucket["complex"] = row.get("complex")
-            if bucket["final_loss"] is None:
-                bucket["final_loss"] = row.get("final_loss")
-        elif CRITIC_SCALING_PROXY in critic_name:
-            if is_antibody:
-                bucket["cdr_distogram_iptm_proxy"] = row.get(
-                    "cdr_distogram_iptm_proxy"
-                )
-            else:
-                bucket["distogram_iptm_proxy"] = row.get("distogram_iptm_proxy")
+        if critic_name == CRITIC_REAL_IPTM and not bucket["_scored"]:
+            # The FIRST scoring row wins every field. Scores used to be
+            # assigned unconditionally (last row won) while complex and
+            # final_loss were first-wins, so two rows sharing a sequence --
+            # which batch_size > 1 makes possible, and which the REUSE_ESMC
+            # half of this change is what finally allows -- handed the user
+            # one row's PDB underneath another row's numbers.
+            bucket["_scored"] = True
+            bucket["iptm"] = _finite(row.get("iptm"))
+            bucket["distogram_iptm_proxy"] = _finite(
+                row.get("distogram_iptm_proxy")
+            )
+            bucket["cdr_distogram_iptm_proxy"] = _finite(
+                row.get("cdr_distogram_iptm_proxy")
+            )
+            bucket["complex"] = row.get("complex")
+            bucket["final_loss"] = _finite(row.get("final_loss"))
 
     designs: list[dict] = []
     for rank, (seq, bucket) in enumerate(by_sequence.items()):
@@ -383,12 +539,48 @@ def _shape_designs(
             }
         )
 
-    # Sort by iPTM desc with None at the bottom.
-    designs.sort(key=lambda d: (-1 if d["iptm"] is None else -d["iptm"]))
+    # Sort by iPTM desc with None at the bottom. The sentinel has to be
+    # +inf, not -1: iPTM lives in [0, 1], so -1 is the negation of a PERFECT
+    # score and sorted an unmeasured design above every measured one, which
+    # is what this comment always claimed it did not do.
+    designs.sort(
+        key=lambda d: (float("inf") if d["iptm"] is None else -d["iptm"])
+    )
     for rank, d in enumerate(designs):
         d["rank"] = rank
         d["name"] = f"{pdb_prefix}design_{rank}"
+    # After shaping, not before: the check reads the values that actually
+    # landed on the designs, which is the only view that catches a proxy
+    # sourced off the wrong critic.
+    _warn_if_scores_missing(designs, is_antibody, critic_results)
     return designs
+
+
+# Filter tiers in preference order. Anything else ("drop", missing) is only
+# reached when no tier above it has a single design.
+_FILTER_TIERS = ("strict_pass", "borderline")
+
+
+def _pick_best(designs: list[dict]) -> Optional[dict]:
+    """Best design by filter tier first, iPTM second.
+
+    ``designs`` is already sorted by iPTM desc, so the first design of the
+    best non-empty tier wins. Ranking on iPTM alone hands the user a record
+    the tool's own filter rejected: a pI ~12 poly-Arg hallucination can
+    outscore every clean design, and best_sequence is what the results page
+    offers up for peptide synthesis.
+
+    Tier first, iPTM second -- in BOTH modes. In scFv mode ``_classify``
+    decides the tier on the CDR distogram proxy while this ordering stays
+    iPTM, so the winner is the highest-iPTM design among those the proxy let
+    through, not the highest-proxy one. Deliberate: iPTM is the calibrated
+    quantity and the proxy is a gate.
+    """
+    for tier in _FILTER_TIERS:
+        for d in designs:
+            if d.get("filter_status") == tier:
+                return d
+    return designs[0] if designs else None
 
 
 # ===========================================================================
@@ -625,7 +817,6 @@ def _run() -> int:
     is_antibody = bool(job_spec.get("is_antibody", preset == "scfv"))
     seed = int(job_spec.get("seed", 0))
     batch_size = int(job_spec.get("batch_size", 1))
-    use_scaling_critics = bool(job_spec.get("use_scaling_critics", False))
     # pdb_prefix is set by the multi-seed orchestrator in modal_app.py
     # so each child run uses a unique Storage key for its PDB output;
     # single-seed runs receive an empty string and behave as before.
@@ -633,7 +824,7 @@ def _run() -> int:
 
     logger.info(
         "ESMFold2 design start: job=%s tier=%s preset=%s target=%s "
-        "binder=%s seed=%d batch_size=%d scaling=%s",
+        "binder=%s seed=%d batch_size=%d",
         job_id,
         tier,
         preset,
@@ -641,7 +832,6 @@ def _run() -> int:
         binder_name,
         seed,
         batch_size,
-        use_scaling_critics,
     )
 
     # Import the upstream module. /opt is on sys.path via the top of
@@ -669,8 +859,36 @@ def _run() -> int:
     # Modal container, so we use ESMFold2Design rather than the
     # ESMFold2DesignModal wrapper class.
     try:
+        # Share the one ESM-C 6B trunk the inversion models already hold
+        # instead of loading a second fp32 copy for the LM head (~24 GB).
+        # Upstream ships this False and measures 51 GB -> 27 GB VRAM with it
+        # True, on exactly the scfv config this tool exposes, noting it is
+        # what "enables increasing batch size up to 6". The 1-6 bound in
+        # __init__.py is that same figure -- so shipping False under it took
+        # the cap from one branch and the setting from the other, and every
+        # batch_size > 1 scfv run OOMed an 80 GB H100 for zero designs
+        # (default batch_size is 3, so that was the default web path).
+        # CAVEAT: the shared trunk is not the fp32 one this replaces, so the
+        # LM-loss term is not bit-identical to prior runs. Upstream flags the
+        # same thing ("testing this setting in silico").
+        # load() reads it as a module global, so it must be set before it.
+        bd.REUSE_ESMC = True
         designer = bd.ESMFold2Design()
-        designer.load(use_scaling_critics)
+        # Hero critics only, always. The 15-checkpoint scaling ensemble this
+        # argument used to switch on loads with device="cpu" and
+        # cache_esmc=False -- 15 more checkpoints, 5 of them 6B, each carrying
+        # its own ESMC copy, against the 10 GB ``memory=`` in modal_app.py.
+        # Upstream recommends 60 GB host RAM for it. Since _shape_designs reads
+        # every score off CRITIC_REAL_IPTM, a hero critic, those rows are never
+        # read and the ensemble changed no reported number.
+        #
+        # Deliberately not calling that an OOM: a bare integer ``memory=`` is
+        # a Modal soft limit ("How much memory to request, in MiB. This is a
+        # soft limit." -- modal/image.py), so the ensemble may have been
+        # throttled rather than killed. Untested either way, because the path
+        # never ran in prod. What IS certain is the trade: six times the
+        # documented host-RAM requirement, for no change to any number.
+        designer.load(False)
     except Exception as exc:
         logger.error("Failed to load ESMFold2Design: %s\n%s", exc, traceback.format_exc())
         _write_result(
@@ -715,7 +933,6 @@ def _run() -> int:
                 "designs_completed": 0,
                 "n_failures": 1,
                 "designs": [],
-                "use_scaling_critics": use_scaling_critics,
                 "runtime_seconds": int(time.time() - start),
                 "provider_job_id": job_id,
             }
@@ -733,13 +950,16 @@ def _run() -> int:
         job_token,
         pdb_prefix=pdb_prefix,
     )
+    best_design = _pick_best(designs)
     runtime = int(time.time() - start)
 
-    # The Flask CSV/FASTA exporters + summarize_top_score read
     # ``job.result["candidates"]`` with ``scores`` as a nested dict and
-    # capitalized keys (ipTM, iPTM_proxy, pI). Build that canonical view
-    # alongside the ``designs`` shape the results template already
-    # consumes, so we don't have to rewrite either.
+    # capitalized keys (ipTM, iPTM_proxy, pI) is what the web tier reads:
+    # shared/exports.py (CSV + FASTA), shared/email.py::_top_candidate_summary
+    # and blueprints/jobs.py::_top_score_for_share. Build that canonical view
+    # alongside the ``designs`` shape the results template already consumes,
+    # so we don't have to rewrite either. (This comment used to name a
+    # ``summarize_top_score``, which has never existed in this repo.)
     candidates = [
         {
             "rank": d["rank"],
@@ -773,9 +993,16 @@ def _run() -> int:
         "designs_total": batch_size,
         "designs_completed": len(designs),
         "n_failures": max(0, batch_size - len(designs)),
-        "use_scaling_critics": use_scaling_critics,
         "trajectory_steps": len(trajectory) if trajectory is not None else None,
-        "best_sequence": _extract_binder_sequence(best_seq) if best_seq else None,
+        # NOT ``best_seq`` from design(): upstream returns its own top pick
+        # with no knowledge of our strict-pass gate. It survives only as the
+        # fallback for a run that shaped nothing to choose from -- or whose
+        # chosen design has an empty binder half, which would otherwise make
+        # the results panel vanish rather than degrade.
+        "best_sequence": (
+            (best_design or {}).get("sequence")
+            or (_extract_binder_sequence(best_seq) if best_seq else None)
+        ),
         "designs": designs,
         "candidates": candidates,
         "runtime_seconds": runtime,

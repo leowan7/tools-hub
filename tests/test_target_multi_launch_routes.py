@@ -217,7 +217,7 @@ def _assert_float_encoding_is_distinguishable(money_strings, what):
         f"every {what} figure {money_strings} round-trips through float "
         f"unchanged, so the 4dp assertions above would pass against "
         f"str(float(...)) and pin nothing. Pick a cohort whose {what} carry a "
-        f"trailing zero (rfdiffusion@120 + boltzgen@120 does)."
+        f"trailing zero (rfdiffusion@60 + boltzgen@60 does)."
     )
 
 
@@ -555,25 +555,29 @@ def test_the_estimate_encodes_money_as_strings(client):
     the two encodings apart.
 
     The cohort matters as much as the assertion. ``str(float(x)) == str(x)`` for
-    any 4dp Decimal WITHOUT trailing zeros, so priced against rfdiffusion@12
-    alone this test passed even with the endpoint floating every figure: that
-    cohort plans 2.0101 and 2.6219, both of which survive the round trip intact,
-    so there was nothing to catch. rfdiffusion@120 + boltzgen@120 is chosen
-    because it carries a trailing zero in BOTH groups: measured, of the six
-    asserted figures four have one (totals 50.2470 and 56.2190; rows
-    rfdiffusion first_wave 26.2190 and boltzgen first_wave 30.0000), while rows
-    rfdiffusion budget 20.1009 and boltzgen budget 30.1461 do not. A trailing
-    zero is the only condition under which either encoding is observable, and
-    the preconditions are checked per group precisely because one group having
-    one does not mean the other does. Both tools are ungated, so no flag
-    patching is needed.
+    any 4dp Decimal WITHOUT trailing zeros, so priced against a single-tool
+    cohort whose figures all round-trip cleanly this test passed even with the
+    endpoint floating every figure -- there was nothing to catch.
+    rfdiffusion@60 + boltzgen@60 is chosen because it carries a trailing zero in
+    BOTH groups: measured, of the six asserted figures four have one (totals
+    37.2000 and 48.2070; rows rfdiffusion first_wave 30.0000 and boltzgen
+    first_wave 18.2070), while rows rfdiffusion budget 23.2413 and boltzgen
+    budget 13.9587 do not. A trailing zero is the only condition under which
+    either encoding is observable, and the preconditions are checked per group
+    precisely because one group having one does not mean the other does. Both
+    tools are ungated, so no flag patching is needed.
+
+    Was @120 for both tools, which stopped carrying a trailing zero in the
+    TOTALS group when rfdiffusion's expected_gpu_seconds was corrected
+    1200 -> 2775; the per-group precondition caught it rather than letting the
+    test go quietly vacuous. The figures above are recomputed, not adjusted.
     """
     _login(client)
     t = _target()
     data = _estimate(
         client, t,
-        "tool=rfdiffusion&designs=120&preset=pilot"
-        "&tool=boltzgen&designs=120&preset=pilot",
+        "tool=rfdiffusion&designs=60&preset=pilot"
+        "&tool=boltzgen&designs=60&preset=pilot",
     )
     assert data["ok"] is True, data.get("error")
 
@@ -614,14 +618,21 @@ def test_the_estimate_encodes_money_as_strings(client):
 # held". Now the server ships a *_display string per figure: costs and holds
 # round UP, balances round DOWN, neither can flatter us.
 #
-# rfdiffusion@12 is the cohort because BOTH its totals have sub-half-cent
-# digits (budget 2.0101, first wave 2.6219), so ceiling and nearest disagree on
-# each. A cohort landing on exact cents would pass this test with the rounding
-# direction reversed. One tool means the row figures are the totals, so the row
-# encoding is covered by the same assertions.
+# rfantibody@20 is the cohort because BOTH its totals have sub-half-cent
+# digits (budget 80.4020, first wave 104.8722), so ceiling and nearest disagree
+# on each. A cohort landing on exact cents would pass this test with the
+# rounding direction reversed. One tool means the row figures are the totals, so
+# the row encoding is covered by the same assertions.
+#
+# Was rfdiffusion@12. rfdiffusion can no longer witness this at ANY design
+# count: correcting expected_gpu_seconds 1200 -> 2775 pushed its cushioned hold
+# onto the hard cap, so first_wave_usd is now always a whole multiple of the
+# $5.00 per-chunk cap and lands on exact cents, where ceiling and nearest agree.
+# The precondition below caught that rather than letting the direction go
+# unpinned; a design count was searched for first and none exists.
 
 
-_DISPLAY_COHORT = "pace=burst&tool=rfdiffusion&designs=12&preset=pilot"
+_DISPLAY_COHORT = "pace=burst&tool=rfantibody&designs=20&preset=pilot"
 
 # The cohort that exposed the rows-do-not-sum-to-the-total defect: rows of
 # $2.02 + $5.03 against a total ceiled from the exact sum of $7.04 (the
@@ -649,26 +660,34 @@ _PACE_OBSERVABLE_COHORT = (
     "&tool=rfdiffusion&designs=200&preset=pilot"
     "&tool=pxdesign&designs=200&preset=pilot"
 )
-#   bindcraft+rfantibody+rfdiffusion @200 is a shape where the STEADY panel
+#   bindcraft+rfantibody+pxdesign @200 is a shape where the STEADY panel
 #   also differs from the ceiling of the steady exact sum, which is what the
 #   narrow-alternative test needs. Searched, not guessed.
 #
 #   The pair bindcraft+rfantibody used to be that shape and no longer is at any
 #   design count from 2 to 400: correcting bindcraft's gpu_class from
 #   A100-40GB to the A100-80GB its container runs on moved its price, and the
-#   two roundings now agree on that cohort. rfdiffusion is added rather than
-#   swapping the pair out so the form params below stay valid. Re-searched over
-#   every 2- and 3-tool combination of {bindcraft, rfantibody, rfdiffusion,
-#   pxdesign, boltzgen, proteina} at designs in {12, 24, 50, 100, 120, 200,
-#   250, 300, 400}: 79 of those 315 shapes satisfy this test's precondition and
-#   the refusal test's together. The count is grid-dependent -- it is here to
-#   show the search happened, not as a figure to check against.
-_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody", "rfdiffusion")
+#   two roundings now agree on that cohort.
+#
+#   rfdiffusion was the third tool and has now left the same way, for a reason
+#   worth recording: correcting its expected_gpu_seconds 1200 -> 2775 pushed
+#   its cushioned hold onto the hard cap, so every rfdiffusion first-wave
+#   figure is a whole multiple of the $5.00 per-chunk cap. A row that lands on
+#   exact cents contributes no rounding error, so it cannot help the row sum
+#   diverge from the ceiling of the exact sum -- with rfdiffusion in the cohort
+#   NO design count from 2 to 400 satisfies this precondition or the refusal
+#   test's. pxdesign replaces it. Re-searched over every 2- and 3-tool
+#   combination of {bindcraft, rfantibody, rfdiffusion, pxdesign, boltzgen} at
+#   designs in {12, 24, 50, 100, 120, 200, 250, 300, 400}: 40 shapes satisfy
+#   this test's precondition and the refusal test's together. The count is
+#   grid-dependent -- it is here to show the search happened, not as a figure
+#   to check against.
+_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody", "pxdesign")
 _STEADY_DIVERGENT_DESIGNS = 200
 
 #   The refusal test needs the row sum to differ from the ceiling of the exact
 #   sum at BOTH paces; the same three tools at 100 designs do that.
-_REFUSAL_COHORT = ("bindcraft", "rfantibody", "rfdiffusion")
+_REFUSAL_COHORT = ("bindcraft", "rfantibody", "pxdesign")
 
 
 def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client):
@@ -690,7 +709,7 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
             != exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
         ), (
             f"{key}={exact} rounds the same way to nearest as to ceiling, so "
-            f"this cohort cannot observe the direction. rfdiffusion@12 can."
+            f"this cohort cannot observe the direction. rfantibody@20 can."
         )
 
     for key in costs:
@@ -1771,7 +1790,7 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
 
     _login(client)
     t = _target()
-    # bindcraft+rfantibody+rfdiffusion@100, not rfdiffusion+pxdesign@12. Three
+    # bindcraft+rfantibody+pxdesign@100, not rfdiffusion+pxdesign@12. Three
     # preconditions have to hold simultaneously and the original cohort met
     # none of them:
     #   1. the paces must price differently (at 12 designs one sub-job per tool
@@ -1804,8 +1823,7 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
         bindcraft__designs="100", bindcraft__binder_length_min="50",
         bindcraft__binder_length_max="100",
         rfantibody__designs="100", rfantibody__cdr_lengths="H1:8,H2:7,H3:10-16",
-        rfdiffusion__designs="100", rfdiffusion__binder_length_min="55",
-        rfdiffusion__binder_length_max="65",
+        pxdesign__designs="100", pxdesign__binder_length="80",
     )
     plan = plan_multi_launch(
         [ToolLaunchSpec(tool=tool, preset="pilot", requested_designs=100,

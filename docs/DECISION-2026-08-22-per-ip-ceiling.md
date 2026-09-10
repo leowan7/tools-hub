@@ -139,6 +139,24 @@ states the current one directly beneath:
     now:    20 hits/IP fleet-wide, each buying a whole analysis = ~300
             CPU-s/IP, so ~4 addresses saturate it, and 10 per worker.
 
+As of 2026-09-04 that `now:` row reads **~280**, not ~300. `/scout/analyze`
+was paying for a PPI interface detection on every request whose result the
+browser discarded -- the renderer had no call site -- and removing it took
+~1 CPU-s off the pair. Nothing in this section's reasoning changes: 1,200 /
+280 is still four addresses, and the lever in the same comment still lands
+under the old ~180 (at ~170) rather than on it exactly.
+
+Every other figure in this document that derives from the ~15 pair or the ~300
+ceiling is the PRE-CHANGE one and is left as written -- section 4's `40 / C`,
+the `~300` one paragraph below, R3's table, R4's gloss calling the lever a
+restoration of ~180, and others besides. This is a decision record, so they
+stay. Mind the DIRECTION when re-deriving: the pair cost moved 15 -> 14, so a
+figure carrying it in the NUMERATOR falls ~7% (~300 -> ~280, ~180 -> ~168),
+while one carrying it in the DENOMINATOR rises ~7% (`40 / C` is `600 / 15`, so
+it becomes `~43 / C`). The conclusions they support are unchanged -- the
+ceiling still exceeds what the budget can honour -- though four addresses now
+demand 1,120 of the 1,200 CPU-s rather than exactly saturating it.
+
 Budget is 2 sync workers x 600 s = **1,200 CPU-s** per window. At the current
 ceiling of 10 the worst-case per-IP demand is already ~300 CPU-s, so **four
 addresses saturate the fleet** — four *distinct* addresses, which is what this
