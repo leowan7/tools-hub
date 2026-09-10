@@ -1378,15 +1378,12 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
 
 
 class TestFeasibilityCsvNamesItsChain:
-    """/scout/feasibility/download takes no chain parameter, so the file itself
-    is the only thing that can say which chain it describes.
-
-    That stamp is the weaker half of the fix: it makes a stale delivery legible
-    to whoever opens the CSV, it does not stop one. Deleting the file when
-    results.csv is rewritten is the other half, pinned by
-    ``TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch`` below. Both are
-    load-bearing — a chain-B request that stops at the results gate never
-    reaches run_pipeline, so no cleanup runs and the stamp is all that is left.
+    """The stamp is what the download's chain comparison READS, so it is now
+    load-bearing rather than merely informative: strip it and ``_csv_chain_id``
+    returns None, the gate cannot say which chain the file describes, and it is
+    served regardless. Deleting the file when results.csv is rewritten is the
+    other half, pinned by
+    ``TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch`` below.
     """
 
     def test_the_column_list_carries_chain_id(self):
@@ -1439,10 +1436,14 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
     """The last file in the job dir that outlived the chain it describes.
 
     ``feasibility_results.csv`` was written by its own pipeline and deleted by
-    nobody, and ``/scout/feasibility/download`` gates on ``exists()`` with no
-    chain parameter — the same shape as the ``/scout/analyze`` bug this file is
-    named for. Scoring chain A's feasibility, then analysing chain B, left the
-    download handing back chain A's row at HTTP 200.
+    nobody, and ``/scout/feasibility/download`` gated on ``exists()`` alone —
+    the same shape as the ``/scout/analyze`` bug this file is named for.
+    Scoring chain A's feasibility, then analysing chain B, left the download
+    handing back chain A's row at HTTP 200.
+
+    Both halves of the close are pinned here: the delete below, and the chain
+    comparison the route now makes (see
+    ``TestTheDownloadGateSurvivesADeleteThatDidNotHappen``).
     """
 
     @staticmethod
@@ -1612,20 +1613,15 @@ class TestTheDownloadGateSurvivesADeleteThatDidNotHappen:
     """Deleting at the rewrite is not the guarantee; the reader gate is.
 
     ``_remove_derived_result_files`` fires on "a pipeline ran", not on "this
-    file stopped matching the chain". Three ways it is a no-op while the stale
-    file is still there, all ending in the original bug at HTTP 200:
+    file stopped matching the chain", so it is a no-op whenever a feasibility
+    run still in flight writes its CSV AFTER a chain switch already deleted it
+    (nothing serialises them: gunicorn defaults to two sync workers and the
+    feasibility routes take no compute slot), or whenever ``_unlink_quietly``
+    swallows the WinError 32 a still-open ``send_file`` causes on Windows.
 
-    * a feasibility run still in flight when a chain switch completes writes
-      its CSV AFTER the delete (nothing serialises them -- two gunicorn
-      workers, and ``anon_compute_slot`` yields at once for signed-in callers);
-    * ``_unlink_quietly`` swallows the WinError 32 a still-open ``send_file``
-      causes on Windows;
-    * a feasibility run that raises leaves the previous run's file untouched.
-
-    The first two are the same state on disk -- a feasibility CSV stamped with
-    a chain results.csv no longer holds -- so one test covers both; writing the
-    file after the chain switch reproduces it exactly, without needing threads.
-    The third is closed at the writer instead, and is pinned below.
+    Both leave the same state on disk — a feasibility CSV stamped with a chain
+    the request is not asking about — so one test covers both: writing the file
+    after the chain switch reproduces it exactly, without needing threads.
     """
 
     def test_a_stale_csv_the_cleanup_missed_is_refused_at_the_reader(
@@ -1692,36 +1688,85 @@ class TestTheDownloadGateSurvivesADeleteThatDidNotHappen:
             f"results.csv to compare against: {resp.get_data(as_text=True)[:200]}"
         )
 
-    def test_a_failed_run_does_not_leave_the_previous_chains_file(
-        self, monkeypatch, tmp_path
+    def test_the_chain_asked_for_beats_the_chain_results_csv_holds(
+        self, client, stub_pipeline, reap_jobs
     ):
-        """Closed at the writer: the delete happens on request, not on success.
+        """``?chain=`` is the request saying which chain it means.
 
-        run_feasibility_pipeline writes its CSV as its last statement, so
-        before this any raise left the previous run's file — possibly naming
-        another chain — for the download to serve at 200.
+        Comparing against results.csv is only a fallback, and on its own it is
+        wrong in BOTH directions: it refuses a feasibility result deliberately
+        scored on another chain (explicit epitope_residues skip the results
+        gate, so that is a supported flow), and it cannot see a request for a
+        chain results.csv does not hold. An explicit chain settles it.
         """
-        import scout.pipeline as pipeline
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
 
-        pdb = tmp_path / "input.pdb"
-        pdb.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n")
-        stale = tmp_path / "feasibility_results.csv"
-        stale.write_text("epitope_id,chain_id,residues\n1,A,\"ALA10\"\n")
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
 
-        # Raise at the first step after the delete point, standing in for any
-        # of the real failures (bad chain, no Cb/Ca, freesasa blowing up).
-        # .pdb suffix, so PDBParser is the one that gets used.
-        monkeypatch.setattr(
-            pipeline, "PDBParser",
-            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        from scout.pipeline import FEASIBILITY_CSV_COLUMNS
+
+        row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
+        row.update({"epitope_id": "1", "chain_id": "B", "tier": "Moderate",
+                    "residues": "ALA60,ALA61", "residue_count": "2"})
+        with (job_dir / "feasibility_results.csv").open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
+            writer.writeheader()
+            writer.writerow(row)
+
+        # results.csv holds A, the file holds B. Asking for B must succeed:
+        # the caller said which chain they meant and the file is that chain.
+        ok = client.get(f"/scout/feasibility/download/{job_id}?chain=B")
+        assert ok.status_code == 200, (
+            "the gate refused chain B's own feasibility result because "
+            f"results.csv still holds chain A: {ok.get_data(as_text=True)[:200]}"
+        )
+        assert "ALA60" in ok.get_data(as_text=True)
+
+        # And asking for A must NOT hand back B's file.
+        no = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert no.status_code == 404, (
+            f"chain B's file was served to a request for chain A: "
+            f"{no.status_code} {no.get_data(as_text=True)[:200]}"
         )
 
-        with pytest.raises(RuntimeError):
-            pipeline.run_feasibility_pipeline(pdb, "B", [1, 2, 3])
+    def test_the_advertised_download_url_carries_the_scored_chain(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The link the page hands out must be one the gate accepts.
 
-        assert not stale.exists(), (
-            "a failed feasibility run left the previous run's CSV on disk, "
-            "where the download serves it at 200"
+        The template assigns ``data.download_url`` to the button verbatim, so
+        the chain travels with the link and no front-end change is needed. Drop
+        the ``chain=`` from that url_for and the button falls back to the
+        results.csv heuristic — which is exactly the case above that it gets
+        wrong.
+        """
+        TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch._stub_feasibility(
+            monkeypatch
+        )
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={"job_id": job_id, "chain": "B",
+                  "epitope_residues": CHAIN_RESIDUES["B"]},
+        )
+        assert resp.status_code == 200, resp.data
+        url = resp.get_json()["download_url"]
+        assert "chain=B" in url, (
+            f"the feasibility download link does not name the scored chain: {url}"
+        )
+        got = client.get(url)
+        assert got.status_code == 200, (
+            "the page advertised a download link its own gate refuses: "
+            f"{got.status_code} {got.get_data(as_text=True)[:200]}"
         )
 
 

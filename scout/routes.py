@@ -685,10 +685,12 @@ def _results_csv_for_chain(job_dir: Path, chain_id: str) -> "Path | None":
     mismatch turns that into a cache miss, which costs a rescore and nothing
     else.
 
-    Route every chain-resolving reader through here. ``download()`` and
-    ``feasibility_download()`` are the deliberate exceptions — they take no
-    chain at all, and are kept honest from the other end by
-    ``_remove_derived_result_files``.
+    Route every chain-resolving reader through here. ``download()`` is the
+    deliberate exception — it takes no chain at all, and is kept honest from
+    the other end by ``_remove_derived_result_files``.
+    ``feasibility_download()`` takes no chain in its PATH either, but it does
+    not depend on that delete: it compares the chain in the request against the
+    ``chain_id`` its CSV is stamped with.
 
     A CSV with no ``chain_id`` column (written before this stamp existed) and
     one with no data rows are both misses: neither can name its chain.
@@ -710,7 +712,7 @@ _DERIVED_RESULT_FILES = (
 
 
 def _remove_derived_result_files(job_dir: Path) -> None:
-    """Invalidate every DOWNLOADABLE file that results.csv's rewrite does not
+    """Invalidate the derived result files that results.csv's rewrite does not
     itself replace.
 
     Once results.csv is rewritten for another chain these describe a chain that
@@ -748,9 +750,15 @@ def _remove_derived_result_files(job_dir: Path) -> None:
     must not take a successful scoring run down with it, so a failed unlink
     leaves the stale file in place (Windows raises WinError 32 whenever a
     preceding /scout/download or /scout/feasibility/download still holds the
-    handle open). That is survivable only because the chain guarantee does not
-    rest here — ``feasibility_download`` compares stamps at the reader, and
-    results.csv's own readers go through ``_results_csv_for_chain``.
+    handle open).
+
+    What that costs differs per file, and only one of the four is covered:
+    ``feasibility_download`` compares chains itself, so a failed unlink there
+    is caught at the reader. The other three are served by ``download()``,
+    which has NO chain check of any kind — a failed unlink of
+    ``results_annotated.csv`` serves the previous chain's rows at ?full=1 with
+    nothing to catch it. That gap is why this must stay best-effort rather than
+    become a guarantee someone relies on.
     """
     for name in _DERIVED_RESULT_FILES:
         _unlink_quietly(job_dir / name)
@@ -1819,7 +1827,12 @@ def feasibility_analyze():
         "risk_factors": result.risk_factors,
         "residues": result_row.get("residues", ""),
         "residue_count": int(result_row.get("residue_count", 0)),
-        "download_url": url_for("scout.feasibility_download", job_id=job_id),
+        # Carries the chain that was actually scored, so the download gate can
+        # be exact instead of inferring it from results.csv. The page assigns
+        # this verbatim to the download button, so no front-end change.
+        "download_url": url_for(
+            "scout.feasibility_download", job_id=job_id, chain=chain_id
+        ),
         "pdb_url": url_for("scout.serve_pdb", job_id=job_id),
         "pdb_format": pdb_path.suffix.lstrip("."),
         "chain": chain_id,
@@ -1970,39 +1983,43 @@ def feasibility_download(job_id):
     if not csv_path.exists():
         return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
 
-    # This route takes no chain, so the file's own stamp against the chain
-    # results.csv currently holds is the only way to tell whether it still
-    # describes what the user is looking at.
+    # THE INVARIANT: never hand back a CSV stamped with a chain other than the
+    # one the request is asking about.
     #
-    # Deleting it in _remove_derived_result_files is not enough on its own,
-    # because that fires on "a pipeline ran", not on "this file stopped
-    # matching". Three ways the delete misses and this gate does not: a
-    # feasibility run still in flight when a chain switch completes writes its
-    # CSV AFTER the delete (nothing serialises them -- two gunicorn workers,
-    # and anon_compute_slot yields immediately for signed-in callers); a
-    # feasibility run that raises leaves the previous chain's file untouched,
-    # since pipeline.py writes it as its last statement; and _unlink_quietly
-    # swallows the WinError 32 a still-open send_file causes on Windows. Each
-    # of those ends in the delete being a no-op, and without this gate that is
-    # the original bug restored at HTTP 200.
+    # `?chain=` is how the request says which chain it means, and every link
+    # the app hands out carries it -- feasibility_analyze builds this URL with
+    # url_for(..., chain=chain_id) and the page assigns it to the download
+    # button verbatim, so the exact chain that was scored travels with the
+    # link. With that, a wrong-chain answer is impossible by construction
+    # rather than inferred: ask for chain X, get chain X's file or a 404.
     #
-    # Both None cases mean "cannot say", and must not be read as a mismatch:
-    # no results.csv is the standalone feasibility job (uploaded on the
-    # feasibility page, which mints a job dir that never gets one), and an
-    # unstamped CSV predates the stamp. Refusing either would take a download
-    # away from someone whose file is fine.
+    # Falling back to results.csv's chain covers a request that names none (a
+    # bookmark, a hand-typed URL). It is a heuristic -- it assumes the chain
+    # results.csv holds is the one the caller means, which is merely usually
+    # true -- so it is the fallback, not the rule.
+    #
+    # Deleting the file in _remove_derived_result_files does NOT make this gate
+    # redundant. That delete fires on "a pipeline ran", not on "this file
+    # stopped matching", and it is a no-op whenever a feasibility run still in
+    # flight writes its CSV after a chain switch already deleted it (nothing
+    # serialises them: gunicorn defaults to two sync workers and the
+    # feasibility routes take no compute slot), or whenever _unlink_quietly
+    # swallows the WinError 32 a still-open send_file causes on Windows. This
+    # gate is what holds in both cases; the delete is what stops a same-chain
+    # rescore serving a file the new epitope numbering no longer matches.
+    #
+    # None means "cannot say" and must never be read as a mismatch: a job
+    # created on the feasibility page never gets a results.csv, and a CSV
+    # written before the stamp existed names no chain. Refusing either would
+    # take a download away from someone whose file is fine.
     feasibility_chain = _csv_chain_id(csv_path)
-    results_chain = _results_csv_chain_id(job_dir)
-    if (
-        feasibility_chain is not None
-        and results_chain is not None
-        and feasibility_chain != results_chain
-    ):
+    asked_for = (request.args.get("chain") or "").strip() or None
+    wanted = asked_for if asked_for is not None else _results_csv_chain_id(job_dir)
+    if feasibility_chain is not None and wanted is not None and feasibility_chain != wanted:
         return jsonify({
             "error": f"These feasibility results are for chain "
-                     f"{feasibility_chain}, but chain {results_chain} is the "
-                     f"one currently analysed. Re-run feasibility on chain "
-                     f"{results_chain}.",
+                     f"{feasibility_chain}, not chain {wanted}. Run "
+                     f"feasibility on chain {wanted} first.",
         }), 404
 
     return send_file(

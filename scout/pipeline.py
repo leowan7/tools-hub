@@ -635,21 +635,15 @@ def run_feasibility_pipeline(
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
 
-    # Drop the previous run's CSV before scoring, not after: this function
-    # writes its output as its LAST statement, so any raise between here and
-    # there used to leave the previous run's file on disk -- and that file can
-    # name a different chain, which /scout/feasibility/download then serves at
-    # 200 while the run the user actually asked for reported an error.
-    #
-    # routes._remove_derived_result_files cannot cover that case: it fires on
-    # results.csv being rewritten, and a job created on the feasibility page
-    # never has a results.csv to rewrite, so its reader-side chain gate has
-    # nothing to compare against either. Deleting on request is what makes the
-    # file always either this run's or absent.
-    #
-    # Placed AFTER the exists() check so a missing staged file 404s without
-    # destroying a good result.
-    (pdb_path.parent / "feasibility_results.csv").unlink(missing_ok=True)
+    # NB: this function writes feasibility_results.csv only at the very end,
+    # after every scoring step, so a raise leaves the PREVIOUS run's file on
+    # disk. Deleting it on entry instead is a trap and was tried: one user
+    # click runs this pipeline TWICE (the /scout/feasibility/progress SSE, then
+    # POST /scout/feasibility/analyze re-running it to read the numbers back),
+    # so an entry-delete opens a hole on every assessment and destroys a good
+    # result whenever the second run fails. The staleness is handled where the
+    # file is READ instead -- feasibility_download compares the chain in the
+    # request against the file's own stamp.
 
     def _emit(stage: str, pct: int) -> None:
         if progress_callback is not None:
