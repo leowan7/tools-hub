@@ -179,13 +179,15 @@ PILOT: dict | None = None
 # "opendde_job_sample_0" is not a substring of
 # "opendde_job_summary_confidence_sample_0" and every read fell through to
 # the alphabetical pick. These figures are sound because that pick landed
-# on the right file anyway, not because it was bypassed: run_pipeline.py
-# asks upstream for atom-level "full_data" only when told to, and nothing
-# here ever tells it to, so the summary-confidence JSON was the only
-# candidate. That is the provable part. Had a "full_data" file been
-# written it would sort ahead of the confidence one and carries no
-# ranking_score, so the same shape would have returned nothing. #245 is
-# what removes the dependence on that.
+# on the right file anyway, not because it was bypassed. What this repo
+# can show: run_pipeline.py builds a fixed command and passes no flag
+# requesting an atom-level "full_data" dump. What it CANNOT show:
+# upstream's own default for writing one, since OpenDDE is invoked as a
+# binary and is not vendored here -- an earlier version of this comment
+# called that half provable and it is not. Had such a file been written
+# it sorts ahead of the confidence one and carries no ranking_score, so
+# the same shape would have returned nothing. #245 removes the dependence
+# either way.
 EXAMPLE: dict | None = {
     "target": (
         "Bovine trypsin with benzamidine bound &mdash; chain A of "
