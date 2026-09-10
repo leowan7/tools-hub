@@ -763,8 +763,8 @@ def _results_csv_chain_id(job_dir: Path) -> "str | None":
     """Which chain ``results.csv`` holds, or None if it cannot say.
 
     None covers every way the file fails to name a chain — absent,
-    header-only, unparseable, or written before the ``chain_id`` stamp
-    existed. All of them mean "no cached result for anyone", never "some other
+    unreadable, header-only, unparseable, or written before the ``chain_id``
+    stamp existed. All of them mean "no cached result for anyone", never "some other
     chain's result".
 
     Kept separate from ``_results_csv_for_chain`` so ``/scout/analyze`` can tell
@@ -2009,10 +2009,14 @@ def feasibility_download(job_id):
     # is app-generated, and on the chainless path `wanted` is inferred, so
     # quoting it would give advice about a chain the caller never asked for.
     if wanted is not None and feasibility_chain != wanted:
+        # States the fact and stops. Any remedy would be wrong on the chainless
+        # path: `wanted` is inferred from results.csv there, so a caller who
+        # asked for exactly this file's chain would be told the results ARE for
+        # that chain, refused, and sent to re-run feasibility on it -- which
+        # cannot clear the refusal, because results.csv still holds the other.
         return jsonify({
             "error": "These feasibility results are for chain "
-                     f"{feasibility_chain or 'unknown'}. Run feasibility on "
-                     "the chain you want first.",
+                     f"{feasibility_chain or 'unknown'}.",
         }), 404
 
     return send_file(

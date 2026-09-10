@@ -168,11 +168,6 @@ def _write_results_csv(job_dir: Path, chain: str) -> None:
 
 
 
-def _stub_run(pdb_path, chain_id, progress_callback=None):
-    """Module-level twin of the stub_pipeline fixture's scorer."""
-    _write_results_csv(Path(pdb_path).parent, chain_id)
-    return Path(pdb_path).parent / "results.csv"
-
 @pytest.fixture
 def stub_pipeline(monkeypatch):
     """Replace the scorer with one that records its chain and writes that chain.
@@ -205,7 +200,8 @@ def _write_feasibility_csv(
 
     ``/scout/feasibility/analyze`` reads the numeric columns straight back out,
     so a partial row is not a usable fixture. Sits beside ``_write_results_csv``
-    rather than in a class, because tests in three classes need it.
+    rather than in a class, because ``_stub_feasibility_pipeline`` needs it too
+    and that is used from three classes.
     """
     from scout.pipeline import FEASIBILITY_CSV_COLUMNS
 
@@ -741,14 +737,24 @@ class TestChainIdIsValidatedAtTheBoundary:
         and took an unvalidated chain for several commits. The empty string is
         in UNSAFE and is NOT a rejection here — it is how a caller says "no
         chain", so it falls through to the results.csv heuristic.
+
+        The job is given a servable CSV so the empty case reaches that
+        fallthrough and returns 200. Without it the route 404s at the missing
+        file and the assertion passes without exercising anything — dropping
+        ``or None`` would then flip that case from serve to refuse unseen.
         """
         _login(client)
         job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "A")
         resp = client.get(
             f"/scout/feasibility/download/{job_id}", query_string={"chain": bad}
         )
         if bad == "":
-            assert resp.status_code == 404, (bad, resp.status_code, resp.data)
+            assert resp.status_code == 200, (
+                "an empty ?chain= must mean 'no chain named' and fall through "
+                f"to the heuristic, not be validated: {resp.status_code} "
+                f"{resp.get_data(as_text=True)[:200]}"
+            )
             return
         assert resp.status_code == 400, (bad, resp.status_code, resp.data)
         assert "valid chain id" in resp.get_json()["error"], (bad, resp.get_json())
