@@ -1324,8 +1324,11 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
         # this guards against applies to every one of them.
         derived = set(routes._DERIVED_RESULT_FILES)
 
+        fired = []
+
         def _boom(self, missing_ok=False):
             if self.name in derived:
+                fired.append(self.name)
                 raise PermissionError(32, "The process cannot access the file")
             return real_unlink(self, missing_ok=missing_ok)
 
@@ -1338,6 +1341,14 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
             f"a failed cleanup destroyed a successful run: {resp.data}"
         )
         assert _residue_numbers(resp) == CHAIN_RESIDUES["A"]
+        # Without this the guard passes vacuously whenever the cleanup stops
+        # running or _DERIVED_RESULT_FILES empties: _boom never fires, nothing
+        # raises, and "the run survived" proves nothing about surviving a
+        # failed unlink. One production token would otherwise disarm the fix
+        # and this guard together.
+        assert fired, (
+            "no unlink was attempted, so this never exercised a failed cleanup"
+        )
 
     def test_an_unknown_epitope_id_says_so_on_the_json_route_too(
         self, client, stub_pipeline, reap_jobs
@@ -1508,17 +1519,23 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
         )
 
         resp = client.get(f"/scout/feasibility/download/{job_id}")
-        body = resp.get_data(as_text=True) if resp.status_code == 200 else ""
+        # Assert the code, not just the absence of chain A in the body: folding
+        # every non-200 to an empty string would let a 500, a redirect or a
+        # permanently broken route read as success.
+        assert resp.status_code == 404, (
+            f"expected the download to refuse; got {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+        body = resp.get_data(as_text=True)
         for residue in CHAIN_RESIDUES["A"]:
             assert f"ALA{residue}" not in body, (
                 f"the feasibility download served chain A's residue {residue} "
                 f"after chain B was analysed: {resp.status_code} {body[:200]}"
             )
-        # And whatever it does serve must not claim to be chain A.
-        for row in csv.DictReader(body.splitlines()):
-            assert row.get("chain_id") != "A", (
-                f"chain A's feasibility row leaked into the download: {row}"
-            )
+        assert not (TMP / job_id / "feasibility_results.csv").exists(), (
+            "chain A's feasibility CSV is still on disk after chain B was "
+            "analysed; the download only refused it by accident"
+        )
 
     def test_rescoring_the_same_chain_drops_it_too(
         self, client, stub_pipeline, reap_jobs, monkeypatch
@@ -1555,13 +1572,19 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
     def test_a_cache_hit_leaves_the_feasibility_result_alone(
         self, client, stub_pipeline, reap_jobs, monkeypatch
     ):
-        """The reassuring half: this is not "nuked on every click".
+        """The cleanup is bound to the REWRITE, not to the /scout/analyze route.
 
-        /scout/analyze reaches run_pipeline only on a cache MISS, so returning
-        to a chain already scored — the ordinary way a user gets back to the
-        results table — does not run the cleanup. Invalidating unconditionally
-        at the route instead would break the normal analyze -> feasibility ->
-        back -> download flow, which is a worse bug than the one being fixed.
+        A direct POST to /scout/analyze for an already-scored chain is a cache
+        hit, reaches no run_pipeline, and so invalidates nothing. Move
+        _remove_derived_result_files out of that cache-miss branch and this
+        dies — which is the point: the invalidation must key off results.csv
+        actually being rewritten.
+
+        NOT a claim about the browser. The page reaches /scout/analyze only
+        from /scout/progress's done handler, and /scout/progress rescores
+        unconditionally, so a re-Analyze in the UI DOES drop the feasibility
+        CSV. The chain guarantee does not rest on this test either way —
+        feasibility_download compares stamps at the reader.
         """
         self._stub_feasibility(monkeypatch)
         _login(client)
@@ -1582,6 +1605,123 @@ class TestTheFeasibilityDownloadIsInvalidatedByAChainSwitch:
         )
         assert csv_path.read_bytes() == before, (
             "a cached re-analyze of the same chain destroyed its feasibility result"
+        )
+
+
+class TestTheDownloadGateSurvivesADeleteThatDidNotHappen:
+    """Deleting at the rewrite is not the guarantee; the reader gate is.
+
+    ``_remove_derived_result_files`` fires on "a pipeline ran", not on "this
+    file stopped matching the chain". Three ways it is a no-op while the stale
+    file is still there, all ending in the original bug at HTTP 200:
+
+    * a feasibility run still in flight when a chain switch completes writes
+      its CSV AFTER the delete (nothing serialises them -- two gunicorn
+      workers, and ``anon_compute_slot`` yields at once for signed-in callers);
+    * ``_unlink_quietly`` swallows the WinError 32 a still-open ``send_file``
+      causes on Windows;
+    * a feasibility run that raises leaves the previous run's file untouched.
+
+    The first two are the same state on disk -- a feasibility CSV stamped with
+    a chain results.csv no longer holds -- so one test covers both; writing the
+    file after the chain switch reproduces it exactly, without needing threads.
+    The third is closed at the writer instead, and is pinned below.
+    """
+
+    def test_a_stale_csv_the_cleanup_missed_is_refused_at_the_reader(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "B"}
+        ).status_code == 200
+
+        # Land chain A's feasibility CSV AFTER the switch to B — exactly what
+        # an in-flight run, or a swallowed WinError 32, leaves behind.
+        from scout.pipeline import FEASIBILITY_CSV_COLUMNS
+
+        row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
+        row.update({"epitope_id": "1", "chain_id": "A", "tier": "Moderate",
+                    "residues": "ALA10,ALA11", "residue_count": "2"})
+        with (job_dir / "feasibility_results.csv").open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
+            writer.writeheader()
+            writer.writerow(row)
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 404, (
+            "a feasibility CSV stamped chain A was served while results.csv "
+            f"holds chain B: {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+        assert "ALA10" not in resp.get_data(as_text=True)
+
+    def test_a_job_with_no_results_csv_can_still_download(
+        self, client, reap_jobs
+    ):
+        """The None cases mean "cannot say" and must not read as a mismatch.
+
+        A job created on the feasibility page never gets a results.csv, so a
+        gate that refused whenever it could not compare would take the download
+        away from every standalone feasibility user.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+        assert not (job_dir / "results.csv").exists(), "fixture must not analyse"
+
+        from scout.pipeline import FEASIBILITY_CSV_COLUMNS
+
+        row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
+        row.update({"epitope_id": "1", "chain_id": "A", "tier": "Moderate",
+                    "residues": "ALA10,ALA11", "residue_count": "2"})
+        with (job_dir / "feasibility_results.csv").open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
+            writer.writeheader()
+            writer.writerow(row)
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 200, (
+            "the chain gate refused a standalone feasibility job that has no "
+            f"results.csv to compare against: {resp.get_data(as_text=True)[:200]}"
+        )
+
+    def test_a_failed_run_does_not_leave_the_previous_chains_file(
+        self, monkeypatch, tmp_path
+    ):
+        """Closed at the writer: the delete happens on request, not on success.
+
+        run_feasibility_pipeline writes its CSV as its last statement, so
+        before this any raise left the previous run's file — possibly naming
+        another chain — for the download to serve at 200.
+        """
+        import scout.pipeline as pipeline
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text("ATOM      1  CA  ALA A   1       0.000   0.000   0.000\n")
+        stale = tmp_path / "feasibility_results.csv"
+        stale.write_text("epitope_id,chain_id,residues\n1,A,\"ALA10\"\n")
+
+        # Raise at the first step after the delete point, standing in for any
+        # of the real failures (bad chain, no Cb/Ca, freesasa blowing up).
+        # .pdb suffix, so PDBParser is the one that gets used.
+        monkeypatch.setattr(
+            pipeline, "PDBParser",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        with pytest.raises(RuntimeError):
+            pipeline.run_feasibility_pipeline(pdb, "B", [1, 2, 3])
+
+        assert not stale.exists(), (
+            "a failed feasibility run left the previous run's CSV on disk, "
+            "where the download serves it at 200"
         )
 
 

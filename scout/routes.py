@@ -710,7 +710,8 @@ _DERIVED_RESULT_FILES = (
 
 
 def _remove_derived_result_files(job_dir: Path) -> None:
-    """Invalidate every DOWNLOADABLE file describing the chain being replaced.
+    """Invalidate every DOWNLOADABLE file that results.csv's rewrite does not
+    itself replace.
 
     Once results.csv is rewritten for another chain these describe a chain that
     is no longer there, and neither ``/scout/download`` nor
@@ -729,17 +730,27 @@ def _remove_derived_result_files(job_dir: Path) -> None:
     download_url.
 
     Binding it to the rewrite also means /scout/progress, which runs the
-    pipeline UNCONDITIONALLY, drops the feasibility CSV when it rescores the
-    SAME chain. That is intended: the rescore can renumber results.csv's
-    epitopes, and the feasibility row records only ``epitope_id: 1``, so it
-    cannot say which epitope of the new numbering it describes — keeping it
-    would trade a wrong-chain answer for a wrong-epitope one. /scout/analyze
-    reaches run_pipeline only on a cache miss, so returning to an
-    already-scored chain leaves its feasibility result in place.
+    pipeline UNCONDITIONALLY, drops the feasibility CSV whenever it rescores —
+    the same chain included. Through the browser that is EVERY Analyze click,
+    because the page reaches /scout/analyze only from /scout/progress's done
+    handler, so /scout/analyze is always a cache hit by the time it is called
+    (templates/scout/index.html: runAnalysis -> openProgressStream -> line 293
+    -> _finalizeAnalysis). Do not read the cache-miss branch below as a promise
+    that a re-Analyze keeps the file; it does not.
 
-    Best-effort: a file that will not delete must not take a successful scoring
-    run down with it. Windows raises WinError 32 whenever a preceding
-    /scout/download or /scout/feasibility/download still holds the handle open.
+    Dropping it is intended. ``run_feasibility_pipeline`` hard-codes
+    ``epitope_id: 1`` on every row whatever epitope was scored, so once
+    results.csv is rewritten nothing in the file ties it back to the new
+    numbering — only its residue string identifies what was scored. Dropping it
+    is cheaper than teaching it to name its epitope.
+
+    Best-effort, and best-effort is not a guarantee: a file that will not delete
+    must not take a successful scoring run down with it, so a failed unlink
+    leaves the stale file in place (Windows raises WinError 32 whenever a
+    preceding /scout/download or /scout/feasibility/download still holds the
+    handle open). That is survivable only because the chain guarantee does not
+    rest here — ``feasibility_download`` compares stamps at the reader, and
+    results.csv's own readers go through ``_results_csv_for_chain``.
     """
     for name in _DERIVED_RESULT_FILES:
         _unlink_quietly(job_dir / name)
@@ -755,8 +766,9 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         logger.warning(
-            "Could not invalidate derived result file %s; /scout/download may "
-            "serve a stale copy of it until the next successful run.",
+            "Could not invalidate derived result file %s; /scout/download or "
+            "/scout/feasibility/download may serve a stale copy of it until "
+            "the next successful run.",
             path,
         )
 
@@ -772,7 +784,20 @@ def _results_csv_chain_id(job_dir: Path) -> "str | None":
     a cross-chain collision (a stamp naming a DIFFERENT chain) from a run that
     simply scored nothing; those need different answers.
     """
-    csv_path = job_dir / "results.csv"
+    return _csv_chain_id(job_dir / "results.csv")
+
+
+def _csv_chain_id(csv_path: Path) -> "str | None":
+    """Which chain the first row of *csv_path* is stamped with, or None.
+
+    Shared by ``results.csv`` and ``feasibility_results.csv``: both stamp
+    ``chain_id`` per row for the same reason, and both are read by a route that
+    has to decide whether the file still describes the chain in play.
+
+    None covers every way a file fails to name a chain — absent, unreadable,
+    header-only, or written before the stamp existed. A caller must treat None
+    as "cannot say", never as "some other chain".
+    """
     if not csv_path.exists():
         return None
     try:
@@ -1944,6 +1969,41 @@ def feasibility_download(job_id):
     csv_path = job_dir / "feasibility_results.csv"
     if not csv_path.exists():
         return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
+
+    # This route takes no chain, so the file's own stamp against the chain
+    # results.csv currently holds is the only way to tell whether it still
+    # describes what the user is looking at.
+    #
+    # Deleting it in _remove_derived_result_files is not enough on its own,
+    # because that fires on "a pipeline ran", not on "this file stopped
+    # matching". Three ways the delete misses and this gate does not: a
+    # feasibility run still in flight when a chain switch completes writes its
+    # CSV AFTER the delete (nothing serialises them -- two gunicorn workers,
+    # and anon_compute_slot yields immediately for signed-in callers); a
+    # feasibility run that raises leaves the previous chain's file untouched,
+    # since pipeline.py writes it as its last statement; and _unlink_quietly
+    # swallows the WinError 32 a still-open send_file causes on Windows. Each
+    # of those ends in the delete being a no-op, and without this gate that is
+    # the original bug restored at HTTP 200.
+    #
+    # Both None cases mean "cannot say", and must not be read as a mismatch:
+    # no results.csv is the standalone feasibility job (uploaded on the
+    # feasibility page, which mints a job dir that never gets one), and an
+    # unstamped CSV predates the stamp. Refusing either would take a download
+    # away from someone whose file is fine.
+    feasibility_chain = _csv_chain_id(csv_path)
+    results_chain = _results_csv_chain_id(job_dir)
+    if (
+        feasibility_chain is not None
+        and results_chain is not None
+        and feasibility_chain != results_chain
+    ):
+        return jsonify({
+            "error": f"These feasibility results are for chain "
+                     f"{feasibility_chain}, but chain {results_chain} is the "
+                     f"one currently analysed. Re-run feasibility on chain "
+                     f"{results_chain}.",
+        }), 404
 
     return send_file(
         str(csv_path),
