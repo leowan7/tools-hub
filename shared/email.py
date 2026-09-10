@@ -154,9 +154,8 @@ def _job_complete_template_context(
         "empty":   f"Your {tool} run finished with no candidates",
         "failed":  f"Your {tool} run failed",
     }[tone]
-    top_score_label, top_score_value, top_score_caption, top_pdb_key = (
-        _top_candidate_summary(job=job, tone=tone)
-    )
+    (top_score_label, top_score_value, top_score_caption, top_pdb_key,
+     top_score_verdict) = _top_candidate_summary(job=job, tone=tone)
     next_step_url, next_step_label = _next_step_for_job(
         job=job, base_url=base_url, tone=tone,
     )
@@ -174,31 +173,76 @@ def _job_complete_template_context(
         "top_score_label":   top_score_label,
         "top_score_value":   top_score_value,
         "top_score_caption": top_score_caption,
+        "top_score_verdict": top_score_verdict,
         "top_pdb_key":       top_pdb_key,
         "next_step_url":     next_step_url,
         "next_step_label":   next_step_label,
     }
 
 
-def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # noqa: ANN001
-    """Pull (label, value, 1-line caption, pdb_key) for the top candidate.
+def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:  # noqa: ANN001
+    """Pull (label, value, 1-line caption, pdb_key, judgement) for the design
+    this mail should LEAD with.
 
-    Returns four empty strings when the job has no candidate scores to
+    Returns five empty strings when the job has no candidate scores to
     surface (sequence-design tools, structure-prediction tools, failed
     runs). The caption comes from shared.score_legends; when no legend
     is registered for the chosen column the caption falls back to "".
+
+    THE DESIGN IS DERIVED, NOT ``candidates[0]``. A container ranks on its
+    ranking key, not on its bar, so the record it stores first can be one the
+    tool itself drops. esmfold2-design job 2b917b54 stores a pI 11.95
+    poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67 design at 0.9354
+    that clears the bar, and this mail sent the reject's number under "0.75 or
+    more is a credible designed interface". Third surface of that class, and the
+    one that reaches a customer unprompted: ``shared/jobs.complete_job`` sends
+    this the moment a run finishes, where the results page and /jobs/compare
+    wait to be opened. ``shared.jobs.headline_candidate`` is the chooser #248
+    (313b764) added for the compare page; its predicate is deliberately not
+    re-derived here, because ``shared.ranking`` and it decide the same question
+    and may not disagree.
+
+    AND THE JUDGEMENT TRAVELS WITH THE NUMBER. Choosing better is not enough on
+    a run where NOTHING clears the bar: ``headline_candidate`` then falls back
+    to a design that fell short, and a legend saying what a good value means is
+    read beside it as a claim that this is one. The fifth element is
+    ``score_legends.verdict_text`` — THE single renderer, whose "below" branch
+    also carries the ``unusable`` and ``unmeasured`` clauses that a hand-join of
+    ``verdict.shortfalls`` drops. It is a SEPARATE return value and not appended
+    to the caption on purpose: the caption is the legend verbatim
+    (tests/test_job_complete_email_caption.py asserts string equality against
+    it), and the two slot ceilings in that file are derived on legend strings.
+
+    ``candidate_records``, not ``result["candidates"]``: it reads the
+    ``designs[]`` shape and unwraps the legacy ``result["output"]`` nesting, so
+    this block and the ``summary`` line above it — which has read
+    ``candidate_records`` since it started counting designs-only results — can
+    no longer describe two different lists.
     """
     if tone != "success":
-        return ("", "", "", "")
+        return ("", "", "", "", "")
     result = getattr(job, "result", None) or {}
     if not isinstance(result, dict):
-        return ("", "", "", "")
-    candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        return ("", "", "", "")
-    top = candidates[0]
+        return ("", "", "", "", "")
+
+    from shared import score_legends  # noqa: PLC0415
+    from shared.jobs import (  # noqa: PLC0415
+        candidate_records,
+        headline_candidate,
+    )
+
+    tool_slug = getattr(job, "tool", "") or ""
+    # THE RESULT FIRST, the stored preset only as a fallback — the order
+    # blueprints/jobs.jobs_compare and templates/tools/esmfold2_design_results
+    # resolve it in. A job's stored preset can be the default string while the
+    # result records what the run actually did, and for a tool whose bar is
+    # keyed on (tool, mode) the wrong answer here is no bar at all.
+    mode = score_legends.result_mode(result) or getattr(job, "preset", None)
+    top, verdict = headline_candidate(
+        candidate_records(result), tool_slug, preset=mode,
+    )
     if not isinstance(top, dict):
-        return ("", "", "", "")
+        return ("", "", "", "", "")
     scores = top.get("scores")
     if not isinstance(scores, dict) or not scores:
         # Some adapters inline the score at the candidate root instead of
@@ -210,7 +254,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         }
         scores = flat or {}
     if not scores:
-        return ("", "", "", "")
+        return ("", "", "", "", "")
 
     # The caption underneath quotes the 80/90 band, so the number beside
     # it has to be on that scale. This mailed "pLDDT 0.830" directly above
@@ -221,13 +265,10 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         for k, v in scores.items()
     }
 
-    try:
-        from shared.score_legends import (  # noqa: PLC0415
-            score_legends_for,
-        )
-        legends = score_legends_for(getattr(job, "tool", "") or "")
-    except Exception:
-        legends = {}
+    # No try/except: ``shared.score_legends`` is imported unguarded above (and
+    # by ``shared.jobs``, which is what sends this mail), so a guard here could
+    # only ever catch something the lines above already raised on.
+    legends = score_legends.score_legends_for(tool_slug)
 
     # Prefer columns with a registered legend so the caption is
     # meaningful. Then fall back to the first numeric score we see.
@@ -242,7 +283,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
                 chosen_col = col
                 break
     if chosen_col is None:
-        return ("", "", "", "")
+        return ("", "", "", "", "")
 
     value = scores[chosen_col]
     if isinstance(value, float):
@@ -288,7 +329,24 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)
-    return (str(chosen_col), value_str, caption, pdb_key)
+
+    # ``verdict_text``, not a hand-join of ``verdict.shortfalls``. That exact
+    # shortcut is the one templates/jobs_compare.html records as its own
+    # history — "hand-built two of the sentences, which is how the 'below' case
+    # came to print its shortfall and swallow its ``unusable`` half" — and the
+    # renderer's docstring says it is the ONLY one for the same reason. It
+    # returns "" when there is no bar to name, including for a moded tool whose
+    # mode did not resolve, so nothing renders rather than a bare "Meets".
+    judgement = score_legends.verdict_text(tool_slug, verdict, preset=mode)
+    if judgement and verdict.verdict == "below":
+        # ``headline_candidate`` hands back a "below" record only as a
+        # FALLBACK, after no record passed its predicate (see the loop in
+        # shared/jobs.py under "NOT SHOWN TO FALL SHORT"). So on this mail —
+        # which shows one design and no table — that verdict is the whole
+        # run's answer, and saying only "pI 11.95, above 6" would read as one
+        # design's problem. Same reading /jobs/compare prints.
+        judgement = f"Nothing in this run clears the bar — {judgement}"
+    return (str(chosen_col), value_str, caption, pdb_key, judgement)
 
 
 def _next_step_for_job(

@@ -39,6 +39,19 @@
                           the two this comment used to carry were both stale
                           within a month, in the file the test sends readers
                           to check them against.
+     top_score_verdict    What the tool's own bar says about the design above,
+                          from shared.score_legends.verdict_text -- the single
+                          renderer, so this is the same sentence /jobs/compare
+                          and the results table show. Empty when the tool
+                          declares no bar, or declares a mode-scoped one whose
+                          mode did not resolve; NEVER the bare word "Meets".
+
+                          It is a SEPARATE variable from top_score_caption and
+                          must stay one. The caption is the legend verbatim and
+                          tests/test_job_complete_email_caption.py asserts that
+                          as string equality; folding a judgement into it would
+                          also put a runtime-composed sentence inside the two
+                          slot ceilings that file derives on legend strings.
      top_pdb_key          PDB filename of top design; empty if none
      next_step_url        URL of /tools/<dest_tool>; empty if no handoff
      next_step_label      Tool label, e.g. "ColabFold"; empty if no handoff
@@ -65,6 +78,15 @@
       {% if top_score_caption %}
         <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.5;">
           {{ top_score_caption }}
+        </div>
+      {% endif %}
+      {# The judgement, under the legend that interprets the number. This
+         callout is an endorsement frame -- "Top design", a green rule -- and
+         on a run where nothing clears the bar the design in it is one that
+         failed, so the frame needs correcting in words. #}
+      {% if top_score_verdict %}
+        <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.5;">
+          {{ top_score_verdict }}
         </div>
       {% endif %}
     </div>

@@ -531,7 +531,7 @@ class TestTheOtherSurfaces:
         folded'."""
         from shared.email import _top_candidate_summary
 
-        label, value, caption, _pdb = _top_candidate_summary(
+        label, value, caption, _pdb, _bar = _top_candidate_summary(
             job=_stub_job("boltzgen", {"pLDDT": 0.83}), tone="success",
         )
         assert label == "pLDDT"
