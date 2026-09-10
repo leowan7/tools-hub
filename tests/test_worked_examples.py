@@ -1941,6 +1941,15 @@ class TestABarAndItsValuesShareAScale:
             ("boltz2", "n_hotspot_contacts"),
             ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
             ("esmfold2-design", "ipTM"),
+            # NEWLY REACHED, and the exact-set control is what said so rather
+            # than absorbing it. pI became a legend with a bar when
+            # MODE_GATE_COLUMNS gave this tool a minibinder gate; its worked
+            # example carries an isoelectric point, so the sweep resolves it.
+            # ``iPTM_proxy`` is deliberately NOT here: it carries no legend
+            # at all (its scFv gate leg was removed in review), so there is no
+            # bar for the sweep to reach. The worked example also stores null
+            # for it under both of its spellings.
+            ("esmfold2-design", "pI"),
             ("mpnn", "recovery"), ("mpnn", "score"),
             ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"), ("pxdesign", "pAE"),
             ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),

@@ -154,6 +154,91 @@ def candidate_count(result: Optional[dict]) -> Optional[int]:
     return None
 
 
+def headline_candidate(
+    records, tool: str, preset: Optional[str] = None
+) -> tuple[Optional[dict], "score_legends.Judgement"]:
+    """``(record, Judgement)`` for the design a page should LEAD with.
+
+    The first record that is neither shown to fall short NOR built on a
+    declared placeholder, in the order the pipeline stored them. When no
+    record qualifies it falls back -- a page with candidates has to show one
+    -- preferring a record with real measurements that missed the bar over one
+    whose metrics are stand-ins. It hands the fallback's own judgement back
+    with it, so the caller renders the shortfall (or the "not usable" note)
+    rather than presenting the pick unqualified.
+
+    WHY A STORED ORDER NEEDS THIS AT ALL. ``result["candidates"][0]`` is
+    whatever the container ranked first, and a container ranks on its ranking
+    key, not on its bar. esmfold2-design job 2b917b54 stores a pI 11.95
+    poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67 design at 0.9354
+    that clears the bar: read blind, the reject headlines a page, an email or
+    a share card. Same argument #216 made for verdicts, applied to a stored
+    ORDER -- fixing a pipeline reaches no job that has already run, and
+    deriving reaches all of them.
+
+    NOT SHOWN TO FALL SHORT, not "meets": an ``unjudged`` record is eligible.
+    Judging unmeasured rows as failures is the mistake ``shared.ranking``
+    records sinking 240 recovered pxdesign rows at ipTM 0.99 below 100
+    bindcraft rows at 0.70, and it would be worse here, where sinking every
+    row means the fallback picks record 0 again with nothing gained.
+
+    BUT ``unusable`` IS SUNK, and the predicate is ``shared.ranking``'s
+    verbatim for that reason -- the two decide the same question and may not
+    disagree. ABSENT AND BROKEN ARE NOT THE SAME THING: an absent metric is
+    the ordinary shape of a rebuilt row, while a declared placeholder (a
+    boltzgen refolding RMSD of exactly 0.00, an rfdiffusion 0.0/0.0/99.0, a
+    "stub (smoke)" row) is evidence the pipeline could not produce a number at
+    all. Both are ``unjudged``, so a predicate of ``!= "below"`` alone floated
+    a placeholder row to the headline ahead of a design that genuinely met the
+    bar -- silently, because the page prints no shortfall for an unjudged
+    pick.
+
+    THIS DOES NOT RE-RANK. Only the headline moves; a table rendered from the
+    same list keeps the pipeline's order, and the caller is expected to say
+    which row it picked when the two differ. Re-sorting the table on the bar
+    is ``shared.ranking``'s job and it reads a different set of rules.
+
+    ``preset`` is the run's MODE for a tool in
+    ``score_legends.MODE_GATE_COLUMNS`` and is inert for every other tool; see
+    :func:`score_legends.gate_columns`. Resolve it with
+    ``score_legends.result_mode(job.result)`` falling back to ``job.preset``.
+    """
+    rows = [r for r in (records or []) if isinstance(r, dict)]
+    if not rows:
+        return None, score_legends.Judgement("unjudged", (), ())
+    # One judge() per record until the answer is found, which on a tool with
+    # no bar is one call and not one per design; a campaign result carries
+    # hundreds of records and this runs once per compare column.
+    fallback = None
+    measured_fallback = None
+    for row in rows:
+        verdict = score_legends.judge(tool, row, preset=preset)
+        if verdict.verdict != "below" and not verdict.unusable:
+            return row, verdict
+        if fallback is None:
+            fallback = (row, verdict)
+        if (
+            measured_fallback is None
+            and verdict.verdict == "below"
+            and not verdict.unusable
+        ):
+            # A CLEANLY MEASURED SHORTFALL BEATS A STAND-IN as the thing to
+            # show when nothing qualifies: "pLDDT 72.4, below 80" tells the
+            # reader something, "not usable" tells them the pipeline failed.
+            #
+            # ``not verdict.unusable`` IS LOAD-BEARING, and omitting it was a
+            # regression. A record can be BOTH: judge returns "below" with a
+            # non-empty ``unusable`` when one leg falls short and a DIFFERENT
+            # leg holds a declared placeholder. Such a row matched
+            # ``verdict == "below"`` and so displaced a purely-unusable one --
+            # and because the page answers "below" first, that row's "not
+            # usable" note then rendered nowhere. A confident shortfall
+            # sentence replaced an honest disclosure about a design whose
+            # other metric was never measured.
+            measured_fallback = (row, verdict)
+    return measured_fallback or fallback
+
+
 def candidate_meets_bar(tool: str, cand: object) -> bool:
     """True iff ``cand``'s measurements meet every leg of ``tool``'s bar.
 
