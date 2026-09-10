@@ -571,11 +571,9 @@ def run_pipeline(
 FEASIBILITY_CSV_COLUMNS = [
     "epitope_id",
     # Same reason as CSV_COLUMNS: this file is written per job dir, not per
-    # chain. A chain-B request that stops at the results gate leaves chain A's
-    # file in place, so without this stamp the delivered CSV cannot say which
-    # chain it describes — and /scout/feasibility/download reads this stamp to
-    # decide whether the file matches the chain being asked for, so a row that
-    # loses it is refused rather than served.
+    # chain, so without this stamp the delivered CSV cannot say which chain it
+    # describes. /scout/feasibility/download reads it to decide whether the
+    # file matches the chain being asked for.
     "chain_id",
     "residues",
     "residue_count",
@@ -636,18 +634,13 @@ def run_feasibility_pipeline(
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
 
-    # NB: this function writes feasibility_results.csv only at the very end,
-    # after every scoring step, so a raise leaves the PREVIOUS run's file on
-    # disk. Deleting it on entry instead is a trap and was tried: one user
-    # click runs this pipeline TWICE (the /scout/feasibility/progress SSE, then
-    # POST /scout/feasibility/analyze re-running it to read the numbers back),
-    # so an entry-delete opens a hole on every assessment and destroys a good
-    # result whenever the second run fails. The CROSS-CHAIN half of that
-    # staleness is handled where the file is READ instead --
-    # feasibility_download compares the chain in the request against the file's
-    # own stamp. A same-chain run that raises does still leave the previous
-    # epitope's row on disk, and that gate passes it; re-adding an entry-delete
-    # is not the way to close it, for the reason above.
+    # NB: this writes feasibility_results.csv only at the very end, so a raise
+    # leaves the PREVIOUS run's file on disk. Do not "fix" that by deleting on
+    # entry: one user click runs this pipeline TWICE (the
+    # /scout/feasibility/progress SSE, then POST /scout/feasibility/analyze
+    # re-running it to read the numbers back), so an entry-delete destroys a
+    # good result whenever the second run fails. Staleness is handled where the
+    # file is READ, in feasibility_download.
 
     def _emit(stage: str, pct: int) -> None:
         if progress_callback is not None:
