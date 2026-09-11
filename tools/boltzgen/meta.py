@@ -207,7 +207,7 @@ about: dict = {
     # other four lines down the page.
     "output_summary": (
         "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, "
-        "and downloadable PDBs. Refolding RMSD is the design against its own "
+        "and PDBs downloadable from a run of your own. Renst its own "
         "refold: at or under 2 &Aring; it clears the RMSD leg of the pass "
         "bar, which also needs pLDDT at or above 80. Under 1.5 &Aring; the "
         "results tooltip calls it self-consistent. That says the binder folds "

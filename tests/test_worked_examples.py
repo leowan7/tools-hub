@@ -419,14 +419,23 @@ class TestEveryPartialIsExampleSafe:
         "shortlist button above",
         "designs above are yours to download",
         # opendde said this in TWO places -- the results partial and
-        # about["output_summary"] -- four visible lines apart on the same
-        # page. #251 guarded the partial, left the panel, and added
-        # nothing here, so the half it fixed could come back in silence
-        # and the half it missed shipped. Registering the phrase rather
-        # than either sentence catches both, and any third that uses the
-        # same words -- matching is an exact substring (line 438), so a
-        # REWORDED promise passes. Verified: "Each structure is yours to
-        # download, or open in the 3D viewer" is not caught.
+        # about["output_summary"]. The panel sentence renders four text
+        # blocks above the worked example's HEADING; the two occurrences
+        # are about thirty blocks apart. (An earlier version of this
+        # comment said the two occurrences were "four visible lines
+        # apart", conflating those two measurements, and the commit that
+        # was supposed to correct it left it here and said it had not.)
+        #
+        # #251 guarded the partial, left the panel, and added nothing
+        # here, so the half it fixed could come back in silence and the
+        # half it missed shipped. Registering the phrase rather than
+        # either sentence catches both, and any third that uses the same
+        # words -- the comprehension in
+        # test_example_copy_does_not_promise_controls_it_hides is a plain
+        # case-sensitive `in`, so a REWORDED promise passes. Verified:
+        # "Each structure is yours to download, or open in the 3D viewer"
+        # is not caught. (This cited a LINE NUMBER through three commits;
+        # it drifted every time. Name the method, not the line.)
         "Download each structure",
         # RETIRED WORDINGS. af2 and colabfold said these directly above
         # example pages that render no download at all: af2's controls are
@@ -443,6 +452,16 @@ class TestEveryPartialIsExampleSafe:
         # hold a pdb_b64), so the short form flags it falsely.
         "Download PDB or PAE matrix",
         "Download as PDB or PAE matrix",
+        # The adjectival half of the same family: six tools described
+        # their output as "downloadable PDBs" directly above an example
+        # page rendering none. Weaker than an imperative -- it describes
+        # the tool, not the table -- but it sat in the same place and read
+        # the same way, so all six are scoped now and the bare phrase is
+        # blocked. NOT registered alongside it: "downloadable as FASTA",
+        # which mpnn still carries in scoped form, and "downloadable
+        # structures", which proteina still carries while separate work
+        # on its clustering promises is in flight.
+        "downloadable PDBs",
     )
 
     def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
@@ -480,6 +499,14 @@ class TestEveryPartialIsExampleSafe:
         assert "Download each structure" in odd, (
             "opendde's real results page no longer offers the download, so "
             "blocking that phrase on the example page proves nothing"
+        )
+        # Third entry, third control. results_shell.html renders this in
+        # the `else` of the same `is_example` branch that carries the
+        # shortlist line, so the boltz2 render above holds both.
+        assert "designs above are yours to download" in html.lower(), (
+            "the real results page no longer says the designs are yours to "
+            "download, so blocking that phrase on the example page proves "
+            "nothing"
         )
 
 
@@ -2629,7 +2656,7 @@ class TestNarrationQuotesTheTable:
         close the </td> and </tr> -- they simply do not say which template.
         An earlier version of this sentence said they "report a narration
         mismatch and leave you hunting", which this docstring itself
-        contradicts three paragraphs above.
+        contradicts two paragraphs above.
         """
         flask_app, slugs = tools_app
         for slug, payload in _example_payloads(slugs).items():

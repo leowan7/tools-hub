@@ -154,7 +154,8 @@ about: dict = {
     ],
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
-        "and downloadable PDBs. Hand off promising designs to the Ranomics "
+        "and PDBs downloadable from a run of your own. Hand off promising "
+        "designs to the Ranomics "
         "yeast display CRO for in vitro validation."
     ),
     "paper_citation": paper_citation,

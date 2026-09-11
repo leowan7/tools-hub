@@ -90,7 +90,9 @@ about: dict = {
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT and PAE. On a run of your "
-        "own both are downloadable for filtering."
+        "own the structure downloads from the results page. The PAE "
+        "matrix downloads only from a standalone run &mdash; a batch "
+        "returns no PAE file."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
