@@ -382,6 +382,17 @@ def test_an_unmeasured_leg_is_disclosed_not_dropped():
             f"and says nothing about it: {body!r}"
         )
         assert "Meets" not in body, body
+        # AND NOT THE SHORTFALL FRAMING. This record is ``unjudged``, not
+        # ``below`` -- a leg was never measured, which is not the same as the
+        # run failing. Widening the guard on that sentence from
+        # ``verdict == "below"`` to ``!= "meets"`` makes the mail say "Nothing
+        # in this run clears the bar — Not measured: pI", telling a customer
+        # their run failed a bar it was never judged against. Every other test
+        # in this file stays green under that mutation.
+        assert "clears the bar" not in body, (
+            f"the {part} body tells a customer whose run was never judged "
+            f"that nothing in it clears the bar: {body!r}"
+        )
 
 
 def test_an_unresolved_mode_asserts_no_bar_at_all():
