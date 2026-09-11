@@ -14,33 +14,32 @@ PD-L1 minibinder, n_seeds=2), as it sits in the database:
     seed0: ipTM 0.9556, pI 11.95 -> the pipeline drops it
     seed1: ipTM 0.9354, pI  5.67 -> clears the bar
 
-``candidates[0]`` is seed0, and both surfaces read it blind: the Share text
-quoted one of its numbers as "Top score", and the FASTA numbered it ``rank1``
-with nothing to say it is the one design the tool's own worked example exists
-to tell you not to order. The "Top score" label itself is gone as of this
-branch -- every surviving occurrence of that phrase is prose about the defect,
-none of it composes the string -- because the pick now comes from
-``headline_candidate``, which does not re-rank, so no wording here may claim a
-rank.
+``candidates[0]`` is seed0. The share route read it blind; the FASTA numbered
+it ``rank1`` with nothing to say it is the one design the tool's own worked
+example exists to tell you not to order.
 
-WHICH number the Share text quoted is a SEPARATE defect, and these fixtures
-cannot see it. They are authored in PIPELINE key order, so ``ipTM`` is the
-first numeric key and ``_top_score_for_share`` quotes an ipTM here.
-``tool_jobs.result`` is ``jsonb`` and Postgres orders object keys by (length,
-bytewise), so the real row yields ``pI`` first: against it the figure
-published was ``pI 11.955``, and after this fix it is ``pI 5.669`` -- the
-right design, still the wrong metric. Open on branch
-``claude/share-headline-metric``. These tests assert the PICK only.
+WHAT THE CARD ACTUALLY PUBLISHED WAS NOT 0.956, and an earlier version of this
+docstring said it was. The metric was "first numeric key in ``scores``", and
+``result`` is a ``jsonb`` column whose keys Postgres normalises by (length,
+bytewise) -- so the first key is ``pI`` and the card read "Top score pI
+11.955". The rejected design was named; its ipTM never was. See :func:`_jsonb`,
+and note that the fixture here is built in the STORED order for that reason.
 
-SURFACES THREE AND FOUR of the class #241 opened and #248 continued. The
-other two repaired here -- the campaign/target counts and the target ranking
-table -- are cohort-level and are driven through the aggregator in
-tests/test_aggregate_target.py, because that is their real path.
+THE SURFACES REPAIRED ALONGSIDE THESE TWO are the TARGET count and the target
+ranking table, driven through the aggregator in tests/test_aggregate_target.py
+because that is their real path. THE CAMPAIGN COUNT IS NOT COVERED THERE and
+an earlier version of this docstring claimed it was: its real path is
+``blueprints/campaigns.py::_campaign_candidates_meeting_bar`` ->
+``/campaigns/<id>/status.json``, which the aggregator never touches. See
+:class:`TestCampaignSurfaces` below, which reaches it.
 
-EVERY TEST HERE GOES THROUGH THE ROUTE, via the Flask test client. Calling
-``_top_score_for_share`` or ``candidates_to_fasta`` directly would leave the
-route free to not call them, which is exactly how the sibling surfaces stayed
-green through #241: the helper was right and nothing reached it.
+EVERY TEST IN A CLASS HERE GOES THROUGH A ROUTE, via the Flask test client.
+Calling ``_top_score_for_share`` or ``candidates_to_fasta`` directly would
+leave the route free to not call them, which is exactly how the sibling
+surfaces stayed green through #241: the helper was right and nothing reached
+it. The module-level tests are declared invariants and say so in their own
+docstrings; an earlier version of this paragraph said EVERY test went through
+a route, which was false of them.
 """
 
 from __future__ import annotations
@@ -71,8 +70,9 @@ def _cand(name: str, iptm, pi, rank: int, *, sequence="MKTAYIAKQRQISFVK") -> dic
         "name": name,
         "pdb_key": f"designs/{name}_complex.pdb",
         "sequence": sequence,
-        "scores": {"ipTM": iptm, "iPTM_proxy": None, "pI": pi,
-                   "final_loss": 1.0},
+        # IN THE STORED KEY ORDER, not the pipeline's. See _jsonb.
+        "scores": _jsonb({"ipTM": iptm, "iPTM_proxy": None, "pI": pi,
+                          "final_loss": 1.0}),
     }
 
 
@@ -164,6 +164,42 @@ def _headers(body: str) -> list[str]:
     return [ln for ln in body.splitlines() if ln.startswith(">")]
 
 
+_URL = "tools.ranomics.com"
+
+
+def _clause(og_title: str) -> str | None:
+    """The og:title's trailing claim, or None when it makes none.
+
+    ASSERT ON THIS, NOT ON A PHRASE. ``"Top score" not in title`` was the
+    original test for "the card says nothing about scores", and rewording the
+    copy to "Top design" turned every one of those assertions into a sentence
+    about a string the card can no longer produce -- true forever, of nothing.
+    The card has exactly two shapes: it ends at the URL, or it appends one
+    clause. This reads which.
+    """
+    head, sep, tail = og_title.partition(_URL)
+    assert sep, f"og:title did not contain the site URL at all: {og_title!r}"
+    return tail.strip(" .") or None
+
+
+def _jsonb(scores: dict) -> dict:
+    """``scores`` in the key order PostgREST actually returns.
+
+    ``tool_jobs.result`` is a ``jsonb`` column
+    (supabase/migrations/0005_tool_jobs.sql:33) and Postgres normalises jsonb
+    object keys by (length, bytewise) -- it does NOT preserve insertion order.
+    So a fixture written in the order ``run_pipeline.py`` emits is not the
+    shape any route ever receives.
+
+    THIS IS NOT PEDANTRY: it hid a live defect. The share card used to print
+    the first numeric key of ``scores``, and under this ordering that is
+    ``pI`` -- two characters, so it sorts ahead of ``ipTM`` every time. The
+    card published "Top score pI 5.669", an isoelectric point announced as a
+    score, while a hand-ordered fixture showed a reassuring "ipTM 0.935".
+    """
+    return {k: scores[k] for k in sorted(scores, key=lambda k: (len(k), k.encode()))}
+
+
 def test_no_campaign_tool_needs_a_mode():
     """Two comments in blueprints/campaigns.py rest on this and neither can
     check it: the campaign FASTA export passes no preset, and the quality
@@ -187,17 +223,29 @@ class TestShareCard:
     def test_the_og_title_names_the_design_that_clears_the_bar(
         self, flask_app, monkeypatch,
     ):
-        """The assigned defect in one assertion: 0.956 is seed0's ipTM and
-        seed0 is the design the pipeline drops. The route quoted it because it
-        read ``candidates[0]`` and the tool's bar needs the run's mode to
-        exist at all. The metric name here is the fixture's key order, not the
-        database's -- see the module docstring."""
-        payload = _share(flask_app, monkeypatch, _job())
-        title = payload["og_title"]
+        """Two independent defects meet on this card, and the fixture is in
+        the STORED key order so neither can hide.
+
+        WHICH DESIGN: seed0 is the one the pipeline drops, and the route read
+        ``candidates[0]`` blind because the tool's bar needs the run's mode to
+        exist at all.
+
+        WHICH NUMBER: the metric used to be "first numeric key in ``scores``",
+        which under jsonb ordering is ``pI``. So the card announced an
+        isoelectric point as a score. It now names the tool's ranking metric.
+
+        AND THE SUPERLATIVE IS QUALIFIED, because a bar applied here: seed0
+        outranks seed1 on ipTM and was dropped, so the run's own results page
+        still shows 0.956 at the top. A bare "Top score 0.935" contradicts it.
+        """
+        title = _share(flask_app, monkeypatch, _job())["og_title"]
         assert "0.956" not in title, (
-            f"the rejected design's ipTM reached the Share text: {title}"
+            f"the rejected design's number reached a public share card: {title}"
         )
-        assert "ipTM 0.935" in title, title
+        assert "pI" not in title, (
+            f"an isoelectric point was published as a score: {title}"
+        )
+        assert _clause(title) == "Top design meeting our quality bar: ipTM 0.935"
 
     def test_no_score_clause_when_nothing_clears_the_bar(
         self, flask_app, monkeypatch,
@@ -210,15 +258,10 @@ class TestShareCard:
             _cand(PASS_NAME, PASS_IPTM, 10.2, 1),
         ]})
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        # Pin the NUMBERS and the verb, not the label word: this assertion
-        # used to read ``"Top score" not in title`` and went vacuous the day
-        # the label changed, which is the same commit that added these two
-        # lines.
-        assert "0.956" not in title and "0.935" not in title, title
-        assert "designed a binder" not in title, title
+        assert _clause(title) is None, title
         # And it still says the run happened -- the clause is dropped, not the
         # card.
-        assert "tools.ranomics.com" in title and "ESMFold2" in title
+        assert "ESMFold2" in title
 
     def test_the_mode_comes_off_the_result_not_the_stored_preset(
         self, flask_app, monkeypatch,
@@ -230,7 +273,12 @@ class TestShareCard:
         gate to a mode where pI is null by construction."""
         job = _job(result_over={"is_antibody": True})
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert "ipTM 0.956" in title, title
+        # scfv has no entry in MODE_GATE_COLUMNS and esmfold2-design registers
+        # no primary metric, so the honest answer is silence. Resolving the
+        # PRESET first would read "minibinder", apply the pI/ipTM bar, and
+        # publish a clause -- which is what makes this assertion discriminating
+        # rather than merely quiet.
+        assert _clause(title) is None, title
 
     def test_an_unranked_designs_list_gets_no_score_at_all(
         self, flask_app, monkeypatch,
@@ -262,8 +310,7 @@ class TestShareCard:
         )
         job.result.pop("candidates")
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert "Top score" not in title, title
-        assert "0.55" not in title and "55.000" not in title, title
+        assert _clause(title) is None, title
 
     def test_a_bar_does_not_substitute_for_an_order(
         self, flask_app, monkeypatch,
@@ -279,8 +326,16 @@ class TestShareCard:
         here clear its bar; the first one listed is the worse one. A bar-armed
         gate would publish 0.710 with 0.950 in the same run.
 
-        A single-clearing-design fixture CANNOT see this, which is how the
-        first probe of the bar arm passed.
+        BOTH DESIGNS CLEAR DELIBERATELY, but NOT because a single-clearing
+        fixture would leave this assertion green -- an earlier version of this
+        docstring claimed that and a reviewer disproved it by building the
+        variant: with only one clearing design the gate still passes, the card
+        still speaks, and ``_clause(...) is None`` still fails. The reason is
+        evidential rather than mechanical. The retracted arm's defect is that
+        a bar NARROWS an arbitrary choice instead of ordering it, and that is
+        only visible when more than one record survives the narrowing. One
+        clearing design proves the gate rejects the shape; two prove WHY the
+        bar could never have replaced it.
         """
         job = _job(
             tool="boltz2", preset="pilot",
@@ -293,8 +348,7 @@ class TestShareCard:
         )
         job.result.pop("candidates")
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert "Top score" not in title, title
-        assert "0.710" not in title, title
+        assert _clause(title) is None, title
 
     def test_a_tool_with_no_bar_is_untouched(self, flask_app, monkeypatch):
         """bindcraft declares no gate columns, so its records are
@@ -309,7 +363,9 @@ class TestShareCard:
             ]},
         )
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert "ipTM 0.701" in title, title
+        # PLAIN "Top design", unqualified: no bar applied, so the pick really
+        # is the container's rank 1 and nothing was dropped above it.
+        assert _clause(title) == "Top design: ipTM 0.701", title
 
 
 class TestFastaExport:
@@ -385,3 +441,177 @@ class TestFastaExport:
         header = _headers(_fasta(flask_app, monkeypatch, job))[0]
         assert "does not meet bar" in header, header
         assert "not usable" in header, header
+
+
+    def test_a_purely_unusable_record_renders_the_other_branch(
+        self, flask_app, monkeypatch,
+    ):
+        """The SIBLING of the test above, and without it half the note-
+        rendering code is unreached. A record can be unusable WITHOUT being
+        below: boltzgen's refolding RMSD of exactly 0.00 is a declared
+        placeholder while its pLDDT of 88 clears. ``judge`` returns
+        ``unjudged`` + ``unusable`` and the header takes the second branch --
+        a bare disclosure with no "does not meet bar" lead-in, because
+        nothing was shown to fall short.
+
+        Every other fixture in this file that is unusable is ALSO below, so
+        that branch could be replaced with any string at all and stay green.
+        """
+        job = _job(
+            tool="boltzgen", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "bg_0", "pdb_key": "designs/bg_0.pdb",
+                 "sequence": "MKTAY",
+                 "scores": {"pLDDT": 88.0, "refolding_rmsd": 0.0}},
+            ]},
+        )
+        header = _headers(_fasta(flask_app, monkeypatch, job))[0]
+        assert "does not meet bar" not in header, header
+        assert header.endswith("[Not usable: Refolding RMSD]"), header
+
+    def test_a_purely_unusable_pick_gets_no_share_clause(
+        self, flask_app, monkeypatch,
+    ):
+        """The ``or verdict.unusable`` half of the share guard, which no other
+        test reaches: every other non-qualifying fixture is ``below``, so
+        narrowing the guard to ``verdict.verdict == "below"`` alone is
+        invisible.
+
+        This design's metrics are a declared placeholder, not a measurement.
+        Without that half the card would publish ``Top design: ipTM 0.950``
+        for a run whose numbers the pipeline could not produce.
+        """
+        job = _job(
+            tool="boltzgen", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "bg_0", "pdb_key": "designs/bg_0.pdb",
+                 "scores": {"ipTM": 0.95, "pLDDT": 88.0,
+                            "refolding_rmsd": 0.0}},
+            ]},
+        )
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert _clause(title) is None, title
+
+
+class TestTargetExportJudgesPerRow:
+    """The MERGED target export, whose bar notes come from a branch nothing
+    else covers.
+
+    ``blueprints/targets.py`` passes NO scalar tool/preset -- its rows span
+    every run on the target -- so every note in that file is produced by
+    ``shared.exports._bar_scope`` reading each row's own ``_source_tool`` /
+    ``_source_preset``. Disabling that branch entirely was invisible to the
+    whole suite.
+    """
+
+    def test_a_merged_row_is_judged_by_its_own_provenance(self):
+        from shared.exports import candidates_to_fasta
+
+        rows = [
+            {"_source_tool": "esmfold2-design", "_source_preset": "minibinder",
+             "pdb_key": "drop.pdb", "sequence": "MK",
+             "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
+            {"_source_tool": "boltzgen", "_source_preset": "pilot",
+             "pdb_key": "bg.pdb", "sequence": "MK",
+             "scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
+        ]
+        headers = _headers(candidates_to_fasta(rows))
+        # Judged with NO scalars passed, each against ITS OWN tool's bar.
+        assert "does not meet bar: pI 11.95" in headers[0], headers[0]
+        # And the boltzgen row, which clears its own different bar, is bare.
+        assert headers[1] == ">rank2_boltzgen_bg.pdb", headers[1]
+
+    def test_the_row_preset_selects_the_mode(self):
+        """``_source_preset`` carries the resolved MODE on merged rows, so a
+        row tagged scfv must read no bar even with a pI that would fail the
+        minibinder one."""
+        from shared.exports import candidates_to_fasta
+
+        rows = [
+            {"_source_tool": "esmfold2-design", "_source_preset": "scfv",
+             "pdb_key": "ab.pdb", "sequence": "MK",
+             "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
+        ]
+        assert _headers(candidates_to_fasta(rows)) == [
+            ">rank1_esmfold2-design_ab.pdb"
+        ]
+
+
+class TestCampaignSurfaces:
+    """The campaign half of this change, which the aggregator tests cannot see.
+
+    ``blueprints/campaigns.py`` has TWO call sites in this diff and neither
+    was covered: the export passes ``tool=`` to ``candidates_to_fasta`` and
+    the quality card threads ``preset`` into ``count_candidates_meeting_bar``.
+    A review found both mutable to no effect across the whole suite -- the
+    export because nothing asserted on a campaign FASTA's contents, the count
+    because ``_campaign_candidates_meeting_bar`` and ``/campaigns/<id>/
+    status.json`` have no test references anywhere in the repo.
+    """
+
+    def test_the_campaign_fasta_carries_bar_notes(self, flask_app, monkeypatch):
+        """The user-facing half, and it is a real behaviour change: campaign
+        exports for every gating tool now disclose which designs fell short.
+
+        Driven through GET /campaigns/<id>/export.fasta. Dropping the
+        ``tool=`` argument leaves this file silent about a design nobody
+        should order.
+        """
+        import blueprints.campaigns as bp
+        from shared import compute_campaigns as cc
+
+        monkeypatch.setattr(
+            bp, "load_user_context", lambda: SimpleNamespace(user_id="u")
+        )
+        monkeypatch.setattr(
+            cc, "aggregate_campaign_candidates",
+            lambda cid, user_id=None, limit=None: {
+                "tool": "boltzgen", "total": 2, "capped": False, "columns": [],
+                "candidates": [
+                    {"pdb_key": "good.pdb", "sequence": "MK",
+                     "scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
+                    {"pdb_key": "bad.pdb", "sequence": "MK",
+                     "scores": {"pLDDT": 40.0, "refolding_rmsd": 1.0}},
+                ],
+            },
+        )
+        resp = _client(flask_app).get("/campaigns/c-1/export.fasta")
+        assert resp.status_code == 200, resp.status_code
+        headers = _headers(resp.get_data(as_text=True))
+        assert headers[0] == ">rank1_good.pdb", headers[0]
+        assert "does not meet bar: pLDDT 40.0, below 80" in headers[1], headers[1]
+
+    def test_the_campaign_count_hands_each_child_its_preset(self, monkeypatch):
+        """The count's ``preset`` argument, pinned by OBSERVING the call.
+
+        It cannot be pinned by its effect: the preset only changes an answer
+        for a tool in MODE_GATE_COLUMNS, and no such tool is campaign-able --
+        which ``test_no_campaign_tool_needs_a_mode`` asserts in the other
+        direction. Constructing a moded campaign tool to get an effect would
+        build a state production forbids, so this asserts the WIRING instead
+        and says so rather than dressing a spy up as a behaviour test.
+        """
+        import blueprints.campaigns as bp
+        from shared import compute_campaigns as cc
+        import shared.jobs as shared_jobs
+
+        seen = []
+        monkeypatch.setattr(
+            bp, "get_service_client", lambda: object()
+        )
+        monkeypatch.setattr(
+            cc, "iter_succeeded_children",
+            lambda cid, client, columns=None: [
+                {"result": {"candidates": [{"scores": {}}]}},
+                {"result": {"candidates": [{"scores": {}}]}},
+            ],
+        )
+        real = shared_jobs.count_candidates_meeting_bar
+
+        def _spy(result, tool, preset=None):
+            seen.append((tool, preset))
+            return real(result, tool, preset)
+
+        monkeypatch.setattr(shared_jobs, "count_candidates_meeting_bar", _spy)
+        bp._campaign_candidates_meeting_bar("c-1", "boltzgen", "pilot")
+        assert seen == [("boltzgen", "pilot"), ("boltzgen", "pilot")], seen

@@ -28,6 +28,7 @@ from flask import (
 
 from shared import metric_glossary as _metric_glossary
 from shared import pdb_bfactors as _pdb_bfactors
+from shared import result_columns as _result_columns
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
@@ -92,6 +93,59 @@ def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
         return False
     value = user_metadata.get("allow_share")
     return isinstance(value, bool) and value is True
+
+
+def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | None:
+    """WHICH number the share card may print, chosen DETERMINISTICALLY.
+
+    ``(column, displayed value)``, or None when this tool has no column worth
+    calling a score.
+
+    THE OLD RULE WAS "THE FIRST NUMERIC KEY IN ``scores``", AND IT PUBLISHED AN
+    ISOELECTRIC POINT. ``tool_jobs.result`` is a ``jsonb`` column
+    (supabase/migrations/0005_tool_jobs.sql:33) and Postgres normalises jsonb
+    object keys by (length, bytewise), so the stored order is NOT the order
+    ``tools/esmfold2_design/run_pipeline.py`` writes. For job 2b917b54's score
+    keys that puts ``pI`` -- two characters -- first, every time. Driven
+    through this route with the stored ordering, the PUBLIC card read "Top
+    score pI 5.669": a solubility measure, lower-is-better, announced as a
+    score. Dict order is not a choice of metric; it is the absence of one.
+
+    THE ORDER OF PREFERENCE:
+
+    * ``shared.result_columns.primary_metric_for`` -- "the metric each tool's
+      designs are globally ranked by". It is also what the container SORTED
+      ``candidates`` on, so it is the number the pick's position is about.
+    * failing that, the first gate leg whose legend is ``higher_is_better``.
+      esmfold2-design registers no primary metric and its minibinder bar is
+      ``(pI, ipTM)``; this picks ipTM and never pI, which is the defect above
+      stated as a rule.
+    * failing both, NOTHING. A tool with neither a ranking metric nor a
+      higher-is-better gate leg has no number this card can honestly label.
+
+    pLDDT is rescaled by ``plddt_on_100`` for the same reason it always was:
+    the string is read with no page around it to give the scale.
+    """
+    key, _direction = _result_columns.primary_metric_for(tool)
+    if not key:
+        key = next(
+            (
+                col for col in score_legends.gate_columns(tool, preset)
+                if (score_legends.get_legend(tool, col) or {}).get("direction")
+                == "higher_is_better"
+            ),
+            None,
+        )
+    if not key:
+        return None
+    value = _result_columns.candidate_metric(record, key)
+    if value is None:
+        return None
+    if key in _metric_glossary.PLDDT_COLUMNS:
+        value = _metric_glossary.plddt_on_100(value)
+    if not isinstance(value, (int, float)):
+        return None
+    return key, value
 
 
 def _top_score_for_share(job) -> str | None:  # noqa: ANN001
@@ -180,22 +234,26 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # speaking for the run unqualified.
     if verdict.verdict == "below" or verdict.unusable:
         return None
-    scores = top.get("scores")
-    if not isinstance(scores, dict):
-        # Some adapters inline the score at the candidate root.
-        flat = {
-            k: top.get(k) for k in ("iptm", "ipTM", "plddt", "pLDDT")
-            if isinstance(top.get(k), (int, float))
-        }
-        scores = flat or {}
-    for col in scores:
-        val = scores.get(col)
-        if col in _metric_glossary.PLDDT_COLUMNS:
-            # This string is pasted with no page around it to give the scale.
-            val = _metric_glossary.plddt_on_100(val)
-        if isinstance(val, (int, float)):
-            return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
-    return None
+    chosen = _share_headline_metric(tool, mode, top)
+    if chosen is None:
+        return None
+    col, val = chosen
+    reading = f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
+    # WHICH SUPERLATIVE IS TRUE DEPENDS ON WHETHER A BAR APPLIED, so the two
+    # cases get two sentences rather than one that is true of only one of
+    # them. The pick is the first record in the container's own ranking that
+    # is not shown to fall short, so:
+    #
+    #   meets    -- a bar applied and a HIGHER-ranked design may have been
+    #               dropped by it. "Top score" would then be false against
+    #               the run's own results page, which still shows that design
+    #               at rank 1. Probed on pxdesign: 0.880 rejected, 0.770
+    #               clears, and the old copy called 0.770 the top score.
+    #   unjudged -- no bar applied, so the pick IS the container's rank 1 and
+    #               "top" is the plain truth.
+    if verdict.verdict == "meets":
+        return f"Top design meeting our quality bar: {reading}"
+    return f"Top design: {reading}"
 
 
 @jobs_bp.route("/jobs", methods=["GET"])
@@ -912,8 +970,22 @@ def job_share(job_id: str):
     )
     adapter = tool_base.get(tool_slug)
     tool_label = adapter.label if adapter else (tool_slug or "tool")
-    top_score = _top_score_for_share(job)
-    og_title = _share_title(tool_label, top_score)
+    # The CLAUSE, not a bare number: whether "top" is true unqualified depends
+    # on whether a bar dropped a higher-ranked design, and only
+    # _top_score_for_share knows that. Composing "Top score {x}" here is what
+    # put a superlative on a number chosen precisely because it was NOT the
+    # highest.
+    top_clause = _top_score_for_share(job)
+    if top_clause is None:
+        og_title = (
+            f"I designed a binder with {tool_label} on "
+            f"tools.ranomics.com"
+        )
+    else:
+        og_title = (
+            f"I designed a binder with {tool_label} on "
+            f"tools.ranomics.com. {top_clause}."
+        )
     og_description = (
         "Ranomics tools-hub runs the same GPU pipelines used in "
         "production protein design."

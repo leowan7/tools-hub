@@ -1990,15 +1990,35 @@ def test_the_ranking_table_sinks_the_rejected_design(monkeypatch):
     neither row is ranked and ``_passed`` is the ONLY thing separating them --
     which makes it the one signal this table has about these designs.
     """
-    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    # ITS OWN THREE-ROW FIXTURE, stored pass/FAIL/pass, and NOT the shared
+    # two-row one: with (drop, keep) the order assertion below holds under a
+    # sort replaced by list(reversed(...)), so it decorated the _passed
+    # assertions rather than adding to them. Kept local so the counts the
+    # other tests assert on do not move.
+    rows = (
+        _job_row(
+            "esm-order", tool="esmfold2-design", preset="minibinder",
+            target_id="T",
+            candidates=(
+                _esm_cand("keep", _PASS_IPTM, _PASS_PI),
+                _esm_cand("drop", _DROP_IPTM, _DROP_PI),
+                _esm_cand("keep2", _PASS_IPTM, _PASS_PI),
+            ),
+            result_extra={"is_antibody": False, "preset": "minibinder"},
+        ),
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
     agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
 
     by_name = {c["name"]: c for c in agg["candidates"]}
     assert by_name["drop"]["_passed"] is False
     assert by_name["keep"]["_passed"] is True
     assert by_name["drop"]["_tool_has_bar"] is True
-    # And the order follows: the reject is no longer first.
-    assert [c["name"] for c in agg["candidates"]] == ["keep", "drop"]
+    # THREE ROWS, STORED pass/FAIL/pass, so that "sorted by _passed" and
+    # "reversed" are different answers. With the two-row (drop, keep) fixture
+    # this assertion held under a sort replaced by list(reversed(...)) -- it
+    # was decorating the two assertions above rather than adding to them.
+    assert [c["name"] for c in agg["candidates"]] == ["keep", "keep2", "drop"]
 
 
 def test_the_cohort_key_carries_the_mode_the_bar_was_applied_under(monkeypatch):
@@ -2009,11 +2029,15 @@ def test_the_cohort_key_carries_the_mode_the_bar_was_applied_under(monkeypatch):
     was ranked against this tool's other <preset> designs -- true only while
     the two are one key.
     """
-    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    # THE STORED PRESET AND THE MODE MUST DIFFER or this test cannot tell
+    # them apart. Its first version used a fixture where both were
+    # "minibinder", and stamping the raw preset instead of the resolved mode
+    # left it green -- the assertion was comparing a string to itself.
+    _install(monkeypatch, rows=_esm_rows(preset="minibinder", is_antibody=True))
     agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
 
-    assert {c["_source_preset"] for c in agg["candidates"]} == {"minibinder"}
-    assert {c["_cohort_preset"] for c in agg["candidates"]} == {"minibinder"}
+    assert {c["_source_preset"] for c in agg["candidates"]} == {"scfv"}
+    assert {c["_cohort_preset"] for c in agg["candidates"]} == {"scfv"}
 
 
 def test_an_scfv_run_has_no_bar_and_every_design_counts(monkeypatch):
@@ -2084,6 +2108,13 @@ def test_a_tool_with_a_tool_wide_bar_ignores_the_preset(monkeypatch):
     rows = (
         _job_row(
             "bg-1", tool="boltzgen", preset="pilot", target_id="T",
+            # ``is_antibody`` ON A NON-MODED TOOL, deliberately. resolve_mode
+            # guards on MODE_GATE_COLUMNS and so must IGNORE this key for
+            # boltzgen; without the guard, result_mode is tool-blind, reads it,
+            # and rewrites this cohort's key to "scfv" -- silently halving a
+            # percentile denominator. The fixture carried no such key at first,
+            # so deleting the guard was invisible.
+            result_extra={"is_antibody": True},
             candidates=(
                 {"name": "over", "pdb_key": "over.pdb",
                  "scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
