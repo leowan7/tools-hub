@@ -22,6 +22,7 @@ failure this file exists for.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -39,23 +40,40 @@ needs_node = pytest.mark.skipif(
 _SORT = "  function sortTable(table, col, dir) {"
 _START = "  function renumberRows(tbody) {"
 _END = "\n  }"
+# The re-append loop that renumberRows has to run AFTER, and the call itself.
+_APPEND = "pairs.forEach(function (p) {"
+_CALL = "renumberRows(tbody);"
+# sortTable's closing brace as a WHOLE LINE; see the slice in the test below.
+_END_LINE = "  }"
 
 
 def test_sort_table_actually_calls_renumber_rows():
-    """The call site, which everything else here leaves unguarded.
+    """The call site. Every other test here drives ``renumberRows`` in
+    isolation, so deleting the one line that CALLS it left the suite green
+    with the stale column back on screen.
 
-    The tests below lift ``renumberRows`` out and drive it in isolation, and
-    the hook contract in tests/test_candidate_table_js_contract.py matches
-    ``'.cand-rank-n'`` as a token -- which appears inside renumberRows' own
-    body. So deleting the single line that CALLS it leaves the original
-    defect back on screen under a green suite: with that line removed and
-    this test not yet written, the 69 tests then covering this behaviour --
-    both this file and test_candidate_table_js_contract.py, plus
-    test_worked_examples.py::TestTheRankColumnIsAPosition -- all passed.
+    Anchors are COUNTED, not merely required to be present: ``.index()`` takes
+    the first match, so a decoy ``pairs.forEach`` ahead of the call satisfied
+    the ordering check while the real re-append ran after it. The body is
+    comment-stripped first, so an ordinary commented-out call does not count
+    (see the truncation trap at the slice below for when that stops holding).
 
-    Compared line-wise against a stripped form rather than by substring, so
-    a comment mentioning renumberRows cannot satisfy it -- this file's own
-    neighbours are full of such mentions.
+    THIS READS TEXT, so it cannot see whether the call runs. Shapes that pass
+    here and leave the stale column on screen include a never-true flag around
+    the call, an uncalled nested helper holding it, unreachable code after an
+    early ``return``, and a local shadow of ``renumberRows``. Others pass and
+    break something else instead -- ``setTimeout`` renumbers a tick late with
+    the column correct, and deleting the re-append's ``appendChild`` lines
+    leaves the numbers right while no row moves. Deliberately not a closed
+    list, but not unbounded either: this pins the line's PRESENCE, its
+    POSITION after the re-append, and both anchor COUNTS at one, so a call
+    moved above the re-append still fails on order, and a wrapper that repeats
+    the anchor LINE ITSELF still fails on count. Both anchors are exact
+    stripped-line matches, so a wrapper whose own loop is spelled any other
+    way -- ``[].forEach``, ``pending.forEach`` -- leaves the count at one and
+    gets through. Separating those needs the harness to drive the real
+    ``sortTable``, whose DOM stub has no ``appendChild``, ``dataset`` or
+    ``[data-col=]``.
     """
     src = SCRIPT.read_text(encoding="utf-8")
     sort_at, renumber_at = src.find(_SORT), src.find(_START)
@@ -65,18 +83,69 @@ def test_sort_table_actually_calls_renumber_rows():
         "renumberRows now precedes sortTable; this slice assumes the order "
         "and would read the wrong region"
     )
-    body = src[sort_at:renumber_at]
+    # A LINE equal to the closing brace, not a substring search for it: the
+    # substring is a prefix of "  });" and "  }," too, so it can end the slice
+    # on an inner closer. sortTable has exactly one line equal to _END_LINE.
+    #
+    # RESIDUAL TRAP. A bare inner "}" at two spaces is indistinguishable from
+    # the real closer, so the slice ends early and drops whatever follows.
+    # The LINE LIST only shrinks -- but the counts below are taken after the
+    # /* */ strip, and that step is not monotone: truncating away a "*/"
+    # orphans its "/*", the strip stops firing, and text it would have deleted
+    # survives as live lines. So the brace hides a surplus AND can manufacture
+    # one. Measured: a hidden real re-append passes (APPEND 2 -> 1), and a
+    # block-commented call whose "*/" sits behind the brace comes back CALL=1
+    # and passes with ZERO real calls, both on a page whose rows move while
+    # the numbers do not. A "//"-commented call, a deleted call and a renamed
+    # anchor all still fail.
+    #
+    # Only the SURPLUS half is specific to counting: the manufactured call
+    # fools a membership test just as well, since the orphaned "/*" resurrects
+    # a line that `in` also finds. Nor is the strip to blame -- run it WITHOUT
+    # the closer bound and it catches this shape (CALL=0). Measured as a
+    # factorial over the two steps: no bound + no strip PASS -- which is the
+    # guard exactly as #257 shipped it, and this file did not exist before
+    # that -- bound only PASS, strip only FAIL, both PASS. The bound is what
+    # re-opens it, by truncating away the "*/" the strip needs.
+    tail = src[sort_at:renumber_at].splitlines()
+    closer = next(
+        (i for i, ln in enumerate(tail) if ln.rstrip() == _END_LINE), None
+    )
+    assert closer is not None, (
+        f"sortTable has no line equal to {_END_LINE!r} before renumberRows, "
+        "so this slice cannot tell where its body ends"
+    )
+    body = "\n".join(tail[:closer])
+    # Block comments as well as line-leading "//": a three-line /* */ has a
+    # middle line that strips to exactly the target. Not string-aware, so a
+    # "/*" AND a "*/" in string literals bracketing the call would delete it
+    # and fail here on correct code -- a lone "/*" is inert, the regex needs
+    # the pair. What keeps that theoretical is the file: the only /* */ pair
+    # in candidate_table.js is its header.
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
     lines = [
         ln.strip() for ln in body.splitlines()
         if not ln.strip().startswith("//")
     ]
-    assert "renumberRows(tbody);" in lines, (
-        "sortTable reorders the rows and never renumbers them, so a column "
-        "sort leaves the # column holding its pre-sort numbers"
+    assert lines.count(_CALL) == 1, (
+        f"sortTable contains {lines.count(_CALL)} lines equal to {_CALL!r}; "
+        "expected exactly one. At zero it reorders the rows and never "
+        "renumbers them, so a column sort leaves the # column holding its "
+        "pre-sort numbers; above one, the ordering check below reads "
+        "whichever comes first and stops meaning anything"
     )
-    # AFTER the rows move, not before -- renumbering the old order is a
-    # no-op that would leave the same stale column behind.
-    assert lines.index("renumberRows(tbody);") > lines.index("pairs.forEach(function (p) {"), (
+    # AFTER the rows move, not before -- renumbering the old order is a no-op
+    # that would leave the same stale column behind. Counted, not just
+    # present: .index() on a missing anchor raises ValueError, which reports a
+    # behaviour-preserving rename (the callback param, or an arrow function)
+    # as a crash rather than as the mismatch it is.
+    assert lines.count(_APPEND) == 1, (
+        f"sortTable contains {lines.count(_APPEND)} lines equal to "
+        f"{_APPEND!r}; expected exactly one. At zero the ordering check has "
+        "no anchor; above one it anchors on the first, which a decoy loop "
+        "ahead of the call satisfies while the real re-append runs after it"
+    )
+    assert lines.index(_CALL) > lines.index(_APPEND), (
         "renumberRows runs before the rows are re-appended, so it numbers "
         "the pre-sort order"
     )
@@ -86,8 +155,11 @@ def _renumber_source() -> str:
     """``renumberRows`` verbatim from the shipped script.
 
     Both anchors are asserted, so renaming or moving the function fails here
-    loudly instead of silently running an empty string -- an empty slice would
-    make every assertion below pass against a function that does nothing.
+    by name instead of further down for a reason that reads like a behaviour
+    change. Measured, if it did slip through: an EMPTY slice makes the harness
+    die with ``ReferenceError: renumberRows is not defined``, so the fixture's
+    returncode assert errors all four tests at once; a slice that parsed but
+    did nothing would still be caught, though only by two of the four.
     """
     src = SCRIPT.read_text(encoding="utf-8")
     start = src.find(_START)
