@@ -365,15 +365,11 @@ def create_app() -> Flask:
     # Metric glossary available in all templates (candidate_table macro reads it).
     flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
 
-    # Per-tool score legends. The candidate_table macro calls
-    # ``score_legends_for(tool_slug)`` to render per-column "what counts
-    # as good?" tooltips. Returns a {column_key: legend} dict.
-    flask_app.jinja_env.globals["score_legends_for"] = (
-        _score_legends.score_legends_for
-    )
-
-    # Multi-tool table support, both used by the candidate_table macro in
-    # ``multi_tool`` mode only.
+    # Candidate-table globals. The macro reads ``format_metric_value`` and
+    # ``ordinal`` in multi-tool mode only -- though jobs_compare.html calls
+    # ``format_metric_value`` outside the macro too -- and reads
+    # ``score_legend_for`` in BOTH modes: the multi-tool Score cell and the
+    # single-tool column header. (``ordinal`` is registered further down.)
     #
     # ``format_metric_value`` renders the Score cell. That cell prints a
     # DIFFERENT metric per row (bindcraft's ipTM beside rfantibody's ipAE), so

@@ -12,8 +12,9 @@ calibrated cofold). When no tool-specific entry exists, the helper
 returns ``None`` and the candidate_table macro falls back to the generic
 ``metric_glossary`` tooltip.
 
-The macro reads ``score_legends_for(tool_slug)`` via a Jinja global
+The macro reads ``score_legend_for(tool_slug, column)`` via a Jinja global
 registered in ``app.py``; templates do not import this module directly.
+That global is ``get_legend``, which folds case -- see there.
 """
 
 from __future__ import annotations
@@ -275,7 +276,21 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
 
     # ── AlphaFold2 (single-prediction fold) ───────────────────────────
-    ("af2", "plddt"): {
+    # THE pLDDT KEY BELOW IS SPELLED AS THE RESULTS PAGE SPELLS IT, and
+    # so are colabfold's and esmfold's. Their containers store
+    # ``mean_plddt``, which ``get_legend``'s case fold still reaches.
+    # A consequence worth knowing before these three are wired into any
+    # surface that names the column ``pLDDT`` -- the spelling
+    # ``_COLUMN_ALIASES`` is keyed on: ``pLDDT`` folds to ``plddt``, not
+    # to ``mean_plddt``, and will NOT resolve here. Nothing passes it to
+    # these three today from the sources a results page draws COLUMNS from
+    # -- the per-tool template, ``columns_for``, ``primary_metric_for`` --
+    # which tests/test_score_legend_lookup.py checks. ON A RESULTS PAGE a
+    # gate column is the other way a name reaches this function, and
+    # tests/test_derived_verdicts.py guards that one. (components/
+    # about_panel.html and help/tool_guide.html also call in, off a results
+    # page, and each passes a literal ``ipTM``.)
+    ("af2", "mean_pLDDT"): {
         "good": 80,
         "excellent": 90,
         "direction": "higher_is_better",
@@ -304,7 +319,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
 
     # ── ColabFold and ESMFold reuse AF2-style pLDDT scale ────────────
-    ("colabfold", "plddt"): {
+    ("colabfold", "mean_pLDDT"): {
         "good": 80,
         "excellent": 90,
         "direction": "higher_is_better",
@@ -331,7 +346,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "plausible interface; above 0.75 is strong."
         ),
     },
-    ("esmfold", "plddt"): {
+    ("esmfold", "mean_pLDDT"): {
         "good": 80,
         "excellent": 90,
         "direction": "higher_is_better",
@@ -915,24 +930,30 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
 def get_legend(tool_slug: str, column_key: str) -> Optional[Legend]:
     """Return the legend for ``(tool_slug, column_key)`` or None.
 
-    Exact match first, then case-insensitive. The keys are each tool's OWN
-    column spelling: af2 and colabfold file their interface score under
-    ``iptm`` where the other six store ``ipTM``, so a caller naming the
-    display column read those two as having no legend at all.
-    Both templates here still name the display column; what changed is
-    this callee. ``score_legends_for`` (below) is a SEPARATE exact-case
-    reader of the same dict, and candidate_table.html:448 uses it, so the
-    results table still loses those legends -- and ``mean_pLDDT`` vs
-    ``plddt`` differs by more than case, so no fold reaches that one.
+    Exact match first, then case-insensitive, as #258 left it. The keys
+    are each tool's OWN column spelling: af2 and colabfold register their
+    interface score as ``iptm`` where other tools register ``ipTM``, so a
+    caller naming the display column read those as having no legend.
+
+    The case fold is all the results table needs, now that af2, colabfold
+    and esmfold register their pLDDT legend as ``mean_pLDDT`` rather than
+    ``plddt``. That is the spelling their pages pass, so THAT key
+    satisfies the invariant above :data:`SCORE_LEGENDS`; the same two
+    tools still register ``iptm``/``ptm`` against a displayed
+    ``ipTM``/``pTM``, and those ride on this fold. The re-keyed legends
+    also reach the ``mean_plddt`` their containers store, which differs
+    from the new key by case alone.
 
     NOT ``_COLUMN_ALIASES``: that maps a column to the STORAGE spellings a
     result RECORD may carry, and deliberately folds ``complex_pLDDT`` into
     ``pLDDT``. A legend is per (tool, column); the note above that map
     warns against answering a bar with another column's READING, and the
-    same reasoning applies to its legend. Case is the only difference
-    folded here, and the first case-insensitive match in SCORE_LEGENDS
-    order wins -- no tool declares two spellings of one column today, so
-    nothing is ambiguous, but a future one would resolve silently.
+    same reasoning applies to its legend.
+
+    The first case-insensitive match in SCORE_LEGENDS order wins. That no
+    tool declares two spellings of one column -- so that nothing is
+    ambiguous today -- is pinned by tests/test_score_legend_lookup.py; a
+    future one would resolve silently.
     """
     if not tool_slug or not column_key:
         return None
@@ -1126,9 +1147,11 @@ def email_caption(legend: Optional[Legend], target_chain,  # noqa: ANN001
 def score_legends_for(tool_slug: str) -> dict[str, Legend]:
     """Return ``{column_key: Legend}`` for one tool. Empty dict on miss.
 
-    Templates call this via the Jinja global registered in ``app.py``;
-    the dict shape lets a template do ``legends.get(col)`` without ever
-    importing the module.
+    No template reads this: ``candidate_table.html`` resolved its header
+    legend here until it moved to ``score_legend_for`` (``get_legend``),
+    which folds case where this exact-case comprehension cannot. In
+    production the remaining caller is ``shared/email.py``; several test
+    modules also call it and register it as a Jinja global.
     """
     if not tool_slug:
         return {}
