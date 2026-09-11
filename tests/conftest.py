@@ -61,8 +61,8 @@ def isolate_supabase(monkeypatch):
     yield
 
 
-@pytest.fixture
-def all_tools_app(monkeypatch):
+@pytest.fixture(scope="module")
+def all_tools_app():
     """Every registered adapter flagged on, not a remembered subset."""
     import app as app_module  # noqa: PLC0415  (populates tools.base registry)
     from shared.feature_flags import flag_name  # noqa: PLC0415
@@ -74,9 +74,20 @@ def all_tools_app(monkeypatch):
         "is empty until `import app` populates it, and a registry that did "
         "not populate would leave every per-adapter test iterating nothing"
     )
-    for slug in slugs:
-        monkeypatch.setenv(flag_name(slug), "on")
-    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    flask_app = app_module.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app, slugs
+    # Module-scoped so a module's page-render sweeps happen once for the
+    # module rather than once per calling test. That rules out the
+    # function-scoped `monkeypatch` fixture; MonkeyPatch.context() is the
+    # same setenv/undo over the module's lifetime.
+    #
+    # Ordering note: a module-scoped fixture is built before the
+    # function-scoped isolate_supabase blanks the credentials. That is
+    # safe here because create_app() captures no Supabase client --
+    # get_service_client() is called inside inject_workspace_context,
+    # a context processor, so it runs per request instead.
+    with pytest.MonkeyPatch.context() as mp:
+        for slug in slugs:
+            mp.setenv(flag_name(slug), "on")
+        mp.setenv("SESSION_SECRET_KEY", "test-secret")
+        flask_app = app_module.create_app()
+        flask_app.config["TESTING"] = True
+        yield flask_app, slugs

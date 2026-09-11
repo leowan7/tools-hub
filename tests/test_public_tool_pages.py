@@ -39,6 +39,13 @@ PUBLIC_TOOLS = ("mpnn", "proteina", "boltz2")
 # which queries Supabase with the stubbed user id.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
+#: Page sweeps memoised per app instance, matching _ENTRIES in
+#: test_about_panel_iptm_bar_default.py. all_tools_app is module-scoped,
+#: so one app serves the module and each sweep renders once rather than
+#: once per calling test. A new module builds a new app, which misses.
+_LEDES: dict = {}
+_PAGES: dict = {}
+
 
 def _ctx(user_id="u-public", balance=100):
     return SimpleNamespace(
@@ -883,6 +890,9 @@ class TestRenderedLedeRules:
         # out, so a registry that half-populated or a flag left off cannot
         # make the loop below pass over three tools.
         assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        cached = _LEDES.get(flask_app)
+        if cached is not None:
+            return cached
         client = flask_app.test_client()
         out = {}
         served = 0
@@ -897,6 +907,7 @@ class TestRenderedLedeRules:
             )
             out[slug] = hero
         assert served == 14, f"only {served} tool pages returned 200"
+        _LEDES[flask_app] = out
         return out
 
     def test_lede_phrase_never_repeats_the_tools_own_name(
@@ -1270,6 +1281,9 @@ class TestIptmThresholdHasOneSource:
         measured on the proteina sweep as M-P3.
         """
         flask_app, slugs = all_tools_app
+        cached = _PAGES.get(flask_app)
+        if cached is not None:
+            return cached
         client = flask_app.test_client()
         out = {}
         for path in _public_get_paths(flask_app, slugs):
@@ -1277,6 +1291,7 @@ class TestIptmThresholdHasOneSource:
             if resp.status_code == 200:
                 out[path] = resp.get_data(as_text=True)
         assert len(out) >= 2 * len(slugs) + 1, sorted(out)
+        _PAGES[flask_app] = out
         return out
 
     def test_the_sourceless_threshold_is_gone_everywhere(
