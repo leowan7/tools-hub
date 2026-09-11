@@ -35,6 +35,7 @@ import base64
 import html
 import json
 import math
+import os
 import statistics
 import re
 from html.parser import HTMLParser
@@ -555,9 +556,16 @@ class TestEveryPartialIsExampleSafe:
         # added here.
         NO_PROBE = (
             "/api/", "/scout/example", "/scout/progress",
-            "/scout/quota", "/health", "/healthz", "/readyz",
-            "/metrics", "/debug/",
+            "/scout/feasibility", "/scout/quota", "/health",
+            "/readyz", "/metrics", "/debug/",
         )
+        # The skip changes NOTHING about which pages are scanned -- every
+        # rule it removes answers non-HTML -- so no assertion below can
+        # see it, and deleting it would be silent. This snapshot is the
+        # only thing holding it: /scout/example wrote a directory per
+        # probe before it existed.
+        tmp_dir = REPO / "tmp"
+        before = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
         paths = [f"/help/tools/{slug}" for slug in slugs]
         for rule in flask_app.url_map.iter_rules():
             if rule.arguments or "GET" not in (rule.methods or ()):
@@ -580,6 +588,12 @@ class TestEveryPartialIsExampleSafe:
         # scan then passes over almost nothing. Mutation-tested by
         # making the status check unsatisfiable: it fails at 14.
         assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
+        after = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
+        assert after <= before, (
+            "probing the route table wrote into the shared tmp/: "
+            f"{sorted(after - before)}. Add the offending rule to "
+            "NO_PROBE rather than letting a copy scan create state."
+        )
         for path in paths:
             flat = re.sub(
                 r"\s+", " ", client.get(path).get_data(as_text=True),
