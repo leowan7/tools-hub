@@ -206,9 +206,12 @@ def validate(
             # clock. Cost therefore scales with n_seeds ONLY -- the spec's
             # scaling_param is "n_seeds" (shared/wallet_estimates.py), not
             # n_designs_total. This comment used to say cost "scales
-            # linearly with both axes", which is wrong in both halves:
-            # batch_size moves time, not cost. n_designs_total is stamped
-            # for the job record; it does not move the hold.
+            # linearly with both axes". The n_seeds half of that is true
+            # (1 seed $9.8614, 8 seeds $78.8909 -- linear in gpu_seconds,
+            # differing only by the 4dp rounding applied to each); the
+            # batch_size half is not -- batch_size moves TIME, not cost.
+            # n_designs_total is stamped for the job record; it does not
+            # move the hold.
             "parameters": {"n_designs_total": n_seeds * batch_size},
         },
         None,
