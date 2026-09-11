@@ -14,7 +14,18 @@
      job_preset           Preset slug
      job_created          Submitted-at string (first 19 chars)
      job_url              Link to /jobs/<id>
-     tone                 "success" | "empty" | "failed"
+     tone                 "success" | "preflight" | "empty" | "failed"
+                          "preflight" is a run that designs nothing by
+                          construction (proteina's `validate` dry-run),
+                          which lands on the same zero-candidate payload as
+                          "empty" while meaning the opposite. Its CTA splits
+                          the two slots the other tones keep together: the
+                          GREEN button of a run that went fine, carrying the
+                          "View job details" label of a run with no results
+                          to view. The two tests must stay different:
+                          narrowing the colour to `tone == 'success'` greys
+                          a run that went fine, and widening the label to
+                          match the colour offers results that do not exist.
      top_score_label      Score label string (e.g. "ipTM"); empty when no top score
      top_score_value      Score value string (e.g. "0.74"); empty when no top score
      top_score_caption    Interpretation of the top score, built by
@@ -133,7 +144,7 @@
   <p style="margin:1.5rem 0;">
     <a href="{{ job_url }}"
        style="display:inline-block;padding:12px 22px;
-              background:{% if tone == 'success' %}#1f9d55{% else %}#525252{% endif %};
+              background:{% if tone in ('success', 'preflight') %}#1f9d55{% else %}#525252{% endif %};
               color:#ffffff;text-decoration:none;border-radius:6px;
               font-weight:600;">
       {% if tone == 'success' %}View results{% else %}View job details{% endif %}
