@@ -423,26 +423,6 @@ class TestSubmittingControlDetector:
         assert _submitting_controls(body, "mpnn") == []
 
 
-@pytest.fixture
-def all_tools_app(monkeypatch):
-    """Every registered adapter flagged on, not a remembered subset."""
-    import app as app_module  # noqa: PLC0415  (populates tools.base registry)
-    from shared.feature_flags import flag_name  # noqa: PLC0415
-    from tools import base as tool_base  # noqa: PLC0415
-
-    slugs = sorted(a.slug for a in tool_base.all_adapters())
-    assert len(slugs) >= 14, (
-        f"adapter registry holds {len(slugs)} tools; a registry that did "
-        "not populate would make every assertion below vacuous"
-    )
-    for slug in slugs:
-        monkeypatch.setenv(flag_name(slug), "on")
-    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    flask_app = app_module.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app, slugs
-
-
 class TestNoAnonymouslyReachableSubmitControl:
 
     def test_every_tool_form(self, all_tools_app):
