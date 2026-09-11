@@ -179,8 +179,22 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
     record = _result_columns.normalize_candidate(record, tool)
 
     def _reading(col):
-        value = _result_columns.candidate_metric(record, col)
+        # score_legends.raw_metric, NOT result_columns.candidate_metric, and
+        # the difference is load-bearing. candidate_metric checks `scores`
+        # then the root for ONE literal key; raw_metric resolves the SAME
+        # aliases ``judge`` does. A boltz2 record keyed `iptm` at the root
+        # judges "meets" through the alias and resolved to None here, so the
+        # text went silent about a design that clears the bar -- a table and a
+        # verdict disagreeing about which cell they read, which is the exact
+        # defect raw_metric was added for.
+        value = score_legends.raw_metric(record, col)
         if value is None:
+            value = _result_columns.candidate_metric(record, col)
+        if value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
             return None
         if col in _metric_glossary.PLDDT_COLUMNS:
             value = _metric_glossary.plddt_on_100(value)

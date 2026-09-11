@@ -225,6 +225,21 @@ def test_the_plddt_preference_is_complete():
     assert len(_PLDDT_PREFERENCE) == len(set(_PLDDT_PREFERENCE)), "duplicate"
 
 
+def test_the_plddt_preference_prefers_the_canonical_spelling():
+    """COMPLETENESS IS NOT ORDER, and the guard above pins only the former.
+
+    Reversing the tuple leaves the whole suite green unless some record
+    carries TWO spellings -- which is the only situation the ordering exists
+    to decide. The production comment says "canonical first"; this is what
+    makes that claim checkable rather than decorative.
+    """
+    from blueprints.jobs import _share_headline_metric
+
+    record = {"scores": {"pLDDT": 90.0, "af2_plddt": 0.10}}
+    # af2 has no bar and no ranking metric, so the pLDDT arm decides.
+    assert _share_headline_metric("af2", None, record) == ("pLDDT", 90.0)
+
+
 def test_no_campaign_tool_needs_a_mode():
     """Two comments in blueprints/campaigns.py rest on this and neither can
     check it: the campaign FASTA export passes no preset, and the quality
@@ -351,11 +366,15 @@ class TestShareCard:
         here clear its bar; the first one listed is the worse one. A bar-armed
         gate would publish 0.710 with 0.950 in the same run.
 
-        BOTH DESIGNS CLEAR DELIBERATELY, but NOT because a single-clearing
-        fixture would leave this assertion green -- an earlier version of this
-        docstring claimed that and a reviewer disproved it by building the
-        variant: with only one clearing design the gate still passes, the card
-        still speaks, and ``_clause(...) is None`` still fails. The reason is
+        BOTH DESIGNS CLEAR DELIBERATELY, and this docstring has now been
+        wrong about WHY twice. It first claimed a single-clearing fixture
+        would leave the assertion green; a reviewer disproved that. It then
+        said the card "still speaks" under that variant -- which a SECOND
+        reviewer disproved, because these records keyed their metrics at the
+        root in lowercase and the metric chain resolved nothing, so the card
+        was silent for a reason unrelated to the gate and this test passed
+        even with the retracted two-armed gate restored. The keys are spelled
+        canonically now, and the chain resolves aliases besides. The reason is
         evidential rather than mechanical. The retracted arm's defect is that
         a bar NARROWS an arbitrary choice instead of ordering it, and that is
         only visible when more than one record survives the narrowing. One
@@ -365,10 +384,17 @@ class TestShareCard:
         job = _job(
             tool="boltz2", preset="pilot",
             result_over={"is_antibody": None, "designs": [
+                # Metrics under ``scores`` with the canonical spellings, so
+                # the card is silent because of the SHAPE GATE and not because
+                # the chain failed to resolve a column. With these at the root
+                # as `iptm`/`plddt` this test passed under the very gate it
+                # exists to forbid.
                 {"name": "b0", "pdb_key": "designs/b0.pdb", "rank": 0,
-                 "iptm": 0.710, "plddt": 88.0, "n_hotspot_contacts": 5},
+                 "scores": {"ipTM": 0.710, "pLDDT": 88.0,
+                            "n_hotspot_contacts": 5}},
                 {"name": "b1", "pdb_key": "designs/b1.pdb", "rank": 1,
-                 "iptm": 0.950, "plddt": 90.0, "n_hotspot_contacts": 6},
+                 "scores": {"ipTM": 0.950, "pLDDT": 90.0,
+                            "n_hotspot_contacts": 6}},
             ]},
         )
         job.result.pop("candidates")
@@ -391,6 +417,30 @@ class TestShareCard:
         # PLAIN "Top design", unqualified: no bar applied, so the pick really
         # is the container's rank 1 and nothing was dropped above it.
         assert _clause(title) == "Top design: ipTM 0.701", title
+
+
+    def test_a_purely_unusable_pick_gets_no_share_clause(
+        self, flask_app, monkeypatch,
+    ):
+        """The ``or verdict.unusable`` half of the share guard, which no other
+        test reaches: every other non-qualifying fixture is ``below``, so
+        narrowing the guard to ``verdict.verdict == "below"`` alone is
+        invisible.
+
+        This design's metrics are a declared placeholder, not a measurement.
+        Without that half the card would publish ``Top design: ipTM 0.950``
+        for a run whose numbers the pipeline could not produce.
+        """
+        job = _job(
+            tool="boltzgen", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "bg_0", "pdb_key": "designs/bg_0.pdb",
+                 "scores": {"ipTM": 0.95, "pLDDT": 88.0,
+                            "refolding_rmsd": 0.0}},
+            ]},
+        )
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert _clause(title) is None, title
 
 
 class TestFastaExport:
@@ -495,30 +545,6 @@ class TestFastaExport:
         assert "does not meet bar" not in header, header
         assert header.endswith("[Not usable: Refolding RMSD]"), header
 
-    def test_a_purely_unusable_pick_gets_no_share_clause(
-        self, flask_app, monkeypatch,
-    ):
-        """The ``or verdict.unusable`` half of the share guard, which no other
-        test reaches: every other non-qualifying fixture is ``below``, so
-        narrowing the guard to ``verdict.verdict == "below"`` alone is
-        invisible.
-
-        This design's metrics are a declared placeholder, not a measurement.
-        Without that half the card would publish ``Top design: ipTM 0.950``
-        for a run whose numbers the pipeline could not produce.
-        """
-        job = _job(
-            tool="boltzgen", preset="pilot",
-            result_over={"is_antibody": None, "candidates": [
-                {"rank": 0, "name": "bg_0", "pdb_key": "designs/bg_0.pdb",
-                 "scores": {"ipTM": 0.95, "pLDDT": 88.0,
-                            "refolding_rmsd": 0.0}},
-            ]},
-        )
-        title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert _clause(title) is None, title
-
-
 class TestTargetExportJudgesPerRow:
     """The MERGED target export, whose bar notes come from a branch nothing
     else covers.
@@ -557,10 +583,18 @@ class TestTargetExportJudgesPerRow:
             {"_source_tool": "esmfold2-design", "_source_preset": "scfv",
              "pdb_key": "ab.pdb", "sequence": "MK",
              "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
+            # THE SAME METRICS UNDER THE OTHER MODE. Without this row the test
+            # is a bare negative -- "no mode" and "scfv" both produce a bare
+            # header, so dropping _source_preset entirely left it green. The
+            # pair makes the mode the ONLY difference between two rows whose
+            # numbers are identical.
+            {"_source_tool": "esmfold2-design", "_source_preset": "minibinder",
+             "pdb_key": "mb.pdb", "sequence": "MK",
+             "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
         ]
-        assert _headers(candidates_to_fasta(rows)) == [
-            ">rank1_esmfold2-design_ab.pdb"
-        ]
+        headers = _headers(candidates_to_fasta(rows))
+        assert headers[0] == ">rank1_esmfold2-design_ab.pdb", headers[0]
+        assert "does not meet bar: pI 11.95" in headers[1], headers[1]
 
 
 class TestCampaignSurfaces:
