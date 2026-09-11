@@ -186,7 +186,11 @@ def test_the_shortlist_and_export_controls_are_all_secondary():
     exactly one primary only by accident of counting, so name the rest."""
     controls = _controls(_render_table(target_id="t-1"))
     labels = {label: classes for classes, label in controls}
-    for label in ("FASTA", "PDBs (ZIP)", "Starred only (CSV)",
+    # "Structures (ZIP)", not "PDBs (ZIP)": the archive carries whatever
+    # the container wrote, and boltzgen and opendde write .cif for most
+    # rows. The label is only this test's handle on the control -- what it
+    # pins is that the control is SECONDARY, which is unchanged.
+    for label in ("FASTA", "Structures (ZIP)", "Starred only (CSV)",
                   "Send shortlist to Ranomics lab"):
         assert label in labels, (label, sorted(labels))
         assert "btn-secondary" in labels[label].split(), (label, labels[label])

@@ -324,12 +324,27 @@ def _tool_label(slug: str) -> str:
     The job-complete email might be sent from a worker that hasn't
     imported the tool adapter modules; keep this self-contained.
     """
+    # All 14 registered slugs, copied from tools.base.all_adapters() at
+    # edit time rather than imported -- the docstring above explains why
+    # the runtime import is avoided. It previously held five entries, one
+    # of which ("proteinmpnn") is not a slug any tool uses, so nine tools
+    # were emailing customers their raw slug: "Your mpnn run is done",
+    # "Your esmfold2-design run finished with no candidates".
     labels = {
+        "af2": "AlphaFold2",
         "bindcraft": "BindCraft",
-        "rfantibody": "RFantibody",
+        "boltz2": "Boltz-2",
         "boltzgen": "BoltzGen",
+        "colabfold": "ColabFold",
+        "esmfold": "ESMFold",
+        "esmfold2-design": "ESMFold2 design",
+        "iggm": "IgGM",
+        "mpnn": "ProteinMPNN",
+        "opendde": "OpenDDE co-folding",
+        "proteina": "Proteina-Complexa",
         "pxdesign": "PXDesign",
-        "proteinmpnn": "ProteinMPNN",
+        "rfantibody": "RFantibody",
+        "rfdiffusion": "RFdiffusion",
     }
     return labels.get(slug, slug)
 

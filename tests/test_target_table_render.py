@@ -263,8 +263,13 @@ def test_single_tool_headers_keep_data_col_so_sorting_still_works():
 # ---------------------------------------------------------------------------
 
 def test_multi_tool_headers_are_the_seven_fixed_columns():
+    # "Structure", not "PDB": the column serves .cif for most boltzgen and
+    # opendde rows. What this pins is the fixed SET of seven and its order,
+    # which the rename does not touch.
     table = _parse(_multi_tool_table())
-    assert table.header_text == ["#", "★", "Tool", "Score", "Pctile", "3D", "PDB"]
+    assert table.header_text == [
+        "#", "★", "Tool", "Score", "Pctile", "3D", "Structure",
+    ]
 
 
 def test_single_tool_renders_its_own_metric_columns():

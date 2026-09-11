@@ -393,7 +393,7 @@
   <div class="cand-export-btns">
     <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-primary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
     <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">FASTA</a>
-    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">PDBs (ZIP)</a>
+    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Structures (ZIP)</a>
     {# "Export starred only" — the star's payoff for a user who never contacts
        Ranomics, which is what turns it from a lab-submission control into a
        general shortlist.
@@ -509,7 +509,7 @@
         {% endfor %}
         {% endif %}
         <th style="width:4.5rem;">3D</th>
-        <th style="width:4.5rem;">PDB</th>
+        <th style="width:4.5rem;">Structure</th>
       </tr>
     </thead>
     <tbody>
@@ -830,10 +830,12 @@
           <td>
             {% if has_pdb %}
               {% if use_url %}
+              {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
+                            if '.' in pdb_key else 'pdb' %}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
-                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+                 style="padding:.2rem .5rem;font-size:.8rem;">.{{ _ext }}</a>
               {% else %}
               <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
                  download="{{ pdb_key }}"
