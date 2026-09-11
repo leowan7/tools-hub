@@ -32,9 +32,12 @@ premise, so an example that stops carrying it fails loudly here instead of
 leaving every assertion below hollow.
 
 EVERY BEHAVIOURAL CHECK GOES THROUGH ``send_job_complete_email`` WITH THE
-TRANSPORT CAPTURED and reads the two bodies a customer receives. (The premise
-test is the exception: its subject is the fixture, so it reads the JSON off disk
-and calls ``judge`` directly.) The defect lived in the
+TRANSPORT CAPTURED and reads the two bodies a customer receives, with two
+exceptions, both narrow and both flagged where they sit: the premise test,
+whose subject is the fixture, reads the JSON off disk and calls ``judge``
+directly; and one assertion pins the disclosure slot's exact string, because
+equality is the only check that pins a fixed string and a membership test over
+the body admits any suffix. The defect lived in the
 wiring, not in any one function: the record is chosen in ``shared.jobs``, judged
 in ``shared.score_legends``, assembled in ``shared.email`` and formatted in two
 templates. A function-level test of the chooser stays green while the context
@@ -579,8 +582,10 @@ def test_the_mail_says_so_when_it_is_not_leading_with_the_first_design():
     a single run's rows from the stored ``rank`` field, which is 0-based on
     this tool -- so a mail saying "design 2 of 2" would send the reader to a
     page labelling those rows 0 and 1. A positional count has the same problem
-    from the other side. The assertion below therefore forbids DIGITS in the
-    disclosure, not merely the wrong ones.
+    from the other side. The assertion below therefore pins the slot's EXACT
+    wording, which admits one string and so rejects every count. The
+    delivered body is not swept for digits -- a count added in the template,
+    beside the interpolation, is not caught here.
     """
     payload = _sent(_job())
     bodies = _bodies(payload)
@@ -730,3 +735,15 @@ def test_a_ranked_candidates_list_still_renders_without_a_bar():
             f"the {part} body dropped the callout for a ranked candidate list"
         )
         assert "0.880" in body, body
+        # THE POSITION/STORED-RANK DISCRIMINATOR, and the only one. This
+        # fixture stores ``rank: 1`` on the design at INDEX 0 -- bindcraft
+        # numbers from 1 -- so reading the stored field instead of the
+        # position makes the mail tell a customer with ONE design that it is
+        # not the first one listed. Every other test passes under that
+        # mutation: no other fixture's stored rank differs from its index in
+        # a way that reaches this line.
+        assert "not the first" not in body, (
+            f"the {part} body read the stored rank field rather than the "
+            f"position, and says a design that IS the only one listed is "
+            f"not the first: {body!r}"
+        )
