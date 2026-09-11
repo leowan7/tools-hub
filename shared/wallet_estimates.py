@@ -434,11 +434,14 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # ~3650 s of a 5400 s session — so past that point a seed bills flat and
         # Ranomics absorbs the rest. absolute_cap ($1000) still exceeds the
         # N_SEEDS_MAX=64 job ceiling (64 x $15 = $960). Historical p90 replaces
-        # the 2400 s bootstrap after >=20 runs. NOTE that will RAISE this
-        # tool's displayed estimate, not lower it: the only two recorded runs
-        # are 3185 s and 3233 s, both far above 2400. (The generic 'p90 refines
-        # the estimate down' framing used elsewhere in this file was written
-        # for tools whose bootstrap over-estimates; this one under-estimates.) WAS UNREGISTERED -> the
+        # the 2400 s bootstrap after >=20 runs. Which DIRECTION it moves the
+        # displayed estimate is not knowable yet, and an earlier draft of this
+        # comment asserted it would rise. It depends on the batch-size mix of
+        # those 20 runs: the only two recorded are batch_size=6 at 3185 s and
+        # 3233 s, well ABOVE the bootstrap, but the form's default is batch 3,
+        # interpolated at ~1500-1800 s, BELOW it. So the generic 'p90 refines
+        # the estimate down' framing used elsewhere in this file may or may not
+        # hold here. WAS UNREGISTERED -> the
         # atomic tier fell to the $0.10 / $10 no-spec default and under-held on
         # a max multi-seed run.
         #

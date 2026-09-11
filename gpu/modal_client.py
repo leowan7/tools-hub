@@ -249,12 +249,15 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # Nothing is repriced by this edit, but NOT for the reason an earlier draft
     # gave. The note at the head of this map says these values ARE used for
     # credit pre-authorisation, and the rfdiffusion block below names two
-    # value-carrying readers: compute_campaigns._campaign_container_seconds and
-    # scripts/calibration/poll_results.py. Both are unreachable for THIS tool in
-    # particular — each asks for preset "pilot", esmfold2-design has no "pilot"
-    # row, and it is not in compute_campaigns.SUPPORTED_TOOLS — so ``submit``'s
-    # non-zero check is the only live reader here, and the row is corrected so
-    # the next person sizing this tool does not reason from a falsified number.
+    # value-carrying readers. Neither can read the rows below, but for two
+    # DIFFERENT reasons, and an earlier draft lumped them together:
+    # compute_campaigns._campaign_container_seconds is genuinely unreachable
+    # (every call site is gated on SUPPORTED_TOOLS, which omits this tool);
+    # scripts/calibration/poll_results.py IS reached with this slug, but asks
+    # for preset "pilot", which has no row here, so it gets 0 and its
+    # slow-success check no-ops. So ``submit``'s non-zero check is the only
+    # live reader of these two rows, and they are corrected so the next person
+    # sizing this tool does not reason from a falsified number.
     ("esmfold2-design", "minibinder"): 5400,
     ("esmfold2-design", "scfv"):       5400,
     # IgGM antibody/nanobody design (diffusion) on A100-40GB. Canary-measured:

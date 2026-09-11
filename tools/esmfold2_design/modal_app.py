@@ -124,7 +124,10 @@ _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 #   * A cancelled job, or one whose orchestrator times out, does NOT stop its
 #     children: run_tool spawns them and never reaps them, and only the
 #     orchestrator's call id is stored, so nothing downstream can either. The
-#     user is fully refunded and Ranomics absorbs the whole bill — now up to
+#     children bill on; the job eventually terminalises via cron/sweep_stuck
+#     _jobs.py (not via the status poll, which ignores the "error" status that
+#     a Modal timeout produces) and lands in a refunded failure class. So the
+#     user pays nothing and Ranomics absorbs the whole bill — now up to
 #     64 x 5400 s = $835 of raw H100, against $557 at 3600 s. Pre-existing;
 #     this raise makes it 1.5x worse.
 #

@@ -39,10 +39,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # Every spec carrying ``worst_case_gpu_seconds`` must appear here; the test
 # below fails if one does not, so a new fixed-container tool cannot register a
 # floor with nothing pinning it to a container.
-# Names this file asserts against. Binding one in a form the source reader
-# cannot follow is an error here, not a silent miss.
-_GUARDED_NAMES = ("_MAX_SESSION_S", "_ORCHESTRATOR_TIMEOUT_S")
-
 _SESSION_CAP_SOURCE = {
     "af2": "af2",
     "alphafold2": "af2",  # historic alias, same container
@@ -68,109 +64,161 @@ def _max_billable(slug: str, params: dict, container_seconds: float, ratio: int)
     return min(charge, cap).quantize(Decimal("0.0001"))
 
 
-def _module_constants(path: Path) -> dict[str, int]:
-    """Every module-level ``NAME = <int expression>`` in ``path``.
+class _ModuleReader:
+    """Resolves ``timeout=`` expressions out of a Modal app's SOURCE.
 
     Read rather than imported, following ``tests/test_gpu_class_drift.py``,
     which reads ``_GPU`` out of these same files: importing a Modal app runs its
     decorators.
 
-    Any OTHER way of binding a guarded name is refused rather than ignored. A
-    reader that only recognises ``ast.Assign`` treats ``_MAX_SESSION_S += 1800``,
-    ``_MAX_SESSION_S: int = 10800``, a tuple target, a two-target chain, a
-    ``globals()[...]`` write, and any binding nested inside ``if``/``try`` as
-    INVISIBLE: the runtime value moves and the guard goes on reporting the old
-    one. Each of those was demonstrated to keep the whole suite green.
+    Reading source means the guard can be lied to, and three rounds of review
+    found ways to do it. The defence is that the set of names this trusts is
+    DERIVED from the expression under test, not listed in advance:
+    ``timeout=_WORKER_TIMEOUT_S`` makes ``_WORKER_TIMEOUT_S`` guarded, and so
+    does every name it in turn resolves through. For each such name exactly one
+    plain module-level ``NAME = <int expr>`` must exist. Anything else fails
+    LOUDLY rather than resolving to a stale value:
+
+    * a second module-level assignment, INCLUDING one this reader cannot
+      evaluate -- ``_MAX_SESSION_S = 16200.0`` or
+      ``= int(os.environ.get("X", "16200"))`` both used to be skipped as
+      "not an int expression" and left the earlier value standing while the
+      decorator, evaluated later, saw the new one;
+    * ``+=``, an annotated assignment, a tuple target, a multi-target chain, a
+      ``globals()[...]`` write, or any binding nested inside ``if``/``try``.
+
+    Every one of those was demonstrated to move the real container timeout with
+    the entire suite green.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    consts: dict[str, int] = {}
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        try:
-            value = _eval_int(node.value, consts)
-        except ValueError:
-            continue
-        assert target.id not in _GUARDED_NAMES or target.id not in consts, (
-            f"{path}: {target.id} is assigned twice at module level. This guard "
-            f"reads source, so the second one makes it report a value the "
-            f"container may not use."
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.tree = ast.parse(path.read_text(encoding="utf-8"))
+        self._plain: dict[str, list[ast.AST]] = {}
+        self._unreadable: dict[str, int] = {}
+        for node in self.tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                self._plain.setdefault(node.targets[0].id, []).append(node.value)
+        for node in ast.walk(self.tree):
+            for name, lineno in _unreadable_targets(node, self.tree):
+                self._unreadable.setdefault(name, lineno)
+
+    def resolve(self, expr: ast.AST) -> int:
+        """Evaluate ``expr`` to an int, vetting every name it depends on."""
+        for name in sorted(_names_in(expr)):
+            self._vet(name)
+        return self._eval(expr)
+
+    def _vet(self, name: str, _seen: tuple[str, ...] = ()) -> None:
+        assert name not in _seen, f"{self.path}: {name} is defined circularly"
+        bindings = self._plain.get(name, [])
+        assert bindings, (
+            f"{self.path}: a timeout expression depends on {name}, which has no "
+            f"plain module-level assignment this guard can read."
         )
-        consts[target.id] = value
-    _refuse_unreadable_rebinds(tree, path)
-    return consts
-
-
-def _refuse_unreadable_rebinds(tree: ast.Module, path: Path) -> None:
-    """Fail if a guarded name is bound in a form :func:`_module_constants` misses."""
-    for node in ast.walk(tree):
-        names: list[str] = []
-        if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
-            if isinstance(node.target, ast.Name):
-                names = [node.target.id]
-        elif isinstance(node, ast.Assign):
-            nested = node not in tree.body
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    if nested or len(node.targets) > 1:
-                        names.append(t.id)
-                elif isinstance(t, ast.Tuple):
-                    names += [e.id for e in t.elts if isinstance(e, ast.Name)]
-                elif isinstance(t, ast.Subscript):
-                    key = t.slice
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                        names.append(key.value)
-        clashes = sorted(set(names) & set(_GUARDED_NAMES))
-        assert not clashes, (
-            f"{path}:{getattr(node, 'lineno', '?')}: {clashes} rebound in a form "
-            f"this source reader cannot follow. Keep these as one plain "
-            f"module-level assignment, or this guard silently reads a stale value."
+        assert len(bindings) == 1, (
+            f"{self.path}: {name} is assigned {len(bindings)} times at module "
+            f"level. This guard reads source, so a later binding would leave it "
+            f"reporting a value the container does not use."
         )
+        assert name not in self._unreadable, (
+            f"{self.path}:{self._unreadable[name]}: {name} is rebound in a form "
+            f"this source reader cannot follow. Keep it as one plain "
+            f"module-level assignment."
+        )
+        for inner in sorted(_names_in(bindings[0])):
+            self._vet(inner, _seen + (name,))
 
+    def _eval(self, node: ast.AST) -> int:
+        """Arithmetic over vetted names.
 
-def _eval_int(node: ast.AST, consts: dict[str, int]) -> int:
-    """Evaluate an int expression over already-seen module constants.
-
-    Arithmetic is allowed on purpose -- ``90 * 60`` and ``_MAX_SESSION_S + 15 * 60``
-    are both legitimate ways to write these, and ``ast.literal_eval`` rejects
-    both. ``max``/``min`` are allowed for the same reason: the subprocess budget
-    is written ``max(60, _MAX_SESSION_S - 30)``.
-
-    Names resolve ONLY out of ``consts`` and the only callables recognised are
-    the two builtins matched by name, so nothing here reaches into the module
-    under test or executes any of it.
-    """
-    if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        return node.value
-    if isinstance(node, ast.Name) and node.id in consts:
-        return consts[node.id]
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        value = _eval_int(node.operand, consts)
-        return value if isinstance(node.op, ast.UAdd) else -value
-    if isinstance(node, ast.BinOp):
-        left = _eval_int(node.left, consts)
-        right = _eval_int(node.right, consts)
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.FloorDiv):
-            return left // right
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in ("max", "min")
-        and not node.keywords
-    ):
-        args = [_eval_int(a, consts) for a in node.args]
-        if args:
+        ``90 * 60`` and ``_MAX_SESSION_S + 15 * 60`` are both legitimate ways to
+        write these, and ``ast.literal_eval`` rejects both. ``max``/``min`` are
+        allowed because the subprocess budget is ``max(60, _MAX_SESSION_S - 30)``.
+        Names resolve only from the vetted module bindings and the only callables
+        recognised are those two builtins matched by name, so nothing here
+        reaches into or executes the module under test.
+        """
+        if isinstance(node, ast.Constant):
+            assert isinstance(node.value, int) and not isinstance(node.value, bool), (
+                f"{self.path}: timeout literal {node.value!r} is not an int; a "
+                f"float here would be read by this guard but is not what these "
+                f"constants are declared as."
+            )
+            return node.value
+        if isinstance(node, ast.Name):
+            return self._eval(self._plain[node.id][0])
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = self._eval(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp):
+            left, right = self._eval(node.left), self._eval(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.FloorDiv):
+                return left // right
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("max", "min")
+            and not node.keywords
+            and node.args
+        ):
+            args = [self._eval(a) for a in node.args]
             return max(args) if node.func.id == "max" else min(args)
-    raise ValueError("not an int expression")
+        raise AssertionError(
+            f"{self.path}: timeout expression {ast.unparse(node)!r} is not "
+            f"arithmetic this guard can evaluate. Keep these expressions simple "
+            f"enough to read, or the guard silently stops guarding."
+        )
+
+
+def _names_in(expr: ast.AST) -> set[str]:
+    """Every ``ast.Name`` load in ``expr``, excluding the max/min callees."""
+    out = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+    for node in ast.walk(expr):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("max", "min")
+        ):
+            out.discard(node.func.id)
+    return out
+
+
+def _unreadable_targets(node: ast.AST, tree: ast.Module) -> list[tuple[str, int]]:
+    """Names ``node`` binds in a form :class:`_ModuleReader` cannot follow."""
+    lineno = getattr(node, "lineno", 0)
+    if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        if isinstance(node.target, ast.Name):
+            return [(node.target.id, lineno)]
+        return []
+    if not isinstance(node, ast.Assign):
+        return []
+    found: list[tuple[str, int]] = []
+    nested = node not in tree.body
+    for target in node.targets:
+        if isinstance(target, ast.Name):
+            if nested or len(node.targets) > 1:
+                found.append((target.id, lineno))
+        elif isinstance(target, ast.Tuple):
+            found += [(e.id, lineno) for e in target.elts if isinstance(e, ast.Name)]
+        elif isinstance(target, ast.Subscript):
+            key = target.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                found.append((key.value, lineno))
+    return found
 
 
 def _gpu_container_timeout(path: Path) -> int:
@@ -178,22 +226,26 @@ def _gpu_container_timeout(path: Path) -> int:
 
     THIS, not ``_MAX_SESSION_S``, is what bounds the container. Guarding only the
     constant left ``@app.function(timeout=_MAX_SESSION_S * 3)`` passing the whole
-    suite -- a 3x under-hold, because the wallet floor still priced 5400 s while
-    Modal allowed 16200. The constant is read only to resolve this expression,
-    and the two must agree.
+    suite: a 3x under-hold, because the wallet floor still priced 5400 s while
+    Modal allowed 16200. The constant is still required to AGREE with this, so
+    that every comment and wallet value written against ``_MAX_SESSION_S`` stays
+    true of the container.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    consts = _module_constants(path)
+    reader = _ModuleReader(path)
     timeouts: dict[str, int] = {}
-    for node in tree.body:
+    for node in reader.tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for dec in node.decorator_list:
             if not isinstance(dec, ast.Call):
                 continue
             kwargs = {kw.arg: kw.value for kw in dec.keywords}
+            assert None not in kwargs, (
+                f"{path}: {node.name}'s decorator uses **kwargs, so this guard "
+                f"cannot see what Modal is handed."
+            )
             if "gpu" in kwargs and "timeout" in kwargs:
-                timeouts[node.name] = _eval_int(kwargs["timeout"], consts)
+                timeouts[node.name] = reader.resolve(kwargs["timeout"])
     assert timeouts, (
         f"{path}: no @app.function passing both gpu= and timeout=; this guard "
         f"is reading nothing."
@@ -204,7 +256,7 @@ def _gpu_container_timeout(path: Path) -> int:
         f"worst_case_gpu_seconds can mirror only one."
     )
     seconds = distinct.pop()
-    declared = consts.get("_MAX_SESSION_S")
+    declared = reader.resolve(ast.Name(id="_MAX_SESSION_S", ctx=ast.Load()))
     assert seconds == declared, (
         f"{path}: the GPU container is handed timeout={seconds} s while "
         f"_MAX_SESSION_S is {declared}. Every comment and every wallet constant "
@@ -453,8 +505,8 @@ def _esmfold2_timeouts() -> dict[str, int]:
     a real inversion.
     """
     path = _REPO_ROOT / "tools" / "esmfold2_design" / "modal_app.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    consts = _module_constants(path)
+    reader = _ModuleReader(path)
+    tree = reader.tree
 
     worker = _gpu_container_timeout(path)
 
@@ -471,7 +523,7 @@ def _esmfold2_timeouts() -> dict[str, int]:
                     f"{path}: more than one non-GPU @app.function passes a "
                     f"timeout; this guard cannot tell which is the orchestrator."
                 )
-                orchestrator = _eval_int(kwargs["timeout"], consts)
+                orchestrator = reader.resolve(kwargs["timeout"])
     assert orchestrator is not None, (
         f"{path}: no CPU-only @app.function with a timeout=; the orchestrator "
         f"bound this test claims to check is not being read."
@@ -500,7 +552,7 @@ def _esmfold2_timeouts() -> dict[str, int]:
         f"cannot say which bounds the run."
     )
     return {
-        "subprocess": _eval_int(budgets[0], consts),
+        "subprocess": reader.resolve(budgets[0]),
         "worker": worker,
         "orchestrator": orchestrator,
     }

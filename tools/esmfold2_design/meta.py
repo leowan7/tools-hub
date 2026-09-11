@@ -30,12 +30,14 @@ from typing import Optional
 
 
 # Wall clock is driven by BATCH SIZE, not by the preset: a run is roughly
-# linear in it. These figures are the default batch of 3. The only measured
-# points are batch_size=6 at 3185 s and 3233 s (docs/VALIDATION-LOG.md); the
-# batch-1 anchor (~450 s) is asserted in that file's prose with no run row, so
-# the midpoint below is INTERPOLATED, not measured, and is given as a range.
-# The previous "~10"/"~12" came from the same falsified "one fixed-length
-# pass" premise that mis-sized the container ceiling.
+# linear in it. These figures are the default batch of 3 and are INTERPOLATED,
+# not measured -- the user-facing strings below say "approx" but cannot carry
+# this caveat, so it lives here. The only measured points are batch_size=6 at
+# 3185 s and 3233 s, BOTH ON THE scfv PRESET (docs/VALIDATION-LOG.md);
+# minibinder has never been run, and its row below is the scfv figure reused.
+# The batch-1 anchor (~450 s) is asserted in that file's prose with no run row
+# behind it. The previous "~10"/"~12" came from the falsified "one fixed-length
+# pass" premise that also mis-sized the container ceiling.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "minibinder": {"typical_minutes": "~25 to 30"},
     "scfv": {"typical_minutes": "~25 to 30"},
@@ -170,11 +172,12 @@ about: dict = {
             "explanation": (
                 "Designs produced per gradient run (1 to 6). They share "
                 "one H100 container, so a higher batch adds candidates "
-                "without adding cost &mdash; but it does add TIME: the "
-                "run is roughly linear in batch size, measured at about "
-                "53 min for a batch of 6 against about 7 min at 1. "
-                "(This field used to claim a batch of 6 was free of "
-                "wall-clock; two production runs disproved that.) "
+                "without adding cost &mdash; but it does add TIME: a "
+                "batch of 6 was measured at about 53 min on the scFv "
+                "preset, against roughly 7 to 8 min for a single "
+                "design, so treat wall-clock as roughly linear in "
+                "this field. (It used to claim a batch of 6 was free "
+                "of wall-clock; two production runs disproved that.) "
                 "<strong>Default 3.</strong> Single-design runs often "
                 "return <code>drop</code> after the iPTM and pI gates. "
                 "Bump to 6 for first-pass exploration when you can wait "
