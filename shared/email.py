@@ -438,10 +438,17 @@ def _top_candidate_summary(
     # below"), and this mail says the same thing in its own words. A name
     # needs no arithmetic and no per-tool base.
     #
-    # Identity, not equality: two records can carry equal dicts. Falsy covers
-    # both position 0 (the pick IS first -- nothing to disclose, the condition
-    # /jobs/compare gates its own line on) and None, which is unreachable
-    # because ``headline_candidate`` returns an element of ``records``.
+    # Identity, matching blueprints/jobs.py, which computes the same offset for
+    # /jobs/compare. Equality would give the same answer everywhere reachable
+    # here -- ``headline_candidate`` returns the FIRST record satisfying its
+    # predicate, so an earlier record equal to the pick would have been the
+    # pick -- and no test distinguishes them. Identity is used because the
+    # sibling does, not because a case is known.
+    #
+    # Falsy covers both position 0 (the pick IS first -- nothing to disclose,
+    # the condition /jobs/compare gates its own line on) and None, which is
+    # unreachable because ``headline_candidate`` returns an element of
+    # ``records``.
     position = next((i for i, rec in enumerate(records) if rec is top), None)
     position_note = "not the first design listed" if position else ""
 

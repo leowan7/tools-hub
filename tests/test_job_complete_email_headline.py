@@ -187,6 +187,10 @@ def test_the_example_payload_still_carries_the_defect():
     assert "%.3f" % first["ipTM"] == DROP_IPTM, first["ipTM"]
     assert "%.3f" % second["ipTM"] == PASS_IPTM, second["ipTM"]
     assert cands[0]["pdb_key"] == DROP_PDB, cands[0]["pdb_key"]
+    # 0-BASED, which two docstrings argue from: the disclosure carries no
+    # count precisely because the results table numbers these rows from this
+    # field. Re-captured 1-based, those arguments quietly become false.
+    assert [c["rank"] for c in cands] == [0, 1], [c["rank"] for c in cands]
     assert cands[1]["pdb_key"] == PASS_PDB, cands[1]["pdb_key"]
 
     # The mode is a fact ON THE RESULT. It is what lets this mail resolve a bar
@@ -586,12 +590,12 @@ def test_the_mail_says_so_when_it_is_not_leading_with_the_first_design():
             f"the {part} body leads with a design the results page does not "
             f"and says nothing about it: {body!r}"
         )
-        # THE SLOTS ARE IDENTIFIED, not merely both present. Every other
-        # assertion here is a substring search over the whole body, so
-        # swapping this note with ``top_pdb_key`` -- putting it inside the
-        # parenthetical the template documents as a filename -- reads
-        # identically to them. The filename comes first, in its own
-        # parentheses; the note follows.
+        # ORDER, which catches the two RETURN VALUES being swapped -- that
+        # renders the note where the filename belongs and reads identically
+        # to every membership assertion here. It does NOT catch a TEMPLATE
+        # that moves the note inside the filename's parentheses: the
+        # filename still comes first. Nothing pins that, and the slot's
+        # exact value below is what makes the wording itself safe.
         assert body.index(PASS_PDB) < body.index("not the first"), (
             f"the {part} body renders the disclosure in the filename slot: "
             f"{body!r}"
@@ -603,16 +607,25 @@ def test_the_mail_says_so_when_it_is_not_leading_with_the_first_design():
             f"identifies: {body!r}"
         )
 
-    # NO DIGIT ANYWHERE IN THE DISCLOSURE. A number here would have to agree
-    # with the results page's own numbering, and cannot: see the docstring.
-    note = "not the first design listed"
-    for part, body in bodies.items():
-        after = body[body.index(note):body.index(note) + len(note) + 12]
-        assert not any(ch.isdigit() for ch in after), (
-            f"the {part} body numbers the design. The results page numbers "
-            f"that row from the stored rank field, 0-based on this tool, so "
-            f"any count here disagrees with the page it links to: {after!r}"
-        )
+    # THE SLOT'S EXACT VALUE, not a substring of the body. Every assertion
+    # above is a membership test, so any suffix survives them -- "not the
+    # first design listed in the CSV export" passed, and so did a count placed
+    # BEFORE the phrase or more than a few characters after it. An earlier
+    # version of this check sliced a 12-character window after the phrase and
+    # forbade digits in it; three ways of reinstating a number went straight
+    # through, and 11 of the 12 characters it examined were the caption.
+    #
+    # This is the one unit-level assertion in the file, deliberately: the slot
+    # is a fixed string, and equality is the only check that pins a fixed
+    # string. The delivered-body assertions above still hold the wiring.
+    assert email_mod._top_candidate_summary(job=_job(), tone="success")[5] == (
+        "not the first design listed"
+    ), (
+        "the disclosure slot's wording changed. It may not carry a count: the "
+        "results table numbers a single run's rows from the stored rank "
+        "field, whose base differs by tool, so any number here can disagree "
+        "with the page this mail links to."
+    )
 
 
 def test_no_position_line_when_the_first_design_is_the_one_shown():
@@ -634,6 +647,7 @@ def test_no_position_line_when_the_first_design_is_the_one_shown():
             f"the {part} body discloses a position for a design that IS the "
             f"first one listed: {body!r}"
         )
+
 
 def test_a_failed_run_gets_no_endorsement():
     """The tone gate, which nothing in this repo held.
