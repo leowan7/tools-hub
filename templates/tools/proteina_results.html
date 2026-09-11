@@ -1,9 +1,14 @@
 {# Proteina-Complexa results partial — included by job_detail.html on status=succeeded.
-   One shard's designs; the campaign detail page aggregates survivors across all
-   shards (global top-K + diversity). Columns map to keys the pipeline writes into
-   each candidate's `scores` dict: a composite total reward, AF2 confidence
-   (protein binders), the RF3 score (ligand / motif), binder self-consistency
-   RMSD, and the diversity cluster id. Absent metrics render as "—" per variant. #}
+   One shard's designs; the campaign detail page pools survivors across all shards
+   into one globally ranked table (shared.compute_campaigns.aggregate_campaign_candidates
+   — a rank, with no diversity or clustering step). Columns map to keys the pipeline
+   writes into each candidate's `scores` dict: a composite total reward, AF2 confidence
+   (protein binders), the RF3 score (ligand / motif), and binder self-consistency RMSD.
+   Absent metrics render as "—" per variant.
+
+   `cluster_id` IS DELIBERATELY NOT A COLUMN. It was one until 2026-09-10 and was
+   empty on all 17,024 designs anyone has measured, with no code path able to fill
+   it — see the note in shared/result_columns.py. #}
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output     = job.result or {} %}
@@ -14,7 +19,7 @@
    not iterable". Both writers emit a list today; this is the guard, not a
    report of a live failure. #}
 {% set candidates = output.get('candidates') or [] %}
-{% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd', 'cluster_id'] %}
+{% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd'] %}
 
 {# WHICH RESIDUE NUMBERING THE DOWNLOADED FILES CARRY. Upstream renumbers every
    design chain to 1..N, so an operator who asked for hotspot A241 can get back
