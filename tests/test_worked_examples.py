@@ -1047,10 +1047,14 @@ class TestExampleNumbersComeFromThePayload:
         assert (statistics.median(col("af2_plddt", cands[:12]))
                 > statistics.median(col("af2_plddt", cands[-12:])))
 
-        # rf3_score and cluster_id are ABSENT, not zero. The narration
-        # tells the reader that column is empty because RF3 was off, and a
-        # stub value of 0 would render a confident "0.00" instead of the
-        # em dash — see templates/components/candidate_table.html.
+        # rf3_score is ABSENT, not zero. The narration tells the reader that
+        # column is empty because this preset does not run RF3, and a stub
+        # value of 0 would render a confident "0.00" instead of the em dash —
+        # see templates/components/candidate_table.html.
+        #
+        # cluster_id is absent too and is NOT narrated, because it is no longer
+        # a rendered column (shared/result_columns.py, 2026-09-10). The key set
+        # below is the whole check that it stays out of the payload.
         for c in cands:
             assert set(c["scores"]) == {
                 "total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd",

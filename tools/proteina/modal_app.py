@@ -17,8 +17,11 @@ and writes ``/tmp/smoke_results.json``. The wrapper returns that file inline via
 One CONTAINER == one search SHARD. The campaign engine
 (``shared/compute_campaigns.py``) fans ``num_designs`` out across many of these
 containers, each with a distinct ``++seed`` (generate.py: ``seed = cfg.seed +
-job_id`` makes them independent), and the hub does the global cross-shard top-K
-+ diversity clustering. This app never runs multi-GPU / multi-shard itself.
+job_id`` makes them independent), and the hub pools their candidates into one
+globally ranked table (``compute_campaigns.aggregate_campaign_candidates``).
+That is a RANK and nothing else — it applies no diversity or clustering step,
+which this line claimed until 2026-09-10. This app never runs multi-GPU /
+multi-shard itself.
 
 GPU: A100-80GB (AF2 + RF3 co-resident with the flow-matching generator is
 heavy; 40GB risks OOM). ``_MAX_SESSION_S = 7200`` (2 h) physically caps a

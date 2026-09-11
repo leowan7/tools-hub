@@ -39,7 +39,51 @@
                           the two this comment used to carry were both stale
                           within a month, in the file the test sends readers
                           to check them against.
+     top_score_verdict    What the tool's own bar says about the design above,
+                          from shared.score_legends.verdict_text -- the single
+                          renderer. Empty when the tool declares no bar, or
+                          declares a mode-scoped one whose mode did not resolve;
+                          never the bare word "Meets".
+
+                          THE SAME SENTENCE AS /jobs/compare, which is the only
+                          other caller that passes a preset
+                          (jobs_compare.html:296).
+                          components/candidate_table.html:705 calls verdict_text
+                          with NO preset, so on a mode-scoped tool it renders ""
+                          there, and the esmfold2-design results page carries no
+                          derived bar COLUMN. It is not the only other place a
+                          verdict for this tool is stated: that same results
+                          page composes one locally at :347 ("No design in this
+                          run clears the bar stated above ...") without calling
+                          verdict_text. Two renderings of one judgement, and a
+                          reworded bar reaches them separately.
+
+                          It is a SEPARATE variable from top_score_caption and
+                          must stay one, because
+                          test_the_caption_is_the_legend_and_nothing_invented
+                          asserts caption == legend["explanation"] as string
+                          equality. NOT because of the _SLOT_LIMIT/_CAVEAT_LIMIT
+                          ceilings beside it: those measure SCORE_LEGENDS and
+                          email_caption directly and would not notice. Nothing
+                          bounds the length of THIS line.
      top_pdb_key          PDB filename of top design; empty if none
+     top_position         "not the first design listed", when the design shown
+                          is NOT the first record stored. Empty otherwise --
+                          the same condition /jobs/compare gates its equivalent
+                          line on. Deriving the headline means this mail can
+                          lead with a design the results page does not, and
+                          headline_candidate's docstring puts that disclosure
+                          on the caller.
+
+                          NO COUNT, and two drafts of this carried one. The
+                          results table numbers a single run's rows from the
+                          stored `rank` field, whose base differs by tool, so
+                          any number here can disagree with the page this mail
+                          links to. The tool's own results page names the fact
+                          instead ("not the top row below") and so does this.
+                          The per-tool base census that used to sit here is in
+                          templates/jobs_compare.html, which states it over the
+                          tools it was actually measured on.
      next_step_url        URL of /tools/<dest_tool>; empty if no handoff
      next_step_label      Tool label, e.g. "ColabFold"; empty if no handoff
 #}
@@ -61,10 +105,22 @@
             ({{ top_pdb_key }})
           </span>
         {% endif %}
+        {% if top_position %}
+          <span style="color:#888;font-size:13px;">{{ top_position }}</span>
+        {% endif %}
       </div>
       {% if top_score_caption %}
         <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.5;">
           {{ top_score_caption }}
+        </div>
+      {% endif %}
+      {# The judgement, under the legend that interprets the number. This
+         callout is an endorsement frame -- "Top design", a green rule -- and
+         on a run where nothing clears the bar the design in it is one that
+         failed, so the frame needs correcting in words. #}
+      {% if top_score_verdict %}
+        <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.5;">
+          {{ top_score_verdict }}
         </div>
       {% endif %}
     </div>
