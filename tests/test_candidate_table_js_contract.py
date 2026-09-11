@@ -363,6 +363,15 @@ _HOOKS = [
     # panel from the design it belongs to.
     (r"contains\('cand-row'\)", "tr.cand-row, which sortTable moves", _ALL,
      _el(tag="tr", cls="cand-row")),
+    # The "#" cell is a POSITION, so renumberRows rewrites it after a sort.
+    # Rename either side and the column silently keeps its pre-sort numbers,
+    # which is how it read before that function existed: one click on a
+    # metric header left the first row of a column headed "#" saying "10".
+    (r"'\.cand-rank-n'", "span.cand-rank-n, the number renumberRows rewrites",
+     _ALL, _el(tag="span", cls="cand-rank-n")),
+    (r"'\.cand-group-row'", "tr.cand-group-row, which renumberRows refuses to "
+     "renumber across", ("target_grouped",),
+     _el(tag="tr", cls="cand-group-row")),
     (r"contains\('viewer-row'\)", "tr.viewer-row, which it moves with it",
      _ALL, _el(tag="tr", cls="viewer-row")),
 

@@ -23,9 +23,11 @@ deliberately skips both macros (its schema is ``sequences``, not
 ``candidates``) and carries its own inline guard keyed on ``example``.
 
 ``TestEveryPartialIsExampleSafe`` verifies that across all fourteen,
-including the thirteen with no payload yet, so the guard is proven
-before it is depended on. ``TestTheDetectorIsNotBlind`` is the positive
-control: the same renders with a REAL job id must still emit the links,
+driving each with a synthetic payload rather than its own, so the guard
+is proven independently of what any tool has captured. (It once said
+"the thirteen with no payload yet"; all fourteen ship one now.)
+``TestTheDetectorIsNotBlind`` is the positive control: the same renders
+with a REAL job id must still emit the links,
 otherwise the scan has gone blind and everything above it is vacuous.
 """
 
@@ -198,9 +200,13 @@ def _render_partial(
 class TestExampleDeclaration:
 
     def test_every_tool_declares_example_explicitly(self, tools_app):
-        """None is a decision — thirteen of fourteen have no captured
-        payload — and each meta.py records which. A missing attribute is
-        an oversight."""
+        """None is a decision — and each meta.py records which. A missing
+        attribute is an oversight.
+
+        This used to say "thirteen of fourteen have no captured payload",
+        which stopped being true as the examples landed: all fourteen
+        declare a truthy EXAMPLE and ship an example/result.json today. The
+        guard is unchanged and still correct; only the count was stale."""
         _, slugs = tools_app
         missing = [s for s in slugs if not hasattr(meta_for(s), "EXAMPLE")]
         assert not missing, f"meta.py declares no EXAMPLE for: {missing}"
@@ -365,12 +371,14 @@ class TestTheDetectorIsNotBlind:
 
 
 class TestEveryPartialIsExampleSafe:
-    """Thirteen of these tools have no EXAMPLE yet. That is the point.
+    """The guard is proven for a tool BEFORE that tool gains a payload.
 
-    The guard lives in two shared macros, so it can be verified for a
-    tool BEFORE that tool gains a payload — which is the difference
-    between shipping the fourteenth example safely and discovering on
-    the public page that its partial was the one nobody guarded.
+    It lives in two shared macros, so it can be verified without one —
+    which is the difference between shipping an example safely and
+    discovering on the public page that its partial was the one nobody
+    guarded. (This opened "Thirteen of these tools have no EXAMPLE yet"
+    when it was written; all fourteen ship one now, and the property is
+    what still matters, not the count.)
     """
 
     def test_no_partial_emits_a_job_scoped_url_under_the_sentinel(
@@ -1313,10 +1321,14 @@ class TestExampleNumbersComeFromThePayload:
         assert (statistics.median(col("af2_plddt", cands[:12]))
                 > statistics.median(col("af2_plddt", cands[-12:])))
 
-        # rf3_score and cluster_id are ABSENT, not zero. The narration
-        # tells the reader that column is empty because RF3 was off, and a
-        # stub value of 0 would render a confident "0.00" instead of the
-        # em dash — see templates/components/candidate_table.html.
+        # rf3_score is ABSENT, not zero. The narration tells the reader that
+        # column is empty because this preset does not run RF3, and a stub
+        # value of 0 would render a confident "0.00" instead of the em dash —
+        # see templates/components/candidate_table.html.
+        #
+        # cluster_id is absent too and is NOT narrated, because it is no longer
+        # a rendered column (shared/result_columns.py, 2026-09-10). The key set
+        # below is the whole check that it stays out of the payload.
         for c in cands:
             assert set(c["scores"]) == {
                 "total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd",
@@ -2957,3 +2969,226 @@ class TestNarrationQuotesTheTable:
             "has stopped. Fine if you meant it -- lower the floor and name "
             "the tool -- but check it was not an accident first"
         )
+
+
+class _RankCells(HTMLParser):
+    """The text of the ``.cand-rank-n`` span in every candidate row.
+
+    Narrower than :class:`_DataCellText` on purpose: that one collects
+    every cell in the document and has no row structure, and the property
+    here is per-row and positional.
+
+    Keyed on the span, not on "the text before the first span in cell 0",
+    which is the only reading available without a hook and infers the
+    number's identity from its position in the markup. That reading goes
+    silently empty the moment anything else moves into the cell -- and the
+    cell already carries two other spans, the "Top" badge and the sub-job
+    tag. ``_rank_column`` turns that silence into a named failure. The
+    span is the same hook
+    static/js/candidate_table.js::renumberRows writes to after a column
+    sort, and tests/test_candidate_table_js_contract.py pins that the JS
+    and the macro still agree on its name.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.cells: list[str] = []
+        self.rows = 0
+        self._in_row = False
+        self._capturing = False
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._in_row = "cand-row" in (dict(attrs).get("class") or "")
+            if self._in_row:
+                self.rows += 1
+        elif tag == "span" and self._in_row:
+            if "cand-rank-n" in (dict(attrs).get("class") or "").split():
+                self._capturing, self._buf = True, []
+
+    def handle_endtag(self, tag):
+        if tag == "span" and self._capturing:
+            self.cells.append(" ".join("".join(self._buf).split()))
+            self._capturing = False
+        elif tag == "tr":
+            self._in_row = False
+
+    def handle_data(self, data):
+        if self._capturing:
+            self._buf.append(data)
+
+
+def _rank_column(html_text: str) -> list[str]:
+    """The "#" column, or a loud failure naming the right cause.
+
+    A table with rows but no ``.cand-rank-n`` in any of them is the hook
+    having gone, not a tool that stopped rendering -- and the difference
+    matters, because the callers below treat an empty column as "this
+    partial renders no candidate table" and skip it. Drop the span from the
+    macro and every column comes back empty, every tool is skipped, and the
+    only thing left to fail is a coverage floor whose message sends the
+    reader looking for a deleted example. Measured: that is exactly what
+    happened under the pre-fix expression, which carried no span.
+    """
+    parser = _RankCells()
+    parser.feed(html_text)
+    assert not (parser.rows and not parser.cells), (
+        f"{parser.rows} candidate rows rendered and not one carries a "
+        ".cand-rank-n span. The macro and this reader disagree about the "
+        "hook; static/js/candidate_table.js::renumberRows writes to the "
+        "same one, so the on-screen numbers have stopped following a sort too"
+    )
+    return parser.cells
+
+
+class TestTheRankColumnIsAPosition:
+    """The "#" column numbers rows 1..n, on every tool's own results table.
+
+    It used to print ``cand.rank`` from the payload, and that field means
+    different things per tool. Measured by rendering the shipped examples
+    before the fix -- eleven of the fourteen render a candidate row at all
+    (colabfold and esmfold take their single-fold branch, mpnn skips the
+    macro) -- three numbered from 0 (boltz2, esmfold2-design, opendde) and
+    six from 1 (bindcraft, boltzgen, proteina, pxdesign, rfantibody,
+    rfdiffusion), so the catalog disagreed with itself about what to call a
+    first design. The remaining two are worse than an offset: on af2 and
+    iggm, rank is a production index -- af2's over its input records,
+    iggm's over its output files -- and the partial re-sorts
+    by score before rendering (templates/tools/af2_results.html:70,
+    templates/tools/iggm_results.html:40), so af2's ten rows rendered
+    0,9,6,1,8,4,7,5,3,2 -- production indices under a "#" heading, on a page
+    whose narration hinges on which row is row one (tools/af2/meta.py:260).
+
+    TWO TESTS, because they fail for different reasons. The first reads
+    today's captured payloads and is what a reader actually sees. The
+    second feeds every partial a payload whose ranks are deliberately
+    0-based AND shuffled, which is the one that still fails if someone
+    reinstates cand.rank and recaptures examples that happen to be
+    1-based. It asserts on thirteen of the fourteen partials -- including
+    colabfold and esmfold, whose own examples render no row -- because a
+    synthetic payload drives them all; mpnn is the fourteenth and renders no
+    ``cand-row`` at all, since it skips the shared macro (see this file's
+    header). mpnn numbers its own table positionally at
+    templates/tools/mpnn_results.html:84 (``loop.index``), which neither
+    test here can see.
+
+    NOT IN SCOPE: the live table a running job streams into
+    (templates/job_detail.html:563) still prints the raw payload rank
+    under the same "#" heading (:231), so a running job can number its rows
+    differently from the finished table that replaces it. Its rows are
+    appended in arrival order and keyed by that value, so it has no stable
+    position to use.
+    """
+
+    # Numbered 0-based and out of order, which is the af2 shape.
+    _SCRAMBLED = [0, 3, 1, 4, 2]
+
+    def _payload(self):
+        rows = []
+        for slot, rank in enumerate(self._SCRAMBLED):
+            row = json.loads(json.dumps(_GENERIC_RESULT["candidates"][0]))
+            row["rank"] = rank
+            row["name"] = f"d{rank}"
+            row["pdb_key"] = f"design_{rank}.pdb"
+            # ASCENDING on slot, against partials that sort DESCENDING
+            # (af2_results.html:70, iggm_results.html:40 both pass
+            # reverse=True), so the rendered order is the reverse of the
+            # input order and the re-sort is actually exercised. Measured:
+            # input 86..90 renders 90..86.
+            #
+            # BOTH VALUES HAVE TO ASCEND, which is the trap here. Feed a
+            # descending series to a descending sort and it is a no-op --
+            # the rendered order equals the input order and the partial's
+            # sort is never exercised at all. The two keys are read by
+            # different partials (mean_plddt by af2, n_epitope_contacts by
+            # iggm), so flipping one back leaves the other still sorting
+            # and the mistake half-invisible.
+            row["mean_plddt"] = 86.0 + slot
+            row["n_epitope_contacts"] = 5 + slot
+            row["scores"] = dict(row["scores"], mean_pLDDT=86.0 + slot)
+            rows.append(row)
+        return dict(_GENERIC_RESULT, candidates=rows, designs=rows)
+
+    def test_every_example_numbers_its_rows_from_one(self, tools_app):
+        """What the reader sees, on the examples that render a table."""
+        flask_app, slugs = tools_app
+        checked = {}
+        for slug, example in sorted(_examples(slugs).items()):
+            if not example:
+                continue
+            path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
+            if not path.exists():
+                continue
+            rendered = _render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=json.loads(path.read_text(encoding="utf-8")),
+            )
+            column = _rank_column(rendered)
+            if not column:
+                continue
+            checked[slug] = column
+            assert column == [str(i) for i in range(1, len(column) + 1)], (
+                f"{slug}: its example's # column reads {column[:12]}, not "
+                f"1..{len(column)}. The column is the row's position in the "
+                "table; if this is printing a payload field again, the tools "
+                "do not agree on what that field means"
+            )
+        # MEASURED, not chosen to pass: eleven of the fourteen examples render
+        # a candidate row today. The three that do not are colabfold and
+        # esmfold (their examples take the standalone single-fold branch) and
+        # mpnn (no shared macro). A floor of 8 would have let three tools drop
+        # out of the real-payload coverage in silence.
+        assert len(checked) >= 11, (
+            f"only {sorted(checked)} rendered a candidate table, so this "
+            "test covers less than it claims. A tool losing its example is "
+            "fine -- lower the floor and say which -- but check first"
+        )
+        # The five whose real example was wrong before the fix. A count alone
+        # would still pass if one of these dropped out and an untouched tool
+        # took its place in the tally.
+        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+            assert slug in checked, (
+                f"{slug}'s example renders no candidate table any more, so "
+                "the tool this test was written for is no longer covered"
+            )
+
+    def test_no_partial_echoes_a_payload_rank(self, tools_app):
+        """The mechanism, on thirteen of the fourteen, not just today's
+        captures.
+
+        Every partial gets ranks 0,3,1,4,2. Any tool whose column comes
+        back holding a 0, or reading in that order, is printing the
+        payload again. mpnn renders no ``cand-row`` and is skipped; see the
+        class docstring.
+        """
+        flask_app, slugs = tools_app
+        payload = self._payload()
+        checked = {}
+        for slug in slugs:
+            column = _rank_column(_render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=payload,
+            ))
+            if not column:
+                continue
+            checked[slug] = column
+            assert column == [str(i) for i in range(1, len(column) + 1)], (
+                f"{slug}: fed ranks {self._SCRAMBLED}, its # column came "
+                f"back {column}. It is echoing the payload's rank instead "
+                "of numbering the rows it actually rendered"
+            )
+        assert len(checked) >= 13, (
+            f"only {sorted(checked)} rendered a candidate row from the "
+            "shared payload. This is meant to reach every partial but mpnn, "
+            "which skips the shared macro (see this file's header); a "
+            "partial that stopped rendering is worth understanding before "
+            "the floor is lowered"
+        )
+        # The five that were wrong before the fix must be among the covered,
+        # or the guard has gone blind on exactly the tools it exists for.
+        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+            assert slug in checked, (
+                f"{slug} rendered no candidate row from the shared payload, "
+                "so this guard no longer covers the tool it was written for"
+            )

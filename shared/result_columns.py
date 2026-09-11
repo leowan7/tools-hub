@@ -27,9 +27,35 @@ _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
     "boltzgen": ["ipTM", "pLDDT", "refolding_rmsd", "against_bar"],
     "pxdesign": ["ipTM", "pLDDT", "pAE", "against_bar"],
     "rfantibody": ["ipAE", "pLDDT", "pAE", "against_bar"],
+    # NO ``cluster_id`` HERE, and it is not an omission. It was listed until
+    # 2026-09-10, and the renderer prints a null as an em dash
+    # (templates/components/candidate_table.html:761 — NOT :789, which is the
+    # branch for a non-null unparseable value; that file draws the distinction
+    # at :785), so the column was a header over nothing.
+    #
+    # 17,024 of 17,024 candidates carry ``"cluster_id": null`` in the
+    # container's own smoke_result.json, across four length-sweep driver runs.
+    # Those went straight from shard_driver.py to Modal and were never
+    # RENDERED — what is measured is the value, not the em dash; an earlier
+    # draft of this comment asserted a rendering that did not happen.
+    #
+    # Jobs stored in the production database were NOT read (that needs
+    # credentials), but nothing could have written one into them either: the
+    # only ingest is ``_pick(row, ("cluster_id",))`` against a column name that
+    # appears in neither reward-CSV header this repo pins (no captured CSV is
+    # committed anywhere, so "no upstream CSV has it" is more than the evidence
+    # carries), and webhooks/modal.py only range-clamps what the container
+    # sent. The precise form is "no code ORIGINATES a value": writes of the key
+    # do exist — a coercion, and several name-only column declarations — so
+    # "every occurrence is a read" would be wrong.
+    #
+    # See the note on ``_SCORE_COLUMNS["cluster_id"]`` in
+    # tools/proteina/run_pipeline.py for where upstream's cluster ids actually
+    # live and why they never arrive. A column header is a claim that the
+    # number exists; this one had no source.
     "proteina": [
         "total_reward", "af2_iptm", "af2_plddt",
-        "rf3_score", "binder_scrmsd", "cluster_id",
+        "rf3_score", "binder_scrmsd",
     ],
     "iggm": ["epitope_contacts"],
 }

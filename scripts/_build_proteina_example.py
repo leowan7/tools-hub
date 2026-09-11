@@ -14,10 +14,22 @@ WHAT IS DROPPED. Sequences, PDB paths and the campaign's job/call ids. The
 results table renders none of them, and the published rule for these examples
 is scores only.
 
-WHAT IS KEPT AS-IS. ``rf3_score`` and ``cluster_id`` are absent from every
-row because the run set ``rf3_required: False`` — the template renders an
-absent metric as an em dash, which is the honest output of this preset, not a
-gap in the capture.
+WHAT IS KEPT AS-IS, AND WHY — TWO DIFFERENT REASONS, WHICH THIS NOTE USED TO
+GIVE AS ONE. It said both ``rf3_score`` and ``cluster_id`` were absent "because
+the run set ``rf3_required: False``". That was wrong about both.
+
+``rf3_score`` is absent because the ``protein_binder`` config has no
+``rf3folding`` reward block, so no RF3 column is written at all. ``rf3_required``
+is not a switch: tools/proteina/__init__.py derives it as ``preset in
+{"ligand_binder", "motif_ame"}`` and run_pipeline uses it only as a pre-GPU
+hard-block when RF3 is off. It is a consequence of the preset, not a cause.
+The template renders an absent metric as an em dash, which is the honest output
+of this preset, not a gap in the capture.
+
+``cluster_id`` is absent because nothing writes it — not this run, and not any
+of the 17,024 designs measured across the four sweep campaigns. It is no longer
+a rendered column (shared/result_columns.py), so it is not written here for the
+same reason the other unrendered keys are not.
 """
 from __future__ import annotations
 
@@ -30,7 +42,8 @@ SHARD = "28"
 OUT = Path(__file__).resolve().parent.parent / "tools" / "proteina" / "example" / "result.json"
 
 # Columns templates/tools/proteina_results.html renders that this preset
-# actually produces. rf3_score / cluster_id are deliberately not written.
+# actually produces. rf3_score is a rendered column this preset leaves empty and
+# is deliberately not written; cluster_id is not a rendered column at all.
 SCORE_COLUMNS = ("total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd")
 
 

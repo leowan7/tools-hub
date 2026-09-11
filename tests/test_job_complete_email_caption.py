@@ -260,7 +260,12 @@ def _bodies(payload: dict) -> dict:
 
 
 def _caption_of(job: ToolJob) -> str:
-    label, value, caption, _pdb = email_mod._top_candidate_summary(
+    # The 5th element is the design's judgement against the tool's bar, and it
+    # is dropped here deliberately: this file is about the LEGEND half of the
+    # callout, and test_the_caption_is_the_legend_and_nothing_invented below
+    # asserts that half is the legend and nothing else.
+    # tests/test_job_complete_email_headline.py holds the judgement.
+    label, value, caption, _pdb, _bar, _pos = email_mod._top_candidate_summary(
         job=job, tone="success",
     )
     assert (label, value) == ("ipTM", "0.910"), (label, value)

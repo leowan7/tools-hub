@@ -837,9 +837,49 @@ def test_a_single_tool_target_table_numbers_rows_globally():
     assert ranks == ["1", "2", "3", "4", "5", "6"], ranks
 
 
-def test_a_genuine_single_job_table_still_shows_its_own_rank():
-    """The pair. A job page pools nothing, so the rank the pipeline assigned is
-    the right column and must survive."""
+def test_a_single_job_table_numbers_by_position_too():
+    """The pair, and it now agrees with the one above rather than opposing it.
+
+    THIS TEST USED TO ASSERT THE OPPOSITE -- that a job page shows
+    ``cand.rank`` verbatim, on the reasoning that "a job page pools nothing,
+    so the rank the pipeline assigned is the right column". That reasoning
+    held only for the tool it was written against. ``cand.rank`` is a payload
+    field and the pipelines do not agree on what it means. Rendering the
+    fourteen shipped examples through their own partials measured it --
+    eleven render a candidate row at all, and of those:
+
+    * three numbered from 0 (boltz2, esmfold2_design, opendde) and six from 1
+      (bindcraft, boltzgen, proteina, pxdesign, rfantibody, rfdiffusion) --
+      so the catalog disagreed with itself about what to call a first design.
+    * On af2 and iggm it is not a rank at all. It is a production index --
+      af2's over its input records, iggm's over its output files -- and
+      those partials re-sort by score before rendering
+      (templates/tools/af2_results.html:70 on mean pLDDT,
+      templates/tools/iggm_results.html:40 on epitope contacts), so af2's
+      ten rows rendered 0,9,6,1,8,4,7,5,3,2 -- production indices under a
+      "#" heading, on a page whose narration says "row one"
+      (tools/af2/meta.py:260).
+
+    The fixture is itself the tell: a THREE-ROW single-job table whose ranks
+    start at 90 is not a shape any pipeline here produces, so the old
+    assertion could only ever have meant "echo the payload, whatever it is".
+    The odd numbers are kept, because that is exactly what gives this test
+    its bite -- 90,91,92 against an expected 1,2,3 fails under an echo, under
+    ``rank + 1``, and under the old expression.
+
+    The payload's own rank is not lost by numbering positionally: the CSV
+    keeps it as ``source_rank`` beside a positional ``rank``
+    (shared/exports.py:119,125). It is NOT on screen, though -- this macro
+    renders no name column, and on a worked-example page the pdb_key links
+    are suppressed too -- so the number here is the only row identity a
+    reader sees, which is the argument for it being a position rather than a
+    field whose meaning changes per tool.
+
+    Pinned on thirteen of the fourteen partials by
+    tests/test_worked_examples.py::TestTheRankColumnIsAPosition (mpnn renders
+    no candidate row; it numbers its own table at
+    templates/tools/mpnn_results.html:84).
+    """
     cands = []
     for i in range(3):
         c = _row("bindcraft", "ipTM", 0.9 - 0.01 * i, job="job-a", index=i)
@@ -849,7 +889,7 @@ def test_a_genuine_single_job_table_still_shows_its_own_rank():
                    tool_slug="bindcraft")
 
     ranks = [cells[0].split()[0] for cells in _parse(html).rows]
-    assert ranks == ["90", "91", "92"], ranks
+    assert ranks == ["1", "2", "3"], ranks
 
 
 # ---------------------------------------------------------------------------

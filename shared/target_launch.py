@@ -10,7 +10,7 @@ about cost in this module:
 
 * :func:`plan_multi_launch` and :meth:`MultiLaunchPlan.rows` price through
   ``plan_chunks`` -> ``_estimate_chunk_cost`` -> ``estimated_cost_for_tool`` ->
-  ``_historical_p90_seconds``, which SELECTs ``tool_jobs_p90``. Measured: two
+  ``_historical_p90_seconds``, which SELECTs ``tool_jobs``. Measured: two
   reads per SPEC for ``plan_multi_launch`` and one per spec for ``rows()`` (per
   spec, not per tool -- the same tool twice is two entries and costs twice).
   It short-circuits to ``None`` when no service client is configured, which is
