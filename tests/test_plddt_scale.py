@@ -504,6 +504,29 @@ class TestTheDetectorCanFail:
         assert found and found.group(1) == "0.39"
 
 
+class TestShareCardClaimsOnlyWhatItEarned:
+    """A run that produced nothing must not offer to publish a design.
+
+    The Share button is gated on `succeeded and share_allowed`, never on
+    there being output. `_top_score_for_share` returns None for a
+    zero-output run, and the None branch still composed "I designed a
+    binder with {tool}". A review found it by sweeping channels rather
+    than pages.
+    """
+
+    def test_no_design_claim_when_there_is_no_score(self):
+        from blueprints.jobs import _share_title
+        title = _share_title("OpenDDE co-folding", None)
+        assert "designed a binder" not in title
+        assert title == "I ran OpenDDE co-folding on tools.ranomics.com"
+
+    def test_a_scored_run_still_claims_its_design(self):
+        from blueprints.jobs import _share_title
+        title = _share_title("BoltzGen", "0.91")
+        assert "I designed a binder with BoltzGen" in title
+        assert "Top score 0.91" in title
+
+
 class TestTheOtherSurfaces:
     """Everything that shows a pLDDT and is not a tool results page.
 

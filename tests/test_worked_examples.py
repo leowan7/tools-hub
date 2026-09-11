@@ -497,6 +497,27 @@ class TestEveryPartialIsExampleSafe:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
 
+    def test_the_catalog_page_makes_no_suppressed_promise(self, tools_app):
+        """/tools is the other page these phrases reach, and was unscanned.
+
+        The scan above walks /tools/<slug> only. The catalog hero read
+        "Every pipeline lands ranked candidates with downloadable PDBs"
+        -- false for ProteinMPNN, for the folding tools, and for the two
+        hardcoded catalog entries -- and nothing here would have noticed.
+        A review found it by grepping, not by a test.
+
+        The HOMEPAGE is deliberately not scanned: templates/index.html
+        carries "downloadable PDBs" correctly scoped to the design step,
+        so blocking the bare phrase there would flag true copy.
+        """
+        flask_app, _ = tools_app
+        html = flask_app.test_client().get("/tools").get_data(as_text=True)
+        found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+        assert not found, (
+            "the /tools catalog names a control it does not show: "
+            f"{found}"
+        )
+
     def test_a_real_page_with_nothing_to_download_promises_nothing(
         self, tools_app,
     ):
@@ -513,8 +534,11 @@ class TestEveryPartialIsExampleSafe:
         empty = _render_partial(
             flask_app, "opendde", job_id="real-job-1", example=False,
             result={
-                # The shape a real zero-design opendde job writes, not a
-                # minimal stand-in: run_pipeline sets designs_total from
+                # The load-bearing keys a real zero-design opendde job
+                # writes, not a minimal stand-in. (It writes eleven; the
+                # four omitted here -- sample, step, cycle,
+                # provider_job_id -- reach no branch this exercises.)
+                # run_pipeline sets designs_total from
                 # the job spec, never from len(designs_out). A fixture
                 # without it lets the gate be rewritten against
                 # designs_total and stay green while the promise breaks
@@ -563,7 +587,9 @@ class TestEveryPartialIsExampleSafe:
         # (shared/email.py), and /tools promised it for every pipeline
         # including the ones that return sequences or a single structure
         # (templates/tools/comparison.html). Both fixed. The phrase is
-        # still carried, correctly scoped, at templates/index.html:614.
+        # still carried at templates/index.html:614, correctly scoped to
+        # the design step, and at shared/email.py, which now reaches it
+        # only on a real success.
         # results_shell.html renders this one in the `else` of the same
         # `is_example` branch that carries the shortlist line, so the
         # boltz2 render above holds both.

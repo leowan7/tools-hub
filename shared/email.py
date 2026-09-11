@@ -1208,7 +1208,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
       * ``sequences`` (sequence-design tools — MPNN, future LigandMPNN)
       * ``candidates`` (composite binder tools — RFantibody, RFdiffusion,
         BoltzGen, BindCraft, PXDesign)
-      * ``designs`` (opendde, boltz2, iggm) — added after a review found
+      * ``designs`` (opendde, boltz2, iggm; af2 and colabfold too, in
+        their ``batch`` preset) — added after a review found
         that a zero-design run fell past every branch to the "treated as
         a real success" default below and emailed the customer "0
         candidates returned with real scores and downloadable PDBs"
@@ -1316,9 +1317,20 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     from shared.jobs import candidate_records  # noqa: PLC0415
     cands = candidate_records(result)
     n = len(cands)
+    if not n:
+        # Reached ONLY when _is_empty_result did not recognise the shape:
+        # every recognised empty payload takes the "empty" tone above. The
+        # old line here said "0 candidates returned with real scores and
+        # downloadable PDBs" -- three specific assertions about a payload
+        # this branch exists because it could not read. Reachable by
+        # construction: webhooks/modal.py, blueprints/jobs.py and
+        # shared/compute_campaigns.py all coerce a missing completion
+        # payload to {} on a SUCCEEDED job.
+        return "Your run finished. The results are on the job page."
+    # "structures", not "PDBs": boltzgen writes .cif for most rows.
     return (
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
-        "downloadable PDBs."
+        "downloadable structures."
     )
 
 

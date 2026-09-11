@@ -2415,8 +2415,10 @@ def tools_comparison():
     Renders the iteration-loop framing, a category-grouped tile
     grid, and the comparison matrix at the bottom for power users.
     Catalog includes both hardcoded tools (Epitope Scout, Binder
-    Developability Scout, Library Planner) and flag-enabled GPU
-    adapters.
+    Developability Scout) and flag-enabled GPU adapters. The Library
+    Planner was delisted 2026-08-17 and is no longer in
+    _HARDCODED_TOOLS; this docstring still named it, and a review
+    traced a wrong count in a commit message back to here.
     """
     catalog = _build_tools_catalog()
 

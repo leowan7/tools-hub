@@ -746,6 +746,28 @@ def job_cancel(job_id: str):
         }
     )
 
+def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
+    """The text the user publishes when they press Share.
+
+    Extracted from the route so it can be tested without a session and a
+    database row. It was inline, and the zero-output branch still read
+    "I designed a binder with {tool}" -- the Share button is gated on
+    `succeeded and share_allowed` (templates/job_detail.html:396) and
+    never on there being anything to show, so a run that produced nothing
+    offered the user a button publishing a claim it had not earned.
+
+    Not fixed here: "designed a binder" is the wrong verb for the folding
+    tools and for ProteinMPNN under ANY outcome. That is per-tool copy and
+    a product decision.
+    """
+    if top_score is None:
+        return f"I ran {tool_label} on tools.ranomics.com"
+    return (
+        f"I designed a binder with {tool_label} on "
+        f"tools.ranomics.com. Top score {top_score}."
+    )
+
+
 @jobs_bp.route("/jobs/<job_id>/share", methods=["POST"])
 @login_required
 def job_share(job_id: str):
@@ -785,16 +807,7 @@ def job_share(job_id: str):
     adapter = tool_base.get(tool_slug)
     tool_label = adapter.label if adapter else (tool_slug or "tool")
     top_score = _top_score_for_share(job)
-    if top_score is None:
-        og_title = (
-            f"I designed a binder with {tool_label} on "
-            f"tools.ranomics.com"
-        )
-    else:
-        og_title = (
-            f"I designed a binder with {tool_label} on "
-            f"tools.ranomics.com. Top score {top_score}."
-        )
+    og_title = _share_title(tool_label, top_score)
     og_description = (
         "Ranomics tools-hub runs the same GPU pipelines used in "
         "production protein design."

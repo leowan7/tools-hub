@@ -159,7 +159,10 @@ class TestResultTone:
             },
         )
         assert email_mod._result_tone(job) == "empty"
-        assert "downloadable PDBs" not in email_mod._result_summary(
+        # Not "the false phrase is absent" -- the empty branch cannot
+        # contain it for any input, so that assertion could never fail.
+        # Pin the copy that should be there instead.
+        assert "no passing candidates" in email_mod._result_summary(
             job, tone="empty",
         )
 
@@ -168,6 +171,31 @@ class TestResultTone:
         job = _job(status="succeeded", error=None, tool="opendde",
                    result={"designs": [{"rank": 0, "pdb_key": "a.pdb"}]})
         assert email_mod._result_tone(job) == "success"
+        summary = email_mod._result_summary(job, tone="success")
+        # "structures", not "PDBs". boltzgen writes .cif for most rows and
+        # reaches this same line; reverting the word was caught by nothing
+        # until this assertion.
+        assert "downloadable structures" in summary
+        assert "downloadable PDBs" not in summary
+
+    def test_an_unreadable_payload_asserts_nothing_about_it(self):
+        """The default for a shape _is_empty_result cannot recognise.
+
+        It used to fall through to "0 candidates returned with real scores
+        and downloadable PDBs" under a green View results button -- three
+        specific claims about a payload the branch exists because it could
+        not read. Reachable by construction: webhooks/modal.py,
+        blueprints/jobs.py and shared/compute_campaigns.py each coerce a
+        missing completion payload to {} on a SUCCEEDED job.
+        """
+        for payload in ({}, None, {"tier": "pilot", "runtime_seconds": 10}):
+            job = _job(status="succeeded", error=None, tool="boltzgen",
+                       result=payload)
+            summary = email_mod._result_summary(
+                job, tone=email_mod._result_tone(job),
+            )
+            assert "0 candidates" not in summary, payload
+            assert "downloadable" not in summary, payload
 
     def test_succeeded_with_candidates_is_success(self):
         job = _job(status="succeeded", error=None,
