@@ -1208,8 +1208,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
       * ``sequences`` (sequence-design tools — MPNN, future LigandMPNN)
       * ``candidates`` (composite binder tools — RFantibody, RFdiffusion,
         BoltzGen, BindCraft, PXDesign)
-      * ``designs`` (opendde, boltz2, iggm; af2 and colabfold too, in
-        their ``batch`` preset) — added after a review found
+      * ``designs`` (opendde, boltz2, iggm; af2, colabfold and esmfold
+        too, in their ``batch`` preset) — added after a review found
         that a zero-design run fell past every branch to the "treated as
         a real success" default below and emailed the customer "0
         candidates returned with real scores and downloadable PDBs"
@@ -1223,6 +1223,14 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     result = job.result or {}
     if not isinstance(result, dict):
         return False
+    if not result:
+        # {} or None. NOT a shape question, so it belongs above the shape
+        # branches: templates/job_detail.html:282 gates the whole results
+        # section on `job.result`, so the page renders no results block at
+        # all. Calling that a success sent the customer a green "View
+        # results" button, "validate the top design", and a summary saying
+        # the results are on the job page -- to a page with none.
+        return True
     seqs = result.get("sequences")
     if isinstance(seqs, list):
         return len(seqs) == 0

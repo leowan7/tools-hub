@@ -492,7 +492,12 @@ class TestEveryPartialIsExampleSafe:
             html = flask_app.test_client().get(f"/tools/{slug}").get_data(
                 as_text=True,
             )
-            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+            # Whitespace-flattened: the raw HTML wraps mid-phrase, so a
+            # promise split across two source lines reads normally to a
+            # human and was invisible to `p in html`. Demonstrated on
+            # comparison.html, which wraps on the word "downloadable".
+            flat = re.sub(r"\s+", " ", html)
+            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
             if found:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
@@ -512,7 +517,8 @@ class TestEveryPartialIsExampleSafe:
         """
         flask_app, _ = tools_app
         html = flask_app.test_client().get("/tools").get_data(as_text=True)
-        found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+        flat = re.sub(r"\s+", " ", html)
+        found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
         assert not found, (
             "the /tools catalog names a control it does not show: "
             f"{found}"
@@ -535,9 +541,10 @@ class TestEveryPartialIsExampleSafe:
             flask_app, "opendde", job_id="real-job-1", example=False,
             result={
                 # The load-bearing keys a real zero-design opendde job
-                # writes, not a minimal stand-in. (It writes eleven; the
-                # four omitted here -- sample, step, cycle,
-                # provider_job_id -- reach no branch this exercises.)
+                # writes, not a minimal stand-in. Six of the eleven
+                # _write_result emits; the five omitted -- status, sample,
+                # step, cycle, provider_job_id -- reach no branch this
+                # exercises.
                 # run_pipeline sets designs_total from
                 # the job spec, never from len(designs_out). A fixture
                 # without it lets the gate be rewritten against
@@ -587,9 +594,11 @@ class TestEveryPartialIsExampleSafe:
         # (shared/email.py), and /tools promised it for every pipeline
         # including the ones that return sequences or a single structure
         # (templates/tools/comparison.html). Both fixed. The phrase is
-        # still carried at templates/index.html:614, correctly scoped to
-        # the design step, and at shared/email.py, which now reaches it
-        # only on a real success.
+        # still carried, correctly scoped to the design step, at
+        # templates/index.html:614. NOT at shared/email.py any more --
+        # that copy now says "downloadable structures"; the two
+        # occurrences left there quote the old defect in a docstring and
+        # a comment.
         # results_shell.html renders this one in the `else` of the same
         # `is_example` branch that carries the shortlist line, so the
         # boltz2 render above holds both.

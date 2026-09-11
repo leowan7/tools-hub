@@ -188,14 +188,28 @@ class TestResultTone:
         blueprints/jobs.py and shared/compute_campaigns.py each coerce a
         missing completion payload to {} on a SUCCEEDED job.
         """
-        for payload in ({}, None, {"tier": "pilot", "runtime_seconds": 10}):
+        # A FALSY payload is not a shape question. job_detail.html:282
+        # gates the whole results section on `job.result`, so {} and None
+        # render no results block at all -- the email must match the page.
+        for payload in ({}, None):
             job = _job(status="succeeded", error=None, tool="boltzgen",
                        result=payload)
-            summary = email_mod._result_summary(
-                job, tone=email_mod._result_tone(job),
-            )
-            assert "0 candidates" not in summary, payload
-            assert "downloadable" not in summary, payload
+            assert email_mod._result_tone(job) == "empty", payload
+            summary = email_mod._result_summary(job, tone="empty")
+            assert summary.startswith(
+                "The pipeline finished but produced no passing candidates."
+            ), payload
+
+        # Truthy but unreadable: the page DOES render a results block
+        # ("Candidates (0)"), so "the results are on the job page" is true
+        # here and false for the two above. Pinned exactly, because
+        # absence-only assertions let a DIFFERENT false sentence through.
+        job = _job(status="succeeded", error=None, tool="boltzgen",
+                   result={"tier": "pilot", "runtime_seconds": 10})
+        summary = email_mod._result_summary(
+            job, tone=email_mod._result_tone(job),
+        )
+        assert summary == "Your run finished. The results are on the job page."
 
     def test_succeeded_with_candidates_is_success(self):
         job = _job(status="succeeded", error=None,
