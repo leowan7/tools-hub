@@ -95,6 +95,23 @@ def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
     return isinstance(value, bool) and value is True
 
 
+# The pLDDT spellings IN PREFERENCE ORDER, canonical first.
+#
+# ORDERED ON PURPOSE: ``metric_glossary.PLDDT_COLUMNS`` is a FROZENSET, and
+# iterating a set to choose a number for a public card is the same class of
+# defect this whole function exists to fix -- the old code let dict order pick
+# the metric and published an isoelectric point. A set would pick whichever
+# spelling Python happened to hash first on a record carrying two.
+#
+# Held to PLDDT_COLUMNS as a SET by
+# tests/test_esmfold2_reject_surfaces.py::test_the_plddt_preference_is_complete,
+# so a tenth spelling added there cannot silently become unreachable here.
+_PLDDT_PREFERENCE = (
+    "pLDDT", "plddt", "mean_pLDDT", "mean_plddt",
+    "complex_pLDDT", "complex_plddt", "complex_iplddt", "iplddt", "af2_plddt",
+)
+
+
 def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | None:
     """WHICH number the share card may print, chosen DETERMINISTICALLY.
 
@@ -120,8 +137,20 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
       esmfold2-design registers no primary metric and its minibinder bar is
       ``(pI, ipTM)``; this picks ipTM and never pI, which is the defect above
       stated as a rule.
-    * failing both, NOTHING. A tool with neither a ranking metric nor a
-      higher-is-better gate leg has no number this card can honestly label.
+    * failing both, pLDDT, under whichever of its nine spellings the record
+      carries. The folding tools (af2, colabfold, esmfold) register no ranking
+      metric and declare no bar, yet model confidence IS their result, and it
+      means the same thing with the same direction on every tool that reports
+      one. Dropping this arm silently retired a shipped invariant --
+      tests/test_plddt_scale.py pins that this card normalises pLDDT, and the
+      first version of this function turned that assertion into ``None``.
+    * failing all three, NOTHING. A tool with no ranking metric, no
+      higher-is-better gate leg and no confidence score has no number this
+      card can honestly label.
+
+    WHAT THE CHAIN EXISTS TO EXCLUDE is ``pI`` -- lower-is-better, a
+    developability property rather than a quality score -- and ``final_loss``,
+    a gradient-descent artifact. Neither is reachable by any arm above.
 
     pLDDT is rescaled by ``plddt_on_100`` for the same reason it always was:
     the string is read with no page around it to give the scale.
@@ -133,6 +162,14 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
                 col for col in score_legends.gate_columns(tool, preset)
                 if (score_legends.get_legend(tool, col) or {}).get("direction")
                 == "higher_is_better"
+            ),
+            None,
+        )
+    if not key:
+        key = next(
+            (
+                col for col in _PLDDT_PREFERENCE
+                if _result_columns.candidate_metric(record, col) is not None
             ),
             None,
         )
@@ -180,8 +217,10 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     their name, which is why the rule below is strict. ``_share_title`` states
     the same reach at more length.
 
-    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. Every other surface prints
-    a shortfall beside the figure it shows; an og:title is read with no page
+    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. The surfaces that show a
+    figure at all print a shortfall beside it -- except the completion email,
+    which is the last unrepaired consumer of this class and still captions
+    ``candidates[0]`` (shared/email.py). An og:title is read with no page
     around it and has nowhere to put one, so a design the bar rejects gets no
     clause rather than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
     the widening is intended: any run of any gating tool whose every design
@@ -196,7 +235,9 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     esmfold2-design's legacy rows) persist under ``designs``, and the old read
     saw nothing there, so every one of those jobs silently produced no clause.
     The legacy ``result["output"]`` wrapper is NOT part of that --
-    ``ToolJob.from_row`` normalises it away (shared/jobs.py:368) before a job
+    ``ToolJob.from_row`` normalises it away (``_normalize_result_shape``,
+    called from that classmethod -- cited by NAME because this file has
+    already moved that line twice) before a job
     ever reaches this function, so both reads are flat by the time they get
     here.
 
@@ -229,7 +270,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     top, verdict = headline_candidate(records, tool, preset=mode)
     if top is None:
         return None
-    # shared.ranking's predicate, verbatim: a record can be BOTH "below" and
+    # shared.ranking's predicate, negated: a record can be BOTH "below" and
     # carrying a declared placeholder, and either one disqualifies it from
     # speaking for the run unqualified.
     if verdict.verdict == "below" or verdict.unusable:
@@ -535,8 +576,12 @@ def job_status(job_id: str):
         # beautifully and must not be ordered.
         #
         # NO MODE IS PASSED HERE AND THAT IS NOT AN OVERSIGHT. This endpoint
-        # runs while the job is still going, so ``job.result`` is None and
-        # ``resolve_mode`` has nothing to read; and the streamed partials
+        # is usually polled while the job is still running, when
+        # ``job.result`` is None and ``resolve_mode`` has nothing to read.
+        # That half is CONTINGENT, not guaranteed -- this endpoint has no
+        # terminal-status guard and settles the job in the same request, so a
+        # poll can reach here with a result populated. The half that actually
+        # settles it is next: the streamed partials
         # carry no pI at all, so the minibinder bar could not be answered even
         # with the mode in hand (``bar_is_answerable`` takes no preset for the
         # same reason). The template branches on ``has_bar`` and renders

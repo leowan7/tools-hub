@@ -200,6 +200,24 @@ def _jsonb(scores: dict) -> dict:
     return {k: scores[k] for k in sorted(scores, key=lambda k: (len(k), k.encode()))}
 
 
+def test_the_plddt_preference_is_complete():
+    """``blueprints.jobs._PLDDT_PREFERENCE`` must cover every spelling in
+    ``metric_glossary.PLDDT_COLUMNS``.
+
+    That constant is a FROZENSET, and the share card cannot iterate it to
+    choose which number to publish -- picking a metric out of a set is the
+    same non-determinism that let dict order publish an isoelectric point. So
+    the card carries its own ORDERED copy, and this holds the two together: a
+    tenth spelling added to the glossary would otherwise be unreachable on the
+    card with nothing failing.
+    """
+    from blueprints.jobs import _PLDDT_PREFERENCE
+    from shared.metric_glossary import PLDDT_COLUMNS
+
+    assert set(_PLDDT_PREFERENCE) == set(PLDDT_COLUMNS)
+    assert len(_PLDDT_PREFERENCE) == len(set(_PLDDT_PREFERENCE)), "duplicate"
+
+
 def test_no_campaign_tool_needs_a_mode():
     """Two comments in blueprints/campaigns.py rest on this and neither can
     check it: the campaign FASTA export passes no preset, and the quality

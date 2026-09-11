@@ -595,9 +595,16 @@ class TestTheOtherSurfaces:
     def test_the_public_share_card_uses_the_shared_scale(self):
         from blueprints.jobs import _top_score_for_share
 
-        assert _top_score_for_share(
-            _stub_job("esmfold", {"pLDDT": 0.39})
-        ) == "pLDDT 39.000"
+        # THE CONTRACT CHANGED, THE RULE DID NOT. This helper used to return a
+        # bare metric string and now returns the whole og:title clause, because
+        # whether "top" may be claimed unqualified depends on the verdict and
+        # only this helper knows it. What is pinned here is unchanged: the card
+        # renders pLDDT on the 0-100 scale, so 0.39 reads 39.000 and never
+        # "0.390" beside a page showing 39.
+        clause = _top_score_for_share(_stub_job("esmfold", {"pLDDT": 0.39}))
+        assert clause is not None, "the card stopped naming a score at all"
+        assert clause.endswith("pLDDT 39.000"), clause
+        assert "0.390" not in clause, clause
 
 
 class TestEveryKnownDisplaySiteStillCallsTheRule:

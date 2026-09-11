@@ -359,9 +359,14 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
     Returns ``""`` when there is nothing to write (caller supplies the empty
     message so the download still names sensibly).
 
-    ``tool`` / ``preset`` NAME THE RUN, and without them no record is judged
-    and the body is byte-identical to what this function wrote before they
-    existed. With them, a record that does not clear the bar carries the
+    ``tool`` / ``preset`` NAME THE RUN when every row came from one. They are
+    NOT the only source: a row carrying its own ``_source_tool`` is judged
+    from that, scalars or no scalars, which is how the merged target export
+    works (see :func:`_bar_scope` and blueprints/targets.py). So "without
+    ``tool`` nothing is judged" is true ONLY of rows with no provenance -- a
+    per-job or per-campaign export -- and an earlier version of this sentence
+    stated it unconditionally, contradicting a comment added to targets.py in
+    the same change. With them, a record that does not clear the bar carries the
     verdict in its DESCRIPTION -- the free text after the id, which
     :func:`_basename` already treats as a distinct field when it strips
     whitespace out of the id itself. ``preset`` is the run's mode for a tool
@@ -372,12 +377,18 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
     ``candidates[0]``, which is the container's ranking key and not its bar --
     on esmfold2-design job 2b917b54 that is the pI 11.95 design the pipeline
     drops. Moving it would fix the leading record and break something worse:
-    all three serializers take ``rank`` from :func:`export_key` so that row N
-    of the CSV, record N here, and entry N of the ZIP are one design, and
-    re-sorting only this one would silently end that. The FASTA is also the
-    one format carrying NO measurements -- an id and a sequence, nothing a
-    reader could apply the bar to themselves -- which is why it is the format
-    that needs the sentence rather than the column.
+    all three serializers take their ``rank`` LABEL from :func:`export_key`,
+    off one index into one list, so ``rank7`` means the same design in all
+    three files and re-sorting only this one would silently end that. NOT
+    their positions: :func:`export_key`'s own docstring says so, because this
+    function skips rows with no sequence while still numbering from the full
+    list, so a file whose first record is ``rank2`` is ordinary. The ZIP has
+    no N at all -- its entries are named from ``pdb_key``.
+
+    The FASTA is also the format that most needs the sentence: the CSV
+    carries the measurements a reader could apply the bar to themselves, and
+    while the ZIP carries none either, it carries STRUCTURES rather than a
+    ranked list of ids, so nothing in it reads as a recommendation.
 
     ``verdict_text`` renders it, never a hand-join of ``verdict.shortfalls``:
     that drops the ``unusable`` and ``unmeasured`` halves, which is a
@@ -405,7 +416,7 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
         row_tool, row_mode = _bar_scope(cand, tool, preset)
         if row_tool:
             verdict = judge(row_tool, cand, preset=row_mode)
-            # shared.ranking's predicate, verbatim. A record can be BOTH
+            # shared.ranking's predicate, negated. A record can be BOTH
             # "below" and carrying a declared placeholder, and the "below"
             # branch of verdict_text reports both halves.
             if verdict.verdict == "below" or verdict.unusable:
