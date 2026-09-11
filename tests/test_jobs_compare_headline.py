@@ -538,9 +538,14 @@ class TestComparePage:
         assert "not the first design listed" in design_row
         assert "row 2 of 2" in design_row, design_row
         # AND THE DISCLOSURE MUST NOT SAY "rank". The # column beside it
-        # prints the STORED rank, which this tool writes 0-based -- so the
-        # starred row is labelled "1" there, and a "not rank 1" sentence about
-        # it contradicts the table directly above.
+        # prints a POSITION, not the design's stored rank, and the two are
+        # not recoverable from each other. This page preserves ORDER
+        # (blueprints/jobs.py renders candidate_records with no sort) but not
+        # a constant offset: several pipelines bind the loop index before the
+        # failure ``continue``, so a dropped design leaves a gap and shifts
+        # every row after it. On the
+        # tool's own results page af2 and iggm re-sort by score as well.
+        # Calling the position a rank would misdescribe it.
         #
         # Scoped to the sentence, NOT the whole cell: the cell also carries
         # the design NAME, and this tool's own shipped example payload names
@@ -550,8 +555,24 @@ class TestComparePage:
         disclosure = design_row[design_row.find("not the first design listed"):]
         disclosure = disclosure[:disclosure.find("</div>")]
         assert "rank" not in disclosure.lower(), disclosure
-        assert _candidate_rows(html)[1][0].startswith("1"), (
-            "fixture no longer stores the 0-based rank the tool writes"
+        # THE NUMBER AND THE SENTENCE MUST AGREE, which is the defect this
+        # assertion replaced rather than a restatement of it. It used to read
+        # ``.startswith("1")`` -- the SECOND row labelled 1, because the column
+        # echoed a 0-based stored rank while this sentence said "row 2 of 2".
+        #
+        # PIN THE FIXTURE FIRST. `loop.index` prints "2" in row 2 whatever the
+        # payload says, so on its own the assertion below cannot fail for the
+        # reason it exists. It is the 0-based fixture that gives it teeth: a
+        # template regressed to `cand.get('rank', loop.index)` prints rank 1 =
+        # "1" and fails. Renumber _job()'s candidates 1,2 and that regression
+        # would print "2" and slip through, so the ranks are held here -- the
+        # guard the old assertion's failure message claimed to be.
+        assert [c["rank"] for c in _job().result["candidates"]] == [0, 1], (
+            "this test needs a 0-based fixture to tell a position from an "
+            "echoed rank; renumber it and the assertion below goes blind"
+        )
+        assert _candidate_rows(html)[1][0].startswith("2"), (
+            "the # column disagrees with the 'row 2 of 2' disclosure beside it"
         )
 
     def test_a_tool_with_no_bar_keeps_its_stored_order(
