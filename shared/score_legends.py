@@ -913,10 +913,37 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
 
 
 def get_legend(tool_slug: str, column_key: str) -> Optional[Legend]:
-    """Return the legend for ``(tool_slug, column_key)`` or None."""
+    """Return the legend for ``(tool_slug, column_key)`` or None.
+
+    Exact match first, then case-insensitive. The keys are each tool's OWN
+    column spelling: af2 and colabfold file their interface score under
+    ``iptm`` where the other six store ``ipTM``, so a caller naming the
+    display column read those two as having no legend at all.
+    Both templates here still name the display column; what changed is
+    this callee. ``score_legends_for`` (below) is a SEPARATE exact-case
+    reader of the same dict, and candidate_table.html:448 uses it, so the
+    results table still loses those legends -- and ``mean_pLDDT`` vs
+    ``plddt`` differs by more than case, so no fold reaches that one.
+
+    NOT ``_COLUMN_ALIASES``: that maps a column to the STORAGE spellings a
+    result RECORD may carry, and deliberately folds ``complex_pLDDT`` into
+    ``pLDDT``. A legend is per (tool, column); the note above that map
+    warns against answering a bar with another column's READING, and the
+    same reasoning applies to its legend. Case is the only difference
+    folded here, and the first case-insensitive match in SCORE_LEGENDS
+    order wins -- no tool declares two spellings of one column today, so
+    nothing is ambiguous, but a future one would resolve silently.
+    """
     if not tool_slug or not column_key:
         return None
-    return SCORE_LEGENDS.get((tool_slug, column_key))
+    hit = SCORE_LEGENDS.get((tool_slug, column_key))
+    if hit is not None or not isinstance(column_key, str):
+        return hit
+    folded = column_key.lower()
+    for (slug, column), legend in SCORE_LEGENDS.items():
+        if slug == tool_slug and column.lower() == folded:
+            return legend
+    return None
 
 
 def legend_text(legend: Optional[Legend]) -> str:
@@ -1683,7 +1710,15 @@ def _join_bar(tool: str, columns) -> str:
     parts = [
         _bar_reading(col, float(get_legend(tool, col)["good"]))
         for col in columns
-        if get_legend(tool, col) is not None
+        # Not ``is not None``: a legend can exist and state no bar, and the
+        # index above would raise on it. Two legends are like that --
+        # boltzgen's ipTM and bindcraft's surface_hydrophobicity -- and both
+        # already reached the index under their declared spelling. The case
+        # fold widens that to any casing; of the OTHER casings, ``iptm`` is
+        # the only one used anywhere as a column key. No caller reaches
+        # either: all 15 gate columns resolve to a legend carrying ``good``. A
+        # guard, not a fix for a live crash.
+        if "good" in (get_legend(tool, col) or {})
     ]
     if not parts:
         return ""
@@ -2040,6 +2075,15 @@ def judge(
             unusable.append(label)
             continue
         if value is None:
+            unmeasured.append(label)
+            continue
+        if "good" not in legend:
+            # A legend can exist and state no bar (boltzgen's ipTM), and
+            # ``good`` is indexed unconditionally below. Deliberately BELOW
+            # the two branches above rather than beside the None check: a
+            # declared placeholder must still reach ``unusable``, which
+            # shared/ranking.py:431 and shared/jobs.py:223 both read to sink
+            # those rows. Same pin as above makes this unreachable too.
             unmeasured.append(label)
             continue
         good = float(legend["good"])
