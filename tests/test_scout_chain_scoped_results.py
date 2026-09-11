@@ -168,6 +168,13 @@ def _write_results_csv(job_dir: Path, chain: str) -> None:
 
 
 
+# Captured before any fixture replaces the attribute. _analyze_during_outage
+# below needs the real lookup to run so that _resolve_contacts runs, and the
+# stub_pipeline fixture those tests also take replaces it with a lambda
+# returning [].
+_REAL_FETCH_KNOWN_BINDERS = epitope_db.fetch_known_binders
+
+
 def _stub_run(pdb_path, chain_id, progress_callback=None):
     """Module-level twin of the stub_pipeline fixture's scorer."""
     _write_results_csv(Path(pdb_path).parent, chain_id)
@@ -337,18 +344,29 @@ class TestDerivedFilesAreChainScopedToo:
         assert resp_b.status_code == 200, resp_b.data
         assert resp_b.get_json()["epitopes"] == [], "fixture must produce no top-3 for B"
 
+        # Chain B scored nothing qualifying, so /scout/analyze removed both
+        # top-3 files (the else beside each write) and left nothing for the
+        # download to serve. Asserted as the 404 rather than as "the body does
+        # not carry ALA10": the 404 sent the deleted lines down their else
+        # branch, so the local they tested was "" -- that assertion compared
+        # against "" and the DictReader loop under it never ran an iteration.
         dl = client.get(f"/scout/download/{job_id}")
-        body = dl.get_data(as_text=True) if dl.status_code == 200 else ""
-        assert "ALA10" not in body, (
-            "the top-3 download served chain A's epitopes after chain B was analysed: "
-            f"{body[:200]}"
+        assert dl.status_code == 404, (
+            "the top-3 download still served a file after chain B scored "
+            f"nothing that qualifies: {dl.get_data(as_text=True)[:200]}"
         )
-        # Whatever it does serve must not claim to be chain A.
-        for row in csv.DictReader(body.splitlines()):
-            assert row.get("chain_id") != "A", f"chain A row leaked into the download: {row}"
-        assert not (job_dir / "epitopes.csv").exists() or "ALA10" not in (
-            job_dir / "epitopes.csv"
-        ).read_text(), "stale epitopes.csv left on disk for the download fallback"
+        assert not (job_dir / "epitopes.csv").exists(), "stale epitopes.csv on disk"
+        assert not (job_dir / "epitopes_annotated.csv").exists(), (
+            "stale epitopes_annotated.csv on disk"
+        )
+        # download() answers 404 for an unresolvable job dir too, and no file
+        # check can tell the two apart: _resolve_job_dir is ownership-keyed,
+        # not a path test. So ask the ROUTE -- a 200 from ?full=1, through that
+        # same resolver, says the 404 above was about the top-3 files.
+        assert client.get(f"/scout/download/{job_id}?full=1").status_code == 200, (
+            "the all-patches download 404s too, so the 404 above does not "
+            "isolate the top-3 files"
+        )
 
 
 class TestKnownBinderOverlapsAreChainScoped:
@@ -447,20 +465,76 @@ class TestAnOutageIsNotFrozenIntoTheJobOnDisk:
             },
         )
 
+    @pytest.fixture(autouse=True)
+    def _no_inherited_binder_cache(self):
+        """No accession cache inherited from another test.
+
+        Load-bearing for the three tests that go through _analyze_during_outage
+        and so run the real fetch_known_binders: a warm _CACHE entry would
+        short-circuit the query_sabdab stub they steer with. The other two stub
+        BOTH readers of that cache -- fetch_known_binders and cached_binders --
+        so nothing there reads it at all.
+
+        Deliberately NOT also _reset_summary_cache(): it ARMS a live SAbDab
+        fetch rather than preventing one. Nothing here reaches that fetch while
+        the query_sabdab stub returns a NON-EMPTY list -- change it to [] for a
+        "no known binders" case and these tests go to the network.
+        """
+        epitope_db._CACHE.clear()
+        yield
+        epitope_db._CACHE.clear()
+
     def _analyze_during_outage(self, client, monkeypatch) -> Path:
-        """Analyse chain A while the coordinate host is down, return the job."""
+        """Analyse chain A while the coordinate host is down, return the job.
+
+        Stubbed BELOW _resolve_contacts, not above it. The absence this class
+        is about is produced by that function declining to write a placeholder
+        for an interface it could not compute. A fixture handing /analyze a
+        ready-made binder list asserted only its own dict, because stubbing
+        fetch_known_binders replaces _resolve_contacts' ONLY caller -- so a
+        setdefault("contact_residues", []) put back inside it was unreachable
+        from the test. Here query_sabdab supplies the entry and the coordinate
+        fetch returns None -- "could not read", which is what the outage is.
+
+        The fetch is asserted to have HAPPENED, because a worker thread that
+        raises leaves exactly the state this class asserts -- entry pending,
+        key absent -- and would otherwise read as an outage.
+        """
         self._resolves_to(monkeypatch)
-        # No "contact_residues" key: epitope_db could not read the structure.
+        # Undo stub_pipeline's fetch_known_binders stub: this class is about
+        # what the real one leaves on disk.
         monkeypatch.setattr(
-            "scout.epitope_db.fetch_known_binders",
-            lambda *a, **k: [dict(self._BINDER)],
+            "scout.epitope_db.fetch_known_binders", _REAL_FETCH_KNOWN_BINDERS
         )
+        monkeypatch.setattr(
+            "scout.epitope_db.query_sabdab",
+            lambda *a, **k: [
+                dict(self._BINDER, antigen_chain="A", ab_chains=["H", "L"])
+            ],
+        )
+        fetched: list = []
+
+        def _no_coordinates(*a, **k):
+            fetched.append(a)
+            return None
+
+        monkeypatch.setattr(
+            "scout.epitope_db._fetch_and_compute_contacts", _no_coordinates
+        )
+        # _PDB_FILE_RETRY_AT is a module global that other test modules arm
+        # for real. A value leaking in here would close the gate, skip the
+        # fetch, and fail the assertion below for the wrong reason.
+        monkeypatch.setattr(epitope_db, "_PDB_FILE_RETRY_AT", 0.0)
         job_id = _upload_two_chain_job(client)
         assert (
             client.post(
                 "/scout/analyze", json={"job_id": job_id, "chain": "A"}
             ).status_code
             == 200
+        )
+        assert fetched == [("1ABC", "A", ["H", "L"])], (
+            "the coordinate fetch was not attempted with this binder's own "
+            f"identifiers, so a missing contact_residues proves nothing: {fetched}"
         )
         return TMP / job_id
 
@@ -638,7 +712,14 @@ class TestChainIdIsValidatedAtTheBoundary:
     # Control characters must be INTERNAL to be a real case: the routes call
     # .strip() first, and Python counts \x1c-\x1f as whitespace, so a trailing
     # one is removed before validation and "A\x1f" is simply chain "A".
-    UNSAFE = ["", "A\nB", "A\rB", "A\tB", "A\x00B", "A\x1fB", "A" * 65]
+    #
+    # " " is the entry that makes that .strip() load-bearing, and the only one
+    # here that does: _valid_chain refuses every other entry unaided ("" is
+    # falsy, the control characters are all below " " and internal, "A" * 65 is
+    # over the cap) and returns True for " ". So BEFORE this entry was added,
+    # deleting .strip() from the four routes this class exercises failed
+    # nothing here.
+    UNSAFE = ["", " ", "A\nB", "A\rB", "A\tB", "A\x00B", "A\x1fB", "A" * 65]
 
     @pytest.mark.parametrize("chain", PARSER_REACHABLE)
     def test_parser_reachable_ids_are_not_refused(self, client, reap_jobs, chain):
@@ -816,7 +897,7 @@ class TestEveryGuardFailsWhenItIsRemoved:
         resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
         assert resp.status_code == 200, resp.data
         job_dir = TMP / job_id
-        assert (job_dir / "epitopes_annotated.csv").exists()
+        before_top3 = (job_dir / "epitopes_annotated.csv").read_bytes()
         before = (job_dir / "results_annotated.csv").read_bytes()
 
         # Simulate the interleaving: results.csv becomes chain B's between the
@@ -835,6 +916,9 @@ class TestEveryGuardFailsWhenItIsRemoved:
 
         assert resp.status_code == 409, (resp.status_code, resp.data)
         assert (job_dir / "epitopes_annotated.csv").exists(), "deleted the winner's file"
+        # Byte-for-byte, not merely present: .exists() above cannot tell an
+        # untouched file from one a losing run rewrote.
+        assert (job_dir / "epitopes_annotated.csv").read_bytes() == before_top3
         assert (job_dir / "results_annotated.csv").read_bytes() == before
 
     def test_binder_overlaps_are_actually_returned_for_the_right_chain(
@@ -854,7 +938,10 @@ class TestEveryGuardFailsWhenItIsRemoved:
             "binder_type": "antibody",
             "species": "human",
             "affinity": "1 nM",
-            "contact_residues": CHAIN_RESIDUES["A"][:3],
+            # Contacts on BOTH chains, so WHETHER overlaps come back at all
+            # is decided by the cache's chain stamp rather than by which
+            # residues happen to intersect.
+            "contact_residues": CHAIN_RESIDUES["A"][:3] + CHAIN_RESIDUES["B"][:3],
         }
         monkeypatch.setattr(
             "scout.epitope_db.fetch_known_binders", lambda *a, **k: [binder]
@@ -883,7 +970,22 @@ class TestEveryGuardFailsWhenItIsRemoved:
         assert overlaps[0]["overlap_count"] == 3, overlaps
 
         # ...and the round-1 gate still holds for the wrong chain.
-        assert _get_binder_overlaps(job_dir, CHAIN_RESIDUES["A"], "B") == []
+        assert _get_binder_overlaps(job_dir, CHAIN_RESIDUES["B"], "B") == []
+
+        # Now score chain B and check the stamp FOLLOWED. Every assertion above
+        # is equally satisfied by a cache stamped with the constant "A", which
+        # is what /scout/analyze writes if its `"chain": chain_id` is
+        # hard-coded.
+        assert (
+            client.post(
+                "/scout/analyze", json={"job_id": job_id, "chain": "B"}
+            ).status_code
+            == 200
+        )
+        overlaps = _get_binder_overlaps(job_dir, CHAIN_RESIDUES["B"], "B")
+        assert overlaps, "chain B's own binder overlaps came back empty"
+        assert overlaps[0]["overlap_count"] == 3, overlaps
+        assert _get_binder_overlaps(job_dir, CHAIN_RESIDUES["A"], "A") == []
 
     def test_a_header_only_results_csv_is_a_miss(self, client, stub_pipeline, reap_jobs):
         """A file with a header and no data rows cannot name its chain.
@@ -1190,33 +1292,6 @@ class TestNothingFromThePreviousChainSurvives:
                 f"{body[:300]}"
             )
 
-    def test_a_conflicting_run_keeps_the_winners_files(
-        self, client, stub_pipeline, reap_jobs, monkeypatch
-    ):
-        """The 409 must NOT clear: those files belong to the concurrent run."""
-        import scout.routes as routes
-
-        job_id = _upload_two_chain_job(client)
-        assert client.post(
-            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
-        ).status_code == 200
-        job_dir = TMP / job_id
-        before = (job_dir / "epitopes_annotated.csv").read_bytes()
-
-        real = routes._results_csv_for_chain
-        seen = []
-
-        def _steal(jd, cid):
-            seen.append(cid)
-            if len(seen) > 1:
-                _write_results_csv(jd, "B")
-            return real(jd, cid)
-
-        monkeypatch.setattr(routes, "_results_csv_for_chain", _steal)
-        resp = client.post("/scout/analyze", json={"job_id": job_id, "chain": "A"})
-        assert resp.status_code == 409, resp.data
-        assert (job_dir / "epitopes_annotated.csv").read_bytes() == before
-
     def test_a_blank_chain_id_cell_is_a_miss_not_a_collision(self, client, reap_jobs):
         """A blank cell names no chain, so it is a can't-say, not another chain."""
         from scout.routes import _results_csv_chain_id
@@ -1286,13 +1361,24 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
         assert "done" in body, body
         assert stub_pipeline == ["A", "B"], stub_pipeline
 
+        # /scout/progress invalidates the derived files and does not rebuild
+        # them -- the POST /scout/analyze the browser sends next is what does
+        # -- so the download has nothing left to serve. Asserted as the 404,
+        # and as the file being gone: the 404 sent the deleted fold down its
+        # else branch, so its residue loop ran against "" and could not say
+        # whether anything had been served at all.
+        assert not top3_path.exists(), "chain A's top-3 survived the rescore"
         after = client.get(f"/scout/download/{job_id}")
-        text = after.get_data(as_text=True) if after.status_code == 200 else ""
-        for residue in CHAIN_RESIDUES["A"]:
-            assert f"ALA{residue}" not in text, (
-                f"download still serves chain A's residue {residue} after chain B "
-                f"was scored through /scout/progress: {after.status_code} {text[:200]}"
-            )
+        assert after.status_code == 404, (
+            "download still serves a file after chain B was scored through "
+            f"/scout/progress: {after.get_data(as_text=True)[:200]}"
+        )
+        # As above: a 200 from ?full=1 rules out a 404 that merely means
+        # "job not found".
+        assert client.get(f"/scout/download/{job_id}?full=1").status_code == 200, (
+            "the all-patches download 404s too, so the 404 above does not "
+            "isolate the top-3 files"
+        )
 
     def test_reset_all_still_clears_every_chain_scoped_element(self, client):
         """resetAll delegates now; it must not silently stop.
@@ -1484,35 +1570,17 @@ class TestTheChainIsThreadedThroughEveryCallSite:
             "renderViewer no longer passes the scored chain to the table"
         )
 
-    def test_the_results_csv_stamp_is_the_chain_that_was_scored(
-        self, client, stub_pipeline, reap_jobs
-    ):
-        """M36/M61: everything asserted the COLUMN existed, nothing its value.
-
-        A stamp hard-coded to "A", or to the first chain in the file, would
-        have passed every other test here while breaking the cache gate for
-        every other chain.
-        """
-        job_id = _upload_two_chain_job(client)
-        for chain in ("B", "A"):
-            assert client.post(
-                "/scout/analyze", json={"job_id": job_id, "chain": chain}
-            ).status_code == 200
-            rows = list(
-                csv.DictReader((TMP / job_id / "results.csv").open(newline=""))
-            )
-            assert rows, f"no rows written for chain {chain}"
-            stamps = {r["chain_id"] for r in rows}
-            assert stamps == {chain}, (
-                f"results.csv for chain {chain} carries stamps {stamps}"
-            )
-
     def test_the_pipeline_stamps_the_chain_it_was_asked_for(self):
-        """The same property on the real writer, which cannot run here.
+        """The results.csv chain stamp, on the real writer.
 
         Parses run_pipeline's row literal: the chain_id cell must be the
         chain_id PARAMETER, not a constant and not something re-derived from
         the structure.
+
+        Read out of the source because no test here exercises the real writer:
+        every results.csv this file reads back was written by a stub or by the
+        test itself. A route test asserting the stamp therefore asserts a value
+        it supplied, which is exactly what the deleted twin of this test did.
         """
         import ast
         import inspect
