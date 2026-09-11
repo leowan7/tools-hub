@@ -830,8 +830,14 @@
           <td>
             {% if has_pdb %}
               {% if use_url %}
-              {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
-                            if '.' in pdb_key else 'pdb' %}
+              {# pdb_key is whatever the container put in job.result, so it
+                 is not guaranteed to be a str -- `'.' in pdb_key` raises
+                 TypeError on an int and 500s the whole results page.
+                 `| string` is a coercion, not a claim that the data is
+                 clean; no shipped pipeline writes a non-str key today. #}
+              {% set _k = pdb_key | string %}
+              {% set _ext = (_k.rsplit('.', 1)[-1] | lower)
+                            if '.' in _k else 'pdb' %}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"

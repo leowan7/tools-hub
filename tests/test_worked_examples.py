@@ -504,7 +504,7 @@ class TestEveryPartialIsExampleSafe:
         assert not offenders, f"example page promises absent controls: {offenders}"
 
     def test_the_public_pages_make_no_suppressed_promise(self, tools_app):
-        """/tools and / are the other pages these phrases reach.
+        """Every public prose page these phrases can reach.
 
         The scan above walks /tools/<slug> only. The catalog hero read
         "Every pipeline lands ranked candidates with downloadable PDBs"
@@ -515,13 +515,24 @@ class TestEveryPartialIsExampleSafe:
         The homepage was exempt while templates/index.html carried the
         bare phrase for its design step. It no longer does -- that copy
         says "downloadable structures" now, for the same format reason
-        (BoltzGen writes .cif for most rows) -- so the exemption is gone
-        and both pages are scanned. The sentence claiming the exemption
-        survived one commit past the edit that voided it.
+        (BoltzGen writes .cif for most rows) -- so the exemption is gone.
+
+        /pricing, /showcase and the five /help routes were added after a
+        review pointed out they were unscanned. They are clean against
+        the register today and this keeps them that way. It is NOT what
+        found the defect that prompted the extension: /help/faq named
+        ProteinMPNN as the only result without a CSV or a star, which is
+        a wrong SCOPE rather than a registered phrase, and no entry here
+        matches it. A phrase register catches re-use of known-bad
+        wording; it does not check that a sentence is true.
         """
-        flask_app, _ = tools_app
+        flask_app, slugs = tools_app
         client = flask_app.test_client()
-        for path in ("/tools", "/"):
+        paths = [
+            "/tools", "/", "/pricing", "/showcase", "/help",
+            "/help/getting-started", "/help/faq", "/help/troubleshooting",
+        ] + [f"/help/tools/{slug}" for slug in slugs]
+        for path in paths:
             flat = re.sub(
                 r"\s+", " ", client.get(path).get_data(as_text=True),
             )
@@ -607,9 +618,11 @@ class TestEveryPartialIsExampleSafe:
         # the format for a design step that includes BoltzGen, which
         # writes .cif (templates/index.html).
         #
-        # All three are fixed, so the phrase is now in NO template. Its
-        # only occurrences repo-wide are two in shared/email.py quoting
-        # the old defect, in a docstring and a comment. All three entries
+        # All three are fixed, so the phrase is now in NO template.
+        # `git grep -o "downloadable PDBs" HEAD` counts 11 elsewhere --
+        # two in shared/email.py quoting the old defect (a docstring and
+        # a comment), three in tests/test_email_failure_copy.py, five in
+        # THIS file, one in docs/PRODUCT-PLAN.md. All three entries
         # here are retired wordings today -- but this one was not when it
         # was added, which is why it is worth saying so rather than
         # quietly relisting it with the other two.

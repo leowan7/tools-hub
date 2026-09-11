@@ -254,11 +254,14 @@
       <article class="why-card">
         <h3 class="why-card-title">How do I export results?</h3>
         <p class="why-card-body">
-          From a finished job you can open any candidate in the 3D viewer and
-          export the score table as CSV, and star the best candidates to
-          build a shortlist for the wet lab. ProteinMPNN is the exception:
-          its results are sequences, downloadable as FASTA, with no viewer,
-          CSV or star.
+          From a finished job that returns a table of candidates you can
+          open any candidate in the 3D viewer and export the score table as
+          CSV, and star the best candidates to build a shortlist for the wet
+          lab. Not every result is a table. ProteinMPNN returns sequences,
+          downloadable as FASTA, and a single-sequence AlphaFold2, ColabFold
+          or ESMFold run returns one structure, downloadable as PDB. None of
+          those four has a CSV export or a star, and of them only AlphaFold2
+          has a viewer.
         </p>
       </article>
       <article class="why-card">

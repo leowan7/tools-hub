@@ -215,9 +215,11 @@ class TestResultTone:
                     job, tone="empty",
                 ) == NO_OUTPUT, (tool, payload)
 
-        # Truthy but unreadable -- the shape gpu/modal_client.py builds
-        # when a composite pipeline returns {"status": "COMPLETED",
-        # "output": {}}. An earlier version of this test asserted this was
+        # Truthy but unreadable -- the shape gpu/modal_client.py:632-646
+        # builds from a pipeline return carrying tier/runtime_seconds and
+        # no domain keys. (A bare {"status": "COMPLETED", "output": {}}
+        # yields {} instead; the falsy branch handles that one.)
+        # An earlier version of this test asserted this was
         # a SUCCESS, which is what let the email say "your run is ready"
         # with a green View results button over a page reading
         # "returned no candidates".
@@ -292,3 +294,24 @@ class TestEmptyToneRendering:
         job = self._empty_job(result={"sequences": []}, tool="mpnn")
         summary = email_mod._result_summary(job, tone="empty")
         assert "no sequences" in summary
+
+
+def test_every_registered_slug_gets_a_label():
+    """Both label paths, against the live registry.
+
+    shared/email.py carried TWO label tables. Extending one of them
+    left boltz2, esmfold2-design, iggm, opendde and proteina reaching
+    the per-job-cap and overrun-warning mails as raw slugs -- "Your
+    opendde run was blocked by the per job spend cap". The pre-existing
+    coverage used bindcraft, which was in both tables, so it saw
+    nothing. This asserts every slug the registry holds, so a tool
+    added without a label fails here rather than in an inbox.
+    """
+    import app  # noqa: F401 -- populates tools.base._REGISTRY
+    from tools import base as tool_base
+
+    adapters = tool_base.all_adapters()
+    assert len(adapters) >= 14, f"registry holds {len(adapters)} tools"
+    for fn in (email_mod._tool_label, email_mod._label_for_tool):
+        raw = sorted(a.slug for a in adapters if fn(a.slug) == a.slug)
+        assert not raw, f"{fn.__name__} returns the bare slug for: {raw}"

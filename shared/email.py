@@ -327,9 +327,11 @@ def _tool_label(slug: str) -> str:
     # All 14 registered slugs, copied from tools.base.all_adapters() at
     # edit time rather than imported -- the docstring above explains why
     # the runtime import is avoided. It previously held five entries, one
-    # of which ("proteinmpnn") is not a slug any tool uses, so nine tools
-    # were emailing customers their raw slug: "Your mpnn run is done",
-    # "Your esmfold2-design run finished with no candidates".
+    # of which ("proteinmpnn") is not a slug any tool uses, so it covered
+    # FOUR real slugs and the other TEN emailed customers their raw slug:
+    # "Your mpnn run is done", "Your esmfold2-design run finished with no
+    # candidates". (An earlier version of this comment said nine.)
+    # test_every_registered_slug_gets_a_label pins the coverage.
     labels = {
         "af2": "AlphaFold2",
         "bindcraft": "BindCraft",
@@ -1277,11 +1279,16 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     # tool with real output is never told it produced nothing.
     #
     # But the live defect is not a future tool's shape. It is a payload
-    # carrying ONLY run metadata, which gpu/modal_client.py builds when a
-    # composite pipeline returns {"status": "COMPLETED", "output": {}} --
-    # {"tier": "pilot", "runtime_seconds": 90}. There is no output key at
-    # all, present or future. The page agrees: job_detail renders its
-    # results block for any truthy result and that block reads
+    # carrying ONLY run metadata -- {"tier": "pilot",
+    # "runtime_seconds": 90}. gpu/modal_client.py:632-646 builds it from a
+    # pipeline return carrying tier/runtime_seconds and no domain keys,
+    # either flat or beside an empty "output" dict. (An "output": {} with
+    # no wrapper-level tier yields {} instead, which the falsy branch
+    # above catches -- both were executed against that function.)
+    # test_an_unreadable_payload_asserts_nothing_about_it
+    # (tests/test_email_failure_copy.py:226-231) pins the classification.
+    # The page agrees: job_detail renders its results block for any
+    # truthy result and that block reads
     # candidate_records, so it shows "Candidates (0)". Calling that a
     # success sent "your run is ready", a green View results button and
     # "validate the top design" over a page saying it returned none.
@@ -1430,30 +1437,25 @@ _jinja_env = jinja2.Environment(
 
 
 # ---------------------------------------------------------------------------
-# Tool label table (mirrors _tool_label above but extended for the wallet
-# senders, which include tools not in the original job-complete map).
+# Tool label for the wallet senders
 # ---------------------------------------------------------------------------
-
-_WALLET_TOOL_LABELS = {
-    "bindcraft":    "BindCraft",
-    "rfantibody":   "RFantibody",
-    "rfdiffusion":  "RFdiffusion",
-    "boltzgen":     "BoltzGen",
-    "pxdesign":     "PXDesign",
-    "proteinmpnn":  "ProteinMPNN",
-    "mpnn":         "ProteinMPNN",
-    "af2":          "AlphaFold2",
-    "alphafold2":   "AlphaFold2",
-    "colabfold":    "ColabFold",
-    "esmfold":      "ESMFold",
-}
 
 
 def _label_for_tool(slug: Optional[str]) -> str:
-    """Return a human-readable tool label, falling back to the slug."""
+    """Return a human-readable tool label, falling back to the slug.
+
+    Delegates to _tool_label. This used to be a SECOND table, and it
+    went stale: it held eleven entries, two of them ("proteinmpnn",
+    "alphafold2") slugs no tool uses, and was missing boltz2,
+    esmfold2-design, iggm, opendde and proteina -- so a capped OpenDDE
+    run mailed "Your opendde run was blocked by the per job spend cap".
+    Extending only _tool_label (commit e2649a6) fixed the job-complete
+    mail and left these two senders on the stale copy.
+    test_every_registered_slug_gets_a_label pins the coverage.
+    """
     if not slug:
         return "tool"
-    return _WALLET_TOOL_LABELS.get(slug, slug)
+    return _tool_label(slug)
 
 
 # ---------------------------------------------------------------------------

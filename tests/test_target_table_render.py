@@ -263,8 +263,10 @@ def test_single_tool_headers_keep_data_col_so_sorting_still_works():
 # ---------------------------------------------------------------------------
 
 def test_multi_tool_headers_are_the_seven_fixed_columns():
-    # "Structure", not "PDB": the column serves .cif for most boltzgen and
-    # opendde rows. What this pins is the fixed SET of seven and its order,
+    # "Structure", not "PDB": the column serves .cif for four of the five
+    # boltzgen example rows, and for any opendde row whose cif->pdb
+    # conversion failed (tools/opendde/run_pipeline.py:500-509).
+    # What this pins is the fixed SET of seven and its order,
     # which the rename does not touch.
     table = _parse(_multi_tool_table())
     assert table.header_text == [
@@ -1307,3 +1309,58 @@ def test_a_tool_less_group_still_shows_its_counts():
     # renders the header with no counts at all.
     assert "2 of 2 shown" in untooled[0], untooled[0]
     assert "0 ranked" in untooled[0], untooled[0]
+
+
+# ---------------------------------------------------------------------------
+# The per-row download label
+# ---------------------------------------------------------------------------
+
+
+def _download_labels(html: str) -> list:
+    """Anchor text of every per-row structure download."""
+    return re.findall(r'font-size:\.8rem;">(\.[^<]*)</a>', html)
+
+
+def _one_row(pdb_key):
+    row = {"_source_tool": "boltzgen", "_source_preset": "pilot",
+           "_source_job_id": "job-1", "_source_index": 0,
+           "scores": {"ipTM": 0.8}}
+    if pdb_key is not _MISSING:
+        row["pdb_key"] = pdb_key
+    return _render(candidates=[row], columns=["ipTM"], job_id="job-1",
+                   tool_slug="boltzgen")
+
+
+_MISSING = object()
+
+
+def test_the_download_label_is_the_extension_the_row_actually_serves():
+    """The button said .pdb while the href served .cif.
+
+    boltzgen stores four of its five example rows as .cif and the
+    label was hardcoded. A QC round found the replacement expression
+    was pinned by no test at all -- corrupting the rendered label
+    survived 819 targeted tests -- so this is that pin.
+    """
+    assert _download_labels(_one_row("designs/d_1.pdb")) == [".pdb"]
+    assert _download_labels(_one_row("designs/d_2.cif")) == [".cif"]
+    assert _download_labels(_one_row("designs/d_3.CIF")) == [".cif"]
+    # No extension to read: the historic default, not a guess.
+    assert _download_labels(_one_row("designs/d_4")) == [".pdb"]
+
+
+def test_a_non_string_pdb_key_does_not_500_the_page():
+    """job.result is container output, so the key's TYPE is not ours.
+
+    `'.' in pdb_key` raises TypeError on an int, which aborts the
+    whole Jinja render -- the entire results page, not one cell. No
+    shipped pipeline writes a non-str key; this pins the coercion so
+    one arriving later is a wrong label rather than a 500.
+    """
+    labels = _download_labels(_one_row(12345))
+    assert labels == [".pdb"], labels
+
+
+def test_a_row_with_no_structure_offers_no_download():
+    assert _download_labels(_one_row(_MISSING)) == []
+    assert _download_labels(_one_row("")) == []
