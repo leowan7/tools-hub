@@ -188,28 +188,45 @@ class TestResultTone:
         blueprints/jobs.py and shared/compute_campaigns.py each coerce a
         missing completion payload to {} on a SUCCEEDED job.
         """
-        # A FALSY payload is not a shape question. job_detail.html:282
-        # gates the whole results section on `job.result`, so {} and None
-        # render no results block at all -- the email must match the page.
-        for payload in ({}, None):
-            job = _job(status="succeeded", error=None, tool="boltzgen",
-                       result=payload)
-            assert email_mod._result_tone(job) == "empty", payload
-            summary = email_mod._result_summary(job, tone="empty")
-            assert summary.startswith(
-                "The pipeline finished but produced no passing candidates."
-            ), payload
+        # THE RULE: the email classifies a finished job the way the PAGE
+        # does. job_detail.html:282 renders a results block only for a
+        # truthy result, and that block reads candidate_records -- so a
+        # falsy payload shows nothing and an unreadable one shows
+        # "Candidates (0)". Either way the customer has nothing, and
+        # either way the email must say so.
+        #
+        # Exact equality, not startswith: an earlier version used
+        # startswith and a mutation appending " Your designs are
+        # downloadable on the job page." to the copy left all 22 tests in
+        # this file green.
+        NO_OUTPUT = (
+            "The run finished but returned no output. See the job page, "
+            "or rerun it."
+        )
+        for tool in ("boltzgen", "mpnn", "af2"):
+            for payload in ({}, None):
+                job = _job(status="succeeded", error=None, tool=tool,
+                           result=payload)
+                assert email_mod._result_tone(job) == "empty", (tool, payload)
+                # Tool-neutral, deliberately. The binder-design copy tells
+                # the reader to expand "binder length, hotspot list,
+                # number of designs" -- knobs mpnn and af2 do not have.
+                assert email_mod._result_summary(
+                    job, tone="empty",
+                ) == NO_OUTPUT, (tool, payload)
 
-        # Truthy but unreadable: the page DOES render a results block
-        # ("Candidates (0)"), so "the results are on the job page" is true
-        # here and false for the two above. Pinned exactly, because
-        # absence-only assertions let a DIFFERENT false sentence through.
+        # Truthy but unreadable -- the shape gpu/modal_client.py builds
+        # when a composite pipeline returns {"status": "COMPLETED",
+        # "output": {}}. An earlier version of this test asserted this was
+        # a SUCCESS, which is what let the email say "your run is ready"
+        # with a green View results button over a page reading
+        # "returned no candidates".
         job = _job(status="succeeded", error=None, tool="boltzgen",
                    result={"tier": "pilot", "runtime_seconds": 10})
-        summary = email_mod._result_summary(
-            job, tone=email_mod._result_tone(job),
+        assert email_mod._result_tone(job) == "empty"
+        assert email_mod._result_summary(job, tone="empty").startswith(
+            "The pipeline finished but produced no passing candidates."
         )
-        assert summary == "Your run finished. The results are on the job page."
 
     def test_succeeded_with_candidates_is_success(self):
         job = _job(status="succeeded", error=None,

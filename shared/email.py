@@ -1201,6 +1201,16 @@ def _result_tone(job) -> str:  # noqa: ANN001
     return "success"
 
 
+# Keys that describe how a run went, not what it produced. A payload made
+# only of these carries no output by any reading, present or future -- see
+# the metadata-only branch in _is_empty_result.
+_RUN_METADATA_KEYS = frozenset({
+    "status", "tier", "preset", "runtime_seconds", "gpu_seconds",
+    "provider_job_id", "job_id", "designs_total", "designs_completed",
+    "n_failures", "sample", "step", "cycle",
+})
+
+
 def _is_empty_result(job) -> bool:  # noqa: ANN001
     """True when a succeeded job's result payload contains no useful output.
 
@@ -1216,9 +1226,13 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
         under a green View results button
       * ``pdb_b64`` (structure-prediction tools — AF2, ColabFold, ESMFold)
 
-    A tool whose result shape is not recognised is treated as a real
-    success — we'd rather show the user a working page than misclassify
-    a future tool's output.
+    A tool whose result shape is not recognised is still treated as a
+    real success — we'd rather show the user a working page than
+    misclassify a future tool's output. That default is pinned by
+    test_succeeded_with_unknown_shape_is_success and is deliberate.
+
+    The one carve-out is a payload built ONLY of _RUN_METADATA_KEYS, which
+    has no output key of any kind rather than an unfamiliar one.
     """
     result = job.result or {}
     if not isinstance(result, dict):
@@ -1242,6 +1256,26 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
         return len(designs) == 0
     if result.get("pdb_b64"):
         return False
+    # Truthy with no recognised shape. The forward-compat default here is
+    # DELIBERATE and stays: test_succeeded_with_unknown_shape_is_success
+    # pins "unknown shapes default to success -- never empty", so a future
+    # tool with real output is never told it produced nothing.
+    #
+    # But the live defect is not a future tool's shape. It is a payload
+    # carrying ONLY run metadata, which gpu/modal_client.py builds when a
+    # composite pipeline returns {"status": "COMPLETED", "output": {}} --
+    # {"tier": "pilot", "runtime_seconds": 90}. There is no output key at
+    # all, present or future. The page agrees: job_detail renders its
+    # results block for any truthy result and that block reads
+    # candidate_records, so it shows "Candidates (0)". Calling that a
+    # success sent "your run is ready", a green View results button and
+    # "validate the top design" over a page saying it returned none.
+    #
+    # So: metadata-only is empty, anything carrying an unrecognised KEY is
+    # still a success. Narrow on purpose -- it fixes the live path without
+    # touching the decision the test above records.
+    if set(result) <= _RUN_METADATA_KEYS:
+        return True
     return False
 
 
@@ -1272,7 +1306,18 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 
     if tone == "empty":
         result = job.result or {}
-        seqs = result.get("sequences") if isinstance(result, dict) else None
+        if not result or not isinstance(result, dict):
+            # Nothing to read, so remediation advice would be a guess. The
+            # copy below prescribes "binder length, hotspot list, number of
+            # designs" -- knobs ProteinMPNN's form does not have (its
+            # design parameter is num_seq_per_target) and AF2's does not
+            # either. Before the falsy branch in _is_empty_result, {} on
+            # those tools took the success path and never reached it.
+            return (
+                "The run finished but returned no output. See the job "
+                "page, or rerun it."
+            )
+        seqs = result.get("sequences")
         if isinstance(seqs, list):
             return (
                 "The run finished but no sequences were returned. See the job "

@@ -495,15 +495,16 @@ class TestEveryPartialIsExampleSafe:
             # Whitespace-flattened: the raw HTML wraps mid-phrase, so a
             # promise split across two source lines reads normally to a
             # human and was invisible to `p in html`. Demonstrated on
-            # comparison.html, which wraps on the word "downloadable".
+            # comparison.html -- which the OTHER scan below renders, not
+            # this one; both had the same hole and both are flattened.
             flat = re.sub(r"\s+", " ", html)
             found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
             if found:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
 
-    def test_the_catalog_page_makes_no_suppressed_promise(self, tools_app):
-        """/tools is the other page these phrases reach, and was unscanned.
+    def test_the_public_pages_make_no_suppressed_promise(self, tools_app):
+        """/tools and / are the other pages these phrases reach.
 
         The scan above walks /tools/<slug> only. The catalog hero read
         "Every pipeline lands ranked candidates with downloadable PDBs"
@@ -511,18 +512,25 @@ class TestEveryPartialIsExampleSafe:
         hardcoded catalog entries -- and nothing here would have noticed.
         A review found it by grepping, not by a test.
 
-        The HOMEPAGE is deliberately not scanned: templates/index.html
-        carries "downloadable PDBs" correctly scoped to the design step,
-        so blocking the bare phrase there would flag true copy.
+        The homepage was exempt while templates/index.html carried the
+        bare phrase for its design step. It no longer does -- that copy
+        says "downloadable structures" now, for the same format reason
+        (BoltzGen writes .cif for most rows) -- so the exemption is gone
+        and both pages are scanned. The sentence claiming the exemption
+        survived one commit past the edit that voided it.
         """
         flask_app, _ = tools_app
-        html = flask_app.test_client().get("/tools").get_data(as_text=True)
-        flat = re.sub(r"\s+", " ", html)
-        found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
-        assert not found, (
-            "the /tools catalog names a control it does not show: "
-            f"{found}"
-        )
+        client = flask_app.test_client()
+        for path in ("/tools", "/"):
+            flat = re.sub(
+                r"\s+", " ", client.get(path).get_data(as_text=True),
+            )
+            found = [
+                p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat
+            ]
+            assert not found, (
+                f"{path} names a control it does not show: {found}"
+            )
 
     def test_a_real_page_with_nothing_to_download_promises_nothing(
         self, tools_app,
@@ -541,9 +549,10 @@ class TestEveryPartialIsExampleSafe:
             flask_app, "opendde", job_id="real-job-1", example=False,
             result={
                 # The load-bearing keys a real zero-design opendde job
-                # writes, not a minimal stand-in. Six of the eleven
-                # _write_result emits; the five omitted -- status, sample,
-                # step, cycle, provider_job_id -- reach no branch this
+                # writes, not a minimal stand-in. Six of the eleven the
+                # COMPLETED path emits (_fail writes a different, shorter
+                # payload); the five omitted -- status, sample, step,
+                # cycle, provider_job_id -- reach no branch this
                 # exercises.
                 # run_pipeline sets designs_total from
                 # the job spec, never from len(designs_out). A fixture
@@ -587,18 +596,23 @@ class TestEveryPartialIsExampleSafe:
         # tuple has six entries. Two are retired wordings written
         # nowhere, and no control can vouch for those.
         #
-        # The third, "downloadable PDBs", is NOT written nowhere -- an
-        # earlier version of this comment said it was, and following that
-        # wrong claim is how a reviewer found two live defects: the
-        # completion email promised it for runs that returned nothing
-        # (shared/email.py), and /tools promised it for every pipeline
-        # including the ones that return sequences or a single structure
-        # (templates/tools/comparison.html). Both fixed. The phrase is
-        # still carried, correctly scoped to the design step, at
-        # templates/index.html:614. NOT at shared/email.py any more --
-        # that copy now says "downloadable structures"; the two
-        # occurrences left there quote the old defect in a docstring and
-        # a comment.
+        # The third, "downloadable PDBs", WAS live copy when this entry
+        # was added -- an earlier version of this comment said it was
+        # written nowhere, and following that wrong claim is how a
+        # reviewer found three live defects: the completion email
+        # promised it for runs that returned nothing (shared/email.py),
+        # /tools promised it for every pipeline including the ones that
+        # return sequences or a structure
+        # (templates/tools/comparison.html), and the homepage promised
+        # the format for a design step that includes BoltzGen, which
+        # writes .cif (templates/index.html).
+        #
+        # All three are fixed, so the phrase is now in NO template. Its
+        # only occurrences repo-wide are two in shared/email.py quoting
+        # the old defect, in a docstring and a comment. All three entries
+        # here are retired wordings today -- but this one was not when it
+        # was added, which is why it is worth saying so rather than
+        # quietly relisting it with the other two.
         # results_shell.html renders this one in the `else` of the same
         # `is_example` branch that carries the shortlist line, so the
         # boltz2 render above holds both.
