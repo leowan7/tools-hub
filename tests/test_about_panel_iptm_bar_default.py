@@ -65,8 +65,9 @@ from shared.score_legends import SCORE_LEGENDS, get_legend
 # (shared/wallet_estimates.py:672). Counted on this branch by wrapping
 # those functions: 10 of the 28 pages an _entries call renders reach the
 # SELECT -- the 14 guide pages build no such context at all, and af2,
-# colabfold, esmfold and opendde stop short of it -- so 50 live SELECTs
-# across this file's five _entries calls.
+# colabfold, esmfold and opendde stop short of it. _entries memoises on
+# the module-scoped app, so its 28 renders happen once for the module:
+# 10 live SELECTs total, not 10 on each of the five call sites.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: ANY pointer wording. Used where PRESENCE is the question: a tool that
@@ -167,35 +168,25 @@ def _iptm_entry(body: str, slug: str, path: str) -> str:
     return named[0]
 
 
-@pytest.fixture
-def all_tools_app(monkeypatch):
-    """Every registered adapter flagged on, not a remembered subset."""
-    import app as app_module  # noqa: PLC0415  (populates tools.base registry)
-    from shared.feature_flags import flag_name  # noqa: PLC0415
-    from tools import base as tool_base  # noqa: PLC0415
-
-    slugs = sorted(a.slug for a in tool_base.all_adapters())
-    assert len(slugs) >= 14, (
-        f"adapter registry holds {len(slugs)} tools; a registry that did "
-        "not populate would leave the page tests below with nothing to "
-        "iterate"
-    )
-    for slug in slugs:
-        monkeypatch.setenv(flag_name(slug), "on")
-    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    flask_app = app_module.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app, slugs
-
-
 #: Both surfaces that render the per-tool clause. help/faq.html states the
 #: same band but names no tool and points nowhere, so it is correct as it
 #: stands and is not listed here.
 SURFACES = ("/tools/{slug}", "/help/tools/{slug}")
 
 
+#: Keyed by the app the module-scoped fixture built, so the 28 renders
+#: happen on the first call and every later call in the module reuses
+#: them. A new module builds a new app, which misses and rebuilds.
+#: Do not call this inside a patch that changes rendering: the first
+#: call's HTML is what every later call in the module receives.
+_ENTRIES: dict = {}
+
+
 def _entries(all_tools_app) -> dict[tuple[str, str], str]:
     flask_app, slugs = all_tools_app
+    cached = _ENTRIES.get(flask_app)
+    if cached is not None:
+        return cached
     client = flask_app.test_client()
     out = {}
     for slug in slugs:
@@ -219,6 +210,7 @@ def _entries(all_tools_app) -> dict[tuple[str, str], str]:
         f"expected {len(slugs)} slugs x 2 surfaces = {len(slugs) * 2} "
         f"entries; SURFACES={SURFACES} produced {len(out)}"
     )
+    _ENTRIES[flask_app] = out
     return out
 
 

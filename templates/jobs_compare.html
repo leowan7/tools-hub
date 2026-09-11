@@ -104,7 +104,20 @@
                     {% set verdict = judge_design(job.tool, cand, preset=col.mode) %}
                     <tr style="border-top: 1px solid var(--border);">
                       <td style="padding: 0.25rem 0.3rem;">
-                        {{ cand.get('rank', loop.index) }}
+                        {# The row's POSITION in this run's list, matching the
+                           "row N of M" disclosure in the Design row below,
+                           which counts with col.top_index + 1,
+                           and components/candidate_table.html. This printed
+                           cand.rank until the numbering fix, and a side-by-side
+                           of several tools is where that read worst: rank is a
+                           payload field the tools do not agree on, 0-based on
+                           af2/boltz2/esmfold2_design/iggm/opendde and 1-based
+                           on the other six, and on af2 and iggm it is not a
+                           rank at all but an index -- af2's over its input
+                           records, iggm's over its output files. Three adjacent
+                           panels each headed "#" disagreed about what to call a
+                           first design. #}
+                        {{ loop.index }}
                         {#- The star's tooltip must not promise a location. The
                             Shared metrics table renders only the first FOUR
                             columns, so on a 5-job comparison the starred
@@ -265,25 +278,40 @@
                     <span style="font-family: var(--font-mono);">{{ top.get('name') or top.get('pdb_key') or '—' }}</span>
                     {% if col.candidates and col.top is not sameas (col.candidates | first) %}
                       {# POSITION IN THE LIST, AND NEVER THE WORD "RANK".
-                         The # column beside this prints the design's STORED
-                         rank, and the base is not uniform: af2, boltz2,
-                         esmfold2-design and iggm number from 0 (so job
-                         2b917b54 itself), while bindcraft, boltzgen,
-                         proteina, pxdesign, rfantibody and rfdiffusion number
-                         from 1. Measured off each tool's example payload.
+                         This counts from 1 and the # column beside it now
+                         does too, so the two agree -- which they did not
+                         while that column printed the design's STORED rank.
+                         That rank is a payload field the tools do not agree
+                         on: 0-based on af2, boltz2, esmfold2_design, iggm
+                         and opendde, 1-based on bindcraft, boltzgen,
+                         proteina, pxdesign, rfantibody and rfdiffusion, and
+                         on af2 and iggm not a rank at all but an index over
+                         the input records / the output files. So the starred row could be labelled "1" by
+                         the table while this line called it row 2, and "not
+                         rank 1" was a confident contradiction of the table
+                         directly above.
+
+                         THE RULE OUTLIVES THAT BUG: the number beside this is
+                         a POSITION and the stored rank is not, and neither
+                         recovers the other. A dropped design leaves a gap in
+                         the stored ranks -- several pipelines bind the loop
+                         index before the failure ``continue``
+                         (tools/esmfold/run_pipeline.py:1023-1063,
+                         tools/boltz2/run_pipeline.py:629-683) -- and on the
+                         tool's own results page af2 and iggm re-sort by score
+                         (templates/tools/af2_results.html:70,
+                         templates/tools/iggm_results.html:40). Call the
+                         position a rank and a reader carries that word to
+                         both.
 
                          NO CENSUS OF THE REST. Three drafts of this aside
                          tried to say how many tools rank nothing and each got
                          it wrong, because "registered adapters", "tools with
                          an example payload" and "tools that write a rank" are
                          three different populations and the sentence kept
-                         mixing them. The named ten are the ones this rule was
-                         measured on; that is all it needs to say. Saying "not
-                         rank 1" about a row the table above labels "1" is a
-                         confident contradiction on the very job this page was
-                         fixed for -- and it read that way only because the
-                         test fixture used 1-based ranks the tool does not
-                         write. Row position is unambiguous in both bases. #}
+                         mixing them. The eleven tools given a base above are
+                         the ones it was measured on; that is all it needs to
+                         say. #}
                       <div style="color: var(--text-secondary);">not the first design listed &mdash; row {{ col.top_index + 1 }} of {{ col.candidates | length }}</div>
                     {% endif %}
                     {# ONE RENDERER, FOUR STATES. This branched four ways and
