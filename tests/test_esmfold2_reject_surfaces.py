@@ -232,6 +232,70 @@ class TestShareCard:
         title = _share(flask_app, monkeypatch, job)["og_title"]
         assert "ipTM 0.956" in title, title
 
+    def test_an_unranked_designs_list_gets_no_score_at_all(
+        self, flask_app, monkeypatch,
+    ):
+        """THE REGRESSION THIS ROUTE'S WIDENING INTRODUCED, and the reason
+        ``supports_headline_claim`` exists.
+
+        Moving from ``result["candidates"]`` to ``candidate_records`` was a fix
+        for the designs-only tools -- and it also reached shapes that are NOT
+        ranked. af2 / colabfold / esmfold at the ``batch`` tier store one
+        record per INDEPENDENTLY SUBMITTED sequence in submission order
+        (``designs_out`` is appended to and never sorted), so ``designs[0]`` is
+        whichever sequence the customer pasted first. Before the gate this
+        route published "Top score plddt 55.000" -- seqA -- on a PUBLIC share
+        card in a run where seqB scored 0.91.
+
+        origin/main emitted no clause for these tools at all, so abstaining
+        restores exactly what they had rather than inventing a third
+        behaviour.
+        """
+        job = _job(
+            tool="af2", preset="batch",
+            result_over={"is_antibody": None, "candidates": None, "designs": [
+                {"name": "seqA", "pdb_key": "designs/seqA.pdb",
+                 "ptm": 0.400, "plddt": 0.55},
+                {"name": "seqB", "pdb_key": "designs/seqB.pdb",
+                 "ptm": 0.950, "plddt": 0.91},
+            ]},
+        )
+        job.result.pop("candidates")
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert "Top score" not in title, title
+        assert "0.55" not in title and "55.000" not in title, title
+
+    def test_a_bar_does_not_substitute_for_an_order(
+        self, flask_app, monkeypatch,
+    ):
+        """A two-armed gate that also passed on ``tool_has_bar`` was written
+        and retracted before shipping. ``headline_candidate`` DOES NOT
+        RE-RANK: it returns the first record not shown to fall short, in
+        stored order, so on an unranked list a bar only narrows WHICH
+        arbitrary record is crowned.
+
+        boltz2 is the case -- it declares a bar AND stores an unranked
+        ``designs`` list built straight off the pasted sequences. Both designs
+        here clear its bar; the first one listed is the worse one. A bar-armed
+        gate would publish 0.710 with 0.950 in the same run.
+
+        A single-clearing-design fixture CANNOT see this, which is how the
+        first probe of the bar arm passed.
+        """
+        job = _job(
+            tool="boltz2", preset="pilot",
+            result_over={"is_antibody": None, "designs": [
+                {"name": "b0", "pdb_key": "designs/b0.pdb", "rank": 0,
+                 "iptm": 0.710, "plddt": 88.0, "n_hotspot_contacts": 5},
+                {"name": "b1", "pdb_key": "designs/b1.pdb", "rank": 1,
+                 "iptm": 0.950, "plddt": 90.0, "n_hotspot_contacts": 6},
+            ]},
+        )
+        job.result.pop("candidates")
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert "Top score" not in title, title
+        assert "0.710" not in title, title
+
     def test_a_tool_with_no_bar_is_untouched(self, flask_app, monkeypatch):
         """bindcraft declares no gate columns, so its records are
         ``unjudged`` -- which is not ``below`` -- and the card still leads

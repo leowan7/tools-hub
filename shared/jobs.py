@@ -239,6 +239,64 @@ def headline_candidate(
     return measured_fallback or fallback
 
 
+def supports_headline_claim(
+    result: Optional[dict], tool: str, preset: Optional[str] = None
+) -> bool:
+    """Whether "the top design of this run" means anything for this result.
+
+    THE TEST IS PURELY THE SHAPE: does the result carry a ``candidates``
+    array? That is the canonical binder-design shape and the container ORDERS
+    it -- see :func:`headline_candidate`, which exists precisely because
+    ``candidates[0]`` is "whatever the container ranked first". A ``designs``
+    array carries no ordering guarantee at all: for af2 / colabfold / esmfold
+    at the ``batch`` tier, and for boltz2, it is one record per INDEPENDENTLY
+    SUBMITTED sequence in submission order (``designs_out`` is built by
+    ``.append()`` and never sorted -- tools/af2/run_pipeline.py:1196-1399,
+    tools/boltz2/run_pipeline.py:626-728, the latter stamping ``"rank": i``
+    straight off the enumeration index). Its head is whichever sequence the
+    customer pasted first, and nothing about it is "top".
+
+    A BAR IS NOT A SUBSTITUTE FOR AN ORDER, and a two-armed version of this
+    function that also returned True whenever ``tool_has_bar`` held was
+    written, probed, and retracted before it shipped.
+    :func:`headline_candidate` DOES NOT RE-RANK -- it returns the FIRST record
+    not shown to fall short, in stored order -- so on an unranked list a bar
+    only narrows WHICH arbitrary record gets crowned. Probed on this tool: an
+    esmfold2-design ``designs`` list of d0 (ipTM 0.80, pI 5.0) and d1 (ipTM
+    0.95, pI 5.0), both clearing the bar, crowns d0 while 0.95 sits in the
+    same run. The first probe of the bar arm missed this only because its
+    fixture had a single clearing design; two clearing designs is the case
+    that shows it.
+
+    What the shape test costs and what it keeps, checked per shape:
+    esmfold2-design writes ``candidates``
+    (tools/esmfold2_design/modal_app.py:693) so modern rows still qualify and
+    the pI 11.95 reject is still filtered; its LEGACY ``designs``-only rows
+    abstain, which is exactly what ``result["candidates"]`` returned for them
+    before any of this; bindcraft declares no gate columns yet ships a ranked
+    ``candidates`` array, and still qualifies on the shape alone.
+
+    THE READ IS WHAT NEEDS THE GATE, NOT THE BAR. Applying a bar to a read
+    that already existed is safe; WIDENING a read is what puts a surface in
+    front of shapes it was never written for. This function exists because
+    ``_top_score_for_share`` moved from ``result["candidates"]`` to
+    :func:`candidate_records` and inherited the ``designs`` shapes along with
+    the fix.
+
+    ``tool`` and ``preset`` are accepted and deliberately unused: every caller
+    already has them, and a shape-only answer is a decision this docstring
+    records rather than a signature that forecloses it.
+
+    The key is tested in ``candidate_records``' own order over the same
+    normalized result, so the two can never disagree about which array they
+    are describing -- the same contract :func:`candidate_count` keeps.
+    """
+    normalized = _normalize_result_shape(result)
+    return isinstance(normalized, dict) and isinstance(
+        normalized.get("candidates"), list
+    )
+
+
 def candidate_meets_bar(
     tool: str, cand: object, preset: Optional[str] = None
 ) -> bool:

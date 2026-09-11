@@ -41,6 +41,7 @@ from shared.jobs import (
     get_job,
     headline_candidate,
     list_campaign_labels_for_user,
+    supports_headline_claim,
     list_jobs_paginated,
     mark_failed,
     mark_running,
@@ -144,6 +145,18 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     ``ToolJob.from_row`` normalises it away (shared/jobs.py:368) before a job
     ever reaches this function, so both reads are flat by the time they get
     here.
+
+    THAT WIDENING WAS NOT A PURE FIX, AND THIS DOCSTRING CLAIMED IT WAS.
+    Reaching the ``designs`` shapes also reached shapes that are NOT ranked.
+    An af2 ``batch`` result is one record per independently submitted sequence
+    in submission order, so the widened read published "Top score plddt
+    55.000" -- the sequence the customer pasted first -- on a public card in a
+    run whose other design scored 0.91. Probed through this route, not
+    reasoned about. :func:`shared.jobs.supports_headline_claim` is the gate
+    that restores the old answer for the unordered shapes while keeping the
+    fix for the ``candidates`` array the container really does rank; see it
+    for why the test is the SHAPE alone, and why a bar does not substitute for
+    an order.
     """
     if getattr(job, "status", None) != "succeeded":
         return None
@@ -155,6 +168,10 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     mode = score_legends.resolve_mode(
         tool, result, getattr(job, "preset", None)
     )
+    # Before picking a design, ask whether this result can support a claim
+    # about its "top" one at all. An unordered shape cannot, whatever its bar.
+    if not supports_headline_claim(result, tool, mode):
+        return None
     top, verdict = headline_candidate(records, tool, preset=mode)
     if top is None:
         return None
