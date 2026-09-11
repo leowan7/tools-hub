@@ -5,10 +5,9 @@ writers on one tool; #248 fixed /jobs/compare and listed the completion email
 among the surfaces it did not reach. Both of those are PULLED -- a customer
 meets them by opening the site. This one is pushed: the webhook path
 ``webhooks/modal.py`` -> ``complete_job`` mails it when a run finishes, so it
-reaches a customer who never asked to look. (Do not give this an ordinal. The
-repo's two enumerations of the class disagree -- #248's reaches six, #241's
-reaches seven, and a peer branch numbers four of them "Surfaces 3-6" -- so any
-number here is checkable against nothing.)
+reaches a customer who never asked to look. (Do not give this an ordinal. Three
+drafts tried to justify a number by counting the class's members and all three
+got it wrong; #248's own message gives two different totals in two paragraphs.)
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), whose result ships verbatim as this tool's worked
@@ -253,6 +252,16 @@ def test_the_mail_states_the_bar_the_leading_design_meets():
         assert body.index("Meets") < body.index("View results"), (
             f"the {part} body renders the judgement after the call to action"
         )
+        # AND AFTER THE CALLOUT IT QUALIFIES, checked on the RENDER so both
+        # parts are covered. The source check below reads job_complete.html
+        # only; moving the block in job_complete.txt, or folding the sentence
+        # into ``summary`` and passing "" for the slot, puts the judgement
+        # ABOVE the callout in the delivered body and leaves the source check
+        # green. Both were demonstrated.
+        assert body.index("Top design") < body.index("Meets"), (
+            f"the {part} body renders the judgement before the callout whose "
+            f"framing it exists to qualify: {body!r}"
+        )
 
     # THE STRUCTURAL HALF, READ OFF THE TEMPLATE SOURCE rather than the render.
     # The rendered-HTML version of this check counted </div> between offsets,
@@ -264,6 +273,15 @@ def test_the_mail_states_the_bar_the_leading_design_meets():
     # callout's opening div and its closing one.
     tpl = (Path(__file__).resolve().parents[1] / "templates" / "email"
            / "job_complete.html").read_text("utf-8")
+    # ``index`` takes the FIRST match, so a second similarly-styled div added
+    # above the callout would silently re-anchor all three offsets and the
+    # check would go on passing about the wrong block.
+    for marker in ('<div style="margin:1rem 0;padding:12px 14px;',
+                   "</div>\n  {% endif %}", "{{ top_score_verdict }}"):
+        assert tpl.count(marker) == 1, (
+            f"{marker!r} is no longer unique in job_complete.html, so the "
+            f"offsets below no longer identify the callout"
+        )
     callout_open = tpl.index('<div style="margin:1rem 0;padding:12px 14px;')
     callout_close = tpl.index("</div>\n  {% endif %}", callout_open)
     verdict_at = tpl.index("{{ top_score_verdict }}")
@@ -482,7 +500,7 @@ def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim(tool):
     #
     # THE NEEDLE IS THE FOOTER'S PUNCTUATION, which is the only thing that
     # differs: job_complete.txt ends 'Ranomics Tools. <url>' and the inline
-    # ``_render_text`` fallback ends 'Ranomics Tools - <url>' with an em dash.
+    # ``_render_text`` fallback ends with an em dash and no period.
     # 'preset <slug>' does NOT distinguish them -- both emit it, as does the
     # HTML template -- so an earlier needle on that string passed against a
     # deliberately broken template and closed nothing.
@@ -545,37 +563,61 @@ def test_an_unranked_designs_list_abstains_even_when_the_tool_has_a_bar():
     )
 
 
-def test_the_mail_identifies_the_design_when_there_is_no_filename():
-    """Say WHICH row, when there is no filename to say it with.
+def test_the_mail_says_so_when_it_is_not_leading_with_the_first_design():
+    """Deriving the headline means it can differ from the page's lead row.
 
-    Deriving the headline means the mail can show a design that is not the one
-    the results page leads with -- and pxdesign, rfdiffusion and boltzgen
-    candidates carry no ``pdb_key``, so before this the customer got a bare
-    number, unidentifiable, that no longer matched row 1 on the page.
     ``headline_candidate``'s docstring puts the disclosure on the caller ("the
     caller is expected to say which row it picked when the two differ") and
-    /jobs/compare does it; this is the same duty on the pushed surface.
+    /jobs/compare does it. This is the same duty on the pushed surface, where
+    the customer has no table beside the number to locate it in.
 
-    Fixture: record 0 wins on ipTM but fails the pLDDT leg, record 1 clears
-    both -- so the pick genuinely differs from the stored first row.
+    THE SHIPPED EXAMPLE, BECAUSE ITS ``rank`` IS 0-BASED. That is what makes
+    this test able to tell position from the stored field: the pick is the
+    SECOND record and carries ``rank: 1``, so "design 2 of 2" is right and
+    anything rendering the stored value says "1". A fixture whose ranks run
+    1,2,3 -- as an earlier version of this test used -- makes the two
+    identical and passes whichever the code does.
     """
-    bodies = _bodies(_sent(_job(tool="pxdesign", preset="pilot", result={
-        "candidates": [
-            {"rank": 1, "scores": {"ipTM": 0.88, "pLDDT": 68.0}},
-            {"rank": 2, "scores": {"ipTM": 0.79, "pLDDT": 90.0}},
-            {"rank": 3, "scores": {"ipTM": 0.60, "pLDDT": 55.0}},
-        ],
-    })))
+    result = _example_result()
+    assert result["candidates"][1]["rank"] == 1, (
+        "the example's second candidate no longer carries rank 1; this test "
+        "distinguishes position from the stored rank field and needs a 0-based "
+        "fixture to do it"
+    )
+    bodies = _bodies(_sent(_job(result=result)))
     for part, body in bodies.items():
-        # The pick, not the stored first row.
-        assert "0.790" in body, f"the {part} body lost the derived headline"
-        assert "0.880" not in body, (
-            f"the {part} body leads with the row the tool's own bar fails"
+        assert PASS_IPTM in body, f"the {part} body lost the derived headline"
+        assert "design 2 of 2" in body, (
+            f"the {part} body leads with the second design and does not say "
+            f"so, leaving a number the results page does not lead with and "
+            f"nothing to locate it by: {body!r}"
         )
-        # ...and it says which one, so the number can be matched to a design.
-        assert "rank 2 of 3" in body, (
-            f"the {part} body shows a design the customer cannot identify, on "
-            f"a tool whose candidates carry no filename: {body!r}"
+        # Never the stored field, and never the word.
+        assert "rank" not in body.lower(), (
+            f"the {part} body prints a rank. That field is 0-based on seven "
+            f"tools and 1-based on six, so the sentence means two different "
+            f"things depending on which tool sent it: {body!r}"
+        )
+
+
+def test_no_position_line_when_the_first_design_is_the_one_shown():
+    """The counterweight: a line that always rendered would be furniture.
+
+    /jobs/compare gates its equivalent on the pick not being first, and so does
+    this. On a run whose first design already clears the bar there is nothing
+    to disclose.
+    """
+    result = _example_result()
+    # Make record 0 pass, so the headline IS the first record.
+    result["candidates"][0]["scores"]["pI"] = 5.0
+    bodies = _bodies(_sent(_job(result=result)))
+    for part, body in bodies.items():
+        assert DROP_IPTM in body, (
+            f"the {part} body should now lead with the first record"
+        )
+        assert "design 1 of" not in body and "design 2 of" not in body, (
+            f"the {part} body discloses a position for a design that IS the "
+            f"first one listed: {body!r}"
         )
 
 
@@ -585,7 +627,7 @@ def test_a_failed_run_gets_no_endorsement():
     ``_top_candidate_summary`` returns five empty strings unless ``tone`` is
     "success". Delete that line and a job that died mid-run still mails the
     green "Top design" callout, with a legend saying the number is credible,
-    under the headline "Your run failed" -- measured, all tests green.
+    under a headline saying the run failed.
 
     The example payload is reused deliberately: it HAS candidates that would
     render, so the silence here is the tone gate's doing and not an empty

@@ -264,7 +264,7 @@ def _caption_of(job: ToolJob) -> str:
     # callout, and test_the_caption_is_the_legend_and_nothing_invented below
     # asserts that half is the legend and nothing else.
     # tests/test_job_complete_email_headline.py holds the judgement.
-    label, value, caption, _pdb, _bar = email_mod._top_candidate_summary(
+    label, value, caption, _pdb, _bar, _pos = email_mod._top_candidate_summary(
         job=job, tone="success",
     )
     assert (label, value) == ("ipTM", "0.910"), (label, value)

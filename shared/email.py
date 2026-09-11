@@ -155,7 +155,9 @@ def _job_complete_template_context(
         "failed":  f"Your {tool} run failed",
     }[tone]
     (top_score_label, top_score_value, top_score_caption, top_pdb_key,
-     top_score_verdict) = _top_candidate_summary(job=job, tone=tone)
+     top_score_verdict, top_position) = _top_candidate_summary(
+        job=job, tone=tone,
+    )
     next_step_url, next_step_label = _next_step_for_job(
         job=job, base_url=base_url, tone=tone,
     )
@@ -175,16 +177,20 @@ def _job_complete_template_context(
         "top_score_caption": top_score_caption,
         "top_score_verdict": top_score_verdict,
         "top_pdb_key":       top_pdb_key,
+        "top_position":      top_position,
         "next_step_url":     next_step_url,
         "next_step_label":   next_step_label,
     }
 
 
-def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:  # noqa: ANN001
-    """Pull (label, value, 1-line caption, pdb_key, judgement) for the design
+def _top_candidate_summary(
+    *, job, tone: str,
+) -> tuple[str, str, str, str, str, str]:  # noqa: ANN001
+    """Pull (label, value, caption, pdb_key, judgement, position) for the
+    design
     this mail should LEAD with.
 
-    Returns five empty strings when the job has no candidate scores to
+    Returns six empty strings when the job has no candidate scores to
     surface (sequence-design tools, structure-prediction tools, failed
     runs). The caption comes from shared.score_legends; when no legend
     is registered for the chosen column the caption falls back to "".
@@ -200,12 +206,12 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     survives capture, so nothing here evidences it. The pI and the drop are in
     ``example/result.json``.)
 
-    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. The repo
-    holds two enumerations of this class and they disagree: #248's message
-    ("surface two of six") names four consumers still open, reaching six, while
-    #241's names five, reaching seven — they differ over "the target ranking
-    table". A peer branch repairing four of them numbers its own "Surfaces 3-6".
-    Nobody can check an ordinal against that; a name needs no arithmetic.
+    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. No
+    argument for the rule is given here on purpose: three successive drafts
+    tried to justify it by counting the class's members and all three got the
+    count wrong, the last by quoting one paragraph of #248 while its closing
+    paragraph gives a different total. A name needs no arithmetic, which is the
+    whole point.
 
     It is the one that can reach a customer who never opened the site: the
     webhook path ``webhooks/modal.py`` -> ``complete_job`` -> here fires when
@@ -243,10 +249,10 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     whose ``designs[]`` is not a ranked list.
     """
     if tone != "success":
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
     result = getattr(job, "result", None) or {}
     if not isinstance(result, dict):
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
 
     from shared import score_legends  # noqa: PLC0415
     from shared.jobs import (  # noqa: PLC0415
@@ -285,7 +291,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     records = candidate_records(result)
     top, verdict = headline_candidate(records, tool_slug, preset=mode)
     if not isinstance(top, dict):
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
 
     # A "TOP DESIGN" CLAIM NEEDS SOMETHING THAT RANKED THE LIST — nothing else
     # will do, and a bar in particular will not; see below. Widening this
@@ -331,7 +337,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     # disagree about which list is being described.
     normalized = _normalize_result_shape(result)
     if not isinstance((normalized or {}).get("candidates"), list):
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
 
     scores = top.get("scores")
     if not isinstance(scores, dict) or not scores:
@@ -344,7 +350,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
         }
         scores = flat or {}
     if not scores:
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
 
     # The caption underneath quotes the 80/90 band, so the number beside
     # it has to be on that scale. This mailed "pLDDT 0.830" directly above
@@ -370,7 +376,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
                 chosen_col = col
                 break
     if chosen_col is None:
-        return ("", "", "", "", "")
+        return ("", "", "", "", "", "")
 
     value = scores[chosen_col]
     if isinstance(value, float):
@@ -416,19 +422,34 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)
-    if not pdb_key:
-        # SAY WHICH ROW, when there is no filename to say it with.
-        # ``headline_candidate``'s docstring puts this on the caller -- "the
-        # caller is expected to say which row it picked when the two differ" --
-        # and /jobs/compare does it ("not the first design listed — row N of
-        # M"). This mail did not, and it is the surface where it matters most:
-        # pxdesign, rfdiffusion and boltzgen candidates carry no ``pdb_key`` at
-        # all, so a customer reading a number that is no longer the results
-        # page's first row has nothing to identify it by. ``rank`` is on every
-        # record of every tool that reaches here.
-        rank = top.get("rank")
-        if isinstance(rank, int) and not isinstance(rank, bool):
-            pdb_key = f"design rank {rank} of {len(records)}"
+    # SAY WHICH ROW, WHEN IT IS NOT THE FIRST ONE. Deriving the headline means
+    # this mail can show a design the results page does not lead with, and it
+    # said nothing about that. ``headline_candidate``'s docstring puts the
+    # disclosure on the caller -- "the caller is expected to say which row it
+    # picked when the two differ" -- and /jobs/compare does it, as
+    # "not the first design listed — row N of M".
+    #
+    # POSITION IN THE LIST, NEVER THE STORED ``rank`` FIELD, and never the word
+    # "rank". templates/jobs_compare.html carries that rule under its own
+    # heading, with the measurements: ``rank`` is 0-based on esmfold2-design,
+    # boltz2, af2, colabfold, esmfold, iggm and opendde, and 1-based on
+    # bindcraft, boltzgen, proteina, pxdesign, rfantibody and rfdiffusion, so
+    # the same sentence means two different things depending on the tool. An
+    # earlier draft of this block printed the stored field and rendered
+    # "design rank 0 of 2" on this PR's own flagship tool. shared/exports.py
+    # reached the same conclusion independently: it writes a positional rank
+    # and demotes the tool's value to ``source_rank``.
+    #
+    # Identity, not equality: two records can carry equal dicts.
+    position = next((i for i, rec in enumerate(records) if rec is top), None)
+    if position:
+        # Only when it differs from the first row -- the condition
+        # /jobs/compare uses. On a run whose first design already clears the
+        # bar there is nothing to disclose, and a line that always renders is
+        # furniture.
+        position_note = f"design {position + 1} of {len(records)}"
+    else:
+        position_note = ""
 
     # ``verdict_text``, not a hand-join of ``verdict.shortfalls``. That exact
     # shortcut is the one templates/jobs_compare.html records as its own
@@ -446,7 +467,8 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
         # run's answer, and saying only "pI 11.95, above 6" would read as one
         # design's problem. Same reading /jobs/compare prints.
         judgement = f"Nothing in this run clears the bar — {judgement}"
-    return (str(chosen_col), value_str, caption, pdb_key, judgement)
+    return (str(chosen_col), value_str, caption, pdb_key, judgement,
+            position_note)
 
 
 def _next_step_for_job(

@@ -67,6 +67,16 @@
                           email_caption directly and would not notice. Nothing
                           bounds the length of THIS line.
      top_pdb_key          PDB filename of top design; empty if none
+     top_position         "design N of M" when the design shown is NOT the
+                          first record stored -- deriving the headline means
+                          this mail can lead with a design the results page
+                          does not, and headline_candidate's docstring puts
+                          that disclosure on the caller. Empty when the pick IS
+                          the first record, which is the same condition
+                          /jobs/compare gates its equivalent line on.
+                          POSITION, never the stored `rank` field: that field
+                          is 0-based on seven tools and 1-based on six, so it
+                          means two different things depending on the tool.
      next_step_url        URL of /tools/<dest_tool>; empty if no handoff
      next_step_label      Tool label, e.g. "ColabFold"; empty if no handoff
 #}
@@ -87,6 +97,9 @@
           <span style="color:#888;font-size:13px;">
             ({{ top_pdb_key }})
           </span>
+        {% endif %}
+        {% if top_position %}
+          <span style="color:#888;font-size:13px;">{{ top_position }}</span>
         {% endif %}
       </div>
       {% if top_score_caption %}

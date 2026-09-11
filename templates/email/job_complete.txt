@@ -4,7 +4,7 @@
 {{ summary }}
 
 {% if top_score_label and top_score_value -%}
-Top design: {{ top_score_label }} {{ top_score_value }}{% if top_pdb_key %} ({{ top_pdb_key }}){% endif %}
+Top design: {{ top_score_label }} {{ top_score_value }}{% if top_pdb_key %} ({{ top_pdb_key }}){% endif %}{% if top_position %} — {{ top_position }}{% endif %}
 {% if top_score_caption %}{{ top_score_caption }}
 {% endif %}{% if top_score_verdict %}{{ top_score_verdict }}
 {% endif %}
