@@ -14,10 +14,32 @@ wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
 GPU: H100. The 150-step gradient run takes ~10-15 min per design on a
-warm container; weights pull is ~30 GB on a cold Volume. Memory is sized
-for the default ``REUSE_ESMC=False`` path (27 GB VRAM); flip the
-``use_scaling_critics`` env var to load the 15-checkpoint ensemble and
-bump memory to 60 GB host RAM.
+warm container; weights pull is ~30 GB on a cold Volume. VRAM is ~27 GB
+AT batch_size=1 because ``run_pipeline.py`` sets upstream's
+``REUSE_ESMC = True`` before ``ESMFold2Design.load()``; upstream's own
+default of False costs ~51 GB at that same size. (This block used to
+claim 27 GB for the False path -- that was the True figure, and the
+mismatch is what shipped a batch cap the container could not honour.)
+
+Both figures are upstream's, measured at batch_size=1 on cd45 plus
+trastuzumab. "Enables increasing batch size up to 6" is upstream's
+assertion, not upstream's measurement -- every upstream entrypoint runs
+batch_size=1 -- and BATCH_SIZE_MAX here was lifted from that sentence.
+So the 1-6 bound is plausible, not verified: the pre-deploy GPU run
+should be scfv at batch_size=6, which is the only size that actually
+tests the cap.
+
+The four hero critics load on GPU and are the only critics loaded:
+``run_pipeline.py`` calls ``designer.load(False)`` unconditionally. A
+``use_scaling_critics`` flag used to make that argument user-settable, adding
+a 15-checkpoint ensemble on the HOST (upstream loads scaling critics with
+``device="cpu"``, recommending 60 GB host RAM) against the 10 GB ``memory=``
+below. Since no scaling row is ever read, that bought six times the documented
+host-RAM requirement and no change to any score, so the flag was removed.
+Restoring it means raising ``memory=`` first. Note the bare integer form is a
+Modal SOFT limit, not a hard cap, so the failure mode there is unproven --
+throttling and an OOM kill are both consistent with it, and the path never ran
+in prod.
 
 Raw capture: ``run_pipeline.py`` tars its COMPLETE work tree to
 ``/tmp/raw_archive.tgz`` before the container dies; ``_park_raw_archive``
@@ -251,6 +273,14 @@ image = (
         "HF_XET_HIGH_PERFORMANCE": "1",
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "utf-8",
+        # Both observed OOM messages recommended this verbatim, and at
+        # batch_size=2 the run died needing 20-38 MiB with ~1.4 GB sitting
+        # reserved-but-unallocated -- i.e. lost to fragmentation, which is
+        # exactly what expandable_segments reclaims. Set on the image, not in
+        # _build_run_env: it is a container constant, not payload-derived, and
+        # _merged_environment seeds itself from os.environ so run_pipeline.py
+        # inherits it. Lands on the .env layer, so pip/micromamba stay cached.
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     })
     .workdir("/opt")
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
@@ -533,7 +563,6 @@ def _aggregate(
     binder_name = template.get("binder_name", "")
     binder_label = template.get("binder_label", "")
     is_antibody = bool(template.get("is_antibody", False))
-    use_scaling_critics = bool(template.get("use_scaling_critics", False))
 
     all_candidates: list[dict] = []
     all_designs: list[dict] = []
@@ -549,8 +578,6 @@ def _aggregate(
     designs_total = 0
     designs_completed = 0
     inner_failures = 0
-    best_iptm: float | None = None
-    best_seq: str | None = None
 
     for seed, child_ret in successes:
         smoke = (child_ret or {}).get("smoke_result") or {}
@@ -564,13 +591,6 @@ def _aggregate(
             scores["seed"] = seed
             tagged["scores"] = scores
             all_candidates.append(tagged)
-            iptm = scores.get("ipTM")
-            if isinstance(iptm, (int, float)):
-                if best_iptm is None or iptm > best_iptm:
-                    best_iptm = float(iptm)
-                    best_seq = tagged.get("sequence") or tagged.get(
-                        "designed_sequence"
-                    )
         for d in smoke.get("designs", []) or []:
             tagged = dict(d)
             tagged["seed"] = seed
@@ -582,16 +602,71 @@ def _aggregate(
         total_gpu_seconds += child_runtime
         wall_clock_seconds = max(wall_clock_seconds, child_runtime)
 
+    # Descending iPTM with UNMEASURED LAST. -1.0 was the sentinel, which is
+    # the negation of iPTM 1.0 and therefore sorts a design with no iPTM at
+    # all to the TOP, ahead of every measured one -- the opposite of what the
+    # comment on run_pipeline's matching sort claims. The table led with the
+    # blanks, and so did anything reading candidates[0].
     def _cand_sort_key(c: dict) -> float:
         iptm = (c.get("scores") or {}).get("ipTM")
-        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+        return float("inf") if not isinstance(iptm, (int, float)) else -float(iptm)
 
     def _design_sort_key(d: dict) -> float:
         iptm = d.get("iptm")
-        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+        return float("inf") if not isinstance(iptm, (int, float)) else -float(iptm)
 
     all_candidates.sort(key=_cand_sort_key)
     all_designs.sort(key=_design_sort_key)
+
+    # Best = top iPTM WITHIN the best non-empty filter tier, not top iPTM
+    # overall. A design the tool's own filter dropped can lead the table
+    # (real job 2b917b54: ipTM 0.9556 at pI 11.95 outscored a strict_pass at
+    # 0.9354), and best_sequence reads as the one to order.
+    #
+    # The results template no longer trusts this value -- it re-derives the
+    # pick from the candidates' own measurements, because a stored pick is a
+    # frozen verdict and every job that ran before this fix carries a wrong
+    # one. That does not make picking correctly here optional: this is the
+    # root cause, and the derivation falls back to this field on records
+    # whose candidates carry no binder-only ``sequence`` to choose from.
+    #
+    # all_candidates is iPTM-sorted, so the first member of a tier is its
+    # highest-iPTM member. In scFv mode the TIER is decided on the CDR
+    # distogram proxy while the RANK stays iPTM; that split is deliberate,
+    # because iPTM is the calibrated number and the proxy is a gate the
+    # panel itself calls "informative only".
+    def _tier_of(c: dict | None) -> str:
+        return str(((c or {}).get("scores") or {}).get("filter_status") or "")
+
+    def _binder_only(c: dict | None) -> str | None:
+        """The binder half alone, which is what ``best_sequence`` means.
+
+        ``designed_sequence`` is ``target|binder`` concatenated. Returning it
+        whole puts the target into the panel the results page offers for a
+        synthesis order. (Only that panel: export.fasta reads each
+        candidate's own ``sequence``, not this field.) Mirrors
+        run_pipeline._extract_binder_sequence -- duplicated, not imported,
+        because this function runs on the orchestrator container, which has
+        neither run_pipeline.py nor shared/ on its path.
+        """
+        seq = (c or {}).get("sequence")
+        if seq:
+            return str(seq)
+        concat = str((c or {}).get("designed_sequence") or "")
+        if not concat:
+            return None
+        return concat.split("|", 1)[1] if "|" in concat else concat
+
+    # Only a candidate we can quote a binder for is eligible to BE the best;
+    # picking one we then cannot render just empties the panel.
+    offerable = [c for c in all_candidates if _binder_only(c)]
+    best_pool = (
+        [c for c in offerable if _tier_of(c) == "strict_pass"]
+        or [c for c in offerable if _tier_of(c) == "borderline"]
+        or offerable
+    )
+    best = best_pool[0] if best_pool else None
+    best_seq = _binder_only(best) if best else None
 
     for rank, c in enumerate(all_candidates):
         c["rank"] = rank
@@ -613,7 +688,6 @@ def _aggregate(
         "designs_total": designs_total,
         "designs_completed": designs_completed,
         "n_failures": n_failures_total,
-        "use_scaling_critics": use_scaling_critics,
         "best_sequence": best_seq,
         "designs": all_designs,
         "candidates": all_candidates,

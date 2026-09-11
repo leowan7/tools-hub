@@ -664,10 +664,12 @@ What is and is not blocked:
 | --- | --- | --- |
 | Push to `main` (auto-deploy) | No — the new commit gets its own fresh suite | Observed 2026-08-24; see the durability note below |
 | Service-variable change (same commit) | **Yes** | Observed 2026-08-24 |
-| Deployment ⋮ → **Redeploy** | **No — this is the escape hatch** | Observed once, 2026-08-24 |
+| Deployment ⋮ → **Redeploy** (on the ACTIVE deployment) | **No — this is the escape hatch** | Observed once, 2026-08-24 |
 | Rollback to an earlier deployment | **UNKNOWN — never tested** | — |
 
-**The rollback row is the gap that matters most.** Both outage runbooks above
+**The rollback row is one of two untested gaps of this shape** — the other
+is Redeploy on a `SKIPPED` entry, in "Deploy drift detected" below. Both
+outage runbooks above
 ("`/health` or `/` is DOWN", "`/readyz` is DOWN but `/health` is UP") tell you to
 roll back, and nobody has established whether Wait for CI gates that. Establish
 it on a calm day, not during an outage.
@@ -679,7 +681,8 @@ the blocked row beneath it.
 
 **One rule nobody has established: latest suite, or any suite?** `main` at
 `395c523` carries six completed Actions suites, one of them a `failure` from
-2026-08-24T00:47Z that five later successes did not clear. If Railway reads *any*
+2026-08-24T00:47Z that three later successes did not clear (two of the five
+successes on that commit precede the failure). If Railway reads *any*
 failed suite, that commit is permanently un-deployable by variable change. It
 also carries four suites parked at `queued` indefinitely (`render`, `vercel`,
 `railway-app`, `claude`) which evidently block nothing, so Railway plainly is not
@@ -741,29 +744,86 @@ from production.** GitHub's failure email carries no log body, so open the run.
 
 1. Confirm it: `curl -s https://tools.ranomics.com/health` against
    `git rev-parse origin/main`.
-2. Railway dashboard → project `tools-hub` → service `web` → Deployments. If
-   the missing commit has **no entry of any kind** (check that the toggle reads
-   "Hide Skipped", so skipped deploys are visible), the deploy event was
-   dropped. There is nothing to fix in the repo.
+2. Railway dashboard → project `tools-hub` → service `web` → Deployments, and
+   set the toggle so skipped deploys are visible (it is labelled "Hide
+   Skipped"; nobody has recorded which way round that reads, so confirm a
+   `SKIPPED` row can appear at all before concluding none is there). **First, if an entry for it is `BUILDING`, `DEPLOYING` or
+   `WAITING`, a deploy is in flight.** The guard allows 20 minutes (`GRACE` in
+   `synthetic-smoke.yml`) before it calls drift, so a card in that state means
+   wait, not act — do not stack another build on top of it.
 
-   **Do not reach for Redeploy first.** Redeploy acts on an EXISTING
-   deployment and rebuilds the commit that deployment was for, which here is
-   the stale one, so the guard just fires again in 6h. What you need is
-   something that makes Railway deploy the MISSING commit: push a fresh commit
-   to `main` (an empty one is enough — `git commit --allow-empty -m "chore:
-   retrigger deploy" && git push`), then confirm with
-   `curl -s https://tools.ranomics.com/health` that `build` moved. If it did
-   not, the drop is not a one-off and the deploy trigger itself is the fault.
-3. If instead the entry exists and **failed**, this is a broken build, not drift.
-   Read its logs; the guard is telling you the truth about production either way.
+   Otherwise the commit is usually in one of the three states below. They look
+   similar on the dashboard, and telling them apart matters: (b) rules out
+   Redeploy, which (a) leaves open. If instead an entry exists and SUCCEEDED
+   while production is still stale, someone most likely rolled back on purpose
+   — both outage runbooks above tell you to. **Establish why before
+   re-deploying:** re-shipping the commit may restore the outage the rollback
+   was containing.
+
+   **a. A `SKIPPED` entry exists.** Wait for CI gated it — see
+   [A variable change is not deploying (Railway "Wait for CI")](#a-variable-change-is-not-deploying-railway-wait-for-ci).
+   **Neither remedy is well evidenced. What is known:**
+
+   * ⋮ → **Redeploy** on the skipped entry. The single Redeploy observation
+     in this file (2026-08-24, in the section linked above) was on the ACTIVE
+     deployment, picking up a service-variable change on the commit already
+     running — not a skipped entry for a commit that never built. Whether
+     Redeploy is offered there at all, and whether it clears the CI gate, is
+     untested.
+   * Push a fresh commit to `main`, as in (b). **Try this first.** Of the
+     eight workflows here, only `pytest.yml` runs on an empty commit: the
+     other three with a push trigger are `paths:`-filtered, and
+     `synthetic-smoke.yml` is `schedule` and `workflow_dispatch` only, though
+     its cron re-attaches a run to `main`'s HEAD every six hours, so a commit
+     that deploys cleanly can still go red later. So unless a deterministic
+     `pytest.yml` failure is what reddened the suite, the new commit carries a
+     clean one.
+     Table row 1 above records a push deploying normally on 2026-08-24.
+
+   **If the red run is this guard's own, `gh run rerun` will not help:** it
+   re-runs the drift check, which re-fails while production is still stale.
+   `deploy-drift` (the run page labels it **Production is running current
+   code**) and the Platform API smoke are two jobs in ONE workflow run, so a
+   red `Synthetic smoke` run does not say which of them failed — open the run
+   and look. Which check gated the skip is not something this file can answer
+   ("latest suite, or any suite?" above is still open), so read the deadlock
+   paragraph below before acting on whatever you find. (Whether Railway then
+   re-evaluates an already-`SKIPPED` deployment is unrecorded either way: no
+   run on `395c523` was ever re-run in place — all six are `run_attempt=1`
+   — so that worked example cannot answer it.)
+
+   Whichever you try, confirm with `/health` that `build` moved and record the
+   result. Redeploy on a `SKIPPED` entry is untested, like the rollback row
+   above.
+
+   **b. No entry of any kind.** The deploy event was dropped — the 2026-08-20
+   case above. There is nothing to fix in the repo. **Do not reach for Redeploy
+   here:** Redeploy acts on an EXISTING deployment and rebuilds the commit
+   that deployment was for — and with no entry for the missing commit, every
+   entry you can click is for older code, so it rebuilds what is already
+   running and the guard just fires again in 6h. What you need is something
+   that makes Railway deploy the MISSING commit: push a fresh commit to `main`
+   (an empty one is enough — `git commit --allow-empty -m "chore: retrigger
+   deploy" && git push`), then confirm with
+   `curl -s https://tools.ranomics.com/health`
+   that `build` moved. If it did not, the drop is not a one-off and the deploy
+   trigger itself is the fault.
+
+   **c. An entry exists and FAILED, CRASHED or was OOM-killed.** A broken
+   build or a broken boot, not a dropped deploy — Railway keeps the previous
+   deployment serving, which is why `/health` still reports old code. Read its
+   logs, then follow "Railway emailed a deploy failure / crash / OOM" below.
+   The guard is telling you the truth about production either way.
 
 **This guard can deadlock with the Wait-for-CI gate.** A red Actions suite on
 main's HEAD makes Railway skip same-commit deploys. This guard goes red exactly
 when production is stale on commit X, which is exactly when someone needs X
 deployed. Clearing the suite with `gh run rerun` will NOT break the loop: the
 guard cannot go green until production is actually redeployed, so it re-fails
-and the suite is red again. Break it at the deploy (step 2 above), never at the
-check.
+and the suite is red again. Break it at the deploy (2a or 2b above), never at
+the check. When Wait for CI is what skipped it, 2a lists both options and
+the evidence for each — and the `gh run rerun` caveat above applies only when
+this guard is itself the red check.
 
 **One red herring, recorded so it is not chased twice.** The `railway-app` check
 suite on a GitHub commit sits at `status=queued, conclusion=null` indefinitely.

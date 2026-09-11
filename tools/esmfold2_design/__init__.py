@@ -177,10 +177,6 @@ def validate(
     if n_seeds_err:
         return None, n_seeds_err
 
-    use_scaling_critics = (
-        (form.get("use_scaling_critics") or "").strip().lower() in {"on", "1", "true", "yes"}
-    )
-
     label_bits = []
     if target_name:
         label_bits.append(target_name.upper())
@@ -202,7 +198,6 @@ def validate(
             "seed": seed,
             "n_seeds": n_seeds,
             "batch_size": batch_size,
-            "use_scaling_critics": use_scaling_critics,
             "target": " + ".join(label_bits),
             # n_seeds * batch_size = total designs returned. n_seeds fans
             # out to parallel Modal children (same wall-clock as one
@@ -231,7 +226,6 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
         "seed": inputs["seed"],
         "n_seeds": inputs.get("n_seeds", 1),
         "batch_size": inputs["batch_size"],
-        "use_scaling_critics": inputs["use_scaling_critics"],
         "parameters": inputs["parameters"],
     }
 
