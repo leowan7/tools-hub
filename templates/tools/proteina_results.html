@@ -85,9 +85,54 @@
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
     send_target_tools=send_target_tools) %}
-  <p class="subtitle">
-    This Proteina-Complexa shard returned no candidates that cleared the
-    reward filters. Survivors are pooled across the whole campaign, so other
-    shards may still have produced hits — check the campaign page.
-  </p>
+  {# THREE ZERO-CANDIDATE CASES, and the campaign wording is true for only
+     one of them. It was unconditional until 2026-09-11, so a SUCCEEDED free
+     `validate` dry-run — which designs nothing by construction — told the
+     operator its search had found nothing, and pointed at a campaign page
+     that cannot exist: blueprints/campaigns.py:196 and :337 both refuse the
+     validate preset ("not a campaign"), so a validate job never carries a
+     campaign_id. Observed live on job fc9d14d7 (27 GPU-seconds, succeeded).
+
+     Branches on `job.preset`, which is the value job_detail.html:117 already
+     prints as "Preset <x>" above this panel, not on the result's `tier`:
+     preset is a NOT NULL column read straight off the row
+     (shared/jobs.py:330), while `tier` is whatever the container chose to
+     echo back. On the worked-example page job is a dict literal with neither
+     key (components/worked_example.html:80-87), so both tests are Undefined
+     and falsy and the standalone arm renders — which is the right arm for a
+     single example run anyway.
+
+     The validate copy names only the three checks run_validate actually
+     performs (run_pipeline.py:3886-3936). It does NOT repeat the adapter
+     description's "checks your target": that branch returns at
+     run_pipeline.py:4030, and the sole route to download_target (:2864) is
+     the prepare_custom_target call at :4239, well past it. #}
+  {% if job.preset == 'validate' %}
+    <p class="subtitle">
+      <strong>Pre-flight passed.</strong> This was the free
+      <code>validate</code> dry-run, which designs nothing: it checks that the
+      design container is ready — the pipeline package imports, every variant
+      config is present, and a model checkpoint is mounted. Zero candidates is
+      the expected result here, not a failed search.
+    </p>
+    <p class="subtitle">
+      It clears the environment, not your target — the run returns before any
+      target is staged. Re-run with one of the paid design variants to produce
+      binders.
+    </p>
+  {% elif job.campaign_id %}
+    <p class="subtitle">
+      This Proteina-Complexa shard returned no candidates that cleared the
+      reward filters. Survivors are pooled across the whole campaign, so other
+      shards may still have produced hits — check the campaign page.
+    </p>
+  {% else %}
+    <p class="subtitle">
+      This Proteina-Complexa run returned no candidates that cleared the
+      reward filters. It is a single run rather than one shard of a campaign,
+      so there are no sibling shards to pool survivors with. Widening the
+      binder length range, refining your hotspots, or funding more designs are
+      the levers that move it.
+    </p>
+  {% endif %}
 {% endcall %}
