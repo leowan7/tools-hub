@@ -6,28 +6,28 @@ read from ``candidate_records``. The download clause was read from nothing: it
 was appended to every candidate list, whatever the rows carried.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
-sets ``has_pdb = use_url or has_b64`` (:566) from ``pdb_key`` and
-``pdb_content_b64``, and renders an em dash in the View-3D (:821-827) and .pdb
-(:831-846) columns when neither is present. The mail's check is those two keys
-and no others, so it can never promise where that column would abstain.
+sets ``has_pdb = use_url or has_b64`` from ``pdb_key`` and
+``pdb_content_b64``, and renders an em dash in the View-3D and .pdb columns
+when neither is present. The mail's check is those two keys and no others, so
+it can never promise where that column would abstain.
 
 THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
 real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
-inline-capped design (:4817) and never wrote ``pdb_content_b64`` on that leg
-(:4781 is the other branch of the if/else) -- but no in-repo producer puts it
-in front of this code:
+inline-capped design in its ``n_inline_capped`` branch, and the one write of
+``pdb_content_b64`` is the other leg of that same if/else -- but no in-repo
+producer puts it in front of this code:
 
   * that branch needs ``inline_pdbs``, which is ``_inline_enabled() and not
-    upload_endpoint`` (:4064), and the hub sets ``_upload_urls_endpoint``
-    unconditionally (blueprints/tools.py:2323-2338,
-    shared/compute_campaigns.py:2054-2062). A hub-shaped payload without one
-    is refused before the GPU (:4094), which is a failed job, not a success;
+    upload_endpoint``, and the hub sets ``_upload_urls_endpoint``
+    unconditionally (blueprints/tools.py and shared/compute_campaigns.py).
+    A hub-shaped payload without one is refused before the GPU, which is a
+    failed job, not a success;
   * a run where the cap admits NOTHING is failed outright -- ``n_structures ==
-    0`` yields ``inline_cap_admitted_nothing`` (:3695-3707) and
-    ``result["status"] = "FAILED"`` (:5017) -- so it takes the failed branch of
+    0`` yields ``inline_cap_admitted_nothing`` and sets
+    ``result["status"] = "FAILED"`` -- so it takes the failed branch of
     _result_summary, not this one;
-  * boltz2 (:685), iggm (:580) and opendde (:523) all ``continue`` past a
-    failed upload rather than emit a keyless row.
+  * boltz2, iggm and opendde all ``continue`` past a failed upload rather
+    than emit a keyless row.
 
 So the reachable residue is the PARTLY-capped result, which still says
 "downloadable PDBs" and still overstates how many rows carry one. That is not
@@ -41,11 +41,12 @@ THE PREMISE IS RENDERED, NOT ASSERTED.
 payload the mail describes through the real macro in the app's real Jinja
 environment and counts controls. Note its scope: it measures the PER-ROW
 controls only. The export bar above the table carries an unconditional
-"PDBs (ZIP)" link (:396) which is a separate surface and is untouched here.
+"PDBs (ZIP)" link, which is a separate surface and is untouched here.
 
 NO OUTBOUND MAIL IS SENT. ``send_job_complete_email`` posts through
-``requests.post`` at shared/email.py:93 (it does not use ``_post_resend``), and
-``requests`` is the only network import in that module (:39). Every sender test
+``requests.post`` in its own body (it does NOT use ``_post_resend``, which is a
+different sender), and ``requests`` is the only network import in that module.
+Every sender test
 below patches the module attribute all of its call sites resolve through.
 """
 
@@ -95,8 +96,8 @@ def _capped_row(rank: int) -> dict:
     """A proteina design the inline byte cap dropped the atoms of.
 
     Its TOP-LEVEL keys are the ``candidate_entry`` that file builds
-    (run_pipeline.py:4750-4759) minus the two its ``n_inline_capped`` branch
-    removes or never writes -- leaving exactly rank, name, target_numbering,
+    (the ``candidate_entry`` dict) minus the two its ``n_inline_capped``
+    branch removes or never writes -- leaving rank, name, target_numbering,
     scores. The nested ``scores`` is a SUBSET of the real one (that carries six
     columns, including rf3_score and cluster_id); nothing here reads those, and
     the fixture does not claim to reproduce them.
@@ -240,7 +241,7 @@ def _per_row_controls(html: str) -> dict:
     """How many PER-ROW structure controls the table rendered.
 
     ``download=`` counts only the per-row anchors: the three export-bar links
-    (candidate_table.html:394-396, including "PDBs (ZIP)") carry no such
+    (the cand-export-btns bar, including "PDBs (ZIP)") carry no such
     attribute, so they cannot inflate this. That is a deliberate limit, not an
     oversight -- the bulk export is a separate surface this file does not test.
     """
@@ -351,11 +352,11 @@ def test_an_inline_only_row_keeps_the_promise():
 def test_the_designs_shape_is_read_too():
     """boltz2 and iggm store ``designs[]`` and carry no ``candidates`` key.
 
-    ``candidate_records`` reads both keys (shared/jobs.py:123-127), so a
-    structure check that looked at ``result["candidates"]`` directly would
-    strip the promise from those tools' mails -- they set pdb_key on every
-    emitted row (boltz2:685, iggm:580). Not esmfold2_design, which emits BOTH
-    lists (shared/jobs.py:115) and so is reached either way.
+    ``candidate_records`` reads both keys, so a structure check that looked
+    at ``result["candidates"]`` directly would strip the promise from those
+    tools' mails -- they set pdb_key on every emitted row. Not
+    esmfold2_design, whose docstring in shared/jobs.py records that it emits
+    BOTH lists, so it is reached either way.
     """
     bodies = _mail({"designs": [_url_row(i) for i in range(2)]}, tool="boltz2")
     for part, body in bodies.items():
@@ -390,7 +391,7 @@ def test_a_partly_capped_result_still_overstates_and_that_residue_is_known():
 def test_a_non_dict_row_cannot_crash_the_mail():
     """The structure check runs over whatever the result holds.
 
-    ``candidate_records`` returns the stored list unfiltered (shared/jobs.py:126),
+    ``candidate_records`` returns the stored list unfiltered,
     so a malformed row reaches this code, and ``_result_summary`` is called from
     ``_job_complete_template_context`` OUTSIDE the template try/except -- an
     AttributeError here is a job whose customer is never told it finished.
