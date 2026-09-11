@@ -98,9 +98,9 @@ def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
 # The pLDDT spellings IN PREFERENCE ORDER, canonical first.
 #
 # ORDERED ON PURPOSE: ``metric_glossary.PLDDT_COLUMNS`` is a FROZENSET, and
-# iterating a set to choose a number for a public card is the same class of
-# defect this whole function exists to fix -- the old code let dict order pick
-# the metric and published an isoelectric point. A set would pick whichever
+# iterating a set to choose a quoted number is the same class of defect this
+# whole function exists to fix -- the old code let dict order pick the metric
+# and quoted an isoelectric point. A set would pick whichever
 # spelling Python happened to hash first on a record carrying two.
 #
 # Held to PLDDT_COLUMNS as a SET by
@@ -139,17 +139,21 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
       clearing it.
     * rfantibody quoted ``ipAE``, which is LOWER-is-better, so the worse of
       two passing designs printed the bigger figure.
-    * proteina quoted ``total_reward -0.183`` -- negative, and carrying no
-      legend anywhere on the site, so nothing can explain it. That REPLACED a
-      readable ``af2_iptm 0.891``, i.e. the repair was worse than the bug for
-      that tool.
+    * proteina quoted ``total_reward -0.183``, negative in real data and
+      carrying no ``score_legends`` entry -- the map this chain consults for a
+      direction and a band. (``metric_glossary`` DOES describe it and the
+      tool's own results table renders it; an earlier draft said "no legend
+      anywhere on the site", which is false. The point is that the CHAIN has
+      no direction for it.) That REPLACED a readable ``af2_iptm 0.891``, i.e.
+      the repair was worse than the bug for that tool.
 
-    So: a leg of THIS RUN'S bar, preferring one whose legend reads
-    higher_is_better. Every gating tool has such a leg, and it is the only
-    choice that keeps the number and the sentence about the same thing.
+    So: a leg of THIS RUN'S bar whose legend reads higher_is_better -- ONLY
+    such a leg, with no fallback to a lower-is-better one. Every gating tool
+    has at least one, and it is the only choice that keeps the number and the
+    sentence about the same thing.
 
-    Then, when no bar applies: the tool's ranking metric, but only if it is
-    higher-is-better AND carries a legend -- the site must be able to explain
+    Then, when no bar applies: the tool's ranking metric, but only if its
+    REGISTERED DIRECTION is ``desc`` and it carries a ``score_legends`` entry -- the site must be able to explain
     a number it quotes. That admits bindcraft's ipTM and iggm's
     epitope_contacts and refuses proteina's total_reward.
 
@@ -232,10 +236,11 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     because whether the superlative may stand unqualified depends on whether
     a bar applied and only this function knows that.
 
-    Returns None when the job has no candidate scores to surface (a
-    failed run, a sequence-design tool, a job without a result yet),
-    and ALSO when the design this would speak for does not clear the
-    tool's bar. The caller composes ``og_title`` without the trailing
+    Returns None when the job has no candidate scores to surface (a failed
+    run, a sequence-design tool, a job without a result yet), and ALSO
+    whenever a bar applied to the run and this design was not SHOWN to meet
+    it -- which covers a design that fell short AND one never measured
+    against it. The caller composes ``og_title`` without the trailing
     score clause when this returns None.
 
     THE PICK IS DERIVED, NOT ``candidates[0]``. The stored order is the
@@ -294,9 +299,9 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     THAT WIDENING WAS NOT A PURE FIX, AND THIS DOCSTRING CLAIMED IT WAS.
     Reaching the ``designs`` shapes also reached shapes that are NOT ranked.
     An af2 ``batch`` result is one record per independently submitted sequence
-    in submission order, so the widened read published "Top score plddt
-    55.000" -- the sequence the customer pasted first -- on a public card in a
-    run whose other design scored 0.91. Probed through this route, not
+    in submission order, so the widened read quoted "Top score plddt 55.000"
+    -- the sequence the customer pasted first -- in a run whose other design
+    scored 0.91. Probed through this route, not
     reasoned about. :func:`shared.jobs.supports_headline_claim` is the gate
     that restores the old answer for the unordered shapes while keeping the
     fix for the ``candidates`` array the container really does rank; see it
@@ -320,11 +325,6 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     top, verdict = headline_candidate(records, tool, preset=mode)
     if top is None:
         return None
-    # shared.ranking's predicate, negated: a record can be BOTH "below" and
-    # carrying a declared placeholder, and either one disqualifies it from
-    # speaking for the run unqualified.
-    if verdict.verdict == "below" or verdict.unusable:
-        return None
     # WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT OF THE RECORD, and
     # the first repair got this wrong. It branched on the PICK'S VERDICT:
     # "meets" took the qualified sentence and anything else took the plain
@@ -341,6 +341,14 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # was not SHOWN to meet it, there is no sentence to make: an unmeasured
     # design cannot be described as clearing a bar, and it cannot be called
     # the top one either while the bar may have dropped something above it.
+    # ONE GUARD, NOT TWO. A separate ``verdict == "below" or verdict.unusable``
+    # test stood above this and is gone because it could not change an
+    # outcome: ``judge`` returns "below", or a non-empty ``unusable``, ONLY
+    # when ``gate_columns`` is non-empty -- the same call ``bar_applied``
+    # makes with the same mode -- so every record it caught is one this
+    # already refuses. Probed across six tool/preset shapes: nothing fires the
+    # old guard while ``bar_applied`` is False. Its comment described the dead
+    # half as load-bearing.
     bar_applied = bool(score_legends.gate_columns(tool, mode))
     if bar_applied and verdict.verdict != "meets":
         return None

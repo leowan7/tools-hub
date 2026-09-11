@@ -42,7 +42,7 @@ it.
 NOT EVERY TEST HERE DOES, and two earlier versions of this paragraph claimed
 otherwise -- first of all tests, then of all tests in a class, which was still
 false of three added in the same commit. The exceptions, each stated in its
-own docstring: the two module-level invariants, ``TestTargetExportJudgesPerRow``
+own docstring: the THREE module-level tests, ``TestTargetExportJudgesPerRow``
 (the target export merges rows across runs, so the unit under test is the
 per-row provenance branch rather than any one route), and
 ``TestCampaignSurfaces``'s count test, which observes a call because its
@@ -201,7 +201,7 @@ def _jsonb(scores: dict) -> dict:
     THIS IS NOT PEDANTRY: it hid a live defect. The share card used to print
     the first numeric key of ``scores``, and under this ordering that is
     ``pI`` -- two characters, so it sorts ahead of ``ipTM`` every time. The
-    card published "Top score pI 5.669", an isoelectric point announced as a
+    text quoted "Top score pI 5.669", an isoelectric point announced as a
     score, while a hand-ordered fixture showed a reassuring "ipTM 0.935".
     """
     return {k: scores[k] for k in sorted(scores, key=lambda k: (len(k), k.encode()))}
@@ -280,7 +280,7 @@ class TestShareCard:
         """
         title = _share(flask_app, monkeypatch, _job())["og_title"]
         assert "0.956" not in title, (
-            f"the rejected design's number reached a public share card: {title}"
+            f"the rejected design's number reached the share text: {title}"
         )
         assert "pI" not in title, (
             f"an isoelectric point was published as a score: {title}"
@@ -332,8 +332,8 @@ class TestShareCard:
         record per INDEPENDENTLY SUBMITTED sequence in submission order
         (``designs_out`` is appended to and never sorted), so ``designs[0]`` is
         whichever sequence the customer pasted first. Before the gate this
-        route published "Top score plddt 55.000" -- seqA -- on a PUBLIC share
-        card in a run where seqB scored 0.91.
+        route quoted "Top score plddt 55.000" -- seqA -- in a run where seqB
+        scored 0.91.
 
         origin/main emitted no clause for these tools at all, so abstaining
         restores exactly what they had rather than inventing a third
@@ -681,10 +681,11 @@ class TestCampaignSurfaces:
 class TestTheHeadlineMetricChain:
     """WHICH number the share text quotes, per tool.
 
-    Every case here is a regression an independent review caught in the FIRST
-    repair of this defect, which preferred the tool's registered ranking
-    metric over the bar. That produced a number the attached sentence was not
-    about -- and for one tool it was worse than the bug it replaced.
+    Three of these four are regressions an independent review caught in the
+    FIRST repair, which preferred the tool's registered ranking metric over
+    the bar: boltzgen, rfantibody and proteina. The iggm case is NOT one --
+    that tool quoted nothing before the repair and nothing after it, and is
+    here because the alias resolution it needs was added later.
     """
 
     def _clause_for(self, flask_app, monkeypatch, tool, preset, scores, **over):
@@ -739,9 +740,11 @@ class TestTheHeadlineMetricChain:
     ):
         """THE REPAIR WAS WORSE THAN THE BUG HERE, which is why this case
         exists. proteina registers ``total_reward``, which is NEGATIVE in real
-        data (every record of the shipped example is between -0.18 and -0.40)
-        and carries no legend anywhere on the site, so nothing can explain it
-        to a reader. The first repair quoted "total_reward -0.183" where the
+        data (the 64 records of the shipped example span -0.1827 to -0.9555)
+        and carries no ``score_legends`` entry, so the chain has no direction
+        for it. (``metric_glossary`` does describe it and the tool's results
+        table renders it -- an earlier draft said "no legend anywhere on the
+        site", which is false.) The first repair quoted "total_reward -0.183" where the
         original defect had quoted a readable ``af2_iptm 0.891``.
 
         The chain now requires a legend before it will quote a ranking metric,
