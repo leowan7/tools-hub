@@ -434,8 +434,10 @@ class TestEveryPartialIsExampleSafe:
         # test_example_copy_does_not_promise_controls_it_hides is a plain
         # case-sensitive `in`, so a REWORDED promise passes. Verified:
         # "Each structure is yours to download, or open in the 3D viewer"
-        # is not caught. (This cited a LINE NUMBER through three commits;
-        # it drifted every time. Name the method, not the line.)
+        # is not caught. (This once cited a LINE NUMBER. Exactly one
+        # commit did so, and the number was wrong the moment it was
+        # written -- 438 against an actual 457, and 476 one commit later.
+        # Name the method, not the line.)
         "Download each structure",
         # RETIRED WORDINGS. af2 and colabfold said these directly above
         # example pages that render no download at all: af2's controls are
@@ -452,15 +454,30 @@ class TestEveryPartialIsExampleSafe:
         # hold a pdb_b64), so the short form flags it falsely.
         "Download PDB or PAE matrix",
         "Download as PDB or PAE matrix",
-        # The adjectival half of the same family: six tools described
-        # their output as "downloadable PDBs" directly above an example
-        # page rendering none. Weaker than an imperative -- it describes
-        # the tool, not the table -- but it sat in the same place and read
-        # the same way, so all six are scoped now and the bare phrase is
-        # blocked. NOT registered alongside it: "downloadable as FASTA",
+        # The adjectival half of the same family. Five tools said
+        # "downloadable PDBs" and mpnn said "downloadable as FASTA",
+        # each directly above an example page that renders no such
+        # control. Weaker than an imperative -- it describes the tool,
+        # not the table -- but it sat in the same place and read the
+        # same way.
+        #
+        # boltzgen is the exception and was rescoped anyway: its example
+        # page renders exactly ONE .pdb, for rank 1, because its payload
+        # carries a single inline blob. "downloadable PDBs" plural still
+        # overstated the other four rows. An earlier version of this
+        # comment said all six rendered none, which was wrong for
+        # boltzgen and wrong about mpnn's wording. NOT registered alongside it: "downloadable as FASTA",
         # which mpnn still carries in scoped form, and "downloadable
         # structures", which proteina still carries while separate work
         # on its clustering promises is in flight.
+        #
+        # CAVEAT this entry needs and the two above already have: esmfold
+        # and boltzgen DO render a working structure download on their
+        # example pages (esmfold a data-URI, boltzgen an inline blob on
+        # rank 1). If either ever describes its output with this wording
+        # the phrase would be true copy and this entry would flag it
+        # falsely -- narrow it then, the way "Download PDB" was narrowed
+        # to "Download PDB or PAE matrix" for esmfold.
         "downloadable PDBs",
     )
 
@@ -477,6 +494,28 @@ class TestEveryPartialIsExampleSafe:
             if found:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
+
+    def test_a_real_page_with_nothing_to_download_promises_nothing(
+        self, tools_app,
+    ):
+        """The sentinel is not the only way a page can have no downloads.
+
+        opendde's download line was gated on "not the example page", which
+        is not the same as "there is something to download". A real job
+        that returns zero designs renders an empty table, and the sentence
+        sat above it promising a control for rows that do not exist. The
+        gate now also requires raw_designs, and reverting that half was
+        caught by nothing until this.
+        """
+        flask_app, _ = tools_app
+        empty = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+            result={"designs": [], "runtime_seconds": 1},
+        )
+        assert "Download each structure" not in empty, (
+            "opendde promises a structure download on a real job that "
+            "returned no designs, so there is nothing to download"
+        )
 
     def test_a_real_results_page_still_makes_those_promises(self, tools_app):
         """The control. If the phrases vanished from the real page too,
@@ -500,10 +539,13 @@ class TestEveryPartialIsExampleSafe:
             "opendde's real results page no longer offers the download, so "
             "blocking that phrase on the example page proves nothing"
         )
-        # Third entry, third control. results_shell.html renders this in
-        # the `else` of the same `is_example` branch that carries the
-        # shortlist line, so the boltz2 render above holds both.
-        assert "designs above are yours to download" in html.lower(), (
+        # The third control, for the third entry that real copy still
+        # carries. The tuple has six entries; three are retired wordings
+        # written nowhere, and no control can vouch for those.
+        # results_shell.html renders this one in the `else` of the same
+        # `is_example` branch that carries the shortlist line, so the
+        # boltz2 render above holds both.
+        assert "designs above are yours to download" in html, (
             "the real results page no longer says the designs are yours to "
             "download, so blocking that phrase on the example page proves "
             "nothing"
