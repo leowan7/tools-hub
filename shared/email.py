@@ -200,11 +200,12 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     survives capture, so nothing here evidences it. The pI and the drop are in
     ``example/result.json``.)
 
-    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. An earlier
-    version said "third surface of six"; the six does not survive being counted
-    (#241 is one, #248 is two, and #241's own message names five more consumers
-    it did not reach — seven), and the peer branch repairing four of the others
-    numbers its own "surfaces 3-6", which collides. A reader can check a name.
+    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. The repo
+    holds two enumerations of this class and they disagree: #248's message
+    ("surface two of six") names four consumers still open, reaching six, while
+    #241's names five, reaching seven — they differ over "the target ranking
+    table". A peer branch repairing four of them numbers its own "Surfaces 3-6".
+    Nobody can check an ordinal against that; a name needs no arithmetic.
 
     It is the one that can reach a customer who never opened the site: the
     webhook path ``webhooks/modal.py`` -> ``complete_job`` -> here fires when
@@ -237,8 +238,9 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     ``candidate_records``, not ``result["candidates"]``: it unwraps the legacy
     ``result["output"]`` nesting, so a wrapped row is read and judged instead of
     rendering nothing, and it reads the ``designs[]`` shape — but see the
-    ``ranked_shape`` gate below, which is what keeps that second half from
-    turning this block on for tools whose ``designs[]`` is not a ranked list.
+    ranked-list gate below (the ``isinstance(... "candidates", list)`` check),
+    which is what keeps that second half from turning this block on for tools
+    whose ``designs[]`` is not a ranked list.
     """
     if tone != "success":
         return ("", "", "", "", "")
@@ -285,9 +287,10 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     if not isinstance(top, dict):
         return ("", "", "", "", "")
 
-    # A "TOP DESIGN" CLAIM NEEDS SOMETHING THAT RANKED THE LIST, OR A BAR THAT
-    # CAN RE-PICK WITHIN IT — and widening this function from
-    # ``result["candidates"]`` to ``candidate_records`` supplied neither for one
+    # A "TOP DESIGN" CLAIM NEEDS SOMETHING THAT RANKED THE LIST — nothing else
+    # will do, and a bar in particular will not; see below. Widening this
+    # function from ``result["candidates"]`` to ``candidate_records`` supplied
+    # no ranking for one
     # family of tools. ``candidates[]`` is a list the container ranked.
     # ``designs[]`` need not be: af2, colabfold and esmfold store their ``batch``
     # preset there, one record per independently submitted target, carrying the
@@ -322,7 +325,8 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     # collapses into ``resolve_mode``.
     #
     # ``_normalize_result_shape`` is redundant TODAY -- ``ToolJob.from_row``
-    # already normalises and is the only construction site -- and is kept so the
+    # already normalises and is the only construction site in PRODUCTION code
+    # (tests build one directly) -- and is kept so the
     # gate and ``candidate_records`` read one view of the result and cannot
     # disagree about which list is being described.
     normalized = _normalize_result_shape(result)
@@ -412,6 +416,19 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)
+    if not pdb_key:
+        # SAY WHICH ROW, when there is no filename to say it with.
+        # ``headline_candidate``'s docstring puts this on the caller -- "the
+        # caller is expected to say which row it picked when the two differ" --
+        # and /jobs/compare does it ("not the first design listed — row N of
+        # M"). This mail did not, and it is the surface where it matters most:
+        # pxdesign, rfdiffusion and boltzgen candidates carry no ``pdb_key`` at
+        # all, so a customer reading a number that is no longer the results
+        # page's first row has nothing to identify it by. ``rank`` is on every
+        # record of every tool that reaches here.
+        rank = top.get("rank")
+        if isinstance(rank, int) and not isinstance(rank, bool):
+            pdb_key = f"design rank {rank} of {len(records)}"
 
     # ``verdict_text``, not a hand-join of ``verdict.shortfalls``. That exact
     # shortcut is the one templates/jobs_compare.html records as its own

@@ -5,10 +5,10 @@ writers on one tool; #248 fixed /jobs/compare and listed the completion email
 among the surfaces it did not reach. Both of those are PULLED -- a customer
 meets them by opening the site. This one is pushed: the webhook path
 ``webhooks/modal.py`` -> ``complete_job`` mails it when a run finishes, so it
-reaches a customer who never asked to look. (An earlier version of this
-docstring said "surface three of six". Do not restore an ordinal: the six does
-not survive being counted, and the branch repairing four of the siblings numbers
-those same surfaces differently.)
+reaches a customer who never asked to look. (Do not give this an ordinal. The
+repo's two enumerations of the class disagree -- #248's reaches six, #241's
+reaches seven, and a peer branch numbers four of them "Surfaces 3-6" -- so any
+number here is checkable against nothing.)
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), whose result ships verbatim as this tool's worked
@@ -254,19 +254,25 @@ def test_the_mail_states_the_bar_the_leading_design_meets():
             f"the {part} body renders the judgement after the call to action"
         )
 
-    # THE STRUCTURAL HALF, on the raw HTML: the judgement must fall inside the
-    # callout div, i.e. before the first </div> that closes it after "Top
-    # design". Moving the block out to a bare <p> under the callout keeps every
-    # whitespace-normalised assertion above green.
-    html = _sent(_job())["html"]
-    open_at = html.index("Top design")
-    verdict_at = html.index("Meets", open_at)
-    assert "</div>" in html[verdict_at:], html[open_at:]
-    assert html.count("</div>", open_at, verdict_at) < html.count(
-        "</div>", open_at, html.index("View results")
-    ), (
-        "the judgement sits outside the callout it qualifies -- every div "
-        "opened after 'Top design' has already closed before it"
+    # THE STRUCTURAL HALF, READ OFF THE TEMPLATE SOURCE rather than the render.
+    # The rendered-HTML version of this check counted </div> between offsets,
+    # which reduces to "at least one div closes between the judgement and the
+    # CTA" -- true of a judgement in a div opened AFTER the callout closed, and
+    # true even of one emitted outside the `if top_score_label` block entirely,
+    # so it would render with no callout to qualify. Source order is exact and
+    # needs no nesting arithmetic: the interpolation must sit between the
+    # callout's opening div and its closing one.
+    tpl = (Path(__file__).resolve().parents[1] / "templates" / "email"
+           / "job_complete.html").read_text("utf-8")
+    callout_open = tpl.index('<div style="margin:1rem 0;padding:12px 14px;')
+    callout_close = tpl.index("</div>\n  {% endif %}", callout_open)
+    verdict_at = tpl.index("{{ top_score_verdict }}")
+    assert callout_open < verdict_at < callout_close, (
+        "templates/email/job_complete.html renders top_score_verdict outside "
+        "the callout it qualifies. The callout is the endorsement frame "
+        "('Top design', a green rule); a judgement that sits below it reads as "
+        "a separate remark, and one emitted outside the enclosing "
+        "`if top_score_label` block renders with no callout at all."
     )
 
 
@@ -302,7 +308,7 @@ def test_when_nothing_clears_the_bar_the_mail_says_so():
         cand["scores"]["pI"] = 11.9
     bodies = _bodies(_sent(_job(result=result)))
     for part, body in bodies.items():
-        assert "clears the bar" in body, (
+        assert "Nothing in this run clears the bar" in body, (
             f"the {part} body captions a design that fails the bar without "
             f"saying it fails: {body!r}"
         )
@@ -398,11 +404,16 @@ def test_an_unresolved_mode_asserts_no_bar_at_all():
         "candidates": [{
             "name": "d0",
             "pdb_key": "d0.pdb",
-            # BOTH legs present, deliberately. With pI omitted the record is
-            # ``unjudged`` with an UNMEASURED leg, and "Meets" is then absent
-            # for that reason instead of for the reason this test names -- so
-            # the assertions below passed without reaching the branch. Fully
-            # measured, only an unresolved bar can keep the mail silent.
+            # BOTH legs present, deliberately, and NOT because the one-leg
+            # fixture reached the wrong branch -- at ``preset="pilot"``
+            # ``gate_columns`` is empty, so there is no leg for either fixture
+            # to leave unmeasured and both are silent for the reason this test
+            # names. It is about what happens UNDER MUTATION: give this tool a
+            # default mode and a fully measured record judges "meets", so the
+            # mail says "Meets pI 6 and ipTM 0.75" and the assertion below
+            # fires. A record missing pI would judge ``unjudged`` with an
+            # unmeasured leg under that same mutation, say "Not measured: pI",
+            # and keep every assertion here green.
             "scores": {"ipTM": 0.91, "pI": 5.0},
         }],
     })))
@@ -412,13 +423,10 @@ def test_an_unresolved_mode_asserts_no_bar_at_all():
             f"the {part} body asserts a bar that could not be resolved"
         )
         assert "clears the bar" not in body, body
-        assert "Not measured" not in body, (
-            f"the {part} body is silent because a leg went unmeasured, not "
-            f"because the bar was unresolved -- this test pins the wrong thing"
-        )
 
 
-def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
+@pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
+def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim(tool):
     """The regression this fix nearly shipped, caught in review.
 
     Reading ``candidate_records`` instead of ``result["candidates"]`` also picks
@@ -444,7 +452,7 @@ def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
     ``designs[]`` and also abstain now. Neither had a callout on ``main``, so
     that is a missed opportunity rather than a regression, and nothing pins it.
     """
-    bodies = _bodies(_sent(_job(tool="af2", preset="batch", result={"designs": [
+    bodies = _bodies(_sent(_job(tool=tool, preset="batch", result={"designs": [
         {"rank": 0, "pdb_key": "seqA.pdb", "ptm": 0.40},
         {"rank": 1, "pdb_key": "seqB.pdb", "ptm": 0.95},
     ]})))
@@ -459,9 +467,15 @@ def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
     # A POSITIVE NEEDLE ONLY THE REAL TEMPLATE PRODUCES. Every assertion above
     # is a negative, and ``send_job_complete_email`` catches a template failure
     # and falls back to an inline body that carries no callout at all -- so a
-    # totally broken template satisfies this test while proving nothing. The
-    # footer line exists only in templates/email/job_complete.txt.
-    assert "preset batch" in bodies["text"], (
+    # totally broken template satisfies this test while proving nothing.
+    #
+    # THE NEEDLE IS THE FOOTER'S PUNCTUATION, which is the only thing that
+    # differs: job_complete.txt ends 'Ranomics Tools. <url>' and the inline
+    # ``_render_text`` fallback ends 'Ranomics Tools - <url>' with an em dash.
+    # 'preset <slug>' does NOT distinguish them -- both emit it, as does the
+    # HTML template -- so an earlier needle on that string passed against a
+    # deliberately broken template and closed nothing.
+    assert "Ranomics Tools." in bodies["text"], (
         "the plain-text body did not come from job_complete.txt, so the "
         "absence of a callout above is not evidence about the gate"
     )
@@ -477,10 +491,19 @@ def test_an_unranked_designs_list_abstains_even_when_the_tool_has_a_bar():
     narrows WHICH arbitrary record gets crowned.
 
     boltz2 is the case that proves it -- submission-ordered ``designs[]`` AND a
-    registered bar. Under the two-armed gate this payload mailed
-    "Top design: ipTM 0.710" on a run holding 0.95. ``origin/main`` sent boltz2
+    registered bar. Under the two-armed gate this payload mailed a top-design
+    callout for d1 at 0.710 on a run holding 0.95. ``origin/main`` sent boltz2
     no callout at all, so that was a hole this change opened rather than one it
     inherited.
+
+    The LABEL that gate mailed was ``iptm``, not ``ipTM``: boltz2 stores the
+    lowercase spelling, the legend table is keyed on the canonical one, and the
+    column chooser matches by raw key -- so the callout carried a bare storage
+    key with no caption, two lines above a verdict naming ``ipTM``. That is a
+    separate, older defect in the chooser, still live for any record whose
+    scores use an alias spelling (a recovered row carrying ``i_pae``). It is not
+    fixed here and no test covers it; abstaining simply stops this tool meeting
+    it.
     """
     from shared.score_legends import gate_columns
 
@@ -503,10 +526,85 @@ def test_an_unranked_designs_list_abstains_even_when_the_tool_has_a_bar():
             f"bar while a better one sits in the same run: {body!r}"
         )
         assert "0.710" not in body, body
-    assert "preset pilot" in bodies["text"], (
+    # See the needle note in the af2 sibling: the footer's period is what
+    # separates the real template from the inline fallback.
+    assert "Ranomics Tools." in bodies["text"], (
         "the plain-text body did not come from job_complete.txt, so the "
         "absence of a callout above is not evidence about the gate"
     )
+
+
+def test_the_mail_identifies_the_design_when_there_is_no_filename():
+    """Say WHICH row, when there is no filename to say it with.
+
+    Deriving the headline means the mail can show a design that is not the one
+    the results page leads with -- and pxdesign, rfdiffusion and boltzgen
+    candidates carry no ``pdb_key``, so before this the customer got a bare
+    number, unidentifiable, that no longer matched row 1 on the page.
+    ``headline_candidate``'s docstring puts the disclosure on the caller ("the
+    caller is expected to say which row it picked when the two differ") and
+    /jobs/compare does it; this is the same duty on the pushed surface.
+
+    Fixture: record 0 wins on ipTM but fails the pLDDT leg, record 1 clears
+    both -- so the pick genuinely differs from the stored first row.
+    """
+    bodies = _bodies(_sent(_job(tool="pxdesign", preset="pilot", result={
+        "candidates": [
+            {"rank": 1, "scores": {"ipTM": 0.88, "pLDDT": 68.0}},
+            {"rank": 2, "scores": {"ipTM": 0.79, "pLDDT": 90.0}},
+            {"rank": 3, "scores": {"ipTM": 0.60, "pLDDT": 55.0}},
+        ],
+    })))
+    for part, body in bodies.items():
+        # The pick, not the stored first row.
+        assert "0.790" in body, f"the {part} body lost the derived headline"
+        assert "0.880" not in body, (
+            f"the {part} body leads with the row the tool's own bar fails"
+        )
+        # ...and it says which one, so the number can be matched to a design.
+        assert "rank 2 of 3" in body, (
+            f"the {part} body shows a design the customer cannot identify, on "
+            f"a tool whose candidates carry no filename: {body!r}"
+        )
+
+
+def test_a_failed_run_gets_no_endorsement():
+    """The tone gate, which nothing in this repo held.
+
+    ``_top_candidate_summary`` returns five empty strings unless ``tone`` is
+    "success". Delete that line and a job that died mid-run still mails the
+    green "Top design" callout, with a legend saying the number is credible,
+    under the headline "Your run failed" -- measured, all tests green.
+
+    The example payload is reused deliberately: it HAS candidates that would
+    render, so the silence here is the tone gate's doing and not an empty
+    result's.
+    """
+    row = {
+        "id": "2b917b54-0871-44af-a3d1-5d07ea5dcaeb",
+        "user_id": str(uuid.uuid4()),
+        "tool": "esmfold2-design",
+        "preset": RUN_MODE,
+        "status": "failed",
+        "inputs": {},
+        "result": _example_result(),
+        "error": {"detail": "GPU OOM at design 3"},
+        "modal_function_call_id": "fc-stub-x",
+        "job_token": "t" * 64,
+        "gpu_seconds_used": 120,
+        "created_at": "2026-09-01T12:00:00Z",
+        "started_at": "2026-09-01T12:00:01Z",
+        "completed_at": "2026-09-01T12:30:00Z",
+    }
+    bodies = _bodies(_sent(ToolJob.from_row(row)))
+    for part, body in bodies.items():
+        assert "Top design" not in body, (
+            f"the {part} body endorses a design in a mail about a run that "
+            f"failed: {body!r}"
+        )
+        assert PASS_IPTM not in body and DROP_IPTM not in body, body
+        assert "credible designed interface" not in body, body
+        assert "Meets" not in body, body
 
 
 def test_the_gate_reads_a_list_not_merely_a_present_key():

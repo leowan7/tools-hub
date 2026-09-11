@@ -45,14 +45,18 @@
                           declares a mode-scoped one whose mode did not resolve;
                           never the bare word "Meets".
 
-                          THE SAME SENTENCE AS /jobs/compare, AND ONLY THAT
-                          PAGE. components/candidate_table.html:705 calls
-                          verdict_text with NO preset, so on a mode-scoped tool
-                          it renders "" there, and the esmfold2-design results
-                          page carries no bar column at all -- this mail and
-                          /jobs/compare (jobs_compare.html:296, which does pass
-                          preset) are the only two surfaces that state this
-                          tool's verdict.
+                          THE SAME SENTENCE AS /jobs/compare, which is the only
+                          other caller that passes a preset
+                          (jobs_compare.html:296).
+                          components/candidate_table.html:705 calls verdict_text
+                          with NO preset, so on a mode-scoped tool it renders ""
+                          there, and the esmfold2-design results page carries no
+                          derived bar COLUMN. It is not the only other place a
+                          verdict for this tool is stated: that same results
+                          page composes one locally at :347 ("No design in this
+                          run clears the bar stated above ...") without calling
+                          verdict_text. Two renderings of one judgement, and a
+                          reworded bar reaches them separately.
 
                           It is a SEPARATE variable from top_score_caption and
                           must stay one, because
