@@ -89,9 +89,14 @@
      one of them. It was unconditional until 2026-09-11, so a SUCCEEDED free
      `validate` dry-run — which designs nothing by construction — told the
      operator its search had found nothing, and pointed at a campaign page
-     that cannot exist: blueprints/campaigns.py:196 and :337 both refuse the
-     validate preset ("not a campaign"), so a validate job never carries a
-     campaign_id. Observed live on job fc9d14d7 (27 GPU-seconds, succeeded).
+     that cannot exist. Traced rather than assumed: the only writer of
+     tool_jobs.campaign_id is shared/compute_campaigns.py:2020-2033, which
+     takes its preset from a campaign, and the only two routes that create a
+     campaign both refuse this preset first — blueprints/campaigns.py:337 and
+     blueprints/targets.py:243. (campaigns.py:196 refuses it too, but that is
+     the JSON estimate preview, which creates nothing.) No path UPDATEs
+     campaign_id afterwards, so a validate job cannot acquire one.
+     Observed live on job fc9d14d7 (27 GPU-seconds, succeeded).
 
      Branches on `job.preset`, which is the value job_detail.html:117 already
      prints as "Preset <x>" above this panel, not on the result's `tier`:
@@ -116,8 +121,8 @@
       the expected result here, not a failed search.
     </p>
     <p class="subtitle">
-      It clears the environment, not your target — the run returns before any
-      target is staged. Re-run with one of the paid design variants to produce
+      It clears the environment, not your target — nothing here inspects the
+      target itself. Re-run with one of the paid design variants to produce
       binders.
     </p>
   {% elif job.campaign_id %}
@@ -127,12 +132,23 @@
       shards may still have produced hits — check the campaign page.
     </p>
   {% else %}
+    {# NO PARAMETER ADVICE HERE. The sentence that stood here named three
+       levers — binder length, hotspots, design count — and all three are
+       false for most runs that reach this arm. A curated run REFUSES
+       hotspots and contigs outright (tools/proteina/__init__.py:666) and
+       ligand_binder / motif_ame can never be custom (:151, :607), so they
+       are always curated; binder_length is parsed on every path but only
+       consumed under `target_source == "custom"`
+       (run_pipeline.py:4009 read, :4245 sole use, inside the :4234 gate);
+       and a shard is pinned at 4x2=8 designs (__init__.py:162) — raising
+       the count scales the SHARD count, which makes it a campaign and so
+       contradicts this arm's own first sentence. What is left is true for
+       every standalone run regardless of preset or target source. #}
     <p class="subtitle">
       This Proteina-Complexa run returned no candidates that cleared the
       reward filters. It is a single run rather than one shard of a campaign,
-      so there are no sibling shards to pool survivors with. Widening the
-      binder length range, refining your hotspots, or funding more designs are
-      the levers that move it.
+      so there are no sibling shards to pool survivors with — a campaign
+      spreads the same target over more shards.
     </p>
   {% endif %}
 {% endcall %}
