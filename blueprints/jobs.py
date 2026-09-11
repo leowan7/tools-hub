@@ -12,6 +12,7 @@ _top_score_for_share move in at module level.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 
@@ -153,8 +154,8 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
     sentence about the same thing.
 
     Then, when no bar applies: the tool's ranking metric, but only if its
-    REGISTERED DIRECTION is ``desc`` and it carries a ``score_legends`` entry -- the site must be able to explain
-    a number it quotes. That admits bindcraft's ipTM and iggm's
+    REGISTERED DIRECTION is ``desc`` and it carries a ``score_legends`` entry
+    -- the site must be able to explain a number it quotes. That admits bindcraft's ipTM and iggm's
     epitope_contacts and refuses proteina's total_reward.
 
     Then model confidence, over ``_PLDDT_PREFERENCE``. This arm is what gives
@@ -194,15 +195,29 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
         value = score_legends.raw_metric(record, col)
         if value is None:
             value = _result_columns.candidate_metric(record, col)
-        if value is None:
+        # A BOOL IS NOT A SCORE, and ``isinstance(True, int)`` is True, so the
+        # numeric check below would have quoted "ipTM 1.000" for a stored
+        # ``true``.
+        if value is None or isinstance(value, bool):
             return None
         try:
             value = float(value)
         except (TypeError, ValueError):
             return None
+        # NaN AND INFINITY FORMAT AS WORDS. Probed through this route before
+        # the guard: a stored NaN produced "Top design: ipTM nan" and an
+        # infinity "ipTM inf", in text a person pastes somewhere. This
+        # pipeline does produce NaN -- tools/esmfold2_design writes
+        # ``float("nan")`` for the CDR proxy on every non-antibody design and
+        # carries a ``_finite`` helper to strip it -- so the shape is real
+        # even though the storage round-trip usually removes it.
+        if not math.isfinite(value):
+            return None
         if col in _metric_glossary.PLDDT_COLUMNS:
             value = _metric_glossary.plddt_on_100(value)
-        return (col, value) if isinstance(value, (int, float)) else None
+            if value is None or not math.isfinite(value):
+                return None
+        return (col, value)
 
     def _higher_is_better(col):
         legend = score_legends.get_legend(tool, col) or {}
@@ -341,6 +356,21 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # was not SHOWN to meet it, there is no sentence to make: an unmeasured
     # design cannot be described as clearing a bar, and it cannot be called
     # the top one either while the bar may have dropped something above it.
+    # A FABRICATED RECORD IS NEVER QUOTED, whatever its bar. The smoke tier
+    # invents deterministic scores when no model output exists, and ``judge``
+    # marks that ``unusable`` -- but only AFTER an early return for a tool
+    # with no gate columns, so a bindcraft/proteina/iggm stub comes back a
+    # plain "unjudged" with an EMPTY unusable and sails past the bar guard
+    # below. Probed: a bindcraft record carrying ``filter_status`` "stub
+    # (smoke)" and ipTM 0.99 quoted "Top design: ipTM 0.990". The same stub on
+    # pxdesign is caught, which is what made this look covered.
+    #
+    # PRE-EXISTING, not introduced here -- the old first-numeric-key rule
+    # quoted the invented number too -- but this function is now where the
+    # decision lives, and shared/exports.py already refuses to hand these
+    # numbers over unmarked (``export_key``'s "stub (smoke)" provenance).
+    if score_legends.is_fabricated(top):
+        return None
     # ONE GUARD, NOT TWO. A separate ``verdict == "below" or verdict.unusable``
     # test stood above this and is gone because it could not change an
     # outcome: ``judge`` returns "below", or a non-empty ``unusable``, ONLY

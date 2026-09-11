@@ -817,3 +817,72 @@ class TestTheBarDecidesTheSentence:
         )
         clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
         assert clause == "Top design: ipTM 0.801", clause
+
+
+class TestTheShareTextRefusesNonsense:
+    """Values that must never be quoted, whatever the bar says.
+
+    Found by running the correctness lens's hunt list by hand after the agent
+    itself died on a rate limit mid-review. Both are reachable through the
+    real route and neither was refused.
+    """
+
+    def _bindcraft(self, flask_app, monkeypatch, scores):
+        job = _job(
+            tool="bindcraft", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "c0", "pdb_key": "designs/c0.pdb",
+                 "sequence": "MK", "scores": scores},
+            ]},
+        )
+        return _clause(_share(flask_app, monkeypatch, job)["og_title"])
+
+    def test_a_smoke_stub_is_never_quoted(self, flask_app, monkeypatch):
+        """THE EARLY RETURN IN ``judge`` IS WHY THIS WAS REACHABLE.
+
+        The smoke tier invents deterministic scores when no model output
+        exists, and ``judge`` marks that ``unusable`` -- but only AFTER
+        returning early for a tool with no gate columns. So a bindcraft /
+        proteina / iggm stub comes back a plain "unjudged" with an EMPTY
+        ``unusable`` and passes the bar guard, while the SAME stub on pxdesign
+        is caught. That asymmetry is what made this look covered.
+
+        Probed before the guard: this record quoted "Top design: ipTM 0.990".
+        Pre-existing rather than introduced -- the old first-numeric-key rule
+        quoted it too -- but this function is where the decision lives now,
+        and shared/exports.py already refuses to hand these numbers over
+        unmarked.
+        """
+        clause = self._bindcraft(
+            flask_app, monkeypatch,
+            {"ipTM": 0.99, "filter_status": "stub (smoke)"},
+        )
+        assert clause is None, clause
+
+    def test_a_real_score_on_the_same_tool_still_speaks(
+        self, flask_app, monkeypatch,
+    ):
+        """The pair, so the test above cannot pass by silencing the tool."""
+        clause = self._bindcraft(flask_app, monkeypatch, {"ipTM": 0.801})
+        assert clause == "Top design: ipTM 0.801", clause
+
+    @pytest.mark.parametrize(
+        "label,value",
+        [("nan", float("nan")), ("inf", float("inf")),
+         ("-inf", float("-inf")), ("bool", True)],
+    )
+    def test_a_non_finite_or_boolean_value_is_never_quoted(
+        self, flask_app, monkeypatch, label, value,
+    ):
+        """``f"{float('nan'):.3f}"`` is the word "nan", so before the guard
+        this route emitted "Top design: ipTM nan" -- and "ipTM inf" -- in text
+        a person pastes somewhere.
+
+        This pipeline does produce NaN: tools/esmfold2_design writes
+        ``float("nan")`` for the CDR proxy on every non-antibody design and
+        carries a ``_finite`` helper to strip it. The bool case is separate:
+        ``isinstance(True, int)`` is True, so a stored ``true`` formatted as
+        "ipTM 1.000".
+        """
+        clause = self._bindcraft(flask_app, monkeypatch, {"ipTM": value})
+        assert clause is None, f"{label} -> {clause}"
