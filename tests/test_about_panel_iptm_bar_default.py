@@ -65,8 +65,9 @@ from shared.score_legends import SCORE_LEGENDS, get_legend
 # (shared/wallet_estimates.py:672). Counted on this branch by wrapping
 # those functions: 10 of the 28 pages an _entries call renders reach the
 # SELECT -- the 14 guide pages build no such context at all, and af2,
-# colabfold, esmfold and opendde stop short of it -- so 50 live SELECTs
-# across this file's five _entries calls.
+# colabfold, esmfold and opendde stop short of it. _entries memoises on
+# the module-scoped app, so its 28 renders happen once for the module:
+# 10 live SELECTs total, not 10 on each of the five call sites.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: ANY pointer wording. Used where PRESENCE is the question: a tool that
@@ -176,6 +177,8 @@ SURFACES = ("/tools/{slug}", "/help/tools/{slug}")
 #: Keyed by the app the module-scoped fixture built, so the 28 renders
 #: happen on the first call and every later call in the module reuses
 #: them. A new module builds a new app, which misses and rebuilds.
+#: Do not call this inside a patch that changes rendering: the first
+#: call's HTML is what every later call in the module receives.
 _ENTRIES: dict = {}
 
 

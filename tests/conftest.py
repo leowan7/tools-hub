@@ -72,18 +72,29 @@ def all_tools_app():
     assert len(slugs) >= 14, (
         f"adapter registry holds {len(slugs)} tools; tools.base._REGISTRY "
         "is empty until `import app` populates it, and a registry that did "
-        "not populate would leave every per-adapter test iterating nothing"
+        "not populate would leave every test that iterates it covering "
+        "nothing"
     )
-    # Module-scoped so a module's page-render sweeps happen once for the
-    # module rather than once per calling test. That rules out the
-    # function-scoped `monkeypatch` fixture; MonkeyPatch.context() is the
-    # same setenv/undo over the module's lifetime.
+    # Module-scoped so one app object serves a whole module and the
+    # memoised sweep helpers in the consumer modules can key on it.
+    # Scope alone renders nothing fewer -- the memo dicts do that, and
+    # the un-memoised per-test loops still render once per test. Module
+    # scope does rule out the function-scoped `monkeypatch` fixture;
+    # MonkeyPatch.context() is the same setenv/undo, held open over the
+    # module's lifetime instead of one test's.
+    #
+    # Consequence of that wider window: every FLAG_TOOL_* stays on for
+    # the rest of the module once this fixture is built, where the
+    # function-scoped version undid them after each test. A module whose
+    # other fixtures flag only a subset on will see all of them from
+    # that point. Both consumers happen to define those tests earlier in
+    # the file, which is collection order, but nothing enforces it.
     #
     # Ordering note: a module-scoped fixture is built before the
     # function-scoped isolate_supabase blanks the credentials. That is
-    # safe here because create_app() captures no Supabase client --
+    # safe because create_app() captures no Supabase client --
     # get_service_client() is called inside inject_workspace_context,
-    # a context processor, so it runs per request instead.
+    # a context processor, so it runs per render instead.
     with pytest.MonkeyPatch.context() as mp:
         for slug in slugs:
             mp.setenv(flag_name(slug), "on")

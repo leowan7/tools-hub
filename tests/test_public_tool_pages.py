@@ -41,8 +41,13 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: Page sweeps memoised per app instance, matching _ENTRIES in
 #: test_about_panel_iptm_bar_default.py. all_tools_app is module-scoped,
-#: so one app serves the module and each sweep renders once rather than
-#: once per calling test. A new module builds a new app, which misses.
+#: so one all_tools_app instance serves the module and each of these two
+#: helpers renders once rather than once per calling test. The separate
+#: function-scoped `app` fixture below still builds an app per test, and
+#: the un-memoised per-test slug loops still render per test.
+#: A new module builds a new app, which misses.
+#: Do not call either helper inside a patch that changes rendering: the
+#: first call's HTML is what every later call in the module receives.
 _LEDES: dict = {}
 _PAGES: dict = {}
 
@@ -548,8 +553,9 @@ class TestPublicContextIsBuiltOncePerRequest:
     round trips per crawler hit, on fourteen pages.
     """
 
-    # Uses the module's ``all_tools_app`` fixture rather than setting
-    # FLAG_TOOL_* by hand: the hand-rolled version set fourteen env vars
+    # Uses the shared ``all_tools_app`` fixture from tests/conftest.py
+    # rather than setting FLAG_TOOL_* by hand: the hand-rolled version
+    # set fourteen env vars
     # plus SESSION_SECRET_KEY and never restored them, leaking flag state
     # into whatever test ran next.
     @staticmethod
