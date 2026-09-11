@@ -154,8 +154,9 @@ def _job_complete_template_context(
         "empty":   f"Your {tool} run finished with no candidates",
         "failed":  f"Your {tool} run failed",
     }[tone]
-    top_score_label, top_score_value, top_score_caption, top_pdb_key = (
-        _top_candidate_summary(job=job, tone=tone)
+    (top_score_label, top_score_value, top_score_caption, top_pdb_key,
+     top_score_verdict, top_position) = _top_candidate_summary(
+        job=job, tone=tone,
     )
     next_step_url, next_step_label = _next_step_for_job(
         job=job, base_url=base_url, tone=tone,
@@ -174,31 +175,168 @@ def _job_complete_template_context(
         "top_score_label":   top_score_label,
         "top_score_value":   top_score_value,
         "top_score_caption": top_score_caption,
+        "top_score_verdict": top_score_verdict,
         "top_pdb_key":       top_pdb_key,
+        "top_position":      top_position,
         "next_step_url":     next_step_url,
         "next_step_label":   next_step_label,
     }
 
 
-def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # noqa: ANN001
-    """Pull (label, value, 1-line caption, pdb_key) for the top candidate.
+def _top_candidate_summary(
+    *, job, tone: str,  # noqa: ANN001
+) -> tuple[str, str, str, str, str, str]:
+    """Pull (label, value, caption, pdb_key, judgement, position) for the
+    design this mail should LEAD with.
 
-    Returns four empty strings when the job has no candidate scores to
+    Returns six empty strings when the job has no candidate scores to
     surface (sequence-design tools, structure-prediction tools, failed
     runs). The caption comes from shared.score_legends; when no legend
     is registered for the chosen column the caption falls back to "".
+
+    THE DESIGN IS DERIVED, NOT ``candidates[0]``. A container ranks on its
+    ranking key, not on its bar, so the record it stores first can be one the
+    tool itself drops. esmfold2-design job 2b917b54 stores a design at pI 11.95
+    and ipTM 0.9556, which its own ``filter_status`` marks ``drop``, ahead of a
+    pI 5.67 design at 0.9354 marked ``strict_pass`` — and this mail sent the
+    reject's number under "0.75 or more is a credible designed interface". (The
+    repo describes that design's sequence as a poly-leucine bundle in four other
+    places, ``score_legends.py`` and ``meta.py`` among them; no sequence
+    survives capture, so nothing here evidences it. The pI and the drop are in
+    ``example/result.json``.)
+
+    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. The
+    argument for the rule is not rehearsed here, because the rule is what
+    survived three drafts of it: #248's own message gives two different totals
+    in two paragraphs, so there is no ordinal for this class that a reader can
+    check. A name needs no arithmetic, which is the whole point.
+
+    It is the one that can reach a customer who never opened the site: the
+    webhook path ``webhooks/modal.py`` -> ``complete_job`` -> here fires when
+    the run finishes, where the results page and /jobs/compare wait to be
+    opened. Note the caveat block below, which turns on the OPPOSITE fact —
+    ``complete_job``'s other callers finalize long-STORED results (the inline
+    poll in ``blueprints/jobs``, ``timeout_stuck_job``,
+    ``scripts/finalize_stuck_job.py``, and ``reconcile_campaign_children`` in
+    ``shared/compute_campaigns``), so "pushed" is true of the webhook caller and
+    not of every caller.
+    ``shared.jobs.headline_candidate`` is the chooser #248 (313b764) added for
+    the compare page; its predicate is deliberately not re-derived here, because
+    ``shared.ranking`` and it decide the same question and may not disagree.
+
+    AND THE JUDGEMENT TRAVELS WITH THE NUMBER. Choosing better is not enough on
+    a run where NOTHING clears the bar: ``headline_candidate`` then falls back
+    to a design that fell short, and a legend saying what a good value means is
+    read beside it as a claim that this is one. The fifth element is
+    ``score_legends.verdict_text`` — THE single renderer, whose "below" branch
+    also carries the ``unusable`` and ``unmeasured`` clauses that a hand-join of
+    ``verdict.shortfalls`` drops. It is a SEPARATE return value and not appended
+    to the caption on purpose, and the reason is ONE test, not the ceilings:
+    ``test_the_caption_is_the_legend_and_nothing_invented`` asserts
+    ``caption == legend["explanation"]`` as string equality, which appending
+    would break. The ``_SLOT_LIMIT``/``_CAVEAT_LIMIT`` ceilings beside it would
+    NOT catch it — they measure ``SCORE_LEGENDS`` and ``email_caption`` directly
+    and never see this function's return value. Nothing bounds the length of the
+    judgement line; ``gate_bar_text`` is short today and no test says so.
+
+    ``candidate_records``, not ``result["candidates"]``: it unwraps the legacy
+    ``result["output"]`` nesting, so a wrapped row is read and judged instead of
+    rendering nothing, and it reads the ``designs[]`` shape — but see the
+    ranked-list gate below (the ``isinstance(... "candidates", list)`` check),
+    which is what keeps that second half from turning this block on for tools
+    whose ``designs[]`` is not a ranked list.
     """
     if tone != "success":
-        return ("", "", "", "")
+        return ("", "", "", "", "", "")
     result = getattr(job, "result", None) or {}
     if not isinstance(result, dict):
-        return ("", "", "", "")
-    candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        return ("", "", "", "")
-    top = candidates[0]
+        return ("", "", "", "", "", "")
+
+    from shared import score_legends  # noqa: PLC0415
+    from shared.jobs import (  # noqa: PLC0415
+        _normalize_result_shape,
+        candidate_records,
+        headline_candidate,
+    )
+
+    tool_slug = getattr(job, "tool", "") or ""
+    # THE RESULT FIRST, the stored preset only as a fallback — the order
+    # blueprints/jobs.jobs_compare and templates/tools/esmfold2_design_results
+    # resolve it in. A job's stored preset can be the default string while the
+    # result records what the run actually did, and for a tool whose bar is
+    # keyed on (tool, mode) the wrong answer here is no bar at all.
+    #
+    # THIS IS THE SECOND SPELLING OF ONE RULE AND SHOULD NOT SURVIVE.
+    # ``score_legends.resolve_mode(tool, result, preset)`` says exactly this and
+    # is written, on branch claude/amazing-chaplygin-c7d6dc (3ed0201), which
+    # repairs the four sibling surfaces of this same defect class. That branch
+    # is unpushed, so there is nothing to import yet and this call site stays
+    # inline rather than adding a third copy to shared/score_legends.py while
+    # another session is editing it. COLLAPSE THIS INTO resolve_mode when that
+    # branch lands; it is one expression, deliberately.
+    #
+    # The two are NOT identical and the difference is why theirs is the one to
+    # keep: resolve_mode is guarded on MODE_GATE_COLUMNS, so for a tool with no
+    # mode-scoped bar it hands back the preset untouched and never reads the
+    # result at all. ``result_mode`` is tool-blind — it reads ``is_antibody``
+    # off any dict — so this line can hand a non-moded tool a mode it never
+    # had. Inert HERE, because the only consumers are gate_columns/judge/
+    # verdict_text and those ignore the preset for a GATE_COLUMNS tool (probed
+    # across six preset values on pxdesign, all six judged identically). Inert
+    # is not correct, and a later consumer that used the value as a cohort key
+    # would inherit the bug.
+    mode = score_legends.result_mode(result) or getattr(job, "preset", None)
+    records = candidate_records(result)
+    top, verdict = headline_candidate(records, tool_slug, preset=mode)
     if not isinstance(top, dict):
-        return ("", "", "", "")
+        return ("", "", "", "", "", "")
+
+    # A "TOP DESIGN" CLAIM NEEDS SOMETHING THAT RANKED THE LIST — nothing else
+    # will do, and a bar in particular will not; see below. Widening this
+    # function from ``result["candidates"]`` to ``candidate_records`` supplied
+    # no ranking for one
+    # family of tools. ``candidates[]`` is a list the container ranked.
+    # ``designs[]`` need not be: af2, colabfold and esmfold store their ``batch``
+    # preset there, one record per independently submitted target, carrying the
+    # submission index as ``rank`` (``"rank": rec_info["index"]`` in
+    # tools/af2/run_pipeline.py and tools/colabfold/run_pipeline.py, ``"rank": i``
+    # in tools/esmfold/run_pipeline.py; af2's and colabfold's adapters call them
+    # "many independent targets", esmfold's says "Fold many monomer sequences").
+    # The list is never sorted on quality, so record 0 is a submission, not a
+    # winner, and the block asserted "Top design: ptm 0.400" over whichever
+    # sequence the customer pasted first, captioned with what a GOOD ptm looks
+    # like, on a run holding a 0.95. Measured on a two-record af2 batch payload.
+    #
+    # A BAR DOES NOT SUBSTITUTE FOR THE ORDERING, which is what an earlier
+    # version of this gate got wrong: it also admitted any list whose tool
+    # declares a bar, on the reasoning that ``headline_candidate`` could re-pick
+    # within it. It cannot — its docstring says "THIS DOES NOT RE-RANK" and its
+    # loop returns the FIRST record not shown to fall short, in stored order. On
+    # an unranked list a bar only narrows WHICH arbitrary record gets crowned:
+    # boltz2 stores submission-ordered ``designs[]`` and does declare a bar, and
+    # that gate mailed "Top design: ipTM 0.710" on a run holding 0.95. main sent
+    # boltz2 no callout at all, so that was a hole this change opened.
+    #
+    # THE RULE IS THE SHAPE ALONE. Gating on the bar alone is equally wrong in
+    # the other direction: bindcraft declares none yet stores a ranked
+    # ``candidates[]``, so that rule deletes a callout it has had all along.
+    #
+    # ONE RULE, TWO CALLERS, AND THIS COPY SHOULD NOT SURVIVE: a peer session is
+    # placing it in shared/jobs.py beside ``headline_candidate``, whose other
+    # caller (blueprints/jobs.py, for /jobs/compare) has no shape test and leads
+    # that page with ``designs[0]`` for an af2 batch job today. COLLAPSE THIS
+    # into that helper when it lands, the same way the mode resolution above
+    # collapses into ``resolve_mode``.
+    #
+    # ``_normalize_result_shape`` is redundant TODAY -- ``ToolJob.from_row``
+    # already normalises and is the only construction site in PRODUCTION code
+    # (tests build one directly) -- and is kept so the
+    # gate and ``candidate_records`` read one view of the result and cannot
+    # disagree about which list is being described.
+    normalized = _normalize_result_shape(result)
+    if not isinstance((normalized or {}).get("candidates"), list):
+        return ("", "", "", "", "", "")
+
     scores = top.get("scores")
     if not isinstance(scores, dict) or not scores:
         # Some adapters inline the score at the candidate root instead of
@@ -210,7 +348,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         }
         scores = flat or {}
     if not scores:
-        return ("", "", "", "")
+        return ("", "", "", "", "", "")
 
     # The caption underneath quotes the 80/90 band, so the number beside
     # it has to be on that scale. This mailed "pLDDT 0.830" directly above
@@ -221,13 +359,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
         for k, v in scores.items()
     }
 
-    try:
-        from shared.score_legends import (  # noqa: PLC0415
-            score_legends_for,
-        )
-        legends = score_legends_for(getattr(job, "tool", "") or "")
-    except Exception:
-        legends = {}
+    legends = score_legends.score_legends_for(tool_slug)
 
     # Prefer columns with a registered legend so the caption is
     # meaningful. Then fall back to the first numeric score we see.
@@ -242,7 +374,7 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
                 chosen_col = col
                 break
     if chosen_col is None:
-        return ("", "", "", "")
+        return ("", "", "", "", "", "")
 
     value = scores[chosen_col]
     if isinstance(value, float):
@@ -288,7 +420,56 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)
-    return (str(chosen_col), value_str, caption, pdb_key)
+    # SAY SO WHEN THIS IS NOT THE FIRST DESIGN LISTED. Deriving the headline
+    # means this mail can lead with a design the results page does not, and it
+    # said nothing about that. ``headline_candidate``'s docstring puts the
+    # disclosure on the caller -- "the caller is expected to say which row it
+    # picked when the two differ" -- and /jobs/compare does it.
+    #
+    # NO NUMBER, DELIBERATELY, and two earlier drafts of this block carried
+    # one. The results table numbers its rows from the stored ``rank`` field
+    # (components/candidate_table.html renders
+    # ``cand.get('rank', loop.index)`` for a single run), and that field is
+    # 0-based on this tool -- so a mail saying "design 2 of 2" sends the
+    # customer to a page whose two rows are labelled 0 and 1. A positional
+    # count is no better: it is right for the list and wrong for the page.
+    # The tool's own results page already solved this by NAMING the fact
+    # instead (templates/tools/esmfold2_design_results.html: "not the top row
+    # below"), and this mail says the same thing in its own words. A name
+    # needs no arithmetic and no per-tool base.
+    #
+    # Identity, matching blueprints/jobs.py, which computes the same offset for
+    # /jobs/compare. Equality would give the same answer everywhere reachable
+    # here -- ``headline_candidate`` returns the FIRST record satisfying its
+    # predicate, so an earlier record equal to the pick would have been the
+    # pick -- and no test distinguishes them. Identity is used because the
+    # sibling does, not because a case is known.
+    #
+    # Falsy covers both position 0 (the pick IS first -- nothing to disclose,
+    # the condition /jobs/compare gates its own line on) and None, which is
+    # unreachable because ``headline_candidate`` returns an element of
+    # ``records``.
+    position = next((i for i, rec in enumerate(records) if rec is top), None)
+    position_note = "not the first design listed" if position else ""
+
+    # ``verdict_text``, not a hand-join of ``verdict.shortfalls``. That exact
+    # shortcut is the one templates/jobs_compare.html records as its own
+    # history — "hand-built two of the sentences, which is how the 'below' case
+    # came to print its shortfall and swallow its ``unusable`` half" — and the
+    # renderer's docstring says it is the ONLY one for the same reason. It
+    # returns "" when there is no bar to name, including for a moded tool whose
+    # mode did not resolve, so nothing renders rather than a bare "Meets".
+    judgement = score_legends.verdict_text(tool_slug, verdict, preset=mode)
+    if judgement and verdict.verdict == "below":
+        # ``headline_candidate`` hands back a "below" record only as a
+        # FALLBACK, after no record passed its predicate (see the loop in
+        # shared/jobs.py under "NOT SHOWN TO FALL SHORT"). So on this mail —
+        # which shows one design and no table — that verdict is the whole
+        # run's answer, and saying only "pI 11.95, above 6" would read as one
+        # design's problem. Same reading /jobs/compare prints.
+        judgement = f"Nothing in this run clears the bar — {judgement}"
+    return (str(chosen_col), value_str, caption, pdb_key, judgement,
+            position_note)
 
 
 def _next_step_for_job(
