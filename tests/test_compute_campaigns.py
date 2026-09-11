@@ -42,7 +42,7 @@ from shared.wallet_estimates import get_tool_spec
 # ``wallet_estimates._historical_p90_seconds``, which late-imports
 # ``credits.get_service_client`` -- a different module attribute the fake never
 # replaces. Without the fixture every planner test SELECTs the live
-# ``tool_jobs_p90`` view with the service-role key from the repo-root ``.env``,
+# ``tool_jobs`` table with the service-role key from the repo-root ``.env``,
 # and the money it plans is priced off production history. Nothing here asserts
 # an exact planned figure (the plan-derived assertions are all inequalities), so
 # the fixture changes no expected value; it removes the production read.
