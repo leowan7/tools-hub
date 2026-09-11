@@ -548,7 +548,7 @@ class TestEpitopeScoutPrerequisite:
 
 
 class TestPublicContextIsBuiltOncePerRequest:
-    """One page render, one build — and one ``tool_jobs_p90`` SELECT.
+    """One page render, one build — and one ``tool_jobs`` SELECT.
 
     The bundle is needed twice per render: ``tool_form`` passes it into
     the template, and the ``tool_public_context`` jinja global rebuilds

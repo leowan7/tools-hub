@@ -35,7 +35,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from math import isfinite
+from statistics import quantiles
 from typing import Mapping, Optional
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,14 @@ MIN_HISTORICAL_RUNS = 20
 
 # Lookback window for the p90 sample.
 HISTORICAL_LOOKBACK_DAYS = 30
+
+# Most rows the p90 sample will pull for one tool. The whole 30-day window
+# is well under this today (40 succeeded rows across ALL tools, measured on
+# prod 2026-09-09), so the cap never truncates; it exists so one busy tool
+# cannot turn an uncached per-render SELECT into an unbounded one.
+# ponytail: newest-N truncation skews the percentile if a tool ever exceeds
+# this; move the percentile back into SQL (a per-unit view) if that happens.
+_HISTORICAL_ROW_CAP = 500
 
 # Multiplier applied to the point estimate to size the wallet HOLD (the
 # reservation), so actual usually lands under the hold and settle releases
@@ -230,9 +241,10 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # cover its compute: at 1200.0 a 100-design campaign planned $18.09
         # against ~$33.68 of real cost, so fund-and-drain stalled part way.
         #
-        # ``estimated_cost_for_tool`` prefers a 30-day p90 from tool_jobs_p90
-        # and only falls back here below MIN_HISTORICAL_RUNS, so the live price
-        # self-corrects as post-update runs accumulate. The chunking does not.
+        # ``estimated_cost_for_tool`` prefers a 30-day p90 from
+        # ``_historical_p90_seconds`` and only falls back here below
+        # MIN_HISTORICAL_RUNS, so the live price self-corrects as post-update
+        # runs accumulate. The chunking does not.
         #
         # ONE CONSEQUENCE, AND ITS LIMITS. WHILE THIS FALLBACK IS IN FORCE
         # the cushion (1.5x) exceeds the scaled cap by ~1.05% at every design
@@ -243,16 +255,41 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # an ordinary 8-design run reserved $2.1849, settled $2.6946, and took
         # a $0.51 true-up that Ranomics absorbed whenever the balance was short.
         #
-        # IT MAY NOT SURVIVE THE p90 HANDOVER described in the paragraph
-        # above, and which way it goes is UNDETERMINED -- do not read the
-        # paragraph above as a standing property of the tool. The clamp needs
-        # a p90 at or above ~2746 GPU-s, and the repo's two runtime models for
-        # a 10-design chunk STRADDLE that: 2775 s at the flat 277.5 rate (the
-        # clamp holds) against 2600 s on meta.py's fixed ~700 s + ~190 s per
-        # design (it goes, holding $4.73 against a $5.00 cap). The handover
-        # itself needs MIN_HISTORICAL_RUNS succeeded runs inside one rolling
-        # 30-day window, and tool_jobs_p90 takes a 90th percentile, so it sits
-        # near the TOP of the observed spread rather than at the smallest job.
+        # THE p90 HANDOVER NO LONGER MOVES THIS BY UNITS. The clamp needs a
+        # baseline-equivalent p90 at or above ~2746 GPU-s, and
+        # ``_historical_p90_seconds`` now returns exactly that unit -- a
+        # per-design percentile times the baseline -- so a sample of
+        # post-update runs lands near 277.5 * 10 = 2775 and the clamp holds
+        # for the reason it holds today rather than by luck. Only NEAR: the
+        # margin is 1.045%, and normalising divides the fixed ~83 s of
+        # start-up by the run size, so a sample of runs LARGER than about 11
+        # designs drops under the threshold (12-design runs read 2739.8) and
+        # the clamp goes. It is lost by a fraction of a percent, and the
+        # cushion still covers -- see the next paragraph. Before that fix
+        # the p90 tracked past job SIZES: prod's sample is four 4-design and
+        # two 8-design runs (528, 408, 468, 414, 804, 2220 GPU-s), whose RAW
+        # p90 is 1512 -- so had the gate been open, a 10-design chunk would
+        # have held $2.75 against a $3.37 charge (277.5 s/design at the rate
+        # above; the 82.6 + 267.1n fit in _historical_p90_seconds puts the
+        # same chunk at $3.34). It never was open --
+        # six rows is under MIN_HISTORICAL_RUNS, so no rfdiffusion price has
+        # ever come from the p90 branch; that is the counterfactual this
+        # change closes, not a bug that shipped.
+        #
+        # It is still a percentile over a 30-day window that MIXES eras. The
+        # pre-update runs sit near 100 s/design and the post-update ones near
+        # 277.5, so the percentile over today's six-row sample would be 204.8
+        # (below the clamp threshold). It rises past it once the post-update
+        # rows fill the top decile -- 3 of 20, 4 of 30, 11 of 100, i.e. a
+        # tenth of the sample PLUS about one row, which at the 20-row minimum
+        # is 15%, not 10%. p90 sits near the TOP of the spread. In between, the
+        # clamp is gone but the cushion still covers: the variance-debit and
+        # absorbed_variance branches need the hold BELOW the charge, which at
+        # the era's 277.5 s/design means a per-design p90 under ~185 s --
+        # below the whole post-update era. (The exact figure moves with
+        # num_designs, because _scale_seconds floors its ratio at 1.0 and
+        # anything under the baseline prices as a baseline run: at 8 designs
+        # it is 148 s/design, and it saturates at 185 for n >= baseline.)
         # tests/test_cushioned_hold.py pins both branches so whichever way it
         # lands is visible rather than silent.
         #
@@ -656,40 +693,177 @@ def cushioned_hold_usd(
 
 
 def _historical_p90_seconds(tool_slug: str) -> Optional[float]:
-    """Return the p90 ``gpu_seconds`` for the last 30 days, or ``None``.
+    """Return a BASELINE-EQUIVALENT p90 ``gpu_seconds``, or ``None``.
 
-    Uses the ``tool_jobs_p90`` view when present (computed in the
-    migration shipped by Agent A). Falls back to ``None`` when the
-    Supabase service client is missing, the view is empty for the slug,
-    or the row count is below :data:`MIN_HISTORICAL_RUNS`.
+    The return value is in the same units as ``spec.expected_gpu_seconds``:
+    the seconds a ``designs_per_run_baseline``-sized run takes. The caller
+    hands it straight to :func:`_scale_seconds`, which multiplies by
+    ``actual / baseline`` — so the two sources are interchangeable and the
+    p90 handover cannot move the price by units alone.
+
+    Getting there means normalising PER ROW before taking the percentile.
+    The ``tool_jobs_p90`` view percentiles RAW per-job ``gpu_seconds_used``,
+    which is a different quantity: a job's seconds depend on how many designs
+    that particular job asked for. Feeding a raw p90 into ``_scale_seconds``
+    multiplies by the ratio a second time, so the historical price tracked
+    the SIZE of past jobs rather than the cost of a design. Measured on prod
+    (2026-09-09): rfdiffusion's sample was four 4-design and two 8-design
+    runs, and pricing a 10-design campaign chunk off it held $2.75 against a
+    $3.34 charge — a debit the wallet absorbs. It errs the other way just as
+    easily: every mpnn row is ``num_seq_per_target=50``, so its 36.8 s p90 is
+    already a 50-sequence run and got scaled 6.25x again, holding 9.4x the
+    real cost. Thirteen of the fifteen specs have a ``scaling_param``, so
+    this is not one tool's problem.
+
+    Normalising removes the FIRST-ORDER dependence on job size. It does not
+    remove all of it: a run costs a fixed startup plus a per-unit cost, so
+    seconds/units reads high for jobs smaller than the one being priced and
+    low for jobs larger. Sized on rfdiffusion's measured fit (82.6 s fixed +
+    267.1 s per design), pricing a 10-design chunk off a sample of 1-design
+    runs is 27% over, off 4-design runs 4.5% over, and off 25-, 100- and
+    500-design runs 1.8%, 2.7% and 2.9% UNDER. The residual is bounded by
+    the fixed share either way, and the under-side is small and asymptotic,
+    but it is not zero -- do not read this as an over-hold guarantee.
+
+    Returns ``None`` — and the caller falls back to the spec constant — when
+    the service client is missing, the query fails, or fewer than
+    :data:`MIN_HISTORICAL_RUNS` usable rows sit inside the window.
     """
     from .credits import get_service_client  # noqa: PLC0415
 
+    spec = TOOL_SPECS.get(tool_slug)
+    if spec is None or spec.designs_per_run_baseline <= 0:
+        return None
     client = get_service_client()
     if client is None:
         return None
+
+    # Read the scaling parameter out of ``inputs`` BY PATH rather than
+    # selecting the jsonb whole: it carries hotspot lists, preflight payloads
+    # and pasted FASTA (median 1.4 KB, max 28 KB per row on prod), and this
+    # SELECT is uncached and runs on every /tools/<slug> render. ``preset`` is
+    # a real column, so it comes for free.
+    columns = ["gpu_seconds_used", "preset"]
+    if spec.scaling_param:
+        # TWO paths, because adapters disagree about where the scaling
+        # parameter lives in the stored ``inputs``. rfdiffusion, mpnn, iggm,
+        # bindcraft and rfantibody put it at the top level; af2, colabfold,
+        # esmfold and boltz2 nest it under "parameters" (see the validate()
+        # return in each tools/<slug>/__init__.py). Reading only the top
+        # level leaves those four permanently unresolvable.
+        columns.append(f"units:inputs->>{spec.scaling_param}")
+        columns.append(f"nested_units:inputs->parameters->>{spec.scaling_param}")
+        # IgGM's affinity_maturation runs one pass per masked position per
+        # sample; the stored job spec carries the pre-computed product, which
+        # is exactly the stored-job shape ``_effective_scaling_value`` prefers.
+        columns.append("total_passes:inputs->>total_passes")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORICAL_LOOKBACK_DAYS)
     try:
         response = (
-            client.table("tool_jobs_p90")
-            .select("p90_gpu_seconds,sample_size")
-            .eq("tool_slug", tool_slug)
-            .eq("lookback_days", HISTORICAL_LOOKBACK_DAYS)
-            .maybe_single()
+            client.table("tool_jobs")
+            .select(",".join(columns))
+            .eq("tool", tool_slug)
+            .eq("status", "succeeded")
+            .gt("gpu_seconds_used", 0)
+            .gte("created_at", cutoff.isoformat())
+            .order("created_at", desc=True)
+            .limit(_HISTORICAL_ROW_CAP)
             .execute()
         )
-        data = getattr(response, "data", None) or {}
-        sample = int(data.get("sample_size") or 0)
-        if sample < MIN_HISTORICAL_RUNS:
-            return None
-        value = data.get("p90_gpu_seconds")
-        if value is None:
-            return None
-        return float(value)
+        rows = getattr(response, "data", None) or []
+
+        per_unit: list[float] = []
+        for row in rows:
+            seconds = _safe_float(row.get("gpu_seconds_used"), 0.0)
+            if seconds <= 0:
+                continue
+            if spec.scaling_param:
+                # Top-level key first, then the nested one. When NEITHER
+                # resolves, _effective_scaling_value falls back to the
+                # baseline -- and for the tools that actually reach here that
+                # is exact rather than a guess: af2, colabfold and esmfold
+                # omit the parameter only on their standalone preset, which
+                # really is one unit, and their baseline is 1.
+                #
+                # DROPPING those rows instead was tried and is worse. It
+                # leaves the sample made of batch rows only, whose per-unit
+                # cost is lower (warm container, amortised load), so the p90
+                # stops seeing the expensive standalone tier: on 25 batch
+                # rows at 1200 s/40 records plus standalone rows at 120 s it
+                # reads 30 s/fold against a real 120. For COLABFOLD and
+                # ESMFOLD that lands the hold under the charge ($0.0546
+                # against $0.1457 on that sample) and reopens the
+                # variance-debit path this function exists to keep shut. af2
+                # is immune only because worst_case_gpu_seconds floors its
+                # hold at the cap -- do not read af2 as the example here.
+                #
+                # The cost of keeping them: one p90 now spans two cost tiers,
+                # and a 90th percentile sits on the expensive one, so a large
+                # BATCH job prices off the standalone rate whenever standalone
+                # rows fill the top decile -- a tenth of the sample plus about
+                # one row (11 of 100; exactly 10 of 100 still interpolates
+                # between the tiers). Below that the p90 drops into the batch
+                # block. That is an over-hold, and still nearer the truth than
+                # the spec constant it replaces.
+                #
+                # boltzgen is the one tool the default is genuinely wrong
+                # for: it records no design count anywhere in ``inputs``
+                # (the campaign key is ``budget``), so its p90 stays raw and
+                # is scaled a second time downstream. That predates this
+                # change and is unchanged by it; closing it needs the adapter
+                # to store the count.
+                raw_units = row.get("units")
+                if raw_units is None:
+                    raw_units = row.get("nested_units")
+                units = _effective_scaling_value(
+                    spec,
+                    {
+                        spec.scaling_param: raw_units,
+                        "preset": row.get("preset"),
+                        "total_passes": row.get("total_passes"),
+                    },
+                )
+            else:
+                # Flat tool: ``_scale_seconds`` never scales it, so the raw
+                # seconds ARE the baseline-equivalent figure. The baseline is
+                # known here, not inferred.
+                units = float(spec.designs_per_run_baseline)
+            if units <= 0:
+                continue
+            # Filter the ROWS, not the percentile: sorted() is not NaN-safe,
+            # so a single NaN reorders the sample arbitrarily and the cut
+            # point lands on a real but wrong value rather than on NaN, while
+            # +inf survives a >0 check and pegs the estimate to the cap.
+            #
+            # Testing the QUOTIENT rather than its operands covers both in one
+            # check, and covers what the operands cannot: two finite positive
+            # numbers still divide to +inf on overflow (1e300 / 5e-324) or to
+            # 0.0 on underflow (1e-300 / 1e308, which the estimator would
+            # accept as a price, since it only rejects None). A NaN or inf
+            # operand propagates into the quotient and is caught here too --
+            # the ``units <= 0`` test above only exists to keep the division
+            # itself from raising.
+            value = seconds / units
+            if not isfinite(value) or value <= 0:
+                continue
+            per_unit.append(value)
     except Exception:
+        # The row loop is INSIDE the try on purpose: this runs on every
+        # public /tools/<slug> render, and an unexpected row shape escaping
+        # here would 500 the page rather than fall back to the spec constant.
         logger.warning(
-            "Could not read tool_jobs_p90 for %s", tool_slug, exc_info=True
+            "Could not read tool_jobs history for %s", tool_slug, exc_info=True
         )
         return None
+
+    if len(per_unit) < MIN_HISTORICAL_RUNS:
+        return None
+    # ``method="inclusive"`` is the R-7 interpolation Postgres' own
+    # ``percentile_cont(0.9)`` uses, so the figure matches what the
+    # ``tool_jobs_p90`` view would report for the same list.
+    p90_per_unit = quantiles(per_unit, n=10, method="inclusive")[8]
+    return p90_per_unit * float(spec.designs_per_run_baseline)
 
 
 # ---------------------------------------------------------------------------
