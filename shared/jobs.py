@@ -265,8 +265,11 @@ def supports_headline_claim(
     esmfold2-design ``designs`` list of d0 (ipTM 0.80, pI 5.0) and d1 (ipTM
     0.95, pI 5.0), both clearing the bar, crowns d0 while 0.95 sits in the
     same run. The first probe of the bar arm missed this only because its
-    fixture had a single clearing design; two clearing designs is the case
-    that shows it.
+    fixture had a single clearing design. THAT LAST CLAUSE IS WRONG and a
+    reviewer disproved it by building the variant: with one clearing design
+    the shipped assertion still fails under the bar arm. Two clearing designs
+    is the better DEMONSTRATION -- it shows why a bar cannot order an
+    unordered list -- not the only fixture that detects it.
 
     What the shape test costs and what it keeps, checked per shape:
     esmfold2-design writes ``candidates``

@@ -113,80 +113,110 @@ _PLDDT_PREFERENCE = (
 
 
 def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | None:
-    """WHICH number the share card may print, chosen DETERMINISTICALLY.
+    """WHICH number the share text may quote, chosen DETERMINISTICALLY.
 
     ``(column, displayed value)``, or None when this tool has no column worth
-    calling a score.
+    quoting.
 
-    THE OLD RULE WAS "THE FIRST NUMERIC KEY IN ``scores``", AND IT PUBLISHED AN
-    ISOELECTRIC POINT. ``tool_jobs.result`` is a ``jsonb`` column
+    THE ORIGINAL RULE WAS "THE FIRST NUMERIC KEY IN ``scores``", AND IT QUOTED
+    AN ISOELECTRIC POINT. ``tool_jobs.result`` is a ``jsonb`` column
     (supabase/migrations/0005_tool_jobs.sql:33) and Postgres normalises jsonb
     object keys by (length, bytewise), so the stored order is NOT the order
     ``tools/esmfold2_design/run_pipeline.py`` writes. For job 2b917b54's score
-    keys that puts ``pI`` -- two characters -- first, every time. Driven
-    through this route with the stored ordering, the PUBLIC card read "Top
-    score pI 5.669": a solubility measure, lower-is-better, announced as a
-    score. Dict order is not a choice of metric; it is the absence of one.
+    keys that puts ``pI`` -- two characters -- first, every time, so the text
+    read "Top score pI 5.669": a solubility property, lower-is-better,
+    announced as a score. Dict order is not a choice of metric; it is the
+    absence of one.
 
-    THE ORDER OF PREFERENCE:
+    THE BAR COMES FIRST, AND A REVIEW OF THE FIRST REPAIR IS WHY. That version
+    preferred the tool's registered ranking metric, which produced three
+    defects at once because the sentence this feeds NAMES THE BAR:
 
-    * ``shared.result_columns.primary_metric_for`` -- "the metric each tool's
-      designs are globally ranked by". It is also what the container SORTED
-      ``candidates`` on, so it is the number the pick's position is about.
-    * failing that, the first gate leg whose legend is ``higher_is_better``.
-      esmfold2-design registers no primary metric and its minibinder bar is
-      ``(pI, ipTM)``; this picks ipTM and never pI, which is the defect above
-      stated as a rule.
-    * failing both, pLDDT, under whichever of its nine spellings the record
-      carries. The folding tools (af2, colabfold, esmfold) register no ranking
-      metric and declare no bar, yet model confidence IS their result, and it
-      means the same thing with the same direction on every tool that reports
-      one. Dropping this arm silently retired a shipped invariant --
-      tests/test_plddt_scale.py pins that this card normalises pLDDT, and the
-      first version of this function turned that assertion into ``None``.
-    * failing all three, NOTHING. A tool with no ranking metric, no
-      higher-is-better gate leg and no confidence score has no number this
-      card can honestly label.
+    * boltzgen quoted ``ipTM 0.410`` beside "meeting our quality bar", and
+      ipTM is DELIBERATELY not a leg of boltzgen's bar (see GATE_COLUMNS:
+      BoltzGen refolds the design alone, so its ipTM is not the cofold
+      quantity 0.70 describes). A number excluded from the bar, stamped as
+      clearing it.
+    * rfantibody quoted ``ipAE``, which is LOWER-is-better, so the worse of
+      two passing designs printed the bigger figure.
+    * proteina quoted ``total_reward -0.183`` -- negative, and carrying no
+      legend anywhere on the site, so nothing can explain it. That REPLACED a
+      readable ``af2_iptm 0.891``, i.e. the repair was worse than the bug for
+      that tool.
 
-    WHAT THE CHAIN EXISTS TO EXCLUDE is ``pI`` -- lower-is-better, a
-    developability property rather than a quality score -- and ``final_loss``,
-    a gradient-descent artifact. Neither is reachable by any arm above.
+    So: a leg of THIS RUN'S bar, preferring one whose legend reads
+    higher_is_better. Every gating tool has such a leg, and it is the only
+    choice that keeps the number and the sentence about the same thing.
+
+    Then, when no bar applies: the tool's ranking metric, but only if it is
+    higher-is-better AND carries a legend -- the site must be able to explain
+    a number it quotes. That admits bindcraft's ipTM and iggm's
+    epitope_contacts and refuses proteina's total_reward.
+
+    Then model confidence, over ``_PLDDT_PREFERENCE``. This arm is what gives
+    proteina ``af2_plddt 88.5``, bounded and higher-is-better, instead of
+    silence.
+
+    Then NOTHING. esmfold2-design in scFv mode lands here -- no bar in that
+    mode, no ranking metric, no pLDDT -- so the same tool quotes ipTM for a
+    minibinder run and nothing for an scFv one. That asymmetry is deliberate:
+    the alternative is quoting the CDR proxy, whose legend cannot be written
+    per-mode (see the note above MODE_GATE_COLUMNS).
+
+    EVERY ARM FALLS THROUGH ON AN ABSENT VALUE, not just on an unset key. The
+    first repair guarded the later arms on ``if not key``, so a tool whose
+    registered metric was simply missing from the record short-circuited the
+    whole chain and quoted nothing.
+
+    ``normalize_candidate`` runs first because a root-level metric under
+    another name -- iggm stores ``n_epitope_contacts`` for the declared
+    ``epitope_contacts`` -- otherwise resolves to None here while the tool's
+    own results table shows it.
 
     pLDDT is rescaled by ``plddt_on_100`` for the same reason it always was:
-    the string is read with no page around it to give the scale.
+    the text is read with no page around it to give the scale.
     """
-    key, _direction = _result_columns.primary_metric_for(tool)
-    if not key:
-        key = next(
-            (
-                col for col in score_legends.gate_columns(tool, preset)
-                if (score_legends.get_legend(tool, col) or {}).get("direction")
-                == "higher_is_better"
-            ),
-            None,
-        )
-    if not key:
-        key = next(
-            (
-                col for col in _PLDDT_PREFERENCE
-                if _result_columns.candidate_metric(record, col) is not None
-            ),
-            None,
-        )
-    if not key:
-        return None
-    value = _result_columns.candidate_metric(record, key)
-    if value is None:
-        return None
-    if key in _metric_glossary.PLDDT_COLUMNS:
-        value = _metric_glossary.plddt_on_100(value)
-    if not isinstance(value, (int, float)):
-        return None
-    return key, value
+    record = _result_columns.normalize_candidate(record, tool)
+
+    def _reading(col):
+        value = _result_columns.candidate_metric(record, col)
+        if value is None:
+            return None
+        if col in _metric_glossary.PLDDT_COLUMNS:
+            value = _metric_glossary.plddt_on_100(value)
+        return (col, value) if isinstance(value, (int, float)) else None
+
+    def _higher_is_better(col):
+        legend = score_legends.get_legend(tool, col) or {}
+        return legend.get("direction") == "higher_is_better"
+
+    for col in score_legends.gate_columns(tool, preset):
+        if _higher_is_better(col):
+            chosen = _reading(col)
+            if chosen is not None:
+                return chosen
+
+    key, direction = _result_columns.primary_metric_for(tool)
+    if key and direction == "desc" and score_legends.get_legend(tool, key):
+        chosen = _reading(key)
+        if chosen is not None:
+            return chosen
+
+    for col in _PLDDT_PREFERENCE:
+        chosen = _reading(col)
+        if chosen is not None:
+            return chosen
+    return None
 
 
 def _top_score_for_share(job) -> str | None:  # noqa: ANN001
-    """Pull a formatted top-candidate score for the share og_title.
+    """The og:title's trailing CLAUSE for a finished job, or None.
+
+    RETURNS A WHOLE SENTENCE, not a bare metric, and the name still says
+    "score" only because other files reference it. What it returns is "Top
+    design meeting our quality bar: ipTM 0.935" or "Top design: ipTM 0.801",
+    because whether the superlative may stand unqualified depends on whether
+    a bar applied and only this function knows that.
 
     Returns None when the job has no candidate scores to surface (a
     failed run, a sequence-design tool, a job without a result yet),
@@ -198,16 +228,12 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     container's ranking key and not its bar: esmfold2-design job 2b917b54
     stores a pI 11.95 poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67
     design at 0.9354 that clears the bar, so a blind read named the REJECT.
-    Same mechanism the compare page uses (``shared.jobs.headline_candidate``),
-    and the mode comes off the RESULT first with the stored preset only as a
-    fallback (``score_legends.resolve_mode``).
-
-    THIS FIXES THE PICK, NOT THE METRIC. The loop below returns the first
-    numeric key of ``scores``; ``tool_jobs.result`` is ``jsonb`` and Postgres
-    orders object keys by (length, bytewise), so it hands back ``pI`` before
-    ``ipTM`` and this function returns ``pI 5.669`` for job 2b917b54. The
-    fixtures in tests/test_esmfold2_reject_surfaces.py are in PIPELINE order,
-    which hides that. Open on branch ``claude/share-headline-metric``.
+    Not its ipTM, which is what an earlier draft of this paragraph implied --
+    the number quoted was chosen separately and was ``pI 11.955``; see
+    :func:`_share_headline_metric`. Same mechanism the compare page uses
+    (``shared.jobs.headline_candidate``), and the mode comes off the RESULT
+    first with the stored preset only as a fallback
+    (``score_legends.resolve_mode``).
 
     NOT AN AUTO-PUBLISHED CARD, stated because an earlier draft of this
     paragraph called it one. The string is a field of the ``/jobs/<id>/share``
@@ -216,6 +242,16 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     reaches the public only when the owner pastes it -- still a claim made in
     their name, which is why the rule below is strict. ``_share_title`` states
     the same reach at more length.
+
+    WHERE THIS STRING GOES, stated precisely because the branch's own prose
+    twice called it "a PUBLIC card". It is a field of the ``/jobs/<id>/share``
+    JSON, offered to the job's OWNER for pasting into a compose box.
+    ``/jobs/<id>`` is ``@login_required`` and ``templates/job_detail.html``
+    defines no ``og_title`` block, so this text is never rendered as a meta
+    tag and today's share button copies the URL alone. It reaches the public
+    only when a user pastes it -- which is still a claim made in their name,
+    and the reason the rules below are strict, but it is not an auto-published
+    card.
 
     AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. The surfaces that show a
     figure at all print a shortfall beside it -- except the completion email,
@@ -275,24 +311,31 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # speaking for the run unqualified.
     if verdict.verdict == "below" or verdict.unusable:
         return None
+    # WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT OF THE RECORD, and
+    # the first repair got this wrong. It branched on the PICK'S VERDICT:
+    # "meets" took the qualified sentence and anything else took the plain
+    # "Top design:", under a comment asserting that a non-"meets" pick means
+    # no bar applied. It does not. ``headline_candidate`` returns the first
+    # record not shown to fall short, so a REJECTED record 0 followed by an
+    # UNMEASURED record 1 yields "unjudged" with the bar very much applied --
+    # and the plain sentence then crowned a design while a higher-ranked one
+    # sat dropped above it, which is the exact falsehood the two sentences
+    # were added to remove. Probed on pxdesign: rank0 ipTM 0.99 rejected on
+    # pLDDT, rank1 ipTM 0.80 unmeasured, and it read "Top design: ipTM 0.800".
+    #
+    # So the bar decides the sentence, and when a bar applied but this design
+    # was not SHOWN to meet it, there is no sentence to make: an unmeasured
+    # design cannot be described as clearing a bar, and it cannot be called
+    # the top one either while the bar may have dropped something above it.
+    bar_applied = bool(score_legends.gate_columns(tool, mode))
+    if bar_applied and verdict.verdict != "meets":
+        return None
     chosen = _share_headline_metric(tool, mode, top)
     if chosen is None:
         return None
     col, val = chosen
     reading = f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
-    # WHICH SUPERLATIVE IS TRUE DEPENDS ON WHETHER A BAR APPLIED, so the two
-    # cases get two sentences rather than one that is true of only one of
-    # them. The pick is the first record in the container's own ranking that
-    # is not shown to fall short, so:
-    #
-    #   meets    -- a bar applied and a HIGHER-ranked design may have been
-    #               dropped by it. "Top score" would then be false against
-    #               the run's own results page, which still shows that design
-    #               at rank 1. Probed on pxdesign: 0.880 rejected, 0.770
-    #               clears, and the old copy called 0.770 the top score.
-    #   unjudged -- no bar applied, so the pick IS the container's rank 1 and
-    #               "top" is the plain truth.
-    if verdict.verdict == "meets":
+    if bar_applied:
         return f"Top design meeting our quality bar: {reading}"
     return f"Top design: {reading}"
 

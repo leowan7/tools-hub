@@ -33,13 +33,20 @@ an earlier version of this docstring claimed it was: its real path is
 ``/campaigns/<id>/status.json``, which the aggregator never touches. See
 :class:`TestCampaignSurfaces` below, which reaches it.
 
-EVERY TEST IN A CLASS HERE GOES THROUGH A ROUTE, via the Flask test client.
-Calling ``_top_score_for_share`` or ``candidates_to_fasta`` directly would
-leave the route free to not call them, which is exactly how the sibling
+THE SHARE AND FASTA TESTS GO THROUGH THEIR ROUTE, via the Flask test client,
+because calling ``_top_score_for_share`` or ``candidates_to_fasta`` directly
+would leave the route free to not call them -- exactly how the sibling
 surfaces stayed green through #241: the helper was right and nothing reached
-it. The module-level tests are declared invariants and say so in their own
-docstrings; an earlier version of this paragraph said EVERY test went through
-a route, which was false of them.
+it.
+
+NOT EVERY TEST HERE DOES, and two earlier versions of this paragraph claimed
+otherwise -- first of all tests, then of all tests in a class, which was still
+false of three added in the same commit. The exceptions, each stated in its
+own docstring: the two module-level invariants, ``TestTargetExportJudgesPerRow``
+(the target export merges rows across runs, so the unit under test is the
+per-row provenance branch rather than any one route), and
+``TestCampaignSurfaces``'s count test, which observes a call because its
+effect is unreachable.
 """
 
 from __future__ import annotations
@@ -390,9 +397,9 @@ class TestFastaExport:
     def test_the_rejected_record_says_so_and_keeps_its_rank(
         self, flask_app, monkeypatch,
     ):
-        """rank1 is still seed0 -- the CSV and the ZIP number the same rows
-        off the same ``export_key``, so re-sorting only this format would end
-        that silently -- but it now carries WHY it is a reject, and the design
+        """rank1 is still seed0 -- the CSV numbers the same rows off the
+        same ``export_key``, so re-sorting only this format would end that
+        silently (the ZIP names entries from ``pdb_key``, not the rank) -- but it now carries WHY it is a reject, and the design
         that clears the bar carries nothing."""
         headers = _headers(_fasta(flask_app, monkeypatch, _job()))
         assert len(headers) == 2, headers
@@ -472,8 +479,9 @@ class TestFastaExport:
         a bare disclosure with no "does not meet bar" lead-in, because
         nothing was shown to fall short.
 
-        Every other fixture in this file that is unusable is ALSO below, so
-        that branch could be replaced with any string at all and stay green.
+        Before this test and its share-card sibling, every unusable fixture
+        in this file was ALSO below, so this branch could have been replaced
+        with any string at all and stayed green.
         """
         job = _job(
             tool="boltzgen", preset="pilot",
@@ -563,8 +571,9 @@ class TestCampaignSurfaces:
     the quality card threads ``preset`` into ``count_candidates_meeting_bar``.
     A review found both mutable to no effect across the whole suite -- the
     export because nothing asserted on a campaign FASTA's contents, the count
-    because ``_campaign_candidates_meeting_bar`` and ``/campaigns/<id>/
-    status.json`` have no test references anywhere in the repo.
+    because at 3dbcb9d ``_campaign_candidates_meeting_bar`` and
+    ``/campaigns/<id>/status.json`` had no test references anywhere in the
+    repo -- this class is the first.
     """
 
     def test_the_campaign_fasta_carries_bar_notes(self, flask_app, monkeypatch):
@@ -633,3 +642,141 @@ class TestCampaignSurfaces:
         monkeypatch.setattr(shared_jobs, "count_candidates_meeting_bar", _spy)
         bp._campaign_candidates_meeting_bar("c-1", "boltzgen", "pilot")
         assert seen == [("boltzgen", "pilot"), ("boltzgen", "pilot")], seen
+
+
+class TestTheHeadlineMetricChain:
+    """WHICH number the share text quotes, per tool.
+
+    Every case here is a regression an independent review caught in the FIRST
+    repair of this defect, which preferred the tool's registered ranking
+    metric over the bar. That produced a number the attached sentence was not
+    about -- and for one tool it was worse than the bug it replaced.
+    """
+
+    def _clause_for(self, flask_app, monkeypatch, tool, preset, scores, **over):
+        job = _job(
+            tool=tool, preset=preset,
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "c0", "pdb_key": "designs/c0.pdb",
+                 "sequence": "MK", "scores": _jsonb(scores)},
+            ], **over},
+        )
+        return _clause(_share(flask_app, monkeypatch, job)["og_title"])
+
+    def test_boltzgen_quotes_a_leg_of_its_own_bar(
+        self, flask_app, monkeypatch,
+    ):
+        """The sentence names the bar, so the number must come FROM the bar.
+
+        boltzgen's registered ranking metric is ipTM, and ipTM is DELIBERATELY
+        not a leg of its bar -- BoltzGen refolds the design alone, so its ipTM
+        is not the cofold quantity 0.70 describes (see GATE_COLUMNS). The
+        first repair quoted "ipTM 0.410" beside "meeting our quality bar": a
+        number excluded from that bar, stamped as clearing it, and one an
+        outside reader reads as "this does not bind".
+        """
+        clause = self._clause_for(
+            flask_app, monkeypatch, "boltzgen", "pilot",
+            {"ipTM": 0.41, "pLDDT": 88.0, "refolding_rmsd": 1.0},
+        )
+        assert clause == "Top design meeting our quality bar: pLDDT 88.000", clause
+        assert "0.41" not in clause
+
+    def test_rfantibody_does_not_quote_a_lower_is_better_metric(
+        self, flask_app, monkeypatch,
+    ):
+        """rfantibody's ranking metric is ipAE, where LOWER is better, so
+        quoting it made the worse of two passing designs print the bigger
+        figure on a text read without context. Its bar also has a
+        higher-is-better leg, and that is what gets quoted."""
+        clause = self._clause_for(
+            flask_app, monkeypatch, "rfantibody", "pilot",
+            # Values that actually CLEAR rfantibody's bar (pLDDT >= 80,
+            # ipAE <= 10, pAE <= 5). A first draft used pAE 7.0, which the
+            # bar rejects, so the route abstained and the assertion failed
+            # for a reason unrelated to the metric choice under test.
+            {"ipAE": 6.4, "pAE": 4.2, "pLDDT": 91.0},
+        )
+        assert clause == "Top design meeting our quality bar: pLDDT 91.000", clause
+        assert "ipAE" not in clause
+
+    def test_proteina_does_not_quote_an_unexplainable_negative(
+        self, flask_app, monkeypatch,
+    ):
+        """THE REPAIR WAS WORSE THAN THE BUG HERE, which is why this case
+        exists. proteina registers ``total_reward``, which is NEGATIVE in real
+        data (every record of the shipped example is between -0.18 and -0.40)
+        and carries no legend anywhere on the site, so nothing can explain it
+        to a reader. The first repair quoted "total_reward -0.183" where the
+        original defect had quoted a readable ``af2_iptm 0.891``.
+
+        The chain now requires a legend before it will quote a ranking metric,
+        so proteina falls through to model confidence.
+        """
+        clause = self._clause_for(
+            flask_app, monkeypatch, "proteina", "protein_binder",
+            {"total_reward": -0.1827, "af2_iptm": 0.8906, "af2_plddt": 0.885},
+        )
+        assert clause == "Top design: af2_plddt 88.500", clause
+        assert "-0." not in clause, "a negative number reached the share text"
+
+    def test_a_root_level_alias_still_resolves(self, flask_app, monkeypatch):
+        """iggm stores ``n_epitope_contacts`` for the declared
+        ``epitope_contacts``. Without ``normalize_candidate`` the chain
+        resolves nothing and the tool goes silent while its own results table
+        shows the number."""
+        job = _job(
+            tool="iggm", preset="default",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "i0", "pdb_key": "designs/i0.pdb",
+                 "sequence": "MK", "n_epitope_contacts": 7},
+            ]},
+        )
+        clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
+        assert clause == "Top design: epitope_contacts 7.000", clause
+
+
+class TestTheBarDecidesTheSentence:
+    def test_an_unmeasured_pick_under_a_bar_says_nothing(
+        self, flask_app, monkeypatch,
+    ):
+        """WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT THE RECORD.
+
+        The first repair branched on the pick's verdict: "meets" took the
+        qualified sentence, anything else took the plain "Top design:", under
+        a comment asserting that a non-meets pick means no bar applied. It
+        does not. ``headline_candidate`` returns the first record not shown to
+        fall short, so a REJECTED record 0 followed by an UNMEASURED record 1
+        yields "unjudged" with the bar very much applied -- and the plain
+        sentence then crowned a design while a higher-ranked one sat dropped
+        above it. That is the exact falsehood the two sentences exist to
+        remove.
+
+        pxdesign gates on ipTM AND pLDDT. Record 0 is rejected on pLDDT at
+        ipTM 0.99; record 1 carries no pLDDT at all.
+        """
+        job = _job(
+            tool="pxdesign", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "d0", "pdb_key": "designs/d0.pdb",
+                 "sequence": "MK", "scores": {"ipTM": 0.99, "pLDDT": 40.0}},
+                {"rank": 1, "name": "d1", "pdb_key": "designs/d1.pdb",
+                 "sequence": "MK", "scores": {"ipTM": 0.80}},
+            ]},
+        )
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert _clause(title) is None, title
+
+    def test_a_barless_tool_still_speaks_plainly(self, flask_app, monkeypatch):
+        """The pair: with no bar, nothing can have been dropped above the
+        pick, so the unqualified sentence is the plain truth and must survive
+        the fix above."""
+        job = _job(
+            tool="bindcraft", preset="pilot",
+            result_over={"is_antibody": None, "candidates": [
+                {"rank": 0, "name": "b0", "pdb_key": "designs/b0.pdb",
+                 "sequence": "MK", "scores": {"ipTM": 0.801}},
+            ]},
+        )
+        clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
+        assert clause == "Top design: ipTM 0.801", clause

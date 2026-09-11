@@ -377,18 +377,27 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
     ``candidates[0]``, which is the container's ranking key and not its bar --
     on esmfold2-design job 2b917b54 that is the pI 11.95 design the pipeline
     drops. Moving it would fix the leading record and break something worse:
-    all three serializers take their ``rank`` LABEL from :func:`export_key`,
-    off one index into one list, so ``rank7`` means the same design in all
-    three files and re-sorting only this one would silently end that. NOT
-    their positions: :func:`export_key`'s own docstring says so, because this
+    the CSV and this function take their ``rank`` LABEL from
+    :func:`export_key`, off one index into one list, so ``rank7`` is the same
+    design in both and re-sorting only this one would silently end that. NOT
+    their POSITIONS: :func:`export_key`'s own docstring says so, because this
     function skips rows with no sequence while still numbering from the full
-    list, so a file whose first record is ``rank2`` is ordinary. The ZIP has
-    no N at all -- its entries are named from ``pdb_key``.
+    list, so a file whose first record is ``rank2`` is ordinary.
 
-    The FASTA is also the format that most needs the sentence: the CSV
-    carries the measurements a reader could apply the bar to themselves, and
-    while the ZIP carries none either, it carries STRUCTURES rather than a
-    ranked list of ids, so nothing in it reads as a recommendation.
+    THE ZIP IS NOT THE THIRD MEMBER OF THAT SET, and two drafts of this
+    paragraph got it wrong in opposite directions. It labels nothing
+    ``rank7``: :func:`candidates_to_zip` reads ``pdb_key`` out of the same key
+    and names the entry from that. But "the ZIP has no N at all" is false too
+    -- ``key["pdb_key"] or f"candidate_{i + 1}.pdb"`` falls back to the rank
+    for a row carrying no key, which is reachable, and probed:
+    ``['designs/a.pdb', 'candidate_2.pdb', 'candidate_3.pdb']``.
+
+    The FASTA is the format that most needs the sentence anyway. The CSV
+    carries the measurements a reader could apply the bar to themselves; the
+    ZIP carries structures, whose B-factor column this module rewrites to the
+    0-100 pLDDT scale on the way out, so a reader has a confidence signal
+    there too. Only the FASTA is an id and a sequence with nothing to judge
+    by.
 
     ``verdict_text`` renders it, never a hand-join of ``verdict.shortfalls``:
     that drops the ``unusable`` and ``unmeasured`` halves, which is a
