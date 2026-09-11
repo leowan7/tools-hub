@@ -5,9 +5,9 @@ writers on one tool; #248 fixed /jobs/compare and listed the completion email
 among the surfaces it did not reach. Both of those are PULLED -- a customer
 meets them by opening the site. This one is pushed: the webhook path
 ``webhooks/modal.py`` -> ``complete_job`` mails it when a run finishes, so it
-reaches a customer who never asked to look. (Do not give this an ordinal. Three
-drafts tried to justify a number by counting the class's members and all three
-got it wrong; #248's own message gives two different totals in two paragraphs.)
+reaches a customer who never asked to look. (Do not give this an ordinal:
+#248's own message gives two different totals in two paragraphs, so no number
+for this class is checkable.)
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), whose result ships verbatim as this tool's worked
@@ -571,32 +571,47 @@ def test_the_mail_says_so_when_it_is_not_leading_with_the_first_design():
     /jobs/compare does it. This is the same duty on the pushed surface, where
     the customer has no table beside the number to locate it in.
 
-    THE SHIPPED EXAMPLE, BECAUSE ITS ``rank`` IS 0-BASED. That is what makes
-    this test able to tell position from the stored field: the pick is the
-    SECOND record and carries ``rank: 1``, so "design 2 of 2" is right and
-    anything rendering the stored value says "1". A fixture whose ranks run
-    1,2,3 -- as an earlier version of this test used -- makes the two
-    identical and passes whichever the code does.
+    NO NUMBER, AND THAT IS THE POINT. components/candidate_table.html numbers
+    a single run's rows from the stored ``rank`` field, which is 0-based on
+    this tool -- so a mail saying "design 2 of 2" would send the reader to a
+    page labelling those rows 0 and 1. A positional count has the same problem
+    from the other side. The assertion below therefore forbids DIGITS in the
+    disclosure, not merely the wrong ones.
     """
-    result = _example_result()
-    assert result["candidates"][1]["rank"] == 1, (
-        "the example's second candidate no longer carries rank 1; this test "
-        "distinguishes position from the stored rank field and needs a 0-based "
-        "fixture to do it"
-    )
-    bodies = _bodies(_sent(_job(result=result)))
+    payload = _sent(_job())
+    bodies = _bodies(payload)
     for part, body in bodies.items():
         assert PASS_IPTM in body, f"the {part} body lost the derived headline"
-        assert "design 2 of 2" in body, (
-            f"the {part} body leads with the second design and does not say "
-            f"so, leaving a number the results page does not lead with and "
-            f"nothing to locate it by: {body!r}"
+        assert "not the first design listed" in body, (
+            f"the {part} body leads with a design the results page does not "
+            f"and says nothing about it: {body!r}"
         )
-        # Never the stored field, and never the word.
-        assert "rank" not in body.lower(), (
-            f"the {part} body prints a rank. That field is 0-based on seven "
-            f"tools and 1-based on six, so the sentence means two different "
-            f"things depending on which tool sent it: {body!r}"
+        # THE SLOTS ARE IDENTIFIED, not merely both present. Every other
+        # assertion here is a substring search over the whole body, so
+        # swapping this note with ``top_pdb_key`` -- putting it inside the
+        # parenthetical the template documents as a filename -- reads
+        # identically to them. The filename comes first, in its own
+        # parentheses; the note follows.
+        assert body.index(PASS_PDB) < body.index("not the first"), (
+            f"the {part} body renders the disclosure in the filename slot: "
+            f"{body!r}"
+        )
+        # ...and it belongs in the callout, beside the number it qualifies.
+        assert body.index("Top design") < body.index("not the first") < \
+            body.index("View results"), (
+            f"the {part} body renders the disclosure away from the design it "
+            f"identifies: {body!r}"
+        )
+
+    # NO DIGIT ANYWHERE IN THE DISCLOSURE. A number here would have to agree
+    # with the results page's own numbering, and cannot: see the docstring.
+    note = "not the first design listed"
+    for part, body in bodies.items():
+        after = body[body.index(note):body.index(note) + len(note) + 12]
+        assert not any(ch.isdigit() for ch in after), (
+            f"the {part} body numbers the design. The results page numbers "
+            f"that row from the stored rank field, 0-based on this tool, so "
+            f"any count here disagrees with the page it links to: {after!r}"
         )
 
 
@@ -615,16 +630,15 @@ def test_no_position_line_when_the_first_design_is_the_one_shown():
         assert DROP_IPTM in body, (
             f"the {part} body should now lead with the first record"
         )
-        assert "design 1 of" not in body and "design 2 of" not in body, (
+        assert "not the first" not in body, (
             f"the {part} body discloses a position for a design that IS the "
             f"first one listed: {body!r}"
         )
 
-
 def test_a_failed_run_gets_no_endorsement():
     """The tone gate, which nothing in this repo held.
 
-    ``_top_candidate_summary`` returns five empty strings unless ``tone`` is
+    ``_top_candidate_summary`` returns six empty strings unless ``tone`` is
     "success". Delete that line and a job that died mid-run still mails the
     green "Top design" callout, with a legend saying the number is credible,
     under a headline saying the run failed.
@@ -694,7 +708,7 @@ def test_a_ranked_candidates_list_still_renders_without_a_bar():
     )
     bodies = _bodies(_sent(_job(tool="bindcraft", preset="pilot", result={
         "candidates": [
-            {"rank": 0, "pdb_key": "bc_0.pdb", "scores": {"ipTM": 0.88}},
+            {"rank": 1, "pdb_key": "bc_0.pdb", "scores": {"ipTM": 0.88}},
         ],
     })))
     for part, body in bodies.items():

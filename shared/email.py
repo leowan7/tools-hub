@@ -184,11 +184,10 @@ def _job_complete_template_context(
 
 
 def _top_candidate_summary(
-    *, job, tone: str,
-) -> tuple[str, str, str, str, str, str]:  # noqa: ANN001
+    *, job, tone: str,  # noqa: ANN001
+) -> tuple[str, str, str, str, str, str]:
     """Pull (label, value, caption, pdb_key, judgement, position) for the
-    design
-    this mail should LEAD with.
+    design this mail should LEAD with.
 
     Returns six empty strings when the job has no candidate scores to
     surface (sequence-design tools, structure-prediction tools, failed
@@ -206,12 +205,11 @@ def _top_candidate_summary(
     survives capture, so nothing here evidences it. The pI and the drop are in
     ``example/result.json``.)
 
-    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. No
-    argument for the rule is given here on purpose: three successive drafts
-    tried to justify it by counting the class's members and all three got the
-    count wrong, the last by quoting one paragraph of #248 while its closing
-    paragraph gives a different total. A name needs no arithmetic, which is the
-    whole point.
+    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. The
+    argument for the rule is not rehearsed here, because the rule is what
+    survived three drafts of it: #248's own message gives two different totals
+    in two paragraphs, so there is no ordinal for this class that a reader can
+    check. A name needs no arithmetic, which is the whole point.
 
     It is the one that can reach a customer who never opened the site: the
     webhook path ``webhooks/modal.py`` -> ``complete_job`` -> here fires when
@@ -422,34 +420,30 @@ def _top_candidate_summary(
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)
-    # SAY WHICH ROW, WHEN IT IS NOT THE FIRST ONE. Deriving the headline means
-    # this mail can show a design the results page does not lead with, and it
+    # SAY SO WHEN THIS IS NOT THE FIRST DESIGN LISTED. Deriving the headline
+    # means this mail can lead with a design the results page does not, and it
     # said nothing about that. ``headline_candidate``'s docstring puts the
     # disclosure on the caller -- "the caller is expected to say which row it
-    # picked when the two differ" -- and /jobs/compare does it, as
-    # "not the first design listed — row N of M".
+    # picked when the two differ" -- and /jobs/compare does it.
     #
-    # POSITION IN THE LIST, NEVER THE STORED ``rank`` FIELD, and never the word
-    # "rank". templates/jobs_compare.html carries that rule under its own
-    # heading, with the measurements: ``rank`` is 0-based on esmfold2-design,
-    # boltz2, af2, colabfold, esmfold, iggm and opendde, and 1-based on
-    # bindcraft, boltzgen, proteina, pxdesign, rfantibody and rfdiffusion, so
-    # the same sentence means two different things depending on the tool. An
-    # earlier draft of this block printed the stored field and rendered
-    # "design rank 0 of 2" on this PR's own flagship tool. shared/exports.py
-    # reached the same conclusion independently: it writes a positional rank
-    # and demotes the tool's value to ``source_rank``.
+    # NO NUMBER, DELIBERATELY, and two earlier drafts of this block carried
+    # one. The results table numbers its rows from the stored ``rank`` field
+    # (components/candidate_table.html renders
+    # ``cand.get('rank', loop.index)`` for a single run), and that field is
+    # 0-based on this tool -- so a mail saying "design 2 of 2" sends the
+    # customer to a page whose two rows are labelled 0 and 1. A positional
+    # count is no better: it is right for the list and wrong for the page.
+    # The tool's own results page already solved this by NAMING the fact
+    # instead (templates/tools/esmfold2_design_results.html: "not the top row
+    # below"), and this mail says the same thing in its own words. A name
+    # needs no arithmetic and no per-tool base.
     #
-    # Identity, not equality: two records can carry equal dicts.
+    # Identity, not equality: two records can carry equal dicts. Falsy covers
+    # both position 0 (the pick IS first -- nothing to disclose, the condition
+    # /jobs/compare gates its own line on) and None, which is unreachable
+    # because ``headline_candidate`` returns an element of ``records``.
     position = next((i for i, rec in enumerate(records) if rec is top), None)
-    if position:
-        # Only when it differs from the first row -- the condition
-        # /jobs/compare uses. On a run whose first design already clears the
-        # bar there is nothing to disclose, and a line that always renders is
-        # furniture.
-        position_note = f"design {position + 1} of {len(records)}"
-    else:
-        position_note = ""
+    position_note = "not the first design listed" if position else ""
 
     # ``verdict_text``, not a hand-join of ``verdict.shortfalls``. That exact
     # shortcut is the one templates/jobs_compare.html records as its own
