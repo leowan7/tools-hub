@@ -612,13 +612,19 @@
            exactly one tool. A round of review added Proteina to it on the
            strength of shared/metric_glossary.py opening with "composite
            design reward" -- but the next clause of that same entry, and
-           tools/proteina/run_pipeline.py:285, shared/ranking.py:149-151,
-           shared/score_legends.py:1222-1225 and
-           templates/components/candidate_table.html:632-635, all say
+           tools/proteina/run_pipeline.py, shared/ranking.py,
+           shared/score_legends.py and
+           templates/components/candidate_table.html all say
            total_reward IS -i_pAE under the protein_binder preset. That is
            the preset this paragraph describes (upload the target PDB, mark
            hotspots), so Proteina belongs in the sentence, not the
-           exception. It is composite only for ligand_binder and motif_ame.
+           exception. The two named variants are protein_binder and
+           ligand_binder; it is the RF3 composite under the latter.
+           (Cited by file, not by line. The first draft of this comment
+           gave a line range in candidate_table.html, and the same
+           commit's own insertion in that file moved the text out of it.
+           A line number is a measurement taken BEFORE the edit that
+           cites it; it has gone stale four times on this branch.)
            esmfold2-design declares no primary metric in
            shared/result_columns.py but sorts on ipTM
            (templates/tools/esmfold2_design_results.html:121,124). #}

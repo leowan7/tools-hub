@@ -1358,10 +1358,12 @@ def test_a_non_string_pdb_key_does_not_500_the_page(key):
     the WHOLE render -- the results page, not one cell -- on a
     non-str: `| urlencode` raises ValueError on a list, and
     `'.' in pdb_key` raises TypeError on an int. A first attempt
-    coerced only at the extension expression, which left the list and
-    dict cases still 500ing while this test's name claimed otherwise
-    -- hence the parametrize. The label for these is garbage on
-    purpose; what is pinned is that the page renders.
+    coerced only at the extension expression, which still 500'd on a
+    list -- `pdb_url` is built before it -- while this test passed an
+    int and its name claimed the general case. Executed at that
+    commit: 1 of these 5 raised, and it was the list. The label for
+    the non-str cases is garbage on purpose; what is pinned is that
+    the page renders.
     """
     labels = _download_labels(_one_row(key))
     assert len(labels) == 1, labels

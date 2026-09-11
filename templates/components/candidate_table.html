@@ -556,10 +556,11 @@
         {# pdb_key is whatever the container wrote into job.result. Five of
            the fourteen tools build it container-side, outside this repo,
            so its TYPE is not ours to guarantee, and every use below aborts
-           the WHOLE render rather than one cell: `| urlencode` two lines
-           down raises ValueError on a list and silently yields "a=1" for a
-           dict, and `'.' in pdb_key` further down raises TypeError on an
-           int. Coerced HERE, at the definition, so one guard covers the
+           the WHOLE render rather than one cell: the `| urlencode` inside
+           `pdb_url` raises ValueError on a list and silently yields "a=1"
+           for a dict, and `'.' in pdb_key` in the download cell raises
+           TypeError on an int. Coerced HERE, at the definition, so one
+           guard covers the
            url, the download attribute and the extension label. The falsy
            branch is unchanged: None/'' still take the design_N.pdb
            default rather than becoming the string "None". #}

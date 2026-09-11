@@ -553,9 +553,12 @@ class TestEveryPartialIsExampleSafe:
                 continue
             paths.append(rule.rule)
         # 14 guides + 16 parameterless HTML pages today. The floor is a
-        # vacuity guard: if the fixture ever stops rendering, every
-        # probe 302s, `paths` collapses to the guides and the scan
-        # passes over almost nothing.
+        # vacuity guard: the probe keeps a rule only on a 200 with an
+        # HTML content type, so anything that makes the app answer
+        # differently -- a 500 from a broken render, a 302 from a login
+        # redirect -- silently collapses `paths` to the guides and the
+        # scan then passes over almost nothing. Mutation-tested by
+        # making the status check unsatisfiable: it fails at 14.
         assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
         for path in paths:
             flat = re.sub(
@@ -645,8 +648,12 @@ class TestEveryPartialIsExampleSafe:
         #
         # All three are fixed, so the phrase is in NO template:
         # `git grep -c "downloadable PDBs" -- templates/` is the check,
-        # and it is zero. It survives only where code quotes the defect
-        # -- this register, shared/email.py, and two test files.
+        # and it is zero. Elsewhere it survives in code that quotes the
+        # defect -- this file, tests/test_email_failure_copy.py and
+        # shared/email.py. docs/PRODUCT-PLAN.md carried it as a live
+        # product bullet rather than a quotation until this commit; a
+        # review found it, because "only where code quotes it" was the
+        # previous sentence here and was wrong.
         #
         # Do NOT write the repo-wide occurrence count here. A count
         # stated inside a file that itself holds copies of the phrase
