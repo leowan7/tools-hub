@@ -740,8 +740,9 @@ def test_a_ranked_candidates_list_still_renders_without_a_bar():
         # numbers from 1 -- so reading the stored field instead of the
         # position makes the mail tell a customer with ONE design that it is
         # not the first one listed. Every other test passes under that
-        # mutation: no other fixture's stored rank differs from its index in
-        # a way that reaches this line.
+        # mutation: every other fixture reaching this line stores a rank
+        # equal to its index, bar one that stores no rank -- where ``.get``
+        # returns None, falsy exactly as index 0 is.
         assert "not the first" not in body, (
             f"the {part} body read the stored rank field rather than the "
             f"position, and says a design that IS the only one listed is "
