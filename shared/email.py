@@ -250,6 +250,26 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     # resolve it in. A job's stored preset can be the default string while the
     # result records what the run actually did, and for a tool whose bar is
     # keyed on (tool, mode) the wrong answer here is no bar at all.
+    #
+    # THIS IS THE SECOND SPELLING OF ONE RULE AND SHOULD NOT SURVIVE.
+    # ``score_legends.resolve_mode(tool, result, preset)`` says exactly this and
+    # is written, on branch claude/amazing-chaplygin-c7d6dc (3ed0201), which
+    # repairs the four sibling surfaces of this same defect class. That branch
+    # is unpushed, so there is nothing to import yet and this call site stays
+    # inline rather than adding a third copy to shared/score_legends.py while
+    # another session is editing it. COLLAPSE THIS INTO resolve_mode when that
+    # branch lands; it is one expression, deliberately.
+    #
+    # The two are NOT identical and the difference is why theirs is the one to
+    # keep: resolve_mode is guarded on MODE_GATE_COLUMNS, so for a tool with no
+    # mode-scoped bar it hands back the preset untouched and never reads the
+    # result at all. ``result_mode`` is tool-blind — it reads ``is_antibody``
+    # off any dict — so this line can hand a non-moded tool a mode it never
+    # had. Inert HERE, because the only consumers are gate_columns/judge/
+    # verdict_text and those ignore the preset for a GATE_COLUMNS tool (probed
+    # across six preset values on pxdesign, all six judged identically). Inert
+    # is not correct, and a later consumer that used the value as a cohort key
+    # would inherit the bug.
     mode = score_legends.result_mode(result) or getattr(job, "preset", None)
     records = candidate_records(result)
     top, verdict = headline_candidate(records, tool_slug, preset=mode)
