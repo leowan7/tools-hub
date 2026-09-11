@@ -556,14 +556,20 @@ class TestEveryPartialIsExampleSafe:
         # added here.
         NO_PROBE = (
             "/api/", "/scout/example", "/scout/progress",
-            "/scout/feasibility", "/scout/quota", "/health",
+            "/scout/feasibility/", "/scout/quota", "/health",
             "/readyz", "/metrics", "/debug/",
         )
-        # The skip changes NOTHING about which pages are scanned -- every
-        # rule it removes answers non-HTML -- so no assertion below can
-        # see it, and deleting it would be silent. This snapshot is the
-        # only thing holding it: /scout/example wrote a directory per
-        # probe before it existed.
+        # The skip changes NOTHING about which pages are scanned: most
+        # of the rules it removes answer non-HTML, and the rest answer
+        # text/html only as a 301/302 redirect body, which the status
+        # check drops. (An earlier version said every one answers
+        # non-HTML; the two /api/ estimate redirects and the scout
+        # feasibility stream do not. Named, not counted -- a count
+        # here goes stale the next time a route is added.) So no
+        # assertion ABOUT PAGES can see the skip, and deleting it was
+        # silent until the snapshot below, which is now the only thing
+        # holding it.
+        # /scout/example mints one job directory per probe.
         tmp_dir = REPO / "tmp"
         before = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
         paths = [f"/help/tools/{slug}" for slug in slugs]
@@ -589,10 +595,18 @@ class TestEveryPartialIsExampleSafe:
         # making the status check unsatisfiable: it fails at 14.
         assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
         after = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
-        assert after <= before, (
-            "probing the route table wrote into the shared tmp/: "
-            f"{sorted(after - before)}. Add the offending rule to "
-            "NO_PROBE rather than letting a copy scan create state."
+        # `==`, not `<=`: a subset test passes every DELETION, and
+        # deletion is the half of this hazard with a production
+        # incident behind it -- cleanup_old_jobs rmtree's entries it
+        # did not create. Executed both ways against the real app
+        # with an extra probed route that rmtree'd a staged
+        # directory: `<=` passed, `==` failed naming it.
+        assert after == before, (
+            "probing the route table changed the shared tmp/. "
+            f"created: {sorted(after - before)}; "
+            f"removed: {sorted(before - after)}. Add the offending "
+            "rule to NO_PROBE rather than letting a copy scan touch "
+            "state it does not own."
         )
         for path in paths:
             flat = re.sub(
