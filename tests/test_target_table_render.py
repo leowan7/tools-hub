@@ -1349,16 +1349,23 @@ def test_the_download_label_is_the_extension_the_row_actually_serves():
     assert _download_labels(_one_row("designs/d_4")) == [".pdb"]
 
 
-def test_a_non_string_pdb_key_does_not_500_the_page():
+@pytest.mark.parametrize("key", [12345, 1.5, True, ["a.cif"], {"a": 1}])
+def test_a_non_string_pdb_key_does_not_500_the_page(key):
     """job.result is container output, so the key's TYPE is not ours.
 
-    `'.' in pdb_key` raises TypeError on an int, which aborts the
-    whole Jinja render -- the entire results page, not one cell. No
-    shipped pipeline writes a non-str key; this pins the coercion so
-    one arriving later is a wrong label rather than a 500.
+    Five of the fourteen tools build their keys container-side,
+    outside this repo. Three separate expressions in the macro abort
+    the WHOLE render -- the results page, not one cell -- on a
+    non-str: `| urlencode` raises ValueError on a list, and
+    `'.' in pdb_key` raises TypeError on an int. A first attempt
+    coerced only at the extension expression, which left the list and
+    dict cases still 500ing while this test's name claimed otherwise
+    -- hence the parametrize. The label for these is garbage on
+    purpose; what is pinned is that the page renders.
     """
-    labels = _download_labels(_one_row(12345))
-    assert labels == [".pdb"], labels
+    labels = _download_labels(_one_row(key))
+    assert len(labels) == 1, labels
+    assert labels[0].startswith("."), labels
 
 
 def test_a_row_with_no_structure_offers_no_download():

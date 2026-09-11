@@ -1112,5 +1112,5 @@ def export_zip(job_id: str):
     return Response(
         data,
         mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_pdbs.zip"},
+        headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_structures.zip"},
     )

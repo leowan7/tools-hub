@@ -946,9 +946,9 @@ def _campaign_export(campaign_id: str, fmt: str):
     # limitation travels with the file (the CSV / FASTA carry the full set).
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}.zip"
+        zip_name = f"{stem}_structures_top{len(candidates)}of{total}.zip"
     else:
-        zip_name = f"{stem}_pdbs.zip"
+        zip_name = f"{stem}_structures.zip"
     return Response(
         data,
         mimetype="application/zip",

@@ -504,7 +504,8 @@ class TestEveryPartialIsExampleSafe:
         assert not offenders, f"example page promises absent controls: {offenders}"
 
     def test_the_public_pages_make_no_suppressed_promise(self, tools_app):
-        """Every public prose page these phrases can reach.
+        """Every page an anonymous visitor can open without a parameter,
+        plus the per-tool help guides.
 
         The scan above walks /tools/<slug> only. The catalog hero read
         "Every pipeline lands ranked candidates with downloadable PDBs"
@@ -517,21 +518,45 @@ class TestEveryPartialIsExampleSafe:
         says "downloadable structures" now, for the same format reason
         (BoltzGen writes .cif for most rows) -- so the exemption is gone.
 
-        /pricing, /showcase and the five /help routes were added after a
-        review pointed out they were unscanned. They are clean against
-        the register today and this keeps them that way. It is NOT what
-        found the defect that prompted the extension: /help/faq named
-        ProteinMPNN as the only result without a CSV or a star, which is
-        a wrong SCOPE rather than a registered phrase, and no entry here
-        matches it. A phrase register catches re-use of known-bad
-        wording; it does not check that a sentence is true.
+        The path list is DERIVED from url_map rather than written out.
+        Two successive reviews found this scan short by a page: first
+        /pricing, /showcase and the five /help routes, then /scout/,
+        /developability and the auth and legal pages. A hand-written
+        list goes stale every time a route is added, and the docstring
+        claiming it was complete went stale with it. Login-gated routes
+        (302) and non-HTML endpoints drop out on their own responses,
+        so nothing here encodes which ones those are.
+
+        NOT covered: anything behind a login, and any parameterised
+        route except the tool guides -- /jobs/<id> above all, which is
+        where a promise is read against a real result.
+
+        This scan is NOT what found the defect that prompted the last
+        extension: /help/faq named ProteinMPNN as the only result
+        without a CSV or a star, which is a wrong SCOPE rather than a
+        registered phrase, and no entry here matches it. A phrase
+        register catches re-use of known-bad wording; it does not check
+        that a sentence is true.
         """
         flask_app, slugs = tools_app
         client = flask_app.test_client()
-        paths = [
-            "/tools", "/", "/pricing", "/showcase", "/help",
-            "/help/getting-started", "/help/faq", "/help/troubleshooting",
-        ] + [f"/help/tools/{slug}" for slug in slugs]
+        paths = [f"/help/tools/{slug}" for slug in slugs]
+        for rule in flask_app.url_map.iter_rules():
+            if rule.arguments or "GET" not in (rule.methods or ()):
+                continue
+            probe = client.get(rule.rule)
+            if probe.status_code != 200:
+                continue
+            if not probe.headers.get("Content-Type", "").startswith(
+                "text/html"
+            ):
+                continue
+            paths.append(rule.rule)
+        # 14 guides + 16 parameterless HTML pages today. The floor is a
+        # vacuity guard: if the fixture ever stops rendering, every
+        # probe 302s, `paths` collapses to the guides and the scan
+        # passes over almost nothing.
+        assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
         for path in paths:
             flat = re.sub(
                 r"\s+", " ", client.get(path).get_data(as_text=True),
@@ -618,14 +643,19 @@ class TestEveryPartialIsExampleSafe:
         # the format for a design step that includes BoltzGen, which
         # writes .cif (templates/index.html).
         #
-        # All three are fixed, so the phrase is now in NO template.
-        # `git grep -o "downloadable PDBs" HEAD` counts 11 elsewhere --
-        # two in shared/email.py quoting the old defect (a docstring and
-        # a comment), three in tests/test_email_failure_copy.py, five in
-        # THIS file, one in docs/PRODUCT-PLAN.md. All three entries
-        # here are retired wordings today -- but this one was not when it
-        # was added, which is why it is worth saying so rather than
-        # quietly relisting it with the other two.
+        # All three are fixed, so the phrase is in NO template:
+        # `git grep -c "downloadable PDBs" -- templates/` is the check,
+        # and it is zero. It survives only where code quotes the defect
+        # -- this register, shared/email.py, and two test files.
+        #
+        # Do NOT write the repo-wide occurrence count here. A count
+        # stated inside a file that itself holds copies of the phrase
+        # changes the count as it is written: the previous version of
+        # this comment said eleven, and writing it made twelve.
+        #
+        # All three entries here are retired wordings today -- but this
+        # one was not when it was added, which is why it is worth saying
+        # so rather than quietly relisting it with the other two.
         # results_shell.html renders this one in the `else` of the same
         # `is_example` branch that carries the shortlist line, so the
         # boltz2 render above holds both.

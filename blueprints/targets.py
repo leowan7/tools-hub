@@ -877,7 +877,7 @@ def _target_export(target_id: str, fmt: str):
         # In the filename for the reason `incomplete` and `capped` already are,
         # stated below: the artifact leaves this process and is opened later,
         # out of this page's context, so nothing on the page travels with it.
-        # `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}` rather than
+        # `NofM` mirrors the ZIP's own `_structures_top{n}of{total}` rather than
         # inventing a second vocabulary for the same idea.
         #
         # THE TWO MARKERS COMPOSE, and they answer different questions. The
@@ -971,9 +971,9 @@ def _target_export(target_id: str, fmt: str):
     data = candidates_to_zip(candidates, _fetch, namespace=True)
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}{incomplete}.zip"
+        zip_name = f"{stem}_structures_top{len(candidates)}of{total}{incomplete}.zip"
     else:
-        zip_name = f"{stem}_pdbs{incomplete}.zip"
+        zip_name = f"{stem}_structures{incomplete}.zip"
     return Response(
         data,
         mimetype="application/zip",

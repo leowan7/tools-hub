@@ -235,7 +235,7 @@ def test_signed_out_redirects_rather_than_exporting(client):
 @pytest.mark.parametrize("fmt,marker", [
     ("csv", "_scores_incomplete.csv"),
     ("fasta", "_incomplete.fasta"),
-    ("zip", "_pdbs_incomplete.zip"),
+    ("zip", "_structures_incomplete.zip"),
 ])
 def test_a_partial_read_is_marked_in_the_download_filename(client, fmt, marker):
     """Disclosed in the filename because the artifact leaves this process and
@@ -252,7 +252,8 @@ def test_a_partial_read_is_marked_in_the_download_filename(client, fmt, marker):
 
 
 @pytest.mark.parametrize("fmt,stem_part", [
-    ("csv", "_scores.csv"), ("fasta", ".fasta"), ("zip", "_pdbs.zip"),
+    ("csv", "_scores.csv"), ("fasta", ".fasta"),
+    ("zip", "_structures.zip"),
 ])
 def test_a_complete_read_is_not_marked_incomplete(client, fmt, stem_part):
     """The pair. Marking every file discloses nothing at all."""
@@ -384,7 +385,7 @@ def test_a_starred_export_whose_refs_partly_miss_reports_the_shortfall(client):
     """Between the two: refs that named real designs, of which this target can
     resolve only some. Stale sessionStorage after a retention purge does this,
     and the count is the only thing that distinguishes it from a smaller
-    selection. `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}`."""
+    selection. `NofM` mirrors the ZIP's own `_structures_top{n}of{total}`."""
     _login(client)
     resp = _starred_post(
         client,
