@@ -182,6 +182,36 @@ def _basename(pdb_key: str, fallback: str) -> str:
 _STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
 
 
+# Keys no pipeline has a SOURCE for. A column header is a claim that the number
+# exists, and these carry that claim while being empty in every row.
+#
+# ``cluster_id`` is proteina's. It was dropped from the rendered column set on
+# 2026-09-10 once it was measured null on 17,024 of 17,024 candidates (four
+# length-sweep driver runs, not compute_campaigns rows) with no
+# code anywhere that originates a value (see the note on
+# ``_SCORE_COLUMNS["cluster_id"]`` in tools/proteina/run_pipeline.py). Removing
+# it from the page did NOT remove it from the file: this function derives its
+# header from the STORED payload's ``scores`` keys, not from
+# ``shared.result_columns``, so /jobs/<id> export.csv, the campaign export and
+# the target export all kept emitting an empty column the page had stopped
+# showing -- one click apart, contradicting each other. Found by review, not by
+# a test; `tests/test_proteina_promises_no_clustering.py` now pins it.
+#
+# THE FIX HAS TO LIVE HERE rather than in the pipeline. This header is built
+# from what is STORED, and stored rows are expected to carry
+# ``"cluster_id": null`` inside ``result`` (run_pipeline.py writes the key,
+# webhooks/modal.py:549 copies it through) -- expected, not observed: the
+# production jobs table has not been read from here.
+#
+# Scoped by NAME, across every tool, because no RENDERED column list declares
+# ``cluster_id`` -- ``shared/result_columns.py`` and all 14
+# ``{% set columns %}`` template lines are clean. Two OFFLINE operator exports
+# still declare it and are deliberately untouched:
+# ``tools/proteina/export_campaign.py``'s SCORE_COLUMNS and
+# ``shard_driver.py``'s MANIFEST_COLUMNS.
+_UNSOURCED_METRIC_KEYS = frozenset({"cluster_id"})
+
+
 _NON_METRIC_ROOT_KEYS = frozenset({
     "pdb_key", "name", "rank", "scores",
     "sequence", "binder_sequence", "designed_sequence",
@@ -203,15 +233,50 @@ def _metric_columns(cands: list, leading: list[str]) -> list[str]:
     cross-tool aliasing work, not here. Exporting the real numbers under their
     real names beats exporting nothing.
     """
+    # Suppress an unsourced key only WHILE it is unsourced. Keyed on the name
+    # alone, a cluster_id that someone finally wires up would be deleted from
+    # the file -- header and value -- with nothing failing; review caught that
+    # a name-only filter drops a real 7 as readily as a null. Checking the rows
+    # means the column comes back by itself the moment it means something.
+    #
+    # The test is ``_is_metric_value``, NOT ``is not None``, and that is the
+    # second fix here: a list / dict / over-long string is not None, so one such
+    # row re-opened the header while the writer below refused to print it --
+    # an empty column for every row, which is the exact defect this suppression
+    # exists to remove. Whatever cannot be printed cannot count as a source.
+    def _is_printable_value(v: object) -> bool:
+        # A source is a value the writer would actually PRINT.
+        # ``_is_metric_value`` says yes to None (a null prints as an
+        # empty cell), so calling it alone made every null count as a
+        # source and suppressed nothing at all.
+        return v is not None and _is_metric_value(v)
+
+    def _scores_of(cand: object) -> dict:
+        # ``scores`` is container-authored, and the loops below only ITERATE
+        # it, so calling ``.get`` here introduced an AttributeError on a
+        # non-dict that the function did not raise before. (It raised other
+        # things -- measured on the pre-change code, a str or list `scores`
+        # gives ValueError and an int gives TypeError -- so this restores the
+        # previous behaviour exactly, it does not make non-dicts safe.)
+        raw = cand.get("scores") if isinstance(cand, dict) else None
+        return raw if isinstance(raw, dict) else {}
+
+    unsourced = {
+        k for k in _UNSOURCED_METRIC_KEYS
+        if not any(_is_printable_value(_scores_of(c).get(k))
+                   or (isinstance(c, dict) and _is_printable_value(c.get(k)))
+                   for c in cands)
+    }
     out: list[str] = []
     for cand in cands:
         for k in (cand.get("scores") or {}):
             if (k not in out and k not in leading
-                    and k not in _STALE_VERDICT_KEYS):
+                    and k not in _STALE_VERDICT_KEYS
+                    and k not in unsourced):
                 out.append(k)
     for cand in cands:
         for k, v in cand.items():
-            if k in _STALE_VERDICT_KEYS:
+            if k in _STALE_VERDICT_KEYS or k in unsourced:
                 continue
             if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
                 continue

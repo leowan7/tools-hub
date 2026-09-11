@@ -3,8 +3,8 @@
 One invocation == one independent, seeded inference-time search on one
 A100-80GB, returning up to ``_SHARD_DESIGNS`` (8) designs. The campaign engine
 (``shared/compute_campaigns.py``) fans ``num_designs`` out across many of these
-containers; the hub does the global cross-shard top-K + diversity. This script
-never runs multi-GPU / multi-shard itself.
+containers; the hub pools their candidates into one globally ranked table. This
+script never runs multi-GPU / multi-shard itself.
 
 Contract (identical to boltz2 / iggm; set by ``tools/proteina/modal_app.py``):
 
@@ -34,7 +34,9 @@ only — see ``_CUSTOM_TARGET_PRESETS``.
 Output (``/tmp/smoke_results.json`` == the persisted ``job.result``): both a
 flat ``designs`` list and a ``candidates`` list whose nested ``scores`` dict is
 keyed to the results columns the viewer renders
-(total_reward / af2_iptm / af2_plddt / rf3_score / binder_scrmsd / cluster_id).
+(total_reward / af2_iptm / af2_plddt / rf3_score / binder_scrmsd). ``cluster_id``
+is carried in the same dict and has been None in every result measured — it is
+not a rendered column; see the note on ``_SCORE_COLUMNS["cluster_id"]`` below.
 
 CONFIRMED upstream facts (Proteina-Complexa @ dev 916eaaed, source-verified
 against the pinned checkout 2026-07-16):
@@ -318,7 +320,73 @@ _SCORE_COLUMNS: dict[str, tuple[str, ...]] = {
     "rf3_score": ("rf3folding_ranking_score", "rf3_score"),
     # self-consistency RMSD (protein AF2 refold; absent for the ligand variant).
     "binder_scrmsd": ("af2folding_rmsd", "binder_scrmsd", "scrmsd"),
-    # cross-shard diversity is assigned at the hub, not in the per-shard CSV.
+    # NOTHING EVER MATCHES THIS, AND THE COMMENT THAT USED TO SIT HERE SAID SO
+    # BACKWARDS. It read "cross-shard diversity is assigned at the hub, not in
+    # the per-shard CSV", which describes a hub step that was never written:
+    # shared.compute_campaigns.aggregate_campaign_candidates pools every shard's
+    # candidates and SORTS them (passed, missing, primary metric) at
+    # compute_campaigns.py:1483-1495, with no clustering and no diversity step.
+    # (Scoped to proteina design clustering. The repo DOES do MPNN sequence
+    # diversification — shared/resample.py, which raises sampling_temp from
+    # 0.1 to 0.5 to spread sequences over one fold — so "no diversity anywhere
+    # in the repo", which an earlier draft of this comment said, is false.
+    # "Diversified positions" is NOT that: it is the library planner's form
+    # field, templates/library_planner_form.html:54, and an earlier draft of
+    # this parenthesis welded the two together.)
+    #
+    # Every other entry in this table resolves against one of the two reward-CSV
+    # headers pinned in tests/test_proteina_smoke.py::TestRewardParse; this one
+    # matches neither. No captured reward CSV is committed anywhere in this
+    # repo, so "these are the real names" rests on commit messages rather than
+    # on an artifact — TWO of them, not one. 7acd4cb reports the column
+    # PREFIXES read off the P-2/P-3 GPU canaries; 1a43f1f (the pLDDT-polarity
+    # fix) reports ``af2folding_plddt_log`` read off a NAMED production job,
+    # including that it and ``af2folding_plddt`` sum to 1.000000 in every row.
+    # That second one is the stronger evidence, and an earlier draft of this
+    # comment cited neither: it claimed every name came from 7acd4cb, which the
+    # pLDDT block ~25 lines above already contradicts.
+    #
+    # What is certain about this entry: 7acd4cb narrowed it from
+    # ("cluster_id","cluster","cluster_idx","diversity_cluster") to a single
+    # bare guess, and none of the four appears in either pinned header.
+    #
+    # MEASURED 2026-09-10: 17,024 of 17,024 candidates carry cluster_id null,
+    # counted over ~/proteina-sweep-tier{1,2,3a,3b}/shard_*/smoke_result.json —
+    # the container's own output from four length-sweep DRIVER runs
+    # (shard_driver.py calling Modal directly, not compute_campaigns rows).
+    #
+    # WHERE UPSTREAM'S CLUSTER IDS ACTUALLY ARE, so a future wiring attempt does
+    # not start from this table. Read off the pinned source, NOT off a container
+    # log — no run's analyze output has been inspected here, so "upstream runs
+    # this" is what the config says (binder_analyze.yaml's header comment,
+    # "diversity: enabled by default" — a comment, not a key) plus the fact that
+    # the binaries ship (Dockerfile.modal:80-87), not something observed. At
+    # 916eaaed the analyze stage's diversity step
+    # (result_analysis/compute_diversity.py) returns ONE ROW PER GROUP — column
+    # ``_res_diversity_foldseek_{mode}_{suffix}``, an aggregate, written to
+    # res_div_foldseek_*.csv after ``df_grouped.drop("pdb_path")``. The
+    # per-design artifacts all land in a clusters_{mode}_{suffix} SIDE DIRECTORY
+    # written by metrics/diversity.py: cluster_assignments*.csv (header
+    # ``cluster_index,sample_index,path_name``), res_cluster*.tsv (Foldseek's
+    # rep->member table) and original_pdb_paths*.txt.
+    #
+    # None of those is the reward CSV, and the column is ``cluster_index``
+    # rather than ``cluster_id`` in any case — which is the half that actually
+    # holds. NOT "find_reward_csv never opens them": its fourth pattern is a
+    # bare ``**/*.csv`` catch-all (see the function), so with no reward CSV
+    # present it can return an analyze output. What is enforced is narrower and
+    # enough — parse_designs builds ``scores`` from one CSV row through this
+    # table, so no ``scores`` key can ever be ``cluster_index``.
+    #
+    # Those ids are also renumbered from 0 on every diversity_foldseek call
+    # (metrics/diversity.py:207), so they would collide across a campaign and
+    # can never carry the cross-shard claim the page used to make.
+    #
+    # Kept as a parsed key (None in everything measured) rather than deleted:
+    # the shard driver manifest, the campaign export and the webhook all carry
+    # the field, and this table is where the next person will look. It is NOT
+    # rendered, and no longer reaches the CSV export either — see
+    # shared/result_columns.py and shared/exports.py's _UNSOURCED_METRIC_KEYS.
     "cluster_id": ("cluster_id",),
 }
 # Candidate columns for a PDB path/name in the reward CSV (tolerant).
@@ -4213,9 +4281,22 @@ def _run_shard() -> None:
         # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
         # stage can exit nonzero AFTER the reward CSV (with complete scores) is
         # already written — observed on the ligand path (P-3 canary: 8 designs fully
-        # RF3-scored, then exit 1). Cross-shard diversity is assigned at the hub, so
-        # we still DELIVER designs that were fully scored; only fail when the nonzero
-        # exit left nothing scored to deliver (a genuine early failure).
+        # RF3-scored, then exit 1). NO DELIVERED SCORE COMES FROM ANALYZE — every
+        # key in ``scores`` is built from one reward-CSV row through
+        # _SCORE_COLUMNS, and evaluate has already written that CSV by this
+        # point.
+        #
+        # THAT RESTS ON THE TABLE, NOT ON FILE ACCESS, and not on knowing what
+        # analyze writes. find_reward_csv's fourth pattern is a bare
+        # ``**/*.csv`` catch-all, so "this script never opens an analyze output"
+        # is more than the code promises; and no analyze output has ever been
+        # inspected here, so "analyze writes none of these names" is unchecked
+        # too. What holds regardless: ``scores`` keys are exactly
+        # _SCORE_COLUMNS.keys(), whatever file the row came out of.
+        #
+        # So we still DELIVER designs that
+        # were fully scored; only fail when the nonzero exit left nothing scored
+        # to deliver (a genuine early failure).
         n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
         if rc != 0:
             if n_scored == 0 and search_timeout_s is not None:
@@ -4237,7 +4318,7 @@ def _run_shard() -> None:
                 _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
             logger.warning(
                 "complexa design exited %d but %d/%d designs are fully scored — delivering "
-                "(late analyze/eval failure is non-fatal; hub does cross-shard diversity)",
+                "(late analyze/eval failure is non-fatal; no delivered score comes from analyze)",
                 rc, n_scored, len(designs),
             )
 

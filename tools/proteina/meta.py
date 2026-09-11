@@ -112,17 +112,62 @@ paper_url: str = "https://arxiv.org/abs/2603.27950"
 # rebuilds the GPU image. Do not align it with this line.
 github_url: str = "https://github.com/NVIDIA-BioNeMo/Proteina-Complexa"
 
-# NVIDIA Open Model License notice — surfaced verbatim on the tool page + repo.
+# NVIDIA Open Model License notice.
+#
+# NOT ACTUALLY SURFACED ANYWHERE, and this comment claimed it was ("surfaced
+# verbatim on the tool page + repo") until 2026-09-10. Neither this name nor
+# ``reward_attributions`` below appears anywhere under templates/ — grep both;
+# no template dereferences them, and none walks ``about`` or the meta module
+# generically, so neither can arrive by an indirect route either. They are
+# carried into the panel's context inside ``about`` and then dropped.
+#
+# THE REASON IS THAT EVERY RENDER PATH NAMES ITS KEYS. components/
+# about_panel.html holds three macros: about_reference_card dereferences nine
+# fixed ``about.*`` keys, about_public_explainer five fixed ``_meta.*``
+# attributes (comparison_one_liner, seo_faq, paper_citation, paper_url,
+# github_url), and neither list contains these two. Nothing iterates ``about``
+# generically, so nothing can pick them up.
+#
+# An earlier draft said "renders only a fixed short list" and a later one
+# declared that WRONG, on the grounds that there are three macros rather than
+# one. The count was right and the refutation was not: a longer fixed list is
+# still a fixed list, and "these keys are never named" is exactly why they do
+# not surface. Correcting a true statement is its own defect.
+#
+# Whether the Open Model License requires the notice to be displayed is a
+# question for a human — flagged rather than answered here, but the comment may
+# not go on asserting a render path that does not exist.
 model_license_notice: str = (
     "Licensed by NVIDIA Corporation under the NVIDIA Open Model License"
 )
 
-# Reward-model attributions surfaced alongside the results.
+# Reward-model attributions. Defined here, rendered nowhere — see above.
+#
+# THE FOURTH LINE USED TO READ "Foldseek / MMseqs2 / DSSP — post-hoc diversity
+# clustering", and it was wrong twice.
+#
+# DSSP: this image does not install it and nothing sets its path.
+# Dockerfile.modal:74-75 says dssp/sc/hbplus "are NOT bundled here", and a
+# repo-wide grep finds DSSP_EXEC / SC_EXEC only in prose, never assigned. That
+# env/build_uv_env.sh at the pinned SHA is clean too — fetched and searched,
+# 9,219 bytes, zero hits for dssp / hbplus / apt-get / conda. The one layer
+# still uninspected is the BASE image (nvcr.io/nvidia/pytorch:24.08-py3,
+# pinned by digest), so "DSSP is not in the image at all", which an earlier
+# draft asserted flatly, remains one step short. Settled by listing that image
+# or running `which mkdssp` in it. Crediting it for a step we do not surface was
+# wrong either way.
+#
+# CLUSTERING: it reaches no result. No cluster assignment has been delivered in
+# anything measured — 17,024 of 17,024 null, and no code originates a value (see
+# shared/result_columns.py). Foldseek and MMseqs2 ARE installed
+# (Dockerfile.modal:80-87) for upstream's analysis stage, so the credit stays;
+# the product claim does not.
 reward_attributions: list[str] = [
     "AlphaFold2 parameters (CC-BY-4.0, DeepMind) — protein-binder confidence.",
     "RoseTTAFold3 via RosettaCommons foundry (BSD) — ligand + motif reward.",
     "ESM2 (MIT, Meta AI) — sequence likelihood.",
-    "Foldseek / MMseqs2 / DSSP — post-hoc diversity clustering.",
+    "Foldseek / MMseqs2 — clustering binaries shipped for the upstream "
+    "analysis stage; no cluster assignment is surfaced in results.",
 ]
 
 seo_faq: list[dict] = [
@@ -166,9 +211,9 @@ seo_faq: list[dict] = [
             "target: a protein target is scored by an AlphaFold2 refold, a "
             "small-molecule or motif target by RoseTTAFold3, with a physics "
             "force field added where it applies. Each shard keeps what "
-            "scores well, and the hub then ranks across every shard at once "
-            "and clusters the winners, so you get a spread of different "
-            "high-scoring designs rather than near-duplicates."
+            "scores well, and the hub then ranks across every shard at once, "
+            "so one pooled table shows the best-scoring designs from the "
+            "whole run rather than one table per GPU."
         ),
     },
 ]
@@ -210,9 +255,9 @@ about: dict = {
         "a small-molecule or motif target by RoseTTAFold3, with a "
         "physics force field added where it applies. "
         "The run splits into independent shards "
-        "across as many GPUs as your balance funds, then ranks globally "
-        "across all of them and clusters the winners, so you get a "
-        "spread of different designs rather than many copies of one. "
+        "across as many GPUs as your balance funds — each shard is a "
+        "separately seeded search — and the designs are ranked globally "
+        "across all of them into one pooled table. "
         "Proteina-Complexa, Didi et al., ICLR 2026."
     ),
     "when_to_use": [
@@ -235,10 +280,16 @@ about: dict = {
             "You want to scale the search across many GPUs, with your "
             "prepaid balance as the only ceiling."
         ),
-        (
-            "You want a spread of different good designs rather than many "
-            "variations on one."
-        ),
+        # A SIXTH BULLET WAS DELETED HERE 2026-09-10 — the last of the six this
+        # list held, leaving five. (An earlier draft of this note called it the
+        # fourth, which was wrong about the old list and about the new one.) It
+        # read: "You want a spread of different good designs rather than many
+        # variations on one." It was the payoff clause of the diversity-
+        # clustering promise, and that promise described a step nothing in this
+        # repo performs for proteina. Independent seeds do make the shards
+        # independent searches, but "more diverse output than the alternatives"
+        # is a comparative claim nobody has measured, so it is not a reason to
+        # reach for this tool. Do not restore it without one.
     ],
     "prerequisites": [
         "A target: your own structure (<code>.pdb</code>/<code>.cif</code>) for "
@@ -315,10 +366,15 @@ about: dict = {
         {"preset": "motif_ame", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "validate", "typical": "1 to 3 min (free)"},
     ],
+    # NO CLUSTER ID IN THIS SENTENCE. It listed "a structural diversity cluster
+    # id" among the outputs until 2026-09-10. Nothing measured has carried one
+    # (17,024 of 17,024 null) and no code originates a value; the production
+    # jobs table was not read, which is why this says "nothing measured" rather
+    # than "no run ever".
     "output_summary": (
         "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
         "RF3 score for ligand / motif, force-field energy where applicable), "
-        "a structural diversity cluster id, and downloadable structures. The "
+        "a self-consistency re-fold RMSD, and downloadable structures. The "
         "ligand and motif variants score on RF3 only."
     ),
     "paper_citation": paper_citation,
