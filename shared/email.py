@@ -1208,6 +1208,11 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
       * ``sequences`` (sequence-design tools — MPNN, future LigandMPNN)
       * ``candidates`` (composite binder tools — RFantibody, RFdiffusion,
         BoltzGen, BindCraft, PXDesign)
+      * ``designs`` (opendde, boltz2, iggm) — added after a review found
+        that a zero-design run fell past every branch to the "treated as
+        a real success" default below and emailed the customer "0
+        candidates returned with real scores and downloadable PDBs"
+        under a green View results button
       * ``pdb_b64`` (structure-prediction tools — AF2, ColabFold, ESMFold)
 
     A tool whose result shape is not recognised is treated as a real
@@ -1223,6 +1228,9 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     cands = result.get("candidates")
     if isinstance(cands, list):
         return len(cands) == 0
+    designs = result.get("designs")
+    if isinstance(designs, list):
+        return len(designs) == 0
     if result.get("pdb_b64"):
         return False
     return False

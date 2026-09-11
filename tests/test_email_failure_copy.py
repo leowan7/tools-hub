@@ -136,6 +136,39 @@ class TestResultTone:
                    tool="mpnn")
         assert email_mod._result_tone(job) == "empty"
 
+    def test_succeeded_with_zero_designs_is_empty(self):
+        """The designs-only shape, which used to email a success.
+
+        opendde, boltz2 and iggm write ``designs``, not ``candidates``.
+        _is_empty_result recognised neither that key nor anything else in
+        the payload, so a run where every structure upload failed fell
+        past every branch to its "treated as a real success" default: the
+        customer got a green View results button and "0 candidates
+        returned with real scores and downloadable PDBs".
+
+        The payload below is what run_pipeline actually writes in that
+        case -- designs_total comes from the job spec, not from
+        len(designs_out), so it is 5 while designs is empty.
+        """
+        job = _job(
+            status="succeeded", error=None, tool="opendde",
+            result={
+                "status": "COMPLETED", "tier": "general",
+                "designs_total": 5, "designs_completed": 0,
+                "n_failures": 5, "designs": [], "runtime_seconds": 412,
+            },
+        )
+        assert email_mod._result_tone(job) == "empty"
+        assert "downloadable PDBs" not in email_mod._result_summary(
+            job, tone="empty",
+        )
+
+    def test_succeeded_with_designs_is_success(self):
+        """The other side of it: one design must stay a success."""
+        job = _job(status="succeeded", error=None, tool="opendde",
+                   result={"designs": [{"rank": 0, "pdb_key": "a.pdb"}]})
+        assert email_mod._result_tone(job) == "success"
+
     def test_succeeded_with_candidates_is_success(self):
         job = _job(status="succeeded", error=None,
                    result={"candidates": [{"rank": 1, "scores": {}}]})

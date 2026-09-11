@@ -456,8 +456,8 @@ class TestEveryPartialIsExampleSafe:
         "Download as PDB or PAE matrix",
         # The adjectival half of the same family. Five tools said
         # "downloadable PDBs" and mpnn said "downloadable as FASTA",
-        # each directly above an example page that renders no such
-        # control. Weaker than an imperative -- it describes the tool,
+        # five of the six directly above an example page that renders no
+        # such control. Weaker than an imperative -- it describes the tool,
         # not the table -- but it sat in the same place and read the
         # same way.
         #
@@ -466,7 +466,9 @@ class TestEveryPartialIsExampleSafe:
         # carries a single inline blob. "downloadable PDBs" plural still
         # overstated the other four rows. An earlier version of this
         # comment said all six rendered none, which was wrong for
-        # boltzgen and wrong about mpnn's wording. NOT registered alongside it: "downloadable as FASTA",
+        # boltzgen and wrong about mpnn's wording.
+        #
+        # NOT registered alongside it: "downloadable as FASTA",
         # which mpnn still carries in scoped form, and "downloadable
         # structures", which proteina still carries while separate work
         # on its clustering promises is in flight.
@@ -510,7 +512,16 @@ class TestEveryPartialIsExampleSafe:
         flask_app, _ = tools_app
         empty = _render_partial(
             flask_app, "opendde", job_id="real-job-1", example=False,
-            result={"designs": [], "runtime_seconds": 1},
+            result={
+                # The shape a real zero-design opendde job writes, not a
+                # minimal stand-in: run_pipeline sets designs_total from
+                # the job spec, never from len(designs_out). A fixture
+                # without it lets the gate be rewritten against
+                # designs_total and stay green while the promise breaks
+                # on a real run -- demonstrated.
+                "designs": [], "designs_total": 5, "designs_completed": 0,
+                "n_failures": 5, "tier": "general", "runtime_seconds": 412,
+            },
         )
         assert "Download each structure" not in empty, (
             "opendde promises a structure download on a real job that "
@@ -539,9 +550,20 @@ class TestEveryPartialIsExampleSafe:
             "opendde's real results page no longer offers the download, so "
             "blocking that phrase on the example page proves nothing"
         )
-        # The third control, for the third entry that real copy still
-        # carries. The tuple has six entries; three are retired wordings
-        # written nowhere, and no control can vouch for those.
+        # The third control assertion, covering the tuple's SECOND live
+        # entry -- assert order and tuple order are not the same, and an
+        # earlier version of this comment called it the third entry. The
+        # tuple has six entries. Two are retired wordings written
+        # nowhere, and no control can vouch for those.
+        #
+        # The third, "downloadable PDBs", is NOT written nowhere -- an
+        # earlier version of this comment said it was, and following that
+        # wrong claim is how a reviewer found two live defects: the
+        # completion email promised it for runs that returned nothing
+        # (shared/email.py), and /tools promised it for every pipeline
+        # including the ones that return sequences or a single structure
+        # (templates/tools/comparison.html). Both fixed. The phrase is
+        # still carried, correctly scoped, at templates/index.html:614.
         # results_shell.html renders this one in the `else` of the same
         # `is_example` branch that carries the shortlist line, so the
         # boltz2 render above holds both.
