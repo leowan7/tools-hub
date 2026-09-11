@@ -1489,10 +1489,35 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     from shared.jobs import candidate_records  # noqa: PLC0415
     cands = candidate_records(result)
     n = len(cands)
-    return (
-        f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
-        "downloadable PDBs."
-    )
+    label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
+
+    # The download half of this sentence is not implied by the count, so it
+    # is read off the rows -- using THE SAME TWO KEYS THE PAGE GATES ON and
+    # deliberately not a third. templates/components/candidate_table.html
+    # sets ``has_pdb = use_url or has_b64`` from pdb_key and
+    # pdb_content_b64, and renders an em dash in both structure columns
+    # when neither is present. Accepting a key that gate ignores (a per-row
+    # pdb_b64, which no tool in this repo emits) would let this sentence
+    # promise a file the page does not offer -- the thing being prevented.
+    #
+    # A GUARD, NOT A REPAIR: no in-repo producer reaches the else branch
+    # today. proteina drops both keys from an inline-capped design
+    # (run_pipeline.py, the n_inline_capped branch), but that path needs
+    # ``not upload_endpoint`` and the hub always sends one
+    # (blueprints/tools.py), and a run whose cap admits nothing is failed
+    # outright by delivery_verdict. The five container-side tools are not
+    # readable from this repo. See the test file for what is established.
+    #
+    # ANY, not all: a result where only some rows carry a structure still
+    # says "downloadable PDBs" and still overstates how many. That residue
+    # is the REACHABLE one and is not fixed here.
+    if any(
+        isinstance(c, dict)
+        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+        for c in cands
+    ):
+        return f"{label} and downloadable PDBs."
+    return f"{label} — see the job page."
 
 
 # ===========================================================================
