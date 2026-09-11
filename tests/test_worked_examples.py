@@ -540,9 +540,29 @@ class TestEveryPartialIsExampleSafe:
         """
         flask_app, slugs = tools_app
         client = flask_app.test_client()
+        # Skipped BEFORE the request, because the request itself is the
+        # hazard -- not because of what they return. GET /scout/example
+        # copies a fixture into a new tmp/<uuid> directory, mints an
+        # anon session id, spends a rate-limit bucket and runs
+        # cleanup_old_jobs(), which rmtree's over the SHARED tmp/ and
+        # has fired destructively in prod before. /scout/progress opens
+        # an event stream; /readyz and /healthz read Supabase. None of
+        # them answers text/html, so none contributes to this scan.
+        #
+        # Residual risk, stated: a NEW prose page is still picked up
+        # automatically, which is the direction that matters. A new
+        # side-effecting endpoint would be probed once until it is
+        # added here.
+        NO_PROBE = (
+            "/api/", "/scout/example", "/scout/progress",
+            "/scout/quota", "/health", "/healthz", "/readyz",
+            "/metrics", "/debug/",
+        )
         paths = [f"/help/tools/{slug}" for slug in slugs]
         for rule in flask_app.url_map.iter_rules():
             if rule.arguments or "GET" not in (rule.methods or ()):
+                continue
+            if rule.rule.startswith(NO_PROBE):
                 continue
             probe = client.get(rule.rule)
             if probe.status_code != 200:

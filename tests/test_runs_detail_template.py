@@ -148,7 +148,10 @@ def test_capped_note_renders_top_n_of_m(app):
     # Banner honesty: CSV/FASTA are the full ranked set, the ZIP is described as
     # limited, and the old false "download all" wording is gone.
     assert "full ranked set" in html
-    assert "PDB ZIP is" in html and "limited" in html
+    # "structures", not "PDB": the archive carries whatever the container
+    # wrote, and boltzgen writes .cif for most rows.
+    assert "structures ZIP is" in html and "limited" in html
+    assert "PDB ZIP" not in html
     assert "download all" not in html
 
     # This assertion is inverted from what it used to be, deliberately.
