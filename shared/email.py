@@ -195,16 +195,26 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     and ipTM 0.9556, which its own ``filter_status`` marks ``drop``, ahead of a
     pI 5.67 design at 0.9354 marked ``strict_pass`` — and this mail sent the
     reject's number under "0.75 or more is a credible designed interface". (The
-    repo describes that design's sequence as a poly-leucine bundle in five
+    repo describes that design's sequence as a poly-leucine bundle in four other
     places, ``score_legends.py`` and ``meta.py`` among them; no sequence
     survives capture, so nothing here evidences it. The pI and the drop are in
-    ``example/result.json``.) Third surface of that class, and the one that can
-    reach a customer who never opened the site: the webhook path
-    ``webhooks/modal.py`` -> ``complete_job`` -> here fires when the run
-    finishes, where the results page and /jobs/compare wait to be opened. Note
-    the caveat block below, which turns on the OPPOSITE fact — three of
-    ``complete_job``'s other callers finalize long-stored results, so "pushed"
-    is true of the webhook caller and not of every caller.
+    ``example/result.json``.)
+
+    NAME THE SURFACE, NEVER NUMBER IT. This is THE COMPLETION EMAIL. An earlier
+    version said "third surface of six"; the six does not survive being counted
+    (#241 is one, #248 is two, and #241's own message names five more consumers
+    it did not reach — seven), and the peer branch repairing four of the others
+    numbers its own "surfaces 3-6", which collides. A reader can check a name.
+
+    It is the one that can reach a customer who never opened the site: the
+    webhook path ``webhooks/modal.py`` -> ``complete_job`` -> here fires when
+    the run finishes, where the results page and /jobs/compare wait to be
+    opened. Note the caveat block below, which turns on the OPPOSITE fact —
+    ``complete_job``'s other callers finalize long-STORED results (the inline
+    poll in ``blueprints/jobs``, ``timeout_stuck_job``,
+    ``scripts/finalize_stuck_job.py``, and ``reconcile_campaign_children`` in
+    ``shared/compute_campaigns``), so "pushed" is true of the webhook caller and
+    not of every caller.
     ``shared.jobs.headline_candidate`` is the chooser #248 (313b764) added for
     the compare page; its predicate is deliberately not re-derived here, because
     ``shared.ranking`` and it decide the same question and may not disagree.
@@ -244,7 +254,6 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     )
 
     tool_slug = getattr(job, "tool", "") or ""
-    legends = score_legends.score_legends_for(tool_slug)
     # THE RESULT FIRST, the stored preset only as a fallback — the order
     # blueprints/jobs.jobs_compare and templates/tools/esmfold2_design_results
     # resolve it in. A job's stored preset can be the default string while the
@@ -281,51 +290,54 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
     # ``result["candidates"]`` to ``candidate_records`` supplied neither for one
     # family of tools. ``candidates[]`` is a list the container ranked.
     # ``designs[]`` need not be: af2, colabfold and esmfold store their ``batch``
-    # preset there, one record per INDEPENDENTLY SUBMITTED target in submission
-    # order (tools/af2/run_pipeline.py writes ``"rank": rec_info["index"]``, and
-    # the adapter's own copy calls them "many independent targets"). None of the
-    # three declares a bar, so ``headline_candidate`` cannot re-pick and
-    # ``verdict_text`` renders nothing to qualify the choice.
+    # preset there, one record per independently submitted target, carrying the
+    # submission index as ``rank`` (``"rank": rec_info["index"]`` in
+    # tools/af2/run_pipeline.py and tools/colabfold/run_pipeline.py, ``"rank": i``
+    # in tools/esmfold/run_pipeline.py; af2's and colabfold's adapters call them
+    # "many independent targets", esmfold's says "Fold many monomer sequences").
+    # The list is never sorted on quality, so record 0 is a submission, not a
+    # winner, and the block asserted "Top design: ptm 0.400" over whichever
+    # sequence the customer pasted first, captioned with what a GOOD ptm looks
+    # like, on a run holding a 0.95. Measured on a two-record af2 batch payload.
     #
-    # The block therefore asserted "Top design: ptm 0.400" over whichever
-    # sequence the customer happened to paste first, captioned with what a GOOD
-    # ptm looks like, on a run holding a 0.95 — this function's own defect,
-    # recreated on three tools, in the surface that is pushed rather than
-    # pulled. Measured on a two-record af2 batch payload.
+    # A BAR DOES NOT SUBSTITUTE FOR THE ORDERING, which is what an earlier
+    # version of this gate got wrong: it also admitted any list whose tool
+    # declares a bar, on the reasoning that ``headline_candidate`` could re-pick
+    # within it. It cannot — its docstring says "THIS DOES NOT RE-RANK" and its
+    # loop returns the FIRST record not shown to fall short, in stored order. On
+    # an unranked list a bar only narrows WHICH arbitrary record gets crowned:
+    # boltz2 stores submission-ordered ``designs[]`` and does declare a bar, and
+    # that gate mailed "Top design: ipTM 0.710" on a run holding 0.95. main sent
+    # boltz2 no callout at all, so that was a hole this change opened.
     #
-    # GATING ON "HAS A BAR" ALONE IS THE WRONG RULE and was tried first:
-    # bindcraft declares none yet stores a ranked ``candidates[]``, so that rule
-    # deletes a callout bindcraft has had all along. The shape and the bar are
-    # separate questions and this asks both.
+    # THE RULE IS THE SHAPE ALONE. Gating on the bar alone is equally wrong in
+    # the other direction: bindcraft declares none yet stores a ranked
+    # ``candidates[]``, so that rule deletes a callout it has had all along.
+    #
+    # ONE RULE, TWO CALLERS, AND THIS COPY SHOULD NOT SURVIVE: a peer session is
+    # placing it in shared/jobs.py beside ``headline_candidate``, whose other
+    # caller (blueprints/jobs.py, for /jobs/compare) has no shape test and leads
+    # that page with ``designs[0]`` for an af2 batch job today. COLLAPSE THIS
+    # into that helper when it lands, the same way the mode resolution above
+    # collapses into ``resolve_mode``.
+    #
+    # ``_normalize_result_shape`` is redundant TODAY -- ``ToolJob.from_row``
+    # already normalises and is the only construction site -- and is kept so the
+    # gate and ``candidate_records`` read one view of the result and cannot
+    # disagree about which list is being described.
     normalized = _normalize_result_shape(result)
-    ranked_shape = isinstance((normalized or {}).get("candidates"), list)
-    if not ranked_shape and not score_legends.gate_columns(tool_slug, mode):
+    if not isinstance((normalized or {}).get("candidates"), list):
         return ("", "", "", "", "")
 
     scores = top.get("scores")
     if not isinstance(scores, dict) or not scores:
-        # Some adapters inline the score at the candidate root instead of under
-        # .scores, AND in the storage spelling ("iptm"). ``raw_metric`` resolves
-        # a canonical column through score_legends' alias table over
-        # scores-then-root, so the label printed here is the one the legend and
-        # the bar are keyed on. The hardcoded allowlist that used to be the
-        # whole of this branch collected "iptm", which matches no legend, so
-        # boltz2 mailed a raw storage key with no caption two lines above a
-        # verdict naming "ipTM".
-        flat = {}
-        for col in legends:
-            val = score_legends.raw_metric(top, col)
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                flat[col] = val
-        if not flat:
-            # Kept as a second fallback: a record whose only numeric metric is
-            # a column this tool registers no legend for still gets a bare
-            # reading rather than nothing.
-            flat = {
-                k: top.get(k)
-                for k in ("iptm", "ipTM", "plddt", "pLDDT", "ptm", "i_pae")
-                if isinstance(top.get(k), (int, float))
-            }
+        # Some adapters inline the score at the candidate root instead of
+        # under .scores. Fall back to a small allowlist of known keys.
+        flat = {
+            k: top.get(k)
+            for k in ("iptm", "ipTM", "plddt", "pLDDT", "ptm", "i_pae")
+            if isinstance(top.get(k), (int, float))
+        }
         scores = flat or {}
     if not scores:
         return ("", "", "", "", "")
@@ -338,6 +350,8 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str, str]:
             if k in _metric_glossary.PLDDT_COLUMNS else v)
         for k, v in scores.items()
     }
+
+    legends = score_legends.score_legends_for(tool_slug)
 
     # Prefer columns with a registered legend so the caption is
     # meaningful. Then fall back to the first numeric score we see.

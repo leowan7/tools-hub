@@ -1,11 +1,14 @@
 """Regression: the completion email must not headline a design its bar rejects.
 
-SURFACE THREE, AND THE ONE THAT ARRIVES UNPROMPTED. #241 fixed this class in
-three writers on one tool; #248 fixed /jobs/compare and listed the completion
-email among the surfaces it did not reach. Both of those are PULLED -- a
-customer meets them by opening the site. This one is pushed:
-``shared/jobs.complete_job`` mails it the moment a run finishes, so it reaches
-a customer who never asked to look.
+THE COMPLETION EMAIL -- named, not numbered. #241 fixed this class in three
+writers on one tool; #248 fixed /jobs/compare and listed the completion email
+among the surfaces it did not reach. Both of those are PULLED -- a customer
+meets them by opening the site. This one is pushed: the webhook path
+``webhooks/modal.py`` -> ``complete_job`` mails it when a run finishes, so it
+reaches a customer who never asked to look. (An earlier version of this
+docstring said "surface three of six". Do not restore an ordinal: the six does
+not survive being counted, and the branch repairing four of the siblings numbers
+those same surfaces differently.)
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), whose result ships verbatim as this tool's worked
@@ -238,13 +241,33 @@ def test_the_mail_states_the_bar_the_leading_design_meets():
             f"the {part} body tells a customer whose design MEETS the bar that "
             f"nothing in the run clears it: {body!r}"
         )
-        # The judgement belongs in the callout it qualifies, not loose in the
-        # footer: the callout is the endorsement frame ("Top design", a green
-        # rule) that the sentence exists to correct.
+        # NOT MERELY "above the call to action". The callout is the endorsement
+        # frame ("Top design", a green rule) that the sentence exists to
+        # correct, and an assertion that only excluded the footer left the whole
+        # region between the callout's </div> and the CTA passing -- which is
+        # exactly where "loose in the body" lives. Checked on the HTML source
+        # below; here just pin the order, having first proved both needles are
+        # present so a copy change fails the assertion rather than raising
+        # ValueError from ``index``.
+        assert "Meets" in body and "View results" in body, body
         assert body.index("Meets") < body.index("View results"), (
-            f"the {part} body renders the judgement after the call to action, "
-            f"outside the callout whose framing it is there to qualify"
+            f"the {part} body renders the judgement after the call to action"
         )
+
+    # THE STRUCTURAL HALF, on the raw HTML: the judgement must fall inside the
+    # callout div, i.e. before the first </div> that closes it after "Top
+    # design". Moving the block out to a bare <p> under the callout keeps every
+    # whitespace-normalised assertion above green.
+    html = _sent(_job())["html"]
+    open_at = html.index("Top design")
+    verdict_at = html.index("Meets", open_at)
+    assert "</div>" in html[verdict_at:], html[open_at:]
+    assert html.count("</div>", open_at, verdict_at) < html.count(
+        "</div>", open_at, html.index("View results")
+    ), (
+        "the judgement sits outside the callout it qualifies -- every div "
+        "opened after 'Top design' has already closed before it"
+    )
 
 
 def test_the_mode_comes_off_the_result_not_the_stored_preset():
@@ -307,9 +330,14 @@ def test_the_mode_falls_back_to_the_preset_when_the_result_omits_it():
 
     It is not a hypothetical branch. ``result_mode``'s own docstring says it
     "Returns None rather than guessing when the flag is absent", precisely so a
-    caller can fall back to the preset; a row rebuilt by ``shared/job_recovery``
-    or written before the flag existed is exactly that shape. Without the
-    fallback such a run is judged against no bar and mails the reject again.
+    caller can fall back to the preset, and ``shared/job_recovery`` rebuilds a
+    result as ``{"candidates", "candidate_count", "backfilled"}`` -- no
+    ``is_antibody``. Without the fallback such a run is judged against no bar
+    and mails the reject again.
+
+    NOT "or written before the flag existed", which an earlier version claimed:
+    ``is_antibody`` is in this tool's first add-commit, so no row predates it.
+    The recovery path is the whole of the reachability argument.
     """
     result = _example_result()
     del result["is_antibody"]
@@ -328,7 +356,12 @@ def test_an_unmeasured_leg_is_disclosed_not_dropped():
 
     On this fixture the two are byte-identical, so the docstring's stated reason
     for using the single renderer -- that it also carries the ``unmeasured`` and
-    ``unusable`` clauses -- is unexercised, and a hand-join passes. Here pI is
+    ``unusable`` clauses -- is unexercised, and a hand-join CONFINED TO THE
+    "below" BRANCH passes. (That qualifier is load-bearing: a hand-join
+    substituted for the whole of ``verdict_text`` renders "" on a ``meets``
+    record, whose ``shortfalls`` is empty, and the sibling test asserting
+    "Meets" catches it. The dangerous mutation is the one that keeps the meets
+    branch and cheapens the rest.) Here pI is
     absent, which makes the record ``unjudged`` with an ``unmeasured`` leg: the
     headline is then the ipTM 0.956 reject (an unjudged record is eligible, by
     design), and the ONLY thing qualifying it is the clause a hand-join drops.
@@ -365,7 +398,12 @@ def test_an_unresolved_mode_asserts_no_bar_at_all():
         "candidates": [{
             "name": "d0",
             "pdb_key": "d0.pdb",
-            "scores": {"ipTM": 0.91},
+            # BOTH legs present, deliberately. With pI omitted the record is
+            # ``unjudged`` with an UNMEASURED leg, and "Meets" is then absent
+            # for that reason instead of for the reason this test names -- so
+            # the assertions below passed without reaching the branch. Fully
+            # measured, only an unresolved bar can keep the mail silent.
+            "scores": {"ipTM": 0.91, "pI": 5.0},
         }],
     })))
     for part, body in bodies.items():
@@ -374,6 +412,10 @@ def test_an_unresolved_mode_asserts_no_bar_at_all():
             f"the {part} body asserts a bar that could not be resolved"
         )
         assert "clears the bar" not in body, body
+        assert "Not measured" not in body, (
+            f"the {part} body is silent because a leg went unmeasured, not "
+            f"because the bar was unresolved -- this test pins the wrong thing"
+        )
 
 
 def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
@@ -391,10 +433,16 @@ def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
     Measured before the gate: an af2 batch holding ptm 0.40 and 0.95 mailed
     "Top design: ptm 0.400 (seqA.pdb)" above "Above 0.7 is a credible model".
 
-    The rule is the SHAPE or the BAR, and gating on the bar alone is wrong:
-    bindcraft declares no bar yet stores a ranked ``candidates[]``, so that rule
-    would delete a callout it has always had. ``test_a_ranked_candidates_list_
-    still_renders_without_a_bar`` holds that other side.
+    THE RULE IS THE SHAPE ALONE. Gating on the bar instead is wrong in both
+    directions: bindcraft declares no bar yet stores a ranked ``candidates[]``,
+    so a bar-only rule deletes a callout it has always had (the sibling test
+    named ``..._ranked_candidates_list_still_renders_without_a_bar`` holds that
+    side), and boltz2 declares one over an UNRANKED list, so a shape-or-bar rule
+    crowns the wrong design (``..._abstains_even_when_the_tool_has_a_bar``).
+
+    THE GATE IS TOOL-WIDE, not batch-specific. iggm and opendde also store
+    ``designs[]`` and also abstain now. Neither had a callout on ``main``, so
+    that is a missed opportunity rather than a regression, and nothing pins it.
     """
     bodies = _bodies(_sent(_job(tool="af2", preset="batch", result={"designs": [
         {"rank": 0, "pdb_key": "seqA.pdb", "ptm": 0.40},
@@ -402,12 +450,81 @@ def test_an_unranked_designs_list_with_no_bar_gets_no_top_design_claim():
     ]})))
     for part, body in bodies.items():
         assert "Top design" not in body, (
-            f"the {part} body claims a top design over a list nothing ranked "
-            f"and no bar can re-pick within: {body!r}"
+            f"the {part} body claims a top design over a list nothing ranked: "
+            f"{body!r}"
         )
         assert "0.400" not in body and "seqA" not in body, body
         # The mail is still sent, and still counts the run.
         assert "2 candidates returned" in body, body
+    # A POSITIVE NEEDLE ONLY THE REAL TEMPLATE PRODUCES. Every assertion above
+    # is a negative, and ``send_job_complete_email`` catches a template failure
+    # and falls back to an inline body that carries no callout at all -- so a
+    # totally broken template satisfies this test while proving nothing. The
+    # footer line exists only in templates/email/job_complete.txt.
+    assert "preset batch" in bodies["text"], (
+        "the plain-text body did not come from job_complete.txt, so the "
+        "absence of a callout above is not evidence about the gate"
+    )
+
+
+def test_an_unranked_designs_list_abstains_even_when_the_tool_has_a_bar():
+    """A bar does not license a superlative over a list nothing ranked.
+
+    The first version of this gate also admitted any list whose tool declares a
+    bar, reasoning that ``headline_candidate`` could re-pick within it. It
+    cannot: its docstring says "THIS DOES NOT RE-RANK" and its loop returns the
+    FIRST record not shown to fall short, in stored order. A bar therefore only
+    narrows WHICH arbitrary record gets crowned.
+
+    boltz2 is the case that proves it -- submission-ordered ``designs[]`` AND a
+    registered bar. Under the two-armed gate this payload mailed
+    "Top design: ipTM 0.710" on a run holding 0.95. ``origin/main`` sent boltz2
+    no callout at all, so that was a hole this change opened rather than one it
+    inherited.
+    """
+    from shared.score_legends import gate_columns
+
+    assert gate_columns("boltz2"), (
+        "boltz2 has lost its bar; this test's premise -- an unranked list from "
+        "a tool that DOES declare a bar -- no longer holds, so re-point it "
+        "rather than leave it passing"
+    )
+    bodies = _bodies(_sent(_job(tool="boltz2", preset="pilot", result={
+        "designs": [
+            {"rank": 0, "pdb_key": "d1.pdb", "iptm": 0.71,
+             "complex_plddt": 0.86, "n_hotspot_contacts": 13},
+            {"rank": 1, "pdb_key": "d2.pdb", "iptm": 0.95,
+             "complex_plddt": 0.97, "n_hotspot_contacts": 13},
+        ],
+    })))
+    for part, body in bodies.items():
+        assert "Top design" not in body, (
+            f"the {part} body crowns the first-pasted design that clears the "
+            f"bar while a better one sits in the same run: {body!r}"
+        )
+        assert "0.710" not in body, body
+    assert "preset pilot" in bodies["text"], (
+        "the plain-text body did not come from job_complete.txt, so the "
+        "absence of a callout above is not evidence about the gate"
+    )
+
+
+def test_the_gate_reads_a_list_not_merely_a_present_key():
+    """``isinstance(..., list)``, not ``is not None``.
+
+    A row whose ``candidates`` is a non-list (a string, a dict) alongside a real
+    ``designs[]`` would otherwise pass the shape test on the strength of the key
+    alone, and render exactly the unranked callout the gate exists to suppress.
+    """
+    bodies = _bodies(_sent(_job(tool="af2", preset="batch", result={
+        "candidates": "not-a-list",
+        "designs": [{"rank": 0, "pdb_key": "seqA.pdb", "ptm": 0.40}],
+    })))
+    for part, body in bodies.items():
+        assert "Top design" not in body, (
+            f"the {part} body took a non-list 'candidates' key as evidence "
+            f"that the designs list was ranked: {body!r}"
+        )
 
 
 def test_a_ranked_candidates_list_still_renders_without_a_bar():
