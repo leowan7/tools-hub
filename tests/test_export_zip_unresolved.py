@@ -58,8 +58,9 @@ import pytest
 
 import blueprints.jobs as jobs_mod
 # Safe at module scope: shared.exports is pure functions over candidate dicts
-# and imports no Storage layer, so this costs no Supabase client at collection
-# time and cannot run before `isolate_supabase` blanks the credentials.
+# and imports no Storage layer. This DOES run at collection, before any
+# function-scoped fixture -- what it cannot do is touch credentials, because
+# importing it pulls in no supabase, storage or httpx module at all.
 from shared.exports import zip_unresolved_message
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -492,7 +493,8 @@ def test_a_falsy_pdb_key_is_not_a_structure_reference(falsy):
     structure and take the ``candidate_N.pdb`` fallback.
     templates/components/candidate_table.html agrees on the SEMANTICS -- a
     falsy pdb_key is no structure reference -- though its own fallback name is
-    design_N.pdb, so grepping the template for candidate_ finds nothing.
+    design_N.pdb, so the template has no candidate_N.pdb to grep for. (It has
+    plenty of other `candidate_` identifiers; the absent thing is the NAME.)
     """
     from shared.exports import candidates_to_zip, export_key
 

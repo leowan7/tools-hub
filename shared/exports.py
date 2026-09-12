@@ -450,9 +450,25 @@ def zip_unresolved_message(missing) -> str:
     Shared by the job, campaign and target routes so one wording covers the
     three buttons that reach this failure.
 
-    NAMES NO MECHANISM, deliberately. It does hedge ("may no longer be
-    available"), which is a statement about availability, not an explanation
-    of it -- the distinction the two earlier drafts failed.
+    ASSERTS NO CAUSE, deliberately. That is the rule, and it is narrower than
+    "names no mechanism", which this docstring used to claim and the body
+    does not obey: the copy says "storage may have been briefly unreachable",
+    which names a subsystem.
+
+    The line is between STATING a cause and OFFERING one. "Storage returned
+    none of them" tells a customer what happened; this code cannot know it,
+    because a corrupt inline ``pdb_content_b64`` reaches the refusal with no
+    fetch attempted (executed: zero ``fetch_bytes`` calls on that arm). "May
+    have been briefly unreachable" tells them why one more attempt is worth
+    making, which is true on every arm -- two of the three fail
+    deterministically, and retrying costs a click.
+
+    Recording this because the token is loaded: an earlier guard on this
+    string blacklisted ``"storage "`` outright. That blacklist was replaced
+    for being INCOMPLETE (review walked a fourth invented cause past it), not
+    because the word became forbidden -- and draft one, the one rejected for
+    blaming Storage, was rejected for its flat assertion, not for the hedged
+    clause it also contained.
 
     Draft one blamed Storage ("storage returned none of them"), which this
     code cannot know: a corrupt inline ``pdb_content_b64`` reaches the refusal
@@ -469,13 +485,17 @@ def zip_unresolved_message(missing) -> str:
     settle what a deployment runs -- which is itself the reason customer copy
     should not assert the mechanism.
 
-    Two invented causes in two drafts is the argument for naming none.
+    Two invented causes is the argument for asserting none.
 
-    The retry advice SAYS NOTHING ABOUT WHAT A SECOND FAILURE MEANS, and that
-    is the fifth draft of this paragraph. Draft three promised an
-    unconditional retry; draft four said "if it fails the same way again,
-    further retries will not help", which review falsified by execution --
-    409, 409, then 200 with the complete archive once a Storage outage ended.
+    The retry advice SAYS NOTHING ABOUT WHAT A SECOND FAILURE MEANS. Earlier
+    versions promised an unconditional retry, then forbade one ("if it fails
+    the same way again, further retries will not help"), which review
+    falsified by execution -- 409, 409, then 200 with the complete archive
+    once a Storage outage ended. (This paragraph carried a draft NUMBER for
+    two rounds. Two reviewers could neither confirm nor falsify it, because
+    nothing here defines whether a reword starts a new draft; it is dropped
+    rather than corrected a third time. What each version SAID is the part
+    worth keeping, and it is verifiable from the log.)
 
     Three arms reach this message and only two are deterministic: a corrupt
     inline ``pdb_content_b64`` is fixed in ``job.result`` and re-reads
