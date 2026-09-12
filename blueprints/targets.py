@@ -820,6 +820,7 @@ def _target_export(target_id: str, fmt: str):
     from flask import Response  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+        zip_unresolved_message,
     )
     from shared.storage import download_output  # noqa: PLC0415
 
@@ -968,7 +969,21 @@ def _target_export(target_id: str, fmt: str):
     # boltzgen chunk000/designs/design_1.pdb would be one arcname. The switch is
     # driven by _source_tool, which only the target aggregate stamps, so the
     # campaign ZIP is unchanged (shared/exports.py::candidates_to_zip).
-    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    report: dict = {}
+    data = candidates_to_zip(
+        candidates, _fetch, namespace=True, report=report,
+    )
+    # See blueprints/jobs.py::export_zip for why this is a 409 and not a 404.
+    if report["missing"] and not report["written"]:
+        logger.warning(
+            "target export_zip: all %d structures unresolved for %s, refusing",
+            len(report["missing"]), target_id,
+        )
+        return Response(
+            zip_unresolved_message(report["missing"]),
+            mimetype="text/plain",
+            status=409,
+        )
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
         zip_name = f"{stem}_structures_top{len(candidates)}of{total}{incomplete}.zip"

@@ -384,12 +384,57 @@ def candidates_to_fasta(candidates, sequences=None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _missing_note(missing, written_count: int) -> str:
+    """The body of the ``MISSING.txt`` a partial archive carries."""
+    total = written_count + len(missing)
+    lines = [
+        f"{len(missing)} of {total} designs could not be retrieved and are "
+        f"NOT in this archive.",
+        f"The other {written_count} are present and complete.",
+        "",
+        "Their rows reference a structure file that storage did not return "
+        "when this",
+        "archive was built -- the object may have been deleted or expired, or "
+        "storage",
+        "may have been briefly unavailable. Re-downloading may return them.",
+        "",
+        "Missing:",
+    ]
+    lines.extend(f"  {name}" for name in missing)
+    return "\n".join(lines) + "\n"
+
+
+def zip_unresolved_message(missing) -> str:
+    """Body for the refusal a ZIP route returns when NOTHING resolved.
+
+    Shared by the job, campaign and target routes so one wording covers the
+    three buttons that reach this failure.
+    """
+    return (
+        f"None of the {len(missing)} designs in this export could be "
+        f"retrieved.\n"
+        "\n"
+        "Each of them references a structure file, and storage returned none "
+        "of them.\n"
+        "The objects may have been deleted or expired, or storage may be "
+        "briefly\n"
+        "unavailable. No archive was sent, rather than sending you an empty "
+        "one.\n"
+        "\n"
+        "Trying again in a few minutes is worth doing. The scores on the page "
+        "and the\n"
+        "CSV and FASTA exports do not depend on these files and are "
+        "unaffected.\n"
+    )
+
+
 def candidates_to_zip(
     candidates,
     fetch_bytes: Callable[[str, str], Optional[bytes]],
     *,
     default_job_id: Optional[str] = None,
     namespace: bool = False,
+    report: Optional[dict] = None,
 ) -> bytes:
     """Bundle candidate PDBs into a ZIP (bytes).
 
@@ -398,6 +443,19 @@ def candidates_to_zip(
     candidate's ``_source_job_id`` (campaign merge) or ``default_job_id``
     (single job). Candidates that resolve via neither path are skipped rather
     than failing the archive.
+
+    Skipping splits in two, and the caller needs the difference. A row that
+    references no structure at all promised nothing, and an archive without it
+    is a complete answer. A row that DOES carry a ``pdb_key`` or inline
+    ``pdb_content_b64`` and still does not resolve is a design the surface
+    offered and this file does not contain. Only the second kind is recorded
+    as missing.
+
+    ``report``, when passed, is filled with ``written`` and ``missing`` lists
+    of arcnames so the route can answer a total failure with an error status
+    instead of a 200 carrying an empty archive. A partial archive additionally
+    names the absent designs in a ``MISSING.txt`` entry, which is the only
+    channel a file download has.
 
     With ``namespace=True`` each entry is prefixed so identically-named designs
     from different sources do not collide. Which prefix depends on the
@@ -414,21 +472,19 @@ def candidates_to_zip(
       byte-identical to what they produced before this branch existed.
     """
     buf = io.BytesIO()
+    written = []
+    missing = []
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, cand in enumerate(_dict_candidates(candidates)):
             key = export_key(cand, i)
             pdb_key = key["pdb_key"] or f"candidate_{i + 1}.pdb"
             job_id = key.get("source_job") or default_job_id
-            data = _decode_b64(cand.get("pdb_content_b64"))
-            if data is None and job_id and key["pdb_key"]:
-                data = fetch_bytes(job_id, key["pdb_key"])
-            if data is None:
-                continue
-            # One conversion covers the job, campaign and target ZIP
-            # routes, which all come through here. Same whole-file gate
-            # as every other download: a structure that is not a
-            # fractional confidence is archived untouched.
-            data = _pdb_bfactors.bfactors_on_100_bytes(data)
+            # The prefix is computed before the bytes are resolved because a
+            # design that does NOT resolve is reported by the same arcname it
+            # would have been archived under. In a merged target export the
+            # bare pdb_key does not identify a row -- every tool emits a
+            # design_1.pdb -- so an unprefixed name in MISSING.txt would not
+            # say which design is absent.
             prefix = ""
             if namespace:
                 tool = key.get("tool")
@@ -441,6 +497,33 @@ def candidates_to_zip(
                     prefix = f"chunk{int(chunk):03d}/"
                 elif job_id:
                     prefix = f"{str(job_id)[:8]}/"
-            zf.writestr(_safe_arcname(pdb_key, prefix), data)
+            arcname = _safe_arcname(pdb_key, prefix)
+            data = _decode_b64(cand.get("pdb_content_b64"))
+            if data is None and job_id and key["pdb_key"]:
+                data = fetch_bytes(job_id, key["pdb_key"])
+            if data is None:
+                # Read the row, not the archive: a structureless row is not a
+                # miss. tests/test_target_export.py::
+                # test_an_owned_but_empty_target_exports_an_empty_file_not_a_404
+                # requires a target whose runs have not returned a design to
+                # keep exporting a 200 with an empty archive, so emptiness
+                # alone cannot be the signal.
+                if cand.get("pdb_content_b64") or key["pdb_key"]:
+                    missing.append(arcname)
+                continue
+            # One conversion covers the job, campaign and target ZIP
+            # routes, which all come through here. Same whole-file gate
+            # as every other download: a structure that is not a
+            # fractional confidence is archived untouched.
+            data = _pdb_bfactors.bfactors_on_100_bytes(data)
+            zf.writestr(arcname, data)
+            written.append(arcname)
+        # Written only for a PARTIAL archive. With nothing written the route
+        # refuses the download outright, and a note would be the whole file.
+        if missing and written:
+            zf.writestr("MISSING.txt", _missing_note(missing, len(written)))
+    if report is not None:
+        report["written"] = written
+        report["missing"] = missing
     buf.seek(0)
     return buf.read()
