@@ -106,8 +106,8 @@ about: dict = {
     ],
     "output_summary": (
         "A ranked set of predicted complexes (mmCIF/PDB) with the model's own "
-        "confidence ranking score per prediction. Download each structure or view "
-        "it in the browser."
+        "confidence ranking score per prediction. On a run of your own every "
+        "row carries its structure, to download or to open in the viewer."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
@@ -291,8 +291,9 @@ EXAMPLE: dict | None = {
         "show: whether the top two put the benzamidine in the same pocket. "
         "Two predictions can agree on every score and still dock a ligand "
         "in different places, so that question needs the structures "
-        "themselves, which every row carries on a run of your own. The "
-        "viewer opens per row and two rows can be open at once, but each "
+        "themselves, which every row carries on a run of your own. There "
+        "the viewer opens per row and two rows can be open at once, but "
+        "each "
         "shows a single structure and nothing superposes them &mdash; the "
         "comparison is yours to make by eye. "
         "Agreement on the pocket means more seeds will sharpen the pose; "

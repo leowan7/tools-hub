@@ -1418,6 +1418,28 @@ def test_a_capped_complete_table_still_promises_the_csv_is_complete(client):
     assert "could be read" not in body
 
 
+def test_the_capped_banner_names_the_archive_by_what_it_carries(client):
+    """Both arms, because the sentence is duplicated across them.
+
+    The archive is served at /targets/<id>/export.zip and carries
+    whatever the container wrote -- boltzgen writes .cif for four of
+    the five rows in its example -- so "the PDB ZIP" named a format
+    it may not hold, beside a button reading "Structures (ZIP)" and
+    a filename reading _structures_.
+
+    Written because the commit that fixed this wording fixed the same
+    sentence on runs/detail.html and on targets/detail.html, pinned
+    only the first, and a review then reverted BOTH targets sentences
+    with the full suite still green.
+    """
+    for partial in (True, False):
+        body = _detail(client, tools=["bindcraft"],
+                       candidates=_one_design(), total=412, shown=1,
+                       capped=True, partial=partial)
+        assert "structures ZIP is limited" in body, partial
+        assert "PDB ZIP" not in body, partial
+
+
 def test_a_capped_table_says_its_row_numbers_do_not_match_the_export(client):
     """ROUND 17. The page's # column and the export's ``rank`` column number
     the same target from different bases.

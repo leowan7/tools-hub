@@ -1,7 +1,7 @@
 """The completion email must not promise a download it has not checked for.
 
 ``shared/email.py::_result_summary`` ends a successful composite-tool mail with
-"N candidates returned with real scores and downloadable PDBs." The count is
+"N candidates returned with real scores and downloadable structures." The count
 read from ``candidate_records``. The download clause was read from nothing: it
 was appended to every candidate list, whatever the rows carried.
 
@@ -30,7 +30,7 @@ producer puts it in front of this code:
     than emit a keyless row.
 
 So the reachable residue is the PARTLY-capped result, which still says
-"downloadable PDBs" and still overstates how many rows carry one. That is not
+"downloadable structures" and still overstates how many rows carry one. That is
 fixed here; see the test named for it. The five container-side tools
 (pxdesign, rfdiffusion, bindcraft, boltzgen, rfantibody) have no
 ``run_pipeline.py`` in this repo, so their candidate shape is UNREAD -- whether
@@ -327,11 +327,33 @@ def test_a_bare_pdb_b64_row_is_not_promised_a_download():
         assert PROMISE not in body, (part, body)
 
 
+def test_the_zero_count_branch_above_this_one_still_owns_its_case():
+    """#252's branch, pinned because THIS change now sits directly below it.
+
+    ``_result_summary`` returns "Your run finished. The results are on the job
+    page." when ``candidate_records`` reads no rows, which happens on a
+    succeeded job whose payload has an unrecognised shape -- ``_is_empty_result``
+    defaults such a shape to success rather than calling it empty.
+
+    Nothing in the repo asserted that sentence: deleting the branch left the
+    file green, because execution then falls into the code below and produces
+    a plausible "0 candidates returned ..." line. Harmless today, but the two
+    blocks are now adjacent, so an edit to the lower one could silently eat
+    the upper one. This is the boundary marker.
+    """
+    bodies = _mail({"an_unrecognised_shape": [1, 2, 3]})
+    for part, body in bodies.items():
+        assert "Your run finished. The results are on the job page." in body, (
+            part, body,
+        )
+        assert "0 candidate" not in body, (part, body)
+
+
 def test_a_storage_backed_row_keeps_the_promise():
     """No over-correction: a result with real downloads still says so."""
     bodies = _mail({"candidates": [_url_row(i) for i in range(2)]})
     for part, body in bodies.items():
-        assert "2 candidates returned with real scores and downloadable PDBs." in body, (
+        assert "2 candidates returned with real scores and downloadable structures." in body, (
             part, body,
         )
 
@@ -344,7 +366,7 @@ def test_an_inline_only_row_keeps_the_promise():
     """
     bodies = _mail({"candidates": [_inline_row(0)]})
     for part, body in bodies.items():
-        assert "1 candidate returned with real scores and downloadable PDBs." in body, (
+        assert "1 candidate returned with real scores and downloadable structures." in body, (
             part, body,
         )
 
@@ -360,7 +382,7 @@ def test_the_designs_shape_is_read_too():
     """
     bodies = _mail({"designs": [_url_row(i) for i in range(2)]}, tool="boltz2")
     for part, body in bodies.items():
-        assert "downloadable PDBs." in body, (part, body)
+        assert "downloadable structures." in body, (part, body)
 
     capped = _mail({"designs": [_capped_row(i) for i in range(2)]}, tool="boltz2")
     for part, body in capped.items():
@@ -373,7 +395,7 @@ def test_a_partly_capped_result_still_overstates_and_that_residue_is_known():
     Every proteina state that reaches a success mail has at least one row with
     a structure (the all-capped run is failed outright; see this file's
     docstring), so a partly-delivered result is the only shape where the
-    sentence is still wrong. It says "downloadable PDBs" over N rows when
+    sentence is still wrong. It says "downloadable structures" over N rows when
     fewer than N carry one. Narrowing the claim to the delivered subset needs a
     second count and was explicitly out of scope for this change.
 
@@ -383,7 +405,7 @@ def test_a_partly_capped_result_still_overstates_and_that_residue_is_known():
     """
     bodies = _mail({"candidates": [_url_row(0), _capped_row(1), _capped_row(2)]})
     for part, body in bodies.items():
-        assert "3 candidates returned with real scores and downloadable PDBs." in body, (
+        assert "3 candidates returned with real scores and downloadable structures." in body, (
             part, body,
         )
 

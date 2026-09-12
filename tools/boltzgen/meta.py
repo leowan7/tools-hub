@@ -206,10 +206,12 @@ about: dict = {
     # so name which is which rather than picking one and contradicting the
     # other four lines down the page.
     "output_summary": (
-        "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, "
-        "and downloadable PDBs. Refolding RMSD is the design against its own "
-        "refold: at or under 2 &Aring; it clears the RMSD leg of the pass "
-        "bar, which also needs pLDDT at or above 80. Under 1.5 &Aring; the "
+        "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, and "
+        "structures downloadable from a run of your own &mdash; mmCIF or "
+        "PDB, whichever the container wrote. Refolding RMSD is the design "
+        "against its own refold: at or under 2 &Aring; it clears the RMSD "
+        "leg of the pass bar, which also needs pLDDT at or above 80. "
+        "Under 1.5 &Aring; the "
         "results tooltip calls it self-consistent. That says the binder folds "
         "as designed, not that it binds &mdash; re-fold a shortlist against "
         "your target to check that."

@@ -406,7 +406,7 @@
   <div class="cand-export-btns">
     <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-primary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
     <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">FASTA</a>
-    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">PDBs (ZIP)</a>
+    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Structures (ZIP)</a>
     {# "Export starred only" — the star's payoff for a user who never contacts
        Ranomics, which is what turns it from a lab-submission control into a
        general shortlist.
@@ -522,7 +522,7 @@
         {% endfor %}
         {% endif %}
         <th style="width:4.5rem;">3D</th>
-        <th style="width:4.5rem;">PDB</th>
+        <th style="width:4.5rem;">Structure</th>
       </tr>
     </thead>
     <tbody>
@@ -566,7 +566,19 @@
         {% set src_job     = cand.get('_source_job_id') or job_id %}
         {% set src_idx     = cand.get('_source_index') if cand.get('_source_index') is not none else idx %}
         {% set raw_pdb_key = cand.get('pdb_key') %}
-        {% set pdb_key     = raw_pdb_key or 'design_' ~ (idx + 1) ~ '.pdb' %}
+        {# pdb_key is whatever the container wrote into job.result. Five of
+           the fourteen tools build it container-side, outside this repo,
+           so its TYPE is not ours to guarantee, and every use below aborts
+           the WHOLE render rather than one cell: the `| urlencode` inside
+           `pdb_url` raises ValueError on a list and silently yields "a=1"
+           for a dict, and `'.' in pdb_key` in the download cell raises
+           TypeError on an int. Coerced HERE, at the definition, so one
+           guard covers the
+           url, the download attribute and the extension label. The falsy
+           branch is unchanged: None/'' still take the design_N.pdb
+           default rather than becoming the string "None". #}
+        {% set pdb_key     = (raw_pdb_key | string) if raw_pdb_key
+                             else 'design_' ~ (idx + 1) ~ '.pdb' %}
         {% set has_b64     = cand.get('pdb_content_b64') %}
         {# Use the /api/jobs/<id>/pdb/<filename> endpoint when the row has a
            pdb_key — it resolves Storage objects (Step 1 + 3 of the pilot-tier
@@ -900,10 +912,15 @@
           <td>
             {% if has_pdb %}
               {% if use_url %}
+              {# pdb_key is a str by the time it gets here -- coerced at its
+                 definition above, which is where the reason lives. No
+                 extension to read means .pdb, the historic default. #}
+              {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
+                            if '.' in pdb_key else 'pdb' %}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
-                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+                 style="padding:.2rem .5rem;font-size:.8rem;">.{{ _ext }}</a>
               {% else %}
               <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
                  download="{{ pdb_key }}"
