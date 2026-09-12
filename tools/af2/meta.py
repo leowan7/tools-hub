@@ -137,8 +137,9 @@ about: dict = {
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
-        "or ipTM (for multimers). Download PDB or PAE matrix for "
-        "downstream filtering and analysis."
+        "or ipTM (for multimers). On a run of your own the structures "
+        "download from the results page. The PAE matrix downloads only "
+        "from a standalone run &mdash; a batch returns no PAE file."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

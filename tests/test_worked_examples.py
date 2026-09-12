@@ -37,6 +37,7 @@ import base64
 import html
 import json
 import math
+import os
 import statistics
 import re
 from html.parser import HTMLParser
@@ -426,6 +427,69 @@ class TestEveryPartialIsExampleSafe:
     PROMISES_A_SUPPRESSED_CONTROL = (
         "shortlist button above",
         "designs above are yours to download",
+        # opendde said this in TWO places -- the results partial and
+        # about["output_summary"]. The panel sentence renders four text
+        # blocks above the worked example's HEADING; the two occurrences
+        # are about thirty blocks apart. (An earlier version of this
+        # comment said the two occurrences were "four visible lines
+        # apart", conflating those two measurements, and the commit that
+        # was supposed to correct it left it here and said it had not.)
+        #
+        # #251 guarded the partial, left the panel, and added nothing
+        # here, so the half it fixed could come back in silence and the
+        # half it missed shipped. Registering the phrase rather than
+        # either sentence catches both, and any third that uses the same
+        # words -- the comprehension in
+        # test_example_copy_does_not_promise_controls_it_hides is a plain
+        # case-sensitive `in`, so a REWORDED promise passes. Verified:
+        # "Each structure is yours to download, or open in the 3D viewer"
+        # is not caught. (This once cited a LINE NUMBER. Exactly one
+        # commit did so, and the number was wrong the moment it was
+        # written -- 438 against an actual 457, and 476 one commit later.
+        # Name the method, not the line.)
+        "Download each structure",
+        # RETIRED WORDINGS. af2 and colabfold said these directly above
+        # example pages that render no download at all: af2's controls are
+        # double-gated on `not is_example` AND `pdb_b64`
+        # (af2_results.html:241,245) and NEITHER example payload carries a
+        # blob, so both pages instructed a download they did not offer.
+        # Both are reworded now, which means -- unlike the three entries
+        # above -- these are written nowhere, so the control test below
+        # cannot vouch for them. They block a return, nothing more.
+        #
+        # The full phrase, not a bare "Download PDB": esmfold's example
+        # page carries a REAL working download button by that name
+        # (esmfold_results.html:193, live because its example payload does
+        # hold a pdb_b64), so the short form flags it falsely.
+        "Download PDB or PAE matrix",
+        "Download as PDB or PAE matrix",
+        # The adjectival half of the same family. Five tools said
+        # "downloadable PDBs" and mpnn said "downloadable as FASTA",
+        # five of the six directly above an example page that renders no
+        # such control. Weaker than an imperative -- it describes the tool,
+        # not the table -- but it sat in the same place and read the
+        # same way.
+        #
+        # boltzgen is the exception and was rescoped anyway: its example
+        # page renders exactly ONE .pdb, for rank 1, because its payload
+        # carries a single inline blob. "downloadable PDBs" plural still
+        # overstated the other four rows. An earlier version of this
+        # comment said all six rendered none, which was wrong for
+        # boltzgen and wrong about mpnn's wording.
+        #
+        # NOT registered alongside it: "downloadable as FASTA",
+        # which mpnn still carries in scoped form, and "downloadable
+        # structures", which proteina still carries while separate work
+        # on its clustering promises is in flight.
+        #
+        # CAVEAT this entry needs and the two above already have: esmfold
+        # and boltzgen DO render a working structure download on their
+        # example pages (esmfold a data-URI, boltzgen an inline blob on
+        # rank 1). If either ever describes its output with this wording
+        # the phrase would be true copy and this entry would flag it
+        # falsely -- narrow it then, the way "Download PDB" was narrowed
+        # to "Download PDB or PAE matrix" for esmfold.
+        "downloadable PDBs",
     )
 
     def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
@@ -437,10 +501,167 @@ class TestEveryPartialIsExampleSafe:
             html = flask_app.test_client().get(f"/tools/{slug}").get_data(
                 as_text=True,
             )
-            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+            # Whitespace-flattened: the raw HTML wraps mid-phrase, so a
+            # promise split across two source lines reads normally to a
+            # human and was invisible to `p in html`. Demonstrated on
+            # comparison.html -- which the OTHER scan below renders, not
+            # this one; both had the same hole and both are flattened.
+            flat = re.sub(r"\s+", " ", html)
+            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
             if found:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
+
+    def test_the_public_pages_make_no_suppressed_promise(self, tools_app):
+        """Every page an anonymous visitor can open without a parameter,
+        plus the per-tool help guides.
+
+        The scan above walks /tools/<slug> only. The catalog hero read
+        "Every pipeline lands ranked candidates with downloadable PDBs"
+        -- false for ProteinMPNN, for the folding tools, and for the two
+        hardcoded catalog entries -- and nothing here would have noticed.
+        A review found it by grepping, not by a test.
+
+        The homepage was exempt while templates/index.html carried the
+        bare phrase for its design step. It no longer does -- that copy
+        says "downloadable structures" now, for the same format reason
+        (BoltzGen writes .cif for most rows) -- so the exemption is gone.
+
+        The path list is DERIVED from url_map rather than written out.
+        Two successive reviews found this scan short by a page: first
+        /pricing, /showcase and the five /help routes, then /scout/,
+        /developability and the auth and legal pages. A hand-written
+        list goes stale every time a route is added, and the docstring
+        claiming it was complete went stale with it. Login-gated routes
+        (302) and non-HTML endpoints drop out on their own responses,
+        so nothing here encodes which ones those are.
+
+        NOT covered: anything behind a login, and any parameterised
+        route except the tool guides -- /jobs/<id> above all, which is
+        where a promise is read against a real result.
+
+        This scan is NOT what found the defect that prompted the last
+        extension: /help/faq named ProteinMPNN as the only result
+        without a CSV or a star, which is a wrong SCOPE rather than a
+        registered phrase, and no entry here matches it. A phrase
+        register catches re-use of known-bad wording; it does not check
+        that a sentence is true.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        # Skipped BEFORE the request, because the request itself is the
+        # hazard -- not because of what they return. GET /scout/example
+        # copies a fixture into a new tmp/<uuid> directory, mints an
+        # anon session id, spends a rate-limit bucket and runs
+        # cleanup_old_jobs(), which rmtree's over the SHARED tmp/ and
+        # has fired destructively in prod before. /scout/progress opens
+        # an event stream; /readyz and /healthz read Supabase. None of
+        # them answers text/html, so none contributes to this scan.
+        #
+        # Residual risk, stated: a NEW prose page is still picked up
+        # automatically, which is the direction that matters. A new
+        # side-effecting endpoint would be probed once until it is
+        # added here.
+        NO_PROBE = (
+            "/api/", "/scout/example", "/scout/progress",
+            "/scout/feasibility/", "/scout/quota", "/health",
+            "/readyz", "/metrics", "/debug/",
+        )
+        # The skip changes NOTHING about which pages are scanned: most
+        # of the rules it removes answer non-HTML, and the rest answer
+        # text/html only as a 301/302 redirect body, which the status
+        # check drops. (An earlier version said every one answers
+        # non-HTML; the two /api/ estimate redirects and the scout
+        # feasibility stream do not. Named, not counted -- a count
+        # here goes stale the next time a route is added.) So no
+        # assertion ABOUT PAGES can see the skip, and deleting it was
+        # silent until the snapshot below, which is now the only thing
+        # holding it.
+        # /scout/example mints one job directory per probe.
+        tmp_dir = REPO / "tmp"
+        before = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
+        paths = [f"/help/tools/{slug}" for slug in slugs]
+        for rule in flask_app.url_map.iter_rules():
+            if rule.arguments or "GET" not in (rule.methods or ()):
+                continue
+            if rule.rule.startswith(NO_PROBE):
+                continue
+            probe = client.get(rule.rule)
+            if probe.status_code != 200:
+                continue
+            if not probe.headers.get("Content-Type", "").startswith(
+                "text/html"
+            ):
+                continue
+            paths.append(rule.rule)
+        # 14 guides + 16 parameterless HTML pages today. The floor is a
+        # vacuity guard: the probe keeps a rule only on a 200 with an
+        # HTML content type, so anything that makes the app answer
+        # differently -- a 500 from a broken render, a 302 from a login
+        # redirect -- silently collapses `paths` to the guides and the
+        # scan then passes over almost nothing. Mutation-tested by
+        # making the status check unsatisfiable: it fails at 14.
+        assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
+        after = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
+        # `==`, not `<=`: a subset test passes every DELETION, and
+        # deletion is the half of this hazard with a production
+        # incident behind it -- cleanup_old_jobs rmtree's entries it
+        # did not create. Executed both ways against the real app
+        # with an extra probed route that rmtree'd a staged
+        # directory: `<=` passed, `==` failed naming it.
+        assert after == before, (
+            "probing the route table changed the shared tmp/. "
+            f"created: {sorted(after - before)}; "
+            f"removed: {sorted(before - after)}. Add the offending "
+            "rule to NO_PROBE rather than letting a copy scan touch "
+            "state it does not own."
+        )
+        for path in paths:
+            flat = re.sub(
+                r"\s+", " ", client.get(path).get_data(as_text=True),
+            )
+            found = [
+                p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat
+            ]
+            assert not found, (
+                f"{path} names a control it does not show: {found}"
+            )
+
+    def test_a_real_page_with_nothing_to_download_promises_nothing(
+        self, tools_app,
+    ):
+        """The sentinel is not the only way a page can have no downloads.
+
+        opendde's download line was gated on "not the example page", which
+        is not the same as "there is something to download". A real job
+        that returns zero designs renders an empty table, and the sentence
+        sat above it promising a control for rows that do not exist. The
+        gate now also requires raw_designs, and reverting that half was
+        caught by nothing until this.
+        """
+        flask_app, _ = tools_app
+        empty = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+            result={
+                # The load-bearing keys a real zero-design opendde job
+                # writes, not a minimal stand-in. Six of the eleven the
+                # COMPLETED path emits (_fail writes a different, shorter
+                # payload); the five omitted -- status, sample, step,
+                # cycle, provider_job_id -- reach no branch this
+                # exercises.
+                # run_pipeline sets designs_total from
+                # the job spec, never from len(designs_out). A fixture
+                # without it lets the gate be rewritten against
+                # designs_total and stay green while the promise breaks
+                # on a real run -- demonstrated.
+                "designs": [], "designs_total": 5, "designs_completed": 0,
+                "n_failures": 5, "tier": "general", "runtime_seconds": 412,
+            },
+        )
+        assert "Download each structure" not in empty, (
+            "opendde promises a structure download on a real job that "
+            "returned no designs, so there is nothing to download"
+        )
 
     def test_a_real_results_page_still_makes_those_promises(self, tools_app):
         """The control. If the phrases vanished from the real page too,
@@ -452,6 +673,59 @@ class TestEveryPartialIsExampleSafe:
         assert "shortlist button above" in html, (
             "the phrase is gone from the real results page as well, so the "
             "example-side assertion no longer proves anything"
+        )
+        # Same control for the opendde entry, which the register gained
+        # without one. Deleting that sentence outright rather than guarding
+        # it left the block scanning for text nobody writes, and every test
+        # stayed green -- the exact vacuity this method exists to catch.
+        odd = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+        )
+        assert "Download each structure" in odd, (
+            "opendde's real results page no longer offers the download, so "
+            "blocking that phrase on the example page proves nothing"
+        )
+        # The third control assertion, covering the tuple's SECOND live
+        # entry -- assert order and tuple order are not the same, and an
+        # earlier version of this comment called it the third entry. The
+        # tuple has six entries. Two are retired wordings written
+        # nowhere, and no control can vouch for those.
+        #
+        # The third, "downloadable PDBs", WAS live copy when this entry
+        # was added -- an earlier version of this comment said it was
+        # written nowhere, and following that wrong claim is how a
+        # reviewer found three live defects: the completion email
+        # promised it for runs that returned nothing (shared/email.py),
+        # /tools promised it for every pipeline including the ones that
+        # return sequences or a structure
+        # (templates/tools/comparison.html), and the homepage promised
+        # the format for a design step that includes BoltzGen, which
+        # writes .cif (templates/index.html).
+        #
+        # All three are fixed, so the phrase is in NO template:
+        # `git grep -c "downloadable PDBs" -- templates/` is the check,
+        # and it is zero. Elsewhere it survives in code that quotes the
+        # defect -- this file, tests/test_email_failure_copy.py and
+        # shared/email.py. docs/PRODUCT-PLAN.md carried it as a live
+        # product bullet rather than a quotation until this commit; a
+        # review found it, because "only where code quotes it" was the
+        # previous sentence here and was wrong.
+        #
+        # Do NOT write the repo-wide occurrence count here. A count
+        # stated inside a file that itself holds copies of the phrase
+        # changes the count as it is written: the previous version of
+        # this comment said eleven, and writing it made twelve.
+        #
+        # All three entries here are retired wordings today -- but this
+        # one was not when it was added, which is why it is worth saying
+        # so rather than quietly relisting it with the other two.
+        # results_shell.html renders this one in the `else` of the same
+        # `is_example` branch that carries the shortlist line, so the
+        # boltz2 render above holds both.
+        assert "designs above are yours to download" in html, (
+            "the real results page no longer says the designs are yours to "
+            "download, so blocking that phrase on the example page proves "
+            "nothing"
         )
 
 
@@ -2549,7 +2823,8 @@ class TestNarrationQuotesTheTable:
         moves under no mutation of any current rule at all -- it is a
         regression pin against the regex this replaced, not against the
         parser. 0.44 and 1.22 are never the SOLE catcher of a mutation,
-        though both do move if <td> is dropped from the cell set. And the mark-restore and negative-counter guards are
+        though both do move if <td> is dropped from the cell set. And the
+        mark-restore and negative-counter guards are
         caught by the REFUSAL raising, not by a value comparison, so an
         earlier claim that 1.66 and 0.88 pinned them was wrong: under those
         mutations the assertion never reaches the set.
@@ -2592,10 +2867,19 @@ class TestNarrationQuotesTheTable:
         balanced, and the output stays correct. That is the parser being
         right on that input, not a hole here.
 
-        Detection is redundant: every mutation that fires this also fires
-        the two tests above. What it adds is the MESSAGE -- it names the
-        slug and points at the template, where the others report a
-        narration mismatch and leave you hunting for the cause.
+        Detection is redundant, but not with the neighbours you would
+        guess. Under a </tr> deletion this fires alongside
+        test_every_quoted_row_value_is_printed and
+        test_the_sweep_is_not_vacuous. It does NOT fire alongside
+        test_only_data_cells_count_as_printed, which sits directly above
+        and renders a hardcoded markup literal -- that one is structurally
+        incapable of reacting to any template change. What this adds is the
+        MESSAGE: it names the SLUG. The other two fail on the parser's
+        markup refusal, which already points at the template and says to
+        close the </td> and </tr> -- they simply do not say which template.
+        An earlier version of this sentence said they "report a narration
+        mismatch and leave you hunting", which this docstring itself
+        contradicts two paragraphs above.
         """
         flask_app, slugs = tools_app
         for slug, payload in _example_payloads(slugs).items():

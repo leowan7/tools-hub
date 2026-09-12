@@ -89,8 +89,10 @@ about: dict = {
         {"preset": "standalone", "typical": "1 to 2 min"},
     ],
     "output_summary": (
-        "Predicted PDB with per-residue pLDDT and PAE. Download as "
-        "PDB or PAE matrix for filtering."
+        "Predicted PDB with per-residue pLDDT and PAE. On a run of your "
+        "own the structure downloads from the results page. The PAE "
+        "matrix downloads only from a standalone run &mdash; a batch "
+        "returns no PAE file."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

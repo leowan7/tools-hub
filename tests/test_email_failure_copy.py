@@ -136,6 +136,100 @@ class TestResultTone:
                    tool="mpnn")
         assert email_mod._result_tone(job) == "empty"
 
+    def test_succeeded_with_zero_designs_is_empty(self):
+        """The designs-only shape, which used to email a success.
+
+        opendde, boltz2 and iggm write ``designs``, not ``candidates``.
+        _is_empty_result recognised neither that key nor anything else in
+        the payload, so a run where every structure upload failed fell
+        past every branch to its "treated as a real success" default: the
+        customer got a green View results button and "0 candidates
+        returned with real scores and downloadable PDBs".
+
+        The payload below is what run_pipeline actually writes in that
+        case -- designs_total comes from the job spec, not from
+        len(designs_out), so it is 5 while designs is empty.
+        """
+        job = _job(
+            status="succeeded", error=None, tool="opendde",
+            result={
+                "status": "COMPLETED", "tier": "general",
+                "designs_total": 5, "designs_completed": 0,
+                "n_failures": 5, "designs": [], "runtime_seconds": 412,
+            },
+        )
+        assert email_mod._result_tone(job) == "empty"
+        # Not "the false phrase is absent" -- the empty branch cannot
+        # contain it for any input, so that assertion could never fail.
+        # Pin the copy that should be there instead.
+        assert "no passing candidates" in email_mod._result_summary(
+            job, tone="empty",
+        )
+
+    def test_succeeded_with_designs_is_success(self):
+        """The other side of it: one design must stay a success."""
+        job = _job(status="succeeded", error=None, tool="opendde",
+                   result={"designs": [{"rank": 0, "pdb_key": "a.pdb"}]})
+        assert email_mod._result_tone(job) == "success"
+        summary = email_mod._result_summary(job, tone="success")
+        # "structures", not "PDBs". boltzgen writes .cif for most rows and
+        # reaches this same line; reverting the word was caught by nothing
+        # until this assertion.
+        assert "downloadable structures" in summary
+        assert "downloadable PDBs" not in summary
+
+    def test_an_unreadable_payload_asserts_nothing_about_it(self):
+        """The default for a shape _is_empty_result cannot recognise.
+
+        It used to fall through to "0 candidates returned with real scores
+        and downloadable PDBs" under a green View results button -- three
+        specific claims about a payload the branch exists because it could
+        not read. Reachable by construction: webhooks/modal.py,
+        blueprints/jobs.py and shared/compute_campaigns.py each coerce a
+        missing completion payload to {} on a SUCCEEDED job.
+        """
+        # THE RULE: the email classifies a finished job the way the PAGE
+        # does. job_detail.html:282 renders a results block only for a
+        # truthy result, and that block reads candidate_records -- so a
+        # falsy payload shows nothing and an unreadable one shows
+        # "Candidates (0)". Either way the customer has nothing, and
+        # either way the email must say so.
+        #
+        # Exact equality, not startswith: an earlier version used
+        # startswith and a mutation appending " Your designs are
+        # downloadable on the job page." to the copy left all 22 tests in
+        # this file green.
+        NO_OUTPUT = (
+            "The run finished but returned no output. See the job page, "
+            "or rerun it."
+        )
+        for tool in ("boltzgen", "mpnn", "af2"):
+            for payload in ({}, None):
+                job = _job(status="succeeded", error=None, tool=tool,
+                           result=payload)
+                assert email_mod._result_tone(job) == "empty", (tool, payload)
+                # Tool-neutral, deliberately. The binder-design copy tells
+                # the reader to expand "binder length, hotspot list,
+                # number of designs" -- knobs mpnn and af2 do not have.
+                assert email_mod._result_summary(
+                    job, tone="empty",
+                ) == NO_OUTPUT, (tool, payload)
+
+        # Truthy but unreadable -- the shape gpu/modal_client.py:632-646
+        # builds from a pipeline return carrying tier/runtime_seconds and
+        # no domain keys. (A bare {"status": "COMPLETED", "output": {}}
+        # yields {} instead; the falsy branch handles that one.)
+        # An earlier version of this test asserted this was
+        # a SUCCESS, which is what let the email say "your run is ready"
+        # with a green View results button over a page reading
+        # "returned no candidates".
+        job = _job(status="succeeded", error=None, tool="boltzgen",
+                   result={"tier": "pilot", "runtime_seconds": 10})
+        assert email_mod._result_tone(job) == "empty"
+        assert email_mod._result_summary(job, tone="empty").startswith(
+            "The pipeline finished but produced no passing candidates."
+        )
+
     def test_succeeded_with_candidates_is_success(self):
         job = _job(status="succeeded", error=None,
                    result={"candidates": [{"rank": 1, "scores": {}}]})
@@ -200,3 +294,24 @@ class TestEmptyToneRendering:
         job = self._empty_job(result={"sequences": []}, tool="mpnn")
         summary = email_mod._result_summary(job, tone="empty")
         assert "no sequences" in summary
+
+
+def test_every_registered_slug_gets_a_label():
+    """Both label paths, against the live registry.
+
+    shared/email.py carried TWO label tables. Extending one of them
+    left boltz2, esmfold2-design, iggm, opendde and proteina reaching
+    the per-job-cap and overrun-warning mails as raw slugs -- "Your
+    opendde run was blocked by the per job spend cap". The pre-existing
+    coverage used bindcraft, which was in both tables, so it saw
+    nothing. This asserts every slug the registry holds, so a tool
+    added without a label fails here rather than in an inbox.
+    """
+    import app  # noqa: F401 -- populates tools.base._REGISTRY
+    from tools import base as tool_base
+
+    adapters = tool_base.all_adapters()
+    assert len(adapters) >= 14, f"registry holds {len(adapters)} tools"
+    for fn in (email_mod._tool_label, email_mod._label_for_tool):
+        raw = sorted(a.slug for a in adapters if fn(a.slug) == a.slug)
+        assert not raw, f"{fn.__name__} returns the bare slug for: {raw}"

@@ -179,8 +179,9 @@ about: dict = {
         {"preset": "pilot", "typical": "25 to 40 min (4 to 8 designs)"},
     ],
     "output_summary": (
-        "Ranked candidates with ipTM, pLDDT, i_pAE, and downloadable "
-        "PDBs. Aim for at least 1 in 5 with ipTM &ge; 0.65 on a "
+        "Ranked candidates with ipTM, pLDDT, i_pAE, and PDBs "
+        "downloadable from a run of your own. Aim for at least 1 in 5 "
+        "with ipTM &ge; 0.65 on a "
         "tractable target before committing to a full pilot."
     ),
     "paper_citation": paper_citation,
