@@ -105,11 +105,25 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     THE PICK IS DERIVED, NOT ``candidates[0]``. The stored order is the
     container's ranking key and not its bar: esmfold2-design job 2b917b54
     stores a pI 11.95 poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67
-    design at 0.9354 that clears the bar, so a blind read put the reject's
-    number in an og:title on a PUBLIC share URL. Same mechanism the compare
-    page uses (``shared.jobs.headline_candidate``), and the mode comes off the
-    RESULT first with the stored preset only as a fallback
-    (``score_legends.resolve_mode``).
+    design at 0.9354 that clears the bar, so a blind read named the REJECT.
+    Same mechanism the compare page uses (``shared.jobs.headline_candidate``),
+    and the mode comes off the RESULT first with the stored preset only as a
+    fallback (``score_legends.resolve_mode``).
+
+    THIS FIXES THE PICK, NOT THE METRIC. The loop below returns the first
+    numeric key of ``scores``; ``tool_jobs.result`` is ``jsonb`` and Postgres
+    orders object keys by (length, bytewise), so it hands back ``pI`` before
+    ``ipTM`` and this function returns ``pI 5.669`` for job 2b917b54. The
+    fixtures in tests/test_esmfold2_reject_surfaces.py are in PIPELINE order,
+    which hides that. Open on branch ``claude/share-headline-metric``.
+
+    NOT AN AUTO-PUBLISHED CARD, stated because an earlier draft of this
+    paragraph called it one. The string is a field of the ``/jobs/<id>/share``
+    JSON and that route is ``@login_required``; ``templates/job_detail.html``
+    defines no ``og_title`` block, so it is never rendered as a meta tag. It
+    reaches the public only when the owner pastes it -- still a claim made in
+    their name, which is why the rule below is strict. ``_share_title`` states
+    the same reach at more length.
 
     AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. Every other surface prints
     a shortfall beside the figure it shows; an og:title is read with no page
@@ -160,8 +174,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     for col in scores:
         val = scores.get(col)
         if col in _metric_glossary.PLDDT_COLUMNS:
-            # This string goes into og:title on a PUBLIC share card, so it
-            # is read with no page around it to give the scale.
+            # This string is pasted with no page around it to give the scale.
             val = _metric_glossary.plddt_on_100(val)
         if isinstance(val, (int, float)):
             return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"

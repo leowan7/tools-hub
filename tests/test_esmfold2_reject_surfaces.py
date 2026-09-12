@@ -1,11 +1,12 @@
 """Two ARTIFACTS that leave this site must not speak for a rejected design.
 
-The share card's og:title and the per-job FASTA export. Both hand something
-to a reader with no page around it: the og:title goes into a LinkedIn or X
-compose box off a PUBLIC share URL, and the .fasta is opened later in a
-sequence tool. Neither has a cell beside the number to carry a shortfall, so
-a design the tool's own bar drops has to be either not named or named as
-dropped.
+The Share text and the per-job FASTA export. Both hand something to a reader
+with no page around it: the Share text is handed to the OWNER for a LinkedIn
+or X compose box -- ``/jobs/<id>/share`` is ``@login_required`` and
+``templates/job_detail.html`` defines no ``og_title`` block, so it is pasted,
+not auto-published -- and the .fasta is opened later in a sequence tool.
+Neither has a cell beside the number to carry a shortfall, so a design the
+tool's own bar drops has to be either not named or named as dropped.
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), as it sits in the database:
@@ -13,10 +14,19 @@ PD-L1 minibinder, n_seeds=2), as it sits in the database:
     seed0: ipTM 0.9556, pI 11.95 -> the pipeline drops it
     seed1: ipTM 0.9354, pI  5.67 -> clears the bar
 
-``candidates[0]`` is seed0. The share route read it blind and published its
-0.956 as "Top score"; the FASTA numbered it ``rank1`` with nothing to say it
-is the one design the tool's own worked example exists to tell you not to
-order.
+``candidates[0]`` is seed0, and both surfaces read it blind: the Share text
+quoted one of its numbers as "Top score", and the FASTA numbered it ``rank1``
+with nothing to say it is the one design the tool's own worked example exists
+to tell you not to order.
+
+WHICH number the Share text quoted is a SEPARATE defect, and these fixtures
+cannot see it. They are authored in PIPELINE key order, so ``ipTM`` is the
+first numeric key and ``_top_score_for_share`` quotes an ipTM here.
+``tool_jobs.result`` is ``jsonb`` and Postgres orders object keys by (length,
+bytewise), so the real row yields ``pI`` first: against it the figure
+published was ``pI 11.955``, and after this fix it is ``pI 5.669`` -- the
+right design, still the wrong metric. Open on branch
+``claude/share-headline-metric``. These tests assert the PICK only.
 
 SURFACES THREE AND FOUR of the class #241 opened and #248 continued. The
 other two repaired here -- the campaign/target counts and the target ranking
@@ -173,14 +183,15 @@ class TestShareCard:
     def test_the_og_title_names_the_design_that_clears_the_bar(
         self, flask_app, monkeypatch,
     ):
-        """The whole defect in one assertion: 0.956 is seed0's ipTM and seed0
-        is the design the pipeline drops. It reached a PUBLIC card because the
-        route read ``candidates[0]`` and the tool's bar needs the run's mode
-        to exist at all."""
+        """The assigned defect in one assertion: 0.956 is seed0's ipTM and
+        seed0 is the design the pipeline drops. The route quoted it because it
+        read ``candidates[0]`` and the tool's bar needs the run's mode to
+        exist at all. The metric name here is the fixture's key order, not the
+        database's -- see the module docstring."""
         payload = _share(flask_app, monkeypatch, _job())
         title = payload["og_title"]
         assert "0.956" not in title, (
-            f"the rejected design's ipTM reached a public share card: {title}"
+            f"the rejected design's ipTM reached the Share text: {title}"
         )
         assert "ipTM 0.935" in title, title
 
