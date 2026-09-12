@@ -422,14 +422,17 @@ def _missing_note(missing, written_count: int) -> str:
     """
     total = written_count + len(missing)
     # Counts are LABELLED, not written into sentences. "The other 1 are
-    # present" was the previous phrasing, and the asymmetric fixture that
-    # caught a swapped-count bug is exactly the case that exhibits the
+    # present" was the previous phrasing, and the asymmetric fixture added to
+    # catch a swapped-count MUTANT is exactly the case that exhibits the
     # singular. Making the verb agree needs a plural rule in two sentences
     # that carry no other meaning; a label needs none and cannot disagree.
     lines = [
         "This archive is incomplete.",
         "",
-        f"  Designs present:       {written_count} of {total}",
+        # "Structures", not "Designs": `total` counts rows that REFERENCE a
+        # structure, so a design carrying none is in neither number. The value
+        # columns line up -- a reader compares them vertically.
+        f"  Structures present:     {written_count} of {total}",
         f"  Could not be retrieved: {len(missing)}",
         "",
         "The designs below carry a structure in the results that could not be",
@@ -469,7 +472,7 @@ def zip_unresolved_message(missing) -> str:
     Two invented causes in two drafts is the argument for naming none.
 
     The retry advice SAYS NOTHING ABOUT WHAT A SECOND FAILURE MEANS, and that
-    is the fourth draft of this paragraph. Draft three promised an
+    is the fifth draft of this paragraph. Draft three promised an
     unconditional retry; draft four said "if it fails the same way again,
     further retries will not help", which review falsified by execution --
     409, 409, then 200 with the complete archive once a Storage outage ended.
@@ -498,17 +501,21 @@ def zip_unresolved_message(missing) -> str:
         opening
         + "so no archive was sent rather than sending you an empty one.\n"
         "\n"
-        "The scores on the page do not depend on these files, and neither do "
-        "the CSV\n"
-        "and FASTA exports.\n"
+        # Everything after the opening is COUNT-NEUTRAL, so the singular
+        # branch has one line to get right rather than four. An earlier pass
+        # fixed only the opening and left "these files" and "these designs"
+        # plural underneath it.
+        "The scores on the page do not depend on structure files, and neither "
+        "do the\n"
+        "CSV and FASTA exports.\n"
         "\n"
-        "Trying again is worth doing -- the files may have been briefly "
-        "unreachable,\n"
-        "and an outage can outlast more than one attempt. If it keeps "
-        "failing, the\n"
-        "structure files for these designs may no longer be available. The "
-        "run and its\n"
-        "scores stay either way.\n"
+        "Trying again is worth doing -- storage may have been briefly "
+        "unreachable, and\n"
+        "an outage can outlast more than one attempt. If it keeps failing, "
+        "the structure\n"
+        "data for this export may no longer be available. The run and its "
+        "scores stay\n"
+        "either way.\n"
     )
 
 

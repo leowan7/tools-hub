@@ -58,8 +58,8 @@ import pytest
 
 import blueprints.jobs as jobs_mod
 # Safe at module scope: shared.exports is pure functions over candidate dicts
-# and imports no Storage layer, which is the property that lets the retention
-# window be passed in rather than read.
+# and imports no Storage layer, so this costs no Supabase client at collection
+# time and cannot run before `isolate_supabase` blanks the credentials.
 from shared.exports import zip_unresolved_message
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -201,10 +201,12 @@ def test_the_campaign_zip_refuses_when_every_structure_is_unresolved(client):
 
     assert resp.status_code == 409, resp.status_code
     # Verbatim, like the job route: all three serve the canonical message, and
-    # a substring check would not notice one of them drifting.
-    assert resp.get_data(as_text=True) == zip_unresolved_message(
-        ["chunk000/designs/design_1.pdb", "chunk000/designs/design_2.pdb"]
-    )
+    # a substring check would not notice one of them drifting. The argument is
+    # a two-element list and nothing more -- zip_unresolved_message reads only
+    # len(missing), so writing real arcnames here would look like namespacing
+    # coverage while asserting nothing about it.
+    # test_the_missing_note_namespaces_a_merged_target_export is that test.
+    assert resp.get_data(as_text=True) == zip_unresolved_message(["a", "b"])
 
 
 def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
@@ -219,10 +221,7 @@ def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
         resp = client.get(f"/targets/{_TID}/export.zip")
 
     assert resp.status_code == 409, resp.status_code
-    assert resp.get_data(as_text=True) == zip_unresolved_message([
-        "bindcraft/job-bc/designs/design_1.pdb",
-        "boltzgen/job-bz/designs/design_1.pdb",
-    ])
+    assert resp.get_data(as_text=True) == zip_unresolved_message(["a", "b"])
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +301,7 @@ def test_a_partial_archive_is_delivered_and_names_the_absent_designs(
     assert "_missing_designs" in resp.headers["Content-Disposition"]
 
     note = zf.read("MISSING.txt").decode()
-    assert "Designs present:       1 of 3" in note, note
+    assert "Structures present:     1 of 3" in note, note
     assert "Could not be retrieved: 2" in note, note
     # Named individually, not just counted -- "some designs are missing" does
     # not tell the customer which of their leads they still have to chase.
@@ -487,10 +486,13 @@ def test_a_falsy_pdb_key_is_not_a_structure_reference(falsy):
     """Coercing at the source must not stringify falsy values.
 
     ``str(0)`` is ``"0"`` -- truthy, a legal arcname, and indistinguishable
-    from a real key. A row would then be archived under "0" and reported as a
-    missing design. These rows reference no structure and must take the
-    ``candidate_N.pdb`` fallback instead, which is what the template's own
-    falsy branch does with the same value.
+    from a real key. Such a row would be archived under "0" if it carried
+    inline bytes, OR reported as a missing design if it did not; the ``continue``
+    in candidates_to_zip means one row cannot do both. These rows reference no
+    structure and take the ``candidate_N.pdb`` fallback.
+    templates/components/candidate_table.html agrees on the SEMANTICS -- a
+    falsy pdb_key is no structure reference -- though its own fallback name is
+    design_N.pdb, so grepping the template for candidate_ finds nothing.
     """
     from shared.exports import candidates_to_zip, export_key
 
@@ -565,17 +567,17 @@ def test_the_refusal_copy_is_pinned_word_for_word():
         "None of the 2 structure files in this export could be retrieved,\n"
         "so no archive was sent rather than sending you an empty one.\n"
         "\n"
-        "The scores on the page do not depend on these files, and neither do "
-        "the CSV\n"
-        "and FASTA exports.\n"
+        "The scores on the page do not depend on structure files, and neither "
+        "do the\n"
+        "CSV and FASTA exports.\n"
         "\n"
-        "Trying again is worth doing -- the files may have been briefly "
-        "unreachable,\n"
-        "and an outage can outlast more than one attempt. If it keeps "
-        "failing, the\n"
-        "structure files for these designs may no longer be available. The "
-        "run and its\n"
-        "scores stay either way.\n"
+        "Trying again is worth doing -- storage may have been briefly "
+        "unreachable, and\n"
+        "an outage can outlast more than one attempt. If it keeps failing, "
+        "the structure\n"
+        "data for this export may no longer be available. The run and its "
+        "scores stay\n"
+        "either way.\n"
     )
 
 
@@ -647,7 +649,7 @@ def test_the_note_copy_is_pinned_word_for_word():
     assert _missing_note(report["missing"], len(report["written"])) == (
         "This archive is incomplete.\n"
         "\n"
-        "  Designs present:       1 of 3\n"
+        "  Structures present:     1 of 3\n"
         "  Could not be retrieved: 2\n"
         "\n"
         "The designs below carry a structure in the results that could not be\n"
