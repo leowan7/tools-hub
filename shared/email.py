@@ -1589,34 +1589,117 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 
     label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
 
-    # The download half of this sentence is not implied by the count, so it
-    # is read off the rows -- using THE SAME TWO KEYS THE PAGE GATES ON and
-    # deliberately not a third. templates/components/candidate_table.html
-    # sets ``has_pdb = use_url or has_b64`` from pdb_key and
-    # pdb_content_b64, and renders an em dash in both structure columns
-    # when neither is present. Accepting a key that gate ignores (a per-row
-    # pdb_b64, which no tool in this repo emits) would let this sentence
-    # promise a file the page does not offer -- the thing being prevented.
+    # The download half of this sentence is not implied by the count, so
+    # the clause AND ITS OWN NUMBER are read off the rows -- using THE SAME
+    # TWO KEYS THE PAGE GATES ON and deliberately not a third.
+    # templates/components/candidate_table.html sets ``has_pdb`` from
+    # ``use_url or has_b64`` -- cited as two tokens because the template
+    # column-aligns that assignment and the whole statement does not grep
+    # -- i.e. from pdb_key and pdb_content_b64, and renders an em dash in
+    # both structure columns when neither is present. Accepting a key that
+    # gate ignores (a per-row pdb_b64, which no tool in this repo emits)
+    # would let this sentence promise a file the page does not offer --
+    # the thing being prevented. ``use_url`` also requires
+    # ``not is_example``, which no mail can reach: it is
+    # ``job_id == 'example'`` and this job's id is a uuid column.
     #
-    # A GUARD, NOT A REPAIR: no in-repo producer reaches the else branch
-    # today. proteina drops both keys from an inline-capped design
-    # (run_pipeline.py, the n_inline_capped branch), but that path needs
-    # ``not upload_endpoint`` and the hub always sends one
-    # (blueprints/tools.py), and a run whose cap admits nothing is failed
-    # outright by delivery_verdict. #252 carried this forward as its own
-    # task having reached the same conclusion. The five container-side
-    # tools are not readable from this repo.
+    # WHERE THE TWO PREDICATES DIVERGE, THOUGH NOT TODAY: six results
+    # templates (templates/tools/{af2,boltz2,colabfold,esmfold,iggm,
+    # opendde}_results.html) rebuild each row into a fresh dict before the
+    # macro sees it and none copies pdb_content_b64, so on those pages the
+    # gate is pdb_key alone. A seventh file carries the same reshape but
+    # does NOT belong on that list: esmfold2_design_results.html prefers
+    # ``output.candidates``, and that branch passes the stored rows through
+    # untouched. The current pipeline writes ``candidates`` 1:1 with
+    # ``designs`` (tools/esmfold2_design/run_pipeline.py builds it as an
+    # unfiltered comprehension over them), so no ROW it produces today is
+    # reshaped -- a zero-design payload does reach the else-branch, and
+    # reshapes nothing there. The template's own comment records that the
+    # branch is for stored payloads predating the candidates contract,
+    # which CAN be non-empty.
     #
-    # ANY, not all: a result where only some rows carry a structure still
-    # says "downloadable structures" and still overstates how many. That
-    # residue is the REACHABLE one and is not fixed here.
-    if any(
-        isinstance(c, dict)
-        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+    # Latent, not live: every in-repo write of pdb_content_b64 is in
+    # tools/proteina/run_pipeline.py onto ``candidate_entry``, which lands
+    # in result["candidates"], never on a ``designs`` row. Narrowing this
+    # read to pdb_key to match those six would break the shapes that DO use
+    # the inline leg.
+    n_structures = sum(
+        1
         for c in cands
-    ):
+        if isinstance(c, dict)
+        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+    )
+
+    if n_structures == n:
         # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
         return f"{label} and downloadable structures."
+
+    if n_structures:
+        # A PARTLY-DELIVERED RESULT: the only SHAPE in which the old clause
+        # was still wrong -- it said "downloadable structures" over all n
+        # rows while the table served n_structures of them and em-dashed
+        # the rest. #261 reached the same conclusion about shapes.
+        #
+        # NOT ESTABLISHED AS REACHABLE, and no more so than the branch
+        # below. #261 called this one "the reachable residue"; reviewing
+        # this change did not bear that out. Inside proteina's inline mode
+        # a partial cap is the natural outcome and an all-capped run is
+        # failed outright -- ``delivery_verdict`` returns the
+        # ``inline_cap_admitted_nothing`` check only when n_parsed > 0,
+        # n_structures == 0, inline_pdbs AND n_inline_capped > 0 (a bare
+        # n_structures == 0 returns ``no_coordinates_delivered`` instead),
+        # and its caller sets result["status"] = "FAILED" on any verdict.
+        # But inline mode needs ``not upload_endpoint`` (``inline_pdbs`` in
+        # run_pipeline.py), and every path that can submit a PROTEINA job
+        # sets one: blueprints/tools.py and shared/compute_campaigns.py do
+        # it unconditionally. (Not a repo-wide "always" -- the third
+        # submit site, _spawn_refold_job in blueprints/jobs.py, sets it
+        # only under ``if dest_tool == "boltz2"`` while also serving
+        # colabfold and esmfold. proteina is not a refold destination, so
+        # that gap cannot reach this branch.) A hub payload missing the
+        # endpoint is refused at preflight; on the upload path a failed
+        # upload either
+        # takes ``rescue_inline``, which KEEPS pdb_key and adds
+        # pdb_content_b64, or -- when the bytes are empty or will not fit
+        # the remaining inline budget -- ``continue``s and emits no row at
+        # all. Both keys or no row; never a keyless one. So no in-repo
+        # producer is known to reach this branch either.
+        #
+        # The five container-side tools hand their stored rows to the macro
+        # unchanged, so for THEM the two predicates are literally the same
+        # two keys. What is UNREAD is what their containers emit: they have
+        # no run_pipeline.py in this repo, and a committed example fixture
+        # is not a stand-in for one. pxdesign's, for instance, is written
+        # by scripts/_build_pxdesign_example.py, which projects each design
+        # onto {rank, scores} -- so no row of it carries a structure field
+        # at all, and a fixture's key set need not be the container's.
+        #
+        # (That ``status`` is the RESULT's field. _result_tone branches
+        # on job.status, a different field; the link between the two is
+        # the failed-exit path out through gpu/modal_client.py, traced in
+        # review of this change and not re-verified here.)
+        #
+        # n STAYS IN THE SENTENCE because it is what the run produced. The
+        # "2 candidates returned" substring in
+        # tests/test_job_complete_email_headline.py pins the FULL-delivery
+        # sentence, not this one, so it is not evidence for keeping n here.
+        noun = (
+            "a downloadable structure" if n_structures == 1
+            else "downloadable structures"
+        )
+        return f"{label}; {n_structures} with {noun}."
+
+    # NO ROW CARRIES EITHER KEY. #261 found no in-repo producer that
+    # reaches this, and the reachability paragraph above -- which rules out
+    # the same inline-only path for the partial case -- rules this one out
+    # with it. proteina's n_inline_capped branch is the only in-repo writer
+    # of a keyless row that can REACH A MAIL. Keyless rows do exist in the
+    # repo -- 109 of them across four committed example/result.json
+    # fixtures (boltz2 12, proteina 64, pxdesign 25, rfdiffusion 8) -- but
+    # those
+    # render only behind ``is_example`` and have no tool_jobs row, so
+    # send_job_complete_email, which takes a ToolJob, is never called for
+    # them.
     return f"{label} — see the job page."
 
 
