@@ -900,7 +900,9 @@ def _campaign_export(campaign_id: str, fmt: str):
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
         zip_unresolved_message,
     )
-    from shared.storage import download_output  # noqa: PLC0415
+    from shared.storage import (  # noqa: PLC0415
+        RETENTION_DAYS, download_output,
+    )
 
     ctx = load_user_context()
     if ctx is None:
@@ -953,17 +955,22 @@ def _campaign_export(campaign_id: str, fmt: str):
             "refusing", len(report["missing"]), campaign_id,
         )
         return Response(
-            zip_unresolved_message(report["missing"]),
+            zip_unresolved_message(report["missing"], RETENTION_DAYS),
             mimetype="text/plain",
             status=409,
         )
     # When the ZIP is truncated, name the artifact so the "top N of M"
     # limitation travels with the file (the CSV / FASTA carry the full set).
+    # `_partial` rides the same channel for the same reason: some designs
+    # resolved and some did not, and MISSING.txt inside names which.
+    partial = "_partial" if report["missing"] else ""
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_structures_top{len(candidates)}of{total}.zip"
+        zip_name = (
+            f"{stem}_structures_top{len(candidates)}of{total}{partial}.zip"
+        )
     else:
-        zip_name = f"{stem}_structures.zip"
+        zip_name = f"{stem}_structures{partial}.zip"
     return Response(
         data,
         mimetype="application/zip",

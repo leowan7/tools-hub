@@ -45,6 +45,7 @@ from shared.jobs import (
     mark_running,
 )
 from shared.storage import (
+    RETENTION_DAYS,
     StorageError,
     download_output,
     output_exists,
@@ -1129,12 +1130,22 @@ def export_zip(job_id: str):
             len(report["missing"]), job_id,
         )
         return Response(
-            zip_unresolved_message(report["missing"]),
+            zip_unresolved_message(report["missing"], RETENTION_DAYS),
             mimetype="text/plain",
             status=409,
         )
+    # In the filename for the same reason `capped` and `incomplete` already are
+    # on the target route: the artifact leaves this process and is opened
+    # later, out of the page's context. MISSING.txt names WHICH designs are
+    # absent; the filename is what says so before the archive is opened.
+    partial = "_partial" if report["missing"] else ""
     return Response(
         data,
         mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_structures.zip"},
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=job_{job_id[:8]}_structures"
+                f"{partial}.zip"
+            ),
+        },
     )

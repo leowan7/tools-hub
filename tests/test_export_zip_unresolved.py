@@ -13,18 +13,28 @@ What these tests pin is the discrimination between two skips that are
 indistinguishable in the finished archive and are not the same event:
 
 * A row referencing NO structure promised nothing, and an archive without it is
-  a complete answer. ``tests/test_target_export.py::
-  test_an_owned_but_empty_target_exports_an_empty_file_not_a_404`` requires that
-  case to keep returning 200: a user whose runs have not yet produced a design
-  must not be told their own target does not exist.
+  a complete answer. Two separate cases sit here and they are not
+  interchangeable: ZERO rows, covered by ``tests/test_target_export.py::
+  test_an_owned_but_empty_target_exports_an_empty_file_not_a_404`` (a user whose
+  runs have not yet produced a design must not be told their own target does
+  not exist), and a row that is PRESENT and references no structure, covered
+  only by ``test_a_structureless_row_is_not_a_failure_and_still_exports_200``
+  below.
 * A row that DOES carry a ``pdb_key`` or inline ``pdb_content_b64`` and still
   does not resolve is a design the surface offered and the file does not
   contain.
 
-Only the second is an error, so emptiness alone cannot be the signal. The guard
-reads ``candidates_to_zip``'s ``report`` rather than ``len(namelist())``, and
-the test below that feeds a structureless row through the same route is what
-stops a future "just 404 on an empty archive" from passing.
+Only the second is an error, so emptiness alone cannot be the signal -- the
+guard reads ``candidates_to_zip``'s ``report`` rather than ``len(namelist())``.
+Four tests fail under an emptiness-based guard (the three 200 cases here and
+the target one above); no single one of them is load-bearing alone.
+
+The guard is TWO-SIDED and both sides are tested per route. Dropping
+``report["missing"]`` refuses a download that has nothing to refuse; dropping
+``not report["written"]`` refuses a PARTIAL archive that works today. The
+second was a live hole: a review mutated the campaign route's guard to
+``if report["missing"]:`` and the whole nine-suite run stayed green, because
+partial coverage existed for the job and target routes and not for campaigns.
 
 Storage is made to miss by raising :class:`StorageError` from
 ``download_output`` -- the same exception each route's ``_fetch`` already
@@ -147,7 +157,7 @@ _TID = str(uuid.uuid4())
 # ---------------------------------------------------------------------------
 # Nothing resolves -> the download is refused, on all three routes.
 #
-# One route proves the shape; three prove the wiring. The guard is four lines
+# One route proves the shape; three prove the wiring. The guard is a block
 # hand-copied into each blueprint, so a test of one says nothing about the
 # other two -- which is the failure mode a merged export is most exposed to.
 # ---------------------------------------------------------------------------
@@ -166,11 +176,18 @@ def test_the_job_zip_refuses_when_every_structure_is_unresolved(
     assert resp.status_code == 409, resp.status_code
     assert resp.mimetype != "application/zip"
     body = resp.get_data(as_text=True)
-    assert "None of the 2 designs" in body, body
-    # The refusal has to be readable by the person who clicked, and it must
-    # not send them looking for a fault in the scores or the other exports.
-    assert "storage" in body.lower(), body
+    assert "None of the 2 structure files" in body, body
+    # The refusal must not send them looking for a fault in the scores or the
+    # other exports, which do not touch Storage at all.
     assert "CSV" in body, body
+    # And it must not promise that retrying works. shared/storage.py:521 puts
+    # OUTPUT_BUCKET in AGE_SWEEP_BUCKETS, so every structure of a run past
+    # RETENTION_DAYS is deleted on purpose while the job row and its pdb_keys
+    # survive -- that is the DOMINANT path into this 409, and the one where
+    # "try again in a few minutes" can never come true.
+    from shared.storage import RETENTION_DAYS
+    assert f"{RETENTION_DAYS} days" in body, body
+    assert "gone" in body.lower(), body
 
 
 def test_the_campaign_zip_refuses_when_every_structure_is_unresolved(client):
@@ -182,7 +199,7 @@ def test_the_campaign_zip_refuses_when_every_structure_is_unresolved(client):
         resp = client.get(f"/campaigns/{_CID}/export.zip")
 
     assert resp.status_code == 409, resp.status_code
-    assert "None of the 2 designs" in resp.get_data(as_text=True)
+    assert "None of the 2 structure files" in resp.get_data(as_text=True)
 
 
 def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
@@ -197,7 +214,7 @@ def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
         resp = client.get(f"/targets/{_TID}/export.zip")
 
     assert resp.status_code == 409, resp.status_code
-    assert "None of the 2 designs" in resp.get_data(as_text=True)
+    assert "None of the 2 structure files" in resp.get_data(as_text=True)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +286,12 @@ def test_a_partial_archive_is_delivered_and_names_the_absent_designs(
     assert "designs/design_1.pdb" in names, names
     assert "MISSING.txt" in names, names
 
+    # The filename says an archive is short before anyone opens it; the note
+    # inside says which designs are short. Both, for the reason
+    # blueprints/targets.py gives beside `capped`: the artifact leaves this
+    # process and is opened later, out of the page's context.
+    assert "_partial" in resp.headers["Content-Disposition"]
+
     note = zf.read("MISSING.txt").decode()
     assert "2 of 3" in note, note
     # Named individually, not just counted -- "some designs are missing" does
@@ -280,10 +303,11 @@ def test_a_partial_archive_is_delivered_and_names_the_absent_designs(
 
 
 def test_a_complete_archive_carries_no_missing_note(client, monkeypatch):
-    """The note is a symptom of a partial archive, not a fixture of every ZIP.
+    """A complete archive carries no note and no filename marker.
 
-    Without this, writing MISSING.txt unconditionally would pass every other
-    test in this file.
+    Not the only test that catches an unconditional MISSING.txt -- the
+    structureless-row case above has an exact-namelist assertion that fails on
+    it too. This one pins the filename half.
     """
     job = _job_row([_inline(1), _inline(2)])
     _login(client, job.user_id)
@@ -295,6 +319,104 @@ def test_a_complete_archive_carries_no_missing_note(client, monkeypatch):
     assert resp.status_code == 200
     names = zipfile.ZipFile(io.BytesIO(resp.get_data())).namelist()
     assert names == ["designs/design_1.pdb", "designs/design_2.pdb"], names
+    assert "_partial" not in resp.headers["Content-Disposition"]
+
+
+def test_the_campaign_zip_delivers_a_partial_archive_rather_than_refusing(
+    client,
+):
+    """The other side of the campaign guard, and the reason it has two clauses.
+
+    A review mutated blueprints/campaigns.py's guard to ``if
+    report["missing"]:`` -- dropping ``and not report["written"]`` -- and the
+    whole nine-suite run stayed green. That mutant makes THIS case a 409:
+    a campaign where some structures resolved and some did not would stop
+    delivering the archive it delivers today. The job and target routes had
+    partial coverage; campaigns had none.
+    """
+    def _second_job_only(*, user_id, job_id, filename):  # noqa: ARG001
+        if job_id == "job-ok":
+            return b"ATOM      1\n"
+        _storage_miss()
+
+    _login(client)
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
+            patch("shared.compute_campaigns.aggregate_campaign_candidates",
+                  return_value=_campaign_agg([
+                      _stored(1, job="job-ok"),
+                      _stored(2, job="job-gone"),
+                  ])), \
+            patch("shared.storage.download_output", _second_job_only):
+        resp = client.get(f"/campaigns/{_CID}/export.zip")
+
+    assert resp.status_code == 200, resp.status_code
+    assert resp.mimetype == "application/zip"
+    zf = zipfile.ZipFile(io.BytesIO(resp.get_data()))
+    assert "chunk000/designs/design_1.pdb" in zf.namelist(), zf.namelist()
+    note = zf.read("MISSING.txt").decode()
+    assert "designs/design_2.pdb" in note, note
+    assert "_partial" in resp.headers["Content-Disposition"]
+
+
+@pytest.mark.parametrize(
+    "rows, expect_note",
+    [
+        # Partial: one resolves, one does not. The note belongs here.
+        (["inline", "stored"], True),
+        # Complete: nothing is missing, so there is nothing to say.
+        (["inline", "inline"], False),
+        # Total failure: the routes refuse this archive outright, so a note
+        # would be its only member. Dropping the `written` half of the
+        # condition writes one here, and no ROUTE test can see it -- the
+        # response never carries this body.
+        (["stored", "stored"], False),
+    ],
+)
+def test_the_note_is_written_only_when_the_archive_is_really_partial(
+    rows, expect_note,
+):
+    """Unit-level, because the total-failure arm is unreachable through a route.
+
+    A review mutated ``if missing and written:`` to ``if missing:`` and the
+    whole nine-suite run stayed green. Three existing callers
+    (test_campaign_results, test_pdb_bfactors, test_export_shapes) invoke
+    candidates_to_zip with no ``report`` at all, so that arm is not academic.
+    """
+    from shared.exports import candidates_to_zip
+
+    cands = [
+        _inline(i + 1) if kind == "inline" else _stored(i + 1)
+        for i, kind in enumerate(rows)
+    ]
+    report: dict = {}
+    data = candidates_to_zip(
+        cands, lambda _job, _key: None, default_job_id="j1", report=report,
+    )
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    assert ("MISSING.txt" in names) is expect_note, (names, report)
+
+
+def test_a_non_string_pdb_key_on_an_unresolved_row_still_exports():
+    """The arcname is now built for rows that do NOT resolve, and pdb_key is
+    whatever the container wrote into job.result.
+
+    templates/components/candidate_table.html coerces the same value at its own
+    definition because the type "is not ours to guarantee", and commit fadbe24
+    records a non-string one 500-ing the results page. Before the arcname moved
+    above the byte resolution, an unresolved row never reached _safe_arcname;
+    now it does, and .replace on a non-string would take the healthy designs
+    down with it.
+    """
+    from shared.exports import candidates_to_zip
+
+    report: dict = {}
+    data = candidates_to_zip(
+        [_inline(1), {"pdb_key": 12345, "_source_job_id": "j1"}],
+        lambda _job, _key: None, default_job_id="j1", report=report,
+    )
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    assert "designs/design_1.pdb" in names, names
+    assert report["missing"] == ["12345"], report
 
 
 def test_the_missing_note_namespaces_a_merged_target_export(client):
@@ -324,3 +446,9 @@ def test_the_missing_note_namespaces_a_merged_target_export(client):
     assert "bindcraft/job-bc/designs/design_1.pdb" in zf.namelist()
     note = zf.read("MISSING.txt").decode()
     assert "boltzgen/job-bz/designs/design_1.pdb" in note, note
+    # The row that resolved FROM STORAGE must not be listed as absent. The
+    # sibling assertion in the partial test above exercises only an INLINE
+    # resolution, so without this line a bug that recorded every
+    # storage-resolved row as missing too would be caught here by nothing.
+    assert "bindcraft/job-bc/designs/design_1.pdb" not in note, note
+    assert "_partial" in resp.headers["Content-Disposition"]

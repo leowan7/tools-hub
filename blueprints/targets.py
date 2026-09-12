@@ -822,7 +822,9 @@ def _target_export(target_id: str, fmt: str):
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
         zip_unresolved_message,
     )
-    from shared.storage import download_output  # noqa: PLC0415
+    from shared.storage import (  # noqa: PLC0415
+        RETENTION_DAYS, download_output,
+    )
 
     ctx = load_user_context()
     if ctx is None:
@@ -980,15 +982,22 @@ def _target_export(target_id: str, fmt: str):
             len(report["missing"]), target_id,
         )
         return Response(
-            zip_unresolved_message(report["missing"]),
+            zip_unresolved_message(report["missing"], RETENTION_DAYS),
             mimetype="text/plain",
             status=409,
         )
+    # `_partial` joins `capped` and `incomplete` on the filename channel this
+    # route already established: some designs resolved and some did not, and
+    # MISSING.txt inside the archive names which.
+    partial = "_partial" if report["missing"] else ""
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_structures_top{len(candidates)}of{total}{incomplete}.zip"
+        zip_name = (
+            f"{stem}_structures_top{len(candidates)}of{total}"
+            f"{incomplete}{partial}.zip"
+        )
     else:
-        zip_name = f"{stem}_structures{incomplete}.zip"
+        zip_name = f"{stem}_structures{incomplete}{partial}.zip"
     return Response(
         data,
         mimetype="application/zip",

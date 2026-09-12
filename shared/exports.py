@@ -385,18 +385,23 @@ def candidates_to_fasta(candidates, sequences=None) -> str:
 
 
 def _missing_note(missing, written_count: int) -> str:
-    """The body of the ``MISSING.txt`` a partial archive carries."""
+    """The body of the ``MISSING.txt`` a partial archive carries.
+
+    Says only that the bytes did not arrive. An earlier draft asserted that
+    "storage did not return" them, which this function cannot know: a row is
+    recorded missing on the strength of the row alone (see the promise test in
+    :func:`candidates_to_zip`), and a row whose inline ``pdb_content_b64`` is
+    corrupt reaches here without a fetch ever being attempted.
+    """
     total = written_count + len(missing)
     lines = [
         f"{len(missing)} of {total} designs could not be retrieved and are "
         f"NOT in this archive.",
-        f"The other {written_count} are present and complete.",
+        f"The other {written_count} are present.",
         "",
-        "Their rows reference a structure file that storage did not return "
-        "when this",
-        "archive was built -- the object may have been deleted or expired, or "
-        "storage",
-        "may have been briefly unavailable. Re-downloading may return them.",
+        "Each of the designs below is listed on the results page and "
+        "references a",
+        "structure file that did not arrive when this archive was built.",
         "",
         "Missing:",
     ]
@@ -404,27 +409,44 @@ def _missing_note(missing, written_count: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def zip_unresolved_message(missing) -> str:
-    """Body for the refusal a ZIP route returns when NOTHING resolved.
+def zip_unresolved_message(missing, retention_days: int) -> str:
+    """Body for the refusal a ZIP route returns when nothing PROMISED resolved.
 
     Shared by the job, campaign and target routes so one wording covers the
     three buttons that reach this failure.
+
+    ``retention_days`` is passed in rather than imported so this module keeps
+    the property its own docstring claims -- pure functions over candidate
+    dicts, no Storage import. Callers pass
+    :data:`shared.storage.RETENTION_DAYS`.
+
+    The retention sentence leads because it is the DOMINANT path here, not an
+    edge case: ``shared/storage.py`` puts ``OUTPUT_BUCKET`` in
+    ``AGE_SWEEP_BUCKETS``, so every structure of a Storage-backed run is
+    deleted on the ``RETENTION_DAYS`` clock while the job row and its
+    ``pdb_key``s survive in Postgres. An older run reaching this message is
+    working as designed. An earlier draft said "trying again in a few minutes
+    is worth doing" with no such qualifier, which is advice that cannot
+    succeed for exactly the users most likely to see it.
     """
     return (
-        f"None of the {len(missing)} designs in this export could be "
-        f"retrieved.\n"
+        f"None of the {len(missing)} structure files in this export could be "
+        f"retrieved,\n"
+        "so no archive was sent rather than sending you an empty one.\n"
         "\n"
-        "Each of them references a structure file, and storage returned none "
-        "of them.\n"
-        "The objects may have been deleted or expired, or storage may be "
-        "briefly\n"
-        "unavailable. No archive was sent, rather than sending you an empty "
-        "one.\n"
+        f"Structure files are deleted {retention_days} days after a run, while "
+        f"the run and\n"
+        "its scores are kept. If this run is older than that, its structures "
+        "are gone\n"
+        "for good and re-downloading will not bring them back.\n"
         "\n"
-        "Trying again in a few minutes is worth doing. The scores on the page "
-        "and the\n"
-        "CSV and FASTA exports do not depend on these files and are "
-        "unaffected.\n"
+        "If the run is recent, this is more likely to be temporary -- try "
+        "again in a\n"
+        "few minutes.\n"
+        "\n"
+        "Either way the scores on the page and the CSV and FASTA exports do "
+        "not depend\n"
+        "on these files and are unaffected.\n"
     )
 
 
@@ -454,8 +476,11 @@ def candidates_to_zip(
     ``report``, when passed, is filled with ``written`` and ``missing`` lists
     of arcnames so the route can answer a total failure with an error status
     instead of a 200 carrying an empty archive. A partial archive additionally
-    names the absent designs in a ``MISSING.txt`` entry, which is the only
-    channel a file download has.
+    names the absent designs in a ``MISSING.txt`` entry. The other channel a
+    download has is the filename, which the routes already use for this class
+    of caveat (``blueprints/targets.py`` marks a capped or partial export
+    there); the two are complementary, since a filename cannot name each
+    absent design.
 
     With ``namespace=True`` each entry is prefixed so identically-named designs
     from different sources do not collide. Which prefix depends on the
@@ -469,7 +494,11 @@ def candidates_to_zip(
       campaigns of the SAME tool on one target both have a chunk 0 too.
     * ``chunk###/`` or ``<job8>/`` otherwise, which is every campaign and
       single-job export. Gating on ``_source_tool`` is what keeps those
-      byte-identical to what they produced before this branch existed.
+      byte-identical to what they produced before that branch existed -- for
+      a COMPLETE archive. A partial one gains a ``MISSING.txt`` member it did
+      not have before, so the guarantee is now about the structure members
+      rather than the whole file; each archived design is still byte-for-byte
+      what it was.
     """
     buf = io.BytesIO()
     written = []
@@ -477,7 +506,15 @@ def candidates_to_zip(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, cand in enumerate(_dict_candidates(candidates)):
             key = export_key(cand, i)
-            pdb_key = key["pdb_key"] or f"candidate_{i + 1}.pdb"
+            # str() for the reason templates/components/candidate_table.html
+            # coerces the same value at its own definition: pdb_key is whatever
+            # the container wrote into job.result and its type "is not ours to
+            # guarantee". A non-string one reaching _safe_arcname raises
+            # AttributeError on .replace and 500s the whole export, taking the
+            # healthy designs with it. Commit fadbe24 records that shape
+            # 500-ing the results page.
+            pdb_key = str(key["pdb_key"]) if key["pdb_key"] \
+                else f"candidate_{i + 1}.pdb"
             job_id = key.get("source_job") or default_job_id
             # The prefix is computed before the bytes are resolved because a
             # design that does NOT resolve is reported by the same arcname it
@@ -503,11 +540,15 @@ def candidates_to_zip(
                 data = fetch_bytes(job_id, key["pdb_key"])
             if data is None:
                 # Read the row, not the archive: a structureless row is not a
-                # miss. tests/test_target_export.py::
+                # miss, and the archive it produces is byte-identical to the
+                # one a total failure produces. Two tests hold the two halves
+                # of that apart, and they are not interchangeable:
+                # tests/test_target_export.py::
                 # test_an_owned_but_empty_target_exports_an_empty_file_not_a_404
-                # requires a target whose runs have not returned a design to
-                # keep exporting a 200 with an empty archive, so emptiness
-                # alone cannot be the signal.
+                # covers ZERO rows (a target whose runs have not returned yet),
+                # while tests/test_export_zip_unresolved.py::
+                # test_a_structureless_row_is_not_a_failure_and_still_exports_200
+                # covers a row that is present and references no structure.
                 if cand.get("pdb_content_b64") or key["pdb_key"]:
                     missing.append(arcname)
                 continue
@@ -518,8 +559,12 @@ def candidates_to_zip(
             data = _pdb_bfactors.bfactors_on_100_bytes(data)
             zf.writestr(arcname, data)
             written.append(arcname)
-        # Written only for a PARTIAL archive. With nothing written the route
-        # refuses the download outright, and a note would be the whole file.
+        # Written only for a PARTIAL archive, and BOTH halves of that are
+        # load-bearing. With nothing written the route refuses the download,
+        # so a note would be the archive's only member; with nothing missing
+        # there is nothing to say. Dropping either half is caught by
+        # tests/test_export_zip_unresolved.py::
+        # test_the_note_is_written_only_when_the_archive_is_really_partial.
         if missing and written:
             zf.writestr("MISSING.txt", _missing_note(missing, len(written)))
     if report is not None:
