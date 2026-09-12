@@ -316,7 +316,8 @@ class _StubTarget:
 
 def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
              campaign_id=None, chunk_index=None, attempt=1,
-             inputs=None, candidates=(), status="succeeded"):
+             inputs=None, candidates=(), status="succeeded",
+             result_extra=None):
     """One tool_jobs row as the table actually stores it.
 
     ``inputs`` passes through UNCHANGED. Coercing it with ``dict(inputs or {})``
@@ -340,7 +341,18 @@ def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
     returns whatever the jsonb held, so a malformed record is a shape the
     aggregator has to survive, and it is also the only way to test that
     ``_source_index`` counts the records the loop SKIPPED.
+
+    ``result_extra`` merges sibling keys into the result ALONGSIDE
+    ``candidates``. Every pipeline writes run-level facts up there and one of
+    them decides which bar applies: ``is_antibody`` is what
+    ``shared.score_legends.result_mode`` reads to tell an esmfold2-design
+    minibinder run from an scFv one. Without a way to set it, a moded tool's
+    row could only ever arrive with its mode unstated.
     """
+    result = {"candidates": [
+        dict(c) if isinstance(c, Mapping) else c for c in candidates
+    ]}
+    result.update(result_extra or {})
     return {
         "id": job_id,
         "user_id": user_id,
@@ -352,9 +364,7 @@ def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
         "chunk_index": chunk_index,
         "attempt": attempt,
         "inputs": inputs,
-        "result": {"candidates": [
-            dict(c) if isinstance(c, Mapping) else c for c in candidates
-        ]},
+        "result": result,
     }
 
 
@@ -1904,3 +1914,189 @@ def test_a_fully_readable_settled_target_is_not_provisional(monkeypatch):
 
     assert agg["partial"] is False
     assert agg["provisional"] is False
+
+
+# ---------------------------------------------------------------------------
+# The mode-scoped bar: the count and the ranking table
+# ---------------------------------------------------------------------------
+#
+# esmfold2-design's bar is a property of the RUN's mode, not of the tool, so
+# ``tool_has_bar("esmfold2-design")`` answers False and every consumer that
+# could not name a run read no bar at all. TWO OF THEM LIVE IN THIS FUNCTION:
+# ``passed_total`` counted every delivered design as a keeper, and the ranking
+# table marked every design ``_passed`` -- including the one the pipeline
+# drops.
+#
+# Real completed job 2b917b54 (PD-L1 minibinder, n_seeds=2), as stored:
+#
+#     seed0: ipTM 0.9556, pI 11.95 -> the pipeline drops it
+#     seed1: ipTM 0.9354, pI  5.67 -> clears the bar
+#
+# THE AGGREGATOR IS THE REAL PATH for both. The helpers underneath
+# (count_candidates_meeting_bar, annotate_rows) can each be correct while this
+# function never hands them a mode, and a helper-level test cannot see that --
+# which is the shape every earlier surface in this class failed in.
+#
+# Values unrounded, matching tests/test_jobs_compare_headline.py: rounded
+# stand-ins let one assertion span both a defect and its fix.
+_DROP_PI = 11.954517555236816
+_PASS_PI = 5.669371223449708
+_DROP_IPTM = 0.9555796384811401
+_PASS_IPTM = 0.9353567957878113
+
+
+def _esm_cand(name, iptm, pi):
+    return {"name": name, "pdb_key": f"{name}.pdb",
+            "scores": {"ipTM": iptm, "pI": pi}}
+
+
+def _esm_rows(*, preset="minibinder", is_antibody=False, job_id="esm-1"):
+    return (
+        _job_row(
+            job_id, tool="esmfold2-design", preset=preset, target_id="T",
+            candidates=(
+                _esm_cand("drop", _DROP_IPTM, _DROP_PI),
+                _esm_cand("keep", _PASS_IPTM, _PASS_PI),
+            ),
+            result_extra={"is_antibody": is_antibody, "preset": preset},
+        ),
+    )
+
+
+def test_a_minibinder_run_counts_only_the_design_that_meets_the_bar(monkeypatch):
+    """``passed_total`` used to be 2 here, because the tool declares no bar
+    without a mode and a tool with no bar counts every delivered record.
+
+    THIS RE-LABELS DELIVERED WORK, and that is the intended effect: the target
+    page reported two keepers for a run whose own results page tells you not
+    to order one of them.
+    """
+    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["ok"] is True and agg["partial"] is False
+    assert len(agg["candidates"]) == 2, "both designs are still delivered"
+    assert agg["passed_total"] == 1, (
+        "the pI 11.95 design was counted as a keeper"
+    )
+
+
+def test_the_ranking_table_sinks_the_rejected_design(monkeypatch):
+    """``_passed`` LEADS canonical_sort_key, so a design nobody rejected sorts
+    above one that was. With no mode every esmfold2-design row was ``_passed``
+    and the reject sat level with the design that clears the bar.
+
+    esmfold2-design registers no primary metric (shared/result_columns.py), so
+    neither row is ranked and ``_passed`` is the ONLY thing separating them --
+    which makes it the one signal this table has about these designs.
+    """
+    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    by_name = {c["name"]: c for c in agg["candidates"]}
+    assert by_name["drop"]["_passed"] is False
+    assert by_name["keep"]["_passed"] is True
+    assert by_name["drop"]["_tool_has_bar"] is True
+    # And the order follows: the reject is no longer first.
+    assert [c["name"] for c in agg["candidates"]] == ["keep", "drop"]
+
+
+def test_the_cohort_key_carries_the_mode_the_bar_was_applied_under(monkeypatch):
+    """``_source_preset`` is what ``cohort_key_for`` partitions on AND what
+    ``annotate_rows`` hands to ``judge``, so for a moded tool it has to hold
+    the MODE. It is also the key the Preset chip renders
+    (templates/components/candidate_table.html), whose tooltip says the design
+    was ranked against this tool's other <preset> designs -- true only while
+    the two are one key.
+    """
+    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert {c["_source_preset"] for c in agg["candidates"]} == {"minibinder"}
+    assert {c["_cohort_preset"] for c in agg["candidates"]} == {"minibinder"}
+
+
+def test_an_scfv_run_has_no_bar_and_every_design_counts(monkeypatch):
+    """The pair to the minibinder test, and not a formality. pI is null by
+    construction on an scFv run, so a tool-WIDE pI leg would leave every
+    antibody design permanently unjudged -- which is why the bar is keyed on
+    (tool, mode) and why MODE_GATE_COLUMNS has no scfv entry. A fix that
+    quietly applied the minibinder bar to both modes passes every assertion
+    above and fails here.
+    """
+    _install(monkeypatch, rows=_esm_rows(preset="scfv", is_antibody=True))
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["passed_total"] == 2
+    assert all(c["_passed"] is True for c in agg["candidates"])
+    assert all(c["_tool_has_bar"] is False for c in agg["candidates"])
+
+
+def test_the_mode_comes_off_the_result_before_the_stored_preset(monkeypatch):
+    """THAT ORDER, and reversing it is silent. A job's stored preset can be a
+    default string while the result records what the run actually did, so
+    ``result_mode`` leads. Here the row says preset=minibinder and the result
+    says the run was an antibody one: judged by the preset it would be held to
+    a pI gate that mode never measures.
+    """
+    _install(monkeypatch, rows=_esm_rows(preset="minibinder", is_antibody=True))
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert {c["_source_preset"] for c in agg["candidates"]} == {"scfv"}
+    assert agg["passed_total"] == 2
+    assert all(c["_tool_has_bar"] is False for c in agg["candidates"])
+
+
+def test_two_modes_of_one_tool_are_two_cohorts(monkeypatch):
+    """An scFv and a minibinder are not one comparable population, and after
+    this change they cannot be read as one: the mode IS the cohort key, so
+    each half is judged against its own bar and neither borrows the other's.
+
+    This is also the answer to "would counting a mixed cohort sum two
+    different bars?" -- the total is a sum of PER-RUN counts, each taken
+    against the bar its own run declares. 2 from the unbarred scFv run plus 1
+    from the minibinder run.
+    """
+    rows = _esm_rows(job_id="esm-mini") + _esm_rows(
+        preset="scfv", is_antibody=True, job_id="esm-scfv",
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["multi_tool"] is True, "one tool at two modes is two cohorts"
+    assert {c["_source_preset"] for c in agg["candidates"]} == {
+        "minibinder", "scfv",
+    }
+    assert agg["passed_total"] == 3
+    minibinder = [c for c in agg["candidates"]
+                  if c["_source_preset"] == "minibinder"]
+    assert {c["_passed"] for c in minibinder} == {True, False}
+
+
+def test_a_tool_with_a_tool_wide_bar_ignores_the_preset(monkeypatch):
+    """The regression guard for every other tool. ``gate_columns`` documents
+    that a tool keyed in GATE_COLUMNS ignores ``preset`` entirely, so handing
+    a cohort's preset down must not shrink or move boltzgen's bar, and
+    ``resolve_mode`` must hand a non-moded tool's preset back untouched --
+    that key is a cohort boundary, and rewriting it would split a percentile
+    denominator with nothing raising.
+    """
+    rows = (
+        _job_row(
+            "bg-1", tool="boltzgen", preset="pilot", target_id="T",
+            candidates=(
+                {"name": "over", "pdb_key": "over.pdb",
+                 "scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
+                {"name": "under", "pdb_key": "under.pdb",
+                 "scores": {"pLDDT": 40.0, "refolding_rmsd": 1.0}},
+            ),
+        ),
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["passed_total"] == 1
+    by_name = {c["name"]: c for c in agg["candidates"]}
+    assert by_name["over"]["_passed"] is True
+    assert by_name["under"]["_passed"] is False
+    assert by_name["over"]["_source_preset"] == "pilot"

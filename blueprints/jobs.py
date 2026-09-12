@@ -39,6 +39,7 @@ from shared.jobs import (
     complete_job,
     create_job,
     get_job,
+    headline_candidate,
     list_campaign_labels_for_user,
     list_jobs_paginated,
     mark_failed,
@@ -96,20 +97,71 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     """Pull a formatted top-candidate score for the share og_title.
 
     Returns None when the job has no candidate scores to surface (a
-    failed run, a sequence-design tool, a job without a result yet).
-    The caller composes ``og_title`` without the trailing score clause
-    when this returns None.
+    failed run, a sequence-design tool, a job without a result yet),
+    and ALSO when the design this would speak for does not clear the
+    tool's bar. The caller composes ``og_title`` without the trailing
+    score clause when this returns None.
+
+    THE PICK IS DERIVED, NOT ``candidates[0]``. The stored order is the
+    container's ranking key and not its bar: esmfold2-design job 2b917b54
+    stores a pI 11.95 poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67
+    design at 0.9354 that clears the bar, so a blind read named the REJECT.
+    Same mechanism the compare page uses (``shared.jobs.headline_candidate``),
+    and the mode comes off the RESULT first with the stored preset only as a
+    fallback (``score_legends.resolve_mode``).
+
+    THIS FIXES THE PICK, NOT THE METRIC. The loop below returns the first
+    numeric key of ``scores``; ``tool_jobs.result`` is ``jsonb`` and Postgres
+    orders object keys by (length, bytewise), so it hands back ``pI`` before
+    ``ipTM`` and this function returns ``pI 5.669`` for job 2b917b54. The
+    fixtures in tests/test_esmfold2_reject_surfaces.py are in PIPELINE order,
+    which hides that. Open on branch ``claude/share-headline-metric``.
+
+    NOT AN AUTO-PUBLISHED CARD, stated because an earlier draft of this
+    paragraph called it one. The string is a field of the ``/jobs/<id>/share``
+    JSON and that route is ``@login_required``; ``templates/job_detail.html``
+    defines no ``og_title`` block, so it is never rendered as a meta tag. It
+    reaches the public only when the owner pastes it -- still a claim made in
+    their name, which is why the rule below is strict. ``_share_title`` states
+    the same reach at more length.
+
+    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. Every other surface prints
+    a shortfall beside the figure it shows; an og:title is read with no page
+    around it and has nowhere to put one, so a design the bar rejects gets no
+    clause rather than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
+    the widening is intended: any run of any gating tool whose every design
+    fell short now shares a bare title where it used to publish the least-bad
+    number. A tool that declares no bar is unaffected -- its records are
+    ``unjudged``, which is not ``below`` -- and so is a run with one design
+    that clears. Both halves are driven through this route by
+    tests/test_esmfold2_reject_surfaces.py.
+
+    ``candidate_records`` rather than ``result["candidates"]``: the
+    designs-only pipelines (boltz2, af2, colabfold, esmfold, iggm, opendde and
+    esmfold2-design's legacy rows) persist under ``designs``, and the old read
+    saw nothing there, so every one of those jobs silently produced no clause.
+    The legacy ``result["output"]`` wrapper is NOT part of that --
+    ``ToolJob.from_row`` normalises it away (shared/jobs.py:368) before a job
+    ever reaches this function, so both reads are flat by the time they get
+    here.
     """
     if getattr(job, "status", None) != "succeeded":
         return None
-    result = getattr(job, "result", None) or {}
-    if not isinstance(result, dict):
+    result = getattr(job, "result", None)
+    records = candidate_records(result)
+    if not records:
         return None
-    candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    tool = getattr(job, "tool", None) or ""
+    mode = score_legends.resolve_mode(
+        tool, result, getattr(job, "preset", None)
+    )
+    top, verdict = headline_candidate(records, tool, preset=mode)
+    if top is None:
         return None
-    top = candidates[0]
-    if not isinstance(top, dict):
+    # shared.ranking's predicate, verbatim: a record can be BOTH "below" and
+    # carrying a declared placeholder, and either one disqualifies it from
+    # speaking for the run unqualified.
+    if verdict.verdict == "below" or verdict.unusable:
         return None
     scores = top.get("scores")
     if not isinstance(scores, dict):
@@ -122,8 +174,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     for col in scores:
         val = scores.get(col)
         if col in _metric_glossary.PLDDT_COLUMNS:
-            # This string goes into og:title on a PUBLIC share card, so it
-            # is read with no page around it to give the scale.
+            # This string is pasted with no page around it to give the scale.
             val = _metric_glossary.plddt_on_100(val)
         if isinstance(val, (int, float)):
             return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
@@ -235,8 +286,14 @@ def jobs_compare():
         # resolves it in. Reading job.preset alone reads the other way round
         # from every other surface: the stored preset can be the default
         # string while the result records what the run actually did.
+        #
+        # THIS EXPRESSION WAS WRITTEN INLINE HERE FIRST and is now
+        # score_legends.resolve_mode, which every surface in this class calls.
+        # Same answer for every tool -- the added guard only stops a tool-blind
+        # is_antibody read reaching a tool that is not moded, and `mode` here
+        # equalled `j.preset` for those anyway.
         records = candidate_records(j.result)
-        mode = score_legends.result_mode(j.result) or j.preset
+        mode = score_legends.resolve_mode(j.tool or "", j.result, j.preset)
         top, top_verdict = headline_candidate(records, j.tool, preset=mode)
         # Its POSITION in the stored order, so the page can say "row 7 of 12"
         # rather than a bare "not rank 1" pointing at a row the 3-row table
@@ -398,9 +455,20 @@ def job_status(job_id: str):
     rows = [c for c in partials if isinstance(c, dict)]
     if not score_legends.tool_has_bar(job.tool):
         # No bar to meet, so this is a delivered count and the template says
-        # so. It must NOT be described as meeting a bar: esmfold2-design has
-        # no bar, and its own worked example turns on a design that folds
+        # so. It must NOT be described as meeting a bar: esmfold2-design reads
+        # no bar here, and its own worked example turns on a design that folds
         # beautifully and must not be ordered.
+        #
+        # NO MODE IS PASSED HERE AND THAT IS NOT AN OVERSIGHT. This endpoint
+        # runs while the job is still going, so ``job.result`` is None and
+        # ``resolve_mode`` has nothing to read; and the streamed partials
+        # carry no pI at all, so the minibinder bar could not be answered even
+        # with the mode in hand (``bar_is_answerable`` takes no preset for the
+        # same reason). The template branches on ``has_bar`` and renders
+        # "... returned so far" rather than "... meeting the quality bar so
+        # far" (templates/job_detail.html), so the live line stays honest:
+        # unlike the finished surfaces this class is about, it never presents
+        # a delivered count AS a count of keepers.
         passed = len(rows)
     elif score_legends.bar_is_answerable(job.tool, rows):
         passed = sum(
@@ -765,15 +833,27 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     Extracted from the route so it can be tested without a session and a
     database row.
 
+    NO RANKING WORD IN THE CLAUSE, because the number no longer comes from
+    a ranking. `_top_score_for_share` feeds this from `headline_candidate`,
+    whose contract is "the first record that is neither shown to fall short
+    NOR built on a declared placeholder, in the order the pipeline stored
+    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
+    This line read "Top score {top_score}." until that change landed on this
+    branch -- defensible while the value was `candidates[0]` off a ranking
+    container, false once the pick became bar-first: on job 2b917b54 the
+    headline design is ipTM 0.9354 and the run's highest ipTM is 0.9556, so
+    the label would have contradicted the number beside it.
+
     Not fixed here: "designed a binder" is the wrong verb for the folding
     tools and for ProteinMPNN under ANY outcome. That is per-tool copy and
-    a product decision.
+    a product decision. Nor is WHICH metric gets formatted -- see
+    `_top_score_for_share`.
     """
     if top_score is None:
         return f"I ran {tool_label} on tools.ranomics.com"
     return (
         f"I designed a binder with {tool_label} on "
-        f"tools.ranomics.com. Top score {top_score}."
+        f"tools.ranomics.com. One design at {top_score}."
     )
 
 
@@ -869,8 +949,15 @@ def export_fasta(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     result = job.result or {}
+    # The tool and the RUN'S MODE, so a design this tool's own bar rejects
+    # says so in its own record rather than sitting at rank1 unmarked. Mode
+    # off the result first, stored preset as the fallback -- the order every
+    # other surface on this tool resolves it in.
     body = candidates_to_fasta(
-        candidate_records(job.result), sequences=result.get("sequences", []),
+        candidate_records(job.result),
+        sequences=result.get("sequences", []),
+        tool=job.tool,
+        preset=score_legends.resolve_mode(job.tool or "", job.result, job.preset),
     )
     if not body:
         body = "# No sequences found in this job's output.\n"

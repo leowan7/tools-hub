@@ -87,6 +87,7 @@ from shared.ranking import (
     rank_candidates,
 )
 from shared.result_columns import columns_for, normalize_candidate
+from shared.score_legends import resolve_mode
 from shared.targets import get_target
 
 logger = logging.getLogger(__name__)
@@ -194,16 +195,30 @@ def _candidate_rows(
     (shared/compute_campaigns.py:1262); without it here the target table
     cannot say which of a run's sub-jobs produced a design, and ``#0`` from
     every campaign would be indistinguishable.
+
+    ``_source_preset`` IS THE RUN'S MODE FOR A MODED TOOL, not necessarily its
+    stored preset, and that is deliberate. This key is what
+    ``shared.ranking.cohort_key_for`` partitions on and what
+    ``annotate_rows`` then hands to ``judge``, so writing the mode here is how
+    the bar reaches the target table at all -- and it is also the only place
+    that HAS the run's result to resolve one from. Two things fall out: an
+    scFv run and a minibinder run of one tool form two cohorts, which they
+    should (they are not one comparable population); and the Preset chip
+    ``templates/components/candidate_table.html`` renders from this key keeps
+    saying what the design was actually ranked against, which is what its
+    tooltip claims. ``score_legends.resolve_mode`` returns ``preset``
+    untouched for every tool that is not moded, so nothing else moves.
     """
     job_id = job.get("id")
     chunk = job.get("chunk_index")
     rows: list[dict[str, Any]] = []
+    mode = resolve_mode(tool or "", job.get("result"), preset)
     for index, cand in enumerate(candidate_records(job.get("result"))):
         if not isinstance(cand, Mapping):
             continue
         row = dict(normalize_candidate(cand, tool or ""))
         row["_source_tool"] = tool
-        row["_source_preset"] = preset
+        row["_source_preset"] = mode
         row["_source_campaign_id"] = campaign_id
         row["_source_job_id"] = job_id
         row["_source_index"] = index
@@ -256,7 +271,10 @@ def _merge_child_rows(
     merged: list[dict[str, Any]] = []
     passed = 0
     for job in best_by_chunk.values():
-        passed += count_candidates_meeting_bar(job.get("result"), tool)
+        # ``preset`` is only the FALLBACK mode here; a moded tool's own result
+        # answers first (shared.score_legends.resolve_mode), which is why this
+        # is per child rather than resolved once for the campaign.
+        passed += count_candidates_meeting_bar(job.get("result"), tool, preset)
         merged += _candidate_rows(
             job, tool=tool, preset=preset, campaign_id=campaign_id,
         )
@@ -676,7 +694,7 @@ def aggregate_target_candidates(
             continue
         standalone_jobs += 1
         passed_total += count_candidates_meeting_bar(
-            job.get("result"), job.get("tool"),
+            job.get("result"), job.get("tool"), job.get("preset"),
         )
         merged += _candidate_rows(
             job,

@@ -524,7 +524,7 @@ class TestShareCardClaimsOnlyWhatItEarned:
         from blueprints.jobs import _share_title
         title = _share_title("BoltzGen", "0.91")
         assert "I designed a binder with BoltzGen" in title
-        assert "Top score 0.91" in title
+        assert "One design at 0.91" in title
 
 
 class TestTheOtherSurfaces:

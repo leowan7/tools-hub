@@ -8,9 +8,17 @@ SURFACE TWO, NOT SIX. #241 fixed this class in three WRITERS on one tool
 (modal_app._aggregate, run_pipeline._pick_best and the results template), and
 its own commit message records five consumers as NOT reached by it: the
 campaign and target counts, the target ranking table, the completion email,
-the share card's og:title, and the FASTA export's rank0. This page is the
-second surface repaired. Those five are still open -- and the completion
-email, which fires on every run, still captions the pI 11.95 reject.
+the share card's og:title, and the FASTA export's rank0. This page was the
+second surface repaired.
+
+ALL FIVE ARE NOW CLOSED, each through its own real path: the share text and
+the FASTA export in tests/test_esmfold2_reject_surfaces.py, the counts and the
+ranking table through the aggregator in tests/test_aggregate_target.py, and
+the completion email separately in 058f6c1 (#255), which resolves the mode in
+shared/email.py::_top_candidate_summary and passes it to both
+headline_candidate and verdict_text. An earlier version of this paragraph said
+the email was still open; that stopped being true when this branch rebased
+onto that commit.
 
 Real completed job ``2b917b54-0871-44af-a3d1-5d07ea5dcaeb`` (esmfold2-design,
 PD-L1 minibinder, n_seeds=2), as it sits in the database:

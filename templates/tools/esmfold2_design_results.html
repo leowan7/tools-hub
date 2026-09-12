@@ -58,11 +58,21 @@
    literals, which is the reassurance a reader most needs to be true. Change
    the bar and you must edit all three copies by hand.
 
-   STILL NOT WIRED, and each still treats every design here as a keeper: the
-   campaign count, the target ranking table, the completion email, the share
-   card and the FASTA export. tool_has_bar("esmfold2-design") is deliberately
-   still False without a mode, so none of them changed; each needs a caller
-   that can resolve the run's mode before it can pass one.
+   NO CONSUMER OF THIS CLASS IS LEFT UNMODED. The share text's score clause,
+   the FASTA export, the campaign and target counts and the target ranking
+   table each resolve the run's mode now (score_legends.resolve_mode) and pass
+   it, so each holds a minibinder design to pI and ipTM. The completion email
+   does the same through an inline copy of the same expression
+   (shared/email.py::_top_candidate_summary, landed separately as 058f6c1),
+   which it passes to both headline_candidate and verdict_text; an earlier
+   version of this paragraph called it the one consumer left, and that stopped
+   being true when this branch rebased onto that commit. tool_has_bar(
+   "esmfold2-design") is still False with no argument, which is what keeps a
+   caller that cannot name a run reading no bar rather than the wrong one.
+
+   The target count moved as a result: a minibinder run used to have every
+   delivered design counted as a keeper and now counts only the ones that
+   meet the bar.
 
    The pipeline returns a single best_sequence plus a per-critic results
    table. The table is surfaced as-is; the headline sequence is re-derived

@@ -815,7 +815,9 @@ def compute_campaign_status(campaign_id):
     # request time — no stored verdict is read. It is NOT the number of designs
     # produced (small batches often meet nothing). ``designs_delivered`` is
     # kept as a back-compat alias for the same value.
-    hits = _campaign_candidates_meeting_bar(campaign_id, campaign.tool)
+    hits = _campaign_candidates_meeting_bar(
+        campaign_id, campaign.tool, campaign.preset,
+    )
     payload["hits"] = hits
     payload["designs_delivered"] = hits
     payload["terminal"] = campaign.status in (
@@ -830,7 +832,9 @@ def compute_campaign_status(campaign_id):
     payload["paused"] = campaign.status == "paused_insufficient_funds"
     return jsonify(payload)
 
-def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
+def _campaign_candidates_meeting_bar(
+    campaign_id: str, tool: str, preset: str | None = None,
+) -> int:
     """Sum candidates that MEET ``tool``'s quality bar across a campaign's
     succeeded children.
 
@@ -852,6 +856,14 @@ def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
     reads ``result["candidates"]`` or ``result["designs"]`` and resolves
     metrics under ``scores`` or at the record root, which is the shape bug
     that made this card under-report before.
+
+    ``preset`` is the campaign's, and it is only a FALLBACK mode for a tool
+    whose bar is keyed on the run's mode -- each child's own result answers
+    first, inside ``count_candidates_meeting_bar``. It changes nothing for any
+    tool campaigns can currently run: esmfold2-design is the only moded tool
+    and it is not in ``compute_campaigns.SUPPORTED_TOOLS``. Threaded anyway
+    because the alternative is a card that silently reads no bar the day one
+    is added, which is the shape of defect this whole class is.
     """
     client = get_service_client()
     if client is None:
@@ -869,7 +881,8 @@ def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
         return 0
     from shared.jobs import count_candidates_meeting_bar  # noqa: PLC0415
     return sum(
-        count_candidates_meeting_bar(r.get("result"), tool) for r in rows
+        count_candidates_meeting_bar(r.get("result"), tool, preset)
+        for r in rows
     )
 
 # CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
@@ -920,7 +933,15 @@ def _campaign_export(campaign_id: str, fmt: str):
             headers={"Content-Disposition": f"attachment; filename={stem}_scores.csv"},
         )
     if fmt == "fasta":
-        body = candidates_to_fasta(candidates) or (
+        # NO PRESET. A campaign's envelope carries the tool but not the
+        # preset, and no campaign tool needs one: the intersection of
+        # compute_campaigns.SUPPORTED_TOOLS and score_legends.MODE_GATE_COLUMNS
+        # is EMPTY (four of the seven declare a tool-wide bar in GATE_COLUMNS,
+        # which ignores a preset by construction, and bindcraft, proteina and
+        # iggm declare no bar at all). A moded tool added to that list later
+        # would read no bar here and get no notes -- the same answer it gives
+        # everywhere else that cannot name a run.
+        body = candidates_to_fasta(candidates, tool=agg.get("tool")) or (
             "# No sequences found in this campaign's output.\n"
         )
         return Response(
