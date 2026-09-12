@@ -38,7 +38,10 @@
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
     legend_text             — shared.score_legends.legend_text
-    format_metric_value, score_legend_for, ordinal — multi-tool mode only
+    score_legend_for        — shared.score_legends.get_legend. BOTH modes:
+                              the single-tool column header and the
+                              multi-tool Score cell resolve through it
+    format_metric_value, ordinal — multi-tool mode only
 
   ``legend_text(leg)`` and not ``leg.explanation``: a legend may carry a
   ``caveat`` about what an OLD STORED result holds, and this table is the only
@@ -450,15 +453,11 @@
 {% endif %}
 
 {# ── Table ─────────────────────────────────────────────────────── #}
-{# Per-tool score legend lookup. Returns ``{col_key: {good, excellent,
-   direction, explanation}}``; empty dict if the tool has no legends.
-   Registered as a Jinja global in app.py from shared.score_legends. #}
 {# NOT resolved in multi-tool mode: legends are per (tool, column), and a header
    spans rows from several tools. bindcraft passes ipTM at 0.75 while
    rfdiffusion passes at 0.65 (shared/score_legends.py), so a header legend
    would state one tool's bar over another tool's number. Multi-tool resolves
    the legend PER CELL from that row's own tool instead. #}
-{% set legends = {} if multi_tool else (score_legends_for(tool_slug) if score_legends_for else {}) %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
@@ -485,7 +484,17 @@
         {% else %}
         {% for col in columns %}
           {% set g = metric_glossary.get(col, {}) %}
-          {% set leg = legends.get(col) %}
+          {# ``score_legend_for``, NOT the exact-case ``score_legends_for``
+             dict this line used to read. TWO spelling mismatches cost
+             seven (tool, column) pairs their legend here, on the page
+             that shows the numbers those legends judge: af2 and colabfold
+             register ``iptm``/``ptm`` while displaying ``ipTM``/``pTM``
+             -- four pairs, which this call reaches because
+             ``get_legend`` folds case -- and af2, colabfold and esmfold
+             registered a pLDDT legend as ``plddt`` while displaying
+             ``mean_pLDDT`` -- three more, closed by re-keying those
+             legends. (tests/test_score_legend_lookup.py) #}
+          {% set leg = score_legend_for(tool_slug, col) if score_legend_for else None %}
           {# When a per-tool legend exists, its explanation is the
              concrete "what counts as good?" answer; the metric_glossary
              entry remains the academic citation. Stack both into one
