@@ -2,20 +2,22 @@
 
 ``shared/email.py::_result_summary`` ends a successful composite-tool mail with
 "N candidates returned with real scores and downloadable structures." The count
-read from ``candidate_records``. The download clause was read from nothing: it
+is read from ``candidate_records``. The download clause was read from nothing:
+it
 was appended to every candidate list, whatever the rows carried.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
-sets ``has_pdb = use_url or has_b64`` from ``pdb_key`` and
+sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
 ``pdb_content_b64``, and renders an em dash in the View-3D and .pdb columns
 when neither is present. The mail's check is those two keys and no others, so
 it can never promise where that column would abstain.
 
 THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
 real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
-inline-capped design in its ``n_inline_capped`` branch, and the one write of
-``pdb_content_b64`` is the other leg of that same if/else -- but no in-repo
-producer puts it in front of this code:
+inline-capped design in its ``n_inline_capped`` branch, and neither of the two
+writes of ``pdb_content_b64`` in that file runs on that path (one is the other
+leg of the same if/else, one is the ``rescue_inline`` branch, which needs an
+upload endpoint) -- but no in-repo producer puts it in front of this code:
 
   * that branch needs ``inline_pdbs``, which is ``_inline_enabled() and not
     upload_endpoint``, and the hub sets ``_upload_urls_endpoint``
@@ -31,7 +33,7 @@ producer puts it in front of this code:
 
 So the reachable residue is the PARTLY-capped result, which still says
 "downloadable structures" and still overstates how many rows carry one. That is
-fixed here; see the test named for it. The five container-side tools
+NOT fixed here; see the test named for it. The five container-side tools
 (pxdesign, rfdiffusion, bindcraft, boltzgen, rfantibody) have no
 ``run_pipeline.py`` in this repo, so their candidate shape is UNREAD -- whether
 the guarded branch is ever live depends on them.
@@ -40,8 +42,9 @@ THE PREMISE IS RENDERED, NOT ASSERTED.
 ``test_the_page_offers_no_per_row_download_for_the_same_payload`` puts the very
 payload the mail describes through the real macro in the app's real Jinja
 environment and counts controls. Note its scope: it measures the PER-ROW
-controls only. The export bar above the table carries an unconditional
-"PDBs (ZIP)" link, which is a separate surface and is untouched here.
+controls only. The export bar above the table carries a "Structures (ZIP)"
+link (#252 renamed it from "PDBs (ZIP)"), gated on ``not is_example`` rather
+than on any row's structure. Separate surface, untouched here.
 
 NO OUTBOUND MAIL IS SENT. ``send_job_complete_email`` posts through
 ``requests.post`` in its own body (it does NOT use ``_post_resend``, which is a
@@ -241,7 +244,7 @@ def _per_row_controls(html: str) -> dict:
     """How many PER-ROW structure controls the table rendered.
 
     ``download=`` counts only the per-row anchors: the three export-bar links
-    (the cand-export-btns bar, including "PDBs (ZIP)") carry no such
+    (the cand-export-btns bar, including "Structures (ZIP)") carry no such
     attribute, so they cannot inflate this. That is a deliberate limit, not an
     oversight -- the bulk export is a separate surface this file does not test.
     """

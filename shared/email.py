@@ -1578,13 +1578,15 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # every recognised empty payload takes the "empty" tone above. The
         # old line here said "0 candidates returned with real scores and
         # downloadable PDBs" -- three specific assertions about a payload
-        # this branch exists because it could not read. Reachable by
-        # construction: webhooks/modal.py, blueprints/jobs.py and
-        # shared/compute_campaigns.py all coerce a missing completion
-        # payload to {} on a SUCCEEDED job.
+        # this branch exists because it could not read.
+        #
+        # Reached by an unrecognised KEY, not by {}: _is_empty_result now
+        # returns True for a falsy result, so {} takes the "empty" tone
+        # instead (test_an_unreadable_payload_asserts_nothing_about_it).
+        # The live route is a truthy payload whose keys this module does
+        # not know, which defaults to success on purpose.
         return "Your run finished. The results are on the job page."
 
-    # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
     label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
 
     # The download half of this sentence is not implied by the count, so it
@@ -1613,6 +1615,7 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         and (c.get("pdb_key") or c.get("pdb_content_b64"))
         for c in cands
     ):
+        # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
         return f"{label} and downloadable structures."
     return f"{label} — see the job page."
 
