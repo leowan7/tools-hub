@@ -9,7 +9,7 @@ WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
 ``pdb_content_b64``, and renders an em dash in the View-3D and .pdb columns
 when neither is present. The mail's check is those two keys and no others, so
-it can never promise where that column would abstain.
+it can never promise where those columns would abstain.
 
 THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
 real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
@@ -18,11 +18,11 @@ writes of ``pdb_content_b64`` in that file runs on that path (one is the other
 leg of the same if/else, one is the ``rescue_inline`` branch, which needs an
 upload endpoint) -- but no in-repo producer puts it in front of this code:
 
-  * that branch needs ``inline_pdbs``, which is ``_inline_enabled() and not
-    upload_endpoint``, and the hub sets ``_upload_urls_endpoint``
-    unconditionally (blueprints/tools.py and shared/compute_campaigns.py).
-    A hub-shaped payload without one is refused before the GPU, which is a
-    failed job, not a success;
+  * the ``n_inline_capped`` branch needs ``inline_pdbs``, which is
+    ``_inline_enabled() and not upload_endpoint``, and the hub sets
+    ``_upload_urls_endpoint`` unconditionally (blueprints/tools.py and
+    shared/compute_campaigns.py). A hub-shaped payload without one is
+    refused before the GPU, which is a failed job, not a success;
   * a run where the cap admits NOTHING is failed outright -- ``n_structures ==
     0`` yields ``inline_cap_admitted_nothing`` and sets
     ``result["status"] = "FAILED"`` -- so it takes the failed branch of
@@ -47,9 +47,9 @@ than on any row's structure. Separate surface, untouched here.
 
 NO OUTBOUND MAIL IS SENT. ``send_job_complete_email`` posts through
 ``requests.post`` in its own body (it does NOT use ``_post_resend``, which is a
-different sender), and ``requests`` is the only network import in that
-module. Every sender test below patches the module attribute all of its
-call sites resolve through.
+different sender), and ``requests`` is the only network import in
+``shared/email.py``. Every sender test below patches the module attribute
+all of its call sites resolve through.
 """
 
 from __future__ import annotations
@@ -379,8 +379,8 @@ def test_the_designs_shape_is_read_too():
     ``candidate_records`` reads both keys, so a structure check that looked
     at ``result["candidates"]`` directly would strip the promise from those
     tools' mails -- they set pdb_key on every emitted row. Not
-    esmfold2_design, whose docstring in shared/jobs.py records that it emits
-    BOTH lists, so it is reached either way.
+    esmfold2_design: ``candidate_records``'s own docstring records that it
+    emits BOTH lists, so it is reached either way.
     """
     bodies = _mail({"designs": [_url_row(i) for i in range(2)]}, tool="boltz2")
     for part, body in bodies.items():
