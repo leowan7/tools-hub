@@ -989,7 +989,7 @@ def _target_export(target_id: str, fmt: str):
     # did not, and MISSING.txt inside the archive names which.
     #
     # NOT named `partial`, in either the marker or the local. `partial` is
-    # ALREADY BOUND in this function, at the top, to bool(agg["partial"]) --
+    # ALREADY BOUND in this function, above, to bool(agg.get("partial")) --
     # the aggregate-read-failure flag that `incomplete` is derived from. A
     # second binding here would have left two different meanings on one name
     # in one scope, both truthy in the same direction, so a later `if partial:`

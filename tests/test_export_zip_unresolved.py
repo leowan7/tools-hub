@@ -4,7 +4,7 @@
 ``/targets/<id>/export.zip`` all build their archive with
 :func:`shared.exports.candidates_to_zip`, which skips any candidate whose
 structure bytes do not resolve. A row KEEPS its ``pdb_key`` when the Storage
-object behind it has been deleted, has expired, or is briefly unreachable, so
+object behind it is absent or briefly unreachable, so
 the page still renders that row's per-row ``.pdb`` link and its View 3D button
 -- and the bulk button used to hand back HTTP 200 with a valid 22-byte archive
 containing nothing at all.
@@ -28,8 +28,10 @@ Only the second is an error, so emptiness alone cannot be the signal -- the
 guard reads ``candidates_to_zip``'s ``report`` rather than ``len(namelist())``.
 Several tests across this file and ``test_target_export.py`` fail under an
 emptiness-based guard; no single one of them is load-bearing alone. (An
-earlier header said "four", then "five"; the number depends on which suites
-you run, so counting them here was only ever a way to be wrong.)
+earlier header said "four" and mis-split it as well -- the count was wrong,
+not unknowable. It is deliberately not restated here: a figure that spans
+nine suites, written inside one of them, goes stale when any of the other
+eight gains a test, and nothing would fail when it did.)
 
 The guard is TWO-SIDED and both sides are tested per route. Dropping
 ``report["missing"]`` refuses a download that has nothing to refuse; dropping
@@ -177,20 +179,13 @@ def test_the_job_zip_refuses_when_every_structure_is_unresolved(
 
     assert resp.status_code == 409, resp.status_code
     assert resp.mimetype != "application/zip"
-    body = resp.get_data(as_text=True)
-    assert "None of the 2 structure files" in body, body
-    # The refusal must not send them looking for a fault in the scores or the
-    # other exports, which do not touch Storage at all.
-    assert "CSV" in body, body
-    # And it must name NO cause. Two drafts named one and both were false:
-    # "storage returned none of them" (a corrupt inline b64 gets here with no
-    # fetch attempted) and "structure files are deleted 30 days after a run"
-    # (nothing deletes them on a clock -- cron/purge_old_storage.py's only
-    # non-test caller is the dry-run-by-default CLI at app.py:1086, the
-    # Procfile runs no cron, and no scheduled workflow invokes it).
-    # The route knows the bytes did not arrive and does not know why.
-    for invented_cause in ("deleted", "expired", "days after", "storage "):
-        assert invented_cause not in body.lower(), (invented_cause, body)
+    # The route serves the canonical message verbatim. What that message may
+    # say is pinned once, by exact text, in
+    # test_the_refusal_copy_is_pinned_word_for_word.
+    from shared.exports import zip_unresolved_message
+    assert resp.get_data(as_text=True) == zip_unresolved_message(
+        ["designs/design_1.pdb", "designs/design_2.pdb"]
+    )
 
 
 def test_the_campaign_zip_refuses_when_every_structure_is_unresolved(client):
@@ -407,7 +402,8 @@ def test_a_non_string_pdb_key_does_not_kill_the_export(client, monkeypatch):
 
     An earlier version of this test passed ``lambda _job, _key: None`` as
     fetch_bytes -- a callback that tolerates any type -- and asserted the
-    arcname was built. It passed while the export still 500'd in production:
+    arcname was built. It passed while the export still 500'd through the
+    real route:
     shared/storage.py::download_output computes _output_object_path OUTSIDE
     its try block, so posixpath.basename raises TypeError on a non-string, and
     the routes' _fetch catches only StorageError. The coercion had been applied
@@ -437,6 +433,70 @@ def zf_note(resp) -> str:
     return zf.read("MISSING.txt").decode() if "MISSING.txt" in zf.namelist() else ""
 
 
+@pytest.mark.parametrize("fmt", ["zip", "fasta", "csv"])
+def test_no_export_format_500s_on_a_non_string_pdb_key(
+    client, monkeypatch, fmt,
+):
+    """All THREE formats, because the coercion was applied per-consumer twice
+    and each time the others stayed live.
+
+    Round 3 coerced the ZIP arcname, leaving the ZIP's own Storage fetch
+    raw -- still 500. Round 4 coerced both of those, and /export.fasta still
+    returned 500 through _basename, while the ZIP's refusal body was telling
+    that same user the FASTA export was unaffected. The value is now coerced
+    once in export_key, which is the single dict all three serializers read.
+    """
+    job = _job_row([
+        _inline(1),
+        {"pdb_key": 12345, "sequence": "MKTAY", "scores": {"ipTM": 0.5}},
+    ])
+    _login(client, job.user_id)
+    monkeypatch.setattr(jobs_mod, "load_user_context", lambda: _ctx(job.user_id))
+    monkeypatch.setattr(jobs_mod, "get_job", lambda _id, user_id=None: job)
+
+    resp = client.get(f"/jobs/{job.id}/export.{fmt}")
+
+    assert resp.status_code == 200, (fmt, resp.status_code)
+
+
+@pytest.mark.parametrize("falsy", [0, 0.0, False, b"", {}, [], None, ""])
+def test_a_falsy_pdb_key_is_not_a_structure_reference(falsy):
+    """Coercing at the source must not stringify falsy values.
+
+    ``str(0)`` is ``"0"`` -- truthy, a legal arcname, and indistinguishable
+    from a real key. A row would then be archived under "0" and reported as a
+    missing design. These rows reference no structure and must take the
+    ``candidate_N.pdb`` fallback instead, which is what the template's own
+    falsy branch does with the same value.
+    """
+    from shared.exports import candidates_to_zip, export_key
+
+    assert export_key({"pdb_key": falsy}, 0)["pdb_key"] == ""
+
+    report: dict = {}
+    candidates_to_zip(
+        [{"pdb_key": falsy, "pdb_content_b64": base64.b64encode(b"A").decode()}],
+        lambda _job, _key: None, default_job_id="j1", report=report,
+    )
+    assert report["written"] == ["candidate_1.pdb"], report
+    assert report["missing"] == [], report
+
+
+def test_a_structureless_row_never_reaches_storage():
+    """The fetch gate reads the coerced key, so a row with nothing to fetch
+    costs no Storage round-trip. Dropping ``and lookup_key`` from that gate
+    changes no response, so only this sees it."""
+    from shared.exports import candidates_to_zip
+
+    calls = []
+    candidates_to_zip(
+        [{"sequence": "MKTAY"}, {"pdb_key": "", "scores": {}}],
+        lambda job_id, key: calls.append((job_id, key)),
+        default_job_id="j1",
+    )
+    assert calls == [], calls
+
+
 def test_two_rows_with_no_pdb_key_do_not_collide_into_one_entry():
     """The ``candidate_{i+1}.pdb`` fallback is what keeps them apart.
 
@@ -460,42 +520,97 @@ def test_two_rows_with_no_pdb_key_do_not_collide_into_one_entry():
     assert {zf.read(n) for n in zf.namelist()} == {b"ATOM  A\n", b"ATOM  B\n"}
 
 
-def test_the_note_body_states_no_cause_and_does_not_overclaim():
-    """Pins the MISSING.txt copy itself.
+def test_the_refusal_copy_is_pinned_word_for_word():
+    """Customer-facing copy, pinned by EXACT TEXT and not by a word list.
 
-    Both sentences here have been wrong before and a mutation reverting either
-    survived the whole suite: "are present and complete" (nothing checks
-    completeness -- shared/storage.py only rejects a zero-byte object) and
-    "storage did not return" / "references a structure file" (false for a row
-    with a corrupt inline b64 and no pdb_key, which reaches the note under a
-    synthesised arcname having referenced no file at all).
+    Three drafts of this message shipped a false sentence, and the guard that
+    replaced the second one -- a blacklist of "deleted", "expired",
+    "days after", "storage " -- was shown by review to let a fourth through:
+    "Runs older than thirty days no longer keep their structure files" matches
+    none of those four strings. A blacklist pins the phrasings someone already
+    thought of; the next wrong sentence is by definition not among them. It
+    also had a literal hole, a trailing space that let a sentence-final
+    "storage." pass.
+
+    Exact text is the only guard whose failure mode is right: changing what a
+    customer is told cannot happen without editing this string, which is where
+    the claim gets looked at.
     """
-    from shared.exports import candidates_to_zip
+    from shared.exports import zip_unresolved_message
+
+    assert zip_unresolved_message(["a.pdb", "b.pdb"]) == (
+        "None of the 2 structure files in this export could be retrieved,\n"
+        "so no archive was sent rather than sending you an empty one.\n"
+        "\n"
+        "The scores on the page do not depend on these files, and neither do "
+        "the CSV\n"
+        "and FASTA exports.\n"
+        "\n"
+        "One more attempt is worth trying, in case the files were briefly "
+        "unreachable.\n"
+        "If it fails the same way again, further retries will not help: the "
+        "structure\n"
+        "files for these designs may no longer be available. The run and its "
+        "scores\n"
+        "stay either way.\n"
+    )
+
+
+def test_the_note_copy_is_pinned_word_for_word():
+    """Same treatment for MISSING.txt, and for the same reason.
+
+    Its previous word-list guard also let a false replacement through:
+    "Every design below was found on the results surface and its file was
+    requested and refused" matches none of "storage", "deleted", "expired",
+    "results page" -- and is false for the very row this test builds, whose
+    file is never requested.
+
+    The counts are ASYMMETRIC (2 missing, 1 written) on purpose. The earlier
+    fixture had one of each, so written_count and len(missing) were the same
+    number and a mutant printing the wrong one read correctly.
+    """
+    from shared.exports import _missing_note, candidates_to_zip
 
     report: dict = {}
     candidates_to_zip(
-        [_inline(1), {"pdb_content_b64": "!!!not-base64!!!"}],
+        [
+            _inline(1),                                  # resolves
+            {"pdb_content_b64": "!!!not-base64!!!"},     # corrupt, no pdb_key
+            _stored(3),                                  # storage miss
+        ],
         lambda _job, _key: None, default_job_id="j1", report=report,
     )
-    assert report["missing"] == ["candidate_2.pdb"], report
+    # The corrupt-b64 row references no file at all and still lands here under
+    # a synthesised name -- which is why the copy cannot say a file was asked
+    # for and refused.
+    assert report["written"] == ["designs/design_1.pdb"], report
+    assert report["missing"] == ["candidate_2.pdb", "designs/design_3.pdb"], (
+        report
+    )
 
-    from shared.exports import _missing_note
-    note = _missing_note(report["missing"], len(report["written"]))
-    assert "1 of 2 designs" in note, note
-    assert "are present." in note, note
-    assert "complete" not in note, note
-    for invented_cause in ("storage", "deleted", "expired", "results page"):
-        assert invented_cause not in note.lower(), (invented_cause, note)
+    assert _missing_note(report["missing"], len(report["written"])) == (
+        "2 of 3 designs could not be retrieved and are NOT in this archive.\n"
+        "The other 1 are present.\n"
+        "\n"
+        "The designs below carry a structure in the results that could not be\n"
+        "read when the archive was built.\n"
+        "\n"
+        "Missing:\n"
+        "  candidate_2.pdb\n"
+        "  designs/design_3.pdb\n"
+    )
 
 
 @pytest.mark.parametrize("capped", [False, True])
 def test_the_campaign_filename_marks_missing_designs_even_when_capped(
     client, capped,
 ):
-    """The capped branch builds its own filename and had no coverage.
+    """The capped branch builds its own filename, and the MARKER on it had no
+    coverage -- deleting it there survived the whole suite.
 
-    Deleting the marker from campaigns.py's capped branch survived the whole
-    suite: the only campaign filename assertion ran through the uncapped one.
+    The branch itself was not unwatched: tests/test_campaign_results.py
+    asserts "top300of350" through it. What nothing checked was this marker
+    composing with that truncation.
     """
     def _first_job_only(*, user_id, job_id, filename):  # noqa: ARG001
         if job_id == "job-ok":
@@ -523,9 +638,11 @@ def test_the_target_filename_carries_every_marker_it_earns(
     client, capped, agg_partial,
 ):
     """`capped`, `incomplete` and `_missing_designs` are three independent
-    conditions on one filename, and the capped branch had coverage for none of
-    them -- deleting either `{incomplete}` or the new marker from that branch
-    survived the whole suite.
+    conditions on one filename. `capped` itself is covered by
+    tests/test_target_export.py::test_a_capped_zip_names_its_own_truncation;
+    what nothing watched was the other two COMPOSING with it -- deleting
+    either `{incomplete}` or the new marker from the capped branch survived
+    the whole suite.
 
     `incomplete` comes from the aggregate's own `partial` flag (a sub-job could
     not be read); `_missing_designs` means structures did not resolve. They are

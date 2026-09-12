@@ -121,7 +121,31 @@ def export_key(cand: dict, i: int) -> dict:
         value = cand.get(source)
         if value is not None:
             key[column] = value
-    key["pdb_key"] = cand.get("pdb_key", "")
+    # Coerced HERE, not at the call sites, because all three serializers read
+    # pdb_key from this one dict and it reaches three things that break on a
+    # non-string:
+    #   _basename        (FASTA ids)   -> .replace
+    #   _safe_arcname    (ZIP entries) -> .replace
+    #   download_output  (ZIP fetch)   -> posixpath.basename, and shared/
+    #                                     storage.py computes the object path
+    #                                     OUTSIDE its try, so this raises
+    #                                     TypeError, which the routes' _fetch
+    #                                     does not catch (it catches
+    #                                     StorageError) and the export 500s.
+    # pdb_key is whatever the container wrote into job.result and its type "is
+    # not ours to guarantee" -- templates/components/candidate_table.html
+    # coerces it at its own definition for that reason, and commit fadbe24
+    # records the shape 500-ing the results page. Two earlier attempts at this
+    # patched one call site each and left the other consumers live: the second
+    # of them fixed the ZIP while /export.fasta still returned 500 for the
+    # same row.
+    #
+    # Falsiness is PRESERVED rather than stringified. A pdb_key of 0, {} or []
+    # is not a structure reference, and str() would make it the truthy "0" or
+    # "{}", which reads as one -- it would be archived under that name and
+    # reported as a missing design. The template's own falsy branch agrees.
+    raw_pdb_key = cand.get("pdb_key", "")
+    key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
     # Whether these numbers were measured at all. The smoke tier fabricates
     # deterministic scores when no model output exists, and stripping the
@@ -399,8 +423,7 @@ def _missing_note(missing, written_count: int) -> str:
         f"NOT in this archive.",
         f"The other {written_count} are present.",
         "",
-        "The designs below carry a structure in this run's results that could "
-        "not be",
+        "The designs below carry a structure in the results that could not be",
         "read when the archive was built.",
         "",
         "Missing:",
@@ -415,37 +438,48 @@ def zip_unresolved_message(missing) -> str:
     Shared by the job, campaign and target routes so one wording covers the
     three buttons that reach this failure.
 
-    STATES NO CAUSE, deliberately, and the history here is worth keeping. Draft
-    one blamed Storage ("storage returned none of them"), which this code
-    cannot know -- a corrupt inline ``pdb_content_b64`` reaches the refusal
-    without a fetch being attempted. Draft two replaced that with a retention
-    explanation ("structure files are deleted 30 days after a run"), which is
-    false in its MECHANISM: ``cron/purge_old_storage.py`` is the only thing
-    that would delete them, its sole non-test caller is the
-    ``flask storage:purge-old`` CLI at ``app.py:1086`` (dry-run unless
-    ``--apply``), the Procfile runs no cron, and no scheduled workflow invokes
-    it. Nothing deletes these objects on a clock today. ``templates/legal/``
-    is more careful than draft two was, saying outputs "may be" deleted after
-    thirty days.
+    NAMES NO MECHANISM, deliberately. It does hedge ("may no longer be
+    available"), which is a statement about availability, not an explanation
+    of it -- the distinction the two earlier drafts failed.
 
-    Two false causes in two drafts is the argument for naming none. The route
-    knows the bytes did not arrive; it does not know why, and a customer acts
-    on the same advice either way.
+    Draft one blamed Storage ("storage returned none of them"), which this
+    code cannot know: a corrupt inline ``pdb_content_b64`` reaches the refusal
+    without a fetch being attempted. Draft two replaced that with a retention
+    explanation ("structure files are deleted 30 days after a run"), false in
+    its MECHANISM -- ``cron/purge_old_storage.py`` is the only thing in THIS
+    REPOSITORY that would delete them, its sole non-test caller is the
+    ``flask storage:purge-old`` CLI at ``app.py:1086`` (``dry_run: bool =
+    True``), the Procfile runs no cron, and none of the three scheduled
+    workflows invokes it. Scoped to the repository on purpose: Railway crons
+    are configured in a dashboard, outside this tree, so no file here can
+    settle what a deployment runs -- which is itself the reason customer copy
+    should not assert the mechanism.
+
+    Two invented causes in two drafts is the argument for naming none.
+
+    The retry advice is CONDITIONAL for the same reason draft one's was wrong.
+    Two arms of this refusal fail deterministically -- a corrupt inline b64 is
+    fixed in ``job.result`` and re-reads identically forever, and so does a
+    pdb_key that names an object that is simply gone. An unconditional "trying
+    again is worth doing" is the same false promise draft one made, and a
+    third draft briefly reinstated it.
     """
     return (
         f"None of the {len(missing)} structure files in this export could be "
         f"retrieved,\n"
         "so no archive was sent rather than sending you an empty one.\n"
         "\n"
-        "The scores on the page and the CSV and FASTA exports do not depend on "
-        "these\n"
-        "files and are unaffected.\n"
+        "The scores on the page do not depend on these files, and neither do "
+        "the CSV\n"
+        "and FASTA exports.\n"
         "\n"
-        "Trying again is worth doing. If it keeps failing, the structure files "
-        "for\n"
-        "this run may no longer be available -- the run and its scores stay "
-        "either\n"
-        "way.\n"
+        "One more attempt is worth trying, in case the files were briefly "
+        "unreachable.\n"
+        "If it fails the same way again, further retries will not help: the "
+        "structure\n"
+        "files for these designs may no longer be available. The run and its "
+        "scores\n"
+        "stay either way.\n"
     )
 
 
@@ -505,23 +539,9 @@ def candidates_to_zip(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, cand in enumerate(_dict_candidates(candidates)):
             key = export_key(cand, i)
-            # Coerced ONCE, here, because this value has two consumers and both
-            # of them break on a non-string. pdb_key is whatever the container
-            # wrote into job.result, and its type "is not ours to guarantee" --
-            # templates/components/candidate_table.html coerces it at its own
-            # definition for that reason, and commit fadbe24 records the shape
-            # 500-ing the results page.
-            #   _safe_arcname  -> AttributeError on .replace (TypeError for
-            #                     bytes, whose .replace wants bytes args)
-            #   fetch_bytes    -> shared/storage.py::download_output computes
-            #                     _output_object_path OUTSIDE its try, so
-            #                     posixpath.basename raises TypeError, which
-            #                     the routes' _fetch does not catch (it catches
-            #                     StorageError) and the whole export 500s.
-            # An earlier draft coerced only the arcname and left the fetch
-            # reading key["pdb_key"] raw, so the Storage-backed row -- the one
-            # the coercion was added for -- still 500'd.
-            lookup_key = str(key["pdb_key"]) if key["pdb_key"] else ""
+            # Already a str, coerced once in export_key -- see the note there
+            # for why it is done at the source and not here.
+            lookup_key = key["pdb_key"]
             pdb_key = lookup_key or f"candidate_{i + 1}.pdb"
             job_id = key.get("source_job") or default_job_id
             # The prefix is computed before the bytes are resolved because a
