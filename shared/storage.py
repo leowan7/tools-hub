@@ -232,7 +232,24 @@ def stage_campaign_candidates(
         # route through -- the three `candidates=candidate_records(
         # job.result)` call sites in blueprints/lab_projects.py.
         cand = candidates[idx] if isinstance(candidates[idx], Mapping) else {}
-        raw_key = cand.get("pdb_key") or f"candidate_{idx}.pdb"
+        # pdb_key is whatever the tool container wrote into job.result, so
+        # its TYPE is not ours to guarantee. Coerced HERE, at the definition,
+        # the way candidate_table.html coerces it at its own: the raw value
+        # has TWO consumers below and BOTH raise TypeError on a non-str --
+        # `download_output` (via `_output_object_path`) and `_safe_filename`
+        # (via `werkzeug.utils.secure_filename`, which calls
+        # `unicodedata.normalize`). Only the first is one StorageError
+        # away from the `continue` below; `_safe_filename` sits past the
+        # if/elif join, so it runs on BOTH arms with nothing catching it, and
+        # the inline-b64 arm reaches it without calling Storage at all --
+        # which is the arm a non-str key takes, since
+        # `shared.jobs._slim_result_for_persist` gates slimming on
+        # `isinstance(pdb_key, str)` and so leaves the inline copy on exactly
+        # these rows. The falsy branch is unchanged: None/''/0 still take the
+        # candidate_N.pdb default rather than becoming the truthy "None"/"0".
+        raw = cand.get("pdb_key")
+        pdb_key = str(raw) if raw else ""
+        raw_key = pdb_key or f"candidate_{idx}.pdb"
         encoded = cand.get("pdb_content_b64")
         data = None
         if encoded:
@@ -241,11 +258,11 @@ def stage_campaign_candidates(
             except Exception:
                 logger.warning("Candidate %s has un-decodable pdb_content_b64.", idx)
                 continue
-        elif cand.get("pdb_key"):
+        elif pdb_key:
             # Inline copy was slimmed off the row — fetch from Storage.
             try:
                 data = download_output(
-                    user_id=user_id, job_id=job_id, filename=cand["pdb_key"],
+                    user_id=user_id, job_id=job_id, filename=pdb_key,
                 )
             except StorageError:
                 logger.warning(

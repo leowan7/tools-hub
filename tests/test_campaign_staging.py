@@ -311,3 +311,93 @@ def test_an_out_of_range_index_is_skipped_without_staging_anything_else():
 
     assert [p for p, _ in uploads] == ["camp-1/designs_d2.pdb"]
     assert [_bfactors(d) for _, d in uploads] == [[20.0]]
+
+
+# --------------------------------------------------------------------------
+# pdb_key type (the container writes it; this repo does not)
+# --------------------------------------------------------------------------
+#
+# These call ``stage_campaign_candidates`` directly. ``shared/storage.py``
+# imports nothing from ``shared.email`` (grep: no match), so the campaign
+# mailer the two blueprint call sites fire afterwards is not reachable from
+# here and there is nothing to patch out.
+
+
+def test_a_non_string_pdb_key_does_not_abandon_the_rest_of_the_shortlist():
+    """A bad key must skip ITS candidate, the way an out-of-range index and
+    a storage miss already do -- not abort the loop partway.
+
+    The bad row is deliberately NOT first. Before the coercion the
+    ``TypeError`` escaped after design_1 had already been uploaded and
+    before design_3 was reached, so the failure mode was a wet-lab order
+    holding SOME of its structures with nothing recording that it was
+    incomplete; a bad row at index 0 would have looked like a clean
+    zero-PDB failure instead and hidden that.
+
+    ``download_output`` is NOT patched here, unlike ``_stage_many``. The
+    crash was in the path it BUILDS (``_output_object_path`` ->
+    ``posixpath.basename``), which runs before any Storage call, so a
+    patched-away download resolves the key without ever touching the code
+    under test and this test passes with the defect present. The mocked
+    bucket raising on download is what turns a coerced-but-absent key into
+    the ``StorageError`` the existing ``except`` already handles.
+    """
+    ctx, client = _patched_bucket()
+    client.storage.from_.return_value.download.side_effect = RuntimeError(
+        "no such object"
+    )
+    cands = [
+        {"rank": 1, "pdb_key": "designs/design_1.pdb",
+         "pdb_content_b64": _b64_atom(0.10)},
+        {"rank": 2, "pdb_key": 12345},
+        {"rank": 3, "pdb_key": "designs/design_3.pdb",
+         "pdb_content_b64": _b64_atom(0.30)},
+    ]
+    with ctx:
+        written = storage_mod.stage_campaign_candidates(
+            campaign_id="camp-1",
+            candidates=cands,
+            indices=[0, 1, 2],
+            user_id="u1",
+            job_id="job-1",
+        )
+
+    assert written == [
+        "camp-1/designs_design_1.pdb", "camp-1/designs_design_3.pdb",
+    ]
+    assert [path for path, _ in _uploads(client)] == written
+
+
+def test_a_non_string_pdb_key_with_an_inline_payload_is_staged_under_it():
+    """The arm that moving ``_output_object_path`` inside
+    ``download_output``'s ``try`` would NOT have fixed.
+
+    With an inline ``pdb_content_b64`` the Storage branch is never taken,
+    and the raw key's second consumer -- ``_safe_filename``, via
+    ``werkzeug.utils.secure_filename`` and in turn
+    ``unicodedata.normalize`` -- raises the same uncaught ``TypeError``
+    further down. It is also the arm these rows actually take:
+    ``shared.jobs._slim_result_for_persist`` gates slimming on
+    ``isinstance(pdb_key, str)``, so a non-str key is precisely the case
+    that KEEPS its inline copy.
+
+    The last row pins the falsy branch, which is why the coercion is
+    ``str(raw) if raw else ""`` and not a bare ``str(raw)``: ``0`` is a
+    legal-looking key that means "no structure reference", and ``str(0)``
+    would make it the truthy ``"0"`` and stage the design under a filename
+    the container never wrote.
+    """
+    cands = [
+        {"rank": 1, "pdb_key": "designs/design_1.pdb",
+         "pdb_content_b64": _b64_atom(0.10)},
+        {"rank": 2, "pdb_key": 12345, "pdb_content_b64": _b64_atom(0.20)},
+        {"rank": 3, "pdb_key": 0, "pdb_content_b64": _b64_atom(0.30)},
+    ]
+    uploads = _stage_many(cands)
+
+    assert [path for path, _ in uploads] == [
+        "camp-1/designs_design_1.pdb",
+        "camp-1/12345",
+        "camp-1/candidate_2.pdb",
+    ]
+    assert [_bfactors(data) for _, data in uploads] == [[10.0], [20.0], [30.0]]
