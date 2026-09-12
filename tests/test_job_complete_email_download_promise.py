@@ -13,12 +13,43 @@ is those two keys and no others, so it cannot promise on the strength of a
 key those columns ignore. (It CAN still overstate how many rows carry one --
 see the residue below.)
 
-THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
-real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
-inline-capped design in its ``n_inline_capped`` branch, and neither of the two
-writes of ``pdb_content_b64`` in that file runs on that path (one is the other
-leg of the same if/else, one is the ``rescue_inline`` branch, which needs an
-upload endpoint). No PROTEINA state puts such a row in front of this code:
+THIS FIXES A LIVE DEFECT, AND THE FIRST SIX ROUNDS OF REVIEW SAID OTHERWISE.
+esmfold2_design ships a result whose every candidate row carries ``pdb_key``
+None and no inline copy, and on main that mail said "downloadable structures"
+over it while the page rendered an em dash in both columns for every row.
+
+HOW THE ALL-KEYLESS RESULT ARISES (tools/esmfold2_design/run_pipeline.py).
+``_save_complex_pdb`` returns None whenever the bucket's ``complex`` is None,
+and that field is written ONLY by a ``CRITIC_REAL_IPTM`` row that claims the
+bucket -- while a bucket is created for EVERY row carrying a
+``designed_sequence``, and every bucket becomes a design. So two paths reach
+it: a design whose sequence never appeared on a ``CRITIC_REAL_IPTM`` row keeps
+the bucket's literal None, and a claiming row may itself carry ``complex``
+None beside real scores. The design is appended ANYWAY -- no ``continue``,
+unlike the three tools above -- and copied into ``candidates``. That file
+writes ``pdb_content_b64`` nowhere.
+
+NOTHING FAILS SUCH A RUN. Its four FAILED paths are payload-parse, import,
+model-load and ``design()`` raising; none inspects what was delivered. The
+summary hardcodes COMPLETED, and ``_warn_if_scores_missing`` only logs -- its
+own docstring says a dropped complex still passes. proteina's
+``delivery_verdict``, which fails a run that delivered no coordinates, exists
+only in proteina.
+
+THE SHAPING IS PINNED BY EXISTING TESTS, THE UPSTREAM IS NOT.
+tests/test_esmfold2_design_critic_mapping.py asserts ``pdb_key is None`` twice
+on a ONE-design run -- which is an all-keyless run -- over rows whose winner
+carries a score and no complex. Those call ``_shape_designs`` directly, so
+they pin the shaping, not the critic: whether the upstream ``binder_design``
+library emits such a row set is UNREAD here, because that library is not in
+this repo.
+
+PROTEINA MAKES THE SAME SHAPE AND CANNOT REACH THIS CODE, which is why six
+rounds mis-read the reachability. ``tools/proteina/run_pipeline.py`` pops
+``pdb_key`` from an inline-capped design, and neither of the two
+``pdb_content_b64`` writes in that file runs on the capped leg (one is the
+other leg of the same if/else, one is the ``rescue_inline`` branch, which
+needs an upload endpoint). But:
 
   * the ``n_inline_capped`` branch needs ``inline_pdbs``, which is
     ``_inline_enabled() and not upload_endpoint``, and the hub sets
@@ -32,29 +63,15 @@ upload endpoint). No PROTEINA state puts such a row in front of this code:
   * boltz2, iggm and opendde all ``continue`` past a failed upload rather
     than emit a keyless row.
 
-BUT esmfold2_design DOES. ``_save_complex_pdb`` returns None for a design
-whose critic row carried no complex, or whose PDB write raised, and the row
-is appended ANYWAY -- no ``continue``, unlike the three above -- into both
-``designs`` and ``candidates``, carrying ``pdb_key`` None. That file writes
-``pdb_content_b64`` nowhere. Its own comment records the case as observed: a
-design "ranked LAST with iptm None, no complex (so no PDB written, no
-download, no NGL viewer)". An earlier version of this docstring said no
-in-repo producer existed; it had censused the four tools above and missed
-the ninth.
+An earlier version of this docstring said no in-repo producer existed. It had
+censused those four tools and missed this one -- the tool with no
+Dockerfile.modal, which every sweep keyed on that file skips.
 
-So the MIXED result -- some rows delivered, some keyless -- is LIVE, and it
-is exactly the residue this change does not fix (see the test named for it).
-Whether a whole run can lose EVERY complex, which is what the no-structure
-branch needs, is UNREAD: each design takes its complex from the row that
-claims its bucket, and nothing here establishes that every bucket can end up
-empty.
-
-So the reachable residue is the PARTLY-capped result, which still says
-"downloadable structures" and still overstates how many rows carry one. That is
-NOT fixed here; see the test named for it. The five container-side tools
-(pxdesign, rfdiffusion, bindcraft, boltzgen, rfantibody) have no
-``run_pipeline.py`` in this repo, so their candidate shape is UNREAD -- whether
-the guarded branch is ever live depends on them.
+THE MIXED RESULT IS STILL WRONG AND IS NOT FIXED HERE. A result where some
+rows carry a structure and some do not still says "downloadable structures"
+over all of them; see the test named for that residue. The five container-side
+tools (pxdesign, rfdiffusion, bindcraft, boltzgen, rfantibody) have no
+``run_pipeline.py`` in this repo, so their candidate shape is UNREAD.
 
 THE PREMISE IS RENDERED, NOT ASSERTED.
 ``test_the_page_offers_no_per_row_download_for_the_same_payload`` puts the very
@@ -323,6 +340,29 @@ def test_no_structure_anywhere_drops_the_download_promise():
             f"the {part} body promises a download for a result whose rows "
             f"carry no structure: {body!r}"
         )
+
+
+def test_the_live_esmfold2_design_shape_is_not_promised_a_download():
+    """The run this change actually repairs, in the shape that tool emits.
+
+    Every row carries ``pdb_key`` None and there is no inline copy anywhere,
+    which is what esmfold2_design ships when the bucket's complex is None --
+    see the module docstring for the two routes to that. On main the customer
+    was told "downloadable structures" for a run with no structure on any row,
+    over a page rendering an em dash in both columns for every one of them.
+
+    NOT a duplicate of test_no_structure_anywhere_drops_the_download_promise:
+    that one uses proteina's cap shape, which cannot reach this code. This is
+    the shape that can, so deleting it would remove the only pin on the live
+    case while leaving the file green.
+    """
+    rows = [{"rank": i, "name": f"design_{i}", "pdb_key": None,
+             "scores": {"ipTM": 0.81}} for i in range(2)]
+    bodies = _mail({"designs": rows, "candidates": rows},
+                   tool="esmfold2-design")
+    for part, body in bodies.items():
+        assert PROMISE not in body, (part, body)
+        assert "2 candidates returned with real scores" in body, (part, body)
 
 
 def test_the_count_survives_when_the_promise_is_dropped():

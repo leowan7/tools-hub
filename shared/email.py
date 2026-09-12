@@ -1598,26 +1598,30 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     # pdb_b64, which no tool in this repo emits) would let this sentence
     # promise a file the page does not offer -- the thing being prevented.
     #
-    # ONE LIVE PRODUCER, AND IT IS NOT PROTEINA. esmfold2_design appends a
-    # design whose complex is missing anyway -- no ``continue`` -- carrying
-    # pdb_key None and no inline copy (run_pipeline.py, _save_complex_pdb),
-    # so a MIXED result is reachable today and this sentence still overstates
-    # it. Whether a whole run can lose EVERY complex -- which is what the
-    # no-structure return below needs -- is unread.
+    # LIVE, NOT DEFENSIVE, and six review rounds said otherwise.
+    # esmfold2_design ships results whose every candidate row carries pdb_key
+    # None and no inline copy: ``_save_complex_pdb`` returns None when the
+    # bucket's complex is None, that field is written only by a
+    # CRITIC_REAL_IPTM row that claims the bucket, and a bucket exists for
+    # every designed_sequence. The row is appended anyway -- no ``continue``
+    # -- and nothing fails the run: its four FAILED paths are setup and crash
+    # guards, none inspects delivery, and proteina's ``delivery_verdict`` has
+    # no analog there. On main this sentence promised structures over such a
+    # result.
     #
-    # proteina makes the same shape and cannot reach here: it pops pdb_key
-    # from an inline-capped design and never writes pdb_content_b64 on that
-    # leg (the n_inline_capped branch). That path needs
-    # ``not upload_endpoint`` and the hub always sends one
-    # (blueprints/tools.py); a run whose cap admits nothing is failed
-    # outright by delivery_verdict. #252 reached that conclusion for
-    # proteina and carried the same question forward as a follow-up. The
-    # five container-side tools have no run_pipeline.py in this repo, so
-    # their candidate shape is unread here.
+    # proteina makes the same shape and CANNOT reach here, which is what the
+    # earlier reading generalised from: it pops pdb_key from an inline-capped
+    # design and never writes pdb_content_b64 on that leg (the n_inline_capped
+    # branch). That path needs ``not upload_endpoint`` and the hub always
+    # sends one (blueprints/tools.py); a run whose cap admits nothing is
+    # failed outright by delivery_verdict. #252 reached that conclusion for
+    # proteina and carried the same question forward as a follow-up. The five
+    # container-side tools have no run_pipeline.py in this repo, so their
+    # candidate shape is unread here.
     #
-    # ANY, not all: a result where only some rows carry a structure still
-    # says "downloadable structures" and still overstates how many. That
-    # residue is the REACHABLE one and is not fixed here.
+    # ANY, not all: a result where only some rows carry a structure still says
+    # "downloadable structures" and still overstates how many. That residue is
+    # not fixed here.
     if any(
         isinstance(c, dict)
         and (c.get("pdb_key") or c.get("pdb_content_b64"))
