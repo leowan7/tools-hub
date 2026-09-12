@@ -142,8 +142,11 @@ def export_key(cand: dict, i: int) -> dict:
     #
     # Falsiness is PRESERVED rather than stringified. A pdb_key of 0, {} or []
     # is not a structure reference, and str() would make it the truthy "0" or
-    # "{}", which reads as one -- it would be archived under that name and
-    # reported as a missing design. The template's own falsy branch agrees.
+    # "{}", which reads as one -- such a row would be archived under that name
+    # if it carried inline bytes, or reported as a missing design if it did
+    # not. templates/components/candidate_table.html agrees on the SEMANTICS,
+    # treating a falsy pdb_key as no structure reference; its fallback name is
+    # design_N.pdb rather than the candidate_N.pdb used here.
     raw_pdb_key = cand.get("pdb_key", "")
     key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
@@ -418,10 +421,16 @@ def _missing_note(missing, written_count: int) -> str:
     corrupt reaches here without a fetch ever being attempted.
     """
     total = written_count + len(missing)
+    # Counts are LABELLED, not written into sentences. "The other 1 are
+    # present" was the previous phrasing, and the asymmetric fixture that
+    # caught a swapped-count bug is exactly the case that exhibits the
+    # singular. Making the verb agree needs a plural rule in two sentences
+    # that carry no other meaning; a label needs none and cannot disagree.
     lines = [
-        f"{len(missing)} of {total} designs could not be retrieved and are "
-        f"NOT in this archive.",
-        f"The other {written_count} are present.",
+        "This archive is incomplete.",
+        "",
+        f"  Designs present:       {written_count} of {total}",
+        f"  Could not be retrieved: {len(missing)}",
         "",
         "The designs below carry a structure in the results that could not be",
         "read when the archive was built.",
@@ -446,40 +455,60 @@ def zip_unresolved_message(missing) -> str:
     code cannot know: a corrupt inline ``pdb_content_b64`` reaches the refusal
     without a fetch being attempted. Draft two replaced that with a retention
     explanation ("structure files are deleted 30 days after a run"), false in
-    its MECHANISM -- ``cron/purge_old_storage.py`` is the only thing in THIS
-    REPOSITORY that would delete them, its sole non-test caller is the
-    ``flask storage:purge-old`` CLI at ``app.py:1086`` (``dry_run: bool =
-    True``), the Procfile runs no cron, and none of the three scheduled
-    workflows invokes it. Scoped to the repository on purpose: Railway crons
+    its MECHANISM. In THIS REPOSITORY the age sweep is
+    ``cron.purge_old_storage.purge_old_storage``, whose only non-test caller
+    is the ``flask storage:purge-old`` CLI in ``app.py`` (dry-run unless
+    ``--apply``); the module also exports ``purge_user_objects``, called by the
+    same CLI module for erasure requests, which is not on a clock either. The
+    Procfile schedules no purge, and none of the three scheduled workflows
+    invokes one. Scoped to the repository on purpose: Railway crons
     are configured in a dashboard, outside this tree, so no file here can
     settle what a deployment runs -- which is itself the reason customer copy
     should not assert the mechanism.
 
     Two invented causes in two drafts is the argument for naming none.
 
-    The retry advice is CONDITIONAL for the same reason draft one's was wrong.
-    Two arms of this refusal fail deterministically -- a corrupt inline b64 is
-    fixed in ``job.result`` and re-reads identically forever, and so does a
-    pdb_key that names an object that is simply gone. An unconditional "trying
-    again is worth doing" is the same false promise draft one made, and a
-    third draft briefly reinstated it.
+    The retry advice SAYS NOTHING ABOUT WHAT A SECOND FAILURE MEANS, and that
+    is the fourth draft of this paragraph. Draft three promised an
+    unconditional retry; draft four said "if it fails the same way again,
+    further retries will not help", which review falsified by execution --
+    409, 409, then 200 with the complete archive once a Storage outage ended.
+
+    Three arms reach this message and only two are deterministic: a corrupt
+    inline ``pdb_content_b64`` is fixed in ``job.result`` and re-reads
+    identically forever, and so does a key naming an object that is gone. The
+    third is Storage being briefly unreachable, and
+    ``shared/storage.py::download_output`` wraps ANY failure from the download
+    into ``StorageError``, so a 503, a network blip and a genuinely absent
+    object are indistinguishable here. Nothing in this process can tell the
+    customer which one they have, so the copy stops at "may".
+
+    ``len(missing) == 1`` takes a different opening: "None of the 1 structure
+    files" is what a count interpolated into a fixed plural produces, and a
+    single-candidate job is a perfectly ordinary run.
     """
-    return (
-        f"None of the {len(missing)} structure files in this export could be "
+    count = len(missing)
+    opening = (
+        "The structure file in this export could not be retrieved,\n"
+        if count == 1 else
+        f"None of the {count} structure files in this export could be "
         f"retrieved,\n"
-        "so no archive was sent rather than sending you an empty one.\n"
+    )
+    return (
+        opening
+        + "so no archive was sent rather than sending you an empty one.\n"
         "\n"
         "The scores on the page do not depend on these files, and neither do "
         "the CSV\n"
         "and FASTA exports.\n"
         "\n"
-        "One more attempt is worth trying, in case the files were briefly "
-        "unreachable.\n"
-        "If it fails the same way again, further retries will not help: the "
-        "structure\n"
-        "files for these designs may no longer be available. The run and its "
-        "scores\n"
-        "stay either way.\n"
+        "Trying again is worth doing -- the files may have been briefly "
+        "unreachable,\n"
+        "and an outage can outlast more than one attempt. If it keeps "
+        "failing, the\n"
+        "structure files for these designs may no longer be available. The "
+        "run and its\n"
+        "scores stay either way.\n"
     )
 
 

@@ -57,6 +57,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import blueprints.jobs as jobs_mod
+# Safe at module scope: shared.exports is pure functions over candidate dicts
+# and imports no Storage layer, which is the property that lets the retention
+# window be passed in rather than read.
+from shared.exports import zip_unresolved_message
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -182,7 +186,6 @@ def test_the_job_zip_refuses_when_every_structure_is_unresolved(
     # The route serves the canonical message verbatim. What that message may
     # say is pinned once, by exact text, in
     # test_the_refusal_copy_is_pinned_word_for_word.
-    from shared.exports import zip_unresolved_message
     assert resp.get_data(as_text=True) == zip_unresolved_message(
         ["designs/design_1.pdb", "designs/design_2.pdb"]
     )
@@ -197,7 +200,11 @@ def test_the_campaign_zip_refuses_when_every_structure_is_unresolved(client):
         resp = client.get(f"/campaigns/{_CID}/export.zip")
 
     assert resp.status_code == 409, resp.status_code
-    assert "None of the 2 structure files" in resp.get_data(as_text=True)
+    # Verbatim, like the job route: all three serve the canonical message, and
+    # a substring check would not notice one of them drifting.
+    assert resp.get_data(as_text=True) == zip_unresolved_message(
+        ["chunk000/designs/design_1.pdb", "chunk000/designs/design_2.pdb"]
+    )
 
 
 def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
@@ -212,7 +219,10 @@ def test_the_target_zip_refuses_when_every_structure_is_unresolved(client):
         resp = client.get(f"/targets/{_TID}/export.zip")
 
     assert resp.status_code == 409, resp.status_code
-    assert "None of the 2 structure files" in resp.get_data(as_text=True)
+    assert resp.get_data(as_text=True) == zip_unresolved_message([
+        "bindcraft/job-bc/designs/design_1.pdb",
+        "boltzgen/job-bz/designs/design_1.pdb",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +302,8 @@ def test_a_partial_archive_is_delivered_and_names_the_absent_designs(
     assert "_missing_designs" in resp.headers["Content-Disposition"]
 
     note = zf.read("MISSING.txt").decode()
-    assert "2 of 3" in note, note
+    assert "Designs present:       1 of 3" in note, note
+    assert "Could not be retrieved: 2" in note, note
     # Named individually, not just counted -- "some designs are missing" does
     # not tell the customer which of their leads they still have to chase.
     assert "designs/design_2.pdb" in note, note
@@ -457,6 +468,18 @@ def test_no_export_format_500s_on_a_non_string_pdb_key(
     resp = client.get(f"/jobs/{job.id}/export.{fmt}")
 
     assert resp.status_code == 200, (fmt, resp.status_code)
+    # Not status alone: a "fix" that silently dropped the offending row from
+    # CSV and FASTA would return 200 with the design missing from the file.
+    if fmt == "zip":
+        assert "designs/design_1.pdb" in zipfile.ZipFile(
+            io.BytesIO(resp.get_data())
+        ).namelist()
+    else:
+        body = resp.get_data(as_text=True)
+        if fmt == "csv":
+            assert len(body.strip().splitlines()) == 3, body  # header + 2 rows
+        else:
+            assert body.count(">") == 2, body
 
 
 @pytest.mark.parametrize("falsy", [0, 0.0, False, b"", {}, [], None, ""])
@@ -534,10 +557,10 @@ def test_the_refusal_copy_is_pinned_word_for_word():
 
     Exact text is the only guard whose failure mode is right: changing what a
     customer is told cannot happen without editing this string, which is where
-    the claim gets looked at.
+    the claim gets looked at. That cuts both ways -- it enforces a falsehood
+    just as faithfully, which is how "further retries will not help" survived
+    a round after being pinned here.
     """
-    from shared.exports import zip_unresolved_message
-
     assert zip_unresolved_message(["a.pdb", "b.pdb"]) == (
         "None of the 2 structure files in this export could be retrieved,\n"
         "so no archive was sent rather than sending you an empty one.\n"
@@ -546,14 +569,44 @@ def test_the_refusal_copy_is_pinned_word_for_word():
         "the CSV\n"
         "and FASTA exports.\n"
         "\n"
-        "One more attempt is worth trying, in case the files were briefly "
-        "unreachable.\n"
-        "If it fails the same way again, further retries will not help: the "
-        "structure\n"
-        "files for these designs may no longer be available. The run and its "
-        "scores\n"
-        "stay either way.\n"
+        "Trying again is worth doing -- the files may have been briefly "
+        "unreachable,\n"
+        "and an outage can outlast more than one attempt. If it keeps "
+        "failing, the\n"
+        "structure files for these designs may no longer be available. The "
+        "run and its\n"
+        "scores stay either way.\n"
     )
+
+
+def test_the_refusal_does_not_promise_that_a_retry_is_pointless():
+    """A draft said "if it fails the same way again, further retries will not
+    help". Review falsified it by execution: 409, 409, then 200 once a Storage
+    outage ended.
+
+    Three arms reach this message and only two are deterministic.
+    shared/storage.py::download_output wraps ANY download failure into
+    StorageError, so a 503, a network blip and an absent object are one event
+    here -- the code cannot tell the customer which they have, and a message
+    pinned by exact text would have enforced the guess forever.
+    """
+    body = zip_unresolved_message(["a.pdb", "b.pdb"])
+    assert "will not help" not in body, body
+    assert "may no longer be available" in body, body
+
+
+def test_a_single_missing_structure_reads_as_one():
+    """`len(missing) == 1` is an ordinary single-candidate run.
+
+    A count interpolated into a fixed plural gives "None of the 1 structure
+    files", which is why the opening is chosen rather than formatted. Neither
+    reviewer exercised this arm -- both used two missing designs.
+    """
+    body = zip_unresolved_message(["only.pdb"])
+    assert body.startswith(
+        "The structure file in this export could not be retrieved,\n"
+    ), body
+    assert "1 structure files" not in body, body
 
 
 def test_the_note_copy_is_pinned_word_for_word():
@@ -588,9 +641,14 @@ def test_the_note_copy_is_pinned_word_for_word():
         report
     )
 
+    # Counts are labelled rather than written into sentences: the asymmetric
+    # fixture that catches a swapped count is the same case that produced
+    # "The other 1 are present."
     assert _missing_note(report["missing"], len(report["written"])) == (
-        "2 of 3 designs could not be retrieved and are NOT in this archive.\n"
-        "The other 1 are present.\n"
+        "This archive is incomplete.\n"
+        "\n"
+        "  Designs present:       1 of 3\n"
+        "  Could not be retrieved: 2\n"
         "\n"
         "The designs below carry a structure in the results that could not be\n"
         "read when the archive was built.\n"
