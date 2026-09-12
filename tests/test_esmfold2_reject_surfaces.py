@@ -17,7 +17,11 @@ PD-L1 minibinder, n_seeds=2), as it sits in the database:
 ``candidates[0]`` is seed0, and both surfaces read it blind: the Share text
 quoted one of its numbers as "Top score", and the FASTA numbered it ``rank1``
 with nothing to say it is the one design the tool's own worked example exists
-to tell you not to order.
+to tell you not to order. The "Top score" label itself is gone as of this
+branch -- every surviving occurrence of that phrase is prose about the defect,
+none of it composes the string -- because the pick now comes from
+``headline_candidate``, which does not re-rank, so no wording here may claim a
+rank.
 
 WHICH number the Share text quoted is a SEPARATE defect, and these fixtures
 cannot see it. They are authored in PIPELINE key order, so ``ipTM`` is the
@@ -206,7 +210,12 @@ class TestShareCard:
             _cand(PASS_NAME, PASS_IPTM, 10.2, 1),
         ]})
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        assert "Top score" not in title, title
+        # Pin the NUMBERS and the verb, not the label word: this assertion
+        # used to read ``"Top score" not in title`` and went vacuous the day
+        # the label changed, which is the same commit that added these two
+        # lines.
+        assert "0.956" not in title and "0.935" not in title, title
+        assert "designed a binder" not in title, title
         # And it still says the run happened -- the clause is dropped, not the
         # card.
         assert "tools.ranomics.com" in title and "ESMFold2" in title

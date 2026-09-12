@@ -833,15 +833,27 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     Extracted from the route so it can be tested without a session and a
     database row.
 
+    NO RANKING WORD IN THE CLAUSE, because the number no longer comes from
+    a ranking. `_top_score_for_share` feeds this from `headline_candidate`,
+    whose contract is "the first record that is neither shown to fall short
+    NOR built on a declared placeholder, in the order the pipeline stored
+    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
+    This line read "Top score {top_score}." until that change landed on this
+    branch -- defensible while the value was `candidates[0]` off a ranking
+    container, false once the pick became bar-first: on job 2b917b54 the
+    headline design is ipTM 0.9354 and the run's highest ipTM is 0.9556, so
+    the label would have contradicted the number beside it.
+
     Not fixed here: "designed a binder" is the wrong verb for the folding
     tools and for ProteinMPNN under ANY outcome. That is per-tool copy and
-    a product decision.
+    a product decision. Nor is WHICH metric gets formatted -- see
+    `_top_score_for_share`.
     """
     if top_score is None:
         return f"I ran {tool_label} on tools.ranomics.com"
     return (
         f"I designed a binder with {tool_label} on "
-        f"tools.ranomics.com. Top score {top_score}."
+        f"tools.ranomics.com. One design at {top_score}."
     )
 
 
