@@ -1578,16 +1578,46 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # every recognised empty payload takes the "empty" tone above. The
         # old line here said "0 candidates returned with real scores and
         # downloadable PDBs" -- three specific assertions about a payload
-        # this branch exists because it could not read. Reachable by
-        # construction: webhooks/modal.py, blueprints/jobs.py and
-        # shared/compute_campaigns.py all coerce a missing completion
-        # payload to {} on a SUCCEEDED job.
+        # this branch exists because it could not read.
+        #
+        # Reached by an unrecognised KEY, not by {}: _is_empty_result now
+        # returns True for a falsy result, so {} takes the "empty" tone
+        # instead (test_an_unreadable_payload_asserts_nothing_about_it).
+        # The live route is a truthy payload whose keys this module does
+        # not know, which defaults to success on purpose.
         return "Your run finished. The results are on the job page."
-    # "structures", not "PDBs": boltzgen writes .cif for most rows.
-    return (
-        f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
-        "downloadable structures."
-    )
+
+    label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
+
+    # The download half of this sentence is not implied by the count, so it
+    # is read off the rows -- using THE SAME TWO KEYS THE PAGE GATES ON and
+    # deliberately not a third. templates/components/candidate_table.html
+    # sets ``has_pdb = use_url or has_b64`` from pdb_key and
+    # pdb_content_b64, and renders an em dash in both structure columns
+    # when neither is present. Accepting a key that gate ignores (a per-row
+    # pdb_b64, which no tool in this repo emits) would let this sentence
+    # promise a file the page does not offer -- the thing being prevented.
+    #
+    # A GUARD, NOT A REPAIR: no in-repo producer reaches the else branch
+    # today. proteina drops both keys from an inline-capped design
+    # (run_pipeline.py, the n_inline_capped branch), but that path needs
+    # ``not upload_endpoint`` and the hub always sends one
+    # (blueprints/tools.py), and a run whose cap admits nothing is failed
+    # outright by delivery_verdict. #252 carried this forward as its own
+    # task having reached the same conclusion. The five container-side
+    # tools are not readable from this repo.
+    #
+    # ANY, not all: a result where only some rows carry a structure still
+    # says "downloadable structures" and still overstates how many. That
+    # residue is the REACHABLE one and is not fixed here.
+    if any(
+        isinstance(c, dict)
+        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+        for c in cands
+    ):
+        # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
+        return f"{label} and downloadable structures."
+    return f"{label} — see the job page."
 
 
 # ===========================================================================
