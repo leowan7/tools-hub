@@ -399,9 +399,9 @@ def _missing_note(missing, written_count: int) -> str:
         f"NOT in this archive.",
         f"The other {written_count} are present.",
         "",
-        "Each of the designs below is listed on the results page and "
-        "references a",
-        "structure file that did not arrive when this archive was built.",
+        "The designs below carry a structure in this run's results that could "
+        "not be",
+        "read when the archive was built.",
         "",
         "Missing:",
     ]
@@ -409,44 +409,43 @@ def _missing_note(missing, written_count: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def zip_unresolved_message(missing, retention_days: int) -> str:
+def zip_unresolved_message(missing) -> str:
     """Body for the refusal a ZIP route returns when nothing PROMISED resolved.
 
     Shared by the job, campaign and target routes so one wording covers the
     three buttons that reach this failure.
 
-    ``retention_days`` is passed in rather than imported so this module keeps
-    the property its own docstring claims -- pure functions over candidate
-    dicts, no Storage import. Callers pass
-    :data:`shared.storage.RETENTION_DAYS`.
+    STATES NO CAUSE, deliberately, and the history here is worth keeping. Draft
+    one blamed Storage ("storage returned none of them"), which this code
+    cannot know -- a corrupt inline ``pdb_content_b64`` reaches the refusal
+    without a fetch being attempted. Draft two replaced that with a retention
+    explanation ("structure files are deleted 30 days after a run"), which is
+    false in its MECHANISM: ``cron/purge_old_storage.py`` is the only thing
+    that would delete them, its sole non-test caller is the
+    ``flask storage:purge-old`` CLI at ``app.py:1086`` (dry-run unless
+    ``--apply``), the Procfile runs no cron, and no scheduled workflow invokes
+    it. Nothing deletes these objects on a clock today. ``templates/legal/``
+    is more careful than draft two was, saying outputs "may be" deleted after
+    thirty days.
 
-    The retention sentence leads because it is the DOMINANT path here, not an
-    edge case: ``shared/storage.py`` puts ``OUTPUT_BUCKET`` in
-    ``AGE_SWEEP_BUCKETS``, so every structure of a Storage-backed run is
-    deleted on the ``RETENTION_DAYS`` clock while the job row and its
-    ``pdb_key``s survive in Postgres. An older run reaching this message is
-    working as designed. An earlier draft said "trying again in a few minutes
-    is worth doing" with no such qualifier, which is advice that cannot
-    succeed for exactly the users most likely to see it.
+    Two false causes in two drafts is the argument for naming none. The route
+    knows the bytes did not arrive; it does not know why, and a customer acts
+    on the same advice either way.
     """
     return (
         f"None of the {len(missing)} structure files in this export could be "
         f"retrieved,\n"
         "so no archive was sent rather than sending you an empty one.\n"
         "\n"
-        f"Structure files are deleted {retention_days} days after a run, while "
-        f"the run and\n"
-        "its scores are kept. If this run is older than that, its structures "
-        "are gone\n"
-        "for good and re-downloading will not bring them back.\n"
+        "The scores on the page and the CSV and FASTA exports do not depend on "
+        "these\n"
+        "files and are unaffected.\n"
         "\n"
-        "If the run is recent, this is more likely to be temporary -- try "
-        "again in a\n"
-        "few minutes.\n"
-        "\n"
-        "Either way the scores on the page and the CSV and FASTA exports do "
-        "not depend\n"
-        "on these files and are unaffected.\n"
+        "Trying again is worth doing. If it keeps failing, the structure files "
+        "for\n"
+        "this run may no longer be available -- the run and its scores stay "
+        "either\n"
+        "way.\n"
     )
 
 
@@ -506,15 +505,24 @@ def candidates_to_zip(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, cand in enumerate(_dict_candidates(candidates)):
             key = export_key(cand, i)
-            # str() for the reason templates/components/candidate_table.html
-            # coerces the same value at its own definition: pdb_key is whatever
-            # the container wrote into job.result and its type "is not ours to
-            # guarantee". A non-string one reaching _safe_arcname raises
-            # AttributeError on .replace and 500s the whole export, taking the
-            # healthy designs with it. Commit fadbe24 records that shape
+            # Coerced ONCE, here, because this value has two consumers and both
+            # of them break on a non-string. pdb_key is whatever the container
+            # wrote into job.result, and its type "is not ours to guarantee" --
+            # templates/components/candidate_table.html coerces it at its own
+            # definition for that reason, and commit fadbe24 records the shape
             # 500-ing the results page.
-            pdb_key = str(key["pdb_key"]) if key["pdb_key"] \
-                else f"candidate_{i + 1}.pdb"
+            #   _safe_arcname  -> AttributeError on .replace (TypeError for
+            #                     bytes, whose .replace wants bytes args)
+            #   fetch_bytes    -> shared/storage.py::download_output computes
+            #                     _output_object_path OUTSIDE its try, so
+            #                     posixpath.basename raises TypeError, which
+            #                     the routes' _fetch does not catch (it catches
+            #                     StorageError) and the whole export 500s.
+            # An earlier draft coerced only the arcname and left the fetch
+            # reading key["pdb_key"] raw, so the Storage-backed row -- the one
+            # the coercion was added for -- still 500'd.
+            lookup_key = str(key["pdb_key"]) if key["pdb_key"] else ""
+            pdb_key = lookup_key or f"candidate_{i + 1}.pdb"
             job_id = key.get("source_job") or default_job_id
             # The prefix is computed before the bytes are resolved because a
             # design that does NOT resolve is reported by the same arcname it
@@ -536,8 +544,8 @@ def candidates_to_zip(
                     prefix = f"{str(job_id)[:8]}/"
             arcname = _safe_arcname(pdb_key, prefix)
             data = _decode_b64(cand.get("pdb_content_b64"))
-            if data is None and job_id and key["pdb_key"]:
-                data = fetch_bytes(job_id, key["pdb_key"])
+            if data is None and job_id and lookup_key:
+                data = fetch_bytes(job_id, lookup_key)
             if data is None:
                 # Read the row, not the archive: a structureless row is not a
                 # miss, and the archive it produces is byte-identical to the

@@ -45,7 +45,6 @@ from shared.jobs import (
     mark_running,
 )
 from shared.storage import (
-    RETENTION_DAYS,
     StorageError,
     download_output,
     output_exists,
@@ -1130,7 +1129,7 @@ def export_zip(job_id: str):
             len(report["missing"]), job_id,
         )
         return Response(
-            zip_unresolved_message(report["missing"], RETENTION_DAYS),
+            zip_unresolved_message(report["missing"]),
             mimetype="text/plain",
             status=409,
         )
@@ -1138,14 +1137,20 @@ def export_zip(job_id: str):
     # on the target route: the artifact leaves this process and is opened
     # later, out of the page's context. MISSING.txt names WHICH designs are
     # absent; the filename is what says so before the archive is opened.
-    partial = "_partial" if report["missing"] else ""
+    #
+    # Spelled `_missing_designs` and not `_partial` because the target route
+    # already writes `_incomplete` for a DIFFERENT failure (its aggregate could
+    # not read some sub-jobs), and the variable behind that marker is itself
+    # named `partial` there -- so `_partial` would have been the repo's own
+    # word for the other condition, sitting next to it in one filename.
+    missing_designs = "_missing_designs" if report["missing"] else ""
     return Response(
         data,
         mimetype="application/zip",
         headers={
             "Content-Disposition": (
                 f"attachment; filename=job_{job_id[:8]}_structures"
-                f"{partial}.zip"
+                f"{missing_designs}.zip"
             ),
         },
     )

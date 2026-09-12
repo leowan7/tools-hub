@@ -822,9 +822,7 @@ def _target_export(target_id: str, fmt: str):
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
         zip_unresolved_message,
     )
-    from shared.storage import (  # noqa: PLC0415
-        RETENTION_DAYS, download_output,
-    )
+    from shared.storage import download_output  # noqa: PLC0415
 
     ctx = load_user_context()
     if ctx is None:
@@ -982,22 +980,29 @@ def _target_export(target_id: str, fmt: str):
             len(report["missing"]), target_id,
         )
         return Response(
-            zip_unresolved_message(report["missing"], RETENTION_DAYS),
+            zip_unresolved_message(report["missing"]),
             mimetype="text/plain",
             status=409,
         )
-    # `_partial` joins `capped` and `incomplete` on the filename channel this
-    # route already established: some designs resolved and some did not, and
-    # MISSING.txt inside the archive names which.
-    partial = "_partial" if report["missing"] else ""
+    # `_missing_designs` joins `capped` and `incomplete` on the filename
+    # channel this route already established: some designs resolved and some
+    # did not, and MISSING.txt inside the archive names which.
+    #
+    # NOT named `partial`, in either the marker or the local. `partial` is
+    # ALREADY BOUND in this function, at the top, to bool(agg["partial"]) --
+    # the aggregate-read-failure flag that `incomplete` is derived from. A
+    # second binding here would have left two different meanings on one name
+    # in one scope, both truthy in the same direction, so a later `if partial:`
+    # added below would read the wrong one silently rather than raising.
+    missing_designs = "_missing_designs" if report["missing"] else ""
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
         zip_name = (
             f"{stem}_structures_top{len(candidates)}of{total}"
-            f"{incomplete}{partial}.zip"
+            f"{incomplete}{missing_designs}.zip"
         )
     else:
-        zip_name = f"{stem}_structures{incomplete}{partial}.zip"
+        zip_name = f"{stem}_structures{incomplete}{missing_designs}.zip"
     return Response(
         data,
         mimetype="application/zip",
