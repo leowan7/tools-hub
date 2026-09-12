@@ -2,9 +2,8 @@
 
 ``shared/email.py::_result_summary`` ends a successful composite-tool mail with
 "N candidates returned with real scores and downloadable structures." The count
-is read from ``candidate_records``. The download clause was read from nothing:
-it
-was appended to every candidate list, whatever the rows carried.
+is read from ``candidate_records``. The download clause was read from
+nothing: it was appended to every candidate list, whatever the rows carried.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
@@ -48,9 +47,9 @@ than on any row's structure. Separate surface, untouched here.
 
 NO OUTBOUND MAIL IS SENT. ``send_job_complete_email`` posts through
 ``requests.post`` in its own body (it does NOT use ``_post_resend``, which is a
-different sender), and ``requests`` is the only network import in that module.
-Every sender test
-below patches the module attribute all of its call sites resolve through.
+different sender), and ``requests`` is the only network import in that
+module. Every sender test below patches the module attribute all of its
+call sites resolve through.
 """
 
 from __future__ import annotations
@@ -98,8 +97,8 @@ def _scores(iptm: float) -> dict:
 def _capped_row(rank: int) -> dict:
     """A proteina design the inline byte cap dropped the atoms of.
 
-    Its TOP-LEVEL keys are the ``candidate_entry`` that file builds
-    (the ``candidate_entry`` dict) minus the two its ``n_inline_capped``
+    Its TOP-LEVEL keys are the ``candidate_entry`` dict built in
+    ``tools/proteina/run_pipeline.py``, minus the two its ``n_inline_capped``
     branch removes or never writes -- leaving rank, name, target_numbering,
     scores. The nested ``scores`` is a SUBSET of the real one (that carries six
     columns, including rf3_score and cluster_id); nothing here reads those, and
