@@ -1580,7 +1580,7 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # downloadable PDBs" -- three specific assertions about a payload
         # this branch exists because it could not read.
         #
-        # Reached by an unrecognised KEY, not by {}: _is_empty_result now
+        # Reached by an unrecognised SHAPE, not by {}: _is_empty_result now
         # returns True for a falsy result, so {} takes the "empty" tone
         # instead (test_an_unreadable_payload_asserts_nothing_about_it).
         # The live route is a truthy payload whose keys this module does
@@ -1598,15 +1598,15 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     # pdb_b64, which no tool in this repo emits) would let this sentence
     # promise a file the page does not offer -- the thing being prevented.
     #
-    # A GUARD, NOT A REPAIR: no in-repo producer reaches the else branch
-    # today. proteina pops pdb_key from an inline-capped design and never
-    # wrote pdb_content_b64 on that leg (run_pipeline.py, the
-    # n_inline_capped branch), but that path needs
-    # ``not upload_endpoint`` and the hub always sends one
-    # (blueprints/tools.py), and a run whose cap admits nothing is failed
-    # outright by delivery_verdict. #252 carried this forward as its own
-    # task having reached the same conclusion. The five container-side
-    # tools are not readable from this repo.
+    # A GUARD, NOT A REPAIR: no in-repo producer reaches the no-structure
+    # return below today. proteina pops pdb_key from an inline-capped design
+    # and never writes pdb_content_b64 on that leg (run_pipeline.py, the
+    # n_inline_capped branch), but that path needs ``not upload_endpoint``
+    # and the hub always sends one (blueprints/tools.py), and a run whose
+    # cap admits nothing is failed outright by delivery_verdict. #252
+    # reached the same conclusion and carried the same question forward as
+    # a follow-up. The five container-side tools have no run_pipeline.py in
+    # this repo, so their candidate shape is unread here.
     #
     # ANY, not all: a result where only some rows carry a structure still
     # says "downloadable structures" and still overstates how many. That

@@ -7,8 +7,9 @@ nothing: it was appended to every candidate list, whatever the rows carried.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
-``pdb_content_b64``, and renders an em dash in the View-3D and .pdb columns
-when neither is present. The mail's check is those two keys and no others, so
+``pdb_content_b64``, and renders an em dash in the 3D and Structure columns
+(#252 renamed that header from PDB) when neither is present. The mail's check
+is those two keys and no others, so
 it can never promise where those columns would abstain.
 
 THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
@@ -16,7 +17,8 @@ real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
 inline-capped design in its ``n_inline_capped`` branch, and neither of the two
 writes of ``pdb_content_b64`` in that file runs on that path (one is the other
 leg of the same if/else, one is the ``rescue_inline`` branch, which needs an
-upload endpoint) -- but no in-repo producer puts it in front of this code:
+upload endpoint) -- but no in-repo producer puts such a row in front of this
+code:
 
   * the ``n_inline_capped`` branch needs ``inline_pdbs``, which is
     ``_inline_enabled() and not upload_endpoint``, and the hub sets
@@ -217,9 +219,10 @@ def env(isolate_supabase):
     fixture it was instantiated BEFORE the function-scoped mark at the top of
     this file could blank the environment, because pytest fills higher scopes
     first -- so ``create_app()`` ran against whatever ``load_dotenv()`` found.
-    ``DOTENV_PATH`` does not protect it: that name appears nowhere in this repo,
-    and app.py calls bare ``load_dotenv()``, which walks up to the real .env
-    above the worktree. One test uses this, so the per-test rebuild is free.
+    ``DOTENV_PATH`` does not protect it: no code in this repo reads that
+    name, and app.py calls bare ``load_dotenv()``, which walks up to the .env
+    above the worktree. Two tests take this fixture, so the per-test rebuild
+    is cheap.
     """
     from app import create_app
 
@@ -280,8 +283,9 @@ def test_the_page_ignores_a_bare_pdb_b64_row(env):
 
     ``pdb_b64`` is a ROOT-level field on the structure-prediction tools (af2,
     colabfold, esmfold), consumed earlier in _result_summary. The table never
-    reads it per row, so accepting it there would promise a download this
-    column abstains from -- reintroducing the defect through a wider read.
+    reads it per row, so accepting it there would promise a download the
+    3D and Structure columns both abstain from -- reintroducing the defect
+    through a wider read.
     """
     only_b64 = [{"rank": 0, "name": "d0", "scores": _scores(0.8),
                  "pdb_b64": _b64(_PDB_TEXT)}]
@@ -363,8 +367,12 @@ def test_a_storage_backed_row_keeps_the_promise():
 def test_an_inline_only_row_keeps_the_promise():
     """The second leg of the page's ``or``: inline bytes, no pdb_key.
 
-    A check written against ``pdb_key`` alone would strip the promise from
-    every smoke/mini-pilot result, which does have downloads.
+    A check written against ``pdb_key`` alone would silently ignore the
+    second term. candidate_table.html calls that leg legacy -- "modern
+    adapters always set pdb_key" -- and no tool in this repo emits it
+    today, so this pins a symmetry with the page's gate rather than a live
+    tool's output. Smoke and mini_pilot rows do NOT need it: they carry a
+    bare-filename pdb_key (see _slim_result_for_persist in shared/jobs.py).
     """
     bodies = _mail({"candidates": [_inline_row(0)]})
     for part, body in bodies.items():
