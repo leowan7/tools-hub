@@ -9,28 +9,45 @@ WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
 ``pdb_content_b64``, and renders an em dash in the 3D and Structure columns
 (#252 renamed that header from PDB) when neither is present. The mail's check
-is those two keys and no others, so
-it can never promise where those columns would abstain.
+is those two keys and no others, so it cannot promise on the strength of a
+key those columns ignore. (It CAN still overstate how many rows carry one --
+see the residue below.)
 
 THIS IS A GUARD, NOT A REPAIR OF AN OBSERVED MAIL. The structureless row is a
 real shape -- ``tools/proteina/run_pipeline.py`` pops ``pdb_key`` from an
 inline-capped design in its ``n_inline_capped`` branch, and neither of the two
 writes of ``pdb_content_b64`` in that file runs on that path (one is the other
 leg of the same if/else, one is the ``rescue_inline`` branch, which needs an
-upload endpoint) -- but no in-repo producer puts such a row in front of this
-code:
+upload endpoint). No PROTEINA state puts such a row in front of this code:
 
   * the ``n_inline_capped`` branch needs ``inline_pdbs``, which is
     ``_inline_enabled() and not upload_endpoint``, and the hub sets
     ``_upload_urls_endpoint`` unconditionally (blueprints/tools.py and
     shared/compute_campaigns.py). A hub-shaped payload without one is
     refused before the GPU, which is a failed job, not a success;
-  * a run where the cap admits NOTHING is failed outright -- ``n_structures ==
-    0`` yields ``inline_cap_admitted_nothing`` and sets
-    ``result["status"] = "FAILED"`` -- so it takes the failed branch of
+  * a run where the cap admits NOTHING is failed outright:
+    ``n_structures == 0`` yields ``inline_cap_admitted_nothing``, which sets
+    ``result["status"] = "FAILED"``, so it takes the failed branch of
     _result_summary, not this one;
   * boltz2, iggm and opendde all ``continue`` past a failed upload rather
     than emit a keyless row.
+
+BUT esmfold2_design DOES. ``_save_complex_pdb`` returns None for a design
+whose critic row carried no complex, or whose PDB write raised, and the row
+is appended ANYWAY -- no ``continue``, unlike the three above -- into both
+``designs`` and ``candidates``, carrying ``pdb_key`` None. That file writes
+``pdb_content_b64`` nowhere. Its own comment records the case as observed: a
+design "ranked LAST with iptm None, no complex (so no PDB written, no
+download, no NGL viewer)". An earlier version of this docstring said no
+in-repo producer existed; it had censused the four tools above and missed
+the ninth.
+
+So the MIXED result -- some rows delivered, some keyless -- is LIVE, and it
+is exactly the residue this change does not fix (see the test named for it).
+Whether a whole run can lose EVERY complex, which is what the no-structure
+branch needs, is UNREAD: each design takes its complex from the row that
+claims its bucket, and nothing here establishes that every bucket can end up
+empty.
 
 So the reachable residue is the PARTLY-capped result, which still says
 "downloadable structures" and still overstates how many rows carry one. That is
@@ -221,7 +238,7 @@ def env(isolate_supabase):
     first -- so ``create_app()`` ran against whatever ``load_dotenv()`` found.
     ``DOTENV_PATH`` does not protect it: no code in this repo reads that
     name, and app.py calls bare ``load_dotenv()``, which walks up to the .env
-    above the worktree. Two tests take this fixture, so the per-test rebuild
+    above the worktree. Few tests take this fixture, so the per-test rebuild
     is cheap.
     """
     from app import create_app
@@ -283,7 +300,7 @@ def test_the_page_ignores_a_bare_pdb_b64_row(env):
 
     ``pdb_b64`` is a ROOT-level field on the structure-prediction tools (af2,
     colabfold, esmfold), consumed earlier in _result_summary. The table never
-    reads it per row, so accepting it there would promise a download the
+    reads ``pdb_b64`` per row, so accepting it would promise a download the
     3D and Structure columns both abstain from -- reintroducing the defect
     through a wider read.
     """
