@@ -820,6 +820,7 @@ def _target_export(target_id: str, fmt: str):
     from flask import Response  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+        zip_unresolved_message,
     )
     from shared.storage import download_output  # noqa: PLC0415
 
@@ -968,12 +969,40 @@ def _target_export(target_id: str, fmt: str):
     # boltzgen chunk000/designs/design_1.pdb would be one arcname. The switch is
     # driven by _source_tool, which only the target aggregate stamps, so the
     # campaign ZIP is unchanged (shared/exports.py::candidates_to_zip).
-    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    report: dict = {}
+    data = candidates_to_zip(
+        candidates, _fetch, namespace=True, report=report,
+    )
+    # See blueprints/jobs.py::export_zip for why this is a 409 and not a 404.
+    if report["missing"] and not report["written"]:
+        logger.warning(
+            "target export_zip: all %d structures unresolved for %s, refusing",
+            len(report["missing"]), target_id,
+        )
+        return Response(
+            zip_unresolved_message(report["missing"]),
+            mimetype="text/plain",
+            status=409,
+        )
+    # `_missing_designs` joins `capped` and `incomplete` on the filename
+    # channel this route already established: some designs resolved and some
+    # did not, and MISSING.txt inside the archive names which.
+    #
+    # NOT named `partial`, in either the marker or the local. `partial` is
+    # ALREADY BOUND in this function, above, to bool(agg.get("partial")) --
+    # the aggregate-read-failure flag that `incomplete` is derived from. A
+    # second binding here would have left two different meanings on one name
+    # in one scope, both truthy in the same direction, so a later `if partial:`
+    # added below would read the wrong one silently rather than raising.
+    missing_designs = "_missing_designs" if report["missing"] else ""
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_structures_top{len(candidates)}of{total}{incomplete}.zip"
+        zip_name = (
+            f"{stem}_structures_top{len(candidates)}of{total}"
+            f"{incomplete}{missing_designs}.zip"
+        )
     else:
-        zip_name = f"{stem}_structures{incomplete}.zip"
+        zip_name = f"{stem}_structures{incomplete}{missing_designs}.zip"
     return Response(
         data,
         mimetype="application/zip",

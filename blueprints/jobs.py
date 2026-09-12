@@ -1083,11 +1083,17 @@ def export_zip(job_id: str):
        written. Used when the pipeline POSTed to the upload-URLs
        endpoint rather than emitting b64 in the result row.
 
-    Candidates that resolve via neither path are silently skipped
-    (rather than failing the whole archive).
+    A candidate that references no structure at all is silently
+    skipped (rather than failing the whole archive). One that DOES
+    reference a structure and still does not resolve is a design this
+    page offered and the file would not contain: some of those and the
+    archive names them in MISSING.txt, all of them and the download is
+    refused rather than served as a 200 carrying nothing.
     """
     from flask import Response  # noqa: PLC0415
-    from shared.exports import candidates_to_zip  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_zip, zip_unresolved_message,
+    )
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -1108,9 +1114,43 @@ def export_zip(job_id: str):
             )
             return None
 
-    data = candidates_to_zip(candidates, _fetch, default_job_id=job_id)
+    report: dict = {}
+    data = candidates_to_zip(
+        candidates, _fetch, default_job_id=job_id, report=report,
+    )
+    # 409 and not 404: the job exists and is the caller's, and its designs
+    # exist as records -- only the stored bytes are unreachable. 404 is the
+    # one code this must not use, for the reason tests/test_target_export.py::
+    # test_an_owned_but_empty_target_exports_an_empty_file_not_a_404 gives:
+    # an export answering 404 tells a paying user their own work is gone.
+    if report["missing"] and not report["written"]:
+        logger.warning(
+            "export_zip: all %d structures unresolved for job %s, refusing",
+            len(report["missing"]), job_id,
+        )
+        return Response(
+            zip_unresolved_message(report["missing"]),
+            mimetype="text/plain",
+            status=409,
+        )
+    # In the filename for the same reason `capped` and `incomplete` already are
+    # on the target route: the artifact leaves this process and is opened
+    # later, out of the page's context. MISSING.txt names WHICH designs are
+    # absent; the filename is what says so before the archive is opened.
+    #
+    # Spelled `_missing_designs` and not `_partial` because the target route
+    # already writes `_incomplete` for a DIFFERENT failure (its aggregate could
+    # not read some sub-jobs), and the variable behind that marker is itself
+    # named `partial` there -- so `_partial` would have been the repo's own
+    # word for the other condition, sitting next to it in one filename.
+    missing_designs = "_missing_designs" if report["missing"] else ""
     return Response(
         data,
         mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_structures.zip"},
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=job_{job_id[:8]}_structures"
+                f"{missing_designs}.zip"
+            ),
+        },
     )

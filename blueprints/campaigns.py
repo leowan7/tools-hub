@@ -898,6 +898,7 @@ def _campaign_export(campaign_id: str, fmt: str):
     from shared import compute_campaigns as cc  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+        zip_unresolved_message,
     )
     from shared.storage import download_output  # noqa: PLC0415
 
@@ -941,14 +942,35 @@ def _campaign_export(campaign_id: str, fmt: str):
             )
             return None
 
-    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    report: dict = {}
+    data = candidates_to_zip(
+        candidates, _fetch, namespace=True, report=report,
+    )
+    # See blueprints/jobs.py::export_zip for why this is a 409 and not a 404.
+    if report["missing"] and not report["written"]:
+        logger.warning(
+            "campaign export_zip: all %d structures unresolved for %s, "
+            "refusing", len(report["missing"]), campaign_id,
+        )
+        return Response(
+            zip_unresolved_message(report["missing"]),
+            mimetype="text/plain",
+            status=409,
+        )
     # When the ZIP is truncated, name the artifact so the "top N of M"
     # limitation travels with the file (the CSV / FASTA carry the full set).
+    # `_missing_designs` rides the same channel for the same reason: some
+    # designs resolved and some did not, and MISSING.txt inside names which.
+    # See blueprints/jobs.py::export_zip for why not `_partial`.
+    missing_designs = "_missing_designs" if report["missing"] else ""
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_structures_top{len(candidates)}of{total}.zip"
+        zip_name = (
+            f"{stem}_structures_top{len(candidates)}of{total}"
+            f"{missing_designs}.zip"
+        )
     else:
-        zip_name = f"{stem}_structures.zip"
+        zip_name = f"{stem}_structures{missing_designs}.zip"
     return Response(
         data,
         mimetype="application/zip",
