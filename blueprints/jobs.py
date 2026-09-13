@@ -124,10 +124,13 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
     (supabase/migrations/0005_tool_jobs.sql:33) and Postgres normalises jsonb
     object keys by (length, bytewise), so the stored order is NOT the order
     ``tools/esmfold2_design/run_pipeline.py`` writes. For job 2b917b54's score
-    keys that puts ``pI`` -- two characters -- first, every time, so the text
-    read "Top score pI 5.669": a solubility property, lower-is-better,
-    announced as a score. Dict order is not a choice of metric; it is the
-    absence of one.
+    keys that puts ``pI`` -- two characters -- first, every time, so main
+    publishes "One design at pI 5.669." for that job TODAY: a solubility
+    property, lower-is-better, announced as a score. (5.669, not the 11.955
+    the same job quoted before #266 -- that PR fixed WHICH design is read, so
+    a different design's pI is now first. Each number is true of its own
+    moment; only this branch changes WHICH KEY is read at all.) Dict order is
+    not a choice of metric; it is the absence of one.
 
     THE BAR COMES FIRST, AND A REVIEW OF THE FIRST REPAIR IS WHY. That version
     preferred the tool's registered ranking metric, which produced three
@@ -189,23 +192,38 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
         # score_legends.raw_metric, NOT result_columns.candidate_metric, and
         # the difference is load-bearing. candidate_metric checks `scores`
         # then the root for ONE literal key; raw_metric resolves the SAME
-        # aliases ``judge`` does. A boltz2 record keyed `iptm` at the root
-        # judges "meets" through the alias and resolved to None here, so the
-        # text went silent about a design that clears the bar -- a table and a
-        # verdict disagreeing about which cell they read, which is the exact
-        # defect raw_metric was added for.
+        # aliases ``judge`` does, over those same two places. A boltz2 record
+        # keyed `iptm` at the root judges "meets" through the alias and
+        # resolved to None under candidate_metric, so the text went silent
+        # about a design that clears the bar -- a table and a verdict
+        # disagreeing about which cell they read, which is the exact defect
+        # raw_metric was added for.
+        #
+        # AND THERE IS NO FALLBACK TO candidate_metric, because one stood here
+        # and could not fire: every column appears in its own
+        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py:1964-1970 iterates
+        # ``_COLUMN_ALIASES.get(column, (column,))``, and a sweep of the whole
+        # map found no column missing from its own tuple), so raw_metric
+        # returning None means candidate_metric reads the same two places for
+        # the same key and also finds nothing.
         value = score_legends.raw_metric(record, col)
-        if value is None:
-            value = _result_columns.candidate_metric(record, col)
         # A BOOL IS NOT A SCORE, and ``isinstance(True, int)`` is True, so the
         # numeric check below would have quoted "ipTM 1.000" for a stored
         # ``true``.
         if value is None or isinstance(value, bool):
             return None
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return None
+        # AN INT STAYS AN INT. ``plddt_on_100`` hands back the ORIGINAL object
+        # rather than its own float copy precisely so callers can format the
+        # two differently (shared/metric_glossary.py:405-411 names this
+        # caller's og:title as the reason), and a blanket ``float()`` here
+        # undid that one line later: a stored int 88 printed "pLDDT 88.000"
+        # where the results page prints "88". Coerce only what is not already
+        # numeric, so a stored numeric string still reads.
+        if not isinstance(value, (int, float)):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
         # NaN AND INFINITY FORMAT AS WORDS. Probed through this route before
         # the guard: a stored NaN produced "ipTM nan" and an infinity
         # "ipTM inf", in text a person pastes somewhere. This

@@ -244,8 +244,9 @@ def supports_headline_claim(
 ) -> bool:
     """Whether "the top design of this run" means anything for this result.
 
-    THE TEST IS PURELY THE SHAPE: does the result carry a ``candidates``
-    array? That is the canonical binder-design shape and the container ORDERS
+    THE TEST IS THE SHAPE PLUS ONE FLAG: does the result carry a ``candidates``
+    array that a container actually built? That is the canonical binder-design
+    shape and the container ORDERS
     it -- see :func:`headline_candidate`, which exists precisely because
     ``candidates[0]`` is "whatever the container ranked first". A ``designs``
     array carries no ordering guarantee at all: for af2 / colabfold / esmfold
@@ -286,18 +287,35 @@ def supports_headline_claim(
     :func:`candidate_records` and inherited the ``designs`` shapes along with
     the fix.
 
+    A RECOVERED ROW CARRIES THE CANONICAL SHAPE WITHOUT THE ORDER BEHIND IT,
+    which the shape test alone cannot see. ``recover_stuck_job_result`` writes
+    ``candidates`` for ANY tool, with no tool branch above it
+    (shared/job_recovery.py:286-291), and ``reconstruct`` fills that list from
+    the streamed ``inputs._partial_candidates`` by ``.append()`` or, failing
+    that, from a Storage file listing by ``enumerate`` -- neither is a ranking
+    and neither sorts (shared/job_recovery.py:126-146). The row is then stored
+    ``succeeded`` (shared/jobs.py:1055), so it reaches every reader a webhook
+    row would. Hence the recovery writer's own ``backfilled`` flag is read
+    here; ``test_a_recovered_run_gets_no_score_at_all`` holds it.
+
+    This is WIDER than the shape test it guards, deliberately: it abstains for
+    esmfold2-design too, whose native ``candidates`` array IS ranked. A
+    recovered one is not, and the flag cannot tell which tool it came from.
+
     ``tool`` and ``preset`` are accepted and deliberately unused: every caller
-    already has them, and a shape-only answer is a decision this docstring
-    records rather than a signature that forecloses it.
+    already has them, and an answer drawn from the result alone is a decision
+    this docstring records rather than a signature that forecloses it.
 
     The key is tested in ``candidate_records``' own order over the same
     normalized result, so the two can never disagree about which array they
     are describing -- the same contract :func:`candidate_count` keeps.
     """
     normalized = _normalize_result_shape(result)
-    return isinstance(normalized, dict) and isinstance(
+    if not isinstance(normalized, dict) or not isinstance(
         normalized.get("candidates"), list
-    )
+    ):
+        return False
+    return not normalized.get("backfilled")
 
 
 def candidate_meets_bar(

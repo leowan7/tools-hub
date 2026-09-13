@@ -355,6 +355,47 @@ class TestShareCard:
         title = _share(flask_app, monkeypatch, job)["og_title"]
         assert _clause(title) is None, title
 
+    def test_a_recovered_run_gets_no_score_at_all(
+        self, flask_app, monkeypatch,
+    ):
+        """THE CANONICAL SHAPE WITHOUT THE ORDER BEHIND IT.
+
+        The test above abstains on the ``designs`` SHAPE. This one carries
+        ``candidates`` -- the shape that test admits -- and must still abstain,
+        because no container ranked it. ``recover_stuck_job_result`` rebuilds
+        ``candidates`` for ANY tool, with no tool branch above it
+        (shared/job_recovery.py:286-291), filling it from the streamed partials
+        by ``.append()`` or else from a Storage file listing by ``enumerate``,
+        neither of which sorts (shared/job_recovery.py:126-146). The row is
+        then stored ``succeeded`` (shared/jobs.py:1055), so it reaches this
+        route exactly as a webhook row would.
+
+        The fixture's FIRST record is the worse of the two, which is the whole
+        point: stream order is arrival order, not rank.
+        """
+        recovered = {
+            "is_antibody": None,
+            "candidates": [
+                {"rank": 1, "name": "d0", "pdb_key": "designs/d0.pdb",
+                 "sequence": "MK", "scores": _jsonb({"pLDDT": 55.0})},
+                {"rank": 2, "name": "d1", "pdb_key": "designs/d1.pdb",
+                 "sequence": "MK", "scores": _jsonb({"pLDDT": 91.0})},
+            ],
+            "candidate_count": 2,
+            "backfilled": True,
+        }
+        job = _job(tool="af2", preset="batch", result_over=recovered)
+        title = _share(flask_app, monkeypatch, job)["og_title"]
+        assert _clause(title) is None, title
+
+        # THE CONTROL. The same records without the flag DO get a clause, so
+        # the silence above is the flag's doing and not the fixture quietly
+        # failing some other leg of the chain.
+        job = _job(tool="af2", preset="batch",
+                   result_over=dict(recovered, backfilled=False))
+        unflagged = _clause(_share(flask_app, monkeypatch, job)["og_title"])
+        assert unflagged == "One design at pLDDT 55.000", unflagged
+
     def test_a_bar_does_not_substitute_for_an_order(
         self, flask_app, monkeypatch,
     ):
@@ -721,6 +762,31 @@ class TestTheHeadlineMetricChain:
         assert clause == "One design at pLDDT 88.000", clause
         assert "0.41" not in clause
 
+    def test_an_integer_reading_keeps_its_type(
+        self, flask_app, monkeypatch,
+    ):
+        """AN INT PRINTS AS AN INT, with the float beside it as the control.
+
+        ``plddt_on_100`` hands back the ORIGINAL object for a value already on
+        0-100 rather than its own ``float()`` copy, and names THIS route's
+        og:title as the reason it bothers
+        (shared/metric_glossary.py:405-411). A blanket ``float()`` in
+        ``_reading`` undid that one line later, so a stored int 88 read
+        "88.000" on the share card while the results page read "88" -- two
+        surfaces disagreeing about a number neither of them computed.
+        """
+        common = {"ipTM": 0.41, "refolding_rmsd": 1.0}
+        as_int = self._clause_for(
+            flask_app, monkeypatch, "boltzgen", "pilot",
+            dict(common, pLDDT=88),
+        )
+        as_float = self._clause_for(
+            flask_app, monkeypatch, "boltzgen", "pilot",
+            dict(common, pLDDT=88.0),
+        )
+        assert as_int == "One design at pLDDT 88", as_int
+        assert as_float == "One design at pLDDT 88.000", as_float
+
     def test_rfantibody_does_not_quote_a_lower_is_better_metric(
         self, flask_app, monkeypatch,
     ):
@@ -774,7 +840,11 @@ class TestTheHeadlineMetricChain:
             ]},
         )
         clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
-        assert clause == "One design at epitope_contacts 7.000", clause
+        # "7", not "7.000": a CONTACT COUNT has no thousandths, and this
+        # assertion pinned "7.000" for as long as ``_reading`` coerced every
+        # value through ``float()``. See
+        # ``test_an_integer_reading_keeps_its_type``.
+        assert clause == "One design at epitope_contacts 7", clause
 
 
 class TestTheBarDecidesWhetherThereIsAClause:
