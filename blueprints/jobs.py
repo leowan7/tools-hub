@@ -131,7 +131,9 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
 
     THE BAR COMES FIRST, AND A REVIEW OF THE FIRST REPAIR IS WHY. That version
     preferred the tool's registered ranking metric, which produced three
-    defects at once because the sentence this feeds NAMES THE BAR:
+    defects at once. The reading this feeds is emitted ONLY when the run's bar
+    was met (:func:`_top_score_for_share` returns None otherwise), so any
+    number printed there is read as one that bar passed:
 
     * boltzgen quoted ``ipTM 0.410`` beside "meeting our quality bar", and
       ipTM is DELIBERATELY not a leg of boltzgen's bar (see GATE_COLUMNS:
@@ -151,7 +153,7 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
     So: a leg of THIS RUN'S bar whose legend reads higher_is_better -- ONLY
     such a leg, with no fallback to a lower-is-better one. Every gating tool
     has at least one, and it is the only choice that keeps the number and the
-    sentence about the same thing.
+    bar that licensed printing it about the same thing.
 
     Then, when no bar applies: the tool's ranking metric, but only if its
     REGISTERED DIRECTION is ``desc`` and it carries a ``score_legends`` entry
@@ -205,8 +207,8 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
         except (TypeError, ValueError):
             return None
         # NaN AND INFINITY FORMAT AS WORDS. Probed through this route before
-        # the guard: a stored NaN produced "Top design: ipTM nan" and an
-        # infinity "ipTM inf", in text a person pastes somewhere. This
+        # the guard: a stored NaN produced "ipTM nan" and an infinity
+        # "ipTM inf", in text a person pastes somewhere. This
         # pipeline does produce NaN -- tools/esmfold2_design writes
         # ``float("nan")`` for the CDR proxy on every non-antibody design and
         # carries a ``_finite`` helper to strip it -- so the shape is real
@@ -243,13 +245,12 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
 
 
 def _top_score_for_share(job) -> str | None:  # noqa: ANN001
-    """The og:title's trailing CLAUSE for a finished job, or None.
+    """The reading the og:title may quote for a finished job, or None.
 
-    RETURNS A WHOLE SENTENCE, not a bare metric, and the name still says
-    "score" only because other files reference it. What it returns is "Top
-    design meeting our quality bar: ipTM 0.935" or "Top design: ipTM 0.801",
-    because whether the superlative may stand unqualified depends on whether
-    a bar applied and only this function knows that.
+    RETURNS A BARE READING -- ``"ipTM 0.935"`` -- and never a sentence.
+    ``_share_title`` composes the wording and states why it carries no ranking
+    word; this function decides WHICH number may be read out and WHETHER any
+    may be. The name still says "score" only because other files reference it.
 
     Returns None when the job has no candidate scores to surface (a failed
     run, a sequence-design tool, a job without a result yet), and ALSO
@@ -277,22 +278,10 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     their name, which is why the rule below is strict. ``_share_title`` states
     the same reach at more length.
 
-    WHERE THIS STRING GOES, stated precisely because the branch's own prose
-    twice called it "a PUBLIC card". It is a field of the ``/jobs/<id>/share``
-    JSON, offered to the job's OWNER for pasting into a compose box.
-    ``/jobs/<id>`` is ``@login_required`` and ``templates/job_detail.html``
-    defines no ``og_title`` block, so this text is never rendered as a meta
-    tag and today's share button copies the URL alone. It reaches the public
-    only when a user pastes it -- which is still a claim made in their name,
-    and the reason the rules below are strict, but it is not an auto-published
-    card.
-
-    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. The surfaces that show a
-    figure at all print a shortfall beside it -- except the completion email,
-    which is the last unrepaired consumer of this class and still captions
-    ``candidates[0]`` (shared/email.py). An og:title is read with no page
-    around it and has nowhere to put one, so a design the bar rejects gets no
-    clause rather than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
+    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. A page can print a
+    shortfall beside a figure; an og:title is read with no page around it and
+    has nowhere to put one, so a design the bar rejects gets no clause rather
+    than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
     the widening is intended: any run of any gating tool whose every design
     fell short now shares a bare title where it used to publish the least-bad
     number. A tool that declares no bar is unaffected -- its records are
@@ -341,28 +330,28 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     if top is None:
         return None
     # WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT OF THE RECORD, and
-    # the first repair got this wrong. It branched on the PICK'S VERDICT:
-    # "meets" took the qualified sentence and anything else took the plain
-    # "Top design:", under a comment asserting that a non-"meets" pick means
-    # no bar applied. It does not. ``headline_candidate`` returns the first
-    # record not shown to fall short, so a REJECTED record 0 followed by an
-    # UNMEASURED record 1 yields "unjudged" with the bar very much applied --
-    # and the plain sentence then crowned a design while a higher-ranked one
-    # sat dropped above it, which is the exact falsehood the two sentences
-    # were added to remove. Probed on pxdesign: rank0 ipTM 0.99 rejected on
-    # pLDDT, rank1 ipTM 0.80 unmeasured, and it read "Top design: ipTM 0.800".
+    # the first repair got this wrong. It branched on the PICK'S VERDICT to
+    # decide how strongly to word the claim, under a comment asserting that a
+    # non-"meets" pick means no bar applied. It does not.
+    # ``headline_candidate`` returns the first record not shown to fall short
+    # and does not re-rank (shared/jobs.py:196), so a REJECTED record 0
+    # followed by an UNMEASURED record 1 yields "unjudged" with the bar very
+    # much applied. Probed on pxdesign: rank0 ipTM 0.99 rejected on pLDDT,
+    # rank1 ipTM 0.80 unmeasured, and it quoted ``ipTM 0.800`` -- a figure
+    # from a design the run's own results page shows below one it dropped.
     #
-    # So the bar decides the sentence, and when a bar applied but this design
-    # was not SHOWN to meet it, there is no sentence to make: an unmeasured
-    # design cannot be described as clearing a bar, and it cannot be called
-    # the top one either while the bar may have dropped something above it.
+    # So the bar decides whether there is a reading at all: when a bar applied
+    # and this design was not SHOWN to meet it, there is nothing to quote. An
+    # unmeasured design cannot be presented as clearing a bar, and quoting it
+    # anyway puts a figure in the text while the bar may have dropped
+    # something above it.
     # A FABRICATED RECORD IS NEVER QUOTED, whatever its bar. The smoke tier
     # invents deterministic scores when no model output exists, and ``judge``
     # marks that ``unusable`` -- but only AFTER an early return for a tool
     # with no gate columns, so a bindcraft/proteina/iggm stub comes back a
     # plain "unjudged" with an EMPTY unusable and sails past the bar guard
     # below. Probed: a bindcraft record carrying ``filter_status`` "stub
-    # (smoke)" and ipTM 0.99 quoted "Top design: ipTM 0.990". The same stub on
+    # (smoke)" and ipTM 0.99 quoted ``ipTM 0.990``. The same stub on
     # pxdesign is caught, which is what made this look covered.
     #
     # PRE-EXISTING, not introduced here -- the old first-numeric-key rule
@@ -1055,16 +1044,16 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     whose contract is "the first record that is neither shown to fall short
     NOR built on a declared placeholder, in the order the pipeline stored
     them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
-    This line read "Top score {top_score}." until that change landed on this
-    branch -- defensible while the value was `candidates[0]` off a ranking
+    This line read "Top score {top_score}." until #266 landed that change on
+    main (359f417) -- defensible while the value was `candidates[0]` off a ranking
     container, false once the pick became bar-first: on job 2b917b54 the
     headline design is ipTM 0.9354 and the run's highest ipTM is 0.9556, so
     the label would have contradicted the number beside it.
 
     Not fixed here: "designed a binder" is the wrong verb for the folding
     tools and for ProteinMPNN under ANY outcome. That is per-tool copy and
-    a product decision. Nor is WHICH metric gets formatted -- see
-    `_top_score_for_share`.
+    a product decision. WHICH metric gets formatted is not decided here
+    either -- see `_top_score_for_share` and `_share_headline_metric`.
     """
     if top_score is None:
         return f"I ran {tool_label} on tools.ranomics.com"
