@@ -962,6 +962,14 @@ class TestARecoveredColumnIsNotGated:
     same schema, so the page would delete a working table and print a false
     reason for doing it.
 
+    AND IT IS NOT ONLY THE RECOVERED SHAPE THAT WOULD GO. Simulating the gate
+    also fails ``test_the_legacy_designs_shape_is_judged_not_waved_through``
+    above, which is not about recovery at all: that column stores the legacy
+    ``designs[]`` shape, the gate refuses it for want of a ``candidates`` list,
+    and the Design row it deletes is the one currently disclosing "pI 11.95,
+    above 6". A bar-aware shortfall, removed by a gate added to suppress an
+    unearned claim.
+
     NOT CLOSED BY THIS: the per-column heading "Top candidates (N total)" IS a
     superlative over a list nothing ranked. It reads ``col.candidates``, not
     ``col.top``, so the gate would not have reached it either. Left alone
