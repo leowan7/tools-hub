@@ -178,9 +178,10 @@ def _clause(og_title: str) -> str | None:
     """The og:title's trailing claim, or None when it makes none.
 
     ASSERT ON THIS, NOT ON A PHRASE. ``"Top score" not in title`` was the
-    original test for "the card says nothing about scores", and rewording the
-    copy to "Top design" turned every one of those assertions into a sentence
-    about a string the card can no longer produce -- true forever, of nothing.
+    original test for "the card says nothing about scores". #266 reworded the
+    copy to "One design at", turning every one of those assertions into a
+    sentence about a string the card can no longer produce -- true forever, of
+    nothing.
     The card has exactly two shapes: it ends at the URL, or it appends one
     clause. This reads which.
     """
@@ -272,11 +273,13 @@ class TestShareCard:
 
         WHICH NUMBER: the metric used to be "first numeric key in ``scores``",
         which under jsonb ordering is ``pI``. So the card announced an
-        isoelectric point as a score. It now names the tool's ranking metric.
+        isoelectric point as a score. It now names a leg of the run's own
+        quality bar (``blueprints.jobs._share_headline_metric``).
 
-        AND THE SUPERLATIVE IS QUALIFIED, because a bar applied here: seed0
+        AND THE SENTENCE CROWNS NOTHING, because a bar applied here: seed0
         outranks seed1 on ipTM and was dropped, so the run's own results page
-        still shows 0.956 at the top. A bare "Top score 0.935" contradicts it.
+        still shows 0.956 at the top. "Top score 0.935" would contradict that
+        page; "One design at 0.935" does not.
         """
         title = _share(flask_app, monkeypatch, _job())["og_title"]
         assert "0.956" not in title, (
@@ -285,7 +288,7 @@ class TestShareCard:
         assert "pI" not in title, (
             f"an isoelectric point was published as a score: {title}"
         )
-        assert _clause(title) == "Top design meeting our quality bar: ipTM 0.935"
+        assert _clause(title) == "One design at ipTM 0.935"
 
     def test_no_score_clause_when_nothing_clears_the_bar(
         self, flask_app, monkeypatch,
@@ -414,9 +417,7 @@ class TestShareCard:
             ]},
         )
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        # PLAIN "Top design", unqualified: no bar applied, so the pick really
-        # is the container's rank 1 and nothing was dropped above it.
-        assert _clause(title) == "Top design: ipTM 0.701", title
+        assert _clause(title) == "One design at ipTM 0.701", title
 
 
     def test_a_purely_unusable_pick_gets_no_share_clause(
@@ -428,7 +429,7 @@ class TestShareCard:
         invisible.
 
         This design's metrics are a declared placeholder, not a measurement.
-        Without that half the card would publish ``Top design: ipTM 0.950``
+        Without that half the card would publish ``One design at ipTM 0.950``
         for a run whose numbers the pipeline could not produce.
         """
         job = _job(
@@ -701,20 +702,23 @@ class TestTheHeadlineMetricChain:
     def test_boltzgen_quotes_a_leg_of_its_own_bar(
         self, flask_app, monkeypatch,
     ):
-        """The sentence names the bar, so the number must come FROM the bar.
+        """A NUMBER QUOTED UNDER A BAR MUST BE ONE THAT BAR READS.
 
         boltzgen's registered ranking metric is ipTM, and ipTM is DELIBERATELY
         not a leg of its bar -- BoltzGen refolds the design alone, so its ipTM
         is not the cofold quantity 0.70 describes (see GATE_COLUMNS). The
         first repair quoted "ipTM 0.410" beside "meeting our quality bar": a
         number excluded from that bar, stamped as clearing it, and one an
-        outside reader reads as "this does not bind".
+        outside reader reads as "this does not bind". The wording stamps
+        nothing now, but the clause is still emitted ONLY when the bar was met
+        (``blueprints.jobs._top_score_for_share``), so the number printed
+        beside it has to be one the bar read.
         """
         clause = self._clause_for(
             flask_app, monkeypatch, "boltzgen", "pilot",
             {"ipTM": 0.41, "pLDDT": 88.0, "refolding_rmsd": 1.0},
         )
-        assert clause == "Top design meeting our quality bar: pLDDT 88.000", clause
+        assert clause == "One design at pLDDT 88.000", clause
         assert "0.41" not in clause
 
     def test_rfantibody_does_not_quote_a_lower_is_better_metric(
@@ -732,7 +736,7 @@ class TestTheHeadlineMetricChain:
             # for a reason unrelated to the metric choice under test.
             {"ipAE": 6.4, "pAE": 4.2, "pLDDT": 91.0},
         )
-        assert clause == "Top design meeting our quality bar: pLDDT 91.000", clause
+        assert clause == "One design at pLDDT 91.000", clause
         assert "ipAE" not in clause
 
     def test_proteina_does_not_quote_an_unexplainable_negative(
@@ -754,7 +758,7 @@ class TestTheHeadlineMetricChain:
             flask_app, monkeypatch, "proteina", "protein_binder",
             {"total_reward": -0.1827, "af2_iptm": 0.8906, "af2_plddt": 0.885},
         )
-        assert clause == "Top design: af2_plddt 88.500", clause
+        assert clause == "One design at af2_plddt 88.500", clause
         assert "-0." not in clause, "a negative number reached the share text"
 
     def test_a_root_level_alias_still_resolves(self, flask_app, monkeypatch):
@@ -770,24 +774,22 @@ class TestTheHeadlineMetricChain:
             ]},
         )
         clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
-        assert clause == "Top design: epitope_contacts 7.000", clause
+        assert clause == "One design at epitope_contacts 7.000", clause
 
 
-class TestTheBarDecidesTheSentence:
+class TestTheBarDecidesWhetherThereIsAClause:
     def test_an_unmeasured_pick_under_a_bar_says_nothing(
         self, flask_app, monkeypatch,
     ):
         """WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT THE RECORD.
 
-        The first repair branched on the pick's verdict: "meets" took the
-        qualified sentence, anything else took the plain "Top design:", under
-        a comment asserting that a non-meets pick means no bar applied. It
-        does not. ``headline_candidate`` returns the first record not shown to
-        fall short, so a REJECTED record 0 followed by an UNMEASURED record 1
-        yields "unjudged" with the bar very much applied -- and the plain
-        sentence then crowned a design while a higher-ranked one sat dropped
-        above it. That is the exact falsehood the two sentences exist to
-        remove.
+        The first repair branched on the pick's verdict, under a comment
+        asserting that a non-meets pick means no bar applied. It does not.
+        ``headline_candidate`` returns the first record not shown to fall
+        short and does not re-rank (shared/jobs.py:196), so a REJECTED record
+        0 followed by an UNMEASURED record 1 yields "unjudged" with the bar
+        very much applied -- and the card then quoted record 1's number while
+        a higher-ranked design sat dropped above it.
 
         pxdesign gates on ipTM AND pLDDT. Record 0 is rejected on pLDDT at
         ipTM 0.99; record 1 carries no pLDDT at all.
@@ -804,10 +806,10 @@ class TestTheBarDecidesTheSentence:
         title = _share(flask_app, monkeypatch, job)["og_title"]
         assert _clause(title) is None, title
 
-    def test_a_barless_tool_still_speaks_plainly(self, flask_app, monkeypatch):
+    def test_a_barless_tool_still_gets_a_clause(self, flask_app, monkeypatch):
         """The pair: with no bar, nothing can have been dropped above the
-        pick, so the unqualified sentence is the plain truth and must survive
-        the fix above."""
+        pick, so the clause is the plain truth and must survive the fix
+        above."""
         job = _job(
             tool="bindcraft", preset="pilot",
             result_over={"is_antibody": None, "candidates": [
@@ -816,7 +818,7 @@ class TestTheBarDecidesTheSentence:
             ]},
         )
         clause = _clause(_share(flask_app, monkeypatch, job)["og_title"])
-        assert clause == "Top design: ipTM 0.801", clause
+        assert clause == "One design at ipTM 0.801", clause
 
 
 class TestTheShareTextRefusesNonsense:
@@ -847,7 +849,7 @@ class TestTheShareTextRefusesNonsense:
         ``unusable`` and passes the bar guard, while the SAME stub on pxdesign
         is caught. That asymmetry is what made this look covered.
 
-        Probed before the guard: this record quoted "Top design: ipTM 0.990".
+        Probed before the guard: this record quoted "ipTM 0.990".
         Pre-existing rather than introduced -- the old first-numeric-key rule
         quoted it too -- but this function is where the decision lives now,
         and shared/exports.py already refuses to hand these numbers over
@@ -864,7 +866,7 @@ class TestTheShareTextRefusesNonsense:
     ):
         """The pair, so the test above cannot pass by silencing the tool."""
         clause = self._bindcraft(flask_app, monkeypatch, {"ipTM": 0.801})
-        assert clause == "Top design: ipTM 0.801", clause
+        assert clause == "One design at ipTM 0.801", clause
 
     @pytest.mark.parametrize(
         "label,value",
@@ -875,7 +877,7 @@ class TestTheShareTextRefusesNonsense:
         self, flask_app, monkeypatch, label, value,
     ):
         """``f"{float('nan'):.3f}"`` is the word "nan", so before the guard
-        this route emitted "Top design: ipTM nan" -- and "ipTM inf" -- in text
+        this route emitted "ipTM nan" -- and "ipTM inf" -- in text
         a person pastes somewhere.
 
         This pipeline does produce NaN: tools/esmfold2_design writes
