@@ -200,8 +200,9 @@ def _candidate_rows(
     stored preset, and that is deliberate. This key is what
     ``shared.ranking.cohort_key_for`` partitions on and what
     ``annotate_rows`` then hands to ``judge``, so writing the mode here is how
-    the bar reaches the target table at all -- and it is also the only place
-    that HAS the run's result to resolve one from. Two things fall out: an
+    the bar reaches the target table at all -- and it is the only place that
+    STAMPS it onto a row. (Not the only place holding the result: both callers
+    read it on the adjacent line to count against the bar.) Two things fall out: an
     scFv run and a minibinder run of one tool form two cohorts, which they
     should (they are not one comparable population); and the Preset chip
     ``templates/components/candidate_table.html`` renders from this key keeps

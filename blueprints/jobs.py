@@ -12,6 +12,7 @@ _top_score_for_share move in at module level.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 
@@ -28,6 +29,7 @@ from flask import (
 
 from shared import metric_glossary as _metric_glossary
 from shared import pdb_bfactors as _pdb_bfactors
+from shared import result_columns as _result_columns
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
@@ -41,6 +43,7 @@ from shared.jobs import (
     get_job,
     headline_candidate,
     list_campaign_labels_for_user,
+    supports_headline_claim,
     list_jobs_paginated,
     mark_failed,
     mark_running,
@@ -93,29 +96,197 @@ def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
     return isinstance(value, bool) and value is True
 
 
-def _top_score_for_share(job) -> str | None:  # noqa: ANN001
-    """Pull a formatted top-candidate score for the share og_title.
+# The pLDDT spellings IN PREFERENCE ORDER, canonical first.
+#
+# ORDERED ON PURPOSE: ``metric_glossary.PLDDT_COLUMNS`` is a FROZENSET, and
+# iterating a set to choose a quoted number is the same class of defect this
+# whole function exists to fix -- the old code let dict order pick the metric
+# and quoted an isoelectric point. A set would pick whichever
+# spelling Python happened to hash first on a record carrying two.
+#
+# Held to PLDDT_COLUMNS as a SET by
+# tests/test_esmfold2_reject_surfaces.py::test_the_plddt_preference_is_complete,
+# so a tenth spelling added there cannot silently become unreachable here.
+_PLDDT_PREFERENCE = (
+    "pLDDT", "plddt", "mean_pLDDT", "mean_plddt",
+    "complex_pLDDT", "complex_plddt", "complex_iplddt", "iplddt", "af2_plddt",
+)
 
-    Returns None when the job has no candidate scores to surface (a
-    failed run, a sequence-design tool, a job without a result yet),
-    and ALSO when the design this would speak for does not clear the
-    tool's bar. The caller composes ``og_title`` without the trailing
+
+def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | None:
+    """WHICH number the share text may quote, chosen DETERMINISTICALLY.
+
+    ``(column, displayed value)``, or None when this tool has no column worth
+    quoting.
+
+    THE ORIGINAL RULE WAS "THE FIRST NUMERIC KEY IN ``scores``", AND IT QUOTED
+    AN ISOELECTRIC POINT. ``tool_jobs.result`` is a ``jsonb`` column
+    (supabase/migrations/0005_tool_jobs.sql:33) and Postgres normalises jsonb
+    object keys by (length, bytewise), so the stored order is NOT the order
+    ``tools/esmfold2_design/run_pipeline.py`` writes. For job 2b917b54's score
+    keys that puts ``pI`` -- two characters -- first, every time, so main
+    publishes "One design at pI 5.669." for that job TODAY: a solubility
+    property, lower-is-better, announced as a score. (5.669, not the 11.955
+    the same job quoted before #266 -- that PR fixed WHICH design is read, so
+    a different design's pI is now first. Each number is true of its own
+    moment; only this branch changes WHICH KEY is read at all.) Dict order is
+    not a choice of metric; it is the absence of one.
+
+    THE BAR COMES FIRST, AND A REVIEW OF THE FIRST REPAIR IS WHY. That version
+    preferred the tool's registered ranking metric, which produced three
+    defects at once. The reading this feeds is emitted ONLY when the run's bar
+    was met (:func:`_top_score_for_share` returns None otherwise), so any
+    number printed there is read as one that bar passed:
+
+    * boltzgen quoted ``ipTM 0.410`` beside "meeting our quality bar", and
+      ipTM is DELIBERATELY not a leg of boltzgen's bar (see GATE_COLUMNS:
+      BoltzGen refolds the design alone, so its ipTM is not the cofold
+      quantity 0.70 describes). A number excluded from the bar, stamped as
+      clearing it.
+    * rfantibody quoted ``ipAE``, which is LOWER-is-better, so the worse of
+      two passing designs printed the bigger figure.
+    * proteina quoted ``total_reward -0.183``, negative in real data and
+      carrying no ``score_legends`` entry -- the map this chain consults for a
+      direction and a band. (``metric_glossary`` DOES describe it and the
+      tool's own results table renders it; an earlier draft said "no legend
+      anywhere on the site", which is false. The point is that the CHAIN has
+      no direction for it.) That REPLACED a readable ``af2_iptm 0.891``, i.e.
+      the repair was worse than the bug for that tool.
+
+    So: a leg of THIS RUN'S bar whose legend reads higher_is_better -- ONLY
+    such a leg, with no fallback to a lower-is-better one. Every gating tool
+    has at least one, and it is the only choice that keeps the number and the
+    bar that licensed printing it about the same thing.
+
+    Then, when no bar applies: the tool's ranking metric, but only if its
+    REGISTERED DIRECTION is ``desc`` and it carries a ``score_legends`` entry
+    -- the site must be able to explain a number it quotes. That admits bindcraft's ipTM and iggm's
+    epitope_contacts and refuses proteina's total_reward.
+
+    Then model confidence, over ``_PLDDT_PREFERENCE``. This arm is what gives
+    proteina ``af2_plddt 88.5``, bounded and higher-is-better, instead of
+    silence.
+
+    Then NOTHING. esmfold2-design in scFv mode lands here -- no bar in that
+    mode, no ranking metric, no pLDDT -- so the same tool quotes ipTM for a
+    minibinder run and nothing for an scFv one. That asymmetry is deliberate:
+    the alternative is quoting the CDR proxy, whose legend cannot be written
+    per-mode (see the note above MODE_GATE_COLUMNS).
+
+    EVERY ARM FALLS THROUGH ON AN ABSENT VALUE, not just on an unset key. The
+    first repair guarded the later arms on ``if not key``, so a tool whose
+    registered metric was simply missing from the record short-circuited the
+    whole chain and quoted nothing.
+
+    ``normalize_candidate`` runs first because a root-level metric under
+    another name -- iggm stores ``n_epitope_contacts`` for the declared
+    ``epitope_contacts`` -- otherwise resolves to None here while the tool's
+    own results table shows it.
+
+    pLDDT is rescaled by ``plddt_on_100`` for the same reason it always was:
+    the text is read with no page around it to give the scale.
+    """
+    record = _result_columns.normalize_candidate(record, tool)
+
+    def _reading(col):
+        # score_legends.raw_metric, NOT result_columns.candidate_metric, and
+        # the difference is load-bearing. candidate_metric checks `scores`
+        # then the root for ONE literal key; raw_metric resolves the SAME
+        # aliases ``judge`` does, over those same two places. A boltz2 record
+        # keyed `iptm` at the root judges "meets" through the alias and
+        # resolved to None under candidate_metric, so the text went silent
+        # about a design that clears the bar -- a table and a verdict
+        # disagreeing about which cell they read, which is the exact defect
+        # raw_metric was added for.
+        #
+        # AND THERE IS NO FALLBACK TO candidate_metric, because one stood here
+        # and could not fire: every column appears in its own
+        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py:1964-1970 iterates
+        # ``_COLUMN_ALIASES.get(column, (column,))``, and a sweep of the whole
+        # map found no column missing from its own tuple), so raw_metric
+        # returning None means candidate_metric reads the same two places for
+        # the same key and also finds nothing.
+        value = score_legends.raw_metric(record, col)
+        # A BOOL IS NOT A SCORE, and ``isinstance(True, int)`` is True, so the
+        # numeric check below would have quoted "ipTM 1.000" for a stored
+        # ``true``.
+        if value is None or isinstance(value, bool):
+            return None
+        # AN INT STAYS AN INT. ``plddt_on_100`` hands back the ORIGINAL object
+        # rather than its own float copy precisely so callers can format the
+        # two differently (shared/metric_glossary.py:405-411 names this
+        # caller's og:title as the reason), and a blanket ``float()`` here
+        # undid that one line later: a stored int 88 printed "pLDDT 88.000"
+        # where the results page prints "88". Coerce only what is not already
+        # numeric, so a stored numeric string still reads.
+        if not isinstance(value, (int, float)):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+        # NaN AND INFINITY FORMAT AS WORDS. Probed through this route before
+        # the guard: a stored NaN produced "ipTM nan" and an infinity
+        # "ipTM inf", in text a person pastes somewhere. This
+        # pipeline does produce NaN -- tools/esmfold2_design writes
+        # ``float("nan")`` for the CDR proxy on every non-antibody design and
+        # carries a ``_finite`` helper to strip it -- so the shape is real
+        # even though the storage round-trip usually removes it.
+        if not math.isfinite(value):
+            return None
+        if col in _metric_glossary.PLDDT_COLUMNS:
+            value = _metric_glossary.plddt_on_100(value)
+            if value is None or not math.isfinite(value):
+                return None
+        return (col, value)
+
+    def _higher_is_better(col):
+        legend = score_legends.get_legend(tool, col) or {}
+        return legend.get("direction") == "higher_is_better"
+
+    for col in score_legends.gate_columns(tool, preset):
+        if _higher_is_better(col):
+            chosen = _reading(col)
+            if chosen is not None:
+                return chosen
+
+    key, direction = _result_columns.primary_metric_for(tool)
+    if key and direction == "desc" and score_legends.get_legend(tool, key):
+        chosen = _reading(key)
+        if chosen is not None:
+            return chosen
+
+    for col in _PLDDT_PREFERENCE:
+        chosen = _reading(col)
+        if chosen is not None:
+            return chosen
+    return None
+
+
+def _top_score_for_share(job) -> str | None:  # noqa: ANN001
+    """The reading the og:title may quote for a finished job, or None.
+
+    RETURNS A BARE READING -- ``"ipTM 0.935"`` -- and never a sentence.
+    ``_share_title`` composes the wording and states why it carries no ranking
+    word; this function decides WHICH number may be read out and WHETHER any
+    may be. The name still says "score" only because other files reference it.
+
+    Returns None when the job has no candidate scores to surface (a failed
+    run, a sequence-design tool, a job without a result yet), and ALSO
+    whenever a bar applied to the run and this design was not SHOWN to meet
+    it -- which covers a design that fell short AND one never measured
+    against it. The caller composes ``og_title`` without the trailing
     score clause when this returns None.
 
     THE PICK IS DERIVED, NOT ``candidates[0]``. The stored order is the
     container's ranking key and not its bar: esmfold2-design job 2b917b54
     stores a pI 11.95 poly-Leu/Arg scaffold at ipTM 0.9556 ahead of a pI 5.67
     design at 0.9354 that clears the bar, so a blind read named the REJECT.
-    Same mechanism the compare page uses (``shared.jobs.headline_candidate``),
-    and the mode comes off the RESULT first with the stored preset only as a
-    fallback (``score_legends.resolve_mode``).
-
-    THIS FIXES THE PICK, NOT THE METRIC. The loop below returns the first
-    numeric key of ``scores``; ``tool_jobs.result`` is ``jsonb`` and Postgres
-    orders object keys by (length, bytewise), so it hands back ``pI`` before
-    ``ipTM`` and this function returns ``pI 5.669`` for job 2b917b54. The
-    fixtures in tests/test_esmfold2_reject_surfaces.py are in PIPELINE order,
-    which hides that. Open on branch ``claude/share-headline-metric``.
+    Not its ipTM, which is what an earlier draft of this paragraph implied --
+    the number quoted was chosen separately and was ``pI 11.955``; see
+    :func:`_share_headline_metric`. Same mechanism the compare page uses
+    (``shared.jobs.headline_candidate``), and the mode comes off the RESULT
+    first with the stored preset only as a fallback
+    (``score_legends.resolve_mode``).
 
     NOT AN AUTO-PUBLISHED CARD, stated because an earlier draft of this
     paragraph called it one. The string is a field of the ``/jobs/<id>/share``
@@ -125,10 +296,10 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     their name, which is why the rule below is strict. ``_share_title`` states
     the same reach at more length.
 
-    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. Every other surface prints
-    a shortfall beside the figure it shows; an og:title is read with no page
-    around it and has nowhere to put one, so a design the bar rejects gets no
-    clause rather than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
+    AND WHEN NOTHING QUALIFIES, THERE IS NO NUMBER. A page can print a
+    shortfall beside a figure; an og:title is read with no page around it and
+    has nowhere to put one, so a design the bar rejects gets no clause rather
+    than an unqualified boast. THIS IS WIDER THAN ONE TOOL and
     the widening is intended: any run of any gating tool whose every design
     fell short now shares a bare title where it used to publish the least-bad
     number. A tool that declares no bar is unaffected -- its records are
@@ -141,9 +312,23 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     esmfold2-design's legacy rows) persist under ``designs``, and the old read
     saw nothing there, so every one of those jobs silently produced no clause.
     The legacy ``result["output"]`` wrapper is NOT part of that --
-    ``ToolJob.from_row`` normalises it away (shared/jobs.py:368) before a job
+    ``ToolJob.from_row`` normalises it away (``_normalize_result_shape``,
+    called from that classmethod -- cited by NAME because this file has
+    already moved that line twice) before a job
     ever reaches this function, so both reads are flat by the time they get
     here.
+
+    THAT WIDENING WAS NOT A PURE FIX, AND THIS DOCSTRING CLAIMED IT WAS.
+    Reaching the ``designs`` shapes also reached shapes that are NOT ranked.
+    An af2 ``batch`` result is one record per independently submitted sequence
+    in submission order, so the widened read quoted "Top score plddt 55.000"
+    -- the sequence the customer pasted first -- in a run whose other design
+    scored 0.91. Probed through this route, not
+    reasoned about. :func:`shared.jobs.supports_headline_claim` is the gate
+    that restores the old answer for the unordered shapes while keeping the
+    fix for the ``candidates`` array the container really does rank; see it
+    for why the test is the SHAPE alone, and why a bar does not substitute for
+    an order.
     """
     if getattr(job, "status", None) != "succeeded":
         return None
@@ -155,30 +340,65 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     mode = score_legends.resolve_mode(
         tool, result, getattr(job, "preset", None)
     )
+    # Before picking a design, ask whether this result can support a claim
+    # about its "top" one at all. An unordered shape cannot, whatever its bar.
+    if not supports_headline_claim(result, tool, mode):
+        return None
     top, verdict = headline_candidate(records, tool, preset=mode)
     if top is None:
         return None
-    # shared.ranking's predicate, verbatim: a record can be BOTH "below" and
-    # carrying a declared placeholder, and either one disqualifies it from
-    # speaking for the run unqualified.
-    if verdict.verdict == "below" or verdict.unusable:
+    # WHETHER A BAR APPLIED IS A PROPERTY OF THE RUN, NOT OF THE RECORD, and
+    # the first repair got this wrong. It branched on the PICK'S VERDICT to
+    # decide how strongly to word the claim, under a comment asserting that a
+    # non-"meets" pick means no bar applied. It does not.
+    # ``headline_candidate`` returns the first record not shown to fall short
+    # and does not re-rank (shared/jobs.py:196), so a REJECTED record 0
+    # followed by an UNMEASURED record 1 yields "unjudged" with the bar very
+    # much applied. Probed on pxdesign: rank0 ipTM 0.99 rejected on pLDDT,
+    # rank1 ipTM 0.80 unmeasured, and it quoted ``ipTM 0.800`` -- a figure
+    # from a design the run's own results page shows below one it dropped.
+    #
+    # So the bar decides whether there is a reading at all: when a bar applied
+    # and this design was not SHOWN to meet it, there is nothing to quote. An
+    # unmeasured design cannot be presented as clearing a bar, and quoting it
+    # anyway puts a figure in the text while the bar may have dropped
+    # something above it.
+    # A FABRICATED RECORD IS NEVER QUOTED, whatever its bar. The smoke tier
+    # invents deterministic scores when no model output exists, and ``judge``
+    # marks that ``unusable`` -- but only AFTER an early return for a tool
+    # with no gate columns, so a bindcraft/proteina/iggm stub comes back a
+    # plain "unjudged" with an EMPTY unusable and sails past the bar guard
+    # below. Probed: a bindcraft record carrying ``filter_status`` "stub
+    # (smoke)" and ipTM 0.99 quoted ``ipTM 0.990``. The same stub on
+    # pxdesign is caught, which is what made this look covered.
+    #
+    # PRE-EXISTING, not introduced here -- the old first-numeric-key rule
+    # quoted the invented number too -- but this function is now where the
+    # decision lives, and shared/exports.py already refuses to hand these
+    # numbers over unmarked (``export_key``'s "stub (smoke)" provenance).
+    if score_legends.is_fabricated(top):
         return None
-    scores = top.get("scores")
-    if not isinstance(scores, dict):
-        # Some adapters inline the score at the candidate root.
-        flat = {
-            k: top.get(k) for k in ("iptm", "ipTM", "plddt", "pLDDT")
-            if isinstance(top.get(k), (int, float))
-        }
-        scores = flat or {}
-    for col in scores:
-        val = scores.get(col)
-        if col in _metric_glossary.PLDDT_COLUMNS:
-            # This string is pasted with no page around it to give the scale.
-            val = _metric_glossary.plddt_on_100(val)
-        if isinstance(val, (int, float)):
-            return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
-    return None
+    # ONE GUARD, NOT TWO. A separate ``verdict == "below" or verdict.unusable``
+    # test stood above this and is gone because it could not change an
+    # outcome: ``judge`` returns "below", or a non-empty ``unusable``, ONLY
+    # when ``gate_columns`` is non-empty -- the same call ``bar_applied``
+    # makes with the same mode -- so every record it caught is one this
+    # already refuses. Probed across six tool/preset shapes: nothing fires the
+    # old guard while ``bar_applied`` is False. Its comment described the dead
+    # half as load-bearing.
+    bar_applied = bool(score_legends.gate_columns(tool, mode))
+    if bar_applied and verdict.verdict != "meets":
+        return None
+    chosen = _share_headline_metric(tool, mode, top)
+    if chosen is None:
+        return None
+    col, val = chosen
+    # A BARE READING, NOT A SENTENCE. `_share_title` owns the wording and
+    # states why it carries no ranking word (#266); this function owns WHICH
+    # number may be read out. Splitting them is what keeps the superlative
+    # question and the metric question from being answered in one place by
+    # one person's guess.
+    return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
 
 
 @jobs_bp.route("/jobs", methods=["GET"])
@@ -460,8 +680,12 @@ def job_status(job_id: str):
         # beautifully and must not be ordered.
         #
         # NO MODE IS PASSED HERE AND THAT IS NOT AN OVERSIGHT. This endpoint
-        # runs while the job is still going, so ``job.result`` is None and
-        # ``resolve_mode`` has nothing to read; and the streamed partials
+        # is usually polled while the job is still running, when
+        # ``job.result`` is None and ``resolve_mode`` has nothing to read.
+        # That half is CONTINGENT, not guaranteed -- this endpoint has no
+        # terminal-status guard and settles the job in the same request, so a
+        # poll can reach here with a result populated. The half that actually
+        # settles it is next: the streamed partials
         # carry no pI at all, so the minibinder bar could not be answered even
         # with the mode in hand (``bar_is_answerable`` takes no preset for the
         # same reason). The template branches on ``has_bar`` and renders
@@ -838,16 +1062,16 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     whose contract is "the first record that is neither shown to fall short
     NOR built on a declared placeholder, in the order the pipeline stored
     them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
-    This line read "Top score {top_score}." until that change landed on this
-    branch -- defensible while the value was `candidates[0]` off a ranking
+    This line read "Top score {top_score}." until #266 landed that change on
+    main (359f417) -- defensible while the value was `candidates[0]` off a ranking
     container, false once the pick became bar-first: on job 2b917b54 the
     headline design is ipTM 0.9354 and the run's highest ipTM is 0.9556, so
     the label would have contradicted the number beside it.
 
     Not fixed here: "designed a binder" is the wrong verb for the folding
     tools and for ProteinMPNN under ANY outcome. That is per-tool copy and
-    a product decision. Nor is WHICH metric gets formatted -- see
-    `_top_score_for_share`.
+    a product decision. WHICH metric gets formatted is not decided here
+    either -- see `_top_score_for_share` and `_share_headline_metric`.
     """
     if top_score is None:
         return f"I ran {tool_label} on tools.ranomics.com"

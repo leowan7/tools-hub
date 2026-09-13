@@ -239,6 +239,85 @@ def headline_candidate(
     return measured_fallback or fallback
 
 
+def supports_headline_claim(
+    result: Optional[dict], tool: str, preset: Optional[str] = None
+) -> bool:
+    """Whether "the top design of this run" means anything for this result.
+
+    THE TEST IS THE SHAPE PLUS ONE FLAG: does the result carry a ``candidates``
+    array that a container actually built? That is the canonical binder-design
+    shape and the container ORDERS
+    it -- see :func:`headline_candidate`, which exists precisely because
+    ``candidates[0]`` is "whatever the container ranked first". A ``designs``
+    array carries no ordering guarantee at all: for af2 / colabfold / esmfold
+    at the ``batch`` tier, and for boltz2, it is one record per INDEPENDENTLY
+    SUBMITTED sequence in submission order (``designs_out`` is built by
+    ``.append()`` and never sorted -- tools/af2/run_pipeline.py:1196-1399,
+    tools/boltz2/run_pipeline.py:626-728, the latter stamping ``"rank": i``
+    straight off the enumeration index). Its head is whichever sequence the
+    customer pasted first, and nothing about it is "top".
+
+    A BAR IS NOT A SUBSTITUTE FOR AN ORDER, and a two-armed version of this
+    function that also returned True whenever ``tool_has_bar`` held was
+    written, probed, and retracted before it shipped.
+    :func:`headline_candidate` DOES NOT RE-RANK -- it returns the FIRST record
+    not shown to fall short, in stored order -- so on an unranked list a bar
+    only narrows WHICH arbitrary record gets crowned. Probed on this tool: an
+    esmfold2-design ``designs`` list of d0 (ipTM 0.80, pI 5.0) and d1 (ipTM
+    0.95, pI 5.0), both clearing the bar, crowns d0 while 0.95 sits in the
+    same run. The first probe of the bar arm missed this only because its
+    fixture had a single clearing design. THAT LAST CLAUSE IS WRONG and a
+    reviewer disproved it by building the variant: with one clearing design
+    the shipped assertion still fails under the bar arm. Two clearing designs
+    is the better DEMONSTRATION -- it shows why a bar cannot order an
+    unordered list -- not the only fixture that detects it.
+
+    What the shape test costs and what it keeps, checked per shape:
+    esmfold2-design writes ``candidates``
+    (tools/esmfold2_design/modal_app.py:693) so modern rows still qualify and
+    the pI 11.95 reject is still filtered; its LEGACY ``designs``-only rows
+    abstain, which is exactly what ``result["candidates"]`` returned for them
+    before any of this; bindcraft declares no gate columns yet ships a ranked
+    ``candidates`` array, and still qualifies on the shape alone.
+
+    THE READ IS WHAT NEEDS THE GATE, NOT THE BAR. Applying a bar to a read
+    that already existed is safe; WIDENING a read is what puts a surface in
+    front of shapes it was never written for. This function exists because
+    ``_top_score_for_share`` moved from ``result["candidates"]`` to
+    :func:`candidate_records` and inherited the ``designs`` shapes along with
+    the fix.
+
+    A RECOVERED ROW CARRIES THE CANONICAL SHAPE WITHOUT THE ORDER BEHIND IT,
+    which the shape test alone cannot see. ``recover_stuck_job_result`` writes
+    ``candidates`` for ANY tool, with no tool branch above it
+    (shared/job_recovery.py:286-291), and ``reconstruct`` fills that list from
+    the streamed ``inputs._partial_candidates`` by ``.append()`` or, failing
+    that, from a Storage file listing by ``enumerate`` -- neither is a ranking
+    and neither sorts (shared/job_recovery.py:126-146). The row is then stored
+    ``succeeded`` (shared/jobs.py:1055), so it reaches every reader a webhook
+    row would. Hence the recovery writer's own ``backfilled`` flag is read
+    here; ``test_a_recovered_run_gets_no_score_at_all`` holds it.
+
+    This is WIDER than the shape test it guards, deliberately: it abstains for
+    esmfold2-design too, whose native ``candidates`` array IS ranked. A
+    recovered one is not, and the flag cannot tell which tool it came from.
+
+    ``tool`` and ``preset`` are accepted and deliberately unused: every caller
+    already has them, and an answer drawn from the result alone is a decision
+    this docstring records rather than a signature that forecloses it.
+
+    The key is tested in ``candidate_records``' own order over the same
+    normalized result, so the two can never disagree about which array they
+    are describing -- the same contract :func:`candidate_count` keeps.
+    """
+    normalized = _normalize_result_shape(result)
+    if not isinstance(normalized, dict) or not isinstance(
+        normalized.get("candidates"), list
+    ):
+        return False
+    return not normalized.get("backfilled")
+
+
 def candidate_meets_bar(
     tool: str, cand: object, preset: Optional[str] = None
 ) -> bool:
