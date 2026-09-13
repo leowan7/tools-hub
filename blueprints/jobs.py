@@ -512,6 +512,18 @@ def jobs_compare():
         # Same answer for every tool -- the added guard only stops a tool-blind
         # is_antibody read reaching a tool that is not moded, and `mode` here
         # equalled `j.preset` for those anyway.
+        #
+        # NO ``supports_headline_claim`` HERE, unlike _top_score_for_share
+        # above and shared/email.py::_top_candidate_summary. That gate refuses
+        # a result whose order nothing produced, because those two surfaces
+        # make a SINGULAR claim and publish the pick alone. This page makes no
+        # superlative claim about ``top`` -- the row is labelled "Design", the
+        # star says "the design this run leads with", and the runner-up is
+        # printed with its own numbers in the same panel -- and gating here
+        # would empty the shared-metrics table for EVERY column and blame a
+        # schema difference that does not exist. The reasoning, the
+        # measurement and the condition that would reverse it are in
+        # tests/test_jobs_compare_headline.py::TestARecoveredColumnIsNotGated.
         records = candidate_records(j.result)
         mode = score_legends.resolve_mode(j.tool or "", j.result, j.preset)
         top, top_verdict = headline_candidate(records, j.tool, preset=mode)

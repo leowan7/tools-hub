@@ -892,6 +892,147 @@ class TestHeadlineCandidate:
         assert top["name"] == PASS_NAME
 
 
+def _recovered_job(job_id: str = "cccccccc-0000-0000-0000-000000000000"):
+    """A column whose result a RECOVERY wrote, in that writer's exact shape.
+
+    ``recover_stuck_job_result`` returns ``{candidates, candidate_count,
+    backfilled}`` and nothing else (shared/job_recovery.py:287-291);
+    scripts/finalize_stuck_job.py:76-80 writes the identical dict. The
+    candidates are ``_candidate_from_partial``'s output, which copies only
+    ipTM, pLDDT and i_pae off a streamed partial and keys the file as
+    ``f"designs/{basename}"`` (shared/job_recovery.py:72-92). So there is no
+    ``is_antibody``, no ``filter_status`` and no ``pI`` here -- the base
+    ``_job`` fixture's result carries all three and would not be this shape.
+
+    THE SECOND DESIGN IS THE BETTER ONE, and the list is in arrival order, not
+    quality order: that is what ``backfilled`` records.
+    """
+    return SimpleNamespace(
+        id=job_id,
+        tool="esmfold2-design",
+        preset="minibinder",
+        status="succeeded",
+        result={
+            "candidates": [
+                {"rank": 0, "pdb_key": "designs/d_first.pdb",
+                 "scores": {"ipTM": 0.80, "pLDDT": 0.86}},
+                {"rank": 1, "pdb_key": "designs/d_second.pdb",
+                 "scores": {"ipTM": 0.99, "pLDDT": 0.93}},
+            ],
+            "candidate_count": 2,
+            "backfilled": True,
+        },
+        inputs={},
+        gpu_seconds_used=120,
+    )
+
+
+class TestARecoveredColumnIsNotGated:
+    """This page keeps rendering a backfilled column. The sibling surface does not.
+
+    THESE TESTS INVERT THE USUAL SHAPE ON PURPOSE. Everywhere else in this
+    class of work a test fails WITHOUT the gate; these three fail if
+    ``shared.jobs.supports_headline_claim`` is ever added to
+    ``blueprints/jobs.py::jobs_compare``. That is the decision they exist to
+    pin, and the reason is that this page does not make the claim the gate
+    refuses.
+
+    WHAT THE GATE REFUSES is a SINGULAR "the top design of this run". The
+    completion email makes exactly that claim and publishes the pick and
+    nothing else, so a run whose order recovery invented sends a customer one
+    number that is not the run's best -- measured at ipTM 0.800 with a 0.99 in
+    the same result (tests/test_job_complete_email_headline.py::
+    test_a_recovered_run_gets_no_email_callout).
+
+    THIS PAGE MAKES NO SUCH CLAIM. Nothing attached to ``col.top`` is a
+    superlative: the shared-metrics row is labelled "Design", the star's
+    tooltip says "The design this run leads with", and the only other line is
+    "not the first design listed -- row N of M". The subtitle's own comment
+    (templates/jobs_compare.html:10-23) records that three drafts of a "best"
+    sentence were written and all three deleted, because
+    ``headline_candidate`` does not re-rank. And the runner-up is PUBLISHED,
+    with its own numbers, four lines above the headline in the same panel --
+    which is what ``test_the_better_runner_up_is_published_beside_it`` pins.
+
+    WHAT THE GATE WOULD COST, measured by simulating it on this fixture: with
+    ``col.top`` None for the recovered column, ``raw_metric({}, key)`` is not a
+    number for every key, no key is shared, and the whole Shared-metrics table
+    collapses -- for EVERY column -- to "No shared metrics to compare (jobs use
+    different scoring schemas)". Both jobs here are esmfold2-design with the
+    same schema, so the page would delete a working table and print a false
+    reason for doing it.
+
+    NOT CLOSED BY THIS: the per-column heading "Top candidates (N total)" IS a
+    superlative over a list nothing ranked. It reads ``col.candidates``, not
+    ``col.top``, so the gate would not have reached it either. Left alone
+    rather than fixed here -- ``_candidate_rows`` in this file anchors on that
+    literal string, so renaming it is a wider diff than this change.
+    """
+
+    def test_a_backfilled_column_still_shows_its_shared_metrics(
+        self, flask_app, monkeypatch,
+    ):
+        html = _render_compare(
+            flask_app, monkeypatch, [_recovered_job(), _other_job()],
+        )
+        assert "No shared metrics to compare" not in _flat(html), (
+            "gating col.top on supports_headline_claim empties the "
+            "shared-metrics table for EVERY column and blames a schema "
+            "difference between two jobs of the same tool"
+        )
+        # Three decimals here and two in the per-job table above, because this
+        # cell goes through ``format_metric_value`` (the glossary's precision)
+        # and that one is a flat ``%.2f``.
+        assert _metric_row(html, "ipTM") == ["0.800", "0.900"], (
+            _metric_row(html, "ipTM")
+        )
+        assert _metric_row(html, "pLDDT") == ["86.0", "90.1"], (
+            _metric_row(html, "pLDDT")
+        )
+
+    def test_the_better_runner_up_is_published_beside_it(
+        self, flask_app, monkeypatch,
+    ):
+        """Why the singular claim is not being made: the reader sees both.
+
+        The starred row is the arrival-order first, at ipTM 0.80. The 0.99 is
+        on the same page, in the same panel, un-starred and one row down. An
+        email carrying the same pick carries only the pick.
+        """
+        html = _render_compare(
+            flask_app, monkeypatch, [_recovered_job(), _other_job()],
+        )
+        rows = _candidate_rows(html)
+        assert rows[0][1] == "0.80", rows
+        assert "&#9733;" in rows[0][0] or "★" in rows[0][0], rows[0][0]
+        assert rows[1][1] == "0.99", rows
+        assert "&#9733;" not in rows[1][0] and "★" not in rows[1][0], (
+            rows[1][0]
+        )
+
+    def test_the_design_row_makes_no_superlative_claim(
+        self, flask_app, monkeypatch,
+    ):
+        """The words are the evidence, so they are the assertion.
+
+        If a superlative is ever added to this row the reasoning above stops
+        holding and the gate becomes the right answer -- this is the test that
+        says so out loud rather than leaving the decision undated.
+        """
+        html = _render_compare(
+            flask_app, monkeypatch, [_recovered_job(), _other_job()],
+        )
+        row = _design_row(html)
+        assert "designs/d_first.pdb" in row, row
+        for word in ("best", "top ", "winner", "highest", "strongest",
+                     "leading"):
+            assert word not in row.lower(), (
+                f"the Design row now claims a superlative ({word!r}); a "
+                f"backfilled column cannot support one, so this page needs "
+                f"shared.jobs.supports_headline_claim after all: {row!r}"
+            )
+
+
 def test_every_moded_leg_is_declared_for_a_real_mode():
     """A mode key nothing resolves to is a silently disabled bar -- the exact
     trap ``esmfold2_design`` vs ``esmfold2-design`` sprang on this same tool.
