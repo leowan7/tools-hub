@@ -386,10 +386,12 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     if chosen is None:
         return None
     col, val = chosen
-    reading = f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
-    if bar_applied:
-        return f"Top design meeting our quality bar: {reading}"
-    return f"Top design: {reading}"
+    # A BARE READING, NOT A SENTENCE. `_share_title` owns the wording and
+    # states why it carries no ranking word (#266); this function owns WHICH
+    # number may be read out. Splitting them is what keeps the superlative
+    # question and the metric question from being answered in one place by
+    # one person's guess.
+    return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
 
 
 @jobs_bp.route("/jobs", methods=["GET"])
@@ -1110,22 +1112,8 @@ def job_share(job_id: str):
     )
     adapter = tool_base.get(tool_slug)
     tool_label = adapter.label if adapter else (tool_slug or "tool")
-    # The CLAUSE, not a bare number: whether "top" is true unqualified depends
-    # on whether a bar dropped a higher-ranked design, and only
-    # _top_score_for_share knows that. Composing "Top score {x}" here is what
-    # put a superlative on a number chosen precisely because it was NOT the
-    # highest.
-    top_clause = _top_score_for_share(job)
-    if top_clause is None:
-        og_title = (
-            f"I designed a binder with {tool_label} on "
-            f"tools.ranomics.com"
-        )
-    else:
-        og_title = (
-            f"I designed a binder with {tool_label} on "
-            f"tools.ranomics.com. {top_clause}."
-        )
+    top_score = _top_score_for_share(job)
+    og_title = _share_title(tool_label, top_score)
     og_description = (
         "Ranomics tools-hub runs the same GPU pipelines used in "
         "production protein design."
