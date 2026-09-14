@@ -1927,6 +1927,10 @@ def test_a_fully_readable_settled_target_is_not_provisional(monkeypatch):
 # table marked every design ``_passed`` -- including the one the pipeline
 # drops.
 #
+# BOTH MODES ARE BARRED as of 2026-09-14. scfv was the mode still short-
+# circuiting to 'every design is a keeper'; it gained a MODE_GATE_COLUMNS
+# entry once run_pipeline.py split the CDR proxy onto its own column key.
+#
 # Real completed job 2b917b54 (PD-L1 minibinder, n_seeds=2), as stored:
 #
 #     seed0: ipTM 0.9556, pI 11.95 -> the pipeline drops it
@@ -1944,20 +1948,46 @@ _PASS_PI = 5.669371223449708
 _DROP_IPTM = 0.9555796384811401
 _PASS_IPTM = 0.9353567957878113
 
+# The scFv pair, from job verify242-bs6-1789054528 as recorded in
+# docs/VALIDATION-LOG.md and reused in
+# tests/test_esmfold2_design_scfv_iptm_leg.py. The drop row is the one the
+# whole fix exists for: a proxy well over its 0.50 bar and an ipTM of 0.436.
+_SCFV_DROP_PROXY, _SCFV_DROP_IPTM = 0.618, 0.436
+_SCFV_PASS_PROXY, _SCFV_PASS_IPTM = 0.799, 0.844
+
 
 def _esm_cand(name, iptm, pi):
     return {"name": name, "pdb_key": f"{name}.pdb",
             "scores": {"ipTM": iptm, "pI": pi}}
 
 
+def _esm_scfv_cand(name, iptm, proxy):
+    """SHAPED LIKE THE MODE, not like the minibinder row with a new label.
+
+    pI is null by construction on an scFv run and the CDR proxy is null on a
+    minibinder one, so a fixture that reuses one shape for both modes cannot
+    tell a mode-scoped bar from a tool-wide one -- it would read unjudged
+    for the wrong reason and still count zero.
+    """
+    return {"name": name, "pdb_key": f"{name}.pdb",
+            "scores": {"ipTM": iptm, "CDR_iPTM_proxy": proxy, "pI": None}}
+
+
 def _esm_rows(*, preset="minibinder", is_antibody=False, job_id="esm-1"):
+    if is_antibody:
+        cands = (
+            _esm_scfv_cand("drop", _SCFV_DROP_IPTM, _SCFV_DROP_PROXY),
+            _esm_scfv_cand("keep", _SCFV_PASS_IPTM, _SCFV_PASS_PROXY),
+        )
+    else:
+        cands = (
+            _esm_cand("drop", _DROP_IPTM, _DROP_PI),
+            _esm_cand("keep", _PASS_IPTM, _PASS_PI),
+        )
     return (
         _job_row(
             job_id, tool="esmfold2-design", preset=preset, target_id="T",
-            candidates=(
-                _esm_cand("drop", _DROP_IPTM, _DROP_PI),
-                _esm_cand("keep", _PASS_IPTM, _PASS_PI),
-            ),
+            candidates=cands,
             result_extra={"is_antibody": is_antibody, "preset": preset},
         ),
     )
@@ -2040,20 +2070,28 @@ def test_the_cohort_key_carries_the_mode_the_bar_was_applied_under(monkeypatch):
     assert {c["_cohort_preset"] for c in agg["candidates"]} == {"scfv"}
 
 
-def test_an_scfv_run_has_no_bar_and_every_design_counts(monkeypatch):
+def test_an_scfv_run_counts_against_its_own_bar_not_the_minibinder_one(
+    monkeypatch,
+):
     """The pair to the minibinder test, and not a formality. pI is null by
     construction on an scFv run, so a tool-WIDE pI leg would leave every
     antibody design permanently unjudged -- which is why the bar is keyed on
-    (tool, mode) and why MODE_GATE_COLUMNS has no scfv entry. A fix that
-    quietly applied the minibinder bar to both modes passes every assertion
-    above and fails here.
+    (tool, mode). A fix that quietly applied the minibinder bar to both modes
+    passes every assertion above and counts 0 here, not 1.
+
+    Until 2026-09-14 this asserted 2: scfv had no MODE_GATE_COLUMNS entry, so
+    count_candidates_meeting_bar short-circuited to len(records) and the drop
+    row -- ipTM 0.436, the measured design the pipeline refuses -- was
+    delivered to the customer as a keeper.
     """
     _install(monkeypatch, rows=_esm_rows(preset="scfv", is_antibody=True))
     agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
 
-    assert agg["passed_total"] == 2
-    assert all(c["_passed"] is True for c in agg["candidates"])
-    assert all(c["_tool_has_bar"] is False for c in agg["candidates"])
+    assert agg["passed_total"] == 1
+    assert {c["name"]: c["_passed"] for c in agg["candidates"]} == {
+        "keep": True, "drop": False,
+    }
+    assert all(c["_tool_has_bar"] is True for c in agg["candidates"])
 
 
 def test_the_mode_comes_off_the_result_before_the_stored_preset(monkeypatch):
@@ -2067,8 +2105,11 @@ def test_the_mode_comes_off_the_result_before_the_stored_preset(monkeypatch):
     agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
 
     assert {c["_source_preset"] for c in agg["candidates"]} == {"scfv"}
-    assert agg["passed_total"] == 2
-    assert all(c["_tool_has_bar"] is False for c in agg["candidates"])
+    # 1, not 0: judged by the stored preset these rows would be held to a pI
+    # leg this mode never measures, every design would read unjudged and the
+    # count would be zero. The resolved mode is what makes it 1.
+    assert agg["passed_total"] == 1
+    assert all(c["_tool_has_bar"] is True for c in agg["candidates"])
 
 
 def test_two_modes_of_one_tool_are_two_cohorts(monkeypatch):
@@ -2078,8 +2119,9 @@ def test_two_modes_of_one_tool_are_two_cohorts(monkeypatch):
 
     This is also the answer to "would counting a mixed cohort sum two
     different bars?" -- the total is a sum of PER-RUN counts, each taken
-    against the bar its own run declares. 2 from the unbarred scFv run plus 1
-    from the minibinder run.
+    against the bar its own run declares. 1 from the scFv run plus 1 from the
+    minibinder run. It was 3 until 2026-09-14, when the scFv half stopped
+    counting both of its designs for want of a bar.
     """
     rows = _esm_rows(job_id="esm-mini") + _esm_rows(
         preset="scfv", is_antibody=True, job_id="esm-scfv",
@@ -2091,10 +2133,10 @@ def test_two_modes_of_one_tool_are_two_cohorts(monkeypatch):
     assert {c["_source_preset"] for c in agg["candidates"]} == {
         "minibinder", "scfv",
     }
-    assert agg["passed_total"] == 3
-    minibinder = [c for c in agg["candidates"]
-                  if c["_source_preset"] == "minibinder"]
-    assert {c["_passed"] for c in minibinder} == {True, False}
+    assert agg["passed_total"] == 2
+    for mode in ("minibinder", "scfv"):
+        half = [c for c in agg["candidates"] if c["_source_preset"] == mode]
+        assert {c["_passed"] for c in half} == {True, False}, mode
 
 
 def test_a_tool_with_a_tool_wide_bar_ignores_the_preset(monkeypatch):

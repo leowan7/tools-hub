@@ -174,7 +174,7 @@ CONTAINER_GATES = {
     ("boltz2", "n_hotspot_contacts"): (
         "local", "boltz2", "STRICT_HOTSPOT_CONTACTS_MIN", 1.0,
     ),
-    # esmfold2-design's MODE-scoped minibinder legs (MODE_GATE_COLUMNS),
+    # esmfold2-design's MODE-scoped legs (MODE_GATE_COLUMNS), both modes,
     # checked here the same way as every tool-scoped one.
     #
     # SCOPE OF THIS GUARD, stated exactly because a comment here claimed more:
@@ -187,10 +187,16 @@ CONTAINER_GATES = {
     # comparing its rendered tier to _classify directly. Do not read "all
     # three copies" into these entries.
     #
-    # NO STRICT_CDR_IPTM_PROXY ENTRY: the scFv leg it belonged to was removed
-    # (see SCORE_LEGENDS), so the constant is no longer mirrored here.
+    # STRICT_CDR_IPTM_PROXY IS MIRRORED AGAIN as of 2026-09-14: the scFv leg
+    # it belongs to was restored to MODE_GATE_COLUMNS once run_pipeline.py
+    # split the proxy into a per-mode key and the column could carry its own
+    # legend. ``ipTM`` is one entry for both modes because both gates read
+    # the same constant.
     ("esmfold2-design", "ipTM"): (
         "local", "esmfold2_design", "STRICT_IPTM", 1.0,
+    ),
+    ("esmfold2-design", "CDR_iPTM_proxy"): (
+        "local", "esmfold2_design", "STRICT_CDR_IPTM_PROXY", 1.0,
     ),
     ("esmfold2-design", "pI"): (
         "local", "esmfold2_design", "STRICT_PI", 1.0,
@@ -404,13 +410,13 @@ def test_the_bar_is_unanswerable_for_a_tool_that_has_none():
 def test_a_label_is_split_only_on_a_real_unit():
     """"Shape complementarity (SC)" is an ABBREVIATION, not a unit, and
     splitting it produced the reading "Shape complementarity 0.700 SC"."""
-    from shared.score_legends import _label_and_unit
+    from shared.score_legends import label_and_unit
 
-    assert _label_and_unit("refolding_rmsd") == ("Refolding RMSD", " \u00c5")
-    assert _label_and_unit("shape_complementarity") == (
+    assert label_and_unit("refolding_rmsd") == ("Refolding RMSD", " \u00c5")
+    assert label_and_unit("shape_complementarity") == (
         "Shape complementarity (SC)", "",
     )
-    assert _label_and_unit("ipTM") == ("ipTM", "")
+    assert label_and_unit("ipTM") == ("ipTM", "")
 
 
 def test_boltzgen_is_not_gated_on_iptm():

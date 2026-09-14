@@ -21,6 +21,7 @@ by no test. For these twelve rows it now is.
 
 from __future__ import annotations
 
+import pathlib
 import re
 from types import SimpleNamespace
 
@@ -179,16 +180,16 @@ def flask_app(monkeypatch):
 SEQ = "SEEDLTKAQNLIDEAKKLNDAQAPKG"
 
 
-def _render_one(flask_app, proxy, iptm) -> str:
-    """One scFv candidate, rendered.
+def _render(flask_app, *, is_antibody, scores) -> str:
+    """One candidate, rendered, on whichever mode is asked for.
 
     No stored ``filter_status``: the panel derives its own word, which is the
     copy under test.
     """
     result = {
         "status": "COMPLETED",
-        "preset": "scfv",
-        "is_antibody": True,
+        "preset": "scfv" if is_antibody else "minibinder",
+        "is_antibody": is_antibody,
         "designs_total": 1,
         "designs_completed": 1,
         "n_seeds": 1,
@@ -201,12 +202,7 @@ def _render_one(flask_app, proxy, iptm) -> str:
                 "pdb_key": "design_0_complex.pdb",
                 "sequence": SEQ,
                 "designed_sequence": "TARGET|" + SEQ,
-                "scores": {
-                    "ipTM": iptm,
-                    "iPTM_proxy": proxy,
-                    "final_loss": 1.0,
-                    "pI": None,
-                },
+                "scores": scores,
             }
         ],
     }
@@ -215,6 +211,52 @@ def _render_one(flask_app, proxy, iptm) -> str:
         return flask_app.jinja_env.get_template(
             "tools/esmfold2_design_results.html"
         ).render(job=job, send_target_tools=None)
+
+
+def _render_one(flask_app, proxy, iptm) -> str:
+    """One scFv candidate, rendered.
+
+    The proxy goes in under the LEGACY ``iPTM_proxy`` spelling: that is what
+    every scFv run stored before the 2026-09-14 column split and what the GPU
+    image keeps writing until it is redeployed, so these rows exercise the
+    template's fallback read as well as its arithmetic.
+    """
+    return _render(
+        flask_app, is_antibody=True,
+        scores={"ipTM": iptm, "iPTM_proxy": proxy, "final_loss": 1.0,
+                "pI": None},
+    )
+
+
+def _read_text(path: str) -> str:
+    """A repo file as text, resolved from this file rather than the cwd."""
+    return (pathlib.Path(__file__).resolve().parent.parent / path).read_text(
+        encoding="utf-8",
+    )
+
+
+def _table_columns(html: str) -> list[str]:
+    """The candidate table's column keys, in header order.
+
+    ``data-col`` on the header cell (templates/components/candidate_table.html
+    :520) -- the key, beside the label the cell renders. The table is emitted
+    twice per page (wide and narrow), so the list is de-duplicated while
+    keeping first-seen order.
+    """
+    seen = []
+    for column in re.findall(r'data-col="([^"]+)"', html):
+        if column not in seen:
+            seen.append(column)
+    return seen
+
+
+def _render_minibinder(flask_app, proxy, iptm, pi) -> str:
+    """The same page on the OTHER mode, for the containment assertions."""
+    return _render(
+        flask_app, is_antibody=False,
+        scores={"ipTM": iptm, "iPTM_proxy": proxy, "final_loss": 1.0,
+                "pI": pi},
+    )
 
 
 def _badge(html: str):
@@ -320,3 +362,329 @@ def test_the_page_no_longer_offers_the_0_436_design_unqualified(flask_app):
     assert box, "no sequence box rendered; this assertion would be hollow"
     assert box.group(1) == SEQ
     assert flat.index(_CAUTION) < flat.index(SEQ)
+
+
+# --- where the new column is allowed to appear ----------------------------
+#
+# ``CDR_iPTM_proxy`` is a MODE-SCOPED column: run_pipeline.py emits it on an
+# scFv run and ``iPTM_proxy`` on a minibinder one, so a surface that lists it
+# unconditionally would name a CDR quantity over a whole-interface number.
+# Three comments elsewhere cite "the containment is pinned by this file"
+# (shared/score_legends.py, templates/jobs_compare.html and
+# templates/tools/esmfold2_design_results.html); these are what they cite.
+
+
+def test_the_cdr_column_is_a_leg_of_the_scfv_bar_alone():
+    """MODE_GATE_COLUMNS, scfv only -- and not GATE_COLUMNS at all.
+
+    A tool-wide entry would hold every MINIBINDER design to a column that is
+    absent by construction on that mode, leaving them all unjudged: the same
+    failure the pI leg would cause in the other direction, and the reason
+    esmfold2-design is absent from GATE_COLUMNS entirely.
+    """
+    from shared.score_legends import GATE_COLUMNS, MODE_GATE_COLUMNS
+
+    assert "esmfold2-design" not in GATE_COLUMNS
+    modes = MODE_GATE_COLUMNS["esmfold2-design"]
+    assert modes["scfv"] == ("CDR_iPTM_proxy", "ipTM")
+    assert "CDR_iPTM_proxy" not in modes["minibinder"]
+    for tool, columns in GATE_COLUMNS.items():
+        assert "CDR_iPTM_proxy" not in columns, tool
+
+
+def test_the_cdr_column_is_on_the_antibody_branch_of_the_results_page_alone(
+    flask_app,
+):
+    """The results template picks the key by mode, the way the payload does.
+
+    Rendered both ways and read off the table headers, because the column
+    list is built in Jinja and the header is where it becomes visible. The
+    scFv row here stores the LEGACY ``iPTM_proxy`` spelling -- what every run
+    delivered before the 2026-09-14 split holds, and what the GPU image keeps
+    writing until it is redeployed -- so this also shows the template's
+    fallback read reaching it.
+    """
+    antibody = _render_one(flask_app, 0.618, 0.436)
+    assert _table_columns(antibody) == ["ipTM", "CDR_iPTM_proxy", "final_loss"]
+    assert "CDR distogram proxy" in antibody, "the header shows the label"
+
+    minibinder = _render_minibinder(flask_app, 0.70, 0.90, 5.6)
+    assert _table_columns(minibinder) == [
+        "ipTM", "iPTM_proxy", "final_loss", "pI",
+    ]
+    assert "CDR_iPTM_proxy" not in minibinder
+    assert "CDR distogram proxy" not in minibinder
+
+
+def test_the_cdr_column_stays_out_of_the_compare_priority_keys():
+    """jobs_compare.html must NOT list it, and the reason is the alias.
+
+    ``raw_metric`` resolves ``_COLUMN_ALIASES``, whose tuple for this column
+    ends in the mode-blind legacy spelling ``iPTM_proxy`` -- that entry is
+    what lets pre-split scFv rows judge at all. The cost is that asking a
+    MINIBINDER record for ``CDR_iPTM_proxy`` answers with its whole-interface
+    proxy rather than None, so a compare column headed "CDR distogram proxy"
+    would fill with numbers that are not CDR proxies. Asserted below, not
+    assumed.
+    """
+    from shared.score_legends import _COLUMN_ALIASES, raw_metric
+
+    source = _read_text("templates/jobs_compare.html")
+    keys = re.search(r"set priority_keys = \[([^\]]*)\]", source)
+    assert keys, "priority_keys is no longer a literal list; re-read this test"
+    assert "CDR_iPTM_proxy" not in keys.group(1)
+
+    assert _COLUMN_ALIASES["CDR_iPTM_proxy"][-1] == "iPTM_proxy"
+    minibinder = {"scores": {"ipTM": 0.90, "iPTM_proxy": 0.70}}
+    assert raw_metric(minibinder, "CDR_iPTM_proxy") == 0.70
+
+
+def test_the_share_chain_can_reach_exactly_three_renamed_columns():
+    """WHICH cards moved when the clause started printing glossary names.
+
+    An enumeration, not a rendering check -- the rendering is
+    ``test_the_share_card_quotes_the_cdr_proxy_by_name``. This one exists so
+    that a future tool whose gate leg is an underscored storage key trips a
+    test instead of quietly putting that key in an og:title.
+
+    The reachable set is enumerated by DRIVING ``_share_headline_metric``
+    itself rather than re-deriving its arms: every candidate column is made
+    readable, the chain is asked what it would quote, that column and its
+    alias spellings are removed, and the ask repeats until it goes silent.
+    Three of the ten columns it can reach have a label that differs from
+    their key; the other seven are ipTM/pLDDT spellings whose label IS the
+    key, which is why nothing before this change looked wrong.
+    """
+    import blueprints.jobs as jobs_bp
+    from shared import metric_glossary, result_columns
+    from shared.score_legends import (
+        _COLUMN_ALIASES, GATE_COLUMNS, MODE_GATE_COLUMNS,
+    )
+
+    candidates = set(jobs_bp._PLDDT_PREFERENCE)
+    for columns in GATE_COLUMNS.values():
+        candidates.update(columns)
+    for modes in MODE_GATE_COLUMNS.values():
+        for columns in modes.values():
+            candidates.update(columns)
+    for tool in result_columns._TOOL_PRIMARY_METRIC:
+        key, _direction = result_columns.primary_metric_for(tool)
+        if key:
+            candidates.add(key)
+
+    tools = (set(GATE_COLUMNS) | set(MODE_GATE_COLUMNS)
+             | set(result_columns._TOOL_PRIMARY_METRIC)
+             | set(result_columns._TOOL_RESULT_COLUMNS))
+    reachable = set()
+    for tool in sorted(tools):
+        for mode in list(MODE_GATE_COLUMNS.get(tool, {})) or [None]:
+            scores = {column: 7.0 for column in candidates}
+            while True:
+                chosen = jobs_bp._share_headline_metric(
+                    tool, mode, {"scores": scores},
+                )
+                if chosen is None:
+                    break
+                reachable.add(chosen[0])
+                for spelling in _COLUMN_ALIASES.get(
+                    chosen[0], (chosen[0],),
+                ):
+                    scores.pop(spelling, None)
+
+    renamed = {
+        column for column in reachable
+        if metric_glossary.get(column).get("label") != column
+    }
+    assert renamed == {
+        "CDR_iPTM_proxy", "epitope_contacts", "n_hotspot_contacts",
+    }, sorted(reachable)
+
+
+def test_the_share_card_quotes_the_cdr_proxy_by_name():
+    """End to end on the column this fix added, against the measured pair.
+
+    ipTM 0.844 with proxy 0.799 is the design job verify242-bs6-1789054528
+    kept. The clause names the first leg of the scFv bar in reading order,
+    under the glossary name rather than the storage key -- which is the same
+    name the results table heads that column with, asserted over there in
+    ``test_the_cdr_column_is_on_the_antibody_branch_of_the_results_page_alone``.
+
+    The job's stored ``preset`` says minibinder on purpose: the mode comes
+    off the RESULT, and a clause carrying a CDR name cannot be produced
+    under the other mode.
+    """
+    from blueprints.jobs import _top_score_for_share
+
+    job = SimpleNamespace(
+        id="scfv-share", tool="esmfold2-design", preset="minibinder",
+        status="succeeded",
+        result={
+            "preset": "scfv", "is_antibody": True,
+            "candidates": [{
+                "rank": 0, "name": "design_0", "pdb_key": "design_0.pdb",
+                "sequence": SEQ,
+                "scores": {"ipTM": 0.844, "CDR_iPTM_proxy": 0.799,
+                           "pI": None},
+            }],
+        },
+    )
+    assert _top_score_for_share(job) == "CDR distogram proxy 0.799"
+
+
+# --- the sixth wired surface: the completion email ------------------------
+#
+# Every surface above waits to be opened. This one is PUSHED:
+# shared/jobs.py::complete_job sends it at shared/jobs.py:1349 the moment the
+# run finishes. It needed no edit of its own -- shared/email.py already asks
+# score_legends for the design and the verdict -- which is exactly why it
+# needs a test: nothing in that file mentions this tool or this mode, so the
+# coupling is invisible from either end.
+
+
+def _email_scfv_cand(name, iptm, proxy, rank, filter_status):
+    """A candidate in the key order run_pipeline.py stores.
+
+    The ORDER matters to this surface and to no other:
+    shared/email.py:367-370 leads with the first stored column that has a
+    registered legend, and this change gave ``CDR_iPTM_proxy`` its first one. ipTM is written first
+    (tools/esmfold2_design/run_pipeline.py:1181), so the headline column does
+    not move -- asserted below, because the two files have no other link.
+    """
+    return {
+        "rank": rank,
+        "name": name,
+        "pdb_key": f"{name}.pdb",
+        "sequence": SEQ,
+        "scores": {
+            "ipTM": iptm,
+            "CDR_iPTM_proxy": proxy,
+            "final_loss": 1.0,
+            "pI": None,
+            "filter_status": filter_status,
+        },
+    }
+
+
+def _email_scfv_job(candidates):
+    return SimpleNamespace(
+        id="scfv-mail", tool="esmfold2-design", preset="scfv",
+        status="succeeded",
+        result={"preset": "scfv", "is_antibody": True,
+                "candidates": candidates},
+    )
+
+
+def test_the_completion_email_judges_an_scfv_run_against_its_own_bar():
+    """The mail that reaches a customer who never opens the results page.
+
+    The mode gaining a MODE_GATE_COLUMNS entry changes TWO things here, and
+    neither is in shared/email.py. ``headline_candidate`` picks the design,
+    and with nothing judgeable it falls back to the stored-first record --
+    which on this run is the reject. The first assertion below is what
+    catches that: with the scfv entry removed from MODE_GATE_COLUMNS it read
+    0.436 rather than 0.844 (measured 2026-09-14 by deleting the entry). And
+    the fifth return value is ``score_legends.verdict_text``, which was blank
+    for this mode because ``judge`` answered "unjudged".
+
+    So until 2026-09-14 this mail led with the dropped design's 0.436
+    directly above a caption reading "0.75 or more is a credible designed
+    interface", and said nothing to contradict it.
+    """
+    from shared.email import _top_candidate_summary
+
+    keeper = _email_scfv_cand("keep", 0.844, 0.799, 1, "strict_pass")
+    reject = _email_scfv_cand("drop", 0.436, 0.618, 0, "drop")
+
+    label, value, _caption, pdb_key, judgement, _pos = _top_candidate_summary(
+        job=_email_scfv_job([reject, keeper]), tone="success",
+    )
+    # The headline column is unchanged by the new legend, and the design is
+    # the keeper rather than the stored-first reject.
+    assert (label, value, pdb_key) == ("ipTM", "0.844", "keep.pdb")
+    assert judgement == "Meets CDR distogram proxy 0.5 and ipTM 0.75"
+
+    _l, value, _c, _k, judgement, _p = _top_candidate_summary(
+        job=_email_scfv_job([reject]), tone="success",
+    )
+    assert value == "0.436"
+    assert "Nothing in this run clears the bar" in judgement, judgement
+    assert "ipTM 0.436, below 0.75" in judgement, judgement
+def _share_job(proxy, iptm):
+    return SimpleNamespace(
+        id="scfv-precision", tool="esmfold2-design", preset="scfv",
+        status="succeeded",
+        result={
+            "preset": "scfv", "is_antibody": True,
+            "candidates": [{
+                "rank": 0, "name": "design_0", "pdb_key": "design_0.pdb",
+                "sequence": SEQ,
+                "scores": {"ipTM": iptm, "CDR_iPTM_proxy": proxy,
+                           "pI": None},
+            }],
+        },
+    )
+
+
+def test_a_gate_leg_renders_at_the_precision_the_share_card_prints():
+    """A published clause must not show a number below the bar it claims.
+
+    ``score_legends.shown_value`` judges a leg at the precision the GLOSSARY
+    renders, while the share card prints ``.3f`` (blueprints/jobs.py:440).
+    A leg declared coarser than that is therefore judged on a rounded-up
+    figure and printed as the raw one. This column was ".2f" until review:
+    raw 0.4951 rounded to "0.50", cleared the 0.50 bar, and published as
+    "CDR distogram proxy 0.495" -- measured 2026-09-14 by setting the entry
+    back to ".2f" and driving the chain below, and recorded at
+    shared/metric_glossary.py:337.
+
+    Both legs of this bar are ".3f", so the card prints the number it judged,
+    and templates/components/candidate_table.html:882 gives the results cell
+    the same width so the table does not contradict the verdict beside it.
+    The repo's other seven gate legs are coarser and predate this change;
+    this test does not assert anything about them.
+    """
+    from shared import metric_glossary
+    from shared.score_legends import gate_columns
+    from blueprints.jobs import _top_score_for_share
+
+    for column in gate_columns("esmfold2-design", "scfv"):
+        assert metric_glossary._FORMAT[column] == ".3f", column
+
+    # Straddling the proxy bar, three decimals apart, ipTM clear of its own.
+    assert _top_score_for_share(_share_job(0.4951, 0.80)) is None
+    assert _top_score_for_share(_share_job(0.5010, 0.80)) == (
+        "CDR distogram proxy 0.501"
+    )
+
+
+def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
+    flask_app,
+):
+    """The number in the column and the number in the sentence beside it.
+
+    ``score_legends._reading`` writes the verdict at the glossary format, so
+    a results cell rendered coarser than that prints one figure while the
+    verdict quotes another. A raw 0.4949 showed "0.49" in the cell under a
+    verdict reading "CDR distogram proxy 0.495, below 0.5" until this column
+    joined ipTM in the ``.3f`` branch at
+    templates/components/candidate_table.html:882.
+    """
+    from shared.score_legends import judge, verdict_text
+
+    html = _render(
+        flask_app, is_antibody=True,
+        scores={"ipTM": 0.90, "CDR_iPTM_proxy": 0.4949, "final_loss": 1.0,
+                "pI": None},
+    )
+    cells = re.findall(
+        r'data-col="CDR_iPTM_proxy" data-val="[^"]*">([^<]*)<', html,
+    )
+    assert cells and set(cells) == {"0.495"}, cells
+
+    verdict = judge(
+        "esmfold2-design", {"scores": {"ipTM": 0.90,
+                                       "CDR_iPTM_proxy": 0.4949}}, "scfv",
+    )
+    assert verdict_text("esmfold2-design", verdict, "scfv") == (
+        "CDR distogram proxy 0.495, below 0.5"
+    )

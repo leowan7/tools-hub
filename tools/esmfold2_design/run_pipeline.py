@@ -77,6 +77,12 @@ Output shape (``/tmp/smoke_results.json``)::
       "provider_job_id": "<job_id>"
     }
 
+The example above is a MINIBINDER run, which is why ``pI`` is populated and
+``cdr_distogram_iptm_proxy`` is null. An scFv run is the mirror image: ``pI``
+is null and the proxy arrives under ``CDR_iPTM_proxy`` rather than
+``iPTM_proxy``, one key per mode so that each name means one quantity. See
+the note beside that key in the ``candidates`` construction below.
+
 ``designed_sequence`` is ``target|binder`` concatenated; ``sequence`` is the
 binder alone, and it is what ``best_sequence``, export.fasta and the results
 panel's order-form block all mean. ``candidates[]`` is the capitalized,
@@ -1173,7 +1179,27 @@ def _run() -> int:
             "sequence": d.get("sequence", ""),
             "scores": {
                 "ipTM": d["iptm"],
-                "iPTM_proxy": (
+                # THE MODE PICKS THE KEY, NOT THE VALUE UNDER A SHARED KEY,
+                # and that swap is what lets the column carry a legend.
+                # ``iPTM_proxy`` used to hold whichever proxy the run's mode
+                # populated -- a CDR-restricted one on scFv runs, an
+                # all-pairs one on minibinder runs. SCORE_LEGENDS is keyed on
+                # (tool, column) with no mode in it, so one explanation
+                # string had to be true of both quantities and could not be.
+                # That is why the column carried no legend, and a gate leg
+                # with no legend is answered "unjudged" by
+                # shared/score_legends.py::judge (the ``legend is None``
+                # branch). Named apart, each key holds exactly one quantity
+                # on every run, so the scFv one can be a gate leg in
+                # shared/score_legends.MODE_GATE_COLUMNS.
+                #
+                # ONE KEY PER ROW, not both keys with one of them None. An
+                # all-None score key is NOT suppressed on export:
+                # shared/exports.py::_metric_columns only drops a key listed
+                # in _UNSOURCED_METRIC_KEYS, which holds "cluster_id" alone.
+                # Emitting both would add a permanently empty column to every
+                # CSV and to the FASTA description line.
+                ("CDR_iPTM_proxy" if is_antibody else "iPTM_proxy"): (
                     d["cdr_distogram_iptm_proxy"] if is_antibody
                     else d["distogram_iptm_proxy"]
                 ),

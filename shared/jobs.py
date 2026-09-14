@@ -393,8 +393,13 @@ def count_candidates_meeting_bar(
     THIS RE-LABELS DELIVERED WORK on esmfold2-design. Before, the tool
     declared no bar and every delivered record counted; a minibinder run now
     counts only designs meeting pI and ipTM, so real job 2b917b54 reports 1
-    where it used to report 2. scfv runs are unchanged: no scfv entry exists
-    in ``MODE_GATE_COLUMNS``, so that mode still resolves to no bar.
+    where it used to report 2. AND IT RE-LABELS scfv WORK TOO as of
+    2026-09-14: that mode gained an entry in ``MODE_GATE_COLUMNS``, so an scFv
+    run counts only designs meeting the CDR distogram proxy and ipTM where
+    every delivered design used to count. Runs stored before the column split
+    are reached through the legacy spelling in
+    ``score_legends._COLUMN_ALIASES``; without it their designs would all read
+    ``unjudged`` and the count would be zero.
     """
     records = candidate_records(result)
     if not records:
