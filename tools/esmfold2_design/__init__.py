@@ -203,13 +203,24 @@ def validate(
             # out to parallel Modal children (roughly one seed's wall
             # clock); batch_size runs N designs inside one child, so it
             # adds no container and roughly multiplies that child's wall
-            # clock. Cost therefore scales with n_seeds ONLY -- the spec's
+            # clock. The HOLD scales with n_seeds ONLY -- the spec's
             # scaling_param is "n_seeds" (shared/wallet_estimates.py), not
-            # n_designs_total. This comment used to say cost "scales
-            # linearly with both axes". The n_seeds half of that is true
-            # (1 seed $9.8614, 8 seeds $78.8909 -- linear in gpu_seconds,
-            # differing only by the 4dp rounding applied to each); the
-            # batch_size half is not -- batch_size moves TIME, not cost.
+            # n_designs_total. The CHARGE is a different number and scales
+            # with BOTH: settle bills compute_charge_usd on measured GPU
+            # seconds (shared/jobs.py:1396 -> shared/wallet.py:731),
+            # clamped to the hard cap, so the two measured batch-6 runs
+            # bill $13.0868 (3185 s) and $13.2841 (3233 s) against $1.8490
+            # at the ~450 s batch-1 anchor -- all under the $15.00 cap at
+            # n_seeds=1, so the hold still covers it. (Those two are
+            # measured; the batch-1 anchor is VALIDATION-LOG prose with no
+            # run row, so $1.8490 is an estimate. An earlier draft of this
+            # comment billed "3209 s", which is the AVERAGE of the two runs
+            # and not a run that happened.) This comment
+            # used to say cost "scales linearly with both axes", then that
+            # batch_size "moves TIME, not cost". The first was wrong about
+            # rounding (1 seed $9.8614, 8 seeds $78.8909 -- linear in
+            # gpu_seconds, differing only by the 4dp rounding applied to
+            # each); the second was wrong about the bill.
             # n_designs_total is stamped for the job record; it does not
             # move the hold.
             "parameters": {"n_designs_total": n_seeds * batch_size},
