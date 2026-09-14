@@ -38,10 +38,18 @@ the legend's metric token on a word boundary and ignoring case (load-bearing:
 esmfold2-design writes "iptm"). Four consequences worth naming rather than
 discovering later:
 
-  * A metric named in prose under a different spelling than its legend key is
-    NOT matched -- boltzgen's "refolding RMSD" against the key
-    ``refolding_rmsd`` is the live example, and its summary's 2 angstroms is
-    the container's RMSD_THRESHOLD while the legend gates at 1.5.
+  * The metric is matched by its legend KEY with the comparator immediately
+    after it. Prose that spells the metric differently, or puts a clause
+    between metric and comparator, is not matched -- boltzgen misses on both:
+    "Refolding RMSD is the design against its own refold: at or under 2
+    angstroms it clears the RMSD leg", against the key ``refolding_rmsd``.
+    Adjacency is the binding half: measured across all 14 summaries (not
+    pinned), aliasing ``_`` to a space AND adding "at or under"/"under"/
+    "below" to _CMP matches nothing extra, and only relaxing the adjacency
+    rule reaches it -- the one thing _CMP's comment below rejects. That 2
+    angstroms is the container's RMSD_THRESHOLD against a legend gating at
+    1.5, so it IS a live prose-vs-legend divergence this file does NOT catch.
+    Deliberate: the repair is to the boltzgen sentence, not to this pattern.
   * A tool with no legend for a metric is not judged here. A tool is allowed
     to have no bar.
   * ``good`` OR ``excellent`` is accepted, because a summary may legitimately
