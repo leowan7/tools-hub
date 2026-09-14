@@ -28,8 +28,10 @@ For pilot and full tiers the Modal
 function POSTs to ``webhook_url`` — poll() still reports "running" but
 the webhook handler updates tool_jobs independently.
 
-Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. TimeoutError
-means "still running"; anything else propagates as an error dict.
+Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. The builtin
+``TimeoutError`` means "still running"; ``modal.exception.FunctionTimeoutError``
+(the container hitting its own timeout) maps to status "timeout"; anything
+else propagates as an error dict.
 
 Every Modal gRPC round trip runs inside ``_bounded_modal_call``, because the
 SDK applies no deadline of its own and these are called from request handlers.
@@ -449,9 +451,9 @@ class ModalClient:
 
         Returns:
             dict with ``status`` in
-            ``{"running","succeeded","failed","error"}``, plus ``result``
-            (the inline GPU pipeline return dict when succeeded) and
-            ``error`` (string on error).
+            ``{"running","succeeded","failed","timeout","error"}``, plus
+            ``result`` (the inline GPU pipeline return dict when succeeded)
+            and ``error`` (string on timeout/error).
         """
         if function_call_id.startswith("fc-stub-"):
             # Offline stub path — never advances.
@@ -478,6 +480,18 @@ class ModalClient:
             fc = modal.FunctionCall.from_id(function_call_id)
             return fc.get(timeout=0)
 
+        # Resolved off the module object rather than imported at the top:
+        # ``modal`` is optional here (see ``_import_modal``) and tests stub it.
+        # ``except ()`` never matches, so a stub or a modal without the class
+        # keeps the previous behaviour instead of raising AttributeError out of
+        # the handler and 500-ing the status route.
+        _fn_timeout = getattr(
+            getattr(modal, "exception", None), "FunctionTimeoutError", None
+        )
+        function_timeout_errors = (
+            (_fn_timeout,) if isinstance(_fn_timeout, type) else ()
+        )
+
         try:
             try:
                 raw_result = _bounded_modal_call("poll", _fetch)
@@ -488,6 +502,27 @@ class ModalClient:
                 # visible in the logs — so do not let it fall into the
                 # `except TimeoutError` below and be reported as healthy.
                 raise
+            except function_timeout_errors as exc:
+                # The CONTAINER hit its own timeout: Modal recorded
+                # GENERIC_STATUS_TIMEOUT for this call and will never return a
+                # result, so this is TERMINAL, not an infra blip to retry.
+                # FunctionTimeoutError does NOT subclass builtins.TimeoutError
+                # (its base is modal.exception.TimeoutError, a separate
+                # hierarchy -- asserted against the installed modal by
+                # tests/test_modal_function_timeout.py), so without this clause
+                # it missed both TimeoutError arms and fell into ``except
+                # Exception`` as status="error" -- which no caller
+                # terminalises, leaving the job row non-terminal and its wallet
+                # hold unsettled until the stuck-job sweeper.
+                logger.warning(
+                    "Modal function timeout for fc=%s: %s", function_call_id, exc
+                )
+                return {
+                    "status": "timeout",
+                    "result": None,
+                    "gpu_seconds_used": None,
+                    "error": f"Modal function timeout: {exc}",
+                }
             except TimeoutError:
                 return {
                     "status": "running",

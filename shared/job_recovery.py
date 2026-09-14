@@ -207,7 +207,7 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         # Failed poll with no exit code (older payload) — inconclusive.
         return None, "unknown"
 
-    # running / error / anything else — no ground truth.
+    # running / timeout / error / anything else — no ground truth.
     return None, "unknown"
 
 
@@ -235,7 +235,9 @@ def _completion_signal(job) -> str:  # noqa: ANN001
     return "complete" if completed >= total else "incomplete"
 
 
-def recover_stuck_job_result(job) -> Optional[dict]:  # noqa: ANN001
+def recover_stuck_job_result(
+    job, *, probe_modal: bool = True
+) -> Optional[dict]:  # noqa: ANN001
     """Return a finalizable ``succeeded`` result for a stuck job, or None.
 
     ``None`` means the work is not recoverable and the caller should time the
@@ -252,8 +254,26 @@ def recover_stuck_job_result(job) -> Optional[dict]:  # noqa: ANN001
        pipeline exit (exit 0, webhook merely lost) OR a heartbeat progress
        snapshot showing every design finished. An explicitly INCOMPLETE
        progress snapshot vetoes even a clean exit.
+
+    ``probe_modal=False`` skips step 1/2's Modal round trip for a caller that
+    already holds a terminal Modal verdict for this FunctionCall; recovery
+    then rests on step 3 alone. See the comment at the call site.
     """
-    inline, exit_verdict = _probe_modal(job)
+    if probe_modal:
+        inline, exit_verdict = _probe_modal(job)
+    else:
+        # ``probe_modal=False``: the caller already polled Modal this request
+        # and holds a TERMINAL verdict. Re-polling the same FunctionCall can
+        # only raise the same FunctionTimeoutError, which _probe_modal's tail
+        # maps to "unknown" regardless -- so the probe buys nothing and costs a
+        # second 90 s _bounded_modal_call inside one request. Two stacked hops
+        # is 180 s, past the 120 s gunicorn watchdog that kills the worker and
+        # every other request on it (gunicorn.conf.py:164,
+        # tests/test_modal_call_deadline.py::
+        # test_it_is_below_the_gunicorn_worker_watchdog). Recovery then rests
+        # on the heartbeat + Storage evidence below, which is the only thing
+        # that could have recovered this job anyway.
+        inline, exit_verdict = None, "unknown"
 
     # 1. Inline result already in hand (atomic tools / payload-returning runs).
     if inline is not None:
