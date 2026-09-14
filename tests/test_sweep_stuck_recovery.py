@@ -21,6 +21,7 @@ Fakes mirror ``tests/test_modal_webhook_finalize.py``.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -162,9 +163,12 @@ class TestRecoverFromStorage:
         )
         store.rows[row["id"]] = row
 
-        with patch("shared.storage.output_exists", return_value=True), patch(
-            "shared.wallet.settle_hold"
-        ) as settle, patch("shared.wallet.release_hold") as release, patch.object(
+        with patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif", "design_002.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release, patch.object(
             jobs_mod, "_send_completion_email", lambda _j: None
         ):
             outcome = timeout_stuck_job(row["id"])
@@ -282,9 +286,12 @@ class TestRecoverFromModalPoll:
         }
         with patch(
             "gpu.modal_client.ModalClient.poll", return_value=clean_exit_poll
-        ), patch("shared.storage.output_exists", return_value=True), patch(
-            "shared.wallet.settle_hold"
-        ) as settle, patch("shared.wallet.release_hold") as release, patch.object(
+        ), patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release, patch.object(
             jobs_mod, "_send_completion_email", lambda _j: None
         ):
             outcome = timeout_stuck_job(row["id"])
@@ -308,8 +315,8 @@ class TestGenuinelyDeadJobStillTimesOut:
         store.rows[row["id"]] = row
 
         with patch(
-            "shared.job_recovery._list_design_files", return_value=[]
-        ), patch("shared.storage.output_exists", return_value=False), patch(
+            "shared.job_recovery._list_prefix_names", return_value=[]
+        ), patch(
             "shared.wallet.settle_hold"
         ) as settle, patch("shared.wallet.release_hold") as release:
             outcome = timeout_stuck_job(row["id"])
@@ -355,9 +362,12 @@ class TestGenuinelyDeadJobStillTimesOut:
         }
         with patch(
             "gpu.modal_client.ModalClient.poll", return_value=crash_poll
-        ), patch("shared.storage.output_exists", return_value=True), patch(
-            "shared.wallet.settle_hold"
-        ) as settle, patch("shared.wallet.release_hold") as release:
+        ), patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif", "design_002.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
             outcome = timeout_stuck_job(row["id"])
 
         assert outcome == "timed_out"
@@ -383,9 +393,12 @@ class TestGenuinelyDeadJobStillTimesOut:
         )
         store.rows[row["id"]] = row
 
-        with patch("shared.storage.output_exists", return_value=True), patch(
-            "shared.wallet.settle_hold"
-        ) as settle, patch("shared.wallet.release_hold") as release:
+        with patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
             outcome = timeout_stuck_job(row["id"])
 
         assert outcome == "timed_out"
@@ -448,7 +461,10 @@ class TestWebhookWinsTheRace:
         )
         store.rows[row["id"]] = row
 
-        with patch("shared.storage.output_exists", return_value=True), patch.object(
+        with patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif"],
+        ), patch.object(
             jobs_mod, "_cas_update", return_value=False
         ), patch("shared.wallet.settle_hold") as settle, patch(
             "shared.wallet.release_hold"
@@ -462,3 +478,55 @@ class TestWebhookWinsTheRace:
         release.assert_not_called()
         # Row never moved off 'running' (CAS no-op'd); a later sweep retries.
         assert store.rows[row["id"]]["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# Storage reconstruction costs pages, not one round trip per design.
+# ---------------------------------------------------------------------------
+
+
+def test_reconstruct_pages_the_listing_instead_of_probing_each_design(
+    isolate_supabase,
+):
+    """``recover_stuck_job_result`` now also runs inside the status request,
+    when Modal reports a container timeout (``blueprints/jobs.py::job_status``),
+    so ``reconstruct`` shares that request's budget. Probing Storage once per
+    streamed partial put up to 1000 sequential calls (the
+    ``_partial_candidates`` cap, ``webhooks/modal.py:597``) on a worker whose
+    gunicorn watchdog fires at 120 s (``gunicorn.conf.py:164``).
+
+    Paging also has to walk past storage3's ``limit: 100`` default
+    (``storage3._sync.file_api.DEFAULT_SEARCH_OPTIONS``): one unpaged listing
+    would drop every design after the first 100, and recovery would finalize
+    the truncated set as a success.
+    """
+    from shared import job_recovery as jr
+
+    names = [f"design_{i:04d}.cif" for i in range(250)]
+    calls: list[dict] = []
+
+    def fake_list(path, options):
+        calls.append(dict(options))
+        start = options["offset"]
+        return [{"name": n} for n in names[start : start + options["limit"]]]
+
+    job = SimpleNamespace(
+        id="job-1",
+        user_id="u-1",
+        inputs={
+            "_partial_candidates": [
+                {"rank": i + 1, "pdb_key": f"designs/{n}"}
+                for i, n in enumerate(names)
+            ]
+        },
+    )
+
+    with patch("shared.credits.get_service_client") as gsc:
+        gsc.return_value.storage.from_.return_value.list.side_effect = fake_list
+        candidates = jr.reconstruct(job)
+
+    assert [c["pdb_key"] for c in candidates] == [
+        f"designs/{n}" for n in names
+    ], "designs past the first listing page were dropped"
+    # 250 objects = 3 pages. NOT 250 existence probes.
+    assert [c["offset"] for c in calls] == [0, 100, 200]

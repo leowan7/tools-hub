@@ -8,8 +8,8 @@
 ``ModalClient.poll``'s ``except TimeoutError`` ("still running") never saw it
 and it fell through to the generic ``except Exception`` as ``status="error"``.
 
-``blueprints/jobs.py::job_status`` branches only on succeeded / failed /
-timeout / running, so an "error" poll left the row NON-TERMINAL: the wallet
+Before this fix ``blueprints/jobs.py::job_status`` branched only on succeeded
+/ failed / running, so an "error" poll left the row NON-TERMINAL: the wallet
 hold was neither settled nor released and the user watched a spinner until
 ``cron/sweep_stuck_jobs.py`` caught it at ``STUCK_RUNNING_AGE_HOURS``
 (default 6). That sweeper is the only other terminaliser ``esmfold2-design``
@@ -190,9 +190,9 @@ def test_status_route_terminalises_a_timeout_poll(status_route):
 
 
 def test_status_route_leaves_an_error_poll_alone(status_route):
-    """"error" is the bucket for an unreachable or wedged Modal API call, which
-    says nothing about whether the GPU run stopped. Terminalising it would
-    refund and close a job still burning GPU."""
+    """An "error" poll is the bucket for an unreachable or wedged Modal API
+    call, which says nothing about whether the GPU run stopped. Terminalising
+    it would refund and close a job still burning GPU."""
     client, calls, set_poll = status_route
     set_poll("error")
     resp = client.get("/jobs/job-1/status.json")
@@ -228,6 +228,10 @@ def test_recovery_skips_the_modal_reprobe_when_told_to(monkeypatch):
     assert probes == []
 
     # Control: the sweeper's default path DOES probe.
-    monkeypatch.setattr(jr, "_probe_modal", lambda job: (probes.append(job), (None, "unknown"))[1])
+    def record(job):
+        probes.append(job)
+        return None, "unknown"
+
+    monkeypatch.setattr(jr, "_probe_modal", record)
     assert jr.recover_stuck_job_result(job) is None
     assert len(probes) == 1

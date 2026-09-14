@@ -1019,18 +1019,17 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     """Recover a stuck job if its work survived, else CAS-timeout it.
 
     Called by the stuck-job sweeper, and by the inline status poll when Modal
-    reports a container timeout (blueprints/jobs.py::job_status) -- that
-    caller passes ``probe_modal=False`` because it has already polled Modal
-    this request. Before
-    discarding a marooned job as a timeout, we check whether the work actually
-    completed but its terminal webhook was lost (app restart mid-deploy,
-    transient 5xx, Supabase HTTP/2 read-hang). ``recover_stuck_job_result``
-    inspects Modal (inline ``FunctionCall.get``) and tool-outputs Storage;
-    when it finds a real result we finalize the job as ``succeeded`` through
-    the SAME ``complete_job`` terminal/settle path the webhook uses, so
-    billing settles against actual GPU consumed instead of full-refunding a
-    run that really executed. Only when nothing is recoverable do we time the
-    job out (full refund) as before.
+    reports a container timeout (blueprints/jobs.py::job_status) -- that caller
+    passes ``probe_modal=False`` because it has already polled Modal this
+    request. Before discarding a marooned job as a timeout, we check whether
+    the work actually completed but its terminal webhook was lost (app restart
+    mid-deploy, transient 5xx, Supabase HTTP/2 read-hang).
+    ``recover_stuck_job_result`` inspects Modal (inline ``FunctionCall.get``)
+    and tool-outputs Storage; when it finds a real result we finalize the job
+    as ``succeeded`` through the SAME ``complete_job`` terminal/settle path the
+    webhook uses, so billing settles against actual GPU consumed instead of
+    full-refunding a run that really executed. Only when nothing is recoverable
+    do we time the job out (full refund) as before.
 
     Returns one of:
 
