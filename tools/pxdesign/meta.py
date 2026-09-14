@@ -139,11 +139,16 @@ about: dict = {
     # differ on purpose, and tests/test_derived_verdicts.py pins that half.
     # The agreement THIS line has to keep is pinned by
     # tests/test_guide_bar_matches_legend.py.
+    # THE YIELD CLAUSE IS GONE ON PURPOSE. This sentence used to end "on
+    # 1 to 2 of 5 designs". It entered in dd9755b as copy written beside
+    # the 0.70, grep over *.py/*.html/*.md finds no source for it anywhere
+    # in this repo, and raising the bar to 0.75 can only lower the
+    # fraction of designs that clear it. Do not restate a yield here
+    # without a measurement to cite.
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, pAE, and PDBs downloadable "
         "from a run of your own. "
-        "Target ipTM &ge; 0.75 on 1 to 2 of 5 designs for a tractable "
-        "epitope."
+        "Target ipTM &ge; 0.75 for a tractable epitope."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
