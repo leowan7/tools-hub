@@ -236,13 +236,32 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("boltz2", "standalone"):      1200,
     ("boltz2", "msa_server"):      3600,
     # ESMFold2-design: gradient-based inversion of ESMFold2 on H100.
-    # ~150 steps per design at 4-6 s/step gives ~10-15 min per gradient
-    # run. Cap at 2400 s (40 min) per preset — headroom over upstream's
-    # 60-min Modal timeout, room for batch_size up to 6 and weight-load
-    # latency on a cold container. Tune downward once we have real
-    # observed wall-clock distributions from the first prod batches.
-    ("esmfold2-design", "minibinder"): 2400,
-    ("esmfold2-design", "scfv"):       2400,
+    # These rows carried "~4-6 s/step ... ~10-15 min per gradient run" and
+    # "2400 s ... room for batch_size up to 6". The first prod measurements
+    # falsify both: 150 steps at batch_size=6 ran 3185 s and 3233 s
+    # (~21 s/step; docs/VALIDATION-LOG.md), so 2400 s was 25% UNDER a run it
+    # claimed to leave room for. Step time is a function of batch size, not a
+    # constant. (The ~3 s/step implied at batch_size=1 is derived from a ~450 s
+    # figure carried only in VALIDATION-LOG prose, with no run row behind it --
+    # tools/esmfold2_design/modal_app.py labels it as such.)
+    #
+    # Corrected to 5400 to match tools/esmfold2_design/modal_app.py
+    # _MAX_SESSION_S, which is the ceiling that actually bounds these runs.
+    #
+    # Nothing is repriced by this edit, but NOT for the reason an earlier draft
+    # gave. The note at the head of this map says these values ARE used for
+    # credit pre-authorisation, and the rfdiffusion block below names two
+    # value-carrying readers. Neither can read the rows below, but for two
+    # DIFFERENT reasons, and an earlier draft lumped them together:
+    # compute_campaigns._campaign_container_seconds is genuinely unreachable
+    # (every call site is gated on SUPPORTED_TOOLS, which omits this tool);
+    # scripts/calibration/poll_results.py IS reached with this slug, but asks
+    # for preset "pilot", which has no row here, so it gets 0 and its
+    # slow-success check no-ops. So ``submit``'s non-zero check is the only
+    # live reader of these two rows, and they are corrected so the next person
+    # sizing this tool does not reason from a falsified number.
+    ("esmfold2-design", "minibinder"): 5400,
+    ("esmfold2-design", "scfv"):       5400,
     # IgGM antibody/nanobody design (diffusion) on A100-40GB. Canary-measured:
     # ~24 s per diffusion pass + ~35 s model load. Every preset is bounded to
     # MAX_TOTAL_PASSES=100 inference passes (tools.iggm), so the realistic max
