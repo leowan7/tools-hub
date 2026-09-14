@@ -130,10 +130,13 @@ about: dict = {
     # tests/test_about_panel_iptm_bar_default.py). Every verdict on the
     # results table is computed from shared/score_legends.py, where
     # ("pxdesign", "ipTM") carries good=0.75. This line said 0.70 -- the
-    # container's own IPTM_THRESHOLD
-    # (llm-proteinDesigner/docker/pxdesign/run_pipeline.py:69) -- so a
-    # design at 0.72 met the target stated here and read as below the bar
-    # in the cell beside it. The site does not gate on the container's
+    # container's own IPTM_THRESHOLD, cited without a line number because
+    # that repo moves on its own
+    # (llm-proteinDesigner/docker/pxdesign/run_pipeline.py). CONTAINER_GATES
+    # in tests/test_derived_verdicts.py names that constant and reads its
+    # value out of the sibling checkout, skipping when that repo is absent
+    # -- so a design at 0.72 met the target stated here and read as below
+    # the bar in the cell beside it. The site does not gate on the container's
     # number by decision: the comment above GATE_COLUMNS in
     # shared/score_legends.py lists pxdesign/ipTM as one of five legs that
     # differ on purpose, and tests/test_derived_verdicts.py pins that half.

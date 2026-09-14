@@ -22,7 +22,11 @@ the cell beside it.
 
 WHY 0.70 WAS THERE, because it is not a typo and the next reader will want to
 put it back: it is the CONTAINER's own constant, ``IPTM_THRESHOLD = 0.70`` at
-llm-proteinDesigner/docker/pxdesign/run_pipeline.py:69, and this site
+llm-proteinDesigner/docker/pxdesign/run_pipeline.py -- no line number, that
+repo moves on its own. ``CONTAINER_GATES`` in tests/test_derived_verdicts.py
+names that constant and reads its value out of the sibling checkout, skipping
+when that repo is absent, so the 0.70 written just above is a cross-repo
+reading and not a number this repo pins. This site
 deliberately does not judge on it. The comment above ``GATE_COLUMNS`` in
 shared/score_legends.py records that decision -- the bar is the legend's
 ``good`` value so that a column's tooltip and the verdict beside it can never
