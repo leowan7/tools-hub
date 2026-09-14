@@ -47,6 +47,7 @@ from shared.jobs import (
     list_jobs_paginated,
     mark_failed,
     mark_running,
+    timeout_stuck_job,
 )
 from shared.storage import (
     StorageError,
@@ -643,9 +644,40 @@ def job_status(job_id: str):
                 gpu_seconds_used=poll.get("gpu_seconds_used"),
             )
             job = get_job(job_id, user_id=ctx.user_id)
+        elif poll["status"] == "timeout":
+            # Modal recorded a container timeout for this FunctionCall, so it
+            # will never return: terminal, and nothing is gained by waiting for
+            # the 6h stuck-job sweeper to say the same thing.
+            #
+            # Routed through timeout_stuck_job rather than
+            # complete_job(terminal_status="timeout") so it keeps the sweeper's
+            # recovery gate: a run that finished every design and uploaded its
+            # outputs before the container clock ran out is finalised as
+            # SUCCEEDED off Storage + the heartbeat snapshot
+            # (shared/job_recovery.py::recover_stuck_job_result), not refunded
+            # with its results discarded. Only when nothing is recoverable does
+            # it mark_timeout + settle, which releases the hold in full
+            # (status="timeout" -> failure_class="no_progress_timeout" ->
+            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES).
+            #
+            # probe_modal=False: we just polled Modal above and got a terminal
+            # container timeout, so recovery's own Modal probe would re-raise
+            # the same error and reach the same "unknown" verdict -- while
+            # spending a SECOND bounded 90 s call in this request. Two stacked
+            # hops is 180 s, past gunicorn's 120 s worker watchdog
+            # (gunicorn.conf.py:164). Pinned by
+            # tests/test_modal_function_timeout.py.
+            timeout_stuck_job(job.id, probe_modal=False)
+            job = get_job(job_id, user_id=ctx.user_id)
         elif poll["status"] == "running" and job.status == "pending":
             mark_running(job.id)
             job = get_job(job_id, user_id=ctx.user_id)
+        # poll["status"] == "error" is deliberately NOT terminalised: it is the
+        # bucket for an unreachable or wedged Modal API call (including our own
+        # ModalCallTimeout), which says nothing about whether the GPU run
+        # stopped. Terminalising here would refund and close a job still
+        # burning GPU. The next poll, the terminal webhook, or the stuck-job
+        # sweeper resolves it.
 
     inputs = job.inputs or {}
     partials = inputs.get("_partial_candidates") or []
