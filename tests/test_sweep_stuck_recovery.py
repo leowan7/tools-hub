@@ -530,3 +530,30 @@ def test_reconstruct_pages_the_listing_instead_of_probing_each_design(
     ], "designs past the first listing page were dropped"
     # 250 objects = 3 pages. NOT 250 existence probes.
     assert [c["offset"] for c in calls] == [0, 100, 200]
+
+
+def test_listing_walk_is_not_ended_by_a_row_it_skips(isolate_supabase):
+    """A full page holding one unusable row is still a full page.
+
+    Ending the walk on the FILTERED count makes any skipped row look like
+    end-of-listing, which drops every page after it -- the silent truncation
+    the paging exists to close, one line lower down.
+    """
+    from shared import job_recovery as jr
+
+    rows = [{"name": f"design_{i:04d}.cif"} for i in range(150)]
+    rows[50] = {"name": None}          # a row the filter drops
+    offsets: list[int] = []
+
+    def fake_list(path, options):
+        offsets.append(options["offset"])
+        start = options["offset"]
+        return rows[start : start + options["limit"]]
+
+    with patch("shared.credits.get_service_client") as gsc:
+        gsc.return_value.storage.from_.return_value.list.side_effect = fake_list
+        got = jr._list_prefix_names("u-1", "job-1")
+
+    assert got == [r["name"] for r in rows if r["name"]]
+    assert len(got) == 149
+    assert offsets == [0, 100]

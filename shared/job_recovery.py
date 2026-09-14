@@ -125,13 +125,17 @@ def _list_prefix_names(user_id: str, job_id: str) -> list[str]:
             )
         except Exception:
             return []
-        page = [
+        rows = listing or []
+        names.extend(
             item["name"]
-            for item in listing or []
+            for item in rows
             if isinstance(item, dict) and item.get("name")
-        ]
-        names.extend(page)
-        if len(page) < _LIST_PAGE:
+        )
+        # Page on the RAW row count, never the filtered one: a short page is
+        # the only end-of-listing signal, and a page that is full but holds a
+        # row we skip would otherwise end the walk and drop every page after
+        # it -- the same silent truncation this pagination exists to close.
+        if len(rows) < _LIST_PAGE:
             break
     return names
 
