@@ -456,9 +456,13 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         #
         # This block used to justify that from a FALSE premise — that batch_size
         # 1-6 "runs its designs inside ONE gradient pass at the SAME wall-clock",
-        # and that scaling on n_designs_total would UNDER-hold. Wall clock is
-        # roughly linear in batch size (3185 s and 3233 s at batch_size=6 against
-        # a ~450 s batch_size=1 figure; docs/VALIDATION-LOG.md), and the
+        # and that scaling on n_designs_total would UNDER-hold. Wall clock
+        # GROWS with batch size, a little FASTER than in proportion: 3185 s
+        # and 3233 s at batch_size=6 against a ~450 s batch_size=1 figure is
+        # ~7.1x the wall clock for a 6x batch, not 6x (docs/VALIDATION-LOG.md;
+        # that ~450 s anchor is prose there with no run row). Two points fit a
+        # line exactly, so this is a direction, not a fitted shape -- do not
+        # extrapolate it past batch_size=6. And the
         # baseline above makes the second backwards. The container COUNT, which
         # is what this spec prices, was never the thing in question. Where the
         # false premise did damage was the container CEILING sized from it: see

@@ -29,12 +29,22 @@ from __future__ import annotations
 from typing import Optional
 
 
-# Wall clock is driven by BATCH SIZE, not by the preset: a run is roughly
-# linear in it. These figures are the default batch of 3 and are INTERPOLATED,
-# not measured -- the user-facing strings below say "approx" but cannot carry
-# this caveat, so it lives here. The only measured points are batch_size=6 at
-# 3185 s and 3233 s, BOTH ON THE scfv PRESET (docs/VALIDATION-LOG.md);
-# minibinder has never been run, and its row below is the scfv figure reused.
+# Wall clock is driven by BATCH SIZE, not by the preset, and it grows a little
+# FASTER than in proportion: ~7.1x the wall clock for a 6x batch (3185 s
+# against ~450 s), not 6x. These figures are the default batch of 3 and are
+# INTERPOLATED on the chord between the two endpoints below, not measured --
+# the user-facing strings below say "approx" but cannot carry this caveat, so
+# it lives here. There is no third point, so whether the true batch-3 time
+# falls ABOVE or BELOW that chord is unknown, and it must not be presented as
+# a bound in either direction. (An earlier draft argued the curve was convex,
+# and therefore that the chord errs LONG, from per-step time degrading WITHIN
+# a run: 19.5 s to 22.9 s across the 150 steps at batch_size=6. That runs over
+# STEP INDEX inside one run and says nothing about how wall clock varies with
+# BATCH SIZE, and inferring a shape from two points is the same error this
+# comment corrects two sentences earlier.) The only measured points are
+# batch_size=6 at 3185 s and 3233 s, BOTH ON THE scfv PRESET
+# (docs/VALIDATION-LOG.md); minibinder has never been run, and its row below
+# is the scfv figure reused.
 # The batch-1 anchor (~450 s) is asserted in that file's prose with no run row
 # behind it. The previous "~10"/"~12" came from the falsified "one fixed-length
 # pass" premise that also mis-sized the container ceiling.
@@ -174,9 +184,10 @@ about: dict = {
                 "one H100 container, so a higher batch adds candidates "
                 "without adding cost &mdash; but it does add TIME: a "
                 "batch of 6 was measured at about 53 min on the scFv "
-                "preset, against roughly 7 to 8 min for a single "
-                "design, so treat wall-clock as roughly linear in "
-                "this field. (It used to claim a batch of 6 was free "
+                "preset, against an estimated 7 to 8 min for a single "
+                "design, so expect wall-clock to grow with this field "
+                "a little faster than in proportion. (It used to claim "
+                "a batch of 6 was free "
                 "of wall-clock; two production runs disproved that.) "
                 "<strong>Default 3.</strong> Single-design runs often "
                 "return <code>drop</code> after the iPTM and pI gates. "
