@@ -42,18 +42,20 @@ the legend's metric token on a word boundary and ignoring case (load-bearing:
 esmfold2-design writes "iptm"). Four consequences worth naming rather than
 discovering later:
 
-  * The metric is matched by its legend KEY with the comparator immediately
-    after it. Prose that spells the metric differently, or puts a clause
-    between metric and comparator, is not matched -- boltzgen misses on both:
-    "Refolding RMSD is the design against its own refold: at or under 2
-    angstroms it clears the RMSD leg", against the key ``refolding_rmsd``.
-    Adjacency is the binding half: measured across all 14 summaries (not
-    pinned), aliasing ``_`` to a space AND adding "at or under"/"under"/
-    "below" to _CMP matches nothing extra, and only relaxing the adjacency
-    rule reaches it -- the one thing _CMP's comment below rejects. That 2
-    angstroms is the container's RMSD_THRESHOLD against a legend gating at
-    1.5, so it IS a live prose-vs-legend divergence this file does NOT catch.
-    Deliberate: the repair is to the boltzgen sentence, not to this pattern.
+  * The metric is matched by its legend KEY, with each ``_`` in that key
+    allowed to be a space in the prose (``refolding_rmsd`` matches "Refolding
+    RMSD"), and the comparator immediately after it. Adjacency stays binding:
+    prose that puts a clause between metric and comparator is still not
+    matched, and boltzgen is the worked example of why that cost a repair
+    rather than a looser pattern. Its summary read "Refolding RMSD is the
+    design against its own refold: at or under 2 angstroms it clears the RMSD
+    leg" -- the container's RMSD_THRESHOLD, against a legend gating at 1.5 --
+    and the clause in the middle put it out of reach of the underscore alias
+    and of the lower-is-better comparator words alike, together or apart:
+    measured across all 14 summaries (not pinned), 9 pairs for each of those
+    three and 10 only once tools/boltzgen/meta.py moved the comparator next
+    to the metric. So the repair was to the sentence. Relaxing adjacency is
+    the one thing _CMP's comment below rejects.
   * A tool with no legend for a metric is not judged here. A tool is allowed
     to have no bar.
   * ``good`` OR ``excellent`` is accepted, because a summary may legitimately
@@ -79,17 +81,21 @@ from shared.score_legends import SCORE_LEGENDS
 from shared.tool_meta import meta_for
 from tools import base as tool_base
 
-# A superset of the comparator spellings today's summaries use: the nine
-# thresholds they state are written with >=, <=, >, < and "at or above" only,
-# and the word forms are here for prose not yet written. Entities are decoded
-# before matching, so ``&ge;`` arrives here as the character. What keeps a word
-# form from reading ordinary prose as a threshold is the ``\s*`` in the pattern
-# below: the comparator has to sit immediately after the metric token, so
-# "ipTM scored over 5 designs" cannot match. "ipTM over 5 designs" would, and
+# A superset of the comparator spellings today's summaries use: the ten
+# thresholds they state are written with >=, <=, >, <, "at or above" and "at
+# or under" only, and the rest are here for prose not yet written. Entities are
+# decoded before matching, so ``&ge;`` arrives here as the character. What keeps
+# a word form from reading ordinary prose as a threshold is the ``\s*`` in the
+# pattern below: the comparator has to sit immediately after the metric token,
+# so "ipTM scored over 5 designs" cannot match. "ipTM over 5 designs" would, and
 # no summary is worded that way today -- one that was would still have to state
-# a number its legend publishes or fail here. "under"/"below" are left out
-# because adding them matches nothing extra across all 14 summaries.
-_CMP = r"(?:>=|<=|>|<|at least|at or above|above|over)"
+# a number its legend publishes or fail here. The lower-is-better forms arrived
+# with the ``[_ ]`` alias below, for boltzgen's refolding RMSD; measured across
+# all 14 summaries (not pinned), neither half matches anything extra alone.
+_CMP = (
+    r"(?:>=|<=|>|<|at or above|at or below|at or under|at least|at most"
+    r"|no more than|above|below|under|over)"
+)
 _NUM = r"(\d+(?:\.\d+)?)"
 
 #: U+2265 / U+2264, built with ``chr`` so this file stays pure ASCII and no
@@ -107,6 +113,7 @@ _EXPECTED_COVERAGE = {
     ("boltz2", "ipTM"),
     ("boltz2", "n_hotspot_contacts"),
     ("boltzgen", "pLDDT"),
+    ("boltzgen", "refolding_rmsd"),
     ("esmfold2-design", "ipTM"),
     ("esmfold2-design", "pI"),
     ("pxdesign", "ipTM"),
@@ -135,6 +142,11 @@ def _stated_thresholds(slug: str) -> list[tuple[str, str, float]]:
     match inside ``i_pAE`` or ``ipAE``, and ``pLDDT`` cannot match inside
     ``complex_pLDDT``, because ``_`` and the letters either side are all word
     characters and no boundary falls there.
+
+    Each ``_`` in the legend key may also be written as a space in the prose
+    -- ``refolding_rmsd`` matches "Refolding RMSD" -- because the key is a
+    column name and the summary is English. Only the interior separators move;
+    the ``\\b`` at each end is untouched, so the disambiguation above holds.
     """
     meta = meta_for(slug)
     about = getattr(meta, "about", None) or {}
@@ -145,7 +157,8 @@ def _stated_thresholds(slug: str) -> list[tuple[str, str, float]]:
             continue
         text = _visible(value)
         for metric in metrics:
-            pattern = r"\b" + re.escape(metric) + r"\b\s*" + _CMP + r"\s*" + _NUM
+            token = r"[_ ]".join(re.escape(part) for part in metric.split("_"))
+            pattern = r"\b" + token + r"\b\s*" + _CMP + r"\s*" + _NUM
             for match in re.finditer(pattern, text, re.I):
                 found.append((key, metric, float(match.group(1))))
     return found
@@ -229,11 +242,35 @@ def test_pxdesign_states_the_bar_its_designs_are_judged_at():
     )
 
 
+def test_boltzgen_states_the_bar_its_designs_are_judged_at():
+    """The second pair, and the reason the metric token and _CMP grew.
+
+    Pinned to the legend's ``good`` for the same reason pxdesign's is. The
+    number today is 1.5; the tempting wrong answer is the container's
+    RMSD_THRESHOLD of 2.0, which this sentence stated until
+    tools/boltzgen/meta.py was rewritten. ``GATE_COLUMNS["boltzgen"]`` in
+    shared/score_legends.py names refolding_rmsd, so the legend's value is
+    what every verdict rendered beside that number is computed from.
+    """
+    bar = SCORE_LEGENDS[("boltzgen", "refolding_rmsd")]["good"]
+    stated = [
+        value
+        for _key, metric, value in _stated_thresholds("boltzgen")
+        if metric == "refolding_rmsd"
+    ]
+    assert stated == [bar], (
+        f"boltzgen's About prose states refolding RMSD {stated} while its "
+        f"results are judged at {bar}"
+    )
+
+
 def test_the_guide_page_shows_that_bar_to_a_reader(monkeypatch):
-    """The number reaching a rendered page, not just a dict.
+    """The numbers reaching a rendered page, not just a dict.
 
     Both defects this file exists for were in prose that renders, so a check
-    that never leaves Python would not have seen either.
+    that never leaves Python would not have seen either. The two patterns
+    differ because the sentences do, and each is written the way its tool
+    writes it: pxdesign states a floor, boltzgen a ceiling.
     """
     from shared.feature_flags import flag_name  # noqa: PLC0415
 
@@ -242,12 +279,18 @@ def test_the_guide_page_shows_that_bar_to_a_reader(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     flask_app = _app_module.create_app()
     flask_app.config["TESTING"] = True
+    client = flask_app.test_client()
 
-    resp = flask_app.test_client().get("/help/tools/pxdesign")
-    assert resp.status_code == 200, f"guide page -> {resp.status_code}"
-    text = _visible(resp.get_data(as_text=True))
-
-    bar = SCORE_LEGENDS[("pxdesign", "ipTM")]["good"]
-    assert re.search(rf"ipTM\s*>=\s*{re.escape(str(bar))}", text), (
-        f"/help/tools/pxdesign does not show 'ipTM >= {bar}' to a reader"
-    )
+    px_bar = SCORE_LEGENDS[("pxdesign", "ipTM")]["good"]
+    bg_bar = SCORE_LEGENDS[("boltzgen", "refolding_rmsd")]["good"]
+    shown = {
+        "pxdesign": r"ipTM\s*>=\s*" + re.escape(str(px_bar)),
+        "boltzgen": r"Refolding\s+RMSD\s+at\s+or\s+under\s+" + re.escape(str(bg_bar)),
+    }
+    for slug, pattern in shown.items():
+        resp = client.get(f"/help/tools/{slug}")
+        assert resp.status_code == 200, f"{slug} guide page -> {resp.status_code}"
+        text = _visible(resp.get_data(as_text=True))
+        assert re.search(pattern, text, re.I), (
+            f"/help/tools/{slug} does not show {pattern!r} to a reader"
+        )
