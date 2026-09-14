@@ -1794,8 +1794,9 @@ class TestTheDownloadAsksTheRequestWhichChain:
         assert "chainB" in disposition, (
             f"the download does not name the chain it carries: {disposition}"
         )
+
     def test_a_corrupt_chain_stamp_does_not_500(self, client, reap_jobs):
-        """The suffix is where a file own bytes reach a response header.
+        """The suffix is where a file's own bytes reach a response header.
 
         ``_csv_chain_id`` reads the stamp out of the CSV, and on a chainless
         request it is compared against nothing before being spliced into

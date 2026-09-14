@@ -2036,9 +2036,10 @@ def feasibility_download(job_id):
     # cannot name its chain, rather than writing "chainNone".
     # _valid_chain-gated: this value came out of FILE BYTES via
     # _csv_chain_id, and on the chainless path it is compared against
-    # nothing, so without this it reaches a response header unchecked. A CR
-    # or LF there raises ValueError inside werkzeug, not a stale filename.
-    # Pinned by test_a_corrupt_chain_stamp_does_not_500.
+    # nothing, so without this it reaches a response header unchecked.
+    # werkzeug's _str_header_value raises on a CR or LF, so dropping this
+    # gate is a 500, not a stale filename. Gate pinned by
+    # test_a_corrupt_chain_stamp_does_not_500.
     suffix = (
         f"_chain{feasibility_chain}"
         if feasibility_chain and _valid_chain(feasibility_chain)
