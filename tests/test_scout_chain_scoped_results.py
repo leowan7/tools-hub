@@ -734,13 +734,14 @@ class TestChainIdIsValidatedAtTheBoundary:
 
         This class enumerated JSON and SSE routes only, so when
         /scout/feasibility/download gained ?chain= it landed outside the guard
-        and took an unvalidated chain for several commits. The empty string is
-        in UNSAFE and is NOT a rejection here — it is how a caller says "no
-        chain", so it falls through to the results.csv heuristic.
+        and took an unvalidated chain for several commits.
 
-        The job is given a servable CSV so the empty case reaches that
-        fallthrough and returns 200, rather than 404ing at the missing file
-        without exercising it.
+        A value that strips to empty is NOT a rejection here: the route reads
+        it as "no chain named" and falls through to the results.csv heuristic.
+        Branching on ``.strip()`` rather than on ``""`` so that a
+        whitespace-only entry added to UNSAFE lands on the fallthrough, which
+        is what this route does with it. The job is given a servable CSV so
+        that case reaches the heuristic instead of 404ing at a missing file.
         """
         _login(client)
         job_id = _upload_two_chain_job(client)
@@ -748,9 +749,9 @@ class TestChainIdIsValidatedAtTheBoundary:
         resp = client.get(
             f"/scout/feasibility/download/{job_id}", query_string={"chain": bad}
         )
-        if bad == "":
+        if not bad.strip():
             assert resp.status_code == 200, (
-                "an empty ?chain= must mean 'no chain named' and fall through "
+                "a blank ?chain= must mean 'no chain named' and fall through "
                 f"to the heuristic, not be validated: {resp.status_code} "
                 f"{resp.get_data(as_text=True)[:200]}"
             )
@@ -1792,6 +1793,29 @@ class TestTheDownloadAsksTheRequestWhichChain:
         disposition = resp.headers["Content-Disposition"]
         assert "chainB" in disposition, (
             f"the download does not name the chain it carries: {disposition}"
+        )
+    def test_a_corrupt_chain_stamp_does_not_500(self, client, reap_jobs):
+        """The suffix is where a file own bytes reach a response header.
+
+        ``_csv_chain_id`` reads the stamp out of the CSV, and on a chainless
+        request it is compared against nothing before being spliced into
+        ``download_name``. A CR or LF there raises ValueError inside werkzeug
+        (executed against werkzeug 3.1.8), so the ``_valid_chain`` gate on the
+        suffix is load-bearing rather than belt-and-braces.
+
+        Reachable because csv quotes the field on write and reads it back
+        intact: the stamp round-trips as "A\rB".
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "A\rB")
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 200, resp.data
+        disposition = resp.headers["Content-Disposition"]
+        assert f"feasibility_{job_id[:8]}.csv" in disposition, (
+            "a chain the boundary refuses was spliced into the filename: "
+            f"{disposition}"
         )
 
     def test_the_refusal_names_the_files_chain_not_the_callers_string(self, client, reap_jobs):
