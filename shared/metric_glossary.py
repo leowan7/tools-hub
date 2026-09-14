@@ -347,7 +347,7 @@ _FORMAT: dict[str, str] = {
     #
     # At ".2f" that window ran from just above 0.4950 to 0.50, and the share
     # card prints the raw value at three decimals unconditionally
-    # (blueprints/jobs.py:440), so a design inside it published the clause
+    # (blueprints/jobs.py:458), so a design inside it published the clause
     # "CDR distogram proxy 0.495" under wording asserting it cleared 0.50.
     # Measured by setting this entry to ".2f" and driving
     # blueprints.jobs._top_score_for_share: raw 0.4951 published that clause,

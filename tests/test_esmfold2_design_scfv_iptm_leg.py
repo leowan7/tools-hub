@@ -709,7 +709,7 @@ def test_a_gate_leg_renders_at_the_precision_the_share_card_prints():
     """A published clause must not show a number below the bar it claims.
 
     ``score_legends.shown_value`` judges a leg at the precision the GLOSSARY
-    renders, while the share card prints ``.3f`` (blueprints/jobs.py:440).
+    renders, while the share card prints ``.3f`` (blueprints/jobs.py:458).
     A leg declared coarser than that is therefore judged on a rounded-up
     figure and printed as the raw one. This column was ".2f" until review:
     raw 0.4951 rounded to "0.50", cleared the 0.50 bar, and published as
