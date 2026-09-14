@@ -38,8 +38,9 @@ af2 and colabfold is false.
 WHAT THIS FILE DOES NOT PIN. "Declares one" here means an ipTM legend in
 shared/score_legends.py carrying ``good`` -- the machine-readable bar,
 which is what the template consults. It is NOT a check that the tool's
-guide PAGE prints that number, nor that the two agree where both exist
--- pxdesign's guide states ipTM >= 0.70 against a declared 0.75. Two
+guide PAGE prints that number, nor that the two agree where both exist;
+tests/test_guide_bar_matches_legend.py pins that half, and pxdesign's
+guide stated ipTM >= 0.70 against a declared 0.75 until it landed. Two
 further limits: every check reads the ipTM ``<dd>`` only, so a pointer
 placed elsewhere on the page is invisible to it, and the clause is
 matched by phrase, so a reworded one is too. The sets differ: on
