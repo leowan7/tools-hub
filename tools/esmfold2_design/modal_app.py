@@ -169,6 +169,11 @@ _ORCHESTRATOR_TIMEOUT_S = _MAX_SESSION_S + 15 * 60
 # it. tests/test_esmfold2_orchestrator_reaps_children.py pins both halves.
 _REAP_MARGIN_S = 5 * 60
 _CHILD_WAIT_BUDGET_S = _ORCHESTRATOR_TIMEOUT_S - _REAP_MARGIN_S
+# Passes _reap_children makes over its list. 2, not 1, because a cancel that
+# raises is not recorded and the normal-return path has no outer reap to retry
+# it; not more, because the retry is unbounded gRPC inside _REAP_MARGIN_S and
+# each pass costs at most N_SEEDS_MAX round trips.
+_REAP_ATTEMPTS = 2
 _PYTHON = "python3"
 
 # Raw run artifacts get their OWN Volume, never the weights Volume: a weights
@@ -503,23 +508,42 @@ def _reap_children(
     """Cancel every spawned child that has not reached a terminal state.
 
     Best-effort and per-child: nothing one child raises may leave the rest
-    running, including a cancel that lands mid-reap. ``settled`` is allowed to
-    be approximate in the safe direction -- a redundant cancel of an
-    already-terminated call costs one wasted round trip, a skipped one costs an
-    H100 session.
+    running, including a cancel that lands mid-reap.
+
+    ``settled`` is the set of seeds that need no cancel, and it is MUTATED:
+    each successful cancel is recorded, so calling this twice over the same
+    list and set cancels each call once. ``run_tool`` relies on that -- it
+    shares one set with :func:`_gather_children` so the inner reap and the
+    outer guard around it do not both cancel the same handles.
+
+    On the way in, ``settled`` holds only the seeds whose ``.get()`` RETURNED
+    -- the one outcome that proves a child is terminal. An exception does not
+    prove it, because a failed poll raises too while the child runs on, so
+    those seeds stay unsettled and get cancelled. The asymmetry is the point: a
+    redundant cancel of an already-terminated call costs one round trip, a
+    skipped one costs an H100 session. A cancel that RAISES is not recorded, so
+    it is retried: this makes up to _REAP_ATTEMPTS passes over the list,
+    stopping as soon as every seed is settled. On the normal-return path there
+    is no outer reap to retry it for us, so without that a single flaky gRPC
+    cancel would hand that one child its full _MAX_SESSION_S. Everything that
+    succeeded on an earlier pass is skipped, so the retry costs nothing when
+    nothing failed. Pinned by test_a_flaky_cancel_is_retried_inside_one_reap.
 
     ``terminate_containers`` is left at its default False. That is the opposite
     of tools/proteina/_hotspot_canary.py's explicit True, and deliberate:
     False cancels the INPUT (SIGUSR1 -> InputCancellation in the worker's main
-    thread, which ``subprocess.run`` turns into a kill of the pipeline
-    subprocess), so ``_run_one_seed``'s ``finally`` still parks the raw archive
-    on the way out. True kills the container mid-flight and takes that archive
-    with it. What False leaves on the table is the now-idle container's
-    scaledown window, not another session.
+    thread; CPython's ``subprocess.run`` turns any BaseException out of
+    ``communicate`` into ``process.kill()`` via its bare ``except:``, Lib/
+    subprocess.py), so ``_run_one_seed``'s ``finally`` at modal_app.py:463
+    still parks the raw archive on the way out. True kills the container
+    mid-flight and takes that archive with it. What False leaves on the table
+    is the now-idle container's scaledown window, not another session.
+    Pinned by test_reap_leaves_terminate_containers_at_its_default.
     """
-    # ponytail: unbounded call.cancel(). _REAP_MARGIN_S is the only thing
-    # bounding a wedged Modal channel here; wrap in gpu.modal_client's
-    # _bounded_modal_call equivalent if a reap is ever seen to run long.
+    # ponytail: call.cancel() is left to Modal's own gRPC deadlines rather than
+    # wrapped; _REAP_MARGIN_S is this function's only budget. Wrap it in the
+    # container-side equivalent of gpu/modal_client.py:134's
+    # _bounded_modal_call if a reap is ever seen to run long.
     # ponytail: the guard is per-iteration, not a signal mask. Every statement
     # that could strand a child is inside the try; what is left interruptible
     # is the loop machinery itself and the handler's own print. Closing that
@@ -527,30 +551,34 @@ def _reap_children(
     # cancellation rather than deferring it, so the orchestrator would never
     # learn it was cancelled. Not worth it for the remaining bytecodes.
     pending: BaseException | None = None
-    for seed, call in children:
-        fc_id = "?"
-        try:
-            if seed in settled:
-                continue
-            fc_id = getattr(call, "object_id", "?")
-            call.cancel()
-            print(f"[run_tool] reaped seed={seed} fc_id={fc_id}", flush=True)
-        except BaseException as exc:  # noqa: BLE001 - nothing may stop this loop
-            # The whole body is guarded, not just call.cancel(): a cancel lands
-            # on whichever bytecode is executing, the getattr and the print
-            # included, and escaping the loop anywhere strands every child
-            # after this one. BaseException, not Exception, because
-            # InputCancellation is not an Exception (modal 1.4.2
-            # exception.py). Ordinary failures stay swallowed -- the reap is
-            # best effort and must never be what fails the job. A
-            # non-Exception is deferred, not dropped, so the container still
-            # sees the cancel.
-            print(
-                f"[run_tool] REAP FAILED seed={seed} fc_id={fc_id}: {exc}",
-                flush=True,
-            )
-            if pending is None and not isinstance(exc, Exception):
-                pending = exc
+    for _attempt in range(_REAP_ATTEMPTS):
+        for seed, call in children:
+            fc_id = "?"
+            try:
+                if seed in settled:
+                    continue
+                fc_id = getattr(call, "object_id", "?")
+                call.cancel()
+                settled.add(seed)
+                print(f"[run_tool] reaped seed={seed} fc_id={fc_id}", flush=True)
+            except BaseException as exc:  # noqa: BLE001 - nothing may stop this
+                # The whole body is guarded, not just call.cancel(): a cancel
+                # lands on whichever bytecode is executing, the getattr and the
+                # print included, and escaping the loop anywhere strands every
+                # child after this one. BaseException, not Exception, because
+                # InputCancellation is not an Exception (modal 1.4.2
+                # exception.py). Ordinary failures stay swallowed -- the reap
+                # is best effort and must never be what fails the job. A
+                # non-Exception is deferred, not dropped, so the container
+                # still sees the cancel.
+                print(
+                    f"[run_tool] REAP FAILED seed={seed} fc_id={fc_id}: {exc}",
+                    flush=True,
+                )
+                if pending is None and not isinstance(exc, Exception):
+                    pending = exc
+        if all(seed in settled for seed, _ in children):
+            break
     if pending is not None:
         raise pending
 
@@ -560,6 +588,7 @@ def _gather_children(
     *,
     budget_s: float,
     monotonic: Any = time.monotonic,
+    settled: set[int] | None = None,
 ) -> tuple[list[tuple[int, dict]], list[tuple[int, str]]]:
     """Collect child results under a wall-clock budget, reaping the rest.
 
@@ -573,11 +602,16 @@ def _gather_children(
 
     The reap is in a ``finally`` so it covers the cancel path too, where
     InputCancellation unwinds this frame instead of returning through it.
+
+    Pass ``settled`` to share the "needs no cancel" bookkeeping with a caller
+    that reaps around this call as well; :func:`_reap_children` records its own
+    cancels in it, so the two reaps never cancel the same handle twice.
     """
+    if settled is None:
+        settled = set()
     deadline = monotonic() + budget_s
     successes: list[tuple[int, dict]] = []
     failures: list[tuple[int, str]] = []
-    settled: set[int] = set()
     try:
         for seed, call in children:
             remaining = max(0.0, deadline - monotonic())
@@ -593,9 +627,9 @@ def _gather_children(
                 # Modal's own FunctionTimeoutError, meaning the CHILD hit its
                 # own ceiling, is a different type: it derives from
                 # modal.exception.Error, not the builtin, so it lands in the
-                # `except Exception` below and is marked settled. That is the
-                # right side to fall on -- a child Modal already timed out is
-                # terminal and needs no cancel.
+                # ``except Exception`` below. Neither branch settles the seed,
+                # so a child Modal already killed picks up one redundant
+                # cancel; see that branch for why that is the cheap side.
                 failures.append(
                     (
                         seed,
@@ -608,7 +642,17 @@ def _gather_children(
                     flush=True,
                 )
             except Exception as exc:  # noqa: BLE001 - one bad seed is not the job
-                settled.add(seed)
+                # Deliberately NOT settled. This branch catches two things that
+                # cannot be told apart by type: the child's own exception, where
+                # it really is terminal, and a failure of the POLL, where it is
+                # still running -- modal.exception.ConnectionError / ClientClosed,
+                # raised once the FunctionGetOutputs retries are exhausted (modal
+                # 1.4.2 _utils/grpc_utils.py:76,123,305,307). Both are
+                # Error(Exception), and a whitelist of the child's own types is
+                # impossible because that is arbitrary user code. Leaving the
+                # seed unsettled costs one redundant cancel on an
+                # already-terminal call; settling it on a blip costs a whole
+                # H100 session.
                 failures.append((seed, str(exc)))
                 print(f"[run_tool] child seed={seed} FAILED: {exc}", flush=True)
             else:
@@ -675,6 +719,7 @@ def run_tool(payload: Any) -> dict:
         # return SHAPE is unchanged: the worker's full dict, passed through,
         # never _aggregate.
         singleton: list[tuple[int, Any]] = []
+        single_settled: set[int] = set()
         try:
             call = _run_one_seed.spawn(cp)
             singleton.append((start_seed, call))
@@ -683,12 +728,12 @@ def run_tool(payload: Any) -> dict:
                 f"{getattr(call, 'object_id', '?')}",
                 flush=True,
             )
+            singles, single_failures = _gather_children(
+                singleton, budget_s=_CHILD_WAIT_BUDGET_S, settled=single_settled
+            )
         except BaseException:
-            _reap_children(singleton, set())
+            _reap_children(singleton, single_settled)
             raise
-        singles, single_failures = _gather_children(
-            singleton, budget_s=_CHILD_WAIT_BUDGET_S
-        )
         if singles:
             return singles[0][1]
         # ``.remote()`` propagated the child's exception to the hub; keep doing
@@ -697,14 +742,19 @@ def run_tool(payload: Any) -> dict:
         raise RuntimeError(f"seed {start_seed}: {single_failures[0][1]}")
 
     children: list[tuple[int, Any]] = []
-    # The spawn loop needs its own reap: _gather_children's ``finally`` is
-    # never reached from in here, and this loop is n_seeds SEQUENTIAL gRPC
-    # round trips -- seconds of wall clock at N_SEEDS_MAX. A cancel landing in
-    # that window is the likeliest cancel there is (an accidental submit,
-    # retracted immediately), and without this every handle already in
-    # ``children`` would run to its own _MAX_SESSION_S on a job that refunds in
-    # full. Pinned by tests/test_esmfold2_orchestrator_reaps_children.py's
-    # test_cancel_during_the_spawn_loop_reaps_what_was_already_spawned.
+    settled: set[int] = set()
+    # One guard from the first spawn to the last harvest, with no unguarded
+    # statement between them. The spawn loop is n_seeds SEQUENTIAL gRPC round
+    # trips -- seconds of wall clock at N_SEEDS_MAX -- and a cancel landing
+    # there is the likeliest cancel there is (an accidental submit, retracted
+    # immediately). But the gap AFTER it matters just as much: a cancel landing
+    # on the log write or on the call into _gather_children arrives with
+    # ``children`` fully populated and no reaping frame on the stack yet, so
+    # every one of the n_seeds H100s would run to its own _MAX_SESSION_S on a
+    # job the hub refunds in full. ``settled`` is shared with _gather_children
+    # so its own reap and this one do not both cancel the same call. Pinned by
+    # tests/test_esmfold2_orchestrator_reaps_children.py's
+    # test_every_spawn_and_harvest_in_run_tool_is_inside_a_reaping_guard.
     try:
         for i in range(n_seeds):
             seed = start_seed + i
@@ -720,19 +770,17 @@ def run_tool(payload: Any) -> dict:
                 f"{getattr(call, 'object_id', '?')}",
                 flush=True,
             )
+        print(
+            f"[run_tool] waiting for {len(children)} children to complete "
+            f"(budget {_CHILD_WAIT_BUDGET_S}s)",
+            flush=True,
+        )
+        successes, failures = _gather_children(
+            children, budget_s=_CHILD_WAIT_BUDGET_S, settled=settled
+        )
     except BaseException:
-        _reap_children(children, set())
+        _reap_children(children, settled)
         raise
-
-    print(
-        f"[run_tool] waiting for {len(children)} children to complete "
-        f"(budget {_CHILD_WAIT_BUDGET_S}s)",
-        flush=True,
-    )
-
-    successes, failures = _gather_children(
-        children, budget_s=_CHILD_WAIT_BUDGET_S
-    )
 
     print(
         f"[run_tool] aggregation: {len(successes)} succeeded, "

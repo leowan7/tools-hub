@@ -14,10 +14,12 @@ reachable triggers ended in a full refund with the GPUs still running:
 So every unreaped child is H100 time absorbed for zero revenue, bounded only by
 the worker ceiling: at 64 seeds x 5400 s that is ~$835 of raw H100.
 
-These tests drive :func:`_gather_children` -- the wait/reap loop ``run_tool``
-delegates to -- with fake FunctionCalls. ``run_tool`` itself is a
+Most of these drive :func:`_gather_children` -- the wait/reap loop ``run_tool``
+delegates to -- with fake FunctionCalls; a few call :func:`_reap_children`
+directly to land an interrupt inside the reap itself. ``run_tool`` is a
 ``modal.Function`` and is not locally callable, which is why the loop is a
-module-level helper rather than inline.
+module-level helper, and why the two properties that live in ``run_tool``'s own
+body (guarded spawn loops, no ``.remote()``) are checked over its AST instead.
 
 Runs fully offline - no Modal, no GPU.
 """
@@ -27,6 +29,7 @@ from __future__ import annotations
 import ast
 import inspect
 
+import modal.exception
 import pytest
 
 from tools.esmfold2_design import modal_app
@@ -34,6 +37,7 @@ from tools.esmfold2_design.modal_app import (
     _CHILD_WAIT_BUDGET_S,
     _MAX_SESSION_S,
     _ORCHESTRATOR_TIMEOUT_S,
+    _REAP_ATTEMPTS,
     _gather_children,
 )
 
@@ -189,10 +193,13 @@ def test_a_refusing_cancel_does_not_strand_the_rest() -> None:
     )
 
     assert successes == []
-    assert stubborn.cancelled == 1
+    assert stubborn.cancelled == _REAP_ATTEMPTS, (
+        "a cancel that kept raising was not retried the full _REAP_ATTEMPTS"
+    )
     assert tail.cancelled == 1, (
         "a raising cancel on an earlier child stopped the loop and stranded "
-        "every H100 behind it"
+        "every H100 behind it, or the retry pass re-cancelled a child that "
+        "had already been reaped"
     )
 
 
@@ -258,14 +265,19 @@ def test_a_cancel_landing_outside_call_cancel_does_not_strand_the_tail() -> None
     )
 
 
-def test_cancel_during_the_spawn_loop_reaps_what_was_already_spawned() -> None:
-    """Every spawn loop in ``run_tool`` is guarded by a reaping handler.
+def test_every_spawn_and_harvest_in_run_tool_is_inside_a_reaping_guard() -> None:
+    """No statement between the first spawn and the last harvest is unguarded.
 
-    ``_gather_children``'s ``finally`` is never reached from inside the spawn
-    loop, and that loop is ``n_seeds`` sequential round trips -- the widest
-    window a cancel can land in. ``run_tool`` is a ``modal.Function`` and not
-    locally callable, so this is checked structurally: every
-    ``_run_one_seed.spawn`` must sit inside a ``try`` whose handler is bare or
+    Two windows, one property. ``_gather_children``'s own ``finally`` is not on
+    the stack during the spawn loop, and it is not on the stack yet during the
+    log write and the call setup that follow the loop -- and by then
+    ``children`` holds every handle, so a cancel landing there is the most
+    expensive one possible. Covering the ``_gather_children`` CALL as well as
+    the spawns is what closes the second window.
+
+    ``run_tool`` is a ``modal.Function`` and not locally callable, so this is
+    checked structurally: every ``_run_one_seed.spawn`` AND every
+    ``_gather_children`` call must sit inside a ``try`` whose handler is bare or
     ``BaseException`` (an ``except Exception`` would not catch
     ``InputCancellation``) and calls ``_reap_children``.
     """
@@ -291,29 +303,74 @@ def test_cancel_during_the_spawn_loop_reaps_what_was_already_spawned() -> None:
                 return True
         return False
 
+    must_guard = ("_run_one_seed.spawn", "_gather_children")
+
     guarded: set[int] = set()
     for node in ast.walk(fn):
         if isinstance(node, ast.Try) and _reaping_try(node):
             for inner in ast.walk(node):
                 if (
                     isinstance(inner, ast.Call)
-                    and ast.unparse(inner.func) == "_run_one_seed.spawn"
+                    and ast.unparse(inner.func) in must_guard
                 ):
                     guarded.add(id(inner))
 
-    spawns = [
-        n
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Call)
-        and ast.unparse(n.func) == "_run_one_seed.spawn"
-    ]
-    assert spawns, "no spawn found in run_tool; the AST scan is vacuous"
-    unguarded = [n for n in spawns if id(n) not in guarded]
-    assert not unguarded, (
-        f"{len(unguarded)} of {len(spawns)} _run_one_seed.spawn call(s) in "
-        f"run_tool are not inside a try that reaps on BaseException; a cancel "
-        f"during the spawn loop strands every child spawned so far"
-    )
+    for name in must_guard:
+        calls = [
+            n
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and ast.unparse(n.func) == name
+        ]
+        assert calls, f"no {name} call found in run_tool; the AST scan is vacuous"
+        unguarded = [n for n in calls if id(n) not in guarded]
+        assert not unguarded, (
+            f"{len(unguarded)} of {len(calls)} {name} call(s) in run_tool sit "
+            f"outside a try that reaps on BaseException; a cancel landing "
+            f"there strands every child spawned so far"
+        )
+
+
+def test_reap_is_idempotent_over_a_shared_settled_set() -> None:
+    """Two reaps sharing one set cancel each child once, not twice.
+
+    ``run_tool`` reaps in ``_gather_children`` and again in the guard wrapped
+    around it. Both take the same ``settled`` set, and ``_reap_children``
+    records each successful cancel there, so the outer pass is a no-op over
+    what the inner one already handled.
+    """
+    a = FakeCall(None, object_id="fc-a")
+    b = FakeCall(None, object_id="fc-b")
+    shared: set[int] = set()
+
+    modal_app._reap_children([(0, a), (1, b)], shared)
+    modal_app._reap_children([(0, a), (1, b)], shared)
+
+    assert (a.cancelled, b.cancelled) == (1, 1)
+    assert shared == {0, 1}
+
+
+def test_a_flaky_cancel_is_retried_inside_one_reap() -> None:
+    """A cancel that raises is retried, not written off.
+
+    The reap swallows errors so one child cannot stop the loop. On the
+    normal-return path nothing reaps again afterwards, so without the retry a
+    single transient gRPC failure would hand that one child its whole
+    ``_MAX_SESSION_S`` -- the original leak, reintroduced one seed at a time.
+    """
+
+    class FailsOnce(FakeCall):
+        def cancel(self, **kwargs):
+            super().cancel(**kwargs)
+            if self.cancelled == 1:
+                raise RuntimeError("modal said no")
+
+    flaky = FailsOnce(None, object_id="fc-flaky")
+    shared: set[int] = set()
+
+    modal_app._reap_children([(0, flaky)], shared)
+
+    assert flaky.cancelled == 2, "the failed cancel was never retried"
+    assert shared == {0}, "the eventual success was not recorded"
 
 
 def test_reap_leaves_terminate_containers_at_its_default() -> None:
@@ -334,11 +391,17 @@ def test_reap_leaves_terminate_containers_at_its_default() -> None:
     )
 
 
-# -- terminal children are not re-cancelled ----------------------------------
+# -- only a returned .get() proves a child is terminal -----------------------
 
 
-def test_a_child_that_raised_is_settled_not_reaped() -> None:
-    """A child whose ``.get()`` raised a normal exception already terminated."""
+def test_a_child_that_raised_is_reported_failed_and_still_reaped() -> None:
+    """A raised ``.get()`` is reported as a failure but does not prove terminality.
+
+    Only a ``.get()`` that RETURNED proves the child is done. An exception does
+    not, so the seed stays unsettled and is cancelled anyway. The redundant
+    cancel of a genuinely dead call costs one gRPC round trip; skipping it on a
+    child that is in fact alive costs a whole H100 session.
+    """
     failed = FakeCall(RuntimeError("seed blew up"))
 
     successes, failures = _gather_children(
@@ -347,7 +410,48 @@ def test_a_child_that_raised_is_settled_not_reaped() -> None:
 
     assert successes == []
     assert failures == [(0, "seed blew up")]
-    assert failed.cancelled == 0
+    assert failed.cancelled == 1
+
+
+def test_a_transport_error_on_get_still_reaps_the_child() -> None:
+    """A failed POLL leaves the child running, so it must be cancelled.
+
+    ``FunctionCall.get()`` raises ``modal.exception.ConnectionError`` /
+    ``ClientClosed`` once the ``FunctionGetOutputs`` retries are exhausted
+    (modal 1.4.2 ``_utils/grpc_utils.py``) -- the child is untouched and still
+    burning its H100. Both derive from ``modal.exception.Error(Exception)``,
+    the same base as a child's own error surfaced through Modal, so no type
+    test can separate them; the loop has to reap on both.
+    """
+    stranded = FakeCall(modal.exception.ConnectionError("channel closed"))
+
+    successes, failures = _gather_children(
+        [(0, stranded)], budget_s=600.0, monotonic=_clock([0.0])
+    )
+
+    assert successes == []
+    assert failures == [(0, "channel closed")]
+    assert stranded.cancelled == 1, (
+        "a transport failure was read as the child terminating; the seed runs "
+        "on uncancelled to its own _MAX_SESSION_S"
+    )
+
+
+def test_a_transport_error_is_not_a_builtin_timeout() -> None:
+    """Pins the type split the two handlers in _gather_children rely on.
+
+    The ``except TimeoutError`` branch must catch only "no output yet"
+    (``modal/_functions.py`` raises the BUILTIN ``TimeoutError``). If Modal's
+    transport errors were ever to derive from it, they would be reported as
+    unfinished-at-deadline rather than as failures -- both still reap, but the
+    failure text would lie about what happened.
+    """
+    assert not issubclass(modal.exception.ConnectionError, TimeoutError)
+    assert not issubclass(modal.exception.ClientClosed, TimeoutError)
+    # Same split, other direction: FunctionTimeoutError means the CHILD hit its
+    # own ceiling and is genuinely dead, but it is NOT a builtin TimeoutError
+    # either, so it lands in the same `except Exception` branch.
+    assert not issubclass(modal.exception.FunctionTimeoutError, TimeoutError)
 
 
 # -- the budget leaves room to do the reaping --------------------------------
