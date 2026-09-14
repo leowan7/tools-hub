@@ -121,10 +121,28 @@ about: dict = {
     "runtime_table": [
         {"preset": "pilot", "typical": "30 to 60 min"},
     ],
+    # 0.75 IS THE LEGEND'S BAR, AND DELIBERATELY NOT THE CONTAINER'S
+    # 0.70. Both surfaces that render this sentence -- the tool form's
+    # "What good looks like" panel and /help/tools/pxdesign -- end their
+    # ipTM entry by sending the reader here for this tool's pass bar
+    # (templates/components/about_panel.html and
+    # templates/help/tool_guide.html; both pointer sentences are pinned by
+    # tests/test_about_panel_iptm_bar_default.py). Every verdict on the
+    # results table is computed from shared/score_legends.py, where
+    # ("pxdesign", "ipTM") carries good=0.75. This line said 0.70 -- the
+    # container's own IPTM_THRESHOLD
+    # (llm-proteinDesigner/docker/pxdesign/run_pipeline.py:69) -- so a
+    # design at 0.72 met the target stated here and read as below the bar
+    # in the cell beside it. The site does not gate on the container's
+    # number by decision: the comment above GATE_COLUMNS in
+    # shared/score_legends.py lists pxdesign/ipTM as one of five legs that
+    # differ on purpose, and tests/test_derived_verdicts.py pins that half.
+    # The agreement THIS line has to keep is pinned by
+    # tests/test_guide_bar_matches_legend.py.
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, pAE, and PDBs downloadable "
         "from a run of your own. "
-        "Target ipTM &ge; 0.70 on 1 to 2 of 5 designs for a tractable "
+        "Target ipTM &ge; 0.75 on 1 to 2 of 5 designs for a tractable "
         "epitope."
     ),
     "paper_citation": paper_citation,
