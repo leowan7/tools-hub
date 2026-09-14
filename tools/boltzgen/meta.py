@@ -203,8 +203,11 @@ about: dict = {
     # ONE RMSD NUMBER, AND IT IS THE ONE THE VERDICTS ARE COMPUTED FROM.
     # This sentence read "at or under 2 &Aring; it clears the RMSD leg of the
     # pass bar" -- the CONTAINER's RMSD_THRESHOLD (llm-proteinDesigner/docker/
-    # boltzgen/run_pipeline.py, no line number, that repo moves on its own) --
-    # while every verdict rendered beside the number comes from the legend's
+    # boltzgen/run_pipeline.py, no line number, that repo moves on its own;
+    # ``CONTAINER_GATES`` in tests/test_derived_verdicts.py names that constant
+    # and reads its value out of the sibling checkout, skipping when that repo
+    # is absent, so the 2.0 above is a cross-repo reading and not a number this
+    # repo pins) -- while every verdict beside it comes from the legend's
     # ``good`` of 1.5: shared/score_legends.py ("boltzgen", "refolding_rmsd"),
     # named in ``GATE_COLUMNS["boltzgen"]``. So a design at 1.8 &Aring; read
     # "clears the RMSD leg" on this page and fell short in the cell.

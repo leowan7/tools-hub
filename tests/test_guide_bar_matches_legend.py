@@ -291,6 +291,6 @@ def test_the_guide_page_shows_that_bar_to_a_reader(monkeypatch):
         resp = client.get(f"/help/tools/{slug}")
         assert resp.status_code == 200, f"{slug} guide page -> {resp.status_code}"
         text = _visible(resp.get_data(as_text=True))
-        assert re.search(pattern, text, re.I), (
+        assert re.search(pattern, text), (
             f"/help/tools/{slug} does not show {pattern!r} to a reader"
         )
