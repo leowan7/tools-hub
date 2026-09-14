@@ -534,7 +534,7 @@ def _reap_children(
     False cancels the INPUT (SIGUSR1 -> InputCancellation in the worker's main
     thread; CPython's ``subprocess.run`` turns any BaseException out of
     ``communicate`` into ``process.kill()`` via its bare ``except:``, Lib/
-    subprocess.py), so ``_run_one_seed``'s ``finally`` at modal_app.py:463
+    subprocess.py), so ``_run_one_seed``'s ``finally`` at modal_app.py:460
     still parks the raw archive on the way out. True kills the container
     mid-flight and takes that archive with it. What False leaves on the table
     is the now-idle container's scaledown window, not another session.
