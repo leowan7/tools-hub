@@ -182,6 +182,36 @@ def _basename(pdb_key: str, fallback: str) -> str:
 _STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
 
 
+# Keys no pipeline has a SOURCE for. A column header is a claim that the number
+# exists, and these carry that claim while being empty in every row.
+#
+# ``cluster_id`` is proteina's. It was dropped from the rendered column set on
+# 2026-09-10 once it was measured null on 17,024 of 17,024 candidates (four
+# length-sweep driver runs, not compute_campaigns rows) with no
+# code anywhere that originates a value (see the note on
+# ``_SCORE_COLUMNS["cluster_id"]`` in tools/proteina/run_pipeline.py). Removing
+# it from the page did NOT remove it from the file: this function derives its
+# header from the STORED payload's ``scores`` keys, not from
+# ``shared.result_columns``, so /jobs/<id> export.csv, the campaign export and
+# the target export all kept emitting an empty column the page had stopped
+# showing -- one click apart, contradicting each other. Found by review, not by
+# a test; `tests/test_proteina_promises_no_clustering.py` now pins it.
+#
+# THE FIX HAS TO LIVE HERE rather than in the pipeline. This header is built
+# from what is STORED, and stored rows are expected to carry
+# ``"cluster_id": null`` inside ``result`` (run_pipeline.py writes the key,
+# webhooks/modal.py:549 copies it through) -- expected, not observed: the
+# production jobs table has not been read from here.
+#
+# Scoped by NAME, across every tool, because no RENDERED column list declares
+# ``cluster_id`` -- ``shared/result_columns.py`` and all 14
+# ``{% set columns %}`` template lines are clean. Two OFFLINE operator exports
+# still declare it and are deliberately untouched:
+# ``tools/proteina/export_campaign.py``'s SCORE_COLUMNS and
+# ``shard_driver.py``'s MANIFEST_COLUMNS.
+_UNSOURCED_METRIC_KEYS = frozenset({"cluster_id"})
+
+
 _NON_METRIC_ROOT_KEYS = frozenset({
     "pdb_key", "name", "rank", "scores",
     "sequence", "binder_sequence", "designed_sequence",
@@ -203,15 +233,50 @@ def _metric_columns(cands: list, leading: list[str]) -> list[str]:
     cross-tool aliasing work, not here. Exporting the real numbers under their
     real names beats exporting nothing.
     """
+    # Suppress an unsourced key only WHILE it is unsourced. Keyed on the name
+    # alone, a cluster_id that someone finally wires up would be deleted from
+    # the file -- header and value -- with nothing failing; review caught that
+    # a name-only filter drops a real 7 as readily as a null. Checking the rows
+    # means the column comes back by itself the moment it means something.
+    #
+    # The test is ``_is_metric_value``, NOT ``is not None``, and that is the
+    # second fix here: a list / dict / over-long string is not None, so one such
+    # row re-opened the header while the writer below refused to print it --
+    # an empty column for every row, which is the exact defect this suppression
+    # exists to remove. Whatever cannot be printed cannot count as a source.
+    def _is_printable_value(v: object) -> bool:
+        # A source is a value the writer would actually PRINT.
+        # ``_is_metric_value`` says yes to None (a null prints as an
+        # empty cell), so calling it alone made every null count as a
+        # source and suppressed nothing at all.
+        return v is not None and _is_metric_value(v)
+
+    def _scores_of(cand: object) -> dict:
+        # ``scores`` is container-authored, and the loops below only ITERATE
+        # it, so calling ``.get`` here introduced an AttributeError on a
+        # non-dict that the function did not raise before. (It raised other
+        # things -- measured on the pre-change code, a str or list `scores`
+        # gives ValueError and an int gives TypeError -- so this restores the
+        # previous behaviour exactly, it does not make non-dicts safe.)
+        raw = cand.get("scores") if isinstance(cand, dict) else None
+        return raw if isinstance(raw, dict) else {}
+
+    unsourced = {
+        k for k in _UNSOURCED_METRIC_KEYS
+        if not any(_is_printable_value(_scores_of(c).get(k))
+                   or (isinstance(c, dict) and _is_printable_value(c.get(k)))
+                   for c in cands)
+    }
     out: list[str] = []
     for cand in cands:
         for k in (cand.get("scores") or {}):
             if (k not in out and k not in leading
-                    and k not in _STALE_VERDICT_KEYS):
+                    and k not in _STALE_VERDICT_KEYS
+                    and k not in unsourced):
                 out.append(k)
     for cand in cands:
         for k, v in cand.items():
-            if k in _STALE_VERDICT_KEYS:
+            if k in _STALE_VERDICT_KEYS or k in unsourced:
                 continue
             if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
                 continue
@@ -273,12 +338,73 @@ def candidates_to_csv(candidates) -> str:
     return buf.getvalue()
 
 
-def candidates_to_fasta(candidates, sequences=None) -> str:
-    """FASTA body for a job/campaign. Binder-design tools carry a
+def _bar_scope(cand: dict, tool, preset) -> tuple[str, object]:
+    """``(tool, mode)`` to judge ONE exported row under.
+
+    A merged export carries several runs, so a row that has its own
+    ``_source_tool`` is judged by it; the scalars are the single-run routes'
+    answer for rows that carry no provenance at all. ``_source_preset`` holds
+    the run's MODE on merged rows (``shared.target_results._candidate_rows``),
+    which is exactly what the bar wants.
+    """
+    if cand.get("_source_tool"):
+        return str(cand["_source_tool"]), cand.get("_source_preset")
+    return (tool or ""), preset
+
+
+def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -> str:
+    """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
     output arrives as a separate ``sequences`` list (seq + score + recovery).
     Returns ``""`` when there is nothing to write (caller supplies the empty
-    message so the download still names sensibly)."""
+    message so the download still names sensibly).
+
+    ``tool`` / ``preset`` NAME THE RUN when every row came from one. They are
+    NOT the only source: a row carrying its own ``_source_tool`` is judged
+    from that, scalars or no scalars, which is how the merged target export
+    works (see :func:`_bar_scope` and blueprints/targets.py). So "without
+    ``tool`` nothing is judged" is true ONLY of rows with no provenance -- a
+    per-job or per-campaign export -- and an earlier version of this sentence
+    stated it unconditionally, contradicting a comment added to targets.py in
+    the same change. With them, a record that does not clear the bar carries the
+    verdict in its DESCRIPTION -- the free text after the id, which
+    :func:`_basename` already treats as a distinct field when it strips
+    whitespace out of the id itself. ``preset`` is the run's mode for a tool
+    in ``shared.score_legends.MODE_GATE_COLUMNS`` and inert elsewhere; resolve
+    it with ``score_legends.resolve_mode``.
+
+    WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
+    ``candidates[0]``, which is the container's ranking key and not its bar --
+    on esmfold2-design job 2b917b54 that is the pI 11.95 design the pipeline
+    drops. Moving it would fix the leading record and break something worse:
+    the CSV and this function take their ``rank`` LABEL from
+    :func:`export_key`, off one index into one list, so ``rank7`` is the same
+    design in both and re-sorting only this one would silently end that. NOT
+    their POSITIONS: :func:`export_key`'s own docstring says so, because this
+    function skips rows with no sequence while still numbering from the full
+    list, so a file whose first record is ``rank2`` is ordinary.
+
+    THE ZIP IS NOT THE THIRD MEMBER OF THAT SET, and two drafts of this
+    paragraph got it wrong in opposite directions. It labels nothing
+    ``rank7``: :func:`candidates_to_zip` reads ``pdb_key`` out of the same key
+    and names the entry from that. But "the ZIP has no N at all" is false too
+    -- ``key["pdb_key"] or f"candidate_{i + 1}.pdb"`` falls back to the rank
+    for a row carrying no key, which is reachable, and probed:
+    ``['designs/a.pdb', 'candidate_2.pdb', 'candidate_3.pdb']``.
+
+    The FASTA is the format that most needs the sentence anyway. The CSV
+    carries the measurements a reader could apply the bar to themselves; the
+    ZIP carries structures, whose B-factor column this module rewrites to the
+    0-100 pLDDT scale on the way out, so a reader has a confidence signal
+    there too. Only the FASTA is an id and a sequence with nothing to judge
+    by.
+
+    ``verdict_text`` renders it, never a hand-join of ``verdict.shortfalls``:
+    that drops the ``unusable`` and ``unmeasured`` halves, which is a
+    disclosure about a design whose metric was never measured going missing.
+    """
+    from shared.score_legends import judge, verdict_text  # noqa: PLC0415
+
     lines: list[str] = []
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
@@ -295,7 +421,21 @@ def candidates_to_fasta(candidates, sequences=None) -> str:
         if key.get("source_job"):
             parts.append(str(key["source_job"])[:8])
         parts.append(_basename(key["pdb_key"], f"candidate_{i + 1}"))
-        lines.append(">" + "_".join(parts))
+        header = ">" + "_".join(parts)
+        row_tool, row_mode = _bar_scope(cand, tool, preset)
+        if row_tool:
+            verdict = judge(row_tool, cand, preset=row_mode)
+            # shared.ranking's predicate, negated. A record can be BOTH
+            # "below" and carrying a declared placeholder, and the "below"
+            # branch of verdict_text reports both halves.
+            if verdict.verdict == "below" or verdict.unusable:
+                note = verdict_text(row_tool, verdict, preset=row_mode)
+                if note:
+                    header += (
+                        f" [does not meet bar: {note}]"
+                        if verdict.verdict == "below" else f" [{note}]"
+                    )
+        lines.append(header)
         for start in range(0, len(seq), 80):
             lines.append(seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):

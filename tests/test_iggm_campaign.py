@@ -13,7 +13,7 @@ import pytest as _pytest
 # This file boots create_app(), which triggers app.py's load_dotenv() and pulls
 # the repo-root PRODUCTION service-role credentials into os.environ for the
 # rest of the pytest process. Without this fixture the estimate tests issue a
-# real tool_jobs_p90 SELECT against production (they patch
+# real tool_jobs SELECT against production (they patch
 # shared.compute_campaigns.get_service_client, but _historical_p90_seconds
 # resolves shared.credits.get_service_client) and every unmarked test file that
 # runs afterwards inherits the poisoned environment.

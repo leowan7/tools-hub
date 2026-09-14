@@ -480,6 +480,13 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         n_hotspot_contacts = None
 
     # Proteina-Complexa diversity cluster id (bounded non-negative int).
+    #
+    # None ON EVERYTHING MEASURED, so this bound has had nothing to reject. The
+    # container has no source for the key — 17,024 of 17,024 candidates across
+    # the four length-sweep driver runs carry null — and it is not a rendered
+    # column; see tools/proteina/run_pipeline.py's note on
+    # ``_SCORE_COLUMNS["cluster_id"]``. Kept so the field stays bounded if a
+    # source is ever wired, not because one exists.
     cluster_id: int | None = None
     try:
         if cand.get("cluster_id") is not None:
@@ -528,7 +535,8 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         # and the results renderer hides them). AF2 confidence for protein
         # binders; RF3 score for ligand / motif; force-field energy where it
         # applies; scRMSD self-consistency (binder + ligand); min interface PAE;
-        # a composite total reward; and a diversity cluster id + optional tag.
+        # a composite total reward; a cluster id that has been null on every
+        # run measured (see the note where it is parsed); and an optional tag.
         "af2_plddt": _num(cand.get("af2_plddt")),
         "af2_iptm": _num(cand.get("af2_iptm")),
         "rf3_score": _num(cand.get("rf3_score")),

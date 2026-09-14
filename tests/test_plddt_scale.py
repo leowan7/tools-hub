@@ -504,6 +504,29 @@ class TestTheDetectorCanFail:
         assert found and found.group(1) == "0.39"
 
 
+class TestShareCardClaimsOnlyWhatItEarned:
+    """A run that produced nothing must not offer to publish a design.
+
+    The Share button is gated on `succeeded and share_allowed`, never on
+    there being output. `_top_score_for_share` returns None for a
+    zero-output run, and the None branch still composed "I designed a
+    binder with {tool}". A review found it by sweeping channels rather
+    than pages.
+    """
+
+    def test_no_design_claim_when_there_is_no_score(self):
+        from blueprints.jobs import _share_title
+        title = _share_title("OpenDDE co-folding", None)
+        assert "designed a binder" not in title
+        assert title == "I ran OpenDDE co-folding on tools.ranomics.com"
+
+    def test_a_scored_run_still_claims_its_design(self):
+        from blueprints.jobs import _share_title
+        title = _share_title("BoltzGen", "0.91")
+        assert "I designed a binder with BoltzGen" in title
+        assert "One design at 0.91" in title
+
+
 class TestTheOtherSurfaces:
     """Everything that shows a pLDDT and is not a tool results page.
 
@@ -531,7 +554,7 @@ class TestTheOtherSurfaces:
         folded'."""
         from shared.email import _top_candidate_summary
 
-        label, value, caption, _pdb = _top_candidate_summary(
+        label, value, caption, _pdb, _bar, _pos = _top_candidate_summary(
             job=_stub_job("boltzgen", {"pLDDT": 0.83}), tone="success",
         )
         assert label == "pLDDT"
@@ -572,9 +595,16 @@ class TestTheOtherSurfaces:
     def test_the_public_share_card_uses_the_shared_scale(self):
         from blueprints.jobs import _top_score_for_share
 
-        assert _top_score_for_share(
-            _stub_job("esmfold", {"pLDDT": 0.39})
-        ) == "pLDDT 39.000"
+        # THE CONTRACT CHANGED, THE RULE DID NOT. This helper used to return a
+        # bare metric string and now returns the whole og:title clause, because
+        # whether "top" may be claimed unqualified depends on the verdict and
+        # only this helper knows it. What is pinned here is unchanged: the card
+        # renders pLDDT on the 0-100 scale, so 0.39 reads 39.000 and never
+        # "0.390" beside a page showing 39.
+        clause = _top_score_for_share(_stub_job("esmfold", {"pLDDT": 0.39}))
+        assert clause is not None, "the card stopped naming a score at all"
+        assert clause.endswith("pLDDT 39.000"), clause
+        assert "0.390" not in clause, clause
 
 
 class TestEveryKnownDisplaySiteStillCallsTheRule:
@@ -593,7 +623,15 @@ class TestEveryKnownDisplaySiteStillCallsTheRule:
     # the rule three times and colabfold twice, so removing one call
     # left the needle matching and the guard green.
     SITES = {
-        "templates/jobs_compare.html": ("plddt_on_100(scores.get(", 1),
+        # TWO, one per table. The needle used to be
+        # ``plddt_on_100(scores.get(``, which pinned the ARGUMENT as well as
+        # the call and so went red when the cell switched to ``raw_metric``
+        # with the normalisation still in place. The count is what this guard
+        # is for; the argument is not its business. The second call is the
+        # Shared-metrics row, which rendered pLDDT RAW while the per-job table
+        # above it normalised -- two tables on one page printing different
+        # numbers for the same measurement, and no site entry to catch it.
+        "templates/jobs_compare.html": ("plddt_on_100(", 2),
         "templates/job_detail.html": ("plddtOn100(c.plddt)", 1),
         "templates/components/candidate_table.html": ("plddt_on_100(raw)", 1),
         "templates/tools/esmfold_results.html": ("plddt_on_100(", 3),

@@ -756,7 +756,22 @@ class TestRewardParse:
         assert s["af2_plddt"] == 0.71
         assert s["binder_scrmsd"] == 0.8   # af2folding_rmsd
         assert s["rf3_score"] is None      # protein reward has no rf3 column
-        assert s["cluster_id"] is None     # diversity assigned at the hub
+        # NOT "assigned at the hub" — the comment here said that until
+        # 2026-09-10 and no such hub step exists. Neither this header nor the
+        # ligand one in the next test carries a cluster column of any kind,
+        # which is why cluster_id is not a rendered column; see
+        # _SCORE_COLUMNS["cluster_id"] in run_pipeline.py.
+        #
+        # "Real" is a claim about PROVENANCE, and the honest version is: both
+        # fixtures are hand-written, and no captured reward CSV is committed in
+        # this repo. Their authority is two commit messages — 7acd4cb for the
+        # column prefixes off the P-2/P-3 canaries, and 1a43f1f for
+        # ``af2folding_plddt_log`` specifically, read off a named production
+        # job. That column is the one asserted by ``s["af2_plddt"] == 0.71``
+        # above, and it post-dates 7acd4cb, so crediting 7acd4cb alone (as an
+        # earlier draft did) is wrong about this very fixture. Committing one
+        # header line from a real run would settle it.
+        assert s["cluster_id"] is None
 
     def test_ligand_columns_map(self, tmp_path):
         # Ligand reward CSV uses rf3folding_* names (P-3 canary). Verify the

@@ -19,12 +19,13 @@ Environment variables (set by ``tools/opendde/modal_app.py``):
     JOB_TIER        ``general`` | ``abag``
     OPENDDE_ROOT_DIR  runtime data root (checkpoint/ lives here, on the Volume)
 
-The output structure format (mmCIF vs PDB) and the exact confidence-score file
-are NOT documented upstream, so collection is deliberately defensive: it globs
-both formats, best-effort converts mmCIF to PDB for the viewer, and best-effort
-reads a ranking score from any co-located JSON. Per the standing "never parse in
-the container" rule, the COMPLETE output tree is tarred and parked on the raw
-Volume regardless of what this light-touch parse recovers.
+OpenDDE 1.0.0 writes .cif only — one writer, no format flag — so globbing both
+formats is belt and braces rather than a guess, and mmCIF is best-effort
+converted to PDB for the viewer. The confidence file is likewise derived, not
+guessed: ``runner/dumper.py`` writes one per sample beside the structure,
+carrying the same sample index. Per the standing "never parse in the container"
+rule, the COMPLETE output tree is tarred and parked on the raw Volume regardless
+of what this light-touch parse recovers.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from __future__ import annotations
 import glob
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -62,8 +64,10 @@ CHECKPOINTS = {
     "general": "opendde.pt",
     "abag": "opendde_abag.pt",
 }
-# Keys we try, in order, when scraping a confidence/ranking JSON. Undocumented
-# upstream — best-effort only; a missing score renders as "—", never fails.
+# Keys we try, in order, when reading a per-sample confidence JSON. OpenDDE 1.0.0
+# writes ranking_score / ptm / iptm / plddt at the top level of every summary, so
+# each tuple hits on its FIRST candidate; the rest are tolerance for a rename. A
+# missing score renders as "—", never fails.
 _RANKING_KEYS = ("ranking_score", "ranking", "confidence", "score")
 _PTM_KEYS = ("ptm", "pTM", "complex_ptm")
 _IPTM_KEYS = ("iptm", "ipTM", "complex_iptm")
@@ -97,10 +101,19 @@ def _fail(bucket: str, check: str, detail: str) -> None:
 
 
 def _num(value: Any) -> float | None:
+    """Coerce to a finite float, else None.
+
+    NaN poisons the ranking sort key (measured: one NaN puts 0.9 above 0.95);
+    inf sorts fine but would render as "inf". A JSON int too big for a float
+    raises OverflowError outside every guard — ``_first`` runs from the sort key
+    and again per row, and ``main()``'s try has no ``except``. None is observed
+    upstream; all are one clause.
+    """
     try:
-        return round(float(value), 4)
-    except (TypeError, ValueError):
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return round(num, 4) if math.isfinite(num) else None
 
 
 # ===========================================================================
@@ -179,7 +192,7 @@ def parse_payload() -> dict[str, Any]:
 
 
 # ===========================================================================
-# Output collection (defensive — format is undocumented upstream)
+# Output collection (structure format defensive; confidence path derived)
 # ===========================================================================
 
 
@@ -217,26 +230,62 @@ def _cif_to_pdb(cif_bytes: bytes) -> bytes | None:
                 pass
 
 
+def _confidence_path(structure_path: Path) -> Path | None:
+    """The confidence JSON upstream writes for THIS sample, or None.
+
+    ``runner/dumper.py`` writes both files into one per-seed ``predictions/``
+    dir, from two loops over a single ``sorted_indices`` list, so both carry the
+    same ``k``::
+
+        {name}_sample_{k}.cif
+        {name}_summary_confidence_sample_{k}.json
+
+    ``k`` is the sample's rank, not its sampling index — irrelevant to the join,
+    since both files carry the same one. Verified against the pinned image and
+    not merely PyPI: the source tree in aurekaresearch/opendde:v1 self-reports
+    1.0.0 and its ``runner/dumper.py`` is byte-identical to the 1.0.0 wheel's
+    but for a two-line SPDX header that the 1.0.0 SDIST already carries — so the
+    image is a pre-header snapshot of that source, not a rebuild of it.
+    Convention unchanged in 1.0.3 and 1.1.1.
+    """
+    base, sep, idx = structure_path.stem.rpartition("_sample_")
+    if not sep:
+        return None
+    return structure_path.with_name(f"{base}_summary_confidence_sample_{idx}.json")
+
+
 def _read_score_json(structure_path: Path) -> dict:
-    """Scrape a ranking/confidence JSON co-located with a structure. Best-effort."""
-    cand: dict = {}
-    search_dirs = [structure_path.parent, structure_path.parent.parent]
-    json_paths: list[str] = []
-    for d in search_dirs:
-        json_paths += glob.glob(f"{d}/*.json")
-    stem = structure_path.stem
-    # Prefer a JSON that shares the structure's stem, else the first available.
-    json_paths.sort(key=lambda p: (stem not in Path(p).stem, p))
-    for jp in json_paths[:8]:
-        try:
-            with open(jp) as fh:
-                data = json.load(fh)
-        except Exception:
-            continue
-        if isinstance(data, dict):
-            cand = data
-            break
-    return cand
+    """Read THIS sample's confidence JSON. ``{}`` when there is not one.
+
+    Strict by construction. The previous version globbed the structure's dir AND
+    its parent, preferred a JSON whose stem contained the structure's stem, and
+    otherwise took the first one found. That preference cannot fire (it would
+    need a job name that is ITSELF a suffix of ``_summary_confidence``;
+    ``__init__.py`` pins ``JOB_NAME``), and OpenDDE writes one dir per SEED
+    holding every sample of that seed, so every sample fell through to the same
+    alphabetically-first file. Reproduced from the upstream layout (4 samples x
+    2 seeds, as field job 0c89ce0a): 8 distinct structures, 2 distinct score
+    sets, 6 rows on a neighbour's numbers. The caller sorts and assigns rank
+    from these, so the ranking was wrong too, not merely the cells.
+
+    A missing score is the safe outcome: ``_first`` returns None, the sort puts
+    it last, the row's score cells render as an em dash, and the complete tree is
+    on the raw Volume regardless. A borrowed score is none of those things.
+    """
+    jp = _confidence_path(structure_path)
+    if jp is None:
+        logger.warning("no sample index in %s — recording no score", structure_path.name)
+        return {}
+    try:
+        with jp.open() as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        logger.warning("no confidence file %s for %s — recording no score", jp.name, structure_path.name)
+        return {}
+    except Exception as exc:  # noqa: BLE001 — a best-effort scrape never fails a paid run
+        logger.warning("confidence file %s unreadable (%s) — recording no score", jp.name, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _first(d: dict, keys: tuple[str, ...]) -> float | None:
@@ -251,7 +300,8 @@ def _first(d: dict, keys: tuple[str, ...]) -> float | None:
 def collect_structures(out_dir: Path) -> list[Path]:
     """Glob predicted structures. Prefer mmCIF (AF3-class default); fall back to PDB.
 
-    Picking one format per run avoids double-counting when both are emitted.
+    Picking one format per run avoids double-counting if both were ever emitted;
+    1.0.0 writes .cif only, so the PDB arm is contingency, not a live path.
     """
     cif = sorted(glob.glob(f"{out_dir}/**/*.cif", recursive=True)) + sorted(
         glob.glob(f"{out_dir}/**/*.mmcif", recursive=True)
@@ -270,10 +320,11 @@ def collect_structures(out_dir: Path) -> list[Path]:
 def archive_raw_outputs(work_dir: str, dest: str | None = None) -> None:
     """Tar the ENTIRE work tree to ``dest`` before teardown destroys it.
 
-    A container must never decide which fields are worth keeping. The confidence
-    file format and score names are undocumented for OpenDDE, so the local re-parse
-    of this tar is the source of truth — the container keeps only a best-effort
-    ranking scalar. Unconditional + best-effort by design: it runs on every exit
+    A container must never decide which fields are worth keeping. This one keeps
+    four scalars per sample, so the local re-parse of this tar stays the source of
+    truth for everything else OpenDDE emits — gpde, has_clash, num_recycles,
+    disorder, the chain_* matrices, and atom-level full_data when it is asked
+    for. Unconditional + best-effort by design: it runs on every exit
     path (a run that folded nothing is exactly the tree you need) and never raises.
 
     ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
@@ -490,8 +541,8 @@ def main() -> None:
         finally:
             # Ship the COMPLETE tree home BEFORE TemporaryDirectory deletes it —
             # a _fail sys.exit, an unexpected raise, or a zero-output run is a path
-            # whose tree is worth more, not less (and OpenDDE's score format is
-            # undocumented, so the local re-parse depends on this tar).
+            # whose tree is worth more, not less (and the container keeps only
+            # four scalars per sample, so the re-parse depends on this tar).
             archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)

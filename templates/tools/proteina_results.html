@@ -1,9 +1,14 @@
 {# Proteina-Complexa results partial — included by job_detail.html on status=succeeded.
-   One shard's designs; the campaign detail page aggregates survivors across all
-   shards (global top-K + diversity). Columns map to keys the pipeline writes into
-   each candidate's `scores` dict: a composite total reward, AF2 confidence
-   (protein binders), the RF3 score (ligand / motif), binder self-consistency
-   RMSD, and the diversity cluster id. Absent metrics render as "—" per variant. #}
+   One shard's designs; the campaign detail page pools survivors across all shards
+   into one globally ranked table (shared.compute_campaigns.aggregate_campaign_candidates
+   — a rank, with no diversity or clustering step). Columns map to keys the pipeline
+   writes into each candidate's `scores` dict: a composite total reward, AF2 confidence
+   (protein binders), the RF3 score (ligand / motif), and binder self-consistency RMSD.
+   Absent metrics render as "—" per variant.
+
+   `cluster_id` IS DELIBERATELY NOT A COLUMN. It was one until 2026-09-10 and was
+   empty on all 17,024 designs anyone has measured, with no code path able to fill
+   it — see the note in shared/result_columns.py. #}
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output     = job.result or {} %}
@@ -14,7 +19,7 @@
    not iterable". Both writers emit a list today; this is the guard, not a
    report of a live failure. #}
 {% set candidates = output.get('candidates') or [] %}
-{% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd', 'cluster_id'] %}
+{% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd'] %}
 
 {# WHICH RESIDUE NUMBERING THE DOWNLOADED FILES CARRY. Upstream renumbers every
    design chain to 1..N, so an operator who asked for hotspot A241 can get back
@@ -80,9 +85,70 @@
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
     send_target_tools=send_target_tools) %}
-  <p class="subtitle">
-    This Proteina-Complexa shard returned no candidates that cleared the
-    reward filters. Survivors are pooled across the whole campaign, so other
-    shards may still have produced hits — check the campaign page.
-  </p>
+  {# THREE ZERO-CANDIDATE CASES, and the campaign wording is true for only
+     one of them. It was unconditional until 2026-09-11, so a SUCCEEDED free
+     `validate` dry-run — which designs nothing by construction — told the
+     operator its search had found nothing, and pointed at a campaign page
+     that cannot exist. Traced rather than assumed: the only writer of
+     tool_jobs.campaign_id is shared/compute_campaigns.py:2020-2033, which
+     takes its preset from a campaign, and the only two routes that create a
+     campaign both refuse this preset first — blueprints/campaigns.py:337 and
+     blueprints/targets.py:243. (campaigns.py:196 refuses it too, but that is
+     the JSON estimate preview, which creates nothing.) No path UPDATEs
+     campaign_id afterwards, so a validate job cannot acquire one.
+     Observed live on job fc9d14d7 (27 GPU-seconds, succeeded).
+
+     Branches on `job.preset`, which is the value job_detail.html:117 already
+     prints as "Preset <x>" above this panel, not on the result's `tier`:
+     preset is a NOT NULL column read straight off the row
+     (shared/jobs.py:330), while `tier` is whatever the container chose to
+     echo back. On the worked-example page job is a dict literal with neither
+     key (components/worked_example.html:80-87), so both tests are Undefined
+     and falsy and the standalone arm renders — which is the right arm for a
+     single example run anyway.
+
+     The validate copy names only the three checks run_validate actually
+     performs (run_pipeline.py:3886-3936). It does NOT repeat the adapter
+     description's "checks your target": that branch returns at
+     run_pipeline.py:4030, and the sole route to download_target (:2864) is
+     the prepare_custom_target call at :4239, well past it. #}
+  {% if job.preset == 'validate' %}
+    <p class="subtitle">
+      <strong>Pre-flight passed.</strong> This was the free
+      <code>validate</code> dry-run, which designs nothing: it checks that the
+      design container is ready — the pipeline package imports, every variant
+      config is present, and a model checkpoint is mounted. Zero candidates is
+      the expected result here, not a failed search.
+    </p>
+    <p class="subtitle">
+      It clears the environment, not your target — nothing here inspects the
+      target itself. Re-run with one of the paid design variants to produce
+      binders.
+    </p>
+  {% elif job.campaign_id %}
+    <p class="subtitle">
+      This Proteina-Complexa shard returned no candidates that cleared the
+      reward filters. Survivors are pooled across the whole campaign, so other
+      shards may still have produced hits — check the campaign page.
+    </p>
+  {% else %}
+    {# NO PARAMETER ADVICE HERE. The sentence that stood here named three
+       levers — binder length, hotspots, design count — and all three are
+       false for most runs that reach this arm. A curated run REFUSES
+       hotspots and contigs outright (tools/proteina/__init__.py:666) and
+       ligand_binder / motif_ame can never be custom (:151, :607), so they
+       are always curated; binder_length is parsed on every path but only
+       consumed under `target_source == "custom"`
+       (run_pipeline.py:4009 read, :4245 sole use, inside the :4234 gate);
+       and a shard is pinned at 4x2=8 designs (__init__.py:162) — raising
+       the count scales the SHARD count, which makes it a campaign and so
+       contradicts this arm's own first sentence. What is left is true for
+       every standalone run regardless of preset or target source. #}
+    <p class="subtitle">
+      This Proteina-Complexa run returned no candidates that cleared the
+      reward filters. It is a single run rather than one shard of a campaign,
+      so there are no sibling shards to pool survivors with — a campaign
+      spreads the same target over more shards.
+    </p>
+  {% endif %}
 {% endcall %}

@@ -2855,8 +2855,17 @@ class TestADroppedDesignSScoresStillReachTheCaller:
             self, tmp_path, monkeypatch):
         """Not a re-derived subset. Pinned against a DELIVERED candidate from
         the same run so a future divergence in which keys survive the drop —
-        the cluster id, say, which only the analyze stage writes — shows up
-        here instead of being discovered by an operator comparing two shards."""
+        the RF3 score, say, which the protein variant does not write — shows up
+        here instead of being discovered by an operator comparing two shards.
+        (Scoped to what has been observed: ``rf3folding_ranking_score`` appears
+        in the pinned LIGAND header; no motif_ame reward CSV has ever been seen,
+        so "the ligand and motif variants write it", which this docstring said
+        briefly, is inference from _RF3_REQUIRED rather than a reading.)
+
+        The example it gave originally was the cluster id, "which only the
+        analyze stage writes". Analyze writes it to a side directory under a
+        different column name, and no key here comes from analyze at all —
+        ``scores`` is built from one reward-CSV row through _SCORE_COLUMNS."""
         rows = self._rows("alfa", "bravo")
         rows[1] = (rows[1][0], rows[1][1], None)
         data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)

@@ -456,10 +456,10 @@
     the top <strong>{{ agg.shown }}</strong> of <strong>{{ agg.total }}</strong>.
     {% for slug in agg.tools %}{% set st = agg.per_tool.get(slug, {}) %}{% if st.get('total', 0) > st.get('shown', 0) %}{{ slug }} contributed {{ st.total }}, {{ st.shown }} shown.{% endif %} {% endfor %}
     {% if agg.partial %}
-    The CSV and FASTA exports cover every design that could be read; the PDB ZIP
-    is limited to the top {{ agg.shown }}.
+    The CSV and FASTA exports cover every design that could be read; the
+    structures ZIP is limited to the top {{ agg.shown }}.
     {% else %}
-    The CSV and FASTA exports contain every design; the PDB ZIP is limited to the top {{ agg.shown }}.
+    The CSV and FASTA exports contain every design; the structures ZIP is limited to the top {{ agg.shown }}.
     {% endif %}
     {# Said only under `capped`, because that is the only state where the two
        numberings can disagree. The page ranks with DEFAULT_LIMIT and those

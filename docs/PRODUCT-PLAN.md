@@ -68,7 +68,8 @@ unused credits.
    spawns the Modal function with a presigned URL + signed webhook URL.
 3. ✅ Job detail page polls `/jobs/<id>/status.json` until terminal,
    renders a tool-specific results partial showing per-candidate scores
-   + downloadable PDBs.
+   + downloadable structures (`.pdb` or `.cif`, whichever the container
+   wrote).
 4. ✅ For long-running pilots (> 5 min) the user can close the tab —
    they receive a `tools-hub job complete` email when the run lands
    (subject: "Your <tool> run is ready" — link to /jobs/<id>).

@@ -142,7 +142,7 @@
           <div class="odde-conditional" data-odde-guided-only hidden>
             <label for="proteins" class="label odde-field-label">Protein chains (FASTA)</label>
             <textarea name="proteins" id="proteins" spellcheck="false" class="odde-textarea"
-                      placeholder=">A&#10;MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG">{{ (pre_fill.get('proteins') if pre_fill else '') or '' }}</textarea>
+                      placeholder=">A&#10;IVGGYTCGANTVPYQVSLNSGYHFCGGSLINSQWVVSAAHCYKSGIQVRLGEDNINVVEGNEQFISASKSIVHPSYNSNTLNNDIMLIKLKSAASLNSRVASISLPTSCASAGTQCLISGWGNTKSSGTSYPDVLKCLKAPILSDSSCKSAYPGQITSNMFCAGYLEGGKDSCQGDSGGPVVCSGKLQGIVSWGSGCAQKNKPGVYTKVCNYVSWIKQTIASN">{{ (pre_fill.get('proteins') if pre_fill else '') or '' }}</textarea>
             <div class="odde-help">One record per chain. <code>&gt;id</code> headers are optional (auto-assigned if omitted).</div>
 
             <label for="dna" class="label odde-field-label">DNA chains (FASTA)</label>
@@ -157,7 +157,7 @@
 
             <label for="ligands" class="label odde-field-label">Ligands (one per line)</label>
             <textarea name="ligands" id="ligands" spellcheck="false" class="odde-textarea" style="min-height: 3.5rem;"
-                      placeholder="CCD_ATP&#10;CC(=O)Oc1ccccc1C(=O)O">{{ (pre_fill.get('ligands') if pre_fill else '') or '' }}</textarea>
+                      placeholder="CCD_BEN">{{ (pre_fill.get('ligands') if pre_fill else '') or '' }}</textarea>
             <div class="odde-help">A CCD code (<code>CCD_ATP</code>), a multi-residue code (<code>CCD_NAG_BMA_BGC</code>), a bundled <code>FILE_x.sdf</code>, or a bare SMILES string.</div>
           </div>
 

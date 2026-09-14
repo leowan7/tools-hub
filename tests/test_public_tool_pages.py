@@ -39,6 +39,18 @@ PUBLIC_TOOLS = ("mpnn", "proteina", "boltz2")
 # which queries Supabase with the stubbed user id.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
+#: Page sweeps memoised per app instance, matching _ENTRIES in
+#: test_about_panel_iptm_bar_default.py. all_tools_app is module-scoped,
+#: so one all_tools_app instance serves the module and each of these two
+#: helpers renders once rather than once per calling test. The separate
+#: function-scoped `app` fixture below still builds an app per test, and
+#: the un-memoised per-test slug loops still render per test.
+#: A new module builds a new app, which misses.
+#: Do not call either helper inside a patch that changes rendering: the
+#: first call's HTML is what every later call in the module receives.
+_LEDES: dict = {}
+_PAGES: dict = {}
+
 
 def _ctx(user_id="u-public", balance=100):
     return SimpleNamespace(
@@ -423,26 +435,6 @@ class TestSubmittingControlDetector:
         assert _submitting_controls(body, "mpnn") == []
 
 
-@pytest.fixture
-def all_tools_app(monkeypatch):
-    """Every registered adapter flagged on, not a remembered subset."""
-    import app as app_module  # noqa: PLC0415  (populates tools.base registry)
-    from shared.feature_flags import flag_name  # noqa: PLC0415
-    from tools import base as tool_base  # noqa: PLC0415
-
-    slugs = sorted(a.slug for a in tool_base.all_adapters())
-    assert len(slugs) >= 14, (
-        f"adapter registry holds {len(slugs)} tools; a registry that did "
-        "not populate would make every assertion below vacuous"
-    )
-    for slug in slugs:
-        monkeypatch.setenv(flag_name(slug), "on")
-    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    flask_app = app_module.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app, slugs
-
-
 class TestNoAnonymouslyReachableSubmitControl:
 
     def test_every_tool_form(self, all_tools_app):
@@ -548,7 +540,7 @@ class TestEpitopeScoutPrerequisite:
 
 
 class TestPublicContextIsBuiltOncePerRequest:
-    """One page render, one build — and one ``tool_jobs_p90`` SELECT.
+    """One page render, one build — and one ``tool_jobs`` SELECT.
 
     The bundle is needed twice per render: ``tool_form`` passes it into
     the template, and the ``tool_public_context`` jinja global rebuilds
@@ -561,8 +553,9 @@ class TestPublicContextIsBuiltOncePerRequest:
     round trips per crawler hit, on fourteen pages.
     """
 
-    # Uses the module's ``all_tools_app`` fixture rather than setting
-    # FLAG_TOOL_* by hand: the hand-rolled version set fourteen env vars
+    # Uses the shared ``all_tools_app`` fixture from tests/conftest.py
+    # rather than setting FLAG_TOOL_* by hand: the hand-rolled version
+    # set fourteen env vars
     # plus SESSION_SECRET_KEY and never restored them, leaking flag state
     # into whatever test ran next.
     @staticmethod
@@ -903,6 +896,9 @@ class TestRenderedLedeRules:
         # out, so a registry that half-populated or a flag left off cannot
         # make the loop below pass over three tools.
         assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        cached = _LEDES.get(flask_app)
+        if cached is not None:
+            return cached
         client = flask_app.test_client()
         out = {}
         served = 0
@@ -917,6 +913,7 @@ class TestRenderedLedeRules:
             )
             out[slug] = hero
         assert served == 14, f"only {served} tool pages returned 200"
+        _LEDES[flask_app] = out
         return out
 
     def test_lede_phrase_never_repeats_the_tools_own_name(
@@ -1290,6 +1287,9 @@ class TestIptmThresholdHasOneSource:
         measured on the proteina sweep as M-P3.
         """
         flask_app, slugs = all_tools_app
+        cached = _PAGES.get(flask_app)
+        if cached is not None:
+            return cached
         client = flask_app.test_client()
         out = {}
         for path in _public_get_paths(flask_app, slugs):
@@ -1297,6 +1297,7 @@ class TestIptmThresholdHasOneSource:
             if resp.status_code == 200:
                 out[path] = resp.get_data(as_text=True)
         assert len(out) >= 2 * len(slugs) + 1, sorted(out)
+        _PAGES[flask_app] = out
         return out
 
     def test_the_sourceless_threshold_is_gone_everywhere(

@@ -15,8 +15,12 @@ Runs as a fund-and-drain compute campaign of independent search shards
 (see ``shared/compute_campaigns.py``), NOT a single giant job. One shard is
 one seeded ``proteinfoundation.generate`` run on one A100-80GB; every shard
 gets a distinct ``++seed`` (generate.py: ``seed = cfg.seed + job_id`` makes
-them independent), and the hub does global cross-shard top-K + post-hoc
-diversity. ``num_designs`` scales the SHARD COUNT, not the width/depth inside
+them independent), and the hub pools every shard's candidates into one globally
+ranked table. There is no post-hoc diversity step — this line said there was
+until 2026-09-10, and nothing in this repo clusters proteina designs. (MPNN
+sequence diversification, ``shared/resample.py``, is a different tool and a
+different thing; "no diversity anywhere in the repo" would be false.)
+``num_designs`` scales the SHARD COUNT, not the width/depth inside
 a shard — the generation profile per shard is fixed (see ``_SHARD_*`` below)
 so every shard deterministically yields ``_SHARD_DESIGNS`` designs, which is
 exactly the campaign ``chunk_size`` (``_CHUNK_SIZE_OVERRIDE["proteina"]``).

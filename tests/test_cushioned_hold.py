@@ -20,7 +20,7 @@ from shared.wallet_estimates import (
 )
 
 
-# Money tests must not price against the live tool_jobs_p90 view: without
+# Money tests must not price against live tool_jobs history: without
 # this the estimate path reads production history through the service-role
 # key in the repo-root .env. The two p90 tests below stub the lookup
 # explicitly, but the other six in this file relied on the ambient absence
@@ -106,23 +106,53 @@ def test_rfdiffusion_hold_sits_on_its_cap_while_the_spec_fallback_holds():
 
 
 def test_rfdiffusion_hold_leaves_its_cap_if_the_p90_lands_below_2746():
-    # The other half, and the half that costs money: IF the 30-day p90 lands
-    # below ~2746 GPU-s, estimated_cost_for_tool prefers it, the hold drops
-    # under the cap, and the variance-debit / absorbed_variance branches
-    # reopen. 2220 is the one measured post-update run (job 25471e07).
+    # The other half: IF the 30-day p90 lands below ~2746 GPU-s,
+    # estimated_cost_for_tool prefers it and the hold drops under the cap.
+    # Pinned so that "the hold clamps at the cap for rfdiffusion" cannot be
+    # read as unconditional -- it is a property of the bootstrap constant,
+    # and this is the condition that ends it.
     #
-    # Whether that actually happens is undetermined and this test does not
-    # claim it does -- the repo's two runtime models for a 10-design chunk
-    # straddle the threshold (2775 flat, 2600 on meta.py's fixed+per-design).
-    # It is pinned so that "the variance path is closed for rfdiffusion"
-    # cannot be read as unconditional: it is a property of the bootstrap
-    # constant, and this is the condition that ends it.
+    # LOSING THE CLAMP IS NOT THE SAME AS REOPENING THE VARIANCE PATH, which
+    # an earlier version of this comment claimed. Those branches need the
+    # hold below the CHARGE, not below the cap, and the 1.5x cushion sits in
+    # between. Measured by bisection at THIS num_designs, the debit branches
+    # need a p90 under 1480 -- 148 GPU-s per design, roughly half the
+    # post-update era's 277.5. (8 is under the baseline, so _scale_seconds
+    # floors its ratio at 1.0 and the threshold moves with num_designs.)
+    #
+    # The stub is in the units _historical_p90_seconds returns: seconds for a
+    # designs_per_run_baseline-sized run. 2000 here is 200 s/design, so the
+    # 8 designs under test burn 1600 s. Deliberately NOT job 25471e07's raw
+    # 2220: at this num_designs the ratio floor makes a 2220 stub produce a
+    # POINT ESTIMATE ($2.6946) numerically identical to the charge for 2220
+    # raw GPU-seconds, so an assertion spanning the two would only be
+    # restating the cushion multiplier.
     params = _pilot(8)
-    with patch("shared.wallet_estimates._historical_p90_seconds", return_value=2220.0):
+    with patch("shared.wallet_estimates._historical_p90_seconds", return_value=2000.0):
         hold = cushioned_hold_usd(None, "rfdiffusion", params)
     cap = compute_hard_cap("rfdiffusion", params)
-    assert hold == Decimal("4.0419")
+    assert hold == Decimal("3.6414")
     assert hold < cap
+    # Compare against an INDEPENDENT quantity: what job 25471e07 actually
+    # burned at this num_designs (2220 raw GPU-s, the run that measured the
+    # era). Deriving the charge from the stub instead makes hold/charge the
+    # constant 1.5/0.8 -- the cushion multiplier over the ratio floor -- which
+    # holds for every sub-clamp stub and therefore tests nothing.
+    #
+    # Assert BOTH SIDES of the threshold, not just the covered side: with
+    # ``hold`` pinned to a literal above, a one-sided comparison against
+    # another literal is arithmetic a reader can do, not a property the code
+    # can fail. The hold EQUALS the charge at 1480 and exceeds it from 1481.
+    era_charge = (
+        Decimal("2220") * Decimal("0.000714") * Decimal("1.70")
+    ).quantize(Decimal("0.0001"))
+    assert era_charge == Decimal("2.6946")
+    for stub, covers_the_era_charge in ((2000.0, True), (1480.0, False)):
+        with patch(
+            "shared.wallet_estimates._historical_p90_seconds", return_value=stub
+        ):
+            h = cushioned_hold_usd(None, "rfdiffusion", params)
+        assert (h > era_charge) is covers_the_era_charge, stub
 
 
 def test_hold_never_exceeds_hard_cap_across_tools():

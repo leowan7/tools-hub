@@ -946,7 +946,7 @@ def _public_tool_context(adapter) -> dict:
     (app.py) rebuilds it inside ``about_panel.html`` because macros are
     imported without context. Each build runs ``_pilot_context`` ->
     ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
-    an uncached Supabase SELECT on ``tool_jobs_p90``. /tools/<slug> is
+    an uncached Supabase SELECT on ``tool_jobs``. /tools/<slug> is
     publicly indexable now, so that was two network round trips per
     crawler hit for one page.
 
@@ -2415,8 +2415,10 @@ def tools_comparison():
     Renders the iteration-loop framing, a category-grouped tile
     grid, and the comparison matrix at the bottom for power users.
     Catalog includes both hardcoded tools (Epitope Scout, Binder
-    Developability Scout, Library Planner) and flag-enabled GPU
-    adapters.
+    Developability Scout) and flag-enabled GPU adapters. The Library
+    Planner was delisted 2026-08-17 and is no longer in
+    _HARDCODED_TOOLS; this docstring still named it, and a review
+    traced a wrong count in a commit message back to here.
     """
     catalog = _build_tools_catalog()
 

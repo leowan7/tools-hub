@@ -23,9 +23,11 @@ deliberately skips both macros (its schema is ``sequences``, not
 ``candidates``) and carries its own inline guard keyed on ``example``.
 
 ``TestEveryPartialIsExampleSafe`` verifies that across all fourteen,
-including the thirteen with no payload yet, so the guard is proven
-before it is depended on. ``TestTheDetectorIsNotBlind`` is the positive
-control: the same renders with a REAL job id must still emit the links,
+driving each with a synthetic payload rather than its own, so the guard
+is proven independently of what any tool has captured. (It once said
+"the thirteen with no payload yet"; all fourteen ship one now.)
+``TestTheDetectorIsNotBlind`` is the positive control: the same renders
+with a REAL job id must still emit the links,
 otherwise the scan has gone blind and everything above it is vacuous.
 """
 
@@ -35,8 +37,10 @@ import base64
 import html
 import json
 import math
+import os
 import statistics
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -196,9 +200,13 @@ def _render_partial(
 class TestExampleDeclaration:
 
     def test_every_tool_declares_example_explicitly(self, tools_app):
-        """None is a decision — thirteen of fourteen have no captured
-        payload — and each meta.py records which. A missing attribute is
-        an oversight."""
+        """None is a decision — and each meta.py records which. A missing
+        attribute is an oversight.
+
+        This used to say "thirteen of fourteen have no captured payload",
+        which stopped being true as the examples landed: all fourteen
+        declare a truthy EXAMPLE and ship an example/result.json today. The
+        guard is unchanged and still correct; only the count was stale."""
         _, slugs = tools_app
         missing = [s for s in slugs if not hasattr(meta_for(s), "EXAMPLE")]
         assert not missing, f"meta.py declares no EXAMPLE for: {missing}"
@@ -363,12 +371,14 @@ class TestTheDetectorIsNotBlind:
 
 
 class TestEveryPartialIsExampleSafe:
-    """Thirteen of these tools have no EXAMPLE yet. That is the point.
+    """The guard is proven for a tool BEFORE that tool gains a payload.
 
-    The guard lives in two shared macros, so it can be verified for a
-    tool BEFORE that tool gains a payload — which is the difference
-    between shipping the fourteenth example safely and discovering on
-    the public page that its partial was the one nobody guarded.
+    It lives in two shared macros, so it can be verified without one —
+    which is the difference between shipping an example safely and
+    discovering on the public page that its partial was the one nobody
+    guarded. (This opened "Thirteen of these tools have no EXAMPLE yet"
+    when it was written; all fourteen ship one now, and the property is
+    what still matters, not the count.)
     """
 
     def test_no_partial_emits_a_job_scoped_url_under_the_sentinel(
@@ -417,6 +427,69 @@ class TestEveryPartialIsExampleSafe:
     PROMISES_A_SUPPRESSED_CONTROL = (
         "shortlist button above",
         "designs above are yours to download",
+        # opendde said this in TWO places -- the results partial and
+        # about["output_summary"]. The panel sentence renders four text
+        # blocks above the worked example's HEADING; the two occurrences
+        # are about thirty blocks apart. (An earlier version of this
+        # comment said the two occurrences were "four visible lines
+        # apart", conflating those two measurements, and the commit that
+        # was supposed to correct it left it here and said it had not.)
+        #
+        # #251 guarded the partial, left the panel, and added nothing
+        # here, so the half it fixed could come back in silence and the
+        # half it missed shipped. Registering the phrase rather than
+        # either sentence catches both, and any third that uses the same
+        # words -- the comprehension in
+        # test_example_copy_does_not_promise_controls_it_hides is a plain
+        # case-sensitive `in`, so a REWORDED promise passes. Verified:
+        # "Each structure is yours to download, or open in the 3D viewer"
+        # is not caught. (This once cited a LINE NUMBER. Exactly one
+        # commit did so, and the number was wrong the moment it was
+        # written -- 438 against an actual 457, and 476 one commit later.
+        # Name the method, not the line.)
+        "Download each structure",
+        # RETIRED WORDINGS. af2 and colabfold said these directly above
+        # example pages that render no download at all: af2's controls are
+        # double-gated on `not is_example` AND `pdb_b64`
+        # (af2_results.html:241,245) and NEITHER example payload carries a
+        # blob, so both pages instructed a download they did not offer.
+        # Both are reworded now, which means -- unlike the three entries
+        # above -- these are written nowhere, so the control test below
+        # cannot vouch for them. They block a return, nothing more.
+        #
+        # The full phrase, not a bare "Download PDB": esmfold's example
+        # page carries a REAL working download button by that name
+        # (esmfold_results.html:193, live because its example payload does
+        # hold a pdb_b64), so the short form flags it falsely.
+        "Download PDB or PAE matrix",
+        "Download as PDB or PAE matrix",
+        # The adjectival half of the same family. Five tools said
+        # "downloadable PDBs" and mpnn said "downloadable as FASTA",
+        # five of the six directly above an example page that renders no
+        # such control. Weaker than an imperative -- it describes the tool,
+        # not the table -- but it sat in the same place and read the
+        # same way.
+        #
+        # boltzgen is the exception and was rescoped anyway: its example
+        # page renders exactly ONE .pdb, for rank 1, because its payload
+        # carries a single inline blob. "downloadable PDBs" plural still
+        # overstated the other four rows. An earlier version of this
+        # comment said all six rendered none, which was wrong for
+        # boltzgen and wrong about mpnn's wording.
+        #
+        # NOT registered alongside it: "downloadable as FASTA",
+        # which mpnn still carries in scoped form, and "downloadable
+        # structures", which proteina still carries while separate work
+        # on its clustering promises is in flight.
+        #
+        # CAVEAT this entry needs and the two above already have: esmfold
+        # and boltzgen DO render a working structure download on their
+        # example pages (esmfold a data-URI, boltzgen an inline blob on
+        # rank 1). If either ever describes its output with this wording
+        # the phrase would be true copy and this entry would flag it
+        # falsely -- narrow it then, the way "Download PDB" was narrowed
+        # to "Download PDB or PAE matrix" for esmfold.
+        "downloadable PDBs",
     )
 
     def test_example_copy_does_not_promise_controls_it_hides(self, tools_app):
@@ -428,10 +501,167 @@ class TestEveryPartialIsExampleSafe:
             html = flask_app.test_client().get(f"/tools/{slug}").get_data(
                 as_text=True,
             )
-            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in html]
+            # Whitespace-flattened: the raw HTML wraps mid-phrase, so a
+            # promise split across two source lines reads normally to a
+            # human and was invisible to `p in html`. Demonstrated on
+            # comparison.html -- which the OTHER scan below renders, not
+            # this one; both had the same hole and both are flattened.
+            flat = re.sub(r"\s+", " ", html)
+            found = [p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat]
             if found:
                 offenders[slug] = found
         assert not offenders, f"example page promises absent controls: {offenders}"
+
+    def test_the_public_pages_make_no_suppressed_promise(self, tools_app):
+        """Every page an anonymous visitor can open without a parameter,
+        plus the per-tool help guides.
+
+        The scan above walks /tools/<slug> only. The catalog hero read
+        "Every pipeline lands ranked candidates with downloadable PDBs"
+        -- false for ProteinMPNN, for the folding tools, and for the two
+        hardcoded catalog entries -- and nothing here would have noticed.
+        A review found it by grepping, not by a test.
+
+        The homepage was exempt while templates/index.html carried the
+        bare phrase for its design step. It no longer does -- that copy
+        says "downloadable structures" now, for the same format reason
+        (BoltzGen writes .cif for most rows) -- so the exemption is gone.
+
+        The path list is DERIVED from url_map rather than written out.
+        Two successive reviews found this scan short by a page: first
+        /pricing, /showcase and the five /help routes, then /scout/,
+        /developability and the auth and legal pages. A hand-written
+        list goes stale every time a route is added, and the docstring
+        claiming it was complete went stale with it. Login-gated routes
+        (302) and non-HTML endpoints drop out on their own responses,
+        so nothing here encodes which ones those are.
+
+        NOT covered: anything behind a login, and any parameterised
+        route except the tool guides -- /jobs/<id> above all, which is
+        where a promise is read against a real result.
+
+        This scan is NOT what found the defect that prompted the last
+        extension: /help/faq named ProteinMPNN as the only result
+        without a CSV or a star, which is a wrong SCOPE rather than a
+        registered phrase, and no entry here matches it. A phrase
+        register catches re-use of known-bad wording; it does not check
+        that a sentence is true.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        # Skipped BEFORE the request, because the request itself is the
+        # hazard -- not because of what they return. GET /scout/example
+        # copies a fixture into a new tmp/<uuid> directory, mints an
+        # anon session id, spends a rate-limit bucket and runs
+        # cleanup_old_jobs(), which rmtree's over the SHARED tmp/ and
+        # has fired destructively in prod before. /scout/progress opens
+        # an event stream; /readyz and /healthz read Supabase. None of
+        # them answers text/html, so none contributes to this scan.
+        #
+        # Residual risk, stated: a NEW prose page is still picked up
+        # automatically, which is the direction that matters. A new
+        # side-effecting endpoint would be probed once until it is
+        # added here.
+        NO_PROBE = (
+            "/api/", "/scout/example", "/scout/progress",
+            "/scout/feasibility/", "/scout/quota", "/health",
+            "/readyz", "/metrics", "/debug/",
+        )
+        # The skip changes NOTHING about which pages are scanned: most
+        # of the rules it removes answer non-HTML, and the rest answer
+        # text/html only as a 301/302 redirect body, which the status
+        # check drops. (An earlier version said every one answers
+        # non-HTML; the two /api/ estimate redirects and the scout
+        # feasibility stream do not. Named, not counted -- a count
+        # here goes stale the next time a route is added.) So no
+        # assertion ABOUT PAGES can see the skip, and deleting it was
+        # silent until the snapshot below, which is now the only thing
+        # holding it.
+        # /scout/example mints one job directory per probe.
+        tmp_dir = REPO / "tmp"
+        before = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
+        paths = [f"/help/tools/{slug}" for slug in slugs]
+        for rule in flask_app.url_map.iter_rules():
+            if rule.arguments or "GET" not in (rule.methods or ()):
+                continue
+            if rule.rule.startswith(NO_PROBE):
+                continue
+            probe = client.get(rule.rule)
+            if probe.status_code != 200:
+                continue
+            if not probe.headers.get("Content-Type", "").startswith(
+                "text/html"
+            ):
+                continue
+            paths.append(rule.rule)
+        # 14 guides + 16 parameterless HTML pages today. The floor is a
+        # vacuity guard: the probe keeps a rule only on a 200 with an
+        # HTML content type, so anything that makes the app answer
+        # differently -- a 500 from a broken render, a 302 from a login
+        # redirect -- silently collapses `paths` to the guides and the
+        # scan then passes over almost nothing. Mutation-tested by
+        # making the status check unsatisfiable: it fails at 14.
+        assert len(paths) >= 25, f"only {len(paths)} pages scanned: {paths}"
+        after = set(os.listdir(tmp_dir)) if tmp_dir.is_dir() else set()
+        # `==`, not `<=`: a subset test passes every DELETION, and
+        # deletion is the half of this hazard with a production
+        # incident behind it -- cleanup_old_jobs rmtree's entries it
+        # did not create. Executed both ways against the real app
+        # with an extra probed route that rmtree'd a staged
+        # directory: `<=` passed, `==` failed naming it.
+        assert after == before, (
+            "probing the route table changed the shared tmp/. "
+            f"created: {sorted(after - before)}; "
+            f"removed: {sorted(before - after)}. Add the offending "
+            "rule to NO_PROBE rather than letting a copy scan touch "
+            "state it does not own."
+        )
+        for path in paths:
+            flat = re.sub(
+                r"\s+", " ", client.get(path).get_data(as_text=True),
+            )
+            found = [
+                p for p in self.PROMISES_A_SUPPRESSED_CONTROL if p in flat
+            ]
+            assert not found, (
+                f"{path} names a control it does not show: {found}"
+            )
+
+    def test_a_real_page_with_nothing_to_download_promises_nothing(
+        self, tools_app,
+    ):
+        """The sentinel is not the only way a page can have no downloads.
+
+        opendde's download line was gated on "not the example page", which
+        is not the same as "there is something to download". A real job
+        that returns zero designs renders an empty table, and the sentence
+        sat above it promising a control for rows that do not exist. The
+        gate now also requires raw_designs, and reverting that half was
+        caught by nothing until this.
+        """
+        flask_app, _ = tools_app
+        empty = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+            result={
+                # The load-bearing keys a real zero-design opendde job
+                # writes, not a minimal stand-in. Six of the eleven the
+                # COMPLETED path emits (_fail writes a different, shorter
+                # payload); the five omitted -- status, sample, step,
+                # cycle, provider_job_id -- reach no branch this
+                # exercises.
+                # run_pipeline sets designs_total from
+                # the job spec, never from len(designs_out). A fixture
+                # without it lets the gate be rewritten against
+                # designs_total and stay green while the promise breaks
+                # on a real run -- demonstrated.
+                "designs": [], "designs_total": 5, "designs_completed": 0,
+                "n_failures": 5, "tier": "general", "runtime_seconds": 412,
+            },
+        )
+        assert "Download each structure" not in empty, (
+            "opendde promises a structure download on a real job that "
+            "returned no designs, so there is nothing to download"
+        )
 
     def test_a_real_results_page_still_makes_those_promises(self, tools_app):
         """The control. If the phrases vanished from the real page too,
@@ -443,6 +673,59 @@ class TestEveryPartialIsExampleSafe:
         assert "shortlist button above" in html, (
             "the phrase is gone from the real results page as well, so the "
             "example-side assertion no longer proves anything"
+        )
+        # Same control for the opendde entry, which the register gained
+        # without one. Deleting that sentence outright rather than guarding
+        # it left the block scanning for text nobody writes, and every test
+        # stayed green -- the exact vacuity this method exists to catch.
+        odd = _render_partial(
+            flask_app, "opendde", job_id="real-job-1", example=False,
+        )
+        assert "Download each structure" in odd, (
+            "opendde's real results page no longer offers the download, so "
+            "blocking that phrase on the example page proves nothing"
+        )
+        # The third control assertion, covering the tuple's SECOND live
+        # entry -- assert order and tuple order are not the same, and an
+        # earlier version of this comment called it the third entry. The
+        # tuple has six entries. Two are retired wordings written
+        # nowhere, and no control can vouch for those.
+        #
+        # The third, "downloadable PDBs", WAS live copy when this entry
+        # was added -- an earlier version of this comment said it was
+        # written nowhere, and following that wrong claim is how a
+        # reviewer found three live defects: the completion email
+        # promised it for runs that returned nothing (shared/email.py),
+        # /tools promised it for every pipeline including the ones that
+        # return sequences or a structure
+        # (templates/tools/comparison.html), and the homepage promised
+        # the format for a design step that includes BoltzGen, which
+        # writes .cif (templates/index.html).
+        #
+        # All three are fixed, so the phrase is in NO template:
+        # `git grep -c "downloadable PDBs" -- templates/` is the check,
+        # and it is zero. Elsewhere it survives in code that quotes the
+        # defect -- this file, tests/test_email_failure_copy.py and
+        # shared/email.py. docs/PRODUCT-PLAN.md carried it as a live
+        # product bullet rather than a quotation until this commit; a
+        # review found it, because "only where code quotes it" was the
+        # previous sentence here and was wrong.
+        #
+        # Do NOT write the repo-wide occurrence count here. A count
+        # stated inside a file that itself holds copies of the phrase
+        # changes the count as it is written: the previous version of
+        # this comment said eleven, and writing it made twelve.
+        #
+        # All three entries here are retired wordings today -- but this
+        # one was not when it was added, which is why it is worth saying
+        # so rather than quietly relisting it with the other two.
+        # results_shell.html renders this one in the `else` of the same
+        # `is_example` branch that carries the shortlist line, so the
+        # boltz2 render above holds both.
+        assert "designs above are yours to download" in html, (
+            "the real results page no longer says the designs are yours to "
+            "download, so blocking that phrase on the example page proves "
+            "nothing"
         )
 
 
@@ -464,13 +747,16 @@ class TestExampleNumbersComeFromThePayload:
         seqs = result["sequences"]
         assert len(seqs) == 2
         # "Two sequences, 129 residues each, recovering 53% and 50% ...
-        #  at scores of 0.76."
+        #  at scores of 0.758 and 0.756."
         assert {len(s["seq"]) for s in seqs} == {129}
         assert [round(s["recovery"] * 100) for s in seqs] == [53, 50]
-        assert {round(s["score"], 2) for s in seqs} == {0.76}
+        # THREE decimals, because that is what the table prints. This
+        # line rounded to two and the prose said 0.76 to match it, so
+        # both agreed with each other and neither agreed with the page.
+        assert [round(s["score"], 3) for s in seqs] == [0.758, 0.756]
         assert "129 residues each" in example["what_came_back"]
         assert "53% and 50%" in example["what_came_back"]
-        assert "0.76" in example["what_came_back"]
+        assert "0.758 and 0.756" in example["what_came_back"]
         assert "2" == example["inputs_used"][2][1]
 
     def test_boltz2_narration_matches_its_result_json(self, tools_app):
@@ -973,14 +1259,28 @@ class TestExampleNumbersComeFromThePayload:
         assert "32 to 44 &Aring;" in reading
         ci = col("af2_iptm", copies)
         assert 0.086 <= min(ci) and max(ci) <= 0.098
-        assert "0.086 to 0.098" in reading
+        # The prose may not quote this range: the column renders two
+        # decimals, so 0.086 is on no row of the table the sentence sits
+        # above. Nor may it say "under 0.10" unqualified -- true of the
+        # payload, max 0.0977, and false of the PAGE, where five of these
+        # twelve cells print exactly 0.10.
+        #
+        # Two rounds shipped a version of this line: one quoting the raw
+        # bound, one quoting the printed values, each repairing the
+        # other's fault and reintroducing its own. What settles it is
+        # quoting the cells here AND marking the selection rule four
+        # lines below as raw, so the two clauses stop competing.
+        assert max(ci) < 0.10
+        assert sorted({f"{v:.2f}" for v in ci}) == ["0.09", "0.10"]
+        assert "the twelve print 0.09 or 0.10" in reading
+        assert "under 0.10 before rounding" in reading
 
         # ... against the rest of the shard.
         rest = [c for c in cands if c not in copies]
         assert round(statistics.median(col("binder_scrmsd", rest)), 1) == 2.0
         assert "median of 2.0 &Aring;" in reading
         assert round(statistics.median(col("af2_iptm", rest)), 2) == 0.67
-        assert "0.67 median" in reading
+        assert "0.67 median for the rest" in reading
 
         # "total_reward sends all twelve to ranks 51 to 64"
         assert min(c["rank"] for c in copies) >= 51
@@ -1021,10 +1321,14 @@ class TestExampleNumbersComeFromThePayload:
         assert (statistics.median(col("af2_plddt", cands[:12]))
                 > statistics.median(col("af2_plddt", cands[-12:])))
 
-        # rf3_score and cluster_id are ABSENT, not zero. The narration
-        # tells the reader that column is empty because RF3 was off, and a
-        # stub value of 0 would render a confident "0.00" instead of the
-        # em dash — see templates/components/candidate_table.html.
+        # rf3_score is ABSENT, not zero. The narration tells the reader that
+        # column is empty because this preset does not run RF3, and a stub
+        # value of 0 would render a confident "0.00" instead of the em dash —
+        # see templates/components/candidate_table.html.
+        #
+        # cluster_id is absent too and is NOT narrated, because it is no longer
+        # a rendered column (shared/result_columns.py, 2026-09-10). The key set
+        # below is the whole check that it stays out of the payload.
         for c in cands:
             assert set(c["scores"]) == {
                 "total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd",
@@ -1941,6 +2245,15 @@ class TestABarAndItsValuesShareAScale:
             ("boltz2", "n_hotspot_contacts"),
             ("boltzgen", "pLDDT"), ("boltzgen", "refolding_rmsd"),
             ("esmfold2-design", "ipTM"),
+            # NEWLY REACHED, and the exact-set control is what said so rather
+            # than absorbing it. pI became a legend with a bar when
+            # MODE_GATE_COLUMNS gave this tool a minibinder gate; its worked
+            # example carries an isoelectric point, so the sweep resolves it.
+            # ``iPTM_proxy`` is deliberately NOT here: it carries no legend
+            # at all (its scFv gate leg was removed in review), so there is no
+            # bar for the sweep to reach. The worked example also stores null
+            # for it under both of its spellings.
+            ("esmfold2-design", "pI"),
             ("mpnn", "recovery"), ("mpnn", "score"),
             ("pxdesign", "ipTM"), ("pxdesign", "pLDDT"), ("pxdesign", "pAE"),
             ("rfdiffusion", "ipTM"), ("rfdiffusion", "pLDDT"),
@@ -2084,3 +2397,810 @@ class TestABarAndItsValuesShareAScale:
             "a row written under the canonical name does not resolve, so a "
             "container renamed to match this column would render nothing"
         )
+
+
+# ---------------------------------------------------------------------------
+# Narration numerals against the rendered table
+# ---------------------------------------------------------------------------
+
+# Signed, because proteina's leading column (total_reward) is negative
+# throughout. An unsigned pattern could never match any of its 153 printable
+# entries, so the prose could misquote that column freely.
+_SCORE_NUMERAL = re.compile(r"(?<![\w.])-?\d+\.\d+(?![\w])")
+
+# The two fields that describe the rows. ``what_we_did_next`` is about a
+# later run and ``why_this_target`` about the input, so neither is a claim
+# about the table underneath them.
+_TABLE_PROSE_FIELDS = ("what_came_back", "how_to_read_it")
+
+# A numeral that IS a row value and legitimately is not being quoted as one.
+# Keyed (slug, field, numeral) so an entry cannot spread past the sentence it
+# was written for, and swept for dead entries below: an exception that stops
+# applying has to fail, not linger and quietly cover something else.
+_NOT_QUOTING_A_ROW = {
+    ("bindcraft", "how_to_read_it", "0.26"):
+        "FreeBindCraft's published median across ITS OWN accepted designs "
+        "for this target. It is in scope only because design 2 stores "
+        "i_pAE 0.26, and i_pAE is not one of bindcraft's rendered columns "
+        "-- so this is a collision with a row field the page never prints, "
+        "not with a cell",
+}
+
+
+def _row_floats(obj, in_row=False):
+    """Every float that reaches a candidate row, and nothing else.
+
+    Row keys are ``_CANDIDATE_LIST_KEYS``, the same three the margin sweep
+    uses. A float elsewhere in a payload -- a per-residue array, a run-level
+    total -- is not a cell, so quoting it is not the claim being pinned.
+
+    NOTE this sweeps every field of a row, including ones the tool does
+    not render, and the reason first given for that was simply false. It
+    said opendde declares no columns and would lose all its coverage.
+    opendde's partial declares four, and restricting the sweep to them
+    leaves its count at 21 either way -- measured, not assumed.
+
+    The real reason to sweep everything is that "rendered" has no single
+    source: opendde has no shared/result_columns.py entry, so its column
+    list exists only inside the template. The real cost is that an
+    unrendered field can collide with a legitimate non-row numeral, which
+    is the entire reason _NOT_QUOTING_A_ROW exists. Narrowing the sweep to
+    the rendered columns would retire that allowlist. It is a fair trade
+    and it is deliberately not taken here.
+    """
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            yield from _row_floats(val, in_row or key in _CANDIDATE_LIST_KEYS)
+    elif isinstance(obj, list):
+        for val in obj:
+            yield from _row_floats(val, in_row)
+    elif isinstance(obj, float) and in_row:
+        yield obj
+
+
+def _quotable_row_values(payload) -> set[str]:
+    """Numeral strings that would read as "the value in the row above".
+
+    Two to four decimals always. One decimal ONLY at 10 and above, on the
+    scaled path as well as the raw one: one decimal on a sub-unit score
+    would sweep in every threshold in the prose, and "aim above 0.7" is not
+    a claim about a cell. That single restriction is what keeps this off
+    the thirty-odd thresholds, published comparators and cross-row
+    statistics the narrations legitimately carry.
+
+    Sub-unit values are ALSO offered on the 0-100 scale through the shared
+    ``plddt_on_100``, because several tools store a 0-1 score and render it
+    x100 -- proteina and boltz2 for pLDDT, bindcraft too, and the branch
+    applies to every sub-unit row float on every tool, not to a named list.
+    Without it the most-quoted column on those pages is unguarded: six
+    figures that ARE printed cells sat out of scope.
+
+    The >= 10 gate on the scaled path is INERT TODAY and kept anyway.
+    Measured both ways: with the gate and without it, the sweep checks the
+    same 89 numerals and flags the same one. It removes nothing, because no
+    tool's prose happens to carry a numeral in the band it excludes. An
+    earlier version of this paragraph said an "9.0 A" cutoff in proteina's
+    prose "was pulled into scope and flagged" -- proteina's prose contains
+    no 8.x or 9.x numeral at all. That sentence was reasoned, not measured,
+    which is the exact move this test exists to catch in narration.
+
+    What the gate does buy is a real hazard that no payload has yet.
+    proteina's af2_iptm spans 0.0861 to 0.8906, and its fourteen lowest
+    rows sit in 0.0861-0.0977, scaling to 8.6-9.8 -- so a prose threshold
+    anywhere in that band would enter scope on that tool and be flagged as
+    an unprinted row value -- specifically at one of the nine one-decimal
+    values those rows actually produce (8.6, 8.7, 9.0, and 9.3 through
+    9.8), not anywhere in the band: no row yields 8.8, 8.9, 9.1 or 9.2.
+    (Two earlier versions of this sentence were wrong in turn. One gave
+    0.086-0.098 as the whole column's range, which is the low fourteen
+    rows only -- the page itself quotes a best design at ipTM 0.89. The
+    next said "anywhere in that band".)
+
+    ``plddt_on_100`` is also not idempotent at or below 0.01: 0.005
+    scales to 0.5 and 0.01 to 1.0, both back inside the 0-1 window, which
+    is why BOTH scaled forms are gated
+    and not just the one-decimal one. Gating only the one-decimal form left
+    the two-decimal form free to put "0.50", "0.65", "0.70", "0.75" and
+    "0.80" into scope off a sub-0.01 row float -- and pxdesign's prose does
+    contain 0.50, which is not a printed cell. No shipped payload holds a
+    row float below 0.01 today; the gate is what keeps that from being one
+    payload away.
+    """
+    out: set[str] = set()
+    for val in _row_floats(payload):
+        out.update(f"{val:.{places}f}" for places in (2, 3, 4))
+        if abs(val) >= 10:
+            out.add(f"{val:.1f}")
+        if 0 < val <= 1:
+            scaled = plddt_on_100(val)
+            if scaled >= 10:
+                out.update(f"{scaled:.{places}f}" for places in (1, 2))
+    return out
+
+
+class _DataCellText(HTMLParser):
+    """Character data inside a table's <td>/<th>, or a refusal to guess.
+
+    READ THE LIMIT BEFORE TRUSTING THIS. Four review rounds were spent
+    making this browser-accurate and it is still not, so the limit is
+    stated first and the history second.
+
+    WHAT IT IS EXACT ON: the fourteen partials this repo ships. All
+    fourteen parse balanced, and every one returns a set identical to
+    Chrome's own querySelectorAll("td,th") text -- verified independently
+    by three reviewers. ``test_every_partial_parses_balanced`` pins that,
+    and it is the only property here that a template change can actually
+    break.
+
+    WHAT IT IS NOT EXACT ON: malformed table markup in general, INCLUDING
+    malformed table markup -- but NARROWER than the version of this
+    paragraph that preceded it, and in BOTH directions. That version said
+    omitting </td> alone was enough. It is not: strip every </td> from all
+    fourteen partials and the output stays byte-identical to Chrome,
+    because after an omitted </td> the next token is either another cell
+    (both readings stay inside one) or a </tr> that restores the depth. A
+    divergence needs a SECOND malformation. Two four-tag witnesses, each
+    confirmed against a real browser:
+
+    * fail-OPEN, and it needs an untracked <tbody>:
+      "<table> 2.01 <td> 3.01 <tbody> 4.01 </table>" -- Chrome
+      foster-parents 4.01 OUT of the table; this collects it as a cell.
+    * fail-CLOSED, and it needs a mismatched end tag:
+      "<table> 2.01 <td> 3.01 </th> 4.01 </table>" -- Chrome ignores the
+      </th> inside a <td> and keeps the cell open through 4.01; this
+      treats the two as interchangeable, closes early, and MISSES a value
+      the table really prints.
+
+    The earlier "all of them fail-OPEN" was wrong on the second class, and
+    its document counts are omitted here rather than restated: they were
+    entirely dependent on which tags the generator enumerated, and an
+    independent sweep did not reproduce them.
+
+    <template> and <noscript> hide a whole table from a browser and not
+    from this. A self-closed <script/>, and a </ script> with a space,
+    both leave the skip open in the browser's model and closed here.
+
+    NONE OF THAT IS FIXED, ON PURPOSE. Rounds four through seven each
+    patched the previously-found shapes and each patch was defeated by the
+    next round. Every defect found in all four rounds was on markup this
+    repo does not contain: stripping every optional end tag from all
+    fourteen partials admits exactly zero numerals. A hand-rolled reader
+    will keep losing to a browser, and the way to stop losing is to stop
+    playing -- pin what ships, state what is not covered, and let a real
+    parser be someone's deliberate decision rather than this test's
+    accident.
+
+    WHAT THE REFUSAL STILL BUYS: if the document ends with a cell, a row or
+    a table open, ``_printed_numbers`` raises rather than returning a set
+    it cannot stand behind. That catches the shapes where the leak runs to
+    the end of the page -- the ones that would hand a footnote threshold to
+    the guard as a row value -- and it converts them from silent to loud.
+    It does not catch the within-row case above.
+
+    <th> counts. Header cells hold column labels today -- no partial
+    renders a decimal in one -- but a score promoted to <th scope="row">,
+    the correct markup for a row header, is still a value the table prints,
+    and excluding it turned that ordinary accessibility fix into a red
+    suite telling the author to invent a source for it.
+    """
+
+    _CELLS = {"td", "th"}
+    _SKIP = {"script", "style"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._tables = 0
+        self._depth = 0
+        self._skip = 0
+        self._marks: list[int] = []
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip += 1
+        elif tag == "table":
+            self._tables += 1
+            self._marks.append(self._depth)
+        elif tag == "tr":
+            self._marks.append(self._depth)
+        elif tag in self._CELLS and self._tables > 0:
+            # "> 0" is defence in depth, not a live fix: the decrement
+            # below is guarded, so _tables cannot currently go negative
+            # (measured over 9,348 generated documents: never). An earlier
+            # comment here claimed the negative case was reachable and it
+            # is not.
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip:
+            self._skip -= 1
+        elif tag == "table":
+            if self._tables:
+                self._tables -= 1
+            if self._marks:
+                self._depth = self._marks.pop()
+        elif tag == "tr":
+            if self._marks:
+                self._depth = self._marks.pop()
+        elif tag in self._CELLS and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._depth and not self._skip:
+            self.chunks.append(data)
+
+    @property
+    def left_open(self) -> int:
+        """Nonzero if the parse ended inside a cell, row or table."""
+        return self._depth or self._tables or len(self._marks)
+
+
+def _printed_numbers(markup: str) -> set[float]:
+    """Every number the partial prints IN A DATA CELL, as floats.
+
+    Data cells only. Reading the whole partial let the page's own
+    explanatory copy stand in for a cell -- a threshold in body text or a
+    glossary line could satisfy a claim about a row.
+
+    BE PRECISE ABOUT WHAT THAT FIXED, because the first version of this
+    docstring was not. On the shipped tree the narrowing changes no
+    verdict: the collision needs a numeral that is BOTH a rounding of a
+    candidate-row float AND shown only outside a cell, and no payload here
+    has one. Three tools print a number outside a cell -- colabfold 0.62
+    and 61.05, esmfold 0.119 and 39.0, esmfold2-design 0.75 -- and not one
+    is quotable, so each is discarded before this function is reached. The
+    narrowing removes a class of future collision, not a live defect.
+
+    Floats, not strings, on purpose. A substring test cannot tell "0.88
+    quoted against a cell reading 0.880" -- the same number, trailing zero
+    -- from "0.47 quoted against a cell reading 0.471", a different number
+    that happens to share a prefix. Comparing numerically accepts the first
+    and rejects the second. A string test accepted both, which left half of
+    the precision defect uncaught.
+    """
+    parser = _DataCellText()
+    parser.feed(markup)
+    parser.close()
+    assert not parser.left_open, (
+        "this markup ends with a table cell, row or table still open, so "
+        "_DataCellText will not read it and will not guess. Guessing is "
+        "how this comparison failed open twice: it collects the rest of "
+        "the document as cell text, and a threshold in a footnote then "
+        "satisfies a claim about a row. Close the </td> and </tr> in the "
+        "template -- those two are what this counts; </tbody> is not "
+        "tracked and adding one will not clear this."
+    )
+    return {
+        float(tok) for tok in _SCORE_NUMERAL.findall(" ".join(parser.chunks))
+    }
+
+
+def _quoted_row_values(flask_app, slugs):
+    """``(checked, flagged)`` over every shipped example.
+
+    ``checked`` lists the numerals in scope; ``flagged`` are the ones the
+    table does not print.
+    """
+    checked: list[tuple[str, str, str]] = []
+    flagged: set[tuple[str, str, str]] = set()
+    for slug, payload in _example_payloads(slugs).items():
+        printed = _printed_numbers(_render_partial(
+            flask_app, slug, job_id="example", example=True, result=payload,
+        ))
+        quotable = _quotable_row_values(payload)
+        example = meta_for(slug).EXAMPLE
+        for field in _TABLE_PROSE_FIELDS:
+            prose = re.sub(r"<[^>]+>", " ", example.get(field) or "")
+            for numeral in dict.fromkeys(_SCORE_NUMERAL.findall(prose)):
+                if numeral not in quotable:
+                    continue
+                checked.append((slug, field, numeral))
+                if float(numeral) not in printed:
+                    flagged.add((slug, field, numeral))
+    return checked, flagged
+
+
+class TestNarrationQuotesTheTable:
+    """A row value quoted in the prose must be a number a data cell prints.
+
+    READ THE SCOPE BEFORE TRUSTING THIS. Two adversarial passes established
+    what it does and does not do by mutation, and the gap is wide enough
+    that a reviewer who reads only the class name will over-trust it. The
+    second pass found five sentences of this docstring wrong; they are
+    corrected below rather than quietly dropped, because the wrong version
+    is the reason nobody looked again.
+
+    WHAT IT ENFORCES. A decimal numeral in ``what_came_back`` or
+    ``how_to_read_it`` that is a rounding of a float held by a candidate
+    row must equal a number printed in a ``<td>`` of the rendered results
+    partial. That is the precision-drift defect: prose quoting 0.086 above
+    a cell reading 0.09, or 0.76 above cells reading 0.758 and 0.756. Both
+    of those shipped, both were caught by hand, and this is what stops the
+    third.
+
+    WHAT IT DOES NOT ENFORCE -- each demonstrated by mutation, not assumed:
+
+    * A FABRICATED figure passes. A numeral that is not a rounding of any
+      row value is skipped before any check, so replacing opendde's top
+      pair with an invented 0.911 / 0.872 leaves the suite green. Four
+      tools -- opendde, rfantibody, rfdiffusion, iggm -- have no other
+      numeric pin anywhere in this file, so for them nothing guards
+      against a figure that was never measured. That is not theoretical:
+      pxdesign's shipped narration quotes five Angstrom figures whose only
+      source in the entire repository is the sentence containing them.
+    * A MIS-ROUNDED figure passes too, in EITHER direction. An earlier
+      version of this bullet said round-down was caught and only round-up
+      slipped through; that was wrong. Against a cell reading 0.689 both
+      0.68 and 0.688 pass, because neither is a correct rounding of the
+      row float at two, three or four places and anything that is not a
+      correct rounding is skipped before the check. The real rule is not
+      up-versus-down: a CORRECT rounding quoted at a precision the cell
+      does not use is caught; an INCORRECT rounding is invisible, exactly
+      like a fabrication.
+    * The ROW and the COLUMN are not checked. The comparison is against
+      every data cell on the page, so pTM values sold as ipTM pass, and so
+      does handing the losing pair the winning pair's figures. Measured
+      cost: 689 of 1759 quotable numerals, 39.2%, are printed somewhere in
+      the table and so cannot fail whatever they are attached to. It runs
+      92.2% for rfantibody and 87.2% for pxdesign, whose pins therefore
+      count toward the vacuity floor while being nearly unable to fire.
+      (That denominator was 1773 one commit ago, before both scaled forms
+      were gated. Re-measure, do not copy.)
+    * Integers are out of scope entirely: "223 residues", "thirteen rows",
+      "ranks 51 to 64" are unguarded.
+    * Three of the fourteen tools contribute nothing, for two different
+      reasons. colabfold and esmfold are single-structure and render no
+      candidate table. iggm DOES render one -- an earlier version of this
+      list said it did not -- but every value in its rows is an int, so
+      ``_row_floats`` yields nothing for it.
+    * Both floors in the vacuity test count numerals in scope, not pins
+      that can fail, so padding prose with values copied out of the same
+      tool's own table satisfies them for free.
+
+    The rule is narrow on purpose. A blanket "every prose numeral must
+    appear in the table" flags 38 figures across the fourteen tools, and
+    nearly all are legitimate: thresholds, published comparators, and
+    statistics taken across rows.
+
+    That count has moved three times and the movement is the lesson: 32
+    under a substring test over the whole partial, 33 once the comparison
+    became numeric, 38 once it was narrowed to data cells. Each was right
+    when written and stale one commit later, and each sat here being read
+    as current. Re-measure it before you cite it.
+    """
+
+    def test_every_quoted_row_value_is_printed(self, tools_app):
+        flask_app, slugs = tools_app
+        _checked, flagged = _quoted_row_values(flask_app, slugs)
+
+        unlisted = sorted(flagged - set(_NOT_QUOTING_A_ROW))
+        assert not unlisted, (
+            "narration quotes a row value the table never prints, so the "
+            "reader cannot find it: "
+            + "; ".join(f"{s}.{f} says {n}" for s, f, n in unlisted)
+            + " -- quote the figure at the precision the cell prints, or "
+            "add it to _NOT_QUOTING_A_ROW with the source it really came "
+            "from"
+        )
+        dead = sorted(set(_NOT_QUOTING_A_ROW) - flagged)
+        assert not dead, (
+            "these _NOT_QUOTING_A_ROW entries no longer apply and are now "
+            f"covering nothing: {dead}"
+        )
+
+    def test_only_data_cells_count_as_printed(self):
+        """Undoing the data-cell narrowing has to fail somewhere. Here.
+
+        Nothing else in this file can see that revert. The collision the
+        narrowing prevents needs a numeral that is BOTH a rounding of a
+        candidate-row float AND shown only outside a cell, and no shipped
+        payload has one -- so every other test here stays green whichever
+        way _printed_numbers reads. This is the one that does not.
+
+        Each bullet below names the mutation that a value is known to
+        catch, established by running that mutation. Two earlier versions
+        of this list were wrong -- one claimed three pins that pinned
+        nothing, one wrote a case as "0.7300px" where the CSS unit made
+        the numeral pattern miss it so the assertion could never fire --
+        so what is NOT pinned is listed too:
+
+        * 0.55 catches dropping <th> from the cell set. A score promoted
+          to <th scope="row">, correct markup for a row header, is still a
+          value the table prints.
+        * 0.77 catches deleting either depth mark: without them a nested
+          table's </table> closes the OUTER cell and swallows its tail.
+        * 1.66 catches dropping the open-<table> requirement. A bare <td>
+          in body context is a parse error browsers discard, so collecting
+          it invents a cell.
+        * 0.99 and 0.73 catch dropping the <script> and <style> skips, and
+          1.11 and 1.55 catch a skip that opens and never closes.
+        * 1.77 catches convert_charrefs=False -- it is written
+          "1&#46;7700", which the page renders as a number and a byte
+          comparison would miss.
+        * 0.88 catches dropping the depth term from handle_data.
+
+        NOT PINNED BY ANY VALUE HERE, measured rather than assumed: 0.9111
+        moves under no mutation of any current rule at all -- it is a
+        regression pin against the regex this replaced, not against the
+        parser. 0.44 and 1.22 are never the SOLE catcher of a mutation,
+        though both do move if <td> is dropped from the cell set. And the
+        mark-restore and negative-counter guards are
+        caught by the REFUSAL raising, not by a value comparison, so an
+        earlier claim that 1.66 and 0.88 pinned them was wrong: under those
+        mutations the assertion never reaches the set.
+        """
+        markup = (
+            "<table><tbody><tr>"
+            '<td title="drop anything > 0.9111">0.4400</td>'
+            '<th scope="row">0.5500</th>'
+            "<td><table><tr><td>0.6600</td></tr></table>0.7700</td>"
+            "<td>1.2200</td >"
+            "<td><script>var x = 0.9900;</script>1.1100</td>"
+            "<td><style>i{opacity:0.7300}</style>1.5500</td>"
+            "<td>1&#46;7700</td>"
+            "</tr></tbody></table>"
+            "</table></tr></td>"
+            "<td>1.6600</td>"
+            "<p>a 0.8800 threshold in body copy</p>"
+        )
+        assert _printed_numbers(markup) == {
+            0.44, 0.55, 0.66, 0.77, 1.11, 1.22, 1.55, 1.77,
+        }
+
+    def test_every_partial_parses_balanced(self, tools_app):
+        """The one property here that a template edit can actually break.
+
+        _DataCellText is exact on these fourteen pages and inexact on
+        malformed table markup in general -- read its docstring, the gap is
+        wide and deliberate. So the thing worth pinning is not
+        browser-equivalence in the abstract; it is that the pages this repo
+        ships stay inside the subset it reads correctly.
+
+        If a template starts omitting </tr>, or a minifier is added to the
+        build, this says so in one clear failure -- before _printed_numbers
+        begins refusing every render and the whole narration sweep errors
+        out with a message about markup rather than about narration.
+
+        It does NOT fire on an omitted </td> alone. Measured, including
+        deleting all twelve of them from components/candidate_table.html:
+        the </tr> that follows restores the depth, the document stays
+        balanced, and the output stays correct. That is the parser being
+        right on that input, not a hole here.
+
+        Detection is redundant, but not with the neighbours you would
+        guess. Under a </tr> deletion this fires alongside
+        test_every_quoted_row_value_is_printed and
+        test_the_sweep_is_not_vacuous. It does NOT fire alongside
+        test_only_data_cells_count_as_printed, which sits directly above
+        and renders a hardcoded markup literal -- that one is structurally
+        incapable of reacting to any template change. What this adds is the
+        MESSAGE: it names the SLUG. The other two fail on the parser's
+        markup refusal, which already points at the template and says to
+        close the </td> and </tr> -- they simply do not say which template.
+        An earlier version of this sentence said they "report a narration
+        mismatch and leave you hunting", which this docstring itself
+        contradicts two paragraphs above.
+        """
+        flask_app, slugs = tools_app
+        for slug, payload in _example_payloads(slugs).items():
+            markup = _render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=payload,
+            )
+            parser = _DataCellText()
+            parser.feed(markup)
+            parser.close()
+            assert not parser.left_open, (
+                f"{slug}'s results partial ends with a cell, row or table "
+                f"still open ({parser.left_open}), so _printed_numbers "
+                "refuses it and this tool's narration is no longer checked "
+                "against anything. Close the </td> and </tr> in that "
+                "template."
+            )
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            "<table><tr><td>1.11<tr><td>2.22</table><p>3.33</p>",
+            "<table><tbody><tr><td>1.11</tbody><p>2.22</p></table>",
+            "<table><tr><td>1.11<tr><td>2.22<tr><td>3.33</table><p>4.44</p>",
+            # left_open has three terms. Of the three above, only _marks
+            # is common to all of them (two also set _depth). These two
+            # isolate the other terms: the first ends with ONLY _depth
+            # set, the second with ONLY _tables. Each of the three terms
+            # is now the sole reason exactly one case refuses, so none can
+            # be deleted in silence.
+            "<table></tr><td>1.11</table><p>2.22</p>",
+            "<table></tr>1.11",
+        ],
+        ids=[
+            "two-rows", "tbody-closes-a-cell", "three-rows",
+            "depth-term-only", "tables-term-only",
+        ],
+    )
+    def test_markup_it_cannot_read_is_refused(self, markup):
+        """Markup the parser cannot model must fail loudly, not quietly.
+
+        All three of these omit an end tag HTML makes OPTIONAL, which is
+        what a minifier with removeOptionalTags emits and what hand-written
+        table markup often looks like. A browser closes them implicitly.
+        This parser does not, and for three review rounds it responded by
+        staying inside the cell for the rest of the document -- so a
+        threshold in a footnote counted as a value a row had printed, and
+        the whole point of reading data cells was silently undone.
+
+        Each patch aimed at one of these shapes was itself defeated by the
+        next one: bounding the leak to a row missed two unclosed rows, and
+        neither touched </tbody>, which every shipped partial already uses.
+        Refusing covers the family instead of chasing its members.
+        """
+        with pytest.raises(AssertionError, match="will not guess"):
+            _printed_numbers(markup)
+
+    def test_the_sweep_is_not_vacuous(self, tools_app):
+        """The rule above skips any numeral that is not a row value, so a
+        regex or key-name slip makes it pass over an empty set in silence.
+
+        Both floors matter. The total alone is not enough: opendde supplies
+        21 of the 89, and bindcraft plus rfdiffusion are another 22, so one
+        tool losing all of its coverage can hide under a total-only bound.
+
+        KNOWN SLACK, measured rather than guessed. The total floor sits 9
+        below the current count, so nine real pins can be deleted in
+        silence; the per-tool floor sits at exactly the current 11, so it
+        has none at all. mpnn and pxdesign contribute two numerals each,
+        which means an ordinary copy edit on either trips this. That is
+        intended -- it is a prompt to re-read, not an accusation -- and the
+        messages say so, because a guard that reads like a bug report when
+        it is not is a guard someone quietly lowers.
+        """
+        flask_app, slugs = tools_app
+        checked, _flagged = _quoted_row_values(flask_app, slugs)
+        assert len(checked) >= 80, (
+            f"only {len(checked)} narration numerals resolve to a row "
+            "value; the sweep above is close to testing nothing. If this is "
+            "a deliberate copy edit, lower the floor in the same commit and "
+            "say which pins went"
+        )
+        covered = {slug for slug, _field, _numeral in checked}
+        assert len(covered) >= 11, (
+            f"only {len(covered)} tools contribute a checked numeral "
+            f"({sorted(covered)}); a tool that used to quote its own table "
+            "has stopped. Fine if you meant it -- lower the floor and name "
+            "the tool -- but check it was not an accident first"
+        )
+
+
+class _RankCells(HTMLParser):
+    """The text of the ``.cand-rank-n`` span in every candidate row.
+
+    Narrower than :class:`_DataCellText` on purpose: that one collects
+    every cell in the document and has no row structure, and the property
+    here is per-row and positional.
+
+    Keyed on the span, not on "the text before the first span in cell 0",
+    which is the only reading available without a hook and infers the
+    number's identity from its position in the markup. That reading goes
+    silently empty the moment anything else moves into the cell -- and the
+    cell already carries two other spans, the "Top" badge and the sub-job
+    tag. ``_rank_column`` turns that silence into a named failure. The
+    span is the same hook
+    static/js/candidate_table.js::renumberRows writes to after a column
+    sort, and tests/test_candidate_table_js_contract.py pins that the JS
+    and the macro still agree on its name.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.cells: list[str] = []
+        self.rows = 0
+        self._in_row = False
+        self._capturing = False
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            # Token, not substring: templates/job_detail.html:592 writes
+            # "live-cand-row", which contains this name. No results partial
+            # renders that markup, so this is not reachable today -- matching
+            # the way the JS's classList.contains does keeps it that way.
+            self._in_row = "cand-row" in (
+                (dict(attrs).get("class") or "").split()
+            )
+            if self._in_row:
+                self.rows += 1
+        elif tag == "span" and self._in_row:
+            if "cand-rank-n" in (dict(attrs).get("class") or "").split():
+                self._capturing, self._buf = True, []
+
+    def handle_endtag(self, tag):
+        if tag == "span" and self._capturing:
+            self.cells.append(" ".join("".join(self._buf).split()))
+            self._capturing = False
+        elif tag == "tr":
+            self._in_row = False
+
+    def handle_data(self, data):
+        if self._capturing:
+            self._buf.append(data)
+
+
+def _rank_column(html_text: str) -> list[str]:
+    """The "#" column, or a loud failure naming the right cause.
+
+    Rows that render without a ``.cand-rank-n`` are the hook having gone, not
+    a tool that stopped rendering -- and the difference matters, because the
+    callers below treat an empty column as "this partial renders no candidate
+    table" and skip it. Drop the span from the macro and every column comes
+    back empty, every tool is skipped, and the only thing left to fail is a
+    coverage floor whose message sends the reader looking for a deleted
+    example. Measured: that is exactly what happened under the pre-fix
+    expression, which carried no span.
+
+    PER ROW, not all-or-nothing. The equality also catches a PARTIAL loss,
+    which an "empty column" test cannot: drop the span from all rows but the
+    first and the column comes back short, and the caller then compares it
+    against a range computed from that same short column, so the expectation
+    validates itself.
+    """
+    parser = _RankCells()
+    parser.feed(html_text)
+    assert len(parser.cells) == parser.rows, (
+        f"{parser.rows} candidate rows rendered but {len(parser.cells)} "
+        ".cand-rank-n spans found. The macro and this reader disagree about the "
+        "hook; static/js/candidate_table.js::renumberRows writes to the same "
+        "one, so those rows have stopped following a sort too"
+    )
+    return parser.cells
+
+
+class TestTheRankColumnIsAPosition:
+    """The "#" column numbers rows 1..n, on every tool's own results table.
+
+    It used to print ``cand.rank`` from the payload, and that field means
+    different things per tool. Measured by rendering the shipped examples
+    before the fix -- eleven of the fourteen render a candidate row at all
+    (colabfold and esmfold take their single-fold branch, mpnn skips the
+    macro) -- three numbered from 0 (boltz2, esmfold2-design, opendde) and
+    six from 1 (bindcraft, boltzgen, proteina, pxdesign, rfantibody,
+    rfdiffusion), so the catalog disagreed with itself about what to call a
+    first design. The remaining two are worse than an offset: on af2 and
+    iggm, rank is a production index -- af2's over its input records,
+    iggm's over its output files -- and the partial re-sorts
+    by score before rendering (templates/tools/af2_results.html:70,
+    templates/tools/iggm_results.html:40), so af2's ten rows rendered
+    0,9,6,1,8,4,7,5,3,2 -- production indices under a "#" heading, on a page
+    whose narration hinges on which row is row one (tools/af2/meta.py:260).
+
+    TWO TESTS, because they fail for different reasons. The first reads
+    today's captured payloads and is what a reader actually sees. The
+    second feeds every partial a payload whose ranks are deliberately
+    0-based AND shuffled, which is the one that still fails if someone
+    reinstates cand.rank and recaptures examples that happen to be
+    1-based. It asserts on thirteen of the fourteen partials -- including
+    colabfold and esmfold, whose own examples render no row -- because a
+    synthetic payload drives them all; mpnn is the fourteenth and renders no
+    ``cand-row`` at all, since it skips the shared macro (see this file's
+    header). mpnn numbers its own table positionally at
+    templates/tools/mpnn_results.html:84 (``loop.index``), which neither
+    test here can see.
+
+    NOT IN SCOPE: the live table a running job streams into
+    (templates/job_detail.html:563) still prints the raw payload rank
+    under the same "#" heading (:231), so a running job can number its rows
+    differently from the finished table that replaces it. Its rows are
+    appended in arrival order and keyed by that value, so it has no stable
+    position to use.
+    """
+
+    # Numbered 0-based and out of order, which is the af2 shape.
+    _SCRAMBLED = [0, 3, 1, 4, 2]
+
+    def _payload(self):
+        rows = []
+        for slot, rank in enumerate(self._SCRAMBLED):
+            row = json.loads(json.dumps(_GENERIC_RESULT["candidates"][0]))
+            row["rank"] = rank
+            row["name"] = f"d{rank}"
+            row["pdb_key"] = f"design_{rank}.pdb"
+            # ASCENDING on slot, against partials that sort DESCENDING
+            # (af2_results.html:70, iggm_results.html:40 both pass
+            # reverse=True), so the rendered order is the reverse of the
+            # input order and the re-sort is actually exercised. Measured:
+            # input 86..90 renders 90..86.
+            #
+            # BOTH VALUES HAVE TO ASCEND, which is the trap here. Feed a
+            # descending series to a descending sort and it is a no-op --
+            # the rendered order equals the input order and the partial's
+            # sort is never exercised at all. The two keys are read by
+            # different partials (mean_plddt by af2, n_epitope_contacts by
+            # iggm), so flipping one back leaves the other still sorting
+            # and the mistake half-invisible.
+            row["mean_plddt"] = 86.0 + slot
+            row["n_epitope_contacts"] = 5 + slot
+            row["scores"] = dict(row["scores"], mean_pLDDT=86.0 + slot)
+            rows.append(row)
+        return dict(_GENERIC_RESULT, candidates=rows, designs=rows)
+
+    def test_every_example_numbers_its_rows_from_one(self, tools_app):
+        """What the reader sees, on the examples that render a table."""
+        flask_app, slugs = tools_app
+        checked = {}
+        for slug, example in sorted(_examples(slugs).items()):
+            if not example:
+                continue
+            path = REPO / "tools" / slug.replace("-", "_") / "example" / "result.json"
+            if not path.exists():
+                continue
+            rendered = _render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=json.loads(path.read_text(encoding="utf-8")),
+            )
+            column = _rank_column(rendered)
+            if not column:
+                continue
+            checked[slug] = column
+            assert column == [str(i) for i in range(1, len(column) + 1)], (
+                f"{slug}: its example's # column reads {column[:12]}, not "
+                f"1..{len(column)}. The column is the row's position in the "
+                "table; if this is printing a payload field again, the tools "
+                "do not agree on what that field means"
+            )
+        # MEASURED, not chosen to pass: eleven of the fourteen examples render
+        # a candidate row today. The three that do not are colabfold and
+        # esmfold (their examples take the standalone single-fold branch) and
+        # mpnn (no shared macro). A floor of 8 would have let three tools drop
+        # out of the real-payload coverage in silence.
+        assert len(checked) >= 11, (
+            f"only {sorted(checked)} rendered a candidate table, so this "
+            "test covers less than it claims. A tool losing its example is "
+            "fine -- lower the floor and say which -- but check first"
+        )
+        # The five whose real example was wrong before the fix. A count alone
+        # would still pass if one of these dropped out and an untouched tool
+        # took its place in the tally.
+        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+            assert slug in checked, (
+                f"{slug}'s example renders no candidate table any more, so "
+                "the tool this test was written for is no longer covered"
+            )
+
+    def test_no_partial_echoes_a_payload_rank(self, tools_app):
+        """The mechanism, on thirteen of the fourteen, not just today's
+        captures.
+
+        Every partial gets ranks 0,3,1,4,2. Any tool whose column comes
+        back holding a 0, or reading in that order, is printing the
+        payload again. mpnn renders no ``cand-row`` and is skipped; see the
+        class docstring.
+        """
+        flask_app, slugs = tools_app
+        payload = self._payload()
+        checked = {}
+        for slug in slugs:
+            column = _rank_column(_render_partial(
+                flask_app, slug, job_id="example", example=True,
+                result=payload,
+            ))
+            if not column:
+                continue
+            checked[slug] = column
+            assert column == [str(i) for i in range(1, len(column) + 1)], (
+                f"{slug}: fed ranks {self._SCRAMBLED}, its # column came "
+                f"back {column}. It is echoing the payload's rank instead "
+                "of numbering the rows it actually rendered"
+            )
+        assert len(checked) >= 13, (
+            f"only {sorted(checked)} rendered a candidate row from the "
+            "shared payload. This is meant to reach every partial but mpnn, "
+            "which skips the shared macro (see this file's header); a "
+            "partial that stopped rendering is worth understanding before "
+            "the floor is lowered"
+        )
+        # The five that were wrong before the fix must be among the covered,
+        # or the guard has gone blind on exactly the tools it exists for.
+        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+            assert slug in checked, (
+                f"{slug} rendered no candidate row from the shared payload, "
+                "so this guard no longer covers the tool it was written for"
+            )

@@ -122,7 +122,8 @@ about: dict = {
         {"preset": "pilot", "typical": "30 to 60 min"},
     ],
     "output_summary": (
-        "Ranked candidates with ipTM, pLDDT, pAE, and downloadable PDBs. "
+        "Ranked candidates with ipTM, pLDDT, pAE, and PDBs downloadable "
+        "from a run of your own. "
         "Target ipTM &ge; 0.70 on 1 to 2 of 5 designs for a tractable "
         "epitope."
     ),

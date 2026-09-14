@@ -115,7 +115,7 @@ about: dict = {
     ],
     "output_summary": (
         "Ranked VHH candidates with pAE, pLDDT, ipAE, and "
-        "downloadable PDBs. Filter at pAE &le; 5 / ipAE &le; 6 for "
+        "PDBs downloadable from a run of your own. Filter at pAE &le; 5 / ipAE &le; 6 for "
         "downstream wet-lab work."
     ),
     "paper_citation": paper_citation,
