@@ -433,9 +433,27 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # A GATE LEG COARSER THAN .3f IN THE GLOSSARY CAN THEREFORE PRINT BELOW
     # THE BAR the guard above says it met, because score_legends.shown_value
     # judges at the glossary precision. ipTM and CDR_iPTM_proxy are ".3f" and
-    # cannot; the other seven legs are coarser and predate this change -- pI
-    # 5.995 publishes under a 6.0 bar today. Fixing that is the same deferred
+    # cannot. pLDDT (".1f") can and does: on boltzgen and rfantibody a raw
+    # 79.950 is judged at 80.0, so the verdict reads "Meets pLDDT 80" while
+    # this line publishes "pLDDT 79.950". Measured by driving judge() with a
+    # complete passing record for each tool; 79.940 is judged below, so the
+    # window runs from 79.950 to the bar. Fixing it is the same deferred
     # change: this line reading format_value.
+    #
+    # ONLY TWO COARSE LEGS ARE EVEN REACHABLE HERE, which an earlier draft of
+    # this paragraph got wrong by counting all seven coarse legs and offering
+    # "pI 5.995 under a 6.0 bar" as the example. The loop above quotes a gate
+    # leg only when _higher_is_better(col), so pI, ipAE, pAE, i_pAE and
+    # refolding_rmsd -- every lower-is-better leg -- are skipped and can never
+    # be the quoted column at all. Enumerated over GATE_COLUMNS and
+    # MODE_GATE_COLUMNS: the legs this arm can quote are ipTM,
+    # CDR_iPTM_proxy, pLDDT and n_hotspot_contacts, and of those only pLDDT
+    # (boltz2, boltzgen, pxdesign, rfantibody, rfdiffusion) and
+    # n_hotspot_contacts (".0f", boltz2, and only when ipTM and pLDDT are both
+    # unreadable) are coarser than this line. epitope_contacts (".0f") is also
+    # coarse and reachable, but through the primary-metric arm on iggm, which
+    # declares no bar -- so it carries no "met the bar" claim to contradict.
+    # Pinned by test_no_lower_is_better_leg_can_be_the_quoted_column.
     name, unit = score_legends.label_and_unit(col)
     shown = f"{val:.3f}" if isinstance(val, float) else f"{val}"
     return f"{name} {shown}{unit}"

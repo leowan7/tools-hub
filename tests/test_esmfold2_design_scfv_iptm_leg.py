@@ -500,6 +500,86 @@ def test_the_share_chain_can_reach_exactly_three_renamed_columns():
     }, sorted(reachable)
 
 
+def test_no_lower_is_better_leg_can_be_the_quoted_column():
+    """Which coarse legs the share clause can actually contradict.
+
+    ``_share_headline_metric`` prints at a fixed .3f while ``judge`` decides
+    at the glossary format, so a leg declared coarser than .3f can be
+    published on the far side of the bar the clause says it met. Seven leg
+    columns are coarser, and an earlier draft of the comment at
+    blueprints/jobs.py:433 treated all seven as exposed and offered "pI 5.995
+    under a 6.0 bar" as the example. It is not exposed: the gate arm takes a
+    leg only when ``_higher_is_better``, so no lower-is-better leg is ever the
+    quoted column, and pI is one.
+
+    Driven the same way as
+    ``test_the_share_chain_can_reach_exactly_three_renamed_columns`` rather
+    than by re-deriving the arms.
+    """
+    import blueprints.jobs as jobs_bp
+    from shared import metric_glossary, result_columns
+    from shared.score_legends import (
+        _COLUMN_ALIASES, GATE_COLUMNS, MODE_GATE_COLUMNS, get_legend,
+    )
+
+    candidates = set(jobs_bp._PLDDT_PREFERENCE)
+    for columns in GATE_COLUMNS.values():
+        candidates.update(columns)
+    for modes in MODE_GATE_COLUMNS.values():
+        for columns in modes.values():
+            candidates.update(columns)
+    for tool in result_columns._TOOL_PRIMARY_METRIC:
+        key, _direction = result_columns.primary_metric_for(tool)
+        if key:
+            candidates.add(key)
+
+    tools = (set(GATE_COLUMNS) | set(MODE_GATE_COLUMNS)
+             | set(result_columns._TOOL_PRIMARY_METRIC)
+             | set(result_columns._TOOL_RESULT_COLUMNS))
+    reachable = set()
+    for tool in sorted(tools):
+        for mode in list(MODE_GATE_COLUMNS.get(tool, {})) or [None]:
+            scores = {column: 7.0 for column in candidates}
+            while True:
+                chosen = jobs_bp._share_headline_metric(
+                    tool, mode, {"scores": scores},
+                )
+                if chosen is None:
+                    break
+                reachable.add(chosen[0])
+                for spelling in _COLUMN_ALIASES.get(
+                    chosen[0], (chosen[0],),
+                ):
+                    scores.pop(spelling, None)
+
+    lower = set()
+    for tool, columns in GATE_COLUMNS.items():
+        for column in columns:
+            if (get_legend(tool, column) or {}).get(
+                "direction",
+            ) == "lower_is_better":
+                lower.add(column)
+    for tool, modes in MODE_GATE_COLUMNS.items():
+        for _mode, columns in modes.items():
+            for column in columns:
+                if (get_legend(tool, column) or {}).get(
+                    "direction",
+                ) == "lower_is_better":
+                    lower.add(column)
+
+    assert "pI" in lower, sorted(lower)
+    assert not (lower & reachable), sorted(lower & reachable)
+
+    # What IS exposed, so a new coarse leg has to come here and say so.
+    coarse = {
+        column: metric_glossary._FORMAT[column] for column in reachable
+        if metric_glossary._FORMAT.get(column, ".3f") != ".3f"
+    }
+    assert coarse == {
+        "pLDDT": ".1f", "n_hotspot_contacts": ".0f", "epitope_contacts": ".0f",
+    }, coarse
+
+
 def test_the_share_card_quotes_the_cdr_proxy_by_name():
     """End to end on the column this fix added, against the measured pair.
 
