@@ -668,18 +668,29 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
     verdict reading "CDR distogram proxy 0.495, below 0.5" until this column
     joined ipTM in the ``.3f`` branch at
     templates/components/candidate_table.html:882.
+
+    THE PAGE PRINTS THE PROXY TWICE. The best-design header above the
+    sequence carries its own literal formats
+    (templates/tools/esmfold2_design_results.html:505), so moving the cell
+    alone left the header at .2f and the page showed 0.50 above 0.495 --
+    measured 2026-09-14, and the reason this test reads both. The header
+    branches on the MODE: a pre-split scFv row stores the legacy
+    ``iPTM_proxy`` spelling and the table still renders it in the
+    CDR_iPTM_proxy column, so both spellings are driven below.
     """
     from shared.score_legends import judge, verdict_text
 
-    html = _render(
-        flask_app, is_antibody=True,
-        scores={"ipTM": 0.90, "CDR_iPTM_proxy": 0.4949, "final_loss": 1.0,
-                "pI": None},
-    )
-    cells = re.findall(
-        r'data-col="CDR_iPTM_proxy" data-val="[^"]*">([^<]*)<', html,
-    )
-    assert cells and set(cells) == {"0.495"}, cells
+    for scores in (
+        {"ipTM": 0.90, "CDR_iPTM_proxy": 0.4949, "final_loss": 1.0,
+         "pI": None},
+        {"ipTM": 0.90, "iPTM_proxy": 0.4949, "final_loss": 1.0, "pI": None},
+    ):
+        html = _render(flask_app, is_antibody=True, scores=scores)
+        cells = re.findall(
+            r'data-col="CDR_iPTM_proxy" data-val="[^"]*">([^<]*)<', html,
+        )
+        assert cells and set(cells) == {"0.495"}, (scores, cells)
+        assert "proxy 0.495" in html, (scores, "header disagrees with cell")
 
     verdict = judge(
         "esmfold2-design", {"scores": {"ipTM": 0.90,
@@ -688,3 +699,12 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
     assert verdict_text("esmfold2-design", verdict, "scfv") == (
         "CDR distogram proxy 0.495, below 0.5"
     )
+
+    # The minibinder header keeps .2f, because its column keeps the table's
+    # .2f else-branch (templates/components/candidate_table.html:904).
+    minibinder = _render(
+        flask_app, is_antibody=False,
+        scores={"ipTM": 0.90, "iPTM_proxy": 0.4949, "final_loss": 1.0,
+                "pI": 5.6},
+    )
+    assert "proxy 0.49" in minibinder and "proxy 0.495" not in minibinder

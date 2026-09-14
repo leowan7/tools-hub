@@ -482,19 +482,27 @@
          format_metric_value — that global is only wired up for the
          multi-tool table. Its glossary HAD no entry for iPTM_proxy or pI, so
          both fell to a .3f default and printed "pI 5.669" beside a table cell
-         reading "5.67". ``pI`` and ``CDR_iPTM_proxy`` are declared ".2f"
-         there now (each became a gate leg and score_legends compares at the
-         declared format); the minibinder ``iPTM_proxy`` is NOT, so it still
-         falls to .3f in that global -- which is why this block keeps its own
-         literal formats rather than trusting it. Numbers a reader is invited
-         to compare have to be produced the same way. #}
+         reading "5.67". ``pI`` (".2f") and ``CDR_iPTM_proxy`` (".3f") are
+         declared there now, each having become a gate leg that score_legends
+         compares at its declared format; the minibinder ``iPTM_proxy`` is
+         NOT, so it still falls to .3f in that global -- which is why this
+         block keeps its own literal formats rather than trusting it. Numbers
+         a reader is invited to compare have to be produced the same way.
+
+         THE PROXY FORMAT FOLLOWS THE MODE, NOT THE STORED KEY. A pre-split
+         scFv run holds the legacy ``iPTM_proxy`` spelling, and the table
+         still heads it CDR_iPTM_proxy and renders it at .3f
+         (components/candidate_table.html:882), so keying this line on which
+         spelling is present would print .2f above a .3f cell on exactly the
+         historical rows this branch exists to judge. Pinned by
+         test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged. #}
       {% if best_candidate %}
         {% set _bs = best_candidate.get('scores') or {} %}
         <div style="color: var(--text-tertiary); font-size: 0.78rem; margin-bottom: 0.4rem; font-family: var(--font-mono);">
           {{ best_candidate.get('name') or 'design' }}
           {%- if _bs.get('ipTM') is number %} &middot; iPTM {{ '%.3f' | format(_bs.get('ipTM')) }}{% endif %}
           {%- set _bs_proxy = _bs.get('CDR_iPTM_proxy', _bs.get('iPTM_proxy')) %}
-          {%- if _bs_proxy is number %} &middot; proxy {{ '%.2f' | format(_bs_proxy) }}{% endif %}
+          {%- if _bs_proxy is number %} &middot; proxy {{ ('%.3f' if is_antibody else '%.2f') | format(_bs_proxy) }}{% endif %}
           {%- if _bs.get('pI') is number %} &middot; pI {{ '%.2f' | format(_bs.get('pI')) }}{% endif %}
           {%- if candidates and best_candidate is not sameas (candidates | first) %}
             &middot; <span style="color:#fca5a5;">not the top row below</span>
