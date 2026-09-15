@@ -138,7 +138,8 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 #   FOR: it is not new exposure. ``email_caption(legend, "A,B")`` is character
 #   for character ``legend_text(legend)`` — the string that ALREADY ships as
 #   the ipTM ``<th>``'s ``title`` and as the ``title`` of every per-row Score
-#   cell (components/candidate_table.html:499,650), where the column header's
+#   cell -- in components/candidate_table.html, the two spots
+#   `grep -n 'title="{{ leg' ` finds -- where the column header's
 #   ``data-tooltip`` stacks the glossary definition on top for 861 characters.
 #   A 560px callout is a roomier surface than either. The sentence is not too
 #   long for the slot; the slot was mis-described, and the description is what

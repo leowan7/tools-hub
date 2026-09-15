@@ -540,7 +540,14 @@ def test_campaign_export_csv_fasta_uncapped_zip_capped(monkeypatch):
     assert seen_limits[-1] == bp._CAMPAIGN_ZIP_EXPORT_LIMIT == 300
     names = zipfile.ZipFile(io.BytesIO(zip_resp.get_data())).namelist()
     assert len(names) == 300
-    assert "top300of350" in zip_resp.headers["Content-Disposition"]
+    # "top300of350" survives either stem, so name the stem too: the
+    # archive carries whatever the container wrote and boltzgen writes
+    # .cif for most rows, so "_pdbs" was a false promise in the
+    # filename. Reverting blueprints/campaigns.py alone left the whole
+    # suite green until this line.
+    disposition = zip_resp.headers["Content-Disposition"]
+    assert "top300of350" in disposition
+    assert "_structures_top" in disposition and "_pdbs" not in disposition
 
 
 # ---------------------------------------------------------------------------

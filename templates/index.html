@@ -606,13 +606,35 @@
            with ipTM and pLDDT beside it, all bare. Hotspot gloss matched to
            templates/components/pilot_card.html (PR #154); the two scores are
            named as what they measure and left to the tool pages, which carry
-           the glossary-sourced legend. #}
+           the glossary-sourced legend.
+
+           IgGM is the only exception in this band and the carve-out is
+           exactly one tool. A round of review added Proteina to it on the
+           strength of shared/metric_glossary.py opening with "composite
+           design reward" -- but the next clause of that same entry, and
+           tools/proteina/run_pipeline.py, shared/ranking.py,
+           shared/score_legends.py and
+           templates/components/candidate_table.html all say
+           total_reward IS -i_pAE under the protein_binder preset. That is
+           the preset this paragraph describes (upload the target PDB, mark
+           hotspots), so Proteina belongs in the sentence, not the
+           exception. The two named variants are protein_binder and
+           ligand_binder; it is the RF3 composite under the latter.
+           (Cited by file, not by line. The first draft of this comment
+           gave a line range in candidate_table.html, and the same
+           commit's own insertion in that file moved the text out of it.
+           A line number is a measurement taken BEFORE the edit that
+           cites it; it has gone stale four times on this branch.)
+           esmfold2-design declares no primary metric in
+           shared/result_columns.py but sorts on ipTM
+           (templates/tools/esmfold2_design_results.html:121,124). #}
         <p class="step-body">
           Pick a design tool, upload the target PDB, and mark your hotspot
           residues &mdash; the numbered residues on the patch of your target
           you want the binder to sit on. Ranked candidates land on your job
-          page with downloadable PDBs and a confidence score for the contact
-          they make with your target. Clone, tweak, re-run until you have a
+          page with downloadable structures, scored on how confidently they
+          contact your target &mdash; IgGM ranks on the number of epitope
+          contacts instead. Clone, tweak, re-run until you have a
           shortlist worth pursuing.
         </p>
       </article>

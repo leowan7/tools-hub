@@ -296,9 +296,12 @@
           var form = (batchInput && batchInput.form) || (nSeedsInput && nSeedsInput.form);
           if (form) form.appendChild(hidden);
         }
-        // n_designs_total = parallel seeds * designs per seed. The
-        // wallet estimator scales the cost with the total design count,
-        // so the user sees the estimate climb with both axes.
+        // n_designs_total = parallel seeds * designs per seed, stamped
+        // for the job record only. The wallet estimator scales on
+        // n_seeds (ToolSpec.scaling_param), so the quote climbs with
+        // seeds and NOT with batch size -- the panel posts the whole
+        // form, so it reads n_seeds directly and quotes correctly. This
+        // comment used to claim the estimate tracks both axes.
         hidden.value = String(bs * ns);
         if (typeof window.refreshWalletEstimate === 'function') {
           window.refreshWalletEstimate();

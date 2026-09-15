@@ -209,6 +209,14 @@
           <div class="viewer-bar">
             <div id="viewer-legend" class="viewer-legend"></div>
             <div class="viewer-downloads">
+              <!-- The server's Content-Disposition names the file, chain
+                   included; this attribute is only the fallback the HTML
+                   download algorithm uses when the header carries no filename
+                   (it checks the header FIRST). Kept because dropping it makes
+                   a refused download navigate away from the rendered report
+                   and the live viewer -- jobs reap after an hour, so that is
+                   an ordinary path, not an exotic one. The cost is that a
+                   refusal is not shown; tracked separately. -->
               <a id="download-link" class="viewer-dl-btn" style="display:none;" download="feasibility_report.csv">Download CSV</a>
             </div>
           </div>

@@ -154,7 +154,7 @@ about: dict = {
     ],
     "output_summary": (
         "Ranked candidate sequences with per-position score and overall "
-        "ProteinMPNN recovery, downloadable as FASTA. Pair downstream "
+        "ProteinMPNN recovery, downloadable as FASTA from a run of your own. Pair downstream "
         "with AlphaFold2 or ColabFold to confirm the predicted fold."
     ),
     "paper_citation": paper_citation,

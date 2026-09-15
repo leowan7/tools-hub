@@ -15,6 +15,31 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # total campaign time depends on the requested design count and the launch
     # concurrency (4), not on this number alone.
     #
+    # THE protein_binder BAND IS PER 8-DESIGN SHARD. Not every row here is:
+    # "validate" is a free dry-run that generates no designs at all, and the
+    # 120-minute ceiling on the two untimed variants is the _MAX_SESSION_S
+    # session wall in modal_app.py -- a container property, not a per-design
+    # one.
+    #
+    # 8 is the only shard width the FORM can produce. tools/proteina/
+    # __init__.py locks _SHARD_NSAMPLES=4 x _SHARD_REPLICAS=2, and
+    # _CHUNK_SIZE_OVERRIDE["proteina"] in shared/compute_campaigns.py is a
+    # SECOND, INDEPENDENT literal holding the splitter to the same 8. Neither
+    # derives from the other -- editing the generation profile moves one and
+    # not the other -- which is why tests/test_proteina_shard_size.py
+    # cross-checks them. num_designs buys SHARDS, never a wider one.
+    #
+    # The band was read off three shards of that width. EXAMPLE below records
+    # 3447 s (57 min) for ITS shard, against the 15-minute ceiling here, and
+    # that is not a counter-example: that shard carried 64 designs, eight
+    # times this width, because it came from tools/proteina/shard_driver.py
+    # (NSAMPLES=16, REPLICAS=4) rather than from the form. So this band does
+    # not describe it. HOW RUNTIME SCALES WITH SHARD WIDTH IS NOT ESTABLISHED
+    # HERE: eight of these shards would predict ~4608 s where the one wide
+    # shard on record took 3447, which is a single uncontrolled pair and not
+    # a curve. Widening this band to cover it would describe a run no user of
+    # this tool can launch.
+    #
     # protein_binder is MEASURED, at three sizes. Paid A100-80GB canary shards
     # returned 8 designs in 576 s (9.6 min) at 130 aa, 645 s (10.8 min) at
     # 260 aa and 874 s (14.6 min) at 415 aa. The band below has to CONTAIN the
@@ -351,8 +376,10 @@ about: dict = {
             "name": "Number of designs",
             "explanation": (
                 "How many designs to search for. This scales the number of "
-                "independent search shards; each shard runs on its own GPU and "
-                "returns its survivors, and the hub picks the global top set."
+                "independent search shards rather than the width of one: each "
+                "shard is a fixed 8-design search on its own GPU and returns "
+                "up to 8, and the hub picks the global top set across every "
+                "shard."
             ),
         },
     ],
@@ -361,7 +388,8 @@ about: dict = {
     # targets) and what is only bounded by the 7200 s session wall.
     "runtime_table": [
         {"preset": "protein_binder",
-         "typical": "~9 to 15 min / shard (measured at 130-415 residues)"},
+         "typical": "~9 to 15 min / 8-design shard "
+                    "(measured at 130-415 residues)"},
         {"preset": "ligand_binder", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "motif_ame", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "validate", "typical": "1 to 3 min (free)"},
@@ -451,9 +479,30 @@ PILOT: dict | None = {
 #
 # PROVENANCE. One shard of the tier-2 length sweep, 2026-08-10: 64 designs
 # from a single ranomics-proteina-prod call (3447 GPU-seconds), re-derived by
-# scripts/_build_proteina_example.py. One shard is one job, so this is the
-# shape a single submission returns, not an aggregate over the campaign's 46
-# shards. The target is the same two-chain protein the PXDesign example uses
+# scripts/_build_proteina_example.py. It is one job's output rather than an
+# aggregate over the campaign's 46 shards.
+#
+# IT IS NOT THE SHAPE A FORM SUBMISSION RETURNS. This note used to say it was
+# ("so this is the shape a single submission returns"), and that is the claim
+# that made the page contradict itself: the sweep ran through
+# tools/proteina/shard_driver.py, whose NSAMPLES=16 / REPLICAS=4 put 64
+# designs in one container, and the form has no control that does that. On the
+# form _SHARD_NSAMPLES=4 x _SHARD_REPLICAS=2 is locked at 8 designs per shard
+# and num_designs buys SHARDS, so 64 plans EIGHT of them
+# (shared.compute_campaigns.plan_chunks("proteina", 64).total_subjobs == 8)
+# and the hub pools the result. The payload below is one shard at eight times
+# the product's width, which is why its 3447 s cannot be read against the
+# ~9-15 min band PRESET_RUNTIME quotes: that band describes 8-design shards.
+#
+# KEPT ANYWAY, deliberately. What this example exists to show is a scoring
+# failure mode, and that does not depend on how many designs shared the
+# container. What had to change
+# is the page saying a reader could get here by typing 64. The inputs_used
+# row for "Number of designs" now says what typing 64 actually does, and
+# tests/test_proteina_shard_size.py fails if that row and the splitter drift
+# apart again.
+#
+# The target is the same two-chain protein the PXDesign example uses
 # and is described the same way; the hotspot set is different (18 here, 6
 # there) because these were different rounds.
 #
@@ -530,8 +579,17 @@ EXAMPLE: dict | None = {
         (
             "Number of designs",
             "64",
-            "One shard: 16 starting samples with 4 replicas each. A shard "
-            "is one container, so all 64 came back from a single call.",
+            "Type 64 here and the run splits into eight shards of 8 "
+            "&mdash; not one shard of 64. Every shard the form can launch "
+            "is a fixed 8-design search and this box buys shards, so the "
+            "ranked list comes back pooled across all eight. The run below "
+            "is a single 64-design container, because it came from the "
+            "internal sweep driver, which widens one shard to 16 samples "
+            "with 4 replicas each; the form exposes neither control. That "
+            "width is also why its 57 minutes does not belong against the "
+            "9 to 15 the About panel quotes: that band was measured on "
+            "8-design shards. The settings are reproducible; the "
+            "single-container shape of the table below is not.",
         ),
         (
             "Design variant",
@@ -549,7 +607,13 @@ EXAMPLE: dict | None = {
         "64 designs, of which <strong>12 passed</strong> &mdash; ipTM at or "
         "above 0.80 with the re-folded complex landing within 5 &Aring;. "
         "They are ranks 1 to 11 and 13, so on this shard the ranking and the "
-        "filter agree: the top of the table is the answer. The best scored "
+        "filter agree: the top of the table is the answer. Rank 12 is the "
+        "one row you cannot settle from the table by eye. It prints the "
+        "same <code>0.80</code> as rank 13 and re-folds just as tightly "
+        "(1.26 &Aring; against 1.24 &Aring;), and it is out all the same: "
+        "the column rounds to two places, and the 0.80 line is drawn on the "
+        "stored ipTM &mdash; rank 12 falls just short of it where rank 13 "
+        "just clears. The best scored "
         "ipTM 0.89 at pLDDT 88.50, re-folding 1.32 &Aring; from where the "
         "generator put it. "
         "Of the 52 that did not pass, 30 failed on the re-fold. "

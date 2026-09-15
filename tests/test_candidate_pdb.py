@@ -13,7 +13,9 @@ shim — same trick the wallet API tests use.
 from __future__ import annotations
 
 import base64
+import io
 import uuid
+import zipfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -234,3 +236,33 @@ class TestStorageErrorFallthrough:
         resp = client.get(f"/api/jobs/{job.id}/pdb/design_3.pdb")
         assert resp.status_code == 200
         assert resp.data == pdb_text
+
+
+class TestZipFilename:
+    """The archive name must not promise a format it may not carry.
+
+    shared/exports.py writes each entry at its own pdb_key, so a
+    boltzgen archive really does contain .cif members and the old
+    job_<id>_pdbs.zip was false. A review found that reverting this
+    route's name alone left the WHOLE suite green -- only the targets
+    arm of the same rename was pinned.
+    """
+
+    def test_the_job_archive_is_named_structures_not_pdbs(
+        self, client, monkeypatch,
+    ):
+        job = _job(candidates=[
+            _candidate("designs/design_002.cif",
+                       b64=base64.b64encode(b"data_x").decode()),
+        ])
+        _patch_user_ctx(monkeypatch, job.user_id)
+        _patch_job(monkeypatch, job)
+        _login(client, job.user_id)
+        resp = client.get(f"/jobs/{job.id}/export.zip")
+        assert resp.status_code == 200
+        disposition = resp.headers["Content-Disposition"]
+        assert f"job_{job.id[:8]}_structures.zip" in disposition
+        assert "_pdbs" not in disposition
+        # And the archive really does carry the .cif the name allows.
+        names = zipfile.ZipFile(io.BytesIO(resp.get_data())).namelist()
+        assert any(n.endswith(".cif") for n in names), names

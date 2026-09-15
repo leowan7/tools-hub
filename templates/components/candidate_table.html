@@ -38,7 +38,10 @@
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
     legend_text             — shared.score_legends.legend_text
-    format_metric_value, score_legend_for, ordinal — multi-tool mode only
+    score_legend_for        — shared.score_legends.get_legend. BOTH modes:
+                              the single-tool column header and the
+                              multi-tool Score cell resolve through it
+    format_metric_value, ordinal — multi-tool mode only
 
   ``legend_text(leg)`` and not ``leg.explanation``: a legend may carry a
   ``caveat`` about what an OLD STORED result holds, and this table is the only
@@ -73,8 +76,16 @@
    multi_tool: a SINGLE-tool target still pools every run and sub-job of that
    tool, so multi_tool understates it by exactly the case that reads worst
    (the # column restarting at 1 for each sub-job). Campaign tables merge
-   sub-jobs too, but they are unchanged here on purpose, since their rank
-   column predates this work and is out of Phase 3's scope. #}
+   sub-jobs too and are NOT pooled by this flag -- they carry campaign_id and
+   no target_id (components/results_shell.html:131) -- but they are no longer
+   unchanged, as this comment used to say: since the # column became a
+   position they number straight through their sub-jobs like everything else,
+   which is what their own CSV already did (shared/exports.py:119).
+
+   ``pooled`` still reaches the numbering, indirectly: it gates ``grouped``
+   just below, and a grouped table counts with grp.n instead. Its other two
+   readers are the _rank_position anchor for the Top badge and that badge's
+   tooltip. #}
 {% set pooled = true if target_id else false %}
 {# ``grouped`` = the table is drawn as one block per tool, with a header row
    between blocks. apply_sort_mode's SORT_TOOL keys on _source_tool alone, so a
@@ -116,8 +127,13 @@
    ``pooled`` is not redundant with ``sort_mode``. No caller passes a sort mode
    outside target mode TODAY, so dropping it would keep the suite green, but
    grouping is a claim only a pooled table can make; a campaign or job table
-   that grew a sort toggle would start drawing tool blocks over rows whose #
-   column means something else entirely. Pinned by
+   that grew a sort toggle would start drawing tool blocks over rows the
+   ranking layer never ordered against each other. (That sentence used to
+   end "over rows whose # column means something else entirely", which
+   stopped being true when the # column became a position everywhere this
+   macro draws. The live table on a running job still prints a raw rank;
+   see the NOT COVERED HERE note at the # cell.)
+   Pinned by
    tests/test_target_table_render.py::test_a_sort_tool_campaign_or_job_table_
    draws_no_group_headers. #}
 {% set grouped = pooled and sort_mode == 'tool'
@@ -393,7 +409,7 @@
   <div class="cand-export-btns">
     <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-primary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
     <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">FASTA</a>
-    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">PDBs (ZIP)</a>
+    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Structures (ZIP)</a>
     {# "Export starred only" — the star's payoff for a user who never contacts
        Ranomics, which is what turns it from a lab-submission control into a
        general shortlist.
@@ -437,15 +453,11 @@
 {% endif %}
 
 {# ── Table ─────────────────────────────────────────────────────── #}
-{# Per-tool score legend lookup. Returns ``{col_key: {good, excellent,
-   direction, explanation}}``; empty dict if the tool has no legends.
-   Registered as a Jinja global in app.py from shared.score_legends. #}
 {# NOT resolved in multi-tool mode: legends are per (tool, column), and a header
    spans rows from several tools. bindcraft passes ipTM at 0.75 while
    rfdiffusion passes at 0.65 (shared/score_legends.py), so a header legend
    would state one tool's bar over another tool's number. Multi-tool resolves
    the legend PER CELL from that row's own tool instead. #}
-{% set legends = {} if multi_tool else (score_legends_for(tool_slug) if score_legends_for else {}) %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
@@ -472,26 +484,64 @@
         {% else %}
         {% for col in columns %}
           {% set g = metric_glossary.get(col, {}) %}
-          {% set leg = legends.get(col) %}
+          {# ``score_legend_for``, NOT the exact-case ``score_legends_for``
+             dict this line used to read. TWO spelling mismatches cost
+             seven (tool, column) pairs their legend here, on the page
+             that shows the numbers those legends judge: af2 and colabfold
+             register ``iptm``/``ptm`` while displaying ``ipTM``/``pTM``
+             -- four pairs, which this call reaches because
+             ``get_legend`` folds case -- and af2, colabfold and esmfold
+             registered a pLDDT legend as ``plddt`` while displaying
+             ``mean_pLDDT`` -- three more, closed by re-keying those
+             legends. (tests/test_score_legend_lookup.py) #}
+          {% set leg = score_legend_for(tool_slug, col) if score_legend_for else None %}
           {# When a per-tool legend exists, its explanation is the
              concrete "what counts as good?" answer; the metric_glossary
              entry remains the academic citation. Stack both into one
              tooltip so the user gets the actionable line first. #}
-          {# ...but NOT the glossary's Range when THIS tool's legend
-             deliberately carries no bar. metric_glossary is keyed by METRIC
-             and is global; a legend that omits ``good`` is a tool saying its
-             number is not on that shared scale. Stacking both unconditionally
-             put "so 0.7 does not apply" and "Range: > 0.75 strong; > 0.65
-             acceptable" in ONE boltzgen tooltip -- the exact false bar the
-             legend had just been cleaned of, walking back in four words later
-             from the global entry, on the surface that shows the numbers it
-             judges. Definition and citation still stack: those are true of the
-             metric wherever it appears. #}
-          {% set _tool_states_a_bar = (not leg) or ('good' in leg) %}
+          {# ...but the glossary's Range ONLY where this tool has no legend of
+             its own. metric_glossary is keyed by METRIC and is global; a
+             per-tool legend already answers "what counts as good?" in prose
+             and answers it for THIS tool, so stacking the global Range after
+             one states the bar twice in a single tooltip -- and the two
+             spellings had drifted apart in both directions:
+
+               COMPARATOR. Every gating legend words its bar inclusively ("80
+               or more", "1.5 angstroms or less"), matching judge() at
+               shared/score_legends.py:2172 (``seen <= good`` / ``seen >=
+               good``) and the against_bar definition's "a value exactly ON a
+               bar counts as meeting it". The Range said "> 80", "< 1.5". On
+               the 10 gate legs a design sitting exactly on the bar read as
+               meeting it in the cell and short of it four words later.
+
+               BAND. GLOSSARY["pLDDT"] calls "> 80" very high confidence; all
+               six legends on the pLDDT column reserve that tier for 90 and up,
+               as does the AlphaFold2 paper the entry cites.
+
+             The two barless legends (boltzgen ipTM, bindcraft surface
+             hydrophobicity) were already suppressed here for a different
+             reason -- a legend that omits ``good`` is a tool saying its number
+             is not on that shared scale -- and ``not leg`` keeps them so.
+             Definition and citation still stack: those are true of the metric
+             wherever it appears. The eight columns with no legend at all
+             (against_bar on five tools, esmfold pTM, opendde ranking_score,
+             proteina total_reward) keep the Range, which is their only answer.
+             Both halves pinned by tests/test_column_tooltip_states_one_bar.py.
+             The three other surfaces that print good_range -- about_panel.html,
+             help/faq.html and help/tool_guide.html -- are NOT changed: each
+             names the ipTM or recovery entry explicitly, and neither of those
+             two strings carries the drift. ipTM DOES gate four tools, but its
+             Range reads "0.65 to 0.75 depending on the tool" and states no
+             comparator at all; recovery's states two ("> 0.4", "> 0.6") but is
+             a leg of no tool's bar, so judge() never runs against it. Those
+             surfaces have their own guards (test_public_tool_pages,
+             test_about_panel_iptm_bar_default, and the three boltzgen page
+             tests), which is how a change here that leaked into them would
+             be caught. #}
           {% set leg_text = legend_text(leg) if leg else '' %}
           {% set tooltip_text = leg_text %}
           {% if g.get('definition') %}
-            {% set _range = (' Range: ' ~ g.good_range) if (_tool_states_a_bar and g.good_range) else '' %}
+            {% set _range = (' Range: ' ~ g.good_range) if (not leg and g.good_range) else '' %}
             {% set _cite = (('. ' if _range else ' ') ~ g.citation) if g.citation else '' %}
             {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ _range ~ _cite %}
           {% endif %}
@@ -509,7 +559,7 @@
         {% endfor %}
         {% endif %}
         <th style="width:4.5rem;">3D</th>
-        <th style="width:4.5rem;">PDB</th>
+        <th style="width:4.5rem;">Structure</th>
       </tr>
     </thead>
     <tbody>
@@ -553,7 +603,19 @@
         {% set src_job     = cand.get('_source_job_id') or job_id %}
         {% set src_idx     = cand.get('_source_index') if cand.get('_source_index') is not none else idx %}
         {% set raw_pdb_key = cand.get('pdb_key') %}
-        {% set pdb_key     = raw_pdb_key or 'design_' ~ (idx + 1) ~ '.pdb' %}
+        {# pdb_key is whatever the container wrote into job.result. Five of
+           the fourteen tools build it container-side, outside this repo,
+           so its TYPE is not ours to guarantee, and every use below aborts
+           the WHOLE render rather than one cell: the `| urlencode` inside
+           `pdb_url` raises ValueError on a list and silently yields "a=1"
+           for a dict, and `'.' in pdb_key` in the download cell raises
+           TypeError on an int. Coerced HERE, at the definition, so one
+           guard covers the
+           url, the download attribute and the extension label. The falsy
+           branch is unchanged: None/'' still take the design_N.pdb
+           default rather than becoming the string "None". #}
+        {% set pdb_key     = (raw_pdb_key | string) if raw_pdb_key
+                             else 'design_' ~ (idx + 1) ~ '.pdb' %}
         {% set has_b64     = cand.get('pdb_content_b64') %}
         {# Use the /api/jobs/<id>/pdb/<filename> endpoint when the row has a
            pdb_key — it resolves Storage objects (Step 1 + 3 of the pilot-tier
@@ -589,22 +651,79 @@
         {% set is_top = (cand.get('_rank_position') == 1) if pooled else loop.first %}
         <tr class="cand-row{% if is_top %} cand-row-top{% endif %}" data-idx="{{ idx }}">
           <td>
-            {# A POOLED table uses the global row index, and pooled is not the
-               same as multi-tool. cand.rank is the source job's own rank, so it
-               restarts at 1 for every sub-job and every campaign: one target
-               run twice with bindcraft, 2 sub-jobs each, read 1,2,3,1,2,3,...
-               beside a CSV that ranked the same rows 1..12. A single-tool
-               target table pools exactly as much as a two-tool one.
-               shared/exports.py:69-75 already demoted it to source_rank for the
-               CSV; the screen never was.
+            {# This column is the row's POSITION IN THIS TABLE, and it FOLLOWS
+               a client-side sort: sortTable re-appends whole <tr>s on a header
+               click, then calls renumberRows, which rewrites the
+               .cand-rank-n span below. Without that second step one click left
+               the first row of a column headed "#" reading "10". The span is
+               the hook; rename it on either side and the numbers silently stop
+               following, which tests/test_candidate_table_js_contract.py pins
+               and tests/test_candidate_table_renumber.py exercises under node.
+
+               Never cand.rank: that is a payload field whose meaning is
+               per-tool, so printing it left the column with no single
+               meaning. Across the eleven shipped examples that render rows:
+               three numbered from 0 (boltz2, esmfold2_design, opendde), six
+               numbered from 1 (bindcraft, boltzgen, proteina, pxdesign,
+               rfantibody, rfdiffusion), and two -- af2 and iggm -- rendered
+               a 0-based set in no order at all. (Their payload field is
+               0-based like the first three; what makes them the bad case is
+               that the column was not ascending.) On af2 and iggm rank is a
+               production
+               index -- af2's over its INPUT records
+               (tools/af2/run_pipeline.py:944, which advances past records
+               dropped before the model ever sees them), iggm's over its
+               output files -- and the partial then re-sorts by score
+               before rendering (templates/tools/af2_results.html:70 sorts on
+               mean pLDDT, templates/tools/iggm_results.html:40 on epitope
+               contacts), so af2's ten rows came out 0,9,6,1,8,4,7,5,3,2 --
+               production indices under a "#" heading, on a page whose own
+               narration talks the reader OUT of row one ("the opposite of
+               what you would conclude by reading row one",
+               tools/af2/meta.py:258-260) and so needs the reader to be able
+               to find which row that is.
+
+               shared/exports.py:119 already numbers the CSV by position
+               (``{"rank": i + 1}``) and demotes the payload value to
+               source_rank at :125, so the screen now uses the CSV's
+               CONVENTION. Not its values: the CSV numbers the STORED order
+               while the re-sorting partials above render a different one, so
+               on af2 and iggm screen #4 and CSV rank 4 are different designs.
+               That divergence predates this change and shared/exports.py:101
+               already disclaims rank as a cross-surface identifier -- pdb_key
+               plus source_job is the join, never the number.
+
+               Nothing keys off what this cell prints. The star button, the
+               3D viewer and the lab-submit modal all key off ``idx``
+               (``{% set idx = loop.index0 %}``, at the top of the row loop)
+               and ``_source_index``, so this is
+               presentational only.
+
+               POOLING needs it independently of all that: a pooled table
+               shows rows from several sub-jobs whose ranks each restart at
+               their tool's own base, so one target run twice with bindcraft,
+               2 sub-jobs each, read 1,2,3,1,2,3,... beside a CSV that ranked
+               the same rows 1..12. A single-tool target table pools exactly
+               as much as a two-tool one.
 
                UNDER ``grouped`` the counter RESTARTS at 1 in each tool block.
                loop.index counts straight through the boundary, so grouped by
                tool read 1,2,3,4,... across two tools and asserted exactly the
                single cross-tool ordering this table refuses to make (register
                item A82). Within a block the number is the row's position among
-               that tool's shown designs, which is a claim the page does make. #}
-            {{ grp.n if grouped else (loop.index if pooled else cand.get('rank', loop.index)) }}
+               that tool's shown designs, which is a claim the page does make.
+
+               NOT COVERED HERE: the live table a running job streams into
+               (templates/job_detail.html:563, same "#" heading at :231)
+               still prints the raw payload rank, so a running job can number
+               its rows differently from the finished table that replaces it
+               on reload. Left alone on purpose: those rows are keyed by the
+               rank value (renderedRanks[rank], live-viewer-row-<rank>), so
+               giving them a position means giving them another identity key
+               first. Whatever that fix is, it is not a blanket +1 -- five of
+               the seven streaming tools send an arrival or input-record
+               index, which +1 leaves just as unordered. #}
+            <span class="cand-rank-n">{{ grp.n if grouped else loop.index }}</span>
             {% if is_top %}
               <span class="cand-rank-top-badge" title="{{ 'Top-ranked design across every tool run against this target' if multi_tool else ('Top-ranked design across every run against this target' if pooled else 'Top-ranked design in this run') }}">Top</span>
             {% endif %}
@@ -788,7 +907,8 @@
                    number rather than an honest gap. #}
                 {% set disp = '—' %}
                 {% set fval = '' %}
-              {% elif col in ('ipTM', 'pTM', 'shape_complementarity') %}
+              {% elif col in ('ipTM', 'pTM', 'shape_complementarity',
+                              'CDR_iPTM_proxy') %}
                 {% set disp = '%.3f' | format(fval) %}
               {% elif col == 'pLDDT' %}
                 {% set disp = '%.1f' | format(fval) %}
@@ -830,10 +950,15 @@
           <td>
             {% if has_pdb %}
               {% if use_url %}
+              {# pdb_key is a str by the time it gets here -- coerced at its
+                 definition above, which is where the reason lives. No
+                 extension to read means .pdb, the historic default. #}
+              {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
+                            if '.' in pdb_key else 'pdb' %}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
-                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+                 style="padding:.2rem .5rem;font-size:.8rem;">.{{ _ext }}</a>
               {% else %}
               <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
                  download="{{ pdb_key }}"

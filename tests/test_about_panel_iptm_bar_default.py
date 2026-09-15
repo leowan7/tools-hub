@@ -38,8 +38,9 @@ af2 and colabfold is false.
 WHAT THIS FILE DOES NOT PIN. "Declares one" here means an ipTM legend in
 shared/score_legends.py carrying ``good`` -- the machine-readable bar,
 which is what the template consults. It is NOT a check that the tool's
-guide PAGE prints that number, nor that the two agree where both exist
--- pxdesign's guide states ipTM >= 0.70 against a declared 0.75. Two
+guide PAGE prints that number, nor that the two agree where both exist;
+tests/test_guide_bar_matches_legend.py pins that half, and pxdesign's
+guide stated ipTM >= 0.70 against a declared 0.75 until it landed. Two
 further limits: every check reads the ipTM ``<dd>`` only, so a pointer
 placed elsewhere on the page is invisible to it, and the clause is
 matched by phrase, so a reworded one is too. The sets differ: on
@@ -65,8 +66,9 @@ from shared.score_legends import SCORE_LEGENDS, get_legend
 # (shared/wallet_estimates.py:672). Counted on this branch by wrapping
 # those functions: 10 of the 28 pages an _entries call renders reach the
 # SELECT -- the 14 guide pages build no such context at all, and af2,
-# colabfold, esmfold and opendde stop short of it -- so 50 live SELECTs
-# across this file's five _entries calls.
+# colabfold, esmfold and opendde stop short of it. _entries memoises on
+# the module-scoped app, so its 28 renders happen once for the module:
+# 10 live SELECTs total, not 10 on each of the five call sites.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: ANY pointer wording. Used where PRESENCE is the question: a tool that
@@ -167,35 +169,25 @@ def _iptm_entry(body: str, slug: str, path: str) -> str:
     return named[0]
 
 
-@pytest.fixture
-def all_tools_app(monkeypatch):
-    """Every registered adapter flagged on, not a remembered subset."""
-    import app as app_module  # noqa: PLC0415  (populates tools.base registry)
-    from shared.feature_flags import flag_name  # noqa: PLC0415
-    from tools import base as tool_base  # noqa: PLC0415
-
-    slugs = sorted(a.slug for a in tool_base.all_adapters())
-    assert len(slugs) >= 14, (
-        f"adapter registry holds {len(slugs)} tools; a registry that did "
-        "not populate would leave the page tests below with nothing to "
-        "iterate"
-    )
-    for slug in slugs:
-        monkeypatch.setenv(flag_name(slug), "on")
-    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    flask_app = app_module.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app, slugs
-
-
 #: Both surfaces that render the per-tool clause. help/faq.html states the
 #: same band but names no tool and points nowhere, so it is correct as it
 #: stands and is not listed here.
 SURFACES = ("/tools/{slug}", "/help/tools/{slug}")
 
 
+#: Keyed by the app the module-scoped fixture built, so the 28 renders
+#: happen on the first call and every later call in the module reuses
+#: them. A new module builds a new app, which misses and rebuilds.
+#: Do not call this inside a patch that changes rendering: the first
+#: call's HTML is what every later call in the module receives.
+_ENTRIES: dict = {}
+
+
 def _entries(all_tools_app) -> dict[tuple[str, str], str]:
     flask_app, slugs = all_tools_app
+    cached = _ENTRIES.get(flask_app)
+    if cached is not None:
+        return cached
     client = flask_app.test_client()
     out = {}
     for slug in slugs:
@@ -219,6 +211,7 @@ def _entries(all_tools_app) -> dict[tuple[str, str], str]:
         f"expected {len(slugs)} slugs x 2 surfaces = {len(slugs) * 2} "
         f"entries; SURFACES={SURFACES} produced {len(out)}"
     )
+    _ENTRIES[flask_app] = out
     return out
 
 
@@ -390,15 +383,19 @@ def test_the_legend_lookup_folds_case_at_the_source():
     af2 and colabfold spell the column "iptm", so a caller naming the
     display column reads them as bar-less while shared/score_legends.py
     declares a bar for each. Folding case in get_legend answers that for
-    all five of its production callers -- both templates here,
-    candidate_table.html:646, and _join_bar and judge in
-    score_legends.py. It does NOT reach
-    candidate_table.html:475, which goes through score_legends_for, a
-    separate exact-case reader.
+    its production callers -- both templates here,
+    candidate_table.html's multi-tool Score cell and its single-tool
+    column header, and _join_bar and judge in score_legends.py. That
+    header went through
+    ``score_legends_for``, a separate exact-case reader, until that line
+    was pointed at this function; the three pLDDT legends case alone could
+    not reach were re-keyed to the spelling their pages pass
+    (tests/test_score_legend_lookup.py).
 
-    Case ONLY. ``_COLUMN_ALIASES`` folds complex_pLDDT into pLDDT for
-    reading a result RECORD; a legend is per (tool, column) and must not
-    be answered out of a different column's.
+    Case, and nothing more. ``_COLUMN_ALIASES`` folds complex_pLDDT into
+    pLDDT for reading a result RECORD; a legend is per (tool, column) and
+    must not be answered out of a different column's, which is why that
+    map is not reused here.
     """
     for slug in ("af2", "colabfold"):
         stored = _iptm_legend(slug)
