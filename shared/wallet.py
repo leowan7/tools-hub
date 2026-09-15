@@ -96,16 +96,71 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # $12.58, boltzgen $8.74 -> $6.07). esmfold2-design's pilot is $9.86, under
 # both. opendde is the one expensive tool with no PILOT at all ($14.79 a run;
 # see the note in tools/opendde/meta.py for why it publishes no pilot card).
-# Any tool that gains a pilot above $15, or any rate change that lifts one
-# past it, needs this constant raised with it -- esmfold2-design is the one to
-# watch, H100-priced with the least headroom.
+# (That paragraph is kept for the history. Its SIZING RULE was wrong -- see
+# below.)
+#
+# Raised 15.00 -> 20.00 (2026-09-10). This is a LIVE DEFECT FIX, not a
+# precaution, and an earlier draft of this comment got that backwards by
+# telling the story as if esmfold2-design's session-ceiling change had created
+# the problem. Measured at the commit before that change, with the credit at
+# $15.00, the 1-unit cushioned holds were:
+#
+#     proteina         $15.0000    headroom $0.0000
+#     opendde          $15.0000    headroom $0.0000
+#     esmfold2-design  $14.7921    headroom $0.2079
+#
+# proteina and opendde were ALREADY at exactly zero headroom in production,
+# refusing any new user who had spent a single cent. esmfold2-design was the
+# one that still had room, and it joined them when its ceiling moved
+# 3600 -> 5400 s and its floor reached the $15/seed cap.
+#
+# WHY THE OLD RULE MISSED IT. It sized the credit against the displayed PILOT
+# PRICE. What admits a job is the CUSHIONED HOLD, and on any tool carrying a
+# worst_case_gpu_seconds floor the hold sits well above the price:
+# esmfold2-design displays $9.87 (raw estimate $9.8614; the panel ceils to
+# cents, templates/wallet/_partials.html fmtUp) and holds $15.00. A credit that
+# clears every price can still refuse those tools outright.
+#
+# WHERE THE REFUSAL ACTUALLY HAPPENS, since this is easy to get wrong: the
+# guard calls wallet_preflight on the point ESTIMATE first
+# (shared/wallet_guard.py), which passes. It then calls reserve_hold with the
+# cushioned hold, and reserve_hold runs its OWN wallet_preflight on THAT amount
+# and returns None -- so the refusal is in Python and the SQL is never reached.
+# (try_hold_for_job does carry a balance check of its own, but the live
+# definition is migration 0035, not the 0020 an earlier draft of this comment
+# cited.) The guard then re-preflights against the held amount to render an
+# honest deficit. Note hold >= estimate always, but NOT strictly: both are
+# clamped by the same compute_hard_cap, so they are EQUAL whenever the estimate
+# saturates the cap -- boltzgen at its own documented pool size
+# (num_designs=200) quotes $300.00 and holds $300.00.
+#
+# THE RULE, and its limit: this constant must clear the largest hold of any
+# tool's SMALLEST REAL RUN -- one unit of its scaling parameter, a new user's
+# first action. That maximum is $15.00, reached at bootstrap by proteina,
+# opendde AND esmfold2-design alike, so 20.00 leaves $5.00.
+# ``tests/test_signup_credit_covers_smallest_run.py`` enforces it, and is
+# explicit in its own docstring that at one unit the binding clamp is
+# base_hard_cap_usd -- so that file catches a cap or credit change and NOT a
+# change to the cushion, markup, rate card or floor.
+#
+# It deliberately does NOT promise to cover a scaled-up submit, and no credit
+# could: af2's batch takes up to MAX_BATCH=50 records and holds $39.32 there,
+# and even 14 records holds $21.00. Past one unit, topping up is the intended
+# path. Note the panel quotes the PRICE ($7.34 at 14 records) while the hold
+# ($21.00) is what refuses -- a pre-existing price/hold split in
+# blueprints/wallet.py, not something this constant can fix.
+#
+# ONE ARITHMETIC COLLISION worth knowing: $20 = $15 + $5 puts a new user's
+# balance after one full-cap esmfold2-design seed at exactly $5.00, and
+# LOW_BALANCE_EMAIL_THRESHOLD fires on ``balance < 5.00``. That user gets no
+# low-balance email where the $15 credit would have sent one.
 #
 # This number is user-visible in ~18 places. Do NOT hardcode it in copy:
 # templates read it through the ``signup_credit`` jinja global and Python
 # callers import this constant, both sourced from here. There is no env
 # override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
 # changed only the welcome email, never the grant.
-SIGNUP_CREDIT_USD = Decimal("15.00")
+SIGNUP_CREDIT_USD = Decimal("20.00")
 
 # Send the low-balance email when balance drops below this.
 LOW_BALANCE_EMAIL_THRESHOLD = Decimal("5.00")
@@ -159,9 +214,14 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     # wallet (fund-and-drain), not this per-shard cap. Mirrors TOOL_SPECS.
     "proteina":    Decimal("60.00"),
     # esmfold2-design: atomic H100 binder-design tool that fans out on n_seeds
-    # (one container per seed). $1000 covers the N_SEEDS_MAX=64 submit (~$946
-    # physical max) so it never clips a legit max run while still bounding a
-    # pricing bug. Mirrors TOOL_SPECS absolute_cap_usd.
+    # (one container per seed). $1000 covers the N_SEEDS_MAX=64 submit, which
+    # settle can charge at most $960 for — 64 x the $15/seed base_hard_cap, the
+    # binding clamp. Note that is a CAP-bound max, not a physical one: since
+    # _MAX_SESSION_S went to 5400 s, 64 full sessions are $1420 of marked-up
+    # compute, so the caps now sit BELOW physical and Ranomics absorbs the
+    # difference on a pathological max run rather than clipping the customer.
+    # (At the old 3600 s ceiling physical was $946 and sat under both caps.)
+    # Mirrors TOOL_SPECS absolute_cap_usd.
     "esmfold2-design": Decimal("1000.00"),
     # opendde: atomic H100 co-folding tool. One container per job, physically
     # capped at _MAX_SESSION_S=3600 s ($14.79 marked-up worst case), so $15 is

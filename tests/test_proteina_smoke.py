@@ -5872,8 +5872,9 @@ class TestRuntimeCopyMatchesMeasurement:
         band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
         row = rows["protein_binder"]
         band_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", band)]
-        # The about row carries the measured span (130-415) after the band, so
-        # take the leading pair — the band is what this compares.
+        # The about row carries the shard width and the measured span
+        # ("8-design", 130-415) after the band, so take the leading pair — the
+        # band is what this compares.
         row_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", row)][:2]
         assert len(band_nums) == 2 and row_nums == band_nums, (
             f"about.runtime_table quotes {row!r} while PRESET_RUNTIME quotes "

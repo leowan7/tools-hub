@@ -29,9 +29,28 @@ from __future__ import annotations
 from typing import Optional
 
 
+# Wall clock is driven by BATCH SIZE, not by the preset, and it grows a little
+# FASTER than in proportion: ~7.1x the wall clock for a 6x batch (3185 s
+# against ~450 s), not 6x. These figures are the default batch of 3 and are
+# INTERPOLATED on the chord between the two endpoints below, not measured --
+# the user-facing strings below say "approx" but cannot carry this caveat, so
+# it lives here. There is no third point, so whether the true batch-3 time
+# falls ABOVE or BELOW that chord is unknown, and it must not be presented as
+# a bound in either direction. (An earlier draft argued the curve was convex,
+# and therefore that the chord errs LONG, from per-step time degrading WITHIN
+# a run: 19.5 s to 22.9 s across the 150 steps at batch_size=6. That runs over
+# STEP INDEX inside one run and says nothing about how wall clock varies with
+# BATCH SIZE, and inferring a shape from two points is the same error this
+# comment corrects two sentences earlier.) The only measured points are
+# batch_size=6 at 3185 s and 3233 s, BOTH ON THE scfv PRESET
+# (docs/VALIDATION-LOG.md); minibinder has never been run, and its row below
+# is the scfv figure reused.
+# The batch-1 anchor (~450 s) is asserted in that file's prose with no run row
+# behind it. The previous "~10"/"~12" came from the falsified "one fixed-length
+# pass" premise that also mis-sized the container ceiling.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "minibinder": {"typical_minutes": "~10"},
-    "scfv": {"typical_minutes": "~12"},
+    "minibinder": {"typical_minutes": "~25 to 30"},
+    "scfv": {"typical_minutes": "~25 to 30"},
 }
 
 # Candido, S. is sequence="first" in Crossref and the leading author on
@@ -150,29 +169,38 @@ about: dict = {
             "explanation": (
                 "Number of parallel seeds to sweep (1 to 64). Each seed "
                 "gets its own H100 worker, all run in parallel, so a "
-                "16-seed sweep finishes in the same wall-clock as one "
-                "seed (~10 to 15 min). Results from every seed merge "
-                "into one globally-ranked table. Use this when you need "
-                "to build a candidate library against a target. Cost "
-                "scales linearly with seeds x batch size."
+                "16-seed sweep finishes in about the same wall-clock as "
+                "one seed. Results from every seed merge into one "
+                "globally-ranked table. Use this when you need to build "
+                "a candidate library against a target. Cost scales with "
+                "seeds, not with batch size: each seed is a separate "
+                "billable container, and a seed's designs share one."
             ),
         },
         {
             "name": "Batch size",
             "explanation": (
-                "Designs produced per gradient run (1 to 6). All designs "
-                "share one ~10 min H100 pass, so a higher batch "
-                "multiplies candidates without multiplying wall-clock. "
+                "Designs produced per gradient run (1 to 6). They share "
+                "one H100 container, so a higher batch adds no container "
+                "&mdash; but billing is on actual GPU time, and a bigger "
+                "batch runs longer: a batch of 6 was measured at about "
+                "53 min on the scFv preset, against an estimated 7 to 8 "
+                "min for a single design, so expect wall-clock AND cost "
+                "to grow with this field a little faster than in "
+                "proportion. (It used to claim a batch of 6 was free of "
+                "both; two production runs and the GPU-seconds bill "
+                "disproved that.) "
                 "<strong>Default 3.</strong> Single-design runs often "
                 "return <code>drop</code> after the iPTM and pI gates. "
-                "Bump to 6 for first-pass exploration; drop to 1 only "
-                "when you already know the target gives clean hits."
+                "Bump to 6 for first-pass exploration when you can wait "
+                "the hour; drop to 1 only when you already know the "
+                "target gives clean hits."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "minibinder", "typical": "~10 min/design"},
-        {"preset": "scfv", "typical": "~12 min/design"},
+        {"preset": "minibinder", "typical": "~25-30 min at batch 3; ~53 min at 6"},
+        {"preset": "scfv", "typical": "~25-30 min at batch 3; ~53 min at 6"},
     ],
     "output_summary": (
         "Per-design table with designed sequence, iPTM, distogram iPTM "
