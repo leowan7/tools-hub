@@ -669,8 +669,9 @@ def idempotent(
         def wrapped(*args: Any, **kwargs: Any):
             ctx = load_user_context()
             if ctx is None:
-                # login_required should have intercepted; if not, let the
-                # wrapped handler produce its own auth response.
+                # Anonymous. Either the route is open on purpose (e.g.
+                # tools.library_planner_plan) or @login_required will have
+                # redirected before this ran; either way the handler decides.
                 return f(*args, **kwargs)
 
             route = request.path
