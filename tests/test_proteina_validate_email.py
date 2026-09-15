@@ -253,7 +253,7 @@ class TestFallbackRenderers:
     EMAIL AT ALL, for a job that completed fine.
     """
 
-    def test_inline_html_renders_the_preflight_headline(self):
+    def test_inline_html_renders_preflight_headline_and_cta(self):
         html = email_mod._render_html(job=_job(), job_url=JOB_URL,
                                       tone="preflight")
         assert "pre-flight passed" in html.lower()
@@ -262,7 +262,7 @@ class TestFallbackRenderers:
         assert "View job details" in html
         assert "View results" not in html
 
-    def test_inline_text_renders_the_preflight_headline(self):
+    def test_inline_text_renders_preflight_headline_and_cta(self):
         text = email_mod._render_text(job=_job(), job_url=JOB_URL,
                                       tone="preflight")
         assert "pre-flight passed" in text.lower()

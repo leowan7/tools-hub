@@ -530,6 +530,9 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     # Two DIFFERENT conditions, deliberately. The colour is a did-this-go-well
     # signal and a passed pre-flight did go well, so it is green; the label
     # says what the link shows, and a validate run has no results to view.
+    # Both halves pinned by test_inline_html_renders_preflight_headline_and_cta
+    # (tests/test_proteina_validate_email.py): narrowing the colour or widening
+    # the label each fails it on its own.
     cta_bg = "#1f9d55" if tone in ("success", "preflight") else "#525252"
     cta_label = "View results" if tone == "success" else "View job details"
     cta = (

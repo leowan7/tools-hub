@@ -22,10 +22,15 @@
                           the two slots the other tones keep together: the
                           GREEN button of a run that went fine, carrying the
                           "View job details" label of a run with no results
-                          to view. The two tests must stay different:
-                          narrowing the colour to `tone == 'success'` greys
-                          a run that went fine, and widening the label to
-                          match the colour offers results that do not exist.
+                          to view. The two tests must stay different, and
+                          both halves are mutation-pinned in
+                          tests/test_proteina_validate_email.py: narrowing the
+                          colour to `tone == 'success'` fails
+                          test_button_is_the_green_of_a_run_that_went_fine,
+                          and widening the label to `tone in ('success',
+                          'preflight')` fails
+                          test_button_is_not_labelled_view_results, which
+                          checks the text part too.
      top_score_label      Score label string (e.g. "ipTM"); empty when no top score
      top_score_value      Score value string (e.g. "0.74"); empty when no top score
      top_score_caption    Interpretation of the top score, built by
