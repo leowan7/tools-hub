@@ -41,3 +41,18 @@ def test_query_string_survives(client):
     """
     resp = client.get("/tools/proteinmpnn?clone_from=job-123")
     assert resp.headers["Location"].endswith("/tools/mpnn?clone_from=job-123")
+
+
+def test_malformed_query_string_still_redirects(client):
+    """A non-UTF-8 byte in the query string must not 500.
+
+    WSGI hands QUERY_STRING over as a latin-1 str, so a raw 0xFF byte in
+    the request line reaches the redirect undecoded.
+    """
+    resp = client.get(
+        "/tools/proteinmpnn",
+        environ_overrides={"QUERY_STRING": "clone_from=\xff"},
+    )
+
+    assert resp.status_code == 301
+    assert resp.headers["Location"].startswith("/tools/mpnn?clone_from=")

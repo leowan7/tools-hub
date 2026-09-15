@@ -1075,15 +1075,20 @@ def proteinmpnn_slug_redirect():
 
     A static rule outranks the ``/tools/<tool>`` converter rule in
     Werkzeug's map, so this is reached rather than tool_form. The query
-    string is preserved because tool_form reads pre-fill parameters out
-    of it: pilot, workspace_id, target_pdb_id, clone_from, from_job,
-    handoff and resample_from -- grep ``request.args`` inside tool_form
-    below for all seven. Nothing
-    links here with those today; carrying them costs one line and means
-    a future link that does is not silently truncated.
+    string is carried across because tool_form pre-fills from it; grep
+    ``request.args`` inside tool_form below for the seven parameters it
+    reads (pilot, workspace_id, target_pdb_id, clone_from, from_job,
+    handoff, resample_from). Nothing links here with those today, so
+    this costs one line and keeps a future link that does from being
+    silently truncated.
     """
     target = url_for("tools.tool_form", tool="mpnn")
-    qs = request.query_string.decode("utf-8")
+    # QUERY_STRING arrives as raw bytes and decoding it strictly raises
+    # UnicodeDecodeError on a malformed one, which would 500 instead of
+    # redirecting, so substitute U+FFFD. Pinned by
+    # test_malformed_query_string_still_redirects in
+    # tests/test_tool_slug_redirects.py.
+    qs = request.query_string.decode("utf-8", errors="replace")
     if qs:
         target = f"{target}?{qs}"
     return redirect(target, code=301)
