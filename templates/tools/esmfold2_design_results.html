@@ -3,17 +3,25 @@
    Reshapes the Modal pipeline's per-design output into the
    candidate_table contract. Each design becomes one row with:
      - iPTM
-     - distogram iPTM proxy (or CDR distogram iPTM proxy in scFv mode)
+     - iPTM_proxy on a minibinder run, CDR_iPTM_proxy on an scFv one. ONE
+       KEY PER ROW as of 2026-09-14: the mode picks the key, so each name
+       means one quantity and each can carry its own legend.
      - final_loss (gradient-descent loss at step 150)
      - isoelectric_point (minibinder mode only; scFv mode reports —)
      - NO derived quality column. This tool declares no bar in
-       shared/score_legends.GATE_COLUMNS because its bar is mode-dependent:
-       an scFv is judged on the CDR distogram proxy, a minibinder on ipTM AND
-       pI < 6. Neither can be written as one conjunction over these columns,
-       and an ipTM-only bar would print "meets" on the high-ipTM design this
-       tool's own worked example exists to say you must not order. The
-       pipeline's strict_pass / borderline / drop word is not carried over
-       either: it is a verdict, and a stored verdict goes stale.
+       shared/score_legends.GATE_COLUMNS, the mode-blind map, because its bar
+       is mode-dependent: an scFv is judged on the CDR distogram proxy AND
+       ipTM, a minibinder on ipTM AND pI < 6. Neither can be written as one
+       conjunction over mode-blind columns, and an ipTM-only bar would print
+       "meets" on the high-ipTM design this tool's own worked example exists
+       to say you must not order. MODE_GATE_COLUMNS, which is asked with the
+       run's mode, carries both gates as of 2026-09-14. The pipeline's
+       strict_pass / borderline / drop word is still not carried over: it is
+       a verdict, and a stored verdict goes stale.
+
+       The scFv ipTM leg is NEW as of 2026-09-10. Until then this mode gated
+       on the proxy alone and a design at ipTM 0.436 was a strict pass; see
+       _classify in run_pipeline.py for the measured case and the reasoning.
 
    ONE EXCEPTION, and it is worth stating plainly because the paragraph above
    reads as an absolute. The best-design panel below DOES put a tier word on
@@ -29,39 +37,78 @@
    job.preset) answers for a minibinder run — no GPU rebuild needed, because
    is_antibody is on every job result. /jobs/compare is wired to it.
 
-   THE scFv BAR IS STILL ONLY HERE, deliberately. A leg on the CDR proxy was
-   added there and removed in review: SCORE_LEGENDS is keyed on (tool,
-   column) with no mode, so the legend it needs renders as this page's
-   iPTM_proxy tooltip in BOTH modes — an scFv-worded bar on every minibinder
-   results page. One string cannot be true of two quantities. The tier
-   arithmetic below is mode-aware and can keep judging scFv; judge() cannot.
+   THE scFv BAR IS NO LONGER ONLY HERE EITHER, as of 2026-09-14.
+   MODE_GATE_COLUMNS gained ("CDR_iPTM_proxy", "ipTM") under "scfv". What
+   unblocked it was the column split in run_pipeline.py, not a change to how
+   SCORE_LEGENDS is keyed: while both modes wrote their proxy under one
+   ``iPTM_proxy`` key, the legend that leg needs would have rendered as this
+   page's tooltip in BOTH modes — an scFv-worded bar on every minibinder
+   results page — because SCORE_LEGENDS is keyed on (tool, column) with no
+   mode in it. One string cannot be true of two quantities. Two keys, two
+   strings, each true of one quantity.
 
-   This block is still a SECOND copy of the arithmetic and stays one, because
-   run_pipeline.py is copied into the GPU image and cannot import shared/.
+   AN IPTM-ONLY scFv ENTRY WAS NEVER THE ANSWER and still is not. ipTM alone
+   is a SUBSET of the scFv gate — it cannot see the proxy leg — so it can
+   print "meets" on a design the pipeline drops for a low proxy. The entry
+   that landed carries BOTH legs, in the pipeline's own reading order
+   (proxy first: _classify drops on the proxy floor before it reads ipTM).
 
-   THE DRIFT GUARD DOES NOT COVER THIS FILE, AND NOTHING ELSE DOES EITHER.
+   WHAT THE NEW ENTRY RE-LABELS is every scFv run already delivered. With no
+   scfv entry, shared/jobs.py::count_candidates_meeting_bar returned
+   len(records) — every design a keeper — and the share card quoted no score
+   at all. Rows stored before the column split are reached through the legacy
+   ``iPTM_proxy`` spelling in score_legends._COLUMN_ALIASES; without it their
+   proxy leg reads unjudged and their keeper count is zero, not len(records).
+   See the matching notes in shared/score_legends.MODE_GATE_COLUMNS and
+   _COLUMN_ALIASES.
+
+   THE DRIFT GUARD STILL DOES NOT COVER THIS FILE, BUT A TEST NOW DOES.
    CONTAINER_GATES in tests/test_derived_verdicts.py reads run_pipeline.py's
-   constants and compares them to the legend's ``good``, so it holds exactly
-   TWO copies together — the pipeline's and score_legends'. EVERY threshold
-   hard-coded below is held to the pipeline by NO test: 0.75 and 0.50 (the two
-   STRICT bars), 6.0 (the pI hard gate), the 0.05 and 0.10 borderline band
-   widths that mirror _classify's inline arithmetic, and the same numbers
-   again in the panel prose. The band widths are the worst of them, because
-   unlike the bars they never appear on the page, so a drift there is
-   invisible as well as unguarded.
+   constants and compares them to the legend's ``good``, holding exactly TWO
+   copies together — the pipeline's and score_legends'. It has never read this
+   file and still does not.
 
-   Verified by mutation: moving STRICT_IPTM to 0.80 turns one test red, the
-   legend/constant divergence check, while this template
-   keeps 0.75 and test_esmfold2_design_best_sequence.py stays green — it pins
-   this file against literals and against _classify's OPERATOR, never against
-   its value. An earlier version of this paragraph said that test held these
-   literals, which is the reassurance a reader most needs to be true. Change
-   the bar and you must edit all three copies by hand.
+   What changed on 2026-09-10 is that
+   tests/test_esmfold2_design_scfv_iptm_leg.py renders this template and
+   compares its derived tier to ``_classify`` over the tool's 12 recorded
+   production designs plus 9 synthetic boundary rows. That does not make this
+   copy authoritative, but it does mean a drift between the two copies is now
+   caught.
+
+   Every threshold hard-coded below was mutated one at a time and each turned
+   at least one test red: ``_bar`` (0.50), ``_band`` (0.10), ``_iptm_bar``
+   (0.75), ``_iptm_band`` (0.05) and the pI 6.0 hard gate, plus the
+   pipeline-side ``STRICT_IPTM`` and ``STRICT_PI`` they mirror. Stated as a
+   property rather than as red-counts on purpose: counts go stale the next
+   time anyone adds a test, and a stale number in this paragraph is a defect
+   it has already carried twice.
+
+   THE BAND WIDTHS ONLY STOPPED SURVIVING WHEN THE BOUNDARY ROWS WERE ADDED.
+   With the 12 production rows alone, ``_iptm_band`` 0.05 -> 0.15 stayed
+   green, because no real design has an iPTM in [0.60, 0.70) where that band
+   bites. ``BOUNDARY`` in the guard test is what closes it. If you add a
+   threshold here, add the row that straddles it or you have added an
+   unguarded literal.
+
+   An earlier version of this paragraph claimed every literal here was held by
+   no test, and that moving STRICT_IPTM to 0.80 turned exactly one test red.
+   Both were written before the guard existed and neither was re-measured
+   after.
+
+   This is still a SECOND copy of the arithmetic and stays one, because
+   run_pipeline.py is copied into the GPU image and cannot import shared/.
+   Change a bar and you must still edit all three copies by hand — the
+   difference is that now you will be told.
+
+   Mutation runs used: test_esmfold2_design_scfv_iptm_leg,
+   test_esmfold2_design_best_sequence, test_derived_verdicts,
+   test_esmfold2_design_critic_mapping.
 
    NO CONSUMER OF THIS CLASS IS LEFT UNMODED. The share text's score clause,
    the FASTA export, the campaign and target counts and the target ranking
    table each resolve the run's mode now (score_legends.resolve_mode) and pass
-   it, so each holds a minibinder design to pI and ipTM. The completion email
+   it, so each holds a minibinder design to pI and ipTM and, since
+   2026-09-14, an scFv design to the CDR proxy and ipTM. The completion email
    does the same through an inline copy of the same expression
    (shared/email.py::_top_candidate_summary, landed separately as 058f6c1),
    which it passes to both headline_candidate and verdict_text; an earlier
@@ -72,7 +119,9 @@
 
    The target count moved as a result: a minibinder run used to have every
    delivered design counted as a keeper and now counts only the ones that
-   meet the bar.
+   meet the bar. An scFv run moved the same way on 2026-09-14, and for the
+   same reason — count_candidates_meeting_bar short-circuits to len(records)
+   for a mode with no entry.
 
    The pipeline returns a single best_sequence plus a per-critic results
    table. The table is surfaced as-is; the headline sequence is re-derived
@@ -110,6 +159,21 @@
   {% set candidates = [] %}
   {% for d in raw_designs %}
     {% set _proxy = d.get('cdr_distogram_iptm_proxy') if is_antibody else d.get('distogram_iptm_proxy') %}
+    {# ONE KEY PER MODE, mirroring the candidates[] payload in
+       run_pipeline.py: the scFv proxy and the minibinder proxy are
+       different quantities, and SCORE_LEGENDS is keyed on (tool, column)
+       with no mode in it, so sharing a key means sharing a tooltip. Built
+       by update() because a Jinja dict literal cannot take a computed key.
+       Insertion order differs from the orchestrator's (the proxy lands
+       last here) and nothing downstream of this branch reads order: the
+       column order is the explicit ``columns`` list below, and the email
+       caption reads the STORED candidates, never this reshape. #}
+    {% set _scores = {
+        'ipTM': d.get('iptm'),
+        'final_loss': d.get('final_loss'),
+        'pI': d.get('isoelectric_point') if not is_antibody else none,
+    } %}
+    {% set _ = _scores.update({'CDR_iPTM_proxy': _proxy} if is_antibody else {'iPTM_proxy': _proxy}) %}
     {# ``_sort_iptm``: sorting on scores.ipTM directly raises TypeError — and
        500s the whole results page — the moment ONE design has a null iPTM
        and another has a number, which happens whenever the real-iPTM critic
@@ -120,12 +184,7 @@
         'rank': d.get('rank'),
         'name': d.get('name') or ('design_' ~ (d.get('rank') or '0')),
         'pdb_key': d.get('pdb_key'),
-        'scores': {
-          'ipTM': d.get('iptm'),
-          'iPTM_proxy': _proxy,
-          'final_loss': d.get('final_loss'),
-          'pI': d.get('isoelectric_point') if not is_antibody else none,
-        },
+        'scores': _scores,
         'sequence': d.get('sequence'),
         'designed_sequence': d.get('designed_sequence'),
         '_sort_iptm': d.get('iptm') if d.get('iptm') is number else -1,
@@ -155,16 +214,24 @@
    the prose in the panel below, so a drift in those shows on the page; the
    borderline band widths are not on the page and a drift there is silent.
 
-   ``iPTM_proxy`` and ``pI`` are already mode-resolved by the orchestrator
-   and by the reshape above, so only one shape is read here.
+   ``pI`` is already mode-resolved by the orchestrator and by the reshape
+   above. The proxy is mode-resolved by its KEY as of 2026-09-14, so the
+   read below names the scFv key and falls back to the legacy shared one
+   for rows stored before that split -- every scFv run delivered to date,
+   until the GPU image is redeployed.
 
    candidates is iPTM-sorted, so the first member of a tier is its
    HIGHEST-iPTM member. In scFv mode the tier is decided on the CDR
-   distogram proxy while the ordering stays iPTM, so first-of-tier is not
-   highest-proxy-of-tier. That split is deliberate and matches both
-   pipelines: the mode-specific metric is the GATE, iPTM is the RANK,
-   because iPTM is the calibrated number and the panel below calls the
-   proxy "informative only".
+   distogram proxy AND iPTM while the ordering stays iPTM alone, so
+   first-of-tier is still not highest-proxy-of-tier. That split is
+   deliberate and matches both pipelines: iPTM is the RANK because it is the
+   only one of the two measured on a scale with an external meaning — which is
+   not the same as saying its 0.75 bar is calibrated, and the module TODO in
+   run_pipeline.py says plainly that it is not. The proxy is a GATE leg — it
+   says the CDRs are
+   placed confidently, which is a precondition for an scFv rather than a
+   measure of how good the interface is. That is also why it stopped being
+   the whole gate on 2026-09-10.
 
    Only a candidate we can quote a BINDER for is eligible to be the pick:
    choosing one we then cannot render would just empty the panel, and
@@ -187,12 +254,26 @@
    Keep the divergence anyway. It is now rare rather than universal, but a
    design can still reach here unmeasured, and narrating that as a failure
    would be the same lie in a quieter voice. #}
+{# ``_bar``/``_band`` are the MODE-SPECIFIC leg: the CDR distogram proxy on
+   an scFv run, ipTM on a minibinder one. ``_iptm_bar``/``_iptm_band`` are
+   the leg BOTH modes share -- _classify's STRICT_IPTM and its band width.
+   On a minibinder run the two legs are literally the same test (``_score``
+   IS ``_iptm`` and ``_bar`` IS ``_iptm_bar``), so the shared leg changes
+   nothing there; it exists for scFv mode, which gated on the proxy alone
+   until 2026-09-10 and so called a design at ipTM 0.436 a strict pass. See
+   _classify's docstring in run_pipeline.py for the measured case. #}
 {% set _bar  = 0.50 if is_antibody else 0.75 %}
 {% set _band = 0.10 if is_antibody else 0.05 %}
+{% set _iptm_bar  = 0.75 %}
+{% set _iptm_band = 0.05 %}
 {% set _tier = namespace(strict=[], borderline=[], offerable=[]) %}
 {% for c in candidates %}
   {% set _s = c.get('scores') or {} %}
-  {% set _score = _s.get('iPTM_proxy') if is_antibody else _s.get('ipTM') %}
+  {% set _iptm = _s.get('ipTM') %}
+  {# ``.get(key, default)``, not ``or``: a proxy of 0.0 is a measurement and
+     ``or`` would discard it. The default fires only when the key is ABSENT,
+     which is what a pre-split row looks like. #}
+  {% set _score = _s.get('CDR_iPTM_proxy', _s.get('iPTM_proxy')) if is_antibody else _iptm %}
   {% set _pi = _s.get('pI') %}
   {# The binder half, by the SAME rule modal_app._binder_only used to write
      the stored field: prefer ``sequence``, else split ``designed_sequence``
@@ -202,7 +283,13 @@
      silently excluded. #}
   {% set _dseq = c.get('designed_sequence') or '' %}
   {% set _seq = c.get('sequence') or (_dseq.split('|', 1)[1] if '|' in _dseq else _dseq) %}
-  {# Judged only when the gate's own metrics are actually present. #}
+  {# Judged when the MODE-SPECIFIC leg is present: the CDR proxy on an scFv
+     run, ipTM and pI on a minibinder one. An scFv with a proxy and no ipTM is
+     still judged, because a missing ipTM CAPS its tier at borderline rather
+     than failing it -- see the ipTM block below and _classify's docstring.
+     (An earlier cut required ipTM here too. That made such a design unjudged,
+     which put it in ``offerable`` behind every measured-and-failed design,
+     and the page then offered the worst design in the run.) #}
   {% set _judged = _score is number and (is_antibody or _pi is number) %}
   {% if _seq %}
     {% set _entry = [_seq, c, _judged] %}
@@ -211,9 +298,17 @@
       {# In minibinder mode pI is a HARD gate applied before the score
          bands: an undisplayable scaffold is a reject at any iPTM. #}
       {% if is_antibody or _pi < 6.0 %}
-        {% if _score >= _bar %}
+        {% if _iptm is not number %}
+          {# scFv only -- in minibinder mode _score IS _iptm, so _judged
+             already required it. A CDR proxy that clears its own bar with no
+             ipTM to check is a caution, not a rejection: capped here, exactly
+             as _classify caps it. #}
+          {% if _score >= _bar %}
+            {% set _tier.borderline = _tier.borderline + [_entry] %}
+          {% endif %}
+        {% elif _score >= _bar and _iptm >= _iptm_bar %}
           {% set _tier.strict = _tier.strict + [_entry] %}
-        {% elif _score >= _bar - _band %}
+        {% elif _score >= _bar - _band and _iptm >= _iptm_bar - _iptm_band %}
           {% set _tier.borderline = _tier.borderline + [_entry] %}
         {% endif %}
       {% endif %}
@@ -264,7 +359,12 @@
 {# Add a seed column only when this run actually swept multiple seeds —
    single-seed jobs would just show "0" in every row. #}
 {% if is_antibody %}
-  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss'] + (['seed'] if is_sweep else []) %}
+  {# CDR_iPTM_proxy is listed in the ANTIBODY branch only. That is one of the
+     three things keeping the legacy ``iPTM_proxy`` spelling in
+     score_legends._COLUMN_ALIASES from reaching a minibinder row; the other
+     two are MODE_GATE_COLUMNS and jobs_compare.html's priority_keys. All
+     three are pinned by tests/test_esmfold2_design_scfv_iptm_leg.py. #}
+  {% set columns = ['ipTM', 'CDR_iPTM_proxy', 'final_loss'] + (['seed'] if is_sweep else []) %}
 {% else %}
   {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'pI'] + (['seed'] if is_sweep else []) %}
 {% endif %}
@@ -332,8 +432,10 @@
     <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
-      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
-      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is informative only.
+      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&ge;&nbsp;0.5</code> and <code>iptm&nbsp;&ge;&nbsp;0.75</code>{% else %}<code>iptm&nbsp;&ge;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
+      are the ones worth ordering. Only the real iPTM is calibrated; the distogram proxy is
+      {%- if is_antibody %} the second gate leg, and it asks a narrower question &mdash; whether the CDRs are placed confidently, not whether the interface is good.
+      {%- else %} informative only.{% endif %}
     </div>
   </div>
 </div>
@@ -380,17 +482,27 @@
          format_metric_value — that global is only wired up for the
          multi-tool table. Its glossary HAD no entry for iPTM_proxy or pI, so
          both fell to a .3f default and printed "pI 5.669" beside a table cell
-         reading "5.67". ``pI`` is declared ".2f" there now (it became a gate
-         leg and score_legends compares at the declared format); iPTM_proxy is
+         reading "5.67". ``pI`` (".2f") and ``CDR_iPTM_proxy`` (".3f") are
+         declared there now, each having become a gate leg that score_legends
+         compares at its declared format; the minibinder ``iPTM_proxy`` is
          NOT, so it still falls to .3f in that global -- which is why this
          block keeps its own literal formats rather than trusting it. Numbers
-         a reader is invited to compare have to be produced the same way. #}
+         a reader is invited to compare have to be produced the same way.
+
+         THE PROXY FORMAT FOLLOWS THE MODE, NOT THE STORED KEY. A pre-split
+         scFv run holds the legacy ``iPTM_proxy`` spelling, and the table
+         still heads it CDR_iPTM_proxy and renders it at .3f
+         (components/candidate_table.html:882), so keying this line on which
+         spelling is present would print .2f above a .3f cell on exactly the
+         historical rows this branch exists to judge. Pinned by
+         test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged. #}
       {% if best_candidate %}
         {% set _bs = best_candidate.get('scores') or {} %}
         <div style="color: var(--text-tertiary); font-size: 0.78rem; margin-bottom: 0.4rem; font-family: var(--font-mono);">
           {{ best_candidate.get('name') or 'design' }}
           {%- if _bs.get('ipTM') is number %} &middot; iPTM {{ '%.3f' | format(_bs.get('ipTM')) }}{% endif %}
-          {%- if _bs.get('iPTM_proxy') is number %} &middot; proxy {{ '%.2f' | format(_bs.get('iPTM_proxy')) }}{% endif %}
+          {%- set _bs_proxy = _bs.get('CDR_iPTM_proxy', _bs.get('iPTM_proxy')) %}
+          {%- if _bs_proxy is number %} &middot; proxy {{ ('%.3f' if is_antibody else '%.2f') | format(_bs_proxy) }}{% endif %}
           {%- if _bs.get('pI') is number %} &middot; pI {{ '%.2f' | format(_bs.get('pI')) }}{% endif %}
           {%- if candidates and best_candidate is not sameas (candidates | first) %}
             &middot; <span style="color:#fca5a5;">not the top row below</span>

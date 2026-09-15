@@ -47,6 +47,7 @@ from shared.jobs import (
     list_jobs_paginated,
     mark_failed,
     mark_running,
+    timeout_stuck_job,
 )
 from shared.storage import (
     StorageError,
@@ -167,11 +168,16 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
     proteina ``af2_plddt 88.5``, bounded and higher-is-better, instead of
     silence.
 
-    Then NOTHING. esmfold2-design in scFv mode lands here -- no bar in that
-    mode, no ranking metric, no pLDDT -- so the same tool quotes ipTM for a
-    minibinder run and nothing for an scFv one. That asymmetry is deliberate:
-    the alternative is quoting the CDR proxy, whose legend cannot be written
-    per-mode (see the note above MODE_GATE_COLUMNS).
+    Then NOTHING, for a tool with no bar, no ranking metric and no pLDDT.
+    esmfold2-design in scFv mode used to land there, and no longer does: that
+    mode has a bar as of 2026-09-14 (score_legends.MODE_GATE_COLUMNS), so the
+    first arm above fires and quotes the CDR distogram proxy -- the first leg
+    of that bar in reading order, and higher_is_better. It is a different
+    QUANTITY from the ipTM a minibinder run quotes; both are legs of the bar
+    the run was actually judged against, which is what this chain promises.
+    The asymmetry that used to be here -- a number for one mode and silence
+    for the other -- was the cost of a column whose legend could not be
+    written per-mode, and the column split removed the cause.
 
     EVERY ARM FALLS THROUGH ON AN ABSENT VALUE, not just on an unset key. The
     first repair guarded the later arms on ``if not key``, so a tool whose
@@ -398,7 +404,60 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # number may be read out. Splitting them is what keeps the superlative
     # question and the metric question from being answered in one place by
     # one person's guess.
-    return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
+    #
+    # THE GLOSSARY NAME, NOT THE STORAGE KEY. This string goes into an
+    # og:title -- a compose box on someone else's site -- and the same
+    # column's header on our own results table is the glossary label
+    # (templates/components/candidate_table.html:522). Printing the raw key
+    # here made the two disagree: "CDR_iPTM_proxy 0.799" on the card against
+    # "CDR distogram proxy" in the table. score_legends.label_and_unit is the
+    # same splitter the bar sentences use, so a unit lands after the number
+    # rather than stranded ahead of it.
+    #
+    # THREE COLUMNS MOVE, not one. Enumerated over every tool in
+    # GATE_COLUMNS, MODE_GATE_COLUMNS, result_columns._TOOL_PRIMARY_METRIC
+    # and _TOOL_RESULT_COLUMNS, against each arm of the chain above:
+    # CDR_iPTM_proxy -> "CDR distogram proxy" (esmfold2-design scfv),
+    # epitope_contacts -> "Epitope contacts" (iggm, the primary-metric arm)
+    # and n_hotspot_contacts -> "Hotspot hits" (boltz2, reached only when its
+    # ipTM and pLDDT are both unreadable). Every other reachable column is
+    # ipTM or pLDDT, whose labels ARE their keys. The enumeration is pinned by
+    # test_the_share_chain_can_reach_exactly_three_renamed_columns, and the
+    # rendering by test_the_share_card_quotes_the_cdr_proxy_by_name, both in
+    # tests/test_esmfold2_design_scfv_iptm_leg.py.
+    #
+    # The PRECISION stays .3f rather than the glossary format score_legends
+    # ._reading uses: that would take pLDDT from 84.600 to 84.6 on every
+    # boltzgen and rfantibody card, which is a different change and needs its
+    # own reason.
+    #
+    # A GATE LEG COARSER THAN .3f IN THE GLOSSARY CAN THEREFORE PRINT BELOW
+    # THE BAR the guard above says it met, because score_legends.shown_value
+    # judges at the glossary precision. ipTM and CDR_iPTM_proxy are ".3f" and
+    # cannot. pLDDT (".1f") can and does: on boltzgen and rfantibody a raw
+    # 79.950 is judged at 80.0, so the verdict reads "Meets pLDDT 80" while
+    # this line publishes "pLDDT 79.950". Measured by driving judge() with a
+    # complete passing record for each tool; 79.940 is judged below, so the
+    # window runs from 79.950 to the bar. Fixing it is the same deferred
+    # change: this line reading format_value.
+    #
+    # ONLY TWO COARSE LEGS ARE EVEN REACHABLE HERE, which an earlier draft of
+    # this paragraph got wrong by counting all seven coarse legs and offering
+    # "pI 5.995 under a 6.0 bar" as the example. The loop above quotes a gate
+    # leg only when _higher_is_better(col), so pI, ipAE, pAE, i_pAE and
+    # refolding_rmsd -- every lower-is-better leg -- are skipped and can never
+    # be the quoted column at all. Enumerated over GATE_COLUMNS and
+    # MODE_GATE_COLUMNS: the legs this arm can quote are ipTM,
+    # CDR_iPTM_proxy, pLDDT and n_hotspot_contacts, and of those only pLDDT
+    # (boltz2, boltzgen, pxdesign, rfantibody, rfdiffusion) and
+    # n_hotspot_contacts (".0f", boltz2, and only when ipTM and pLDDT are both
+    # unreadable) are coarser than this line. epitope_contacts (".0f") is also
+    # coarse and reachable, but through the primary-metric arm on iggm, which
+    # declares no bar -- so it carries no "met the bar" claim to contradict.
+    # Pinned by test_no_lower_is_better_leg_can_be_the_quoted_column.
+    name, unit = score_legends.label_and_unit(col)
+    shown = f"{val:.3f}" if isinstance(val, float) else f"{val}"
+    return f"{name} {shown}{unit}"
 
 
 @jobs_bp.route("/jobs", methods=["GET"])
@@ -643,9 +702,40 @@ def job_status(job_id: str):
                 gpu_seconds_used=poll.get("gpu_seconds_used"),
             )
             job = get_job(job_id, user_id=ctx.user_id)
+        elif poll["status"] == "timeout":
+            # Modal recorded a container timeout for this FunctionCall, so it
+            # will never return: terminal, and nothing is gained by waiting for
+            # the 6h stuck-job sweeper to say the same thing.
+            #
+            # Routed through timeout_stuck_job rather than
+            # complete_job(terminal_status="timeout") so it keeps the sweeper's
+            # recovery gate: a run that finished every design and uploaded its
+            # outputs before the container clock ran out is finalised as
+            # SUCCEEDED off Storage + the heartbeat snapshot
+            # (shared/job_recovery.py::recover_stuck_job_result), not refunded
+            # with its results discarded. Only when nothing is recoverable does
+            # it mark_timeout + settle, which releases the hold in full
+            # (status="timeout" -> failure_class="no_progress_timeout" ->
+            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES).
+            #
+            # probe_modal=False: we just polled Modal above and got a terminal
+            # container timeout, so recovery's own Modal probe would re-raise
+            # the same error and reach the same "unknown" verdict -- while
+            # spending a SECOND bounded 90 s call in this request. Two stacked
+            # hops is 180 s, past gunicorn's 120 s worker watchdog
+            # (gunicorn.conf.py:164). Pinned by
+            # tests/test_modal_function_timeout.py.
+            timeout_stuck_job(job.id, probe_modal=False)
+            job = get_job(job_id, user_id=ctx.user_id)
         elif poll["status"] == "running" and job.status == "pending":
             mark_running(job.id)
             job = get_job(job_id, user_id=ctx.user_id)
+        # poll["status"] == "error" is deliberately NOT terminalised: it is the
+        # bucket for an unreachable or wedged Modal API call (including our own
+        # ModalCallTimeout), which says nothing about whether the GPU run
+        # stopped. Terminalising here would refund and close a job still
+        # burning GPU. The next poll, the terminal webhook, or the stuck-job
+        # sweeper resolves it.
 
     inputs = job.inputs or {}
     partials = inputs.get("_partial_candidates") or []

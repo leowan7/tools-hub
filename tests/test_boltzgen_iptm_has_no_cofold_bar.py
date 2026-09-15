@@ -638,7 +638,12 @@ def test_that_refold_claim_check_can_actually_fire():
         # ...and a FROZEN exemplar beside it, because the live string alone is
         # not a pin: the test above already asserts over that same value, so
         # the two moved together on every edit and this entry asserted nothing
-        # new. A review caught exactly that.
+        # new. A review caught exactly that. Its "2 &Aring;" is the wording
+        # that shipped, kept verbatim so the pin stays a pin -- it is NOT this
+        # site's bar. That is the legend's ``good`` of 1.5 for ("boltzgen",
+        # "refolding_rmsd") in shared/score_legends.py, which is the number
+        # the live sentence above now states; the 2.0 is the container's
+        # RMSD_THRESHOLD and reaches no surface a reader can check.
         "Refolding RMSD is the design against its own refold: at or under "
         "2 &Aring; it clears the RMSD leg of the pass bar. That says the "
         "binder folds as designed, not that it binds &mdash; re-fold a "
