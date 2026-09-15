@@ -499,21 +499,49 @@
              concrete "what counts as good?" answer; the metric_glossary
              entry remains the academic citation. Stack both into one
              tooltip so the user gets the actionable line first. #}
-          {# ...but NOT the glossary's Range when THIS tool's legend
-             deliberately carries no bar. metric_glossary is keyed by METRIC
-             and is global; a legend that omits ``good`` is a tool saying its
-             number is not on that shared scale. Stacking both unconditionally
-             put "so 0.7 does not apply" and "Range: > 0.75 strong; > 0.65
-             acceptable" in ONE boltzgen tooltip -- the exact false bar the
-             legend had just been cleaned of, walking back in four words later
-             from the global entry, on the surface that shows the numbers it
-             judges. Definition and citation still stack: those are true of the
-             metric wherever it appears. #}
-          {% set _tool_states_a_bar = (not leg) or ('good' in leg) %}
+          {# ...but the glossary's Range ONLY where this tool has no legend of
+             its own. metric_glossary is keyed by METRIC and is global; a
+             per-tool legend already answers "what counts as good?" in prose
+             and answers it for THIS tool, so stacking the global Range after
+             one states the bar twice in a single tooltip -- and the two
+             spellings had drifted apart in both directions:
+
+               COMPARATOR. Every gating legend words its bar inclusively ("80
+               or more", "1.5 angstroms or less"), matching judge() at
+               shared/score_legends.py:2172 (``seen <= good`` / ``seen >=
+               good``) and the against_bar definition's "a value exactly ON a
+               bar counts as meeting it". The Range said "> 80", "< 1.5". On
+               the 10 gate legs a design sitting exactly on the bar read as
+               meeting it in the cell and short of it four words later.
+
+               BAND. GLOSSARY["pLDDT"] calls "> 80" very high confidence; all
+               six legends on the pLDDT column reserve that tier for 90 and up,
+               as does the AlphaFold2 paper the entry cites.
+
+             The two barless legends (boltzgen ipTM, bindcraft surface
+             hydrophobicity) were already suppressed here for a different
+             reason -- a legend that omits ``good`` is a tool saying its number
+             is not on that shared scale -- and ``not leg`` keeps them so.
+             Definition and citation still stack: those are true of the metric
+             wherever it appears. The eight columns with no legend at all
+             (against_bar on five tools, esmfold pTM, opendde ranking_score,
+             proteina total_reward) keep the Range, which is their only answer.
+             Both halves pinned by tests/test_column_tooltip_states_one_bar.py.
+             The three other surfaces that print good_range -- about_panel.html,
+             help/faq.html and help/tool_guide.html -- are NOT changed: each
+             names the ipTM or recovery entry explicitly, and neither of those
+             two strings carries the drift. ipTM DOES gate four tools, but its
+             Range reads "0.65 to 0.75 depending on the tool" and states no
+             comparator at all; recovery's states two ("> 0.4", "> 0.6") but is
+             a leg of no tool's bar, so judge() never runs against it. Those
+             surfaces have their own guards (test_public_tool_pages,
+             test_about_panel_iptm_bar_default, and the three boltzgen page
+             tests), which is how a change here that leaked into them would
+             be caught. #}
           {% set leg_text = legend_text(leg) if leg else '' %}
           {% set tooltip_text = leg_text %}
           {% if g.get('definition') %}
-            {% set _range = (' Range: ' ~ g.good_range) if (_tool_states_a_bar and g.good_range) else '' %}
+            {% set _range = (' Range: ' ~ g.good_range) if (not leg and g.good_range) else '' %}
             {% set _cite = (('. ' if _range else ' ') ~ g.citation) if g.citation else '' %}
             {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ _range ~ _cite %}
           {% endif %}

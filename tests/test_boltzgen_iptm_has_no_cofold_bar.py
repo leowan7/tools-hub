@@ -228,12 +228,42 @@ def test_the_tooltip_keeps_the_definition_and_the_citation():
     assert ".." not in tooltip and " ." not in tooltip, tooltip
 
 
-def test_a_tool_that_states_a_bar_still_gets_the_global_range():
-    """The control. boltz2 IS the calibrated cofold, so the band is true for
-    it — a fix that stripped the range from every tool would pass the test
-    above and quietly cost every other tool its answer to "what is good?"."""
+def test_a_tool_that_states_a_bar_still_answers_what_good_is():
+    """The control, repointed from the MECHANISM to the PROPERTY it protects.
+
+    It used to assert that boltz2 — the calibrated cofold, for which the band
+    IS true — still received the global ``Range:`` string, guarding the worry
+    that a fix stripping the range from every tool would pass the test above
+    and quietly cost every other tool its answer to "what is good?".
+
+    That worry is right and this still guards it. What changed is that the
+    global Range is no longer HOW boltz2 answers it. Every tooltip used to
+    state its bar twice, once in the tool's own legend and once in a string
+    keyed only on the metric name, and on ten gate legs the two spellings had
+    drifted: the legends word the bar inclusively, matching ``judge()``, while
+    the Range printed a strict comparator on that same number ("> 80",
+    "< 1.5", "> 4"). boltz2 ipTM is NOT one of those ten. Its Range reads
+    "0.65 to 0.75 depending on the tool" and states no comparator at all,
+    which is exactly what makes it a clean control: it lost the Range for the
+    other half of the reason, a bar stated twice, where the tool's own legend
+    is the better of the two — it is about boltz2 rather than about
+    ipTM-in-general.
+
+    Pinning the string was pinning one particular way of answering, which is
+    why this test read as forbidding the fix. Pinning the answer does not.
+    tests/test_column_tooltip_states_one_bar.py carries the rest: the
+    suppressed set, the eight legend-less columns that DO keep the Range, and
+    the inclusive-comparator invariant.
+    """
+    legend = SCORE_LEGENDS[BOLTZ2_IPTM]
+    good = legend.get("good")
+    assert good, "boltz2 ipTM lost its bar, so this control compares nothing"
     tooltip = _column_tooltip("boltz2")
-    assert _GLOBAL_IPTM_RANGE in tooltip, tooltip
+    assert f"{float(good):g}" in tooltip, (
+        f"boltz2's ipTM tooltip no longer states its bar {good!r} anywhere, so "
+        f"a reader is left with no answer to 'what is good?':\n\n{tooltip}"
+    )
+    assert metric_glossary.GLOSSARY["ipTM"]["definition"] in tooltip, tooltip
 
 
 BINDCRAFT_SURFACE_HYDROPHOBICITY = ("bindcraft", "surface_hydrophobicity")
