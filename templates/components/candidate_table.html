@@ -879,7 +879,8 @@
                    number rather than an honest gap. #}
                 {% set disp = '—' %}
                 {% set fval = '' %}
-              {% elif col in ('ipTM', 'pTM', 'shape_complementarity') %}
+              {% elif col in ('ipTM', 'pTM', 'shape_complementarity',
+                              'CDR_iPTM_proxy') %}
                 {% set disp = '%.3f' | format(fval) %}
               {% elif col == 'pLDDT' %}
                 {% set disp = '%.1f' | format(fval) %}

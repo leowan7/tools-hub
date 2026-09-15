@@ -83,6 +83,47 @@ def _cand(name: str, iptm, pi, rank: int, *, sequence="MKTAYIAKQRQISFVK") -> dic
     }
 
 
+# The scFv pair, job verify242-bs6-1789054528 as recorded in
+# docs/VALIDATION-LOG.md and reused in
+# tests/test_esmfold2_design_scfv_iptm_leg.py. The drop row is the design the
+# scFv ipTM leg exists for: a proxy well clear of 0.50 and an ipTM of 0.436.
+SCFV_DROP_PROXY, SCFV_DROP_IPTM = 0.618, 0.436
+SCFV_PASS_PROXY, SCFV_PASS_IPTM = 0.799, 0.844
+
+
+def _scfv_cand(name, iptm, proxy, rank, *, key="CDR_iPTM_proxy"):
+    """SHAPED LIKE THE MODE. pI is null by construction on an scFv run and
+    the CDR proxy is null on a minibinder one, so reusing the minibinder
+    fixture with ``is_antibody`` flipped produces a record whose gate leg is
+    simply absent -- unjudged for the wrong reason, and a test that cannot
+    tell a bar from no bar.
+
+    ``key`` selects the storage spelling: ``CDR_iPTM_proxy`` is what
+    run_pipeline.py emits since the 2026-09-14 column split, ``iPTM_proxy``
+    what every scFv run stored before it.
+    """
+    return {
+        "rank": rank,
+        "name": name,
+        "pdb_key": f"designs/{name}_complex.pdb",
+        "sequence": "MKTAYIAKQRQISFVK",
+        "scores": _jsonb({"ipTM": iptm, key: proxy, "pI": None,
+                          "final_loss": 1.0}),
+    }
+
+
+def _scfv_job(*, key="CDR_iPTM_proxy", **over):
+    """An scFv run, rejected design first, in the same shape as ``_job``."""
+    return _job(result_over={
+        "preset": "scfv",
+        "is_antibody": True,
+        "candidates": [
+            _scfv_cand(DROP_NAME, SCFV_DROP_IPTM, SCFV_DROP_PROXY, 0, key=key),
+            _scfv_cand(PASS_NAME, SCFV_PASS_IPTM, SCFV_PASS_PROXY, 1, key=key),
+        ],
+    }, **over)
+
+
 def _job(**over):
     """Job 2b917b54 as stored: the rejected design is ``candidates[0]``."""
     result = {
@@ -310,18 +351,21 @@ class TestShareCard:
         self, flask_app, monkeypatch,
     ):
         """THAT ORDER. The stored preset says minibinder; the result records
-        that the run was an antibody one. scfv has no entry in
-        MODE_GATE_COLUMNS, so there is no bar and the leading design speaks
-        for the run -- reading the preset first would apply the minibinder pI
-        gate to a mode where pI is null by construction."""
-        job = _job(result_over={"is_antibody": True})
+        that the run was an antibody one, and the two modes have different
+        gates -- so reading the preset first would apply the minibinder pI
+        gate to a mode where pI is null by construction, and every design
+        would go out unjudged.
+
+        The job attribute still says minibinder; only ``result`` says
+        otherwise. The clause names the CDR proxy, which is a leg of the scFv
+        gate ALONE -- so this assertion cannot pass under the wrong mode.
+        """
+        job = _scfv_job(preset="minibinder")
+        assert job.preset == "minibinder"
         title = _share(flask_app, monkeypatch, job)["og_title"]
-        # scfv has no entry in MODE_GATE_COLUMNS and esmfold2-design registers
-        # no primary metric, so the honest answer is silence. Resolving the
-        # PRESET first would read "minibinder", apply the pI/ipTM bar, and
-        # publish a clause -- which is what makes this assertion discriminating
-        # rather than merely quiet.
-        assert _clause(title) is None, title
+        clause = _clause(title)
+        assert clause is not None, title
+        assert "CDR distogram proxy" in clause, clause
 
     def test_an_unranked_designs_list_gets_no_score_at_all(
         self, flask_app, monkeypatch,
@@ -517,15 +561,36 @@ class TestFastaExport:
         seq_lines = [ln for ln in body.splitlines() if not ln.startswith(">")]
         assert seq_lines == ["MKTAYIAKQRQISFVK", "MKTAYIAKQRQISFVK"], seq_lines
 
-    def test_an_scfv_run_gets_no_notes(self, flask_app, monkeypatch):
-        """The scFv mode declares no bar (its proxy leg was added and removed
-        in review -- a mode-scoped BAR cannot carry a mode-scoped LEGEND), so
-        every record is unjudged and the file reads exactly as it did before
-        this change."""
-        job = _job(result_over={"is_antibody": True})
+    def test_an_scfv_run_is_judged_against_its_own_bar(
+        self, flask_app, monkeypatch,
+    ):
+        """Until 2026-09-14 the scFv mode declared no bar, every record was
+        unjudged, and this file went out with two bare headers -- including
+        one for a design at ipTM 0.436 that the pipeline drops. The mode now
+        has an entry in MODE_GATE_COLUMNS, so the dropped design is named as
+        dropped and the passing one stays bare.
+
+        The shortfall quotes ipTM, not the proxy: this design clears its
+        proxy leg at 0.618 and fails on the leg that was missing.
+        """
+        headers = _headers(_fasta(flask_app, monkeypatch, _scfv_job()))
+        assert "does not meet bar: ipTM 0.436" in headers[0], headers[0]
+        assert headers[1] == ">rank2_design_1_complex.pdb", headers[1]
+
+    def test_a_presplit_scfv_run_is_judged_through_the_legacy_spelling(
+        self, flask_app, monkeypatch,
+    ):
+        """EVERY scFv RUN EXPORTED BEFORE THE SPLIT stored its proxy under
+        ``iPTM_proxy``, and the GPU image keeps doing so until it is
+        redeployed. ``score_legends._COLUMN_ALIASES`` carries that spelling so
+        those rows judge rather than read unjudged; without it this export
+        would go back to two bare headers.
+        """
+        job = _scfv_job(key="iPTM_proxy")
+        assert "CDR_iPTM_proxy" not in job.result["candidates"][0]["scores"]
         headers = _headers(_fasta(flask_app, monkeypatch, job))
-        assert headers == [">rank1_design_0_complex.pdb",
-                           ">rank2_design_1_complex.pdb"], headers
+        assert "does not meet bar: ipTM 0.436" in headers[0], headers[0]
+        assert headers[1] == ">rank2_design_1_complex.pdb", headers[1]
 
     def test_a_tool_with_no_bar_gets_no_notes(self, flask_app, monkeypatch):
         job = _job(
@@ -616,23 +681,27 @@ class TestTargetExportJudgesPerRow:
         assert headers[1] == ">rank2_boltzgen_bg.pdb", headers[1]
 
     def test_the_row_preset_selects_the_mode(self):
-        """``_source_preset`` carries the resolved MODE on merged rows, so a
-        row tagged scfv must read no bar even with a pI that would fail the
-        minibinder one."""
+        """``_source_preset`` carries the resolved MODE on merged rows, and
+        each mode gates on a column the other does not have.
+
+        THE SAME METRICS UNDER BOTH MODES. Both rows carry an ipTM that
+        clears 0.75, a pI that fails the minibinder gate, and a CDR proxy
+        that clears the scFv one -- so the mode is the ONLY difference
+        between them, and a row that ignored ``_source_preset`` would have to
+        give them the same header. It was a bare negative until 2026-09-14
+        (scfv had no bar, so "no mode" and "scfv" both produced a bare
+        header, and dropping _source_preset entirely left it green); now each
+        side makes its own positive claim.
+        """
         from shared.exports import candidates_to_fasta
 
+        scores = {"ipTM": DROP_IPTM, "CDR_iPTM_proxy": SCFV_PASS_PROXY,
+                  "pI": DROP_PI}
         rows = [
             {"_source_tool": "esmfold2-design", "_source_preset": "scfv",
-             "pdb_key": "ab.pdb", "sequence": "MK",
-             "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
-            # THE SAME METRICS UNDER THE OTHER MODE. Without this row the test
-            # is a bare negative -- "no mode" and "scfv" both produce a bare
-            # header, so dropping _source_preset entirely left it green. The
-            # pair makes the mode the ONLY difference between two rows whose
-            # numbers are identical.
+             "pdb_key": "ab.pdb", "sequence": "MK", "scores": dict(scores)},
             {"_source_tool": "esmfold2-design", "_source_preset": "minibinder",
-             "pdb_key": "mb.pdb", "sequence": "MK",
-             "scores": {"ipTM": DROP_IPTM, "pI": DROP_PI}},
+             "pdb_key": "mb.pdb", "sequence": "MK", "scores": dict(scores)},
         ]
         headers = _headers(candidates_to_fasta(rows))
         assert headers[0] == ">rank1_esmfold2-design_ab.pdb", headers[0]
@@ -844,7 +913,12 @@ class TestTheHeadlineMetricChain:
         # assertion pinned "7.000" for as long as ``_reading`` coerced every
         # value through ``float()``. See
         # ``test_an_integer_reading_keeps_its_type``.
-        assert clause == "One design at epitope_contacts 7", clause
+        #
+        # "Epitope contacts", not "epitope_contacts": the clause names the
+        # column the way the results table heads it
+        # (templates/components/candidate_table.html:522), which is the
+        # glossary label. It read the storage key until 2026-09-14.
+        assert clause == "One design at Epitope contacts 7", clause
 
 
 class TestTheBarDecidesWhetherThereIsAClause:

@@ -183,7 +183,7 @@
        spellings, which is what makes it safe here.
 
        ``iPTM_proxy`` WAS ADDED HERE AND WAS REMOVED, because it is not. That
-       column holds the CDR proxy on an scFv run and the whole-interface proxy
+       column held the CDR proxy on an scFv run and the whole-interface proxy
        on a minibinder one, and this table's "shared" rule asks only whether
        every column has a NUMBER, never whether they are the same measurement.
        Comparing an scFv job against a minibinder job would therefore have
@@ -192,6 +192,20 @@
        lower down. "Would have": the shared-metric rule drops a column whose
        value is not numeric, and the proxy is blank on every stored run, so
        the row was reachable rather than observed.
+
+       ``CDR_iPTM_proxy`` IS NOT ADDED HERE EITHER, and the 2026-09-14 column
+       split is not a reason to revisit that. The split makes the NAME mean
+       one quantity, but this table reaches a value through ``raw_metric``,
+       which resolves ``score_legends._COLUMN_ALIASES`` -- and that entry
+       carries the legacy mode-blind ``iPTM_proxy`` spelling so that scFv runs
+       stored before the split are still judged. A minibinder row asked for
+       ``CDR_iPTM_proxy`` therefore answers with its whole-interface proxy,
+       and the unlabelled side-by-side is back. Its absence from this list is
+       one of the three things that keep that alias contained; the other two
+       are MODE_GATE_COLUMNS listing it under "scfv" alone and the results
+       template listing it in its antibody branch alone. All three are pinned
+       by tests/test_esmfold2_design_scfv_iptm_leg.py.
+
        A metric belongs in this list only if its meaning is fixed across every
        job that can appear in a column. #}
     {% set priority_keys = ['ipTM', 'pLDDT', 'pAE', 'pTM', 'refolding_rmsd', 'sc_score', 'sap_score', 'pI'] %}
