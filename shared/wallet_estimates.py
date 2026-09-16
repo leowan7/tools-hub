@@ -12,9 +12,13 @@ Estimate sources, in priority order:
 2. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
    (the pilot-tier default). Used for new tools without enough history.
 
-(``ToolSpec.tier_gpu_seconds`` remains in the dataclass for forward-
-compat with future cheap tiers; today every shipped tier falls through
-to historical p90 or the pilot default.)
+(``ToolSpec.tier_gpu_seconds`` overrides both sources for one preset.
+One tier sets it today -- proteina's free ``validate`` pre-flight, at 0
+-- and every other shipped tier falls through to historical p90 or the
+pilot default. A 0 there is what makes a free preset actually free: for a
+signed-in user with a wallet row, ``shared/wallet_guard.py`` skips the HOLD
+on ``estimate <= 0`` -- not the preflight -- so no hold is placed and, with
+no ``hold_tx_id`` on the job, ``shared/jobs.py:1390-1391`` settles nothing.)
 
 Parameter scaling: when the submitted ``params`` include a scaling
 parameter (``num_designs`` and friends), the base ``gpu_seconds`` is
@@ -100,8 +104,10 @@ class ToolSpec:
     ``absolute_cap_usd``.
 
     ``expected_gpu_seconds`` is the default (pilot-tier) bootstrap.
-    ``tier_gpu_seconds`` is retained as an empty override map for
-    forward-compat with future cheap tiers; today no tier uses it.
+    ``tier_gpu_seconds`` maps a preset slug to the gpu_seconds to price
+    THAT preset at, ahead of both history and the bootstrap. Today only
+    proteina uses it (``validate`` -> 0, the free pre-flight); every
+    other spec leaves it empty and falls through.
     """
 
     slug: str
@@ -440,6 +446,46 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("60.00"),
         worst_case_gpu_seconds=7200.0,
+        # ``validate`` is the free pre-flight: run_pipeline.py dispatches it to
+        # ``run_validate`` (package import + config + checkpoint checks) and
+        # returns before any GPU work, and its ``Preset.description`` promises
+        # "No wallet charge" (the ``validate`` Preset in
+        # tools/proteina/__init__.py -- which renders on /help/tools/proteina
+        # via templates/help/tool_guide.html:99; the form itself shows only the
+        # label, "Validate (free dry-run)"). With no row
+        # here the preset inherited ``expected_gpu_seconds`` -- the whole 7200 s
+        # session ceiling -- so /api/wallet/estimate answered $12.5827
+        # (reproduced on ca36d70), and the gate in shared/wallet_guard.py
+        # engaged: a submit WOULD have held $15, the cushioned hold clamped to
+        # base_hard_cap, on the tier advertised as free. Would, not did -- that
+        # is the estimator and the gate traced and re-run in-process, not a
+        # completed validate job. Nor would the hold have lapsed unused:
+        # ``_interpret_pipeline_return`` reports
+        # the container's own ``runtime_seconds`` as gpu_seconds_used
+        # (``gpu/modal_client.py::_interpret_pipeline_return``) and
+        # shared/jobs.py settles a billed class at
+        # that number -- traced through those two functions, not observed on a
+        # completed validate run. 0 restores the promise: the estimate is
+        # $0.0000 and wallet_guard's ``free_run`` branch skips the hold, so with
+        # no hold_tx_id shared/jobs.py:1390-1391 settles nothing. It skips the
+        # HOLD only -- the submit still goes through ``wallet_preflight``, so a
+        # frozen wallet is still refused. Free to the CUSTOMER only:
+        # modal_app.py's single @app.function takes ``gpu=_GPU`` with no branch
+        # (modal_app.py:246-248, _GPU = "A100-80GB" at :69), so Ranomics still
+        # pays for the container (run_pipeline.py's "validate tier" header).
+        # ponytail: ``cushioned_hold_usd`` still returns the
+        # worst_case_gpu_seconds floor ($12.5827) for this preset, because that
+        # floor reads the spec and ignores a zero point estimate. Nothing prices
+        # a validate submit through it -- wallet_guard skips it on the free
+        # branch, and the routes that reach it via ``child_hold_usd`` refuse the
+        # preset first: four independent ``preset == "validate"`` comparisons,
+        # two in blueprints/campaigns.py (the estimate and create paths) and
+        # two in blueprints/targets.py (``_collect_launch_specs`` and the
+        # launch-estimate route). No test under tests/ posts that preset to
+        # either route, so guard the floor itself the day one of them goes.
+        # tests/test_free_presets_cost_nothing.py pins the zero estimate, the
+        # skipped hold, and the frozen-wallet refusal that survives it.
+        tier_gpu_seconds={"validate": 0.0},
     ),
     "esmfold2-design": ToolSpec(
         slug="esmfold2-design",
@@ -507,6 +553,94 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
 def get_tool_spec(tool_slug: str) -> Optional[ToolSpec]:
     """Return the :class:`ToolSpec` for ``tool_slug`` or ``None``."""
     return TOOL_SPECS.get(tool_slug)
+
+
+def _without_non_finite(params: Mapping[str, object]) -> dict:
+    """Drop NaN/inf caller params so they read as absent (-> the baseline).
+
+    ``float()`` accepts "nan", "inf" and "-inf" by name, and both param
+    builders keep whatever it returned (``_wallet_params_from_form`` in
+    shared/wallet_guard.py, and the query-arg coercion in blueprints/wallet.py's
+    estimate route). A NaN then reaches ``min(Decimal("NaN"), cap)``, which
+    raises InvalidOperation. That has always been a 500 on /api/wallet/estimate
+    (blueprints/wallet.py returns ``estimate_failed``). The SUBMIT route never
+    500'd on it before this change, but not because it handled it: the gate
+    caught the raise, set the estimate to 0, and the zero estimate returned
+    before ``wallet_preflight`` -- so the submit CLEARED THE GATE with no hold
+    and nothing to settle. Only the crash was absent. Now that a free run goes
+    through preflight, its ``compute_hard_cap`` call -- outside any try --
+    would have made the same input a 500 there instead. This helper is what
+    keeps that from being the price of routing free runs through the gate.
+
+    Applied at all three public entry points (``estimated_cost_for_tool``,
+    ``compute_hard_cap``, ``cushioned_hold_usd``) rather than inside
+    ``_effective_scaling_value``, which the p90 row loop also calls -- there a
+    poisoned row must be dropped, not defaulted
+    (``test_non_finite_rows_are_filtered_not_percentiled``).
+
+    ``None`` and booleans skip the finiteness test and are KEPT; everything
+    else has ``float()`` tried on it, and a value that is not a number at all
+    is kept too -- ``"protein_binder"`` raises ValueError, a list or a dict
+    raises TypeError, and the one ``except (TypeError, ValueError)`` keeps
+    both. Dropped: anything that parses non-finite, whether it arrives as a
+    float or as a STRING ("Infinity", a 400-digit numeral), AND an ``int`` too
+    large to convert at all, which raises OverflowError rather than returning
+    ``inf``. So "finite numbers survive" is not quite the contract: ``10**400``
+    is finite and is dropped.
+
+    A dropped SCALING param then prices at the tool's BASELINE, and which way
+    that moves the hold depends on the value, so do not read one direction into
+    it. Measured on proteina at ``num_designs``, hold before -> after:
+
+        inf / "inf" / 1e400   $60.00 (absolute cap) -> $15.00   LOWER
+        -inf                  $15.00 -> $15.00                  unchanged
+        nan / "nan" / 10**400 NO HOLD AT ALL -> $15.00           HIGHER
+
+    The last row is the one worth knowing: those values used to RAISE, the gate
+    swallowed the raise into a zero estimate, and the old zero-estimate branch
+    returned before the wallet was consulted -- so a NaN on the scaling key let
+    a submit CLEAR THE GATE with no hold and nothing to settle. On 13 of the 15
+    specs, not all of them: ``alphafold2`` and ``opendde`` declare no
+    ``scaling_param``, so neither ladder ever reads the SCALING param and
+    neither ever raised. Scrubbing closes it on the 13; it loosens only a POSITIVE infinity
+    (the table's middle row is the reminder that ``-inf`` was already pricing
+    at the baseline). Whether any of this reaches a real run is the adapter's
+    decision, and this module asserts nothing about that -- the measurements
+    above are of the gate, not of a completed job.
+
+    The CAP is recomputed at settle -- ``shared/jobs.py`` rebuilds the params
+    from the job's stored inputs and ``shared/wallet.py::settle_hold``
+    re-derives ``compute_hard_cap`` from them -- but do not read that as "the
+    charge is unaffected", for two reasons. The settle-side recomputation runs
+    this same scrubber, so a dropped param lowers the settle cap too, and
+    ``LEAST(p_actual_usd, p_hard_cap_usd)``
+    (supabase/migrations/0020_wallet_corrections.sql:188) clamps the actual to
+    it before the ledger math -- a settle row is still written, but no row
+    records the clamped-off amount. And a smaller hold is a weaker ADMISSION
+    test:
+    ``try_hold_for_job`` refuses a submit whose hold exceeds the balance
+    (supabase/migrations/0035_phase2_remove_daily_cap.sql), so a hold sized off
+    the baseline can admit a run the wallet cannot cover, whose overrun the
+    ``absorbed_variance`` branch (supabase/migrations/0020_wallet_corrections
+    .sql) then books to Ranomics at ``amount_usd = 0``.
+    """
+    clean: dict = {}
+    for key, value in params.items():
+        if value is not None and not isinstance(value, bool):
+            try:
+                if not isfinite(float(value)):  # type: ignore[arg-type]
+                    continue
+            except OverflowError:
+                # An int too large for a float. ``int()`` takes 4300 digits,
+                # so ``_wallet_params_from_form`` hands them over intact, and
+                # OverflowError is NOT a ValueError -- leaving it uncaught
+                # would turn every param key into the crash this helper exists
+                # to prevent. Same treatment as an infinity: drop the key.
+                continue
+            except (TypeError, ValueError):
+                pass  # not numeric at all -- keep it.
+        clean[key] = value
+    return clean
 
 
 def gpu_class_for_job(
@@ -579,9 +713,22 @@ def estimated_cost_for_tool(
     ``user_id`` is accepted so future implementations can use per-user
     historical data. The current implementation ignores it.
     """
-    params = dict(params or {})
+    params = _without_non_finite(dict(params or {}))
     spec = TOOL_SPECS.get(tool_slug)
-    preset = str(params.get("preset") or "").lower()
+    # ``.strip()`` as well as ``.lower()``, to agree with the adapter, which
+    # strips before matching its preset registry
+    # (``tools/proteina/__init__.py::validate``). NOT reachable from a submit:
+    # the gate builds its params with
+    # ``shared/wallet_guard.py::_wallet_params_from_form``, which stores the
+    # stripped string, so a padded preset never arrives here from that path.
+    # It arrives from /api/wallet/estimate, whose query-arg coercion does not
+    # strip (``blueprints/wallet.py::api_wallet_estimate``), where the cost was
+    # a DISPLAYED price of $12.5827 on a preset the adapter runs for free.
+    # Prefer symbols to line numbers, especially into a file you are also
+    # editing: a line citation goes stale the moment anyone adds a line above
+    # its target, and it goes stale silently. Nothing enforces this -- no test,
+    # no lint -- so it is a habit, not a guarantee.
+    preset = str(params.get("preset") or "").strip().lower()
 
     if spec is None:
         # Conservative default: pretend the tool is one default A100-80GB minute.
@@ -591,9 +738,10 @@ def estimated_cost_for_tool(
         raw = Decimal("60") * Decimal(str(DEFAULT_USD_PER_SECOND))
         return _quantize_usd(raw * WALLET_MARKUP)
 
-    # Per-tier bootstrap overrides retained for forward-compat with future
-    # cheap tiers; today no tier sets one and we fall straight through to
-    # the historical p90 lookup.
+    # Per-tier override, ahead of both history and the bootstrap. Only
+    # proteina's free ``validate`` sets one today (0); every other preset
+    # falls straight through to the historical p90 lookup. ``is not None``,
+    # not truthiness: 0 is the whole point of the override.
     tier_override = spec.tier_gpu_seconds.get(preset)
     if tier_override is not None:
         base_seconds = float(tier_override)
@@ -626,7 +774,7 @@ def compute_hard_cap(
     if spec is None:
         # Conservative fallback when the tool is not yet registered.
         return Decimal("10.00")
-    params = dict(params or {})
+    params = _without_non_finite(dict(params or {}))
     if not spec.scaling_param:
         return spec.base_hard_cap_usd
     actual = _effective_scaling_value(spec, params)
@@ -653,6 +801,10 @@ def cushioned_hold_usd(
     This sizes the reservation only. The point estimate stays the displayed
     price and the value settle-monitoring reconciles against.
     """
+    # Scrubbed here too, not just in the two calls below: the worst-case floor
+    # scales by its own ``_effective_scaling_value`` call, where a NaN ratio
+    # would reach ``min(Decimal("NaN"), cap)`` and raise on the submit path.
+    params = _without_non_finite(dict(params or {}))
     point = estimated_cost_for_tool(user_id, tool_slug, params)
     cap = compute_hard_cap(tool_slug, params)
     hold = HOLD_CUSHION_MULTIPLIER * point
@@ -760,13 +912,27 @@ def _historical_p90_seconds(tool_slug: str) -> Optional[float]:
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORICAL_LOOKBACK_DAYS)
     try:
-        response = (
+        query = (
             client.table("tool_jobs")
             .select(",".join(columns))
             .eq("tool", tool_slug)
             .eq("status", "succeeded")
             .gt("gpu_seconds_used", 0)
             .gte("created_at", cutoff.isoformat())
+        )
+        if spec.tier_gpu_seconds:
+            # Server-side, so the _HISTORICAL_ROW_CAP window below is spent on
+            # rows that can actually price something. Filtering these out in
+            # Python instead would still let them fill the newest 500: once
+            # more than 480 of the newest 500 were free ``validate`` runs,
+            # fewer than MIN_HISTORICAL_RUNS paid rows would survive, the p90
+            # would switch off, and the price would snap back to the 7200 s
+            # bootstrap -- 13.0x the p90 quote on the sample in
+            # tests/test_wallet_estimates.py (0.9664 -> 12.5827). How fast a
+            # free tier actually accumulates rows is not measured here.
+            query = query.not_.in_("preset", sorted(spec.tier_gpu_seconds))
+        response = (
+            query
             .order("created_at", desc=True)
             .limit(_HISTORICAL_ROW_CAP)
             .execute()
@@ -778,6 +944,19 @@ def _historical_p90_seconds(tool_slug: str) -> Optional[float]:
             seconds = _safe_float(row.get("gpu_seconds_used"), 0.0)
             if seconds <= 0:
                 continue
+            # No preset filter here: the server-side ``not.in`` above already
+            # removed the free-tier rows, and no CODE PATH writes a preset it
+            # could miss on case or padding: ``shared/jobs.py::create_job`` is
+            # the sole inserter, its three callers pass ``preset.slug``
+            # (blueprints/tools.py, resolved by the exact-match
+            # ``ToolAdapter.preset_for``), the literal "standalone"
+            # (blueprints/jobs.py) and ``campaign.preset`` (compute_campaigns,
+            # itself gated through ``preset_for``), and no UPDATE touches the
+            # column. A Python-side repeat of the same condition lived here for
+            # one round and was deleted once that sweep came back clean.
+            # What the sweep covers is the writers, not the table: it does not
+            # prove some historical or hand-written row is canonical, only that
+            # nothing in this repo can add one.
             if spec.scaling_param:
                 # Top-level key first, then the nested one. When NEITHER
                 # resolves, _effective_scaling_value falls back to the
@@ -910,7 +1089,19 @@ def _effective_scaling_value(spec: ToolSpec, params: Mapping[str, object]) -> fl
     stored ``total_passes`` when present — it is the authoritative pass count —
     then fall back to deriving it from the FASTA mask count."""
     raw = _safe_float(params.get(spec.scaling_param), spec.designs_per_run_baseline)
-    if spec.slug == "iggm" and str(params.get("preset") or "").lower() == "affinity_maturation":
+    # No non-finite guard HERE: the p90 row loop calls this with row-derived
+    # params, where a NaN must survive to be DROPPED by the isfinite check
+    # further down rather than become a plausible number that shifts the
+    # percentile (test_non_finite_rows_are_filtered_not_percentiled). Caller
+    # params are scrubbed by ``_without_non_finite`` at the three public entry
+    # points instead.
+    # ``.strip().lower()`` to match how estimated_cost_for_tool reads the same
+    # key. Every reading of ``preset`` in this module is pricing-side (a dict
+    # lookup there, a comparison here), so the risk is not "prices
+    # as one preset and runs as another" -- what RUNS is the adapter's call --
+    # but that one padded value prices under one preset's rules and scales
+    # under another's.
+    if spec.slug == "iggm" and str(params.get("preset") or "").strip().lower() == "affinity_maturation":
         stored = params.get("total_passes")
         if stored is not None:
             val = _safe_float(stored, 0.0)
@@ -936,7 +1127,21 @@ def _scale_seconds(
 
 
 def _safe_float(value: object, default: float) -> float:
-    """Best-effort numeric coercion. Returns ``default`` on failure."""
+    """Best-effort numeric coercion. Returns ``default`` on failure.
+
+    Non-finite values are NOT a failure here and must not be defaulted: this
+    is also how the p90 reads ``tool_jobs`` rows, where a NaN or +inf row has
+    to be DROPPED rather than turned into a plausible number that changes the
+    percentile (see ``test_non_finite_rows_are_filtered_not_percentiled``).
+    Caller params are scrubbed by ``_without_non_finite`` instead, which also
+    means ``OverflowError`` does not belong here: it was added and removed
+    again once a sweep showed the arm is never entered. Caller values are
+    dropped by the scrubber first, and the row values are bounded by their
+    column types -- ``gpu_seconds_used`` is an ``integer``
+    (supabase/migrations/0005_tool_jobs.sql:40) and the ``inputs->>`` reads are
+    TEXT, where ``float()`` of a long numeral returns ``inf`` rather than
+    raising.
+    """
     if value is None:
         return float(default)
     try:
