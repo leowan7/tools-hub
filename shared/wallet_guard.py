@@ -5,10 +5,12 @@ leaf module so the ``tools`` blueprint (which owns ``/tools/<tool>/submit``)
 can import ``requires_wallet`` at module scope instead of ``from app import``
 — the keystone that lets that route leave ``app.py`` without an import cycle.
 
-Behavior is byte-identical to the previous in-``app`` definition: the decorator
-places a cushioned hold, stashes ``g.wallet_hold_tx_id`` for the handler, and
-auto-releases the hold on any early-return or exception before the wrapped view
-sets ``g.wallet_hold_consumed = True``.
+The decorator places a cushioned hold, stashes ``g.wallet_hold_tx_id`` for the
+handler, and auto-releases the hold on any early-return or exception before the
+wrapped view sets ``g.wallet_hold_consumed = True``. That behaviour was
+byte-identical to the previous in-``app`` definition until a zero estimate
+stopped returning early and started skipping only the hold -- see the comment
+on ``free_run`` below for why the frozen-wallet check has to stay in the path.
 
 NOTE: this is distinct from the legacy, unused ``shared.wallet.requires_wallet``
 (a different signature, applied to no route). Do not conflate them.
@@ -145,7 +147,9 @@ def requires_wallet(view_func=None, *, tool_slug=None):
     3. On allow, atomically reserve the hold via ``reserve_hold`` and
        stash the hold_tx_id plus estimate on ``flask.g`` for the
        handler. If the SQL hold returns null (lost a concurrent race),
-       render the gate too.
+       render the gate too. A zero estimate (a free tier) passes through
+       step 2 like any other and then skips step 3 only, leaving
+       ``g.wallet_hold_tx_id`` None.
 
     The wrapped handler is expected to read ``g.wallet_hold_tx_id`` and
     persist it on the job row so the settle path in
@@ -199,14 +203,24 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                 )
                 estimate = Decimal("0")
 
-            # Smoke runs with a zero estimate skip the gate entirely.
-            # No hold row is placed; the handler simply proceeds.
-            if estimate <= Decimal("0"):
-                g.wallet_estimate_usd = Decimal("0")
-                g.wallet_hold_tx_id = None
-                g.wallet_params = params
-                g.wallet_tool_slug = resolved_slug
-                return f(*args, **kwargs)
+            # A zero estimate means there is nothing to RESERVE -- it does not
+            # mean there is nothing to CHECK. This used to return here, which
+            # was inert while no tier priced at 0; proteina's free ``validate``
+            # is the first one that does (shared/wallet_estimates.py, its
+            # ToolSpec's ``tier_gpu_seconds``), and returning here would have
+            # handed that preset a submit path that never sees
+            # ``wallet_frozen``. A PAID submit meets that flag twice -- in
+            # ``wallet_preflight`` (shared/wallet.py:498) and again inside the
+            # SQL ``try_hold_for_job``
+            # (supabase/migrations/0035_phase2_remove_daily_cap.sql:57-65,
+            # which returns NULL for a frozen wallet). A free run never takes a
+            # hold, so the SQL check is unreachable for it and preflight is the
+            # only one left -- while a validate run still spawns the A100
+            # container Ranomics pays for. So free runs go through the same
+            # gate and skip only the hold, below. The same reasoning covers the
+            # estimator-raised fallback a few lines up, which also lands here
+            # as 0.
+            free_run = estimate <= Decimal("0")
 
             # Detect a missing service client (tests, dev with no
             # Supabase). When the wallet layer can not even resolve
@@ -236,6 +250,20 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                     hard_cap=pre.hard_cap_usd,
                     form_snapshot=request.form.to_dict() or {},
                 )
+
+            # Nothing to reserve on a free tier: the handler proceeds with no
+            # hold row, and with no ``hold_tx_id`` on the job there is nothing
+            # for ``shared/jobs.py`` to settle. Placed AFTER preflight so a
+            # frozen wallet is still refused above. NOT merged into the hold
+            # call below: ``cushioned_hold_usd`` floors a fixed-container tool
+            # at ``worst_case_gpu_seconds``, so for proteina's validate it
+            # returns $12.5827 regardless of the zero point estimate.
+            if free_run:
+                g.wallet_estimate_usd = Decimal("0")
+                g.wallet_hold_tx_id = None
+                g.wallet_params = params
+                g.wallet_tool_slug = resolved_slug
+                return f(*args, **kwargs)
 
             # Reserve a cushioned hold (usually covers actual, so settle
             # releases surplus) while ``estimate`` stays the point estimate
