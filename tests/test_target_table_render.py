@@ -18,6 +18,7 @@ production credentials this suite must never reach.
 
 from __future__ import annotations
 
+import base64
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -263,8 +264,15 @@ def test_single_tool_headers_keep_data_col_so_sorting_still_works():
 # ---------------------------------------------------------------------------
 
 def test_multi_tool_headers_are_the_seven_fixed_columns():
+    # "Structure", not "PDB": the column serves .cif for four of the five
+    # boltzgen example rows, and for any opendde row whose cif->pdb
+    # conversion failed (tools/opendde/run_pipeline.py:500-509).
+    # What this pins is the fixed SET of seven and its order,
+    # which the rename does not touch.
     table = _parse(_multi_tool_table())
-    assert table.header_text == ["#", "★", "Tool", "Score", "Pctile", "3D", "PDB"]
+    assert table.header_text == [
+        "#", "★", "Tool", "Score", "Pctile", "3D", "Structure",
+    ]
 
 
 def test_single_tool_renders_its_own_metric_columns():
@@ -830,9 +838,49 @@ def test_a_single_tool_target_table_numbers_rows_globally():
     assert ranks == ["1", "2", "3", "4", "5", "6"], ranks
 
 
-def test_a_genuine_single_job_table_still_shows_its_own_rank():
-    """The pair. A job page pools nothing, so the rank the pipeline assigned is
-    the right column and must survive."""
+def test_a_single_job_table_numbers_by_position_too():
+    """The pair, and it now agrees with the one above rather than opposing it.
+
+    THIS TEST USED TO ASSERT THE OPPOSITE -- that a job page shows
+    ``cand.rank`` verbatim, on the reasoning that "a job page pools nothing,
+    so the rank the pipeline assigned is the right column". That reasoning
+    held only for the tool it was written against. ``cand.rank`` is a payload
+    field and the pipelines do not agree on what it means. Rendering the
+    fourteen shipped examples through their own partials measured it --
+    eleven render a candidate row at all, and of those:
+
+    * three numbered from 0 (boltz2, esmfold2_design, opendde) and six from 1
+      (bindcraft, boltzgen, proteina, pxdesign, rfantibody, rfdiffusion) --
+      so the catalog disagreed with itself about what to call a first design.
+    * On af2 and iggm it is not a rank at all. It is a production index --
+      af2's over its input records, iggm's over its output files -- and
+      those partials re-sort by score before rendering
+      (templates/tools/af2_results.html:70 on mean pLDDT,
+      templates/tools/iggm_results.html:40 on epitope contacts), so af2's
+      ten rows rendered 0,9,6,1,8,4,7,5,3,2 -- production indices under a
+      "#" heading, on a page whose narration says "row one"
+      (tools/af2/meta.py:260).
+
+    The fixture is itself the tell: a THREE-ROW single-job table whose ranks
+    start at 90 is not a shape any pipeline here produces, so the old
+    assertion could only ever have meant "echo the payload, whatever it is".
+    The odd numbers are kept, because that is exactly what gives this test
+    its bite -- 90,91,92 against an expected 1,2,3 fails under an echo, under
+    ``rank + 1``, and under the old expression.
+
+    The payload's own rank is not lost by numbering positionally: the CSV
+    keeps it as ``source_rank`` beside a positional ``rank``
+    (shared/exports.py:119,125). It is NOT on screen, though -- this macro
+    renders no name column, and on a worked-example page the pdb_key links
+    are suppressed too -- so the number here is the only row identity a
+    reader sees, which is the argument for it being a position rather than a
+    field whose meaning changes per tool.
+
+    Pinned on thirteen of the fourteen partials by
+    tests/test_worked_examples.py::TestTheRankColumnIsAPosition (mpnn renders
+    no candidate row; it numbers its own table at
+    templates/tools/mpnn_results.html:84).
+    """
     cands = []
     for i in range(3):
         c = _row("bindcraft", "ipTM", 0.9 - 0.01 * i, job="job-a", index=i)
@@ -842,7 +890,7 @@ def test_a_genuine_single_job_table_still_shows_its_own_rank():
                    tool_slug="bindcraft")
 
     ranks = [cells[0].split()[0] for cells in _parse(html).rows]
-    assert ranks == ["90", "91", "92"], ranks
+    assert ranks == ["1", "2", "3"], ranks
 
 
 # ---------------------------------------------------------------------------
@@ -1302,3 +1350,176 @@ def test_a_tool_less_group_still_shows_its_counts():
     # renders the header with no counts at all.
     assert "2 of 2 shown" in untooled[0], untooled[0]
     assert "0 ranked" in untooled[0], untooled[0]
+
+
+# ---------------------------------------------------------------------------
+# The per-row download label
+# ---------------------------------------------------------------------------
+
+
+def _download_labels(html: str) -> list:
+    """Anchor text of every per-row structure download."""
+    return re.findall(r'font-size:\.8rem;">(\.[^<]*)</a>', html)
+
+
+# href, download filename and label of ONE anchor, captured together.
+# Read through separate scans they can be paired across rows, and the
+# defect this pins is exactly two fields of one anchor disagreeing.
+_DOWNLOAD_RE = re.compile(
+    r'<a href="([^"]*)"\s+download="([^"]*)"\s+class="btn-secondary"\s+'
+    r'style="padding:\.2rem \.5rem;font-size:\.8rem;">(\.[^<]*)</a>'
+)
+
+
+def _downloads(html: str) -> list:
+    """``(href, download, label)`` per structure download anchor."""
+    return _DOWNLOAD_RE.findall(html)
+
+
+def _structure_b64(ext: str) -> str:
+    """Base64 of a real file of that format.
+
+    The inline arm serves these bytes verbatim: ``bfactors_on_100_b64``
+    declines a CIF through ``_looks_like_cif``, and returns a PDB
+    unchanged unless its B column is fractional, which 50.00 is not. So
+    "the extension the row actually serves" is literal below rather than
+    a stand-in for it.
+    """
+    if ext == "cif":
+        text = (
+            "data_design\n"
+            "loop_\n"
+            "_atom_site.group_PDB\n"
+            "ATOM 1 N N . GLY A 1 1 ? 1.0 2.0 3.0 1.00 50.00 1 GLY A N 1\n"
+        )
+    else:
+        text = (
+            "ATOM      1  N   GLY A   1       1.000   2.000   3.000"
+            "  1.00 50.00           N\n"
+        )
+    return base64.b64encode(text.encode()).decode()
+
+
+def _one_row(pdb_key, *, inline_ext=None):
+    """One candidate row, rendered.
+
+    ``inline_ext`` selects the b64 arm of the download cell instead of
+    the URL arm: the TABLE job_id becomes ``example``, which is what
+    clears ``use_url``, and the row carries bytes of that format. That
+    is the only way in -- a row holding a key on any other page takes
+    the URL arm -- so a caller that omits it silently exercises the URL
+    arm twice. The href assertion below is what catches that.
+    """
+    # The job id carries a DOT on purpose. pdb_url embeds the key, so an
+    # extension read off the url agrees with one read off the key for any
+    # id without one -- a mutant deriving _ext from pdb_url survived the
+    # whole case table under job-1. With a dot upstream of the key, the
+    # no-extension case reads 1/pdb/designs/d_4 off the url and .pdb off
+    # the key, which is the difference this file is here to hold.
+    row = {"_source_tool": "boltzgen", "_source_preset": "pilot",
+           "_source_job_id": "job.1", "_source_index": 0,
+           "scores": {"ipTM": 0.8}}
+    if pdb_key is not _MISSING:
+        row["pdb_key"] = pdb_key
+    if inline_ext is not None:
+        row["pdb_content_b64"] = _structure_b64(inline_ext)
+    return _render(candidates=[row], columns=["ipTM"],
+                   job_id="example" if inline_ext is not None else "job-1",
+                   tool_slug="boltzgen")
+
+
+_MISSING = object()
+
+# The key, the format its bytes are in, and the label describing both.
+_LABEL_CASES = [
+    ("designs/d_1.pdb", "pdb", ".pdb"),
+    ("designs/d_2.cif", "cif", ".cif"),
+    ("designs/d_3.CIF", "cif", ".cif"),
+    # No extension to read: the historic default, not a guess.
+    ("designs/d_4", "pdb", ".pdb"),
+]
+
+
+@pytest.mark.parametrize("arm", ["url", "inline"])
+@pytest.mark.parametrize("key,serves,expected", _LABEL_CASES)
+def test_the_download_label_is_the_extension_the_row_actually_serves(
+    arm, key, serves, expected
+):
+    """The button said .pdb while the href served .cif.
+
+    boltzgen stores four of its five example rows as .cif and the
+    label was hardcoded. A QC round found the replacement expression
+    was pinned by no test at all -- corrupting the rendered label
+    survived 819 targeted tests -- so this is that pin.
+
+    BOTH ARMS, because only the URL one was fixed there. The inline-b64
+    arm went on hardcoding ``.pdb`` beside a ``download=`` carrying the
+    real key, so a .cif row on it showed a label and a filename that
+    disagreed. Latent rather than live: of the shipped example fixtures
+    only boltzgen has a row with inline bytes at all, and that row
+    carries no key, so it takes the design_N.pdb fallback and its label
+    is right. This is the pin, not an incident report.
+
+    THE LABEL FOLLOWS THE KEY, NOT THE MIME. The inline arm serves
+    ``data:chemical/x-pdb`` on every row whatever the bytes, while
+    opendde emits a .cif key exactly when its ``_cif_to_pdb`` returns
+    None and the bytes stay mmCIF. Renaming those bytes .pdb to agree
+    with the MIME is the inverse fix and it mislabels a real file, so
+    ``download=`` is asserted to be the key untouched.
+
+    The href assertion keeps the parametrization honest: one change
+    routing both ids down the same arm would otherwise leave eight
+    green assertions covering a single branch twice.
+    """
+    html = _one_row(key, inline_ext=serves if arm == "inline" else None)
+    found = _downloads(html)
+    assert len(found) == 1, found
+    href, filename, label = found[0]
+
+    if arm == "inline":
+        assert href.startswith("data:"), href
+    else:
+        assert href.startswith("/api/jobs/"), href
+    assert filename == key, (filename, key)
+    assert label == expected, (label, expected)
+
+
+@pytest.mark.parametrize("arm", ["url", "inline"])
+@pytest.mark.parametrize("key", [12345, 1.5, True, ["a.cif"], {"a": 1}])
+def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
+    """job.result is container output, so the key's TYPE is not ours.
+
+    Five of the fourteen tools build their keys container-side,
+    outside this repo. Three separate expressions in the macro abort
+    the WHOLE render -- the results page, not one cell -- on a
+    non-str: `| urlencode` raises ValueError on a list, and
+    `'.' in pdb_key` raises TypeError on an int. A first attempt
+    coerced only at the extension expression, which still 500'd on a
+    list -- `pdb_url` is built before it -- while this test passed an
+    int and its name claimed the general case. Executed at that
+    commit: 1 of these 5 raised, and it was the list. The label for
+    the non-str cases is garbage on purpose; what is pinned is that
+    the page renders.
+
+    BOTH ARMS, because the extension expression now sits AHEAD of the
+    branch rather than inside the URL one, so the inline-b64 arm
+    evaluates it too and inherits whatever it raises.
+    """
+    found = _downloads(
+        _one_row(key, inline_ext="pdb" if arm == "inline" else None)
+    )
+    assert len(found) == 1, found
+    href, _filename, _label = found[0]
+    # The href is what makes `arm` mean anything. Without it the
+    # parametrization is inert: collapsing the two arms leaves all ten
+    # cases green while five of them re-run the URL arm, and the BOTH
+    # ARMS paragraph above would be describing coverage that is gone.
+    if arm == "inline":
+        assert href.startswith("data:"), href
+    else:
+        assert href.startswith("/api/jobs/"), href
+
+
+def test_a_row_with_no_structure_offers_no_download():
+    assert _download_labels(_one_row(_MISSING)) == []
+    assert _download_labels(_one_row("")) == []

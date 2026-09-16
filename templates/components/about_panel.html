@@ -245,14 +245,32 @@ Usage:
           <dd>
             Predicted confidence in the contact between two chains, on a 0
             to 1 scale. Higher is better
+            {#- Three branches, not two. Guarding the honest text on
+                ``_ipl and 'good' not in _ipl`` alone fired it only for a
+                legend that EXISTS and omits ``good``, so a tool declaring
+                no ipTM at all got the confident sentence and was sent to
+                find a bar that does not exist.
+
+                The third branch is NOT the boltzgen one: "X's number is
+                not on the shared scale" asserts the tool HAS an ipTM
+                measured against a different ruler
+                (tests/test_boltzgen_iptm_has_no_cofold_bar.py), which a
+                tool declaring nothing has not claimed. It keeps the
+                general band -- the preamble above already says each tool
+                reports a subset of these -- and loses only the pointer.
+                tests/test_about_panel_iptm_bar_default.py pins both. #}
             {%- if _ipl and 'good' not in _ipl %}, but {{ _short }}'s number is
             not on the shared scale the other tools are read against, so there
             is no cross-tool band to compare it to &mdash; rank on it, then
             re-fold a shortlist to confirm.
-            {%- else %}:
+            {%- elif _ipl %}:
             {{ metric_glossary.get('ipTM', {}).get('good_range', '') }}.
             Individual tools set their own pass bar a little either side of
             that &mdash; the guide for the tool you ran states its one.
+            {%- else %}:
+            {{ metric_glossary.get('ipTM', {}).get('good_range', '') }}.
+            Individual tools set their own pass bar a little either side of
+            that.
             {%- endif %} On a
             multi-chain target the number may cover the target's own
             chain&ndash;chain interface as well as the binder's.

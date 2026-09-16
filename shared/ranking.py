@@ -157,6 +157,15 @@ def cohort_key_for(row: Mapping[str, Any]) -> tuple[str, Optional[str]]:
     preset", and splitting them would halve the denominator and overstate
     every percentile on both sides of the split.
 
+    IT ALSO SELECTS THE BAR, and for a moded tool ``_source_preset`` holds the
+    RUN'S MODE rather than its stored preset -- see
+    ``shared.target_results._candidate_rows``, which resolves and stamps it.
+    ``annotate_rows`` hands this key straight to ``tool_has_bar`` and
+    ``judge``, so the same partition that decides which designs are
+    percentile-comparable decides which bar they are held to. The two answers
+    have to come from one key or a cohort could be scored against a bar its
+    own members did not all run under.
+
     CONTRACT FOR THE AGGREGATION LAYER. For a tool whose preset is forced
     server side, (tool, preset) is meant to collapse to (tool), but it only
     collapses if every row of that tool arrives carrying the SAME preset
@@ -329,12 +338,24 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     PASS REGIME, two levels::
 
-        has_bar   = tool_has_bar(tool)                   # per TOOL
-        passed(c) = judge(tool, c).verdict != "below"     # per RECORD
-                    and not judge(tool, c).unusable       # (see below)
+        has_bar   = tool_has_bar(tool, preset)            # per COHORT
+        passed(c) = judge(tool, c, preset).verdict != "below"   # per RECORD
+                    and not judge(tool, c, preset).unusable     # (see below)
 
     The TOOL decides whether a bar applies at all; the RECORD is then sunk
     only on evidence that it fell short. Both halves are load bearing.
+
+    ``preset`` IS THE COHORT'S OWN, AND FOR A MODED TOOL IT IS THE RUN'S MODE.
+    It refines nothing except a tool in
+    ``shared.score_legends.MODE_GATE_COLUMNS``, whose bar is a property of the
+    run rather than of the tool; ``gate_columns`` ignores it for every tool
+    keyed in ``GATE_COLUMNS``, so handing a cohort's preset to boltzgen or
+    pxdesign cannot shrink or move their bars. Passing nothing was not neutral:
+    esmfold2-design read no bar at all here, so every one of its designs was
+    permanently ``_passed`` and the pI 11.95 reject sorted level with the
+    design that clears the bar. The mode arrives as the cohort key because
+    ``shared.target_results._candidate_rows`` stamps it into
+    ``_source_preset``; see the note there for why that is the right home.
 
     Tool scope for the REGIME, and this is the half that used to be guessed.
     It was ``any(record_has_filter_signal(c) for c in cohort_rows)`` -- read
@@ -397,7 +418,7 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     for (tool, preset), members in cohorts.items():
         metric_key, direction = primary_metric_for(tool)
-        has_bar = tool_has_bar(tool)
+        has_bar = tool_has_bar(tool, preset)
         values: dict[int, float] = {}
         for i in members:
             value = resolve_metric(annotated[i], tool, metric_key)
@@ -416,7 +437,7 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             row["_tool_has_bar"] = has_bar
             row["_metric_key"] = metric_key
             row["_metric_direction"] = direction
-            verdict = judge(tool, row)
+            verdict = judge(tool, row, preset=preset)
             # ABSENT AND BROKEN SORT DIFFERENTLY, and they must. An absent
             # metric is the ordinary shape of a job rebuilt from mid-run
             # records and keeps its place -- that is the rule this module is

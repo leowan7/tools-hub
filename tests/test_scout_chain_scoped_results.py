@@ -205,6 +205,52 @@ def stub_pipeline(monkeypatch):
     return calls
 
 
+def _write_feasibility_csv(
+    job_dir: Path, chain: str, residues=(10, 11)
+) -> Path:
+    """One feasibility row, stamped, with the whole declared column set.
+
+    ``/scout/feasibility/analyze`` reads the numeric columns straight back out,
+    so a partial row is not a usable fixture. Sits beside ``_write_results_csv``
+    rather than in a class, because ``_stub_feasibility_pipeline`` needs it too
+    and that is used from three classes.
+    """
+    from scout.pipeline import FEASIBILITY_CSV_COLUMNS
+
+    row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
+    row.update({
+        "epitope_id": "1",
+        "chain_id": chain,
+        # Residue numbers are the only honest evidence of which chain was
+        # scored; the route echoes `chain` back from the request either way.
+        "residues": ",".join(f"ALA{r}" for r in residues),
+        "residue_count": str(len(residues)),
+        "tier": "Moderate",
+    })
+    out = job_dir / "feasibility_results.csv"
+    with out.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerow(row)
+    return out
+
+
+def _stub_feasibility_pipeline(monkeypatch):
+    """Patch run_feasibility_pipeline to write what the real one would.
+
+    It cannot execute here (freesasa is absent from this venv) and the route
+    reads its numeric columns straight back out, so the stub has to produce the
+    whole declared column set. Module level, because tests in three classes
+    need it — one of them used to reach into another class's staticmethod.
+    """
+    def _run(pdb_path, chain_id, epitope_residues, progress_callback=None):
+        return _write_feasibility_csv(
+            Path(pdb_path).parent, chain_id, epitope_residues
+        )
+
+    monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", _run)
+
+
 def _upload_two_chain_job(client) -> str:
     resp = client.post(
         "/scout/upload",
@@ -767,6 +813,37 @@ class TestChainIdIsValidatedAtTheBoundary:
             assert "valid chain id" in resp.get_json()["error"], (
                 route, bad, resp.get_json()
             )
+
+    @pytest.mark.parametrize("bad", UNSAFE)
+    def test_the_feasibility_download_rejects_unsafe(self, client, reap_jobs, bad):
+        """A third kind of chain-taking route: a query parameter, not a body.
+
+        This class enumerated JSON and SSE routes only, so when
+        /scout/feasibility/download gained ?chain= it landed outside the guard
+        and took an unvalidated chain for several commits.
+
+        A value that strips to empty is NOT a rejection here: the route reads
+        it as "no chain named" and falls through to the results.csv heuristic.
+        Branching on ``.strip()`` rather than on ``""`` so that a
+        whitespace-only entry added to UNSAFE lands on the fallthrough, which
+        is what this route does with it. The job is given a servable CSV so
+        that case reaches the heuristic instead of 404ing at a missing file.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "A")
+        resp = client.get(
+            f"/scout/feasibility/download/{job_id}", query_string={"chain": bad}
+        )
+        if not bad.strip():
+            assert resp.status_code == 200, (
+                "a blank ?chain= must mean 'no chain named' and fall through "
+                f"to the heuristic, not be validated: {resp.status_code} "
+                f"{resp.get_data(as_text=True)[:200]}"
+            )
+            return
+        assert resp.status_code == 400, (bad, resp.status_code, resp.data)
+        assert "valid chain id" in resp.get_json()["error"], (bad, resp.get_json())
 
     @pytest.mark.parametrize("bad", UNSAFE)
     def test_sse_routes_reject_unsafe(self, client, reap_jobs, bad):
@@ -1402,11 +1479,19 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
         still holds the handle (WinError 32), and it turned the SSE stream into
         an error event instead of delivering results.
         """
+        import scout.routes as routes
+
         real_unlink = Path.unlink
-        derived = {"epitopes.csv", "epitopes_annotated.csv", "results_annotated.csv"}
+        # Read off the module, not restated here: a hard-coded set silently
+        # stops covering the next file added to the cleanup, and the WinError 32
+        # this guards against applies to every one of them.
+        derived = set(routes._DERIVED_RESULT_FILES)
+
+        fired = []
 
         def _boom(self, missing_ok=False):
             if self.name in derived:
+                fired.append(self.name)
                 raise PermissionError(32, "The process cannot access the file")
             return real_unlink(self, missing_ok=missing_ok)
 
@@ -1419,6 +1504,13 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
             f"a failed cleanup destroyed a successful run: {resp.data}"
         )
         assert _residue_numbers(resp) == CHAIN_RESIDUES["A"]
+        # Without this the guard passes vacuously whenever the cleanup stops
+        # running or _DERIVED_RESULT_FILES empties: _boom never fires, nothing
+        # raises, and "the run survived" proves nothing about surviving a
+        # failed unlink.
+        assert fired, (
+            "no unlink was attempted, so this never exercised a failed cleanup"
+        )
 
     def test_an_unknown_epitope_id_says_so_on_the_json_route_too(
         self, client, stub_pipeline, reap_jobs
@@ -1448,8 +1540,10 @@ class TestCleanupIsBoundToThePipelineNotTheRoute:
 
 
 class TestFeasibilityCsvNamesItsChain:
-    """/scout/feasibility/download takes no chain parameter, so the file itself
-    is the only thing that can say which chain it describes.
+    """The writer must stamp ``chain_id``; the download gate reads it.
+
+    Strip the stamp and the gate cannot tell which chain the file describes,
+    so it refuses every request that names one.
     """
 
     def test_the_column_list_carries_chain_id(self):
@@ -1496,6 +1590,437 @@ class TestFeasibilityCsvNamesItsChain:
             f"columns-only={set(pipeline.FEASIBILITY_CSV_COLUMNS) - keys}"
         )
         assert "chain_id" in keys, "the feasibility CSV stopped stamping its chain"
+
+        # The VALUE, not just the key: the route-level tests stub this
+        # pipeline out with a stub that stamps its own chain_id argument, so a
+        # real writer stamping anything else would not show up there.
+        chain_value = next(
+            v for k, v in zip(literals[0].keys, literals[0].values)
+            if isinstance(k, ast.Constant) and k.value == "chain_id"
+        )
+        assert isinstance(chain_value, ast.Name) and chain_value.id == "chain_id", (
+            "the feasibility row no longer stamps its chain_id argument "
+            "verbatim; feasibility_download compares that value against the "
+            f"chain in the request: {ast.dump(chain_value)}"
+        )
+
+
+class TestTheFeasibilityDownloadRefusesAfterAChainSwitch:
+    """The reported bug, and the regression fixing it first caused.
+
+    ``feasibility_results.csv`` was written by its own pipeline and deleted by
+    nobody, and ``/scout/feasibility/download`` gated on ``exists()`` alone —
+    the same shape as the ``/scout/analyze`` bug this file is named for.
+    Scoring chain A's feasibility, then analysing chain B, left the download
+    handing back chain A's row at HTTP 200.
+
+    The first fix added the file to ``_remove_derived_result_files``. That was
+    reverted: it also fired on a SAME-chain rescore, which through the browser
+    is every Analyze click (the page reaches /scout/analyze only from
+    /scout/progress's done handler, and /scout/progress rescores
+    unconditionally), and it threw away a result that was still correct. Both
+    directions are pinned below.
+    """
+
+    def _score_feasibility(self, client, job_id, chain):
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={
+                "job_id": job_id,
+                "chain": chain,
+                "epitope_residues": CHAIN_RESIDUES[chain],
+            },
+        )
+        assert resp.status_code == 200, resp.data
+        # Read the fixture's own output off DISK, never through the download
+        # route: send_file keeps the handle open, and on Windows that makes the
+        # very unlink under test fail with WinError 32 — a test artefact, not
+        # the behaviour. Same reason as the top-3 test above.
+        csv_path = TMP / job_id / "feasibility_results.csv"
+        assert f"ALA{CHAIN_RESIDUES[chain][0]}" in csv_path.read_text(), (
+            f"the fixture never wrote chain {chain}'s feasibility row"
+        )
+        return csv_path
+
+    def test_it_is_refused_after_another_chain_is_analysed(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The live bug: chain A's feasibility row served after chain B ran."""
+        _stub_feasibility_pipeline(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        self._score_feasibility(client, job_id, "A")
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "B"}
+        ).status_code == 200
+        assert stub_pipeline == ["A", "B"], (
+            f"pipeline ran for {stub_pipeline}; chain B never rescored, so the "
+            "state this test is about was never reached"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        # Assert the code, not just the absence of chain A in the body: folding
+        # every non-200 to an empty string would let a 500, a redirect or a
+        # permanently broken route read as success.
+        assert resp.status_code == 404, (
+            f"expected the download to refuse; got {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+        # No residue-loop here: a 404 body is the JSON error, which can never
+        # contain a residue, so such a loop would assert nothing. What proves
+        # chain A's rows are not served is the refusal itself.
+
+    def test_rescoring_the_same_chain_keeps_the_feasibility_result(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The regression the first fix caused, pinned so it cannot come back.
+
+        /scout/progress rescores UNCONDITIONALLY and is the only way the
+        browser reaches an analysis, so deleting the feasibility CSV on rewrite
+        threw one away on every Analyze click. Nothing about a same-chain
+        rescore invalidates the row: it names the residues it scored, and
+        ``epitope_id`` is the constant 1 whatever epitope was picked. Put
+        "feasibility_results.csv" back in _DERIVED_RESULT_FILES and this dies.
+        """
+        _stub_feasibility_pipeline(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        csv_path = self._score_feasibility(client, job_id, "A")
+        before = csv_path.read_bytes()
+
+        resp = client.get(
+            "/scout/progress", query_string={"job_id": job_id, "chain": "A"}
+        )
+        assert "done" in resp.get_data(as_text=True), resp.data
+        assert stub_pipeline == ["A", "A"], (
+            f"progress ran for {stub_pipeline}; it must rescore unconditionally, "
+            "or this is not measuring the case that caused the regression"
+        )
+        assert csv_path.read_bytes() == before, (
+            "a same-chain rescore destroyed a feasibility result that was still "
+            "correct — the regression the cleanup-tuple entry caused"
+        )
+        got = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert got.status_code == 200, (
+            "the download refused a chain-A result after a chain-A rescore: "
+            f"{got.status_code} {got.get_data(as_text=True)[:200]}"
+        )
+
+
+class TestTheChainStampParserItself:
+    """``_csv_chain_id`` is the whole basis of the download's chain check.
+
+    Every other test in this file feeds it CSVs written by ``csv.DictWriter``,
+    which always terminates rows with CRLF — so the row shapes that only a
+    direct call can produce are unreached, and the ``newline=""`` this parser
+    depends on is otherwise pinned by nothing.
+    """
+
+    @staticmethod
+    def _chain_id(payload: bytes):
+        from scout.routes import _csv_chain_id
+
+        return _csv_chain_id(payload)
+
+    def test_a_lone_cr_terminates_a_row(self):
+        """Without ``newline=""`` csv raises here and the parser returns None.
+
+        A false None is not a safe failure: it makes the file unable to name
+        its chain, which the download then refuses for every request that
+        names one.
+        """
+        assert self._chain_id(b"epitope_id,chain_id\r1,B\r") == "B"
+
+    def test_crlf_and_lf_both_parse(self):
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,B\r\n") == "B"
+        assert self._chain_id(b"epitope_id,chain_id\n1,B\n") == "B"
+
+    def test_cannot_say_is_none_not_a_guess(self):
+        assert self._chain_id(b"") is None
+        assert self._chain_id(b"epitope_id,chain_id\r\n") is None, "header only"
+        assert self._chain_id(b"epitope_id\r\n1\r\n") is None, "no chain_id column"
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,\r\n") is None, "blank cell"
+
+    def test_undecodable_bytes_do_not_break_the_parse(self):
+        """errors="replace" can garble a VALUE but never invent a delimiter.
+
+        UTF-8 maps no byte >= 0x80 to an ASCII character, so a bad decode
+        cannot create or destroy a comma, quote or newline.
+        """
+        assert self._chain_id(b"epitope_id,chain_id\r\n1,B\r\n\xff\xfe") == "B"
+
+
+class TestTheDownloadAsksTheRequestWhichChain:
+    """The download asks the REQUEST which chain it means, not results.csv.
+
+    ``?chain=`` travels on every link the app mints, so the route compares the
+    chain asked for against the file's own stamp instead of inferring it.
+    Covered here: that precedence, the link carrying the chain, case
+    sensitivity, the refusal when the file cannot name itself, and the
+    chainless fallback that must NOT refuse a job with no results.csv.
+    """
+
+    def test_a_job_with_no_results_csv_can_still_download(
+        self, client, reap_jobs
+    ):
+        """The None cases mean "cannot say" and must not read as a mismatch.
+
+        A job created on the feasibility page never gets a results.csv, so a
+        gate that refused whenever it could not compare would break it.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+        assert not (job_dir / "results.csv").exists(), "fixture must not analyse"
+
+        _write_feasibility_csv(job_dir, "A", [10, 11])
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 200, (
+            "the chain gate refused a standalone feasibility job that has no "
+            f"results.csv to compare against: {resp.get_data(as_text=True)[:200]}"
+        )
+
+    def test_a_file_that_cannot_name_its_chain_is_refused_to_a_chain_request(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """"It did not contradict me" is not "it matches".
+
+        An unstamped, header-only or unreadable CSV cannot be shown to describe
+        the chain asked for, so it must be refused rather than served on the
+        strength of the comparison being unable to run. This is also the
+        concurrent-truncation window: `run_feasibility_pipeline` writes with
+        open("w"), so a reader can catch the file empty mid-rewrite.
+
+        results.csv is deliberately present and holds the SAME chain being
+        asked for. Without that, a gate written as
+        ``_csv_chain_id(payload) or _results_csv_chain_id(job_dir)`` — letting
+        an unnameable file inherit results.csv's chain, which is the original
+        bug — would refuse here anyway, for the wrong reason, and pass.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        from scout.routes import _results_csv_chain_id
+
+        assert _results_csv_chain_id(job_dir) == "A", (
+            "this test only bites while results.csv can supply the chain the "
+            "file cannot"
+        )
+
+        # Header only: exactly what a reader sees mid-truncation.
+        (job_dir / "feasibility_results.csv").write_text(
+            "epitope_id,chain_id,residues\n"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert resp.status_code == 404, (
+            "a CSV that cannot name its chain was served to an explicit "
+            f"request for chain A: {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+        # The `or "unknown"` in the message is otherwise unpinned: every other
+        # refusal test uses a file that CAN name its chain, so dropping it
+        # would ship "for chain None." to a user with the suite green.
+        assert "unknown" in resp.get_json()["error"], resp.get_json()
+
+    def test_a_chainless_request_also_refuses_a_file_that_cannot_name_itself(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """The other half of "cannot say" — and a behaviour change, so pinned.
+
+        When the REQUEST names no chain but results.csv does, an unstamped file
+        still cannot be shown to match, so it is refused. Only when nothing on
+        either side names a chain is it served
+        (test_a_job_with_no_results_csv_can_still_download).
+
+        This is the case the two refusals differed on before they were merged
+        into one comparison: the earlier form served it.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+        (job_dir / "feasibility_results.csv").write_text(
+            "epitope_id,chain_id,residues\n"
+        )
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 404, (
+            "a CSV that cannot name its chain was served to a chainless "
+            f"request while results.csv named one: {resp.status_code} "
+            f"{resp.get_data(as_text=True)[:200]}"
+        )
+
+    def test_the_downloaded_filename_names_the_chain(self, client, reap_jobs):
+        """Two chains must not land in Downloads under one name.
+
+        The whole branch is about not confusing one chain's scores for
+        another's; a user who downloads both and cannot tell the files apart
+        without opening them has the same problem one layer out.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "B", [60, 61])
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}?chain=B")
+        assert resp.status_code == 200, resp.data
+        disposition = resp.headers["Content-Disposition"]
+        assert "chainB" in disposition, (
+            f"the download does not name the chain it carries: {disposition}"
+        )
+
+    def test_a_corrupt_chain_stamp_does_not_500(self, client, reap_jobs):
+        """The suffix is where a file's own bytes reach a response header.
+
+        ``_csv_chain_id`` reads the stamp out of the CSV, and on a chainless
+        request it is compared against nothing before being spliced into
+        ``download_name``. A CR or LF there raises ValueError inside werkzeug
+        (executed against werkzeug 3.1.8), so the ``_valid_chain`` gate on the
+        suffix is load-bearing rather than belt-and-braces.
+
+        Reachable because csv quotes the field on write and reads it back
+        intact: the stamp round-trips as "A\rB".
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        _write_feasibility_csv(TMP / job_id, "A\rB")
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}")
+        assert resp.status_code == 200, resp.data
+        disposition = resp.headers["Content-Disposition"]
+        assert f"feasibility_{job_id[:8]}.csv" in disposition, (
+            "a chain the boundary refuses was spliced into the filename: "
+            f"{disposition}"
+        )
+
+    def test_the_refusal_names_the_files_chain_not_the_callers_string(self, client, reap_jobs):
+        """Same reason as test_the_feasibility_404_names_the_chain above.
+
+        Two things a status-only assertion cannot see. The message must name
+        the chain the FILE holds, so a user can tell "wrong chain" from "no
+        results yet" — and it must NOT echo the caller's own string, which on
+        the chainless path would be a chain they never asked for, and which is
+        request input reaching a response body.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+        _write_feasibility_csv(job_dir, "B", [60, 61])
+
+        resp = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert resp.status_code == 404, resp.data
+        error = resp.get_json()["error"]
+        assert "chain B" in error, error
+        assert "chain A" not in error, (
+            f"the refusal echoed the caller's chain back at them: {error}"
+        )
+
+    def test_the_chain_comparison_is_case_sensitive(self, client, reap_jobs):
+        """PDB chain ids are case-sensitive: `a` and `A` are different chains.
+
+        Every other chain in this file is "A" or "B", so a .upper() or
+        .casefold() on either side of the comparison would pass the whole suite
+        while merging two real chains.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        _write_feasibility_csv(job_dir, "A", [10])
+
+        assert client.get(
+            f"/scout/feasibility/download/{job_id}?chain=a"
+        ).status_code == 404, "chain 'a' was served chain 'A''s feasibility file"
+        assert client.get(
+            f"/scout/feasibility/download/{job_id}?chain=A"
+        ).status_code == 200
+
+    def test_the_chain_asked_for_beats_the_chain_results_csv_holds(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """``?chain=`` is the request saying which chain it means.
+
+        Comparing against results.csv is only a fallback, and on its own it is
+        wrong in BOTH directions: it refuses a feasibility result deliberately
+        scored on another chain (explicit epitope_residues skip the results
+        gate, so that is a supported flow), and it cannot see a request for a
+        chain results.csv does not hold. An explicit chain settles it.
+        """
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        job_dir = TMP / job_id
+
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+
+        _write_feasibility_csv(job_dir, "B", [60, 61])
+
+        # results.csv holds A, the file holds B. Asking for B must succeed:
+        # the caller said which chain they meant and the file is that chain.
+        ok = client.get(f"/scout/feasibility/download/{job_id}?chain=B")
+        assert ok.status_code == 200, (
+            "the gate refused chain B's own feasibility result because "
+            f"results.csv still holds chain A: {ok.get_data(as_text=True)[:200]}"
+        )
+        assert "ALA60" in ok.get_data(as_text=True)
+
+        # And asking for A must NOT hand back B's file.
+        no = client.get(f"/scout/feasibility/download/{job_id}?chain=A")
+        assert no.status_code == 404, (
+            f"chain B's file was served to a request for chain A: "
+            f"{no.status_code} {no.get_data(as_text=True)[:200]}"
+        )
+
+    def test_the_advertised_download_url_carries_the_scored_chain(
+        self, client, stub_pipeline, reap_jobs, monkeypatch
+    ):
+        """The link the page hands out must be one the gate accepts.
+
+        Drop the ``chain=`` from that url_for and the button falls back to the
+        results.csv heuristic — exactly the case above that it gets wrong.
+        """
+        _stub_feasibility_pipeline(monkeypatch)
+        _login(client)
+        job_id = _upload_two_chain_job(client)
+        assert client.post(
+            "/scout/analyze", json={"job_id": job_id, "chain": "A"}
+        ).status_code == 200
+
+        resp = client.post(
+            "/scout/feasibility/analyze",
+            json={"job_id": job_id, "chain": "B",
+                  "epitope_residues": CHAIN_RESIDUES["B"]},
+        )
+        assert resp.status_code == 200, resp.data
+        url = resp.get_json()["download_url"]
+        assert "chain=B" in url, (
+            f"the feasibility download link does not name the scored chain: {url}"
+        )
+        got = client.get(url)
+        assert got.status_code == 200, (
+            "the page advertised a download link its own gate refuses: "
+            f"{got.status_code} {got.get_data(as_text=True)[:200]}"
+        )
+
+
 class TestTheChainIsThreadedThroughEveryCallSite:
     """The functions were tested; the WIRING between them was not.
 
@@ -1525,21 +2050,7 @@ class TestTheChainIsThreadedThroughEveryCallSite:
             return real(job_dir, residues, chain_id)
 
         monkeypatch.setattr(routes, "_get_binder_overlaps", _spy)
-        def _stub_feasibility(pdb_path, chain_id, epitope_residues, progress_callback=None):
-            from scout.pipeline import FEASIBILITY_CSV_COLUMNS
-
-            out = Path(pdb_path).parent / "feasibility_results.csv"
-            row = dict.fromkeys(FEASIBILITY_CSV_COLUMNS, "0")
-            row.update({"epitope_id": "1", "chain_id": chain_id, "tier": "B"})
-            with out.open("w", newline="") as fh:
-                writer = csv.DictWriter(fh, fieldnames=FEASIBILITY_CSV_COLUMNS)
-                writer.writeheader()
-                writer.writerow(row)
-            return out
-
-        monkeypatch.setattr(
-            "scout.pipeline.run_feasibility_pipeline", _stub_feasibility
-        )
+        _stub_feasibility_pipeline(monkeypatch)
 
         _login(client)
         job_id = _upload_two_chain_job(client)

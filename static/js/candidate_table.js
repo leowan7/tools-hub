@@ -366,6 +366,31 @@
       tbody.appendChild(p.dr);
       if (p.vr) tbody.appendChild(p.vr);
     });
+
+    renumberRows(tbody);
+  }
+
+  // The "#" column is the row's POSITION, so it has to follow a sort. The
+  // cells hold literal server-rendered text and nothing else rewrites them,
+  // so without this one click left the first row of a column headed "#"
+  // reading "10". Only the .cand-rank-n span is touched: the "Top" badge and
+  // the sub-job tag share that cell and must survive.
+  //
+  // Grouped tables are skipped. There the number is grp.n, which restarts at
+  // 1 in each tool block, and a straight 1..n would assert the single
+  // cross-tool ordering that table refuses to make. They are not reachable
+  // anyway — the multi-tool thead emits no th[data-col], so sortTable never
+  // fires on one — which makes this a guard against a future header, not a
+  // live branch.
+  function renumberRows(tbody) {
+    if (tbody.querySelector('.cand-group-row')) return;
+    var n = 0;
+    Array.prototype.forEach.call(tbody.children, function (row) {
+      if (!row.classList.contains('cand-row')) return;
+      n += 1;
+      var cell = row.querySelector('.cand-rank-n');
+      if (cell) cell.textContent = String(n);
+    });
   }
 
   // ─── Table initialisation ────────────────────────────────────────────────

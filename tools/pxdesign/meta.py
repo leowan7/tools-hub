@@ -121,10 +121,37 @@ about: dict = {
     "runtime_table": [
         {"preset": "pilot", "typical": "30 to 60 min"},
     ],
+    # 0.75 IS THE LEGEND'S BAR, AND DELIBERATELY NOT THE CONTAINER'S
+    # 0.70. Both surfaces that render this sentence -- the tool form's
+    # "What good looks like" panel and /help/tools/pxdesign -- end their
+    # ipTM entry by sending the reader here for this tool's pass bar
+    # (templates/components/about_panel.html and
+    # templates/help/tool_guide.html; both pointer sentences are pinned by
+    # tests/test_about_panel_iptm_bar_default.py). Every verdict on the
+    # results table is computed from shared/score_legends.py, where
+    # ("pxdesign", "ipTM") carries good=0.75. This line said 0.70 -- the
+    # container's own IPTM_THRESHOLD, cited without a line number because
+    # that repo moves on its own
+    # (llm-proteinDesigner/docker/pxdesign/run_pipeline.py). CONTAINER_GATES
+    # in tests/test_derived_verdicts.py names that constant and reads its
+    # value out of the sibling checkout, skipping when that repo is absent
+    # -- so a design at 0.72 met the target stated here and read as below
+    # the bar in the cell beside it. The site does not gate on the container's
+    # number by decision: the comment above GATE_COLUMNS in
+    # shared/score_legends.py lists pxdesign/ipTM as one of five legs that
+    # differ on purpose, and tests/test_derived_verdicts.py pins that half.
+    # The agreement THIS line has to keep is pinned by
+    # tests/test_guide_bar_matches_legend.py.
+    # THE YIELD CLAUSE IS GONE ON PURPOSE. This sentence used to end "on
+    # 1 to 2 of 5 designs". It entered in dd9755b as copy written beside
+    # the 0.70, grep over *.py/*.html/*.md finds no source for it anywhere
+    # in this repo, and raising the bar to 0.75 can only lower the
+    # fraction of designs that clear it. Do not restate a yield here
+    # without a measurement to cite.
     "output_summary": (
-        "Ranked candidates with ipTM, pLDDT, pAE, and downloadable PDBs. "
-        "Target ipTM &ge; 0.70 on 1 to 2 of 5 designs for a tractable "
-        "epitope."
+        "Ranked candidates with ipTM, pLDDT, pAE, and PDBs downloadable "
+        "from a run of your own. "
+        "Target ipTM &ge; 0.75 for a tractable epitope."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

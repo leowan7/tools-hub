@@ -135,6 +135,44 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
 # ---------------------------------------------------------------------------
 
 
+def _is_structureless(result: dict) -> bool:
+    """True for a single-structure payload that carried no structure.
+
+    The exact condition ``_is_empty_result`` classifies these jobs on, kept
+    in one place so the classifier, the headline and the summary cannot
+    drift apart. Presence-keyed, not truthiness-keyed: a payload with no
+    ``pdb_b64`` at all is an unrecognised shape, not an empty structure.
+    """
+    return "pdb_b64" in result and not result.get("pdb_b64")
+
+
+def _empty_noun(job) -> str:  # noqa: ANN001
+    """What an "empty" run failed to produce, for the headline.
+
+    All three headline tables interpolate this — the live template context
+    below plus the ``_render_html``/``_render_text`` fallbacks — so the
+    delivered subject line and the two fallbacks cannot drift apart.
+
+    The branches below are the same ones ``_result_summary`` takes for
+    tone "empty", in the same order, so the headline and the summary
+    under it always name the same missing thing — a fold tool has no
+    candidates to have produced none of, and neither does ProteinMPNN.
+    test_headline_and_summary_name_the_same_thing walks both functions
+    over one payload list and fails if they diverge.
+
+    "candidates" stays the default: every candidate-producing tool lands
+    there, and the wording is pinned for them by TestEmptyToneRendering.
+    """
+    result = job.result if isinstance(job.result, dict) else {}
+    if not result:
+        return "no output"
+    if isinstance(result.get("sequences"), list):
+        return "no sequences"
+    if _is_structureless(result):
+        return "no structure"
+    return "no candidates"
+
+
 def _job_complete_template_context(
     *, job, base_url: str, job_url: str, tone: str, tool: str,  # noqa: ANN001
 ) -> dict:
@@ -150,9 +188,10 @@ def _job_complete_template_context(
     warning text.
     """
     headline = {
-        "success": f"Your {tool} run is ready",
-        "empty":   f"Your {tool} run finished with no candidates",
-        "failed":  f"Your {tool} run failed",
+        "success":   f"Your {tool} run is ready",
+        "preflight": f"Your {tool} pre-flight passed",
+        "empty":     f"Your {tool} run finished with {_empty_noun(job)}",
+        "failed":    f"Your {tool} run failed",
     }[tone]
     (top_score_label, top_score_value, top_score_caption, top_pdb_key,
      top_score_verdict, top_position) = _top_candidate_summary(
@@ -505,12 +544,29 @@ def _tool_label(slug: str) -> str:
     The job-complete email might be sent from a worker that hasn't
     imported the tool adapter modules; keep this self-contained.
     """
+    # All 14 registered slugs, copied from tools.base.all_adapters() at
+    # edit time rather than imported -- the docstring above explains why
+    # the runtime import is avoided. It previously held five entries, one
+    # of which ("proteinmpnn") is not a slug any tool uses, so it covered
+    # FOUR real slugs and the other TEN emailed customers their raw slug:
+    # "Your mpnn run is done", "Your esmfold2-design run finished with no
+    # candidates". (An earlier version of this comment said nine.)
+    # test_every_registered_slug_gets_a_label pins the coverage.
     labels = {
+        "af2": "AlphaFold2",
         "bindcraft": "BindCraft",
-        "rfantibody": "RFantibody",
+        "boltz2": "Boltz-2",
         "boltzgen": "BoltzGen",
+        "colabfold": "ColabFold",
+        "esmfold": "ESMFold",
+        "esmfold2-design": "ESMFold2 design",
+        "iggm": "IgGM",
+        "mpnn": "ProteinMPNN",
+        "opendde": "OpenDDE co-folding",
+        "proteina": "Proteina-Complexa",
         "pxdesign": "PXDesign",
-        "proteinmpnn": "ProteinMPNN",
+        "rfantibody": "RFantibody",
+        "rfdiffusion": "RFdiffusion",
     }
     return labels.get(slug, slug)
 
@@ -521,11 +577,18 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     cost_line = _cost_breakdown_line(job, tone=tone)
     tool = _tool_label(job.tool)
     headline = {
-        "success": f"Your {tool} run is ready",
-        "empty":   f"Your {tool} run finished — no candidates",
-        "failed":  f"Your {tool} run failed",
+        "success":   f"Your {tool} run is ready",
+        "preflight": f"Your {tool} pre-flight passed",
+        "empty":     f"Your {tool} run finished — {_empty_noun(job)}",
+        "failed":    f"Your {tool} run failed",
     }[tone]
-    cta_bg = "#1f9d55" if tone == "success" else "#525252"
+    # Two DIFFERENT conditions, deliberately. The colour is a did-this-go-well
+    # signal and a passed pre-flight did go well, so it is green; the label
+    # says what the link shows, and a validate run has no results to view.
+    # Both halves pinned by test_inline_html_renders_preflight_headline_and_cta
+    # (tests/test_proteina_validate_email.py): narrowing the colour or widening
+    # the label each fails it on its own.
+    cta_bg = "#1f9d55" if tone in ("success", "preflight") else "#525252"
     cta_label = "View results" if tone == "success" else "View job details"
     cta = (
         '<a href="' + job_url + '" '
@@ -562,9 +625,10 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     cost_line = _cost_breakdown_line(job, tone=tone)
     tool = _tool_label(job.tool)
     headline = {
-        "success": f"Your {tool} run is ready.",
-        "empty":   f"Your {tool} run finished — no candidates.",
-        "failed":  f"Your {tool} run failed.",
+        "success":   f"Your {tool} run is ready.",
+        "preflight": f"Your {tool} pre-flight passed.",
+        "empty":     f"Your {tool} run finished — {_empty_noun(job)}.",
+        "failed":    f"Your {tool} run failed.",
     }[tone]
     link_label = "View results" if tone == "success" else "View job details"
     cost_block = f"{cost_line}\n\n" if cost_line else ""
@@ -1368,18 +1432,75 @@ def _send_simple(
 
 
 def _result_tone(job) -> str:  # noqa: ANN001
-    """Return ``"success"``, ``"empty"``, or ``"failed"``.
+    """Return ``"success"``, ``"preflight"``, ``"empty"``, or ``"failed"``.
 
     ``empty`` covers the soft-fail case: the pipeline ran end-to-end but
     produced no usable output (every design rejected by the post-pipeline
     filter, MPNN returned no sequences, etc.). The job row is technically
     ``status="succeeded"`` but the user has nothing to look at.
+
+    ``preflight`` is a run that was never going to produce output: a
+    proteina ``validate`` dry-run designs nothing by construction, so it
+    lands on the same zero-candidate payload as ``empty`` while meaning the
+    opposite. The check runs FIRST for that reason -- both match, and the
+    one that describes a passing run has to win.
     """
     if job.status != "succeeded":
         return "failed"
+    if _is_preflight_result(job):
+        return "preflight"
     if _is_empty_result(job):
         return "empty"
     return "success"
+
+
+def _is_preflight_result(job) -> bool:  # noqa: ANN001
+    """True for a succeeded run of a preset that designs nothing by design.
+
+    Keyed on the job row, not on the result payload: ``preset`` is a NOT
+    NULL column (supabase/migrations/0005_tool_jobs.sql:29) read straight
+    off the row (shared/jobs.py:330), while the payload is whatever the
+    container echoed back.
+
+    That is safe because the row's preset is the SAME VALUE that chose the
+    container's branch, not an independent label that could drift from it.
+    One ``preset.slug`` feeds both: blueprints/tools.py:2033 writes it to
+    the row via ``create_job(preset=...)`` and :2333 hands the same slug to
+    ``modal_client.submit``, which stamps it into the payload as both
+    ``tier`` and ``job_tier`` (gpu/modal_client.py:567-568) -- and the
+    container derives its own ``preset`` from exactly those
+    (run_pipeline.py:3959) before testing it at :4028. So a row reading
+    ``validate`` ran ``run_validate``, and a row reading anything else did
+    not. ``tools/proteina/run_pipeline.py``
+    :4028 dispatches to ``run_validate`` and returns at :4030, and
+    ``run_validate`` (:3886-3936) writes ``"candidates": []`` on its only
+    success path -- so a succeeded validate job is ALWAYS zero-candidate.
+    Its problem path writes a FAILED payload and ``sys.exit(1)``s instead of
+    reaching that write; either way this helper is never consulted for it,
+    because ``_result_tone`` tests ``status != "succeeded"`` first. (How a
+    non-zero container exit becomes ``status="failed"`` is the job-runner's
+    contract, not traced here.)
+
+    ``tool`` is part of the key even though ``validate`` is today the only
+    preset slug of that name across ``tools/*/__init__.py`` (verified by
+    enumerating every ``slug="..."`` in that glob, 2026-09-11). The copy
+    this gate selects names proteina's three specific checks, so a future
+    tool adopting the slug must not inherit it.
+    """
+    return (
+        getattr(job, "tool", "") == "proteina"
+        and getattr(job, "preset", "") == "validate"
+    )
+
+
+# Keys that describe how a run went, not what it produced. A payload made
+# only of these carries no output by any reading, present or future -- see
+# the metadata-only branch in _is_empty_result.
+_RUN_METADATA_KEYS = frozenset({
+    "status", "tier", "preset", "runtime_seconds", "gpu_seconds",
+    "provider_job_id", "job_id", "designs_total", "designs_completed",
+    "n_failures", "sample", "step", "cycle",
+})
 
 
 def _is_empty_result(job) -> bool:  # noqa: ANN001
@@ -1389,23 +1510,87 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
       * ``sequences`` (sequence-design tools — MPNN, future LigandMPNN)
       * ``candidates`` (composite binder tools — RFantibody, RFdiffusion,
         BoltzGen, BindCraft, PXDesign)
+      * ``designs`` (opendde, boltz2, iggm; af2, colabfold and esmfold
+        too, in their ``batch`` preset) — added after a review found
+        that a zero-design run fell past every branch to the "treated as
+        a real success" default below and emailed the customer "0
+        candidates returned with real scores and downloadable PDBs"
+        under a green View results button
       * ``pdb_b64`` (structure-prediction tools — AF2, ColabFold, ESMFold)
 
-    A tool whose result shape is not recognised is treated as a real
-    success — we'd rather show the user a working page than misclassify
-    a future tool's output.
+    A tool whose result shape is not recognised is still treated as a
+    real success — we'd rather show the user a working page than
+    misclassify a future tool's output. That default is pinned by
+    test_succeeded_with_unknown_shape_is_success and is deliberate.
+
+    The one carve-out is a payload built ONLY of _RUN_METADATA_KEYS, which
+    has no output key of any kind rather than an unfamiliar one.
     """
     result = job.result or {}
     if not isinstance(result, dict):
         return False
+    if not result:
+        # {} or None. NOT a shape question, so it belongs above the shape
+        # branches: templates/job_detail.html:282 gates the whole results
+        # section on `job.result`, so the page renders no results block at
+        # all. Calling that a success sent the customer a green "View
+        # results" button, "validate the top design", and a summary saying
+        # the results are on the job page -- to a page with none.
+        return True
     seqs = result.get("sequences")
     if isinstance(seqs, list):
         return len(seqs) == 0
     cands = result.get("candidates")
     if isinstance(cands, list):
         return len(cands) == 0
-    if result.get("pdb_b64"):
-        return False
+    designs = result.get("designs")
+    if isinstance(designs, list):
+        return len(designs) == 0
+    # Keyed on PRESENCE, like the three branches above, not on truthiness.
+    # The old line here was ``if result.get("pdb_b64"): return False`` --
+    # and "pdb_b64" is not in _RUN_METADATA_KEYS, so a truthy payload
+    # carrying it reached the same ``return False`` at the bottom either
+    # way. The branch decided nothing, which left a blank structure on the
+    # success path: "your run is ready" over a green View results, to a
+    # page whose viewer and Download PDB are both gated on a truthy
+    # pdb_b64 (templates/tools/af2_results.html:130,244) and a download
+    # route that answers 404 without one (blueprints/jobs.py:1400-1406).
+    # No pipeline writes that payload today -- the three run_pipeline.py
+    # files all _fail instead (tools/af2:699, tools/colabfold:763,
+    # tools/esmfold:787), and the batch preset writes "designs", caught
+    # one branch up -- so this closes the gap "designs" reached production
+    # through rather than a live path.
+    # A MISSING key stays untouched by design: tools/colabfold/meta.py:134
+    # ships a payload with no pdb_b64 at all, and an unrecognised shape
+    # keeps the forward-compat default below.
+    # TestSucceededFoldWithNoStructure pins both sides.
+    if "pdb_b64" in result:
+        return _is_structureless(result)
+    # Truthy with no recognised shape. The forward-compat default here is
+    # DELIBERATE and stays: test_succeeded_with_unknown_shape_is_success
+    # pins "unknown shapes default to success -- never empty", so a future
+    # tool with real output is never told it produced nothing.
+    #
+    # But the live defect is not a future tool's shape. It is a payload
+    # carrying ONLY run metadata -- {"tier": "pilot",
+    # "runtime_seconds": 90}. gpu/modal_client.py:632-646 builds it from a
+    # pipeline return carrying tier/runtime_seconds and no domain keys,
+    # either flat or beside an empty "output" dict. (An "output": {} with
+    # no wrapper-level tier yields {} instead, which the falsy branch
+    # above catches -- both were executed against that function.)
+    # test_an_unreadable_payload_asserts_nothing_about_it
+    # (tests/test_email_failure_copy.py:226-231) pins the classification.
+    # The page agrees: job_detail renders its results block for any
+    # truthy result and that block reads
+    # candidate_records, so it shows "Candidates (0)". Calling that a
+    # success sent "your run is ready", a green View results button and
+    # "validate the top design" over a page saying it returned none.
+    #
+    # So: metadata-only is empty, anything carrying an unrecognised KEY is
+    # still a success. Narrow on purpose -- it fixes the live path without
+    # touching the decision the test above records.
+    if set(result) <= _RUN_METADATA_KEYS:
+        return True
     return False
 
 
@@ -1434,13 +1619,77 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
             )
         return f"The run did not complete: {detail}"
 
+    if tone == "preflight":
+        # Says what the check PROVED and what it did not, and names no
+        # remediation levers. Worded to match the page this mail links to --
+        # the `job.preset == 'validate'` arm of
+        # templates/tools/proteina_results.html. That arm is NOT on this
+        # branch: it lands with be8e410 + a7845a1, which at the time of
+        # writing are unmerged. Until both are on main the two halves of this
+        # defect are fixed independently, and the page still tells a validate
+        # operator their search found nothing.
+        #
+        # Three things stay OUT of this copy on purpose:
+        #  * the adapter's "checks your target + config load"
+        #    (tools/proteina/__init__.py:848-849) -- the target half is
+        #    false, run_validate reads no target;
+        #  * the empty-tone levers (binder length / hotspots / more
+        #    designs), false here for the same reasons they were cut from
+        #    the page in a7845a1;
+        #  * any money claim. The preset LABEL says free
+        #    (tools/proteina/__init__.py:846) but nothing in this module
+        #    enforces that, and _cost_breakdown_line below is this mail's
+        #    only voice on cost: it suppresses itself on the failed tone
+        #    (:598-601), whose summary is the one other branch here that
+        #    mentions money (:1485). This branch adds no second voice, so
+        #    the summary and the cost line can never disagree.
+        #    (Whether a validate run is in fact free is NOT settled here:
+        #    estimated_cost_for_tool has no validate exemption and
+        #    wallet_guard skips the hold only at an estimate of <= 0
+        #    (shared/wallet_guard.py:204), so the "No wallet charge" in
+        #    the preset description at :848-849 is unverified. Deliberately
+        #    left alone -- a billing question with its own blast radius,
+        #    not email copy.)
+        return (
+            "Pre-flight passed: the design container is ready — the pipeline "
+            "package imports, every variant config is present, and a model "
+            "checkpoint is mounted. This dry-run designs nothing, so zero "
+            "candidates is the expected result here, not a failed search. It "
+            "clears the environment, not your target — nothing in this run "
+            "inspects the target itself. Re-run with one of the design "
+            "variants to produce binders."
+        )
+
     if tone == "empty":
         result = job.result or {}
-        seqs = result.get("sequences") if isinstance(result, dict) else None
+        if not result or not isinstance(result, dict):
+            # Nothing to read, so remediation advice would be a guess. The
+            # copy below prescribes "binder length, hotspot list, number of
+            # designs" -- knobs ProteinMPNN's form does not have (its
+            # design parameter is num_seq_per_target) and AF2's does not
+            # either. Before the falsy branch in _is_empty_result, {} on
+            # those tools took the success path and never reached it.
+            return (
+                "The run finished but returned no output. See the job "
+                "page, or rerun it."
+            )
+        seqs = result.get("sequences")
         if isinstance(seqs, list):
             return (
                 "The run finished but no sequences were returned. See the job "
                 "page for details, or rerun with different parameters."
+            )
+        # Same carve-out as the two above, for the same reason: the
+        # candidates copy prescribes "binder length, hotspot list, number
+        # of designs", knobs a fold form does not offer. Shares the
+        # predicate with the classifier and the headline, so a future
+        # payload carrying BOTH a real pdb_b64 and an empty designs list
+        # takes the candidates copy rather than being told there is no
+        # structure.
+        if _is_structureless(result):
+            return (
+                "The run finished but no structure was returned. See the job "
+                "page for details, or rerun it."
             )
         return (
             "The pipeline finished but produced no passing candidates. This "
@@ -1489,9 +1738,20 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     from shared.jobs import candidate_records  # noqa: PLC0415
     cands = candidate_records(result)
     n = len(cands)
+    if not n:
+        # Reached ONLY when _is_empty_result did not recognise the shape:
+        # every recognised empty payload takes the "empty" tone above. The
+        # old line here said "0 candidates returned with real scores and
+        # downloadable PDBs" -- three specific assertions about a payload
+        # this branch exists because it could not read. Reachable by
+        # construction: webhooks/modal.py, blueprints/jobs.py and
+        # shared/compute_campaigns.py all coerce a missing completion
+        # payload to {} on a SUCCEEDED job.
+        return "Your run finished. The results are on the job page."
+    # "structures", not "PDBs": boltzgen writes .cif for most rows.
     return (
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
-        "downloadable PDBs."
+        "downloadable structures."
     )
 
 
@@ -1523,30 +1783,25 @@ _jinja_env = jinja2.Environment(
 
 
 # ---------------------------------------------------------------------------
-# Tool label table (mirrors _tool_label above but extended for the wallet
-# senders, which include tools not in the original job-complete map).
+# Tool label for the wallet senders
 # ---------------------------------------------------------------------------
-
-_WALLET_TOOL_LABELS = {
-    "bindcraft":    "BindCraft",
-    "rfantibody":   "RFantibody",
-    "rfdiffusion":  "RFdiffusion",
-    "boltzgen":     "BoltzGen",
-    "pxdesign":     "PXDesign",
-    "proteinmpnn":  "ProteinMPNN",
-    "mpnn":         "ProteinMPNN",
-    "af2":          "AlphaFold2",
-    "alphafold2":   "AlphaFold2",
-    "colabfold":    "ColabFold",
-    "esmfold":      "ESMFold",
-}
 
 
 def _label_for_tool(slug: Optional[str]) -> str:
-    """Return a human-readable tool label, falling back to the slug."""
+    """Return a human-readable tool label, falling back to the slug.
+
+    Delegates to _tool_label. This used to be a SECOND table, and it
+    went stale: it held eleven entries, two of them ("proteinmpnn",
+    "alphafold2") slugs no tool uses, and was missing boltz2,
+    esmfold2-design, iggm, opendde and proteina -- so a capped OpenDDE
+    run mailed "Your opendde run was blocked by the per job spend cap".
+    Extending only _tool_label (commit e2649a6) fixed the job-complete
+    mail and left these two senders on the stale copy.
+    test_every_registered_slug_gets_a_label pins the coverage.
+    """
     if not slug:
         return "tool"
-    return _WALLET_TOOL_LABELS.get(slug, slug)
+    return _tool_label(slug)
 
 
 # ---------------------------------------------------------------------------

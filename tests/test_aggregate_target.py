@@ -316,7 +316,8 @@ class _StubTarget:
 
 def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
              campaign_id=None, chunk_index=None, attempt=1,
-             inputs=None, candidates=(), status="succeeded"):
+             inputs=None, candidates=(), status="succeeded",
+             result_extra=None):
     """One tool_jobs row as the table actually stores it.
 
     ``inputs`` passes through UNCHANGED. Coercing it with ``dict(inputs or {})``
@@ -340,7 +341,18 @@ def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
     returns whatever the jsonb held, so a malformed record is a shape the
     aggregator has to survive, and it is also the only way to test that
     ``_source_index`` counts the records the loop SKIPPED.
+
+    ``result_extra`` merges sibling keys into the result ALONGSIDE
+    ``candidates``. Every pipeline writes run-level facts up there and one of
+    them decides which bar applies: ``is_antibody`` is what
+    ``shared.score_legends.result_mode`` reads to tell an esmfold2-design
+    minibinder run from an scFv one. Without a way to set it, a moded tool's
+    row could only ever arrive with its mode unstated.
     """
+    result = {"candidates": [
+        dict(c) if isinstance(c, Mapping) else c for c in candidates
+    ]}
+    result.update(result_extra or {})
     return {
         "id": job_id,
         "user_id": user_id,
@@ -352,9 +364,7 @@ def _job_row(job_id, *, tool, preset, target_id, user_id=OWNER,
         "chunk_index": chunk_index,
         "attempt": attempt,
         "inputs": inputs,
-        "result": {"candidates": [
-            dict(c) if isinstance(c, Mapping) else c for c in candidates
-        ]},
+        "result": result,
     }
 
 
@@ -1904,3 +1914,262 @@ def test_a_fully_readable_settled_target_is_not_provisional(monkeypatch):
 
     assert agg["partial"] is False
     assert agg["provisional"] is False
+
+
+# ---------------------------------------------------------------------------
+# The mode-scoped bar: the count and the ranking table
+# ---------------------------------------------------------------------------
+#
+# esmfold2-design's bar is a property of the RUN's mode, not of the tool, so
+# ``tool_has_bar("esmfold2-design")`` answers False and every consumer that
+# could not name a run read no bar at all. TWO OF THEM LIVE IN THIS FUNCTION:
+# ``passed_total`` counted every delivered design as a keeper, and the ranking
+# table marked every design ``_passed`` -- including the one the pipeline
+# drops.
+#
+# BOTH MODES ARE BARRED as of 2026-09-14. scfv was the mode still short-
+# circuiting to 'every design is a keeper'; it gained a MODE_GATE_COLUMNS
+# entry once run_pipeline.py split the CDR proxy onto its own column key.
+#
+# Real completed job 2b917b54 (PD-L1 minibinder, n_seeds=2), as stored:
+#
+#     seed0: ipTM 0.9556, pI 11.95 -> the pipeline drops it
+#     seed1: ipTM 0.9354, pI  5.67 -> clears the bar
+#
+# THE AGGREGATOR IS THE REAL PATH for both. The helpers underneath
+# (count_candidates_meeting_bar, annotate_rows) can each be correct while this
+# function never hands them a mode, and a helper-level test cannot see that --
+# which is the shape every earlier surface in this class failed in.
+#
+# Values unrounded, matching tests/test_jobs_compare_headline.py: rounded
+# stand-ins let one assertion span both a defect and its fix.
+_DROP_PI = 11.954517555236816
+_PASS_PI = 5.669371223449708
+_DROP_IPTM = 0.9555796384811401
+_PASS_IPTM = 0.9353567957878113
+
+# The scFv pair, from job verify242-bs6-1789054528 as recorded in
+# docs/VALIDATION-LOG.md and reused in
+# tests/test_esmfold2_design_scfv_iptm_leg.py. The drop row is the one the
+# whole fix exists for: a proxy well over its 0.50 bar and an ipTM of 0.436.
+_SCFV_DROP_PROXY, _SCFV_DROP_IPTM = 0.618, 0.436
+_SCFV_PASS_PROXY, _SCFV_PASS_IPTM = 0.799, 0.844
+
+
+def _esm_cand(name, iptm, pi):
+    return {"name": name, "pdb_key": f"{name}.pdb",
+            "scores": {"ipTM": iptm, "pI": pi}}
+
+
+def _esm_scfv_cand(name, iptm, proxy):
+    """SHAPED LIKE THE MODE, not like the minibinder row with a new label.
+
+    pI is null by construction on an scFv run and the CDR proxy is null on a
+    minibinder one, so a fixture that reuses one shape for both modes cannot
+    tell a mode-scoped bar from a tool-wide one -- it would read unjudged
+    for the wrong reason and still count zero.
+    """
+    return {"name": name, "pdb_key": f"{name}.pdb",
+            "scores": {"ipTM": iptm, "CDR_iPTM_proxy": proxy, "pI": None}}
+
+
+def _esm_rows(*, preset="minibinder", is_antibody=False, job_id="esm-1"):
+    if is_antibody:
+        cands = (
+            _esm_scfv_cand("drop", _SCFV_DROP_IPTM, _SCFV_DROP_PROXY),
+            _esm_scfv_cand("keep", _SCFV_PASS_IPTM, _SCFV_PASS_PROXY),
+        )
+    else:
+        cands = (
+            _esm_cand("drop", _DROP_IPTM, _DROP_PI),
+            _esm_cand("keep", _PASS_IPTM, _PASS_PI),
+        )
+    return (
+        _job_row(
+            job_id, tool="esmfold2-design", preset=preset, target_id="T",
+            candidates=cands,
+            result_extra={"is_antibody": is_antibody, "preset": preset},
+        ),
+    )
+
+
+def test_a_minibinder_run_counts_only_the_design_that_meets_the_bar(monkeypatch):
+    """``passed_total`` used to be 2 here, because the tool declares no bar
+    without a mode and a tool with no bar counts every delivered record.
+
+    THIS RE-LABELS DELIVERED WORK, and that is the intended effect: the target
+    page reported two keepers for a run whose own results page tells you not
+    to order one of them.
+    """
+    _install(monkeypatch, rows=_esm_rows(), campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["ok"] is True and agg["partial"] is False
+    assert len(agg["candidates"]) == 2, "both designs are still delivered"
+    assert agg["passed_total"] == 1, (
+        "the pI 11.95 design was counted as a keeper"
+    )
+
+
+def test_the_ranking_table_sinks_the_rejected_design(monkeypatch):
+    """``_passed`` LEADS canonical_sort_key, so a design nobody rejected sorts
+    above one that was. With no mode every esmfold2-design row was ``_passed``
+    and the reject sat level with the design that clears the bar.
+
+    esmfold2-design registers no primary metric (shared/result_columns.py), so
+    neither row is ranked and ``_passed`` is the ONLY thing separating them --
+    which makes it the one signal this table has about these designs.
+    """
+    # ITS OWN THREE-ROW FIXTURE, stored pass/FAIL/pass, and NOT the shared
+    # two-row one: with (drop, keep) the order assertion below holds under a
+    # sort replaced by list(reversed(...)), so it decorated the _passed
+    # assertions rather than adding to them. Kept local so the counts the
+    # other tests assert on do not move.
+    rows = (
+        _job_row(
+            "esm-order", tool="esmfold2-design", preset="minibinder",
+            target_id="T",
+            candidates=(
+                _esm_cand("keep", _PASS_IPTM, _PASS_PI),
+                _esm_cand("drop", _DROP_IPTM, _DROP_PI),
+                _esm_cand("keep2", _PASS_IPTM, _PASS_PI),
+            ),
+            result_extra={"is_antibody": False, "preset": "minibinder"},
+        ),
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    by_name = {c["name"]: c for c in agg["candidates"]}
+    assert by_name["drop"]["_passed"] is False
+    assert by_name["keep"]["_passed"] is True
+    assert by_name["drop"]["_tool_has_bar"] is True
+    # THREE ROWS, STORED pass/FAIL/pass, so that "sorted by _passed" and
+    # "reversed" are different answers. With the two-row (drop, keep) fixture
+    # this assertion held under a sort replaced by list(reversed(...)) -- it
+    # was decorating the two assertions above rather than adding to them.
+    assert [c["name"] for c in agg["candidates"]] == ["keep", "keep2", "drop"]
+
+
+def test_the_cohort_key_carries_the_mode_the_bar_was_applied_under(monkeypatch):
+    """``_source_preset`` is what ``cohort_key_for`` partitions on AND what
+    ``annotate_rows`` hands to ``judge``, so for a moded tool it has to hold
+    the MODE. It is also the key the Preset chip renders
+    (templates/components/candidate_table.html), whose tooltip says the design
+    was ranked against this tool's other <preset> designs -- true only while
+    the two are one key.
+    """
+    # THE STORED PRESET AND THE MODE MUST DIFFER or this test cannot tell
+    # them apart. Its first version used a fixture where both were
+    # "minibinder", and stamping the raw preset instead of the resolved mode
+    # left it green -- the assertion was comparing a string to itself.
+    _install(monkeypatch, rows=_esm_rows(preset="minibinder", is_antibody=True))
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert {c["_source_preset"] for c in agg["candidates"]} == {"scfv"}
+    assert {c["_cohort_preset"] for c in agg["candidates"]} == {"scfv"}
+
+
+def test_an_scfv_run_counts_against_its_own_bar_not_the_minibinder_one(
+    monkeypatch,
+):
+    """The pair to the minibinder test, and not a formality. pI is null by
+    construction on an scFv run, so a tool-WIDE pI leg would leave every
+    antibody design permanently unjudged -- which is why the bar is keyed on
+    (tool, mode). A fix that quietly applied the minibinder bar to both modes
+    passes every assertion above and counts 0 here, not 1.
+
+    Until 2026-09-14 this asserted 2: scfv had no MODE_GATE_COLUMNS entry, so
+    count_candidates_meeting_bar short-circuited to len(records) and the drop
+    row -- ipTM 0.436, the measured design the pipeline refuses -- was
+    delivered to the customer as a keeper.
+    """
+    _install(monkeypatch, rows=_esm_rows(preset="scfv", is_antibody=True))
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["passed_total"] == 1
+    assert {c["name"]: c["_passed"] for c in agg["candidates"]} == {
+        "keep": True, "drop": False,
+    }
+    assert all(c["_tool_has_bar"] is True for c in agg["candidates"])
+
+
+def test_the_mode_comes_off_the_result_before_the_stored_preset(monkeypatch):
+    """THAT ORDER, and reversing it is silent. A job's stored preset can be a
+    default string while the result records what the run actually did, so
+    ``result_mode`` leads. Here the row says preset=minibinder and the result
+    says the run was an antibody one: judged by the preset it would be held to
+    a pI gate that mode never measures.
+    """
+    _install(monkeypatch, rows=_esm_rows(preset="minibinder", is_antibody=True))
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert {c["_source_preset"] for c in agg["candidates"]} == {"scfv"}
+    # 1, not 0: judged by the stored preset these rows would be held to a pI
+    # leg this mode never measures, every design would read unjudged and the
+    # count would be zero. The resolved mode is what makes it 1.
+    assert agg["passed_total"] == 1
+    assert all(c["_tool_has_bar"] is True for c in agg["candidates"])
+
+
+def test_two_modes_of_one_tool_are_two_cohorts(monkeypatch):
+    """An scFv and a minibinder are not one comparable population, and after
+    this change they cannot be read as one: the mode IS the cohort key, so
+    each half is judged against its own bar and neither borrows the other's.
+
+    This is also the answer to "would counting a mixed cohort sum two
+    different bars?" -- the total is a sum of PER-RUN counts, each taken
+    against the bar its own run declares. 1 from the scFv run plus 1 from the
+    minibinder run. It was 3 until 2026-09-14, when the scFv half stopped
+    counting both of its designs for want of a bar.
+    """
+    rows = _esm_rows(job_id="esm-mini") + _esm_rows(
+        preset="scfv", is_antibody=True, job_id="esm-scfv",
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["multi_tool"] is True, "one tool at two modes is two cohorts"
+    assert {c["_source_preset"] for c in agg["candidates"]} == {
+        "minibinder", "scfv",
+    }
+    assert agg["passed_total"] == 2
+    for mode in ("minibinder", "scfv"):
+        half = [c for c in agg["candidates"] if c["_source_preset"] == mode]
+        assert {c["_passed"] for c in half} == {True, False}, mode
+
+
+def test_a_tool_with_a_tool_wide_bar_ignores_the_preset(monkeypatch):
+    """The regression guard for every other tool. ``gate_columns`` documents
+    that a tool keyed in GATE_COLUMNS ignores ``preset`` entirely, so handing
+    a cohort's preset down must not shrink or move boltzgen's bar, and
+    ``resolve_mode`` must hand a non-moded tool's preset back untouched --
+    that key is a cohort boundary, and rewriting it would split a percentile
+    denominator with nothing raising.
+    """
+    rows = (
+        _job_row(
+            "bg-1", tool="boltzgen", preset="pilot", target_id="T",
+            # ``is_antibody`` ON A NON-MODED TOOL, deliberately. resolve_mode
+            # guards on MODE_GATE_COLUMNS and so must IGNORE this key for
+            # boltzgen; without the guard, result_mode is tool-blind, reads it,
+            # and rewrites this cohort's key to "scfv" -- silently halving a
+            # percentile denominator. The fixture carried no such key at first,
+            # so deleting the guard was invisible.
+            result_extra={"is_antibody": True},
+            candidates=(
+                {"name": "over", "pdb_key": "over.pdb",
+                 "scores": {"pLDDT": 88.0, "refolding_rmsd": 1.0}},
+                {"name": "under", "pdb_key": "under.pdb",
+                 "scores": {"pLDDT": 40.0, "refolding_rmsd": 1.0}},
+            ),
+        ),
+    )
+    _install(monkeypatch, rows=rows, campaigns=())
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["passed_total"] == 1
+    by_name = {c["name"]: c for c in agg["candidates"]}
+    assert by_name["over"]["_passed"] is True
+    assert by_name["under"]["_passed"] is False
+    assert by_name["over"]["_source_preset"] == "pilot"

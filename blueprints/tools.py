@@ -202,9 +202,19 @@ def developability_score():
     )
 
 @tools_bp.route("/library-planner", methods=["GET"])
-@login_required
 def library_planner():
-    """Render the Yeast Display Library Planner input form."""
+    """Render the Yeast Display Library Planner input form.
+
+    Open to anonymous visitors, like /developability above. Ten posts on
+    ranomics.com link here from a "try the tool" callout, and while this
+    route was @login_required every one of those readers landed on
+    /login?next=/library-planner instead of the tool.
+
+    There is nothing to gate: planning is pure arithmetic over the posted
+    form with no GPU, no wallet charge, no job row and no storage write.
+    The trust boundary is the input validation in library_planner_plan
+    below and in plan_library (tools/library_planner/planner.py:141).
+    """
     return render_template(
         "library_planner_form.html",
         error=None,
@@ -212,10 +222,26 @@ def library_planner():
     )
 
 @tools_bp.route("/library-planner/plan", methods=["POST"])
-@login_required
 @idempotent()
 def library_planner_plan():
-    """Validate inputs and render the library planner results page."""
+    """Validate inputs and render the library planner results page.
+
+    Anonymous like its GET: opening the form and then redirecting the
+    submit to login would leave the blog reader at the same wall one
+    click later. Safe to open because this handler spends nothing and
+    persists nothing -- it calls plan_library(), a pure function over
+    the parsed form, and renders a template.
+
+    The bounds below are what keep an anonymous request's cost fixed:
+    positions must parse as an int in 1..40, KD must parse as a float
+    above zero, and coverage falls back to 90% outside (0, 100).
+    plan_library then allowlists scaffold, codon scheme and starting
+    material, raising ValueError into the re-rendered form.
+
+    @idempotent() is retained for signed-in callers; it hands an
+    anonymous request straight to the handler because load_user_context
+    returns None without a session (shared/idempotency.py:671-674).
+    """
     from tools.library_planner import plan_library  # noqa: PLC0415
 
     raw = {
@@ -1037,6 +1063,35 @@ def _build_public_tool_context(adapter) -> dict:
         ],
         "tool_seo": {"software": software, "faq": faq_ld},
     }
+
+@tools_bp.route("/tools/proteinmpnn", methods=["GET"])
+def proteinmpnn_slug_redirect():
+    """301 the guessed URL to the catalog slug.
+
+    The adapter's slug is ``mpnn``, so the real page is /tools/mpnn, but
+    the tool is called ProteinMPNN everywhere else (including this
+    module's own SEO phrase map at ``"mpnn": "proteinmpnn"``) and
+    /tools/proteinmpnn is what a reader types. It used to 404.
+
+    A static rule outranks the ``/tools/<tool>`` converter rule in
+    Werkzeug's map, so this is reached rather than tool_form. The query
+    string is carried across because tool_form pre-fills from it; grep
+    ``request.args`` inside tool_form below for the seven parameters it
+    reads (pilot, workspace_id, target_pdb_id, clone_from, from_job,
+    handoff, resample_from). Nothing links here with those today, so
+    this costs one line and keeps a future link that does from being
+    silently truncated.
+    """
+    target = url_for("tools.tool_form", tool="mpnn")
+    # QUERY_STRING arrives as raw bytes and decoding it strictly raises
+    # UnicodeDecodeError on a malformed one, which would 500 instead of
+    # redirecting, so substitute U+FFFD. Pinned by
+    # test_malformed_query_string_still_redirects in
+    # tests/test_tool_slug_redirects.py.
+    qs = request.query_string.decode("utf-8", errors="replace")
+    if qs:
+        target = f"{target}?{qs}"
+    return redirect(target, code=301)
 
 @tools_bp.route("/tools/<tool>", methods=["GET"])
 def tool_form(tool: str):
@@ -2415,8 +2470,10 @@ def tools_comparison():
     Renders the iteration-loop framing, a category-grouped tile
     grid, and the comparison matrix at the bottom for power users.
     Catalog includes both hardcoded tools (Epitope Scout, Binder
-    Developability Scout, Library Planner) and flag-enabled GPU
-    adapters.
+    Developability Scout) and flag-enabled GPU adapters. The Library
+    Planner was delisted 2026-08-17 and is no longer in
+    _HARDCODED_TOOLS; this docstring still named it, and a review
+    traced a wrong count in a commit message back to here.
     """
     catalog = _build_tools_catalog()
 
