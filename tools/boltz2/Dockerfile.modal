@@ -22,12 +22,54 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Boltz install. The [cuda] extra pulls cuequivariance_torch, which Boltz-2 v2.2.1+
-# requires for the fused triangle-multiplicative kernel (use_kernels defaults to True;
-# import-time failure without it). We pass --no_kernels at predict time so we never
-# touch that path, but pulling [cuda] keeps the image build stable across Boltz patch
-# releases that tighten the import gate.
+# Boltz install. NOT "boltz[cuda]". The deployed image ran a torch newer than the
+# base's 2.4.0 — its traceback reached the allow_override parameter, which
+# torch/library.py does not carry before 2.8 — which stranded the base's matched
+# torchvision, so every fold died at import with "operator torchvision::nms does
+# not exist". The extra is the culprit by its metadata, not by a pip list run
+# inside the image: of the three packages it adds, cuequivariance-ops-torch-cu12
+# is the only one that constrains torch at all, and its 0.11.1 demands
+# torch>=2.11, while boltz itself asks only for torch>=2.2.
+#
+# Dropping the extra is safe: boltz 2.2.1 never imports cuequivariance at module
+# level. Both imports are function-local — triangular_mult.py:22 inside
+# kernel_triangular_mult, triangular_attention/primitives.py:201 inside
+# kernel_triangular_attn — so importing boltz never needs the package, which is
+# what the `boltz --help` probe below enforces. Reaching either one takes the
+# kernel path, gated in pairformer.py on `use_cuequiv_mul or use_kernels` (:78,
+# :83, :244, :249) and `use_cuequiv_attn or use_kernels` (:91, :99, :257, :265).
+# run_boltz clears use_kernels with --no_kernels (boltz main.py:1321), pinned by
+# tests/test_boltz2_smoke.py::TestKernelsStayOff; the two use_cuequiv_* flags are
+# parameters defaulting to False that nothing in the wheel passes — pairformer.py
+# is their only mention.
+#
+# Pinned so no direct requirement of boltz resolves from latest-on-PyPI. boltz 2.2.1
+# pins 18 of its own 23 with ==; the five it leaves floating are torch, numpy, pandas,
+# rdkit and types-requests, so all five are named here. Two of those five
+# drift far: boltz asks pandas>=2.2.2 and rdkit>=2024.3.2, and the newest of each
+# on PyPI is now pandas 3.0.5 (a major release) and rdkit 2026.3.6, both shipping
+# cp311 manylinux wheels, so an unpinned rebuild would take them.
+#
+# pandas/rdkit/types-requests are pinned to the newest release that predates boltz
+# 2.2.1's own upload (2025-09-08). numpy is pinned to 1.26.4, the newest under
+# boltz's own numpy<2.0 cap — that cap binds tighter than the date rule, which
+# would have given 2.3.2. torch is pinned to the base image's own
+# build (that image's config blob sets PYTORCH_VERSION=2.4.0), so a dependency
+# wanting a newer torch fails this build instead of silently upgrading it.
+#
+# ponytail: second-order deps (pandas' own tzdata, hydra's omegaconf, and so on) are
+# still unpinned, so this is not a full lock. Add a constraints file if a rebuild
+# ever breaks on a package named nowhere in this Dockerfile.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir "boltz[cuda]" requests
+    && pip install --no-cache-dir "boltz==2.2.1" "torch==2.4.0" "requests==2.32.3" \
+        "numpy==1.26.4" "pandas==2.3.2" "rdkit==2025.3.6" "types-requests==2.32.4.20250809"
+
+# Enforces the two load-bearing claims at build time: that torch still matches
+# torchvision, and that nothing boltz imports needs cuequivariance. The op probe
+# fails on an ABI mismatch; `boltz --help` imports boltz.main, which imports
+# Boltz1/Boltz2 and with them the whole pairformer/triangular-layer graph, so it
+# fails if any of that import path needs cuequivariance.
+RUN python -c "import torch, torchvision; torch.ops.torchvision.nms; print(torch.__version__, torchvision.__version__)" \
+    && boltz --help > /dev/null
 
 WORKDIR /opt

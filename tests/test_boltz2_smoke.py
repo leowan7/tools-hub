@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import logging
 import os
 import tarfile
@@ -410,3 +411,141 @@ class TestRawArchiveResolutionPlacement:
             f"{tool}: the dest resolution reads RAW_ARCHIVE_PATH before the try, "
             "so a missing constant is a NameError escaping a function called "
             "from a finally instead of a logged warning")
+
+
+# ---------------------------------------------------------------------------
+# 4 — a run that folds nothing FAILS the job, it does not COMPLETE empty
+# ---------------------------------------------------------------------------
+
+
+class TestZeroDesignsFailsTheJob:
+    """``main`` must not report COMPLETED when every design died.
+
+    The torch/torchvision ABI break made every ``boltz predict`` exit non-zero.
+    The pipeline logged a warning per design, dropped it, and still wrote
+    COMPLETED with an empty ``designs[]`` — so the wrapper returned exit_code 0
+    and the user saw a green job carrying no results.
+
+    Two tests, and the second is the one that makes the first mean something:
+    a guard that fired unconditionally would also pass the failure case.
+    """
+
+    def _arrange(self, tmp_path, monkeypatch, *, rc, n_binders=2):
+        """Stub every I/O edge of ``main`` and return the result-file path.
+
+        ``rc`` is what ``run_boltz`` returns for every design: non-zero folds
+        nothing, zero folds all of them.
+        """
+        result_file = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+
+        antigen = tmp_path / "antigen.pdb"
+        antigen.write_text("ATOM\n")
+        monkeypatch.setattr(rp, "download_antigen_pdb", lambda url, dest: antigen)
+        monkeypatch.setattr(rp, "chain_seq", lambda path, chain="A": "GGGGSGGGGS")
+        monkeypatch.setattr(rp, "archive_raw_outputs", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "send_heartbeat", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "run_boltz", lambda *a, **k: rc)
+
+        # Only reached when run_boltz succeeds.
+        predicted = tmp_path / "pred.pdb"
+        predicted.write_text("ATOM\n")
+        monkeypatch.setattr(
+            rp, "collect_outputs", lambda out_dir: (predicted, {"iptm": 0.8}),
+        )
+        monkeypatch.setattr(
+            rp,
+            "hotspot_contacts",
+            lambda *a, **k: {
+                "n_contacted": 0,
+                "n_hotspots": 0,
+                "contacted": [],
+                "antigen_chain": "A",
+            },
+        )
+        monkeypatch.setattr(
+            rp,
+            "request_upload_urls",
+            lambda endpoint, token, keys: {k: "https://example.invalid/put" for k in keys},
+        )
+        monkeypatch.setattr(rp, "upload_pdb", lambda url, data: None)
+
+        payload = {
+            "tier": "standalone",
+            "job_token": "tok",
+            "upload_urls_endpoint": "https://example.invalid/upload-urls",
+            "input_presigned_url": "https://example.invalid/antigen.pdb",
+            "job_spec": {
+                "antigen_chain": "A",
+                "hotspot_residues": [],
+                "binder_sequences": [
+                    {"name": f"d{i}", "sequence": "EVQLVESGGG"}
+                    for i in range(n_binders)
+                ],
+            },
+        }
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        monkeypatch.setenv("JOB_TIER", "standalone")
+        monkeypatch.setenv("JOB_ID", "job-zero-designs")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        return result_file
+
+    def test_every_design_failing_is_a_failed_job(self, tmp_path, monkeypatch):
+        result_file = self._arrange(tmp_path, monkeypatch, rc=1)
+
+        with pytest.raises(SystemExit) as excinfo:
+            rp.main()
+
+        assert excinfo.value.code == 1, (
+            "a run that folded zero designs must exit non-zero — the wrapper "
+            "reports run_pipeline's returncode as the job's exit_code")
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "FAILED", (
+            f"expected FAILED, got {result['status']!r} — a zero-design run "
+            "reported as COMPLETED is the silent failure this guards")
+        assert result["error"]["check"] == "no_designs"
+        assert isinstance(result.get("runtime_seconds"), int), (
+            "a failed run must still report the GPU time it burned: "
+            "gpu/modal_client.py:716 reads runtime_seconds off the FAILED arm "
+            "as gpu_seconds_used, and shared/jobs.py:1389 skips the workspace "
+            "compute debit when it is missing")
+
+    def test_a_folded_design_still_completes(self, tmp_path, monkeypatch):
+        """Positive control: the guard must not fire when designs survive."""
+        result_file = self._arrange(tmp_path, monkeypatch, rc=0)
+
+        rp.main()
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "COMPLETED"
+        assert result["designs_completed"] == 2
+# ---------------------------------------------------------------------------
+# 5 - the image ships no cuequivariance, so the kernel path must stay off
+# ---------------------------------------------------------------------------
+
+
+class TestKernelsStayOff:
+    """``run_boltz`` must keep passing ``--no_kernels``.
+
+    tools/boltz2/Dockerfile.modal installs plain ``boltz``, not ``boltz[cuda]``,
+    so cuequivariance is absent from the image. boltz imports it only inside
+    ``kernel_triangular_mult`` / ``kernel_triangular_attn``, which run on the
+    kernel path, so dropping this flag would fold nothing and the first sign
+    would be a production failure. This test is what makes that Dockerfile
+    comment a checked claim rather than an assertion.
+    """
+
+    def test_run_boltz_disables_kernels(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(rp.subprocess, "run", fake_run)
+        rp.run_boltz(tmp_path / "in.yaml", tmp_path / "out", msa_server=False)
+
+        assert "--no_kernels" in captured["cmd"], (
+            "the boltz2 image installs plain boltz, so cuequivariance is not "
+            "present; without --no_kernels the kernel path imports it and every "
+            "fold dies")
