@@ -186,7 +186,10 @@ def api_runs_estimate():
     """Live budget + chunk-plan preview for the campaign create form."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
-    preset = (request.args.get("preset") or "pilot").strip() or "pilot"
+    # Lowercased to match the estimator's own normalisation
+    # (shared/wallet_estimates.py:618), so a cased "Validate" cannot slip
+    # past the refusal below and be priced as a campaign.
+    preset = (request.args.get("preset") or "pilot").strip().lower() or "pilot"
     try:
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
@@ -197,10 +200,9 @@ def api_runs_estimate():
         # The free pre-flight is not a paid campaign — mirror the create route.
         return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a campaign."})
     try:
-        # Thread the real variant so the estimate matches the create path (the
-        # 5 live tools default to "pilot"); today proteina is fixed-container so
-        # the figures coincide, but this stops a silent divergence if pricing
-        # ever becomes preset-dependent.
+        # Always the "pilot" default in practice: the form's fetchEstimate()
+        # sends only tool + requested_designs, never a preset
+        # (templates/runs/new.html:417-418).
         plan = cc.plan_chunks(tool, requested, preset)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)})
