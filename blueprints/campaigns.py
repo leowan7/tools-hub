@@ -333,9 +333,12 @@ def compute_campaign_create():
         return _err("Unknown tool.")
     if adapter.preset_for(preset) is None:
         return _err("Unknown preset for this tool.")
-    # The free `validate` tier is a CPU-only pre-flight, not a paid campaign; it
-    # is omitted from the form and routed separately. Reject it on the paid path
-    # so a crafted request can't open a priced campaign on a config-less variant.
+    # The free `validate` tier is a pre-flight, not a paid campaign; it is
+    # omitted from the form and routed separately. Reject it on the paid path
+    # so a crafted request can't open a priced campaign on a config-less
+    # variant. Free to the CUSTOMER, not GPU-free: it does no GPU work but
+    # holds the same A100 container (tools/proteina/run_pipeline.py's "validate
+    # tier" header).
     if preset == "validate":
         return _err("The validate tier is a free pre-flight, not a campaign.")
     # IgGM affinity_maturation runs one design PER masked position PER sample, so
