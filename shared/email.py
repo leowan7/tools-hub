@@ -135,6 +135,44 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
 # ---------------------------------------------------------------------------
 
 
+def _is_structureless(result: dict) -> bool:
+    """True for a single-structure payload that carried no structure.
+
+    The exact condition ``_is_empty_result`` classifies these jobs on, kept
+    in one place so the classifier, the headline and the summary cannot
+    drift apart. Presence-keyed, not truthiness-keyed: a payload with no
+    ``pdb_b64`` at all is an unrecognised shape, not an empty structure.
+    """
+    return "pdb_b64" in result and not result.get("pdb_b64")
+
+
+def _empty_noun(job) -> str:  # noqa: ANN001
+    """What an "empty" run failed to produce, for the headline.
+
+    All three headline tables interpolate this — the live template context
+    below plus the ``_render_html``/``_render_text`` fallbacks — so the
+    delivered subject line and the two fallbacks cannot drift apart.
+
+    The branches below are the same ones ``_result_summary`` takes for
+    tone "empty", in the same order, so the headline and the summary
+    under it always name the same missing thing — a fold tool has no
+    candidates to have produced none of, and neither does ProteinMPNN.
+    test_headline_and_summary_name_the_same_thing walks both functions
+    over one payload list and fails if they diverge.
+
+    "candidates" stays the default: every candidate-producing tool lands
+    there, and the wording is pinned for them by TestEmptyToneRendering.
+    """
+    result = job.result if isinstance(job.result, dict) else {}
+    if not result:
+        return "no output"
+    if isinstance(result.get("sequences"), list):
+        return "no sequences"
+    if _is_structureless(result):
+        return "no structure"
+    return "no candidates"
+
+
 def _job_complete_template_context(
     *, job, base_url: str, job_url: str, tone: str, tool: str,  # noqa: ANN001
 ) -> dict:
@@ -152,7 +190,7 @@ def _job_complete_template_context(
     headline = {
         "success":   f"Your {tool} run is ready",
         "preflight": f"Your {tool} pre-flight passed",
-        "empty":     f"Your {tool} run finished with no candidates",
+        "empty":     f"Your {tool} run finished with {_empty_noun(job)}",
         "failed":    f"Your {tool} run failed",
     }[tone]
     (top_score_label, top_score_value, top_score_caption, top_pdb_key,
@@ -541,7 +579,7 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     headline = {
         "success":   f"Your {tool} run is ready",
         "preflight": f"Your {tool} pre-flight passed",
-        "empty":     f"Your {tool} run finished — no candidates",
+        "empty":     f"Your {tool} run finished — {_empty_noun(job)}",
         "failed":    f"Your {tool} run failed",
     }[tone]
     # Two DIFFERENT conditions, deliberately. The colour is a did-this-go-well
@@ -589,7 +627,7 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     headline = {
         "success":   f"Your {tool} run is ready.",
         "preflight": f"Your {tool} pre-flight passed.",
-        "empty":     f"Your {tool} run finished — no candidates.",
+        "empty":     f"Your {tool} run finished — {_empty_noun(job)}.",
         "failed":    f"Your {tool} run failed.",
     }[tone]
     link_label = "View results" if tone == "success" else "View job details"
@@ -1508,8 +1546,26 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     designs = result.get("designs")
     if isinstance(designs, list):
         return len(designs) == 0
-    if result.get("pdb_b64"):
-        return False
+    # Keyed on PRESENCE, like the three branches above, not on truthiness.
+    # The old line here was ``if result.get("pdb_b64"): return False`` --
+    # and "pdb_b64" is not in _RUN_METADATA_KEYS, so a truthy payload
+    # carrying it reached the same ``return False`` at the bottom either
+    # way. The branch decided nothing, which left a blank structure on the
+    # success path: "your run is ready" over a green View results, to a
+    # page whose viewer and Download PDB are both gated on a truthy
+    # pdb_b64 (templates/tools/af2_results.html:130,244) and a download
+    # route that answers 404 without one (blueprints/jobs.py:1400-1406).
+    # No pipeline writes that payload today -- the three run_pipeline.py
+    # files all _fail instead (tools/af2:699, tools/colabfold:763,
+    # tools/esmfold:787), and the batch preset writes "designs", caught
+    # one branch up -- so this closes the gap "designs" reached production
+    # through rather than a live path.
+    # A MISSING key stays untouched by design: tools/colabfold/meta.py:134
+    # ships a payload with no pdb_b64 at all, and an unrecognised shape
+    # keeps the forward-compat default below.
+    # TestSucceededFoldWithNoStructure pins both sides.
+    if "pdb_b64" in result:
+        return _is_structureless(result)
     # Truthy with no recognised shape. The forward-compat default here is
     # DELIBERATE and stays: test_succeeded_with_unknown_shape_is_success
     # pins "unknown shapes default to success -- never empty", so a future
@@ -1622,6 +1678,18 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
             return (
                 "The run finished but no sequences were returned. See the job "
                 "page for details, or rerun with different parameters."
+            )
+        # Same carve-out as the two above, for the same reason: the
+        # candidates copy prescribes "binder length, hotspot list, number
+        # of designs", knobs a fold form does not offer. Shares the
+        # predicate with the classifier and the headline, so a future
+        # payload carrying BOTH a real pdb_b64 and an empty designs list
+        # takes the candidates copy rather than being told there is no
+        # structure.
+        if _is_structureless(result):
+            return (
+                "The run finished but no structure was returned. See the job "
+                "page for details, or rerun it."
             )
         return (
             "The pipeline finished but produced no passing candidates. This "
