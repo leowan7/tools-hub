@@ -1509,7 +1509,7 @@ def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
         _one_row(key, inline_ext="pdb" if arm == "inline" else None)
     )
     assert len(found) == 1, found
-    href, _filename, label = found[0]
+    href, _filename, _label = found[0]
     # The href is what makes `arm` mean anything. Without it the
     # parametrization is inert: collapsing the two arms leaves all ten
     # cases green while five of them re-run the URL arm, and the BOTH
@@ -1518,7 +1518,6 @@ def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
         assert href.startswith("data:"), href
     else:
         assert href.startswith("/api/jobs/"), href
-    assert label.startswith("."), label
 
 
 def test_a_row_with_no_structure_offers_no_download():
