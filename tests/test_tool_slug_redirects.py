@@ -15,6 +15,12 @@ from __future__ import annotations
 
 import pytest
 
+# create_app() builds the real app, which reads SUPABASE_* from the
+# environment, so isolate like the sibling anonymous-route test does. These
+# tests exercise no DB path today; this keeps that true by construction if the
+# redirect target ever gains one. See tests/conftest.py for the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def client(monkeypatch):
