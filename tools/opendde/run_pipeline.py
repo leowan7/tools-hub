@@ -87,16 +87,27 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1.
+
+    Callers that already burned GPU wall-clock pass ``runtime_seconds``:
+    ``_interpret_pipeline_return`` (``gpu/modal_client.py``) reads it off the
+    FAILED arm as the job's ``gpu_seconds_used``, and
+    ``_charge_workspace_for_completed_job`` (``shared/jobs.py``) returns
+    without billing when it is absent or zero. Pre-run failures omit it.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
-    _write_result(
-        {
-            "status": "FAILED",
-            "error": {"bucket": bucket, "check": check, "detail": detail},
-            "tier": os.environ.get("JOB_TIER", ""),
-            "provider_job_id": os.environ.get("JOB_ID", ""),
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": "FAILED",
+        "error": {"bucket": bucket, "check": check, "detail": detail},
+        "tier": os.environ.get("JOB_TIER", ""),
+        "provider_job_id": os.environ.get("JOB_ID", ""),
+    }
+    if runtime_seconds is not None:
+        payload["runtime_seconds"] = runtime_seconds
+    _write_result(payload)
     sys.exit(1)
 
 
@@ -546,6 +557,14 @@ def main() -> None:
             archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)
+    if not designs_out:
+        _fail(
+            "no_yield",
+            "no_designs",
+            f"all {len(structures)} predicted structures failed to upload "
+            f"({n_failures} failures) — nothing to deliver.",
+            runtime_seconds=runtime_seconds,
+        )
     _write_result(
         {
             "status": "COMPLETED",

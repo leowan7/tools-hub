@@ -1,0 +1,406 @@
+"""A GPU run in which every design dies must FAIL, not COMPLETE green.
+
+Three pipelines used to write ``"status": "COMPLETED"`` with ``designs: []``
+when every single design failed to fold or upload, so the user saw a green job
+with no results. Each now guards the terminal write with
+``_fail("no_yield", "no_designs", ..., runtime_seconds=...)``.
+
+Every case here is a PAIR — the zero-design run must FAIL, and a run with one
+surviving design must still COMPLETE. Without the positive control a guard
+that fired unconditionally would pass the failure half just as well.
+
+The ``runtime_seconds`` assertion is the billing half, not decoration:
+``_interpret_pipeline_return`` (``gpu/modal_client.py``) reads that key off
+the FAILED arm as the job's ``gpu_seconds_used`` — ``result`` is ``None`` on
+that arm, so the payload-scan fallback in ``shared/jobs.py`` cannot recover it
+— and ``_charge_workspace_for_completed_job`` (``shared/jobs.py``) returns
+without billing when it is absent or zero.
+
+The ``"no_yield"`` bucket is the same argument for the other ledger, the
+customer wallet. ``classify_terminal_state`` (``shared/jobs.py``) sends any
+bucket missing from ``_ERROR_BUCKET_TO_FAILURE_CLASS`` to ``unclassified``,
+and ``_settle_wallet_hold_for_completed_job`` releases those holds in full, so
+flipping this run to FAILED under an unmapped bucket would have turned a run
+the user paid for into a free one. ``no_yield`` maps to ``completed_no_yield``,
+which is in ``_BILLED_FAILURE_CLASSES``; ``_assert_failed_and_billed`` reads
+the bucket back off each guard's own payload rather than restating it, so a
+guard that moved to an unmapped bucket fails here.
+
+That classifier is only reachable because the poll path carries the bucket.
+All three tools return their terminal payload inline as ``smoke_result``
+(``tools/<tool>/modal_app.py``) and POST no terminal webhook, so
+``/jobs/<id>/status.json`` (``blueprints/jobs.py``) is the only writer that
+terminalises them — and it used to rebuild the error dict with a literal
+``"bucket": "pipeline"``, which classifies as ``tool_error`` and releases the
+hold in full. ``test_guard_bucket_survives_the_poll_route_to_the_wallet``
+drives a real guard payload through ``_interpret_pipeline_return`` and that
+route instead of calling the classifier directly, so a bucket dropped anywhere
+in between fails here.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from tools.esmfold import run_pipeline as esm_rp
+from tools.iggm import run_pipeline as iggm_rp
+from tools.opendde import run_pipeline as odd_rp
+
+
+def _capture(monkeypatch, module) -> list[dict]:
+    """Trap the terminal payload instead of writing /tmp/smoke_results.json."""
+    written: list[dict] = []
+    monkeypatch.setattr(module, "_write_result", written.append)
+    return written
+
+
+def _assert_failed_and_billed(written: list[dict]) -> None:
+    assert len(written) == 1, f"expected exactly one terminal write, got {written}"
+    payload = written[0]
+    assert payload["status"] == "FAILED", payload
+    assert payload["error"]["check"] == "no_designs", payload["error"]
+    # The billing half — see the module docstring.
+    assert payload.get("runtime_seconds") is not None, (
+        "FAILED payload dropped runtime_seconds; the burned GPU session would "
+        "book no compute at all"
+    )
+    assert isinstance(payload["runtime_seconds"], int)
+    # The wallet half — the bucket comes from the guard, not from this file.
+    from shared.jobs import classify_terminal_state, is_billed_failure_class
+
+    failure_class = classify_terminal_state(status="failed", error=payload["error"])
+    assert is_billed_failure_class(failure_class), (
+        f"bucket {payload['error']['bucket']!r} classifies as {failure_class!r}, "
+        "which releases the wallet hold in full for a run that burned GPU time"
+    )
+
+
+def _assert_completed(written: list[dict], n_designs: int) -> None:
+    assert len(written) == 1, f"expected exactly one terminal write, got {written}"
+    payload = written[0]
+    assert payload["status"] == "COMPLETED", payload
+    assert len(payload["designs"]) == n_designs, payload["designs"]
+
+
+# ---------------------------------------------------------------------------
+# ESMFold — batch fold path
+# ---------------------------------------------------------------------------
+
+
+_SEQ = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+
+
+def _esmfold_batch(monkeypatch, *, fold_ok: bool):
+    """Drive ``_run_batch_folds`` with the model + uploads stubbed out."""
+    written = _capture(monkeypatch, esm_rp)
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)  # silences send_heartbeat
+    monkeypatch.setattr(esm_rp, "load_esmfold", lambda: (None, None))
+
+    def _fold(tokenizer, model, name, seq, raw_dir=None, raw_stem=""):
+        if not fold_ok:
+            raise RuntimeError("fold blew up on the GPU")
+        return {
+            "pdb_b64": base64.b64encode(b"ATOM      1  N   MET A   1\n").decode(),
+            "mean_plddt": 88.1,
+            "ptm": 0.8,
+            "total_length": len(seq),
+        }
+
+    monkeypatch.setattr(esm_rp, "_fold_record", _fold)
+    monkeypatch.setattr(
+        esm_rp,
+        "request_upload_urls",
+        lambda ep, tok, keys: {k: "https://up" for k in keys},
+    )
+    monkeypatch.setattr(esm_rp, "upload_pdb", lambda url, data: None)
+
+    payload = {"job_token": "t", "upload_urls_endpoint": "https://example/upload"}
+    records = [{"name": "d0", "sequence": _SEQ}]
+    return written, payload, records
+
+
+def test_esmfold_batch_with_zero_folded_designs_fails(monkeypatch, tmp_path):
+    written, payload, records = _esmfold_batch(monkeypatch, fold_ok=False)
+    with pytest.raises(SystemExit):
+        esm_rp._run_batch_folds(payload, records, 0.0, tmp_path)
+    _assert_failed_and_billed(written)
+
+
+def test_esmfold_batch_with_a_surviving_design_still_completes(monkeypatch, tmp_path):
+    written, payload, records = _esmfold_batch(monkeypatch, fold_ok=True)
+    esm_rp._run_batch_folds(payload, records, 0.0, tmp_path)
+    _assert_completed(written, 1)
+
+
+# ---------------------------------------------------------------------------
+# OpenDDE — every predicted structure fails to upload
+# ---------------------------------------------------------------------------
+
+
+def _opendde_main(monkeypatch, tmp_path, *, upload_ok: bool):
+    written = _capture(monkeypatch, odd_rp)
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+
+    # Satisfy the real weights preflight without a Modal Volume.
+    ckpt_dir = tmp_path / "root" / "checkpoint"
+    ckpt_dir.mkdir(parents=True)
+    (ckpt_dir / odd_rp.CHECKPOINTS["general"]).write_bytes(b"weights")
+    monkeypatch.setattr(odd_rp, "OPENDDE_ROOT", str(tmp_path / "root"))
+
+    monkeypatch.setattr(
+        odd_rp,
+        "parse_payload",
+        lambda: {
+            "job_token": "t",
+            "upload_urls_endpoint": "https://example/upload",
+            "job_spec": {"preset": "general", "spec": [{"id": "A"}], "sample": 1},
+        },
+    )
+    monkeypatch.setattr(odd_rp, "run_opendde", lambda *a, **k: 0)
+    monkeypatch.setattr(odd_rp, "archive_raw_outputs", lambda *a, **k: None)
+
+    def _collect(out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "pred_0.pdb"
+        path.write_bytes(b"ATOM      1  N   MET A   1\n")
+        return [path]
+
+    monkeypatch.setattr(odd_rp, "collect_structures", _collect)
+    monkeypatch.setattr(odd_rp, "_read_score_json", lambda sp: {"ranking_score": 0.9})
+
+    def _urls(ep, tok, keys):
+        if not upload_ok:
+            raise RuntimeError("presign endpoint refused")
+        return {k: "https://up" for k in keys}
+
+    monkeypatch.setattr(odd_rp, "request_upload_urls", _urls)
+    monkeypatch.setattr(odd_rp, "upload_structure", lambda url, data, ctype: None)
+    return written
+
+
+def test_opendde_with_zero_uploaded_predictions_fails(monkeypatch, tmp_path):
+    written = _opendde_main(monkeypatch, tmp_path, upload_ok=False)
+    with pytest.raises(SystemExit):
+        odd_rp.main()
+    _assert_failed_and_billed(written)
+
+
+def test_opendde_with_a_surviving_prediction_still_completes(monkeypatch, tmp_path):
+    written = _opendde_main(monkeypatch, tmp_path, upload_ok=True)
+    odd_rp.main()
+    _assert_completed(written, 1)
+
+
+# ---------------------------------------------------------------------------
+# IgGM — every design PDB fails to upload
+# ---------------------------------------------------------------------------
+
+
+def _iggm_main(monkeypatch, *, upload_ok: bool):
+    written = _capture(monkeypatch, iggm_rp)
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+
+    monkeypatch.setattr(
+        iggm_rp,
+        "parse_payload",
+        lambda: {
+            "job_token": "t",
+            "upload_urls_endpoint": "https://example/upload",
+            "input_presigned_url": "https://example/antigen.pdb",
+            "job_spec": {
+                "preset": "complex_prediction",
+                "run_task": "design",
+                "antibody_fasta": [{"header": "H", "sequence": "QVQLV"}],
+                "antigen_chain": "A",
+                "num_samples": 1,
+            },
+        },
+    )
+    monkeypatch.setattr(iggm_rp, "download_antigen_pdb", lambda url, dest: dest)
+    monkeypatch.setattr(
+        iggm_rp,
+        "antigen_chain_info",
+        lambda path, chain: {"seq": "MQIFV", "resnum_to_pos": {}, "n_res": 5},
+    )
+    monkeypatch.setattr(iggm_rp, "write_fasta", lambda *a, **k: None)
+    monkeypatch.setattr(iggm_rp, "run_iggm", lambda *a, **k: 0)
+    monkeypatch.setattr(iggm_rp, "collect_artifacts", lambda out_dir: [])
+    monkeypatch.setattr(iggm_rp, "_ship_raw", lambda *a, **k: None)
+    monkeypatch.setattr(
+        iggm_rp,
+        "epitope_contacts",
+        lambda text, n, pos: {"n_contacted": 0, "n_epitope": 0, "contacted": []},
+    )
+
+    def _collect(out_dir):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "sample_0.pdb"
+        path.write_text("ATOM      1  N   MET A   1\n")
+        return [path]
+
+    monkeypatch.setattr(iggm_rp, "collect_design_pdbs", _collect)
+
+    def _urls(ep, tok, keys):
+        if not upload_ok:
+            raise RuntimeError("presign endpoint refused")
+        return {k: "https://up" for k in keys}
+
+    monkeypatch.setattr(iggm_rp, "request_upload_urls", _urls)
+    monkeypatch.setattr(iggm_rp, "upload_file", lambda url, data, ctype: None)
+    return written
+
+
+def test_iggm_with_zero_uploaded_designs_fails(monkeypatch):
+    written = _iggm_main(monkeypatch, upload_ok=False)
+    with pytest.raises(SystemExit):
+        iggm_rp.main()
+    _assert_failed_and_billed(written)
+
+
+def test_iggm_with_a_surviving_design_still_completes(monkeypatch):
+    written = _iggm_main(monkeypatch, upload_ok=True)
+    iggm_rp.main()
+    _assert_completed(written, 1)
+
+
+# ---------------------------------------------------------------------------
+# The billing wiring the guards depend on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("module", [esm_rp, odd_rp, iggm_rp])
+def test_fail_omits_runtime_seconds_when_no_gpu_time_was_burned(module, monkeypatch):
+    """Pre-run failures must NOT invent a runtime, or they would bill for one."""
+    written = _capture(monkeypatch, module)
+    with pytest.raises(SystemExit):
+        module._fail("preflight", "weights", "checkpoint missing")
+    assert "runtime_seconds" not in written[0], written[0]
+
+
+@pytest.mark.parametrize("module", [esm_rp, odd_rp, iggm_rp])
+def test_fail_carries_runtime_seconds_through_to_gpu_seconds_used(module, monkeypatch):
+    """The FAILED payload must survive modal_client as a non-zero debit."""
+    from gpu.modal_client import _interpret_pipeline_return
+
+    written = _capture(monkeypatch, module)
+    with pytest.raises(SystemExit):
+        module._fail("no_yield", "no_designs", "nothing survived", runtime_seconds=673)
+
+    interpreted = _interpret_pipeline_return(
+        {"exit_code": 1, "smoke_result": json.loads(json.dumps(written[0]))}
+    )
+    assert interpreted["status"] == "failed"
+    assert interpreted["gpu_seconds_used"] == 673
+
+
+def _zero_design_payload(module, monkeypatch, tmp_path) -> dict:
+    """Run the tool's own guard and hand back the terminal payload it wrote."""
+    if module is esm_rp:
+        written, payload, records = _esmfold_batch(monkeypatch, fold_ok=False)
+        with pytest.raises(SystemExit):
+            esm_rp._run_batch_folds(payload, records, 0.0, tmp_path)
+    elif module is odd_rp:
+        written = _opendde_main(monkeypatch, tmp_path, upload_ok=False)
+        with pytest.raises(SystemExit):
+            odd_rp.main()
+    else:
+        written = _iggm_main(monkeypatch, upload_ok=False)
+        with pytest.raises(SystemExit):
+            iggm_rp.main()
+    return written[0]
+
+
+def _drive_poll_route(monkeypatch, poll: dict) -> dict:
+    """GET /jobs/<id>/status.json against ``poll`` and trap complete_job's args."""
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    from app import create_app
+
+    captured: dict = {}
+    row = SimpleNamespace(
+        id="job-1",
+        status="running",
+        tool="esmfold",
+        preset="standard",
+        inputs={},
+        result=None,
+        error=None,
+        gpu_seconds_used=None,
+        started_at=None,
+        modal_function_call_id="fc-abc123",
+    )
+
+    def _complete_job(job_id, *, terminal_status, **kw):
+        captured.update(kw, terminal_status=terminal_status)
+        row.status = terminal_status
+        return row
+
+    monkeypatch.setattr(
+        "blueprints.jobs.get_job", lambda job_id, user_id=None, **_kw: row
+    )
+    monkeypatch.setattr("blueprints.jobs.complete_job", _complete_job)
+    monkeypatch.setattr(
+        "blueprints.jobs.load_user_context",
+        lambda: SimpleNamespace(
+            user_id="u-1", tier="free", balance=10, email="user@example.com"
+        ),
+    )
+
+    flask_app = create_app()
+    flask_app.config["TESTING"] = True
+    flask_app.modal_client = SimpleNamespace(poll=lambda _fc: poll)
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_email"] = "user@example.com"
+    resp = client.get("/jobs/job-1/status.json")
+    assert resp.status_code == 200, resp.data
+    return captured
+
+
+@pytest.mark.parametrize("module", [esm_rp, odd_rp, iggm_rp])
+def test_guard_bucket_survives_the_poll_route_to_the_wallet(
+    module, monkeypatch, tmp_path
+):
+    """End to end: guard payload -> modal_client -> status route -> classifier."""
+    from gpu.modal_client import _interpret_pipeline_return
+    from shared.jobs import classify_terminal_state, is_billed_failure_class
+
+    smoke = json.loads(json.dumps(_zero_design_payload(module, monkeypatch, tmp_path)))
+    poll = _interpret_pipeline_return({"exit_code": 1, "smoke_result": smoke})
+    captured = _drive_poll_route(monkeypatch, poll)
+
+    assert captured["terminal_status"] == "failed"
+    assert captured["gpu_seconds_used"] == smoke["runtime_seconds"]
+    failure_class = classify_terminal_state(
+        status="failed", error=captured["error"]
+    )
+    assert is_billed_failure_class(failure_class), (
+        f"the route handed the wallet {captured['error']!r} -> {failure_class!r}; "
+        f"the guard reported bucket {smoke['error']['bucket']!r}, so the bucket "
+        "was dropped between the pipeline and the billing decision and a run "
+        "that burned GPU time is refunded in full"
+    )
+
+
+def test_poll_route_still_falls_back_to_pipeline_without_a_bucket(monkeypatch):
+    """A failed poll carrying no payload keeps the old literal bucket.
+
+    ``_interpret_pipeline_return`` reports ``error_bucket`` as ``None`` when the
+    FunctionCall returned no ``smoke_result`` at all (webhook-delivery failure,
+    or a nonzero exit with nothing written) -- that case must keep classifying
+    as ``tool_error`` rather than falling through to ``unclassified``.
+    """
+    from gpu.modal_client import _interpret_pipeline_return
+    from shared.jobs import classify_terminal_state
+
+    poll = _interpret_pipeline_return({"exit_code": 137, "smoke_result": None})
+    assert poll["status"] == "failed"
+    assert poll.get("error_bucket") is None
+    captured = _drive_poll_route(monkeypatch, poll)
+    assert captured["error"]["bucket"] == "pipeline"
+    assert classify_terminal_state(status="failed", error=captured["error"]) == (
+        "tool_error"
+    )
