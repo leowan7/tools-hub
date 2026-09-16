@@ -35,8 +35,10 @@ maps to a checked-in pipeline config + checkpoint pair. ``preset`` becomes
   (``search_ligand_binder_local_pipeline``, RF3 reward; no AF2 fallback).
 - ``motif_ame``      — motif scaffolding / enzyme active-site (AME)
   (``search_ame_local_pipeline``, RF3 reward; no AF2 fallback).
-- ``validate``       — the free CPU-only ``complexa validate`` pre-flight
-  gate (the staging smoke; no GPU, no wallet).
+- ``validate``       — the free ``complexa validate`` pre-flight gate (the
+  staging smoke). No GPU WORK and no wallet charge, but it runs in the same
+  A100 container every other preset gets — see run_pipeline.py's "validate
+  tier" header.
 
 Target model: a run designs against EITHER a curated ``task_name`` (a
 repo-bundled benchmark task whose target is baked into the config) OR a
@@ -845,8 +847,8 @@ adapter = ToolAdapter(
             slug="validate",
             label="Validate (free dry-run)",
             description=(
-                "Free CPU-only pre-flight that checks your target + config "
-                "load before you commit GPU to a paid search. No wallet charge."
+                "Free pre-flight that checks your target + config load before "
+                "you commit GPU to a paid search. No wallet charge."
             ),
             requires_pdb=False,
         ),
