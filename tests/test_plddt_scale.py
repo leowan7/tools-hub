@@ -94,7 +94,7 @@ def _stub_job(tool: str, scores: dict):
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     import app as app_module
     from shared.feature_flags import flag_name
     from tools import base as tool_base
