@@ -25,6 +25,7 @@ import base64
 import csv
 import io
 import zipfile
+from collections.abc import Mapping
 from typing import Callable, Optional
 
 from shared import metric_glossary as _metric_glossary
@@ -32,7 +33,81 @@ from shared import pdb_bfactors as _pdb_bfactors
 
 
 def _dict_candidates(candidates) -> list:
-    return [c for c in (candidates or []) if isinstance(c, dict)]
+    """The EXPORT-layer read of a candidate list: same length, same order,
+    every row a plain dict. The mirror of ``shared.jobs.display_rows``, the
+    RENDER layer's read of the SAME STORED ARRAY -- the export routes reach
+    ``result["candidates"]`` / ``result["designs"]`` through
+    ``shared.jobs.candidate_records``, while each tool's results template
+    reads the key it stores under itself and wraps it in ``display_rows``
+    (a Jinja global; see ``templates/tools/proteina_results.html`` and
+    ``boltz2_results.html``). Two accessors over one array, so these two
+    functions are the only place the page and the download can disagree
+    about which rows exist.
+
+    ``display_rows`` IS NOT ON THIS BRANCH -- it arrives with
+    ``claude/zealous-hertz-98ca24``, and until it does the page still 500s on
+    such a row rather than blanking it. This side is written to match it now
+    so the two land agreeing: its body was copied out of that branch and run
+    beside this one over one probe set (row types, tuple/list, and
+    dict/str/int/None arrays), returning lists that compared equal on every
+    input. Equal BY VALUE -- this side converts a non-dict Mapping (below)
+    where the render side keeps it, and a Mapping equals the dict of its
+    items. Nothing on this branch can re-run that comparison.
+
+    COERCES RATHER THAN FILTERING, and that is the whole fix. Every serializer
+    here derives row identity from ``enumerate`` over this list --
+    :func:`export_key` sets ``rank = i + 1`` -- so dropping a row renumbered
+    every design after it and carried the FASTA ids and ZIP entry names with
+    it. Once the page blanks such a row instead of 500ing, it shows N rows
+    while the download had N-1 under different numbers, one click apart.
+
+    A ``{}`` row needed no new skip in any of the three formats. Measured:
+
+    * CSV -- a blank row under its own rank, later rows unmoved.
+    * FASTA -- dropped by the existing ``if not seq`` (``{}`` carries no
+      sequence), and :func:`candidates_to_fasta` numbers from the full list,
+      so the next record keeps its own rank. Same path a backbone with no
+      sequence already takes; :func:`export_key`'s docstring documents it.
+    * ZIP -- dropped by the existing ``if data is None`` (no inline b64, and
+      a falsy ``pdb_key`` blocks the Storage fetch), later entries named from
+      their own keys.
+
+    So a malformed row is a BLANK CSV ROW and an OMISSION from the FASTA and
+    the ZIP, both with the index preserved. The CSV is the tabular mirror of
+    the page and the page still shows the row; the other two carry a sequence
+    and a structure, which that row does not have. Pinned by
+    tests/test_export_shapes.py::TestMalformedCandidateRow.
+
+    The PREDICATE ``Mapping`` and the list/tuple guard are ``display_rows``'s,
+    because the point of this function is to agree with it about WHICH ROWS
+    EXIST. The guard is load-bearing under a coercion that the old filter did
+    not need: a candidates array that is a dict or a string would otherwise
+    become one blank row per key or per character, where filtering returned
+    ``[]``.
+
+    A Mapping that is not a ``dict`` is CONVERTED rather than passed through,
+    which the render side has no reason to do: three readers downstream of
+    this one narrow the type again -- ``shared.score_legends.is_fabricated``
+    and both probes in :func:`_metric_columns` gate on
+    ``isinstance(..., dict)``. Passed through, such a row reached the CSV
+    with its ``provenance`` column dropped, so a smoke stub's invented ipTM
+    exported unmarked -- failing OPEN exactly where the old filter failed
+    closed. A plain dict is returned as it is, so the only path that copies
+    is one nothing produces today.
+
+    Not imported from ``shared.jobs``: that module pulls Supabase in through
+    ``shared.credits`` at import time and this one is deliberately free of it
+    (see the module docstring), so two duplicated lines are the cheaper edge.
+
+    Hardening, not a live failure: no in-repo producer writes a non-Mapping
+    candidate row today.
+    """
+    if not isinstance(candidates, (list, tuple)):
+        return []
+    return [
+        c if isinstance(c, dict) else dict(c) if isinstance(c, Mapping) else {}
+        for c in candidates
+    ]
 
 
 def _decode_b64(encoded) -> Optional[bytes]:
