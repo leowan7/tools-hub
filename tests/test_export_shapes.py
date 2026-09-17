@@ -21,6 +21,7 @@ key fails here rather than in production.
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 
 import pytest
@@ -367,3 +368,12 @@ class TestNonStringPdbKey:
         assert _safe_arcname("d" * 65535) == "d" * 65535
         assert len(_safe_arcname("d" * 65536).encode("utf-8")) == 65535
         assert len(_safe_arcname("\u00e9" * 40000).encode("utf-8")) <= 65535
+        # Where 65535 comes from, rather than someone's preference: zipfile
+        # is what refuses, at exactly one byte past it. Pinned here so the
+        # bound and its reason cannot drift apart -- a measurement recorded
+        # in a commit message is not something a later reader can re-run.
+        with zipfile.ZipFile(io.BytesIO(), "w") as zf:
+            zf.writestr("d" * 65535, b"ok")
+        with pytest.raises(struct.error):
+            with zipfile.ZipFile(io.BytesIO(), "w") as zf:
+                zf.writestr("d" * 65536, b"too long")
