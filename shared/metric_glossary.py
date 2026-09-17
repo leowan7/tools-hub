@@ -44,12 +44,30 @@ GLOSSARY: dict[str, dict] = {
         "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "pLDDT": {
+        # THE BANDS ARE THE CITED PAPER'S, and they were not: this read
+        # "> 80 very high confidence; 60-80 acceptable" until 2026-09-17.
+        # Jumper et al. put "very high" at 90 and up, "confident" at
+        # 70-90, "low" at 50-70, so 80 was a tier too generous and the
+        # 60-80 band straddled the 70 edge, mixing two of them. All nine
+        # per-tool pLDDT legends in shared/score_legends.py draw their
+        # top tier at 90, where the paper draws it; the old string drew
+        # it at 80, which every one of them calls only "confidently
+        # folded".
+        #
+        # This string is not decoration. It renders on ONE live column --
+        # opendde's pLDDT, the only displayed pLDDT column with no
+        # per-tool legend, where components/candidate_table.html makes it
+        # the reader's only answer to "what is good?". The other pLDDT
+        # columns either carry a legend (suppressed since #277) or are
+        # keyed mean_pLDDT / af2_plddt, which this dict has no entry for.
+        # Both the band and that exposure are pinned by
+        # tests/test_column_tooltip_states_one_bar.py.
         "label": "pLDDT",
         "definition": (
             "Predicted Local Distance Difference Test. Per-residue confidence "
             "in the modelled structure on a 0–100 scale."
         ),
-        "good_range": "> 80 very high confidence; 60–80 acceptable",
+        "good_range": "90 or more very high confidence; 70–90 confident; 50–70 low",
         "citation": "Jumper et al., Nature 2021 (AlphaFold2)",
     },
     "pAE": {
