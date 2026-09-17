@@ -194,14 +194,13 @@ class TestNonStringPdbKey:
     Only the CSV survived, because ``csv`` stringifies what it writes.
 
     NOT position-dependent, which is what separates this from the same
-    defect on the per-row structure route
-    (``blueprints/jobs.py::job_candidate_pdb``, fixed in f6c9463). That
-    loop RETURNS on the first basename match, so a bad row there breaks
-    only the designs listed AFTER it, and a bad row last breaks nothing --
-    f6c9463's own message records that its test passes unfixed with the
-    bad row last. Here the position is irrelevant: the serializer has to
-    walk every row to finish the file, so a bad last row aborts it exactly
-    as a bad first row does. Hence the parametrized position below.
+    defect on the per-row structure route,
+    ``blueprints/jobs.py::job_candidate_pdb``, which carries no coercion
+    of its own. That loop RETURNS on the first basename match, so a bad
+    row there breaks only the requests whose own match sits after it.
+    Here the position is irrelevant: the serializer has to walk every row
+    to finish the file, so a bad last row aborts it exactly as a bad
+    first row does. Hence the parametrized position below.
 
     Coerced at the definition in ``shared.exports.export_key``, which is what
     makes one guard cover all three formats.
@@ -235,9 +234,9 @@ class TestNonStringPdbKey:
         """Both files are built from every row, so the raise reached the
         caller with nothing written at all -- the other designs included.
         The axis asserts the exact count at EVERY position because the
-        outcome here does not vary with position, unlike the same defect
-        on the per-row structure route, where f6c9463's message records
-        that its test passes unfixed with the bad row last."""
+        outcome here does not vary with position, unlike the early-return
+        loop in ``blueprints/jobs.py::job_candidate_pdb``, where it
+        does."""
         rows = [
             {"pdb_key": f"designs/good_{i}.pdb", "sequence": "ACDE",
              "scores": {}}
