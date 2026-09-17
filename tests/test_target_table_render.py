@@ -1489,8 +1489,11 @@ def test_the_download_label_is_the_extension_the_row_actually_serves(
 def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
     """job.result is container output, so the key's TYPE is not ours.
 
-    Five of the fourteen tools build their keys container-side,
-    outside this repo. Three separate expressions in the macro abort
+    It is stored as the container sent it
+    (webhooks/modal.py::_handle_result, blueprints/jobs.py::job_status),
+    and the one pass over candidates before persisting,
+    shared/jobs.py::_slim_result_for_persist, type-checks pdb_key
+    instead of coercing it. Three separate expressions in the macro abort
     the WHOLE render -- the results page, not one cell -- on a
     non-str: `| urlencode` raises ValueError on a list, and
     `'.' in pdb_key` raises TypeError on an int. A first attempt
