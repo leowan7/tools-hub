@@ -479,6 +479,13 @@ def create_app() -> Flask:
         _score_legends.multichain_iptm_unreliable
     )
     flask_app.jinja_env.globals["ordinal"] = _ranking.ordinal
+
+    # A null-safe stand-in for the built-in ``sort(attribute=)`` in the
+    # per-tool results partials: the built-in compares raw values, so a
+    # single null beside a single number raises TypeError out of
+    # render_template and 500s the results page. See
+    # shared.ranking.sort_by_number.
+    flask_app.jinja_env.filters["sort_by_number"] = _ranking.sort_by_number
     # Exposed so the target page can tell a PAUSED run from a still-running one
     # without a second copy of the status set in markup. It must stay
     # CAMPAIGN_TERMINAL_STATUSES and never CAMPAIGN_STATUSES: the two disagree

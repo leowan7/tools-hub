@@ -37,7 +37,7 @@
   }) %}
 {% endfor %}
 
-{% set candidates = candidates | sort(attribute='scores.epitope_contacts', reverse=True) %}
+{% set candidates = candidates | sort_by_number('scores.epitope_contacts', reverse=True) %}
 {% set columns = ['epitope_contacts'] %}
 
 {# Top summary panel. #}

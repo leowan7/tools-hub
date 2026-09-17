@@ -59,7 +59,7 @@
       },
   }) %}
 {% endfor %}
-{% set candidates = candidates | sort(attribute='rank') %}
+{% set candidates = candidates | sort_by_number('rank') %}
 
 {# Only show confidence columns that OpenDDE actually populated this run. #}
 {% set columns = ['ranking_score']
