@@ -286,12 +286,39 @@ class TestNonStringPdbKey:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             assert zf.namelist() == ["candidate_1.pdb"], zf.namelist()
 
-    def test_the_csv_column_is_unchanged_by_the_coercion(self):
-        """The CSV was never the broken one, so the fix must not move it.
-        ``csv`` stringified the raw value already; ``export_key`` now hands it
-        the same text itself."""
-        csv_text = candidates_to_csv([{"pdb_key": 12345, "scores": {}}])
-        assert csv_text.splitlines()[1].split(",")[1] == "12345", csv_text
+    # ``pdb_key`` is column 1 of the CSV (header: rank, pdb_key,
+    # source_rank).
+    @pytest.mark.parametrize("raw,cell", [
+        ("designs/a.pdb", "designs/a.pdb"),
+        (12345, "12345"),
+        (3.5, "3.5"),
+        (True, "True"),
+    ])
+    def test_the_csv_cell_is_unchanged_for_a_truthy_key(self, raw, cell):
+        """The CSV was never the broken one -- ``csv`` stringifies whatever
+        it is handed, so this column never reached ``.replace``. For a
+        TRUTHY key the coercion is therefore a no-op here: ``export_key``
+        writes the text ``csv`` used to write itself."""
+        csv_text = candidates_to_csv([{"pdb_key": raw, "scores": {}}])
+        assert csv_text.splitlines()[1].split(",")[1] == cell, csv_text
+
+    @pytest.mark.parametrize("raw", [False, 0, 0.0])
+    def test_the_csv_cell_empties_for_a_falsy_key(self, raw):
+        """A FALSY key is the one case this column does move, and it moves
+        on purpose: the cell used to carry the literal ``False``, ``0`` or
+        ``0.0`` that ``csv`` printed, text that reads as a key and is not
+        one. Preserving falsiness empties it instead, which is how the CSV
+        spells the state the FASTA and ZIP spell as ``candidate_{i + 1}``.
+
+        ``None`` and ``""`` are absent from the list because ``csv`` wrote
+        both as an empty cell already, so those two really are unchanged.
+
+        Measured rather than assumed: over "designs/a.pdb", 12345, 3.5,
+        True, False, 0, 0.0, None, "", a list, a dict and a tuple, a
+        byte diff of the whole CSV before and after the coercion reports
+        these three rows and no others."""
+        csv_text = candidates_to_csv([{"pdb_key": raw, "scores": {}}])
+        assert csv_text.splitlines()[1].split(",")[1] == "", csv_text
 
     def test_an_oversized_key_does_not_take_the_whole_zip(self):
         """Coercing the TYPE does not close the whole-file blast radius on its
