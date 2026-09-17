@@ -267,12 +267,16 @@ def test_a_tool_that_states_a_bar_still_answers_what_good_is():
 
 
 BINDCRAFT_SURFACE_HYDROPHOBICITY = ("bindcraft", "surface_hydrophobicity")
+PROTEINA_BINDER_SCRMSD = ("proteina", "binder_scrmsd")
 
 
-def test_the_barless_legends_are_the_two_declared_here():
+def test_the_barless_legends_are_the_ones_declared_here():
     """Pins the blast radius of the three template conditions. If a further
     legend ever drops its bar, that tool's surfaces change too — which may be
     right, but it should be a decision, not a surprise.
+
+    (NAMED WITHOUT A COUNT. This assertion's own set is the count, and the
+    previous name said "the two" one entry before a third arrived.)
 
     THE SECOND ENTRY IS A DECISION AND HERE IS THE DECISION. bindcraft's
     surface hydrophobicity had ``good`` 10 / ``excellent`` 5 while it was
@@ -287,12 +291,24 @@ def test_the_barless_legends_are_the_two_declared_here():
     from Accepted/ only, so 0.35 could not be failed either.
     shared/score_legends.py carries the full account.
 
+    THE THIRD ENTRY IS A DECISION TOO. proteina's ``binder_scrmsd`` was
+    registered barless on purpose: the tool declares no GATE_COLUMNS entry, so
+    nothing judges a proteina design against a bar, and the nearest thing to
+    one (``REFOLD_CUT_A`` in tools/proteina/export_campaign.py) is one export
+    script's filter carrying no justification at all — promoting it into
+    ``good`` would be BoltzGen's mistake with a different number.
+    shared/score_legends.py carries that account, and the account of why the
+    tool's other four columns get no legend of any kind.
+
     A barless legend cannot silently become a gate leg: test_derived_verdicts
     ::test_every_gate_column_has_a_legend requires a numeric ``good`` on
-    every column in GATE_COLUMNS, and bindcraft declares none at all.
+    every column in GATE_COLUMNS, and bindcraft and proteina declare none at
+    all.
     """
     barless = {k for k, v in SCORE_LEGENDS.items() if "good" not in v}
-    assert barless == {BOLTZGEN_IPTM, BINDCRAFT_SURFACE_HYDROPHOBICITY}, barless
+    assert barless == {
+        BOLTZGEN_IPTM, BINDCRAFT_SURFACE_HYDROPHOBICITY, PROTEINA_BINDER_SCRMSD,
+    }, barless
 
 
 def test_the_form_page_does_not_quote_the_band_to_a_boltzgen_user(_app_client):
