@@ -1,12 +1,14 @@
 """The completion email must not promise a download it has not checked for.
 
 ``shared/email.py::_result_summary`` ends a successful composite-tool mail with
-"N candidates returned with real scores and downloadable structures." The count
-is read from ``candidate_records``. The download clause was read from nothing:
-it was appended to every candidate list, whatever the rows carried. #261 made
-the clause conditional. This file now also pins its NUMBER, because a result
-where only SOME rows carry a structure kept the clause and kept overstating
-how many rows it covered.
+"N candidates returned with real scores and downloadable structures" -- both
+nouns singular at N == 1, the count's off ``label`` and the download one off
+``noun``, the single expression the partial-delivery branch reads too. The
+count is read from ``candidate_records``. The download clause was read from
+nothing: it was appended to every candidate list, whatever the rows carried.
+#261 made the clause conditional. This file now also pins its NUMBER, because
+a result where only SOME rows carry a structure kept the clause and kept
+overstating how many rows it covered.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
@@ -415,7 +417,7 @@ def test_an_inline_only_row_keeps_the_promise():
     """
     bodies = _mail({"candidates": [_inline_row(0)]})
     for part, body in bodies.items():
-        assert "1 candidate returned with real scores and downloadable structures." in body, (
+        assert "1 candidate returned with real scores and a downloadable structure." in body, (
             part, body,
         )
 

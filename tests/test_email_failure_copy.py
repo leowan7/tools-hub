@@ -174,8 +174,11 @@ class TestResultTone:
         summary = email_mod._result_summary(job, tone="success")
         # "structures", not "PDBs". boltzgen writes .cif for most rows and
         # reaches this same line; reverting the word was caught by nothing
-        # until this assertion.
-        assert "downloadable structures" in summary
+        # until this assertion. Singular because this job carries ONE
+        # design: the clause is built from the same ``noun`` expression the
+        # partial-delivery branch reads, so pinning the whole clause here
+        # pins the number as well as the word.
+        assert "and a downloadable structure." in summary
         assert "downloadable PDBs" not in summary
 
     def test_an_unreadable_payload_asserts_nothing_about_it(self):
