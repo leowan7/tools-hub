@@ -308,7 +308,8 @@ class TestNonStringPdbKey:
         on purpose: the cell used to carry the literal ``False``, ``0`` or
         ``0.0`` that ``csv`` printed, text that reads as a key and is not
         one. Preserving falsiness empties it instead, which is how the CSV
-        spells the state the FASTA and ZIP spell as ``candidate_{i + 1}``.
+        spells the state the FASTA spells as ``candidate_{i + 1}`` and the
+        ZIP as ``candidate_{i + 1}.pdb``.
 
         ``None`` and ``""`` are absent from the list because ``csv`` wrote
         both as an empty cell already, so those two really are unchanged.
