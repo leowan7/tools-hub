@@ -8,8 +8,11 @@ contract. Parallel to ``tools/rfantibody/meta.py``.
 Shapes
 ------
     PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
-                         ``typical_minutes`` is a human-readable range (e.g.
-                         ``"45"``) pulled straight from adapter copy.
+                         ``typical_minutes`` is a bare human-readable range
+                         (e.g. ``"30 to 45"``); both consumers append " min"
+                         themselves (shared/tools_catalog.py:188,
+                         blueprints/tools.py:710), so it carries no unit and
+                         no parenthetical.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink for the BindCraft paper.
     github_url        — upstream repository.
@@ -26,9 +29,12 @@ from __future__ import annotations
 from typing import Optional
 
 # Typical wall-clock per preset. BindCraft ships only the ``pilot``
-# preset; the pipeline cost floor is ~45 min on A100-80GB.
+# preset, whose runtime scales with the trajectory count rather than
+# sitting on a fixed floor: the quoted range is the ``num_designs``
+# default of 4 (tools/bindcraft/__init__.py:72, and the pilot preset
+# description at :134-140). Larger counts take proportionally longer.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "45"},
+    "pilot": {"typical_minutes": "30 to 45"},
 }
 
 # THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE: Nature 646, 483-492,
@@ -81,7 +87,7 @@ seo_faq: list[dict] = [
 comparison_one_liner: str = (
     "You have a target structure and know roughly which patch of "
     "its surface you want gripped, and you want brand-new "
-    "mini-proteins of 60 to 150 residues built to grip it. Every "
+    "mini-proteins of 50 to 150 residues built to grip it. Every "
     "candidate is refolded and filtered before you see it, so what "
     "comes back is already a shortlist."
 )
@@ -111,9 +117,9 @@ about: dict = {
             "antibody."
         ),
         (
-            "You can wait about 45 minutes for a first run, and you would "
-            "rather see a filtered shortlist than every candidate the run "
-            "generated."
+            "You can wait ~30 to 45 min for a default 4-trajectory batch "
+            "(longer for larger counts), and you would rather see a filtered "
+            "shortlist than every candidate the run generated."
         ),
     ],
     "prerequisites": [
@@ -142,15 +148,16 @@ about: dict = {
         {
             "name": "Number of designs",
             "explanation": (
-                "How many final filtered designs to return (1 to 5). "
+                "How many final filtered designs to return (1 to 500). "
                 "Each passes AF2 re-prediction with ipTM and pLDDT above "
-                "the BindCraft default thresholds. Pipeline cost floor "
-                "is ~45 min regardless of count."
+                "the BindCraft default thresholds. Runtime scales with "
+                "the count: start with a 4-trajectory batch (~30 to 45 "
+                "min) to confirm your target and hotspots, then scale up."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "~45 min"},
+        {"preset": "pilot", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
     ],
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
