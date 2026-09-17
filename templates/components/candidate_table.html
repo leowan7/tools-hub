@@ -61,6 +61,14 @@
    target mode (pooled across tools), the campaign id in campaign mode (merged
    across sub-jobs of one tool), else the job id. ``export_base`` routes exports
    to whichever of the three owns this table. #}
+{# The deepest sink every candidate table routes through, and the only one
+   targets/detail.html passes through -- its `{{ candidate_table(...) }}`
+   calls this macro directly,
+   not via results_shell. A row that is not a Mapping raises on the first
+   `.get` below; display_rows turns it into {} without renumbering the rest,
+   because the shortlist posts each row's `_source_index` and the lab handoff
+   indexes the RAW stored list with it. #}
+{% set candidates = display_rows(candidates) %}
 {% set scope = target_id if target_id else (campaign_id if campaign_id else job_id) %}
 {% set export_base = ('/targets/' ~ target_id) if target_id else (('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id)) %}
 {% set table_id = 'cand-table-' ~ scope %}

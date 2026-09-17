@@ -148,6 +148,7 @@ from jinja2 import Environment, FileSystemLoader  # noqa: E402
 
 import app as _app  # noqa: E402,F401  (populates tools.base._REGISTRY)
 from shared import metric_glossary, ranking  # noqa: E402
+from shared.jobs import display_rows
 from tools import base as tool_base  # noqa: E402
 from tools.boltzgen import meta as _bg_meta  # noqa: E402
 
@@ -172,6 +173,10 @@ def _app_client(monkeypatch):
 def _column_tooltip(tool_slug: str) -> str:
     """The assembled ipTM header tooltip for one tool, as the page emits it."""
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    # candidate_table.html coerces its own rows so a row that is not a
+    # Mapping cannot reach the `.get` calls in it. This env renders that
+    # macro outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     env.globals.update(
         metric_glossary=metric_glossary.GLOSSARY,
         score_legends_for=score_legends_for,
