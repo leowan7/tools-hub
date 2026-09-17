@@ -237,15 +237,23 @@ def bfactors(pdb_text: str) -> list[float]:
 
 
 def _looks_like_cif(pdb_text: str) -> bool:
-    """A line-anchored mmCIF marker, the way the viewer sniffs format.
+    """A line-anchored mmCIF marker, wider than the viewer's sniff.
 
     The column-layout check already refuses every real CIF writer I
     could find, but it is a heuristic over offsets and a hand-rolled
     row can align by chance. opendde stores a ``.cif`` under
-    ``pdb_key`` when its CIF-to-PDB conversion fails
-    (tools/opendde/run_pipeline.py:456), so a CIF genuinely reaches
-    the download routes. Cheap insurance; mirrors detectFormat in
-    static/js/mol_viewer.js.
+    ``pdb_key`` when its CIF-to-PDB conversion fails: in ``main()``
+    of ``tools/opendde/run_pipeline.py``, the ``else`` arm of the
+    ``_cif_to_pdb(raw_bytes)`` call keeps the mmCIF bytes and names
+    the key ``{name}.cif``. So a CIF genuinely reaches the download
+    routes. Cited by symbol, not by line: the previous ``:456`` had
+    drifted onto an unrelated ``TemporaryDirectory``.
+
+    Cheap insurance, and NOT the viewer's check. ``detectFormat``
+    in ``static/js/mol_viewer.js`` takes two markers over 4000
+    characters and has no ``loop_`` branch, so a file opening with
+    ``loop_`` sniffs as CIF here and as PDB there. True only
+    declines to rescale, so the bytes come back untouched.
     """
     # Bounded: a CIF declares itself in its header. ``data_`` is the
     # first non-blank line and the ``_atom_site.`` loop precedes the

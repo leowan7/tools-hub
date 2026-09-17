@@ -1348,7 +1348,17 @@ def job_candidate_pdb(job_id: str, filename: str):
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-        cand_basename = posixpath.basename(cand.get("pdb_key") or "")
+        # job.result is stored as the container sent it
+        # (webhooks/modal.py::_handle_result, blueprints/jobs.py::job_status),
+        # and the one pass over candidates before persisting,
+        # shared/jobs.py::_slim_result_for_persist, type-checks pdb_key
+        # instead of coercing it -- so a non-str value arrives here intact
+        # and posixpath.basename raises TypeError on it. This loop returns
+        # only on a match, so such a row 500s the designs listed after it,
+        # not just its own (tests/test_candidate_pdb.py::TestPdbKeyNotAString).
+        # The falsy branch is unchanged: str(0) would be a truthy "0".
+        raw_key = cand.get("pdb_key")
+        cand_basename = posixpath.basename(str(raw_key) if raw_key else "")
         if cand_basename != target_basename:
             continue
         encoded = cand.get("pdb_content_b64")

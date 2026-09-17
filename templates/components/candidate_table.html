@@ -949,12 +949,24 @@
           </td>
           <td>
             {% if has_pdb %}
-              {% if use_url %}
-              {# pdb_key is a str by the time it gets here -- coerced at its
-                 definition above, which is where the reason lives. No
-                 extension to read means .pdb, the historic default. #}
+              {# Both branches label the row with the extension of the name
+                 it saves under. pdb_key is a str by the time it gets here --
+                 coerced at its definition above, which is where the reason
+                 lives. No extension to read means .pdb, the historic
+                 default.
+
+                 THE KEY TRACKS THE BYTES; THE MIME DOES NOT. The b64
+                 branch's href below is a hardcoded data:chemical/x-pdb on
+                 every row whatever the format, while opendde keeps a .cif
+                 key exactly when its _cif_to_pdb returns None and the bytes
+                 stay mmCIF, and shared.pdb_bfactors._looks_like_cif makes
+                 b64_on_100 hand those bytes straight back. So renaming the
+                 download .pdb to agree with the MIME would mislabel a real
+                 mmCIF file. One derivation, both branches, from the name
+                 the row actually saves under. #}
               {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
                             if '.' in pdb_key else 'pdb' %}
+              {% if use_url %}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
@@ -963,7 +975,7 @@
               <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
-                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+                 style="padding:.2rem .5rem;font-size:.8rem;">.{{ _ext }}</a>
               {% endif %}
             {% else %}
               <span style="color:var(--text-secondary);">—</span>
