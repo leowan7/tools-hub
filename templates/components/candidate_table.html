@@ -605,18 +605,17 @@
         {% set raw_pdb_key = cand.get('pdb_key') %}
         {# pdb_key is whatever the container wrote into job.result, so its
            TYPE is not ours to guarantee: bindcraft, boltzgen, pxdesign,
-           rfantibody and rfdiffusion have no run_pipeline.py and no
-           image definition in this repo, so the code that FILLS
-           job.result, and with it whatever key they emit, is not
-           here to read. Every use below aborts
-           the WHOLE render rather than one cell: the `| urlencode` inside
-           `pdb_url` raises ValueError on a list and silently yields "a=1"
-           for a dict, and `'.' in pdb_key` in the download cell raises
-           TypeError on an int. Coerced HERE, at the definition, so one
-           guard covers the
-           url, the download attribute and the extension label. The falsy
-           branch is unchanged: None/'' still take the design_N.pdb
-           default rather than becoming the string "None". #}
+           rfantibody and rfdiffusion have no run_pipeline.py and no image
+           definition in this repo, so the code that FILLS job.result, and
+           with it whatever key they emit, is not here to read. Every use
+           below aborts the WHOLE render rather than one cell: the
+           `| urlencode` inside `pdb_url` raises ValueError on a list and
+           silently yields "a=1" for a dict, and `'.' in pdb_key` in the
+           download cell raises TypeError on an int. Coerced HERE, at the
+           definition, so one guard covers the url, the download attribute
+           and the extension label. The falsy branch is unchanged: None/''
+           still take the design_N.pdb default rather than becoming the
+           string "None". #}
         {% set pdb_key     = (raw_pdb_key | string) if raw_pdb_key
                              else 'design_' ~ (idx + 1) ~ '.pdb' %}
         {% set has_b64     = cand.get('pdb_content_b64') %}
