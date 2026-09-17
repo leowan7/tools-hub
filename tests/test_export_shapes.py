@@ -20,6 +20,7 @@ key fails here rather than in production.
 
 from __future__ import annotations
 
+import csv
 import io
 import struct
 import zipfile
@@ -286,21 +287,31 @@ class TestNonStringPdbKey:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             assert zf.namelist() == ["candidate_1.pdb"], zf.namelist()
 
-    # ``pdb_key`` is column 1 of the CSV (header: rank, pdb_key,
-    # source_rank).
+    @staticmethod
+    def _csv_pdb_key(csv_text: str) -> str:
+        """The ``pdb_key`` cell of the one data row. Column 1 of the CSV,
+        whose header is ``rank,pdb_key,source_rank``. Read back through
+        ``csv.reader`` and not ``split(",")``: ``str()`` of a list, dict or
+        tuple contains commas, and the writer quotes the field."""
+        return list(csv.reader(io.StringIO(csv_text)))[1][1]
+
     @pytest.mark.parametrize("raw,cell", [
         ("designs/a.pdb", "designs/a.pdb"),
         (12345, "12345"),
         (3.5, "3.5"),
         (True, "True"),
+        (["designs/a.pdb"], "['designs/a.pdb']"),
+        ({"key": "a.pdb"}, "{'key': 'a.pdb'}"),
+        (("t",), "('t',)"),
     ])
     def test_the_csv_cell_is_unchanged_for_a_truthy_key(self, raw, cell):
         """The CSV was never the broken one -- ``csv`` stringifies whatever
         it is handed, so this column never reached ``.replace``. For a
         TRUTHY key the coercion is therefore a no-op here: ``export_key``
-        writes the text ``csv`` used to write itself."""
+        writes the text ``csv`` used to write itself, container types
+        included."""
         csv_text = candidates_to_csv([{"pdb_key": raw, "scores": {}}])
-        assert csv_text.splitlines()[1].split(",")[1] == cell, csv_text
+        assert self._csv_pdb_key(csv_text) == cell, csv_text
 
     @pytest.mark.parametrize("raw", [False, 0, 0.0])
     def test_the_csv_cell_empties_for_a_falsy_key(self, raw):
@@ -311,15 +322,13 @@ class TestNonStringPdbKey:
         spells the state the FASTA spells as ``candidate_{i + 1}`` and the
         ZIP as ``candidate_{i + 1}.pdb``.
 
-        ``None`` and ``""`` are absent from the list because ``csv`` wrote
-        both as an empty cell already, so those two really are unchanged.
-
-        Measured rather than assumed: over "designs/a.pdb", 12345, 3.5,
-        True, False, 0, 0.0, None, "", a list, a dict and a tuple, a
-        byte diff of the whole CSV before and after the coercion reports
-        these three rows and no others."""
+        ``None`` and ``""`` are the two falsy values left out. ``csv``
+        wrote both as an empty cell already, so the coercion does not move
+        them and an assertion here would pass against the unfixed code
+        too. Their falsiness is pinned on the FASTA and ZIP side instead,
+        by ``test_a_falsy_key_still_takes_the_candidate_n_fallback``."""
         csv_text = candidates_to_csv([{"pdb_key": raw, "scores": {}}])
-        assert csv_text.splitlines()[1].split(",")[1] == "", csv_text
+        assert self._csv_pdb_key(csv_text) == "", csv_text
 
     def test_an_oversized_key_does_not_take_the_whole_zip(self):
         """Coercing the TYPE does not close the whole-file blast radius on its
