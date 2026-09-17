@@ -606,10 +606,9 @@
         {# pdb_key is whatever the container wrote into job.result, so its
            TYPE is not ours to guarantee: bindcraft, boltzgen, pxdesign,
            rfantibody and rfdiffusion have no run_pipeline.py and no
-           image definition in this repo -- only an adapter that
-           submits the job -- so the code that FILLS job.result, and
-           with it whatever key they emit, is not here to read.
-           Every use below aborts
+           image definition in this repo, so the code that FILLS
+           job.result, and with it whatever key they emit, is not
+           here to read. Every use below aborts
            the WHOLE render rather than one cell: the `| urlencode` inside
            `pdb_url` raises ValueError on a list and silently yields "a=1"
            for a dict, and `'.' in pdb_key` in the download cell raises

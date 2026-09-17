@@ -1493,10 +1493,10 @@ def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
     run_pipeline.py and no image definition in this repo, so whatever
     key they emit is built container-side. Their committed fixtures are
     not a second source: pxdesign's 25 candidates and rfdiffusion's 8
-    carry rank and scores only, and both meta.py files record that as
-    deliberate. rfdiffusion's adds that its container DOES return a
-    pdb_key per candidate and that capture dropped it; pxdesign's says
-    nothing either way, so its live key shape stays unread.
+    carry rank and scores only. rfdiffusion's meta.py says its
+    container does return a pdb_key per candidate and that capture
+    dropped it; pxdesign's records the same scores-only shape without
+    saying whether a key was ever there.
     Three separate expressions in the macro abort
     the WHOLE render -- the results page, not one cell -- on a
     non-str: `| urlencode` raises ValueError on a list, and
