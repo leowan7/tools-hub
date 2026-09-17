@@ -603,9 +603,12 @@
         {% set src_job     = cand.get('_source_job_id') or job_id %}
         {% set src_idx     = cand.get('_source_index') if cand.get('_source_index') is not none else idx %}
         {% set raw_pdb_key = cand.get('pdb_key') %}
-        {# pdb_key is whatever the container wrote into job.result. Five of
-           the fourteen tools build it container-side, outside this repo,
-           so its TYPE is not ours to guarantee, and every use below aborts
+        {# pdb_key is whatever the container wrote into job.result, which is
+           stored as the container sent it (webhooks/modal.py::_handle_result,
+           blueprints/jobs.py::job_status), and the one pass over candidates
+           before persisting, shared/jobs.py::_slim_result_for_persist,
+           type-checks pdb_key instead of coercing it. Its TYPE is therefore
+           not ours to guarantee, and every use below aborts
            the WHOLE render rather than one cell: the `| urlencode` inside
            `pdb_url` raises ValueError on a list and silently yields "a=1"
            for a dict, and `'.' in pdb_key` in the download cell raises
