@@ -352,6 +352,9 @@ class TestNonStringPdbKey:
             {"pdb_key": "designs/good.pdb", "sequence": "EFGH",
              "scores": {}, "pdb_content_b64": "QVRPTQo="},
         ]
+        # The 106890 in the docstring, derived here rather than recorded
+        # in prose a later edit to the fixture would quietly falsify.
+        assert len(str(rows[0]["pdb_key"])) == 106890
         data = candidates_to_zip(
             rows, lambda job_id, key: None, default_job_id="job-1"
         )
