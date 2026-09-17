@@ -252,9 +252,10 @@
                  {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                  class="proteina-field" style="max-width: 120px;">
           <div class="proteina-help">
-            One search shard yields 8 designs on a single A100-80GB. Larger
-            requests fan out automatically as a wallet-bounded campaign of
-            independent shards, with a global top-K across all of them.
+            One search shard yields up to 8 designs on a single A100-80GB.
+            Larger requests fan out automatically as a wallet-bounded
+            campaign of independent shards, with a global top-K across all
+            of them.
           </div>
           {% if single_container_ceiling %}
           <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden

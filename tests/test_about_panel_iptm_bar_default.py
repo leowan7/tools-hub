@@ -38,8 +38,9 @@ af2 and colabfold is false.
 WHAT THIS FILE DOES NOT PIN. "Declares one" here means an ipTM legend in
 shared/score_legends.py carrying ``good`` -- the machine-readable bar,
 which is what the template consults. It is NOT a check that the tool's
-guide PAGE prints that number, nor that the two agree where both exist
--- pxdesign's guide states ipTM >= 0.70 against a declared 0.75. Two
+guide PAGE prints that number, nor that the two agree where both exist;
+tests/test_guide_bar_matches_legend.py pins that half, and pxdesign's
+guide stated ipTM >= 0.70 against a declared 0.75 until it landed. Two
 further limits: every check reads the ipTM ``<dd>`` only, so a pointer
 placed elsewhere on the page is invisible to it, and the clause is
 matched by phrase, so a reworded one is too. The sets differ: on
@@ -382,15 +383,19 @@ def test_the_legend_lookup_folds_case_at_the_source():
     af2 and colabfold spell the column "iptm", so a caller naming the
     display column reads them as bar-less while shared/score_legends.py
     declares a bar for each. Folding case in get_legend answers that for
-    all five of its production callers -- both templates here,
-    candidate_table.html:646, and _join_bar and judge in
-    score_legends.py. It does NOT reach
-    candidate_table.html:475, which goes through score_legends_for, a
-    separate exact-case reader.
+    its production callers -- both templates here,
+    candidate_table.html's multi-tool Score cell and its single-tool
+    column header, and _join_bar and judge in score_legends.py. That
+    header went through
+    ``score_legends_for``, a separate exact-case reader, until that line
+    was pointed at this function; the three pLDDT legends case alone could
+    not reach were re-keyed to the spelling their pages pass
+    (tests/test_score_legend_lookup.py).
 
-    Case ONLY. ``_COLUMN_ALIASES`` folds complex_pLDDT into pLDDT for
-    reading a result RECORD; a legend is per (tool, column) and must not
-    be answered out of a different column's.
+    Case, and nothing more. ``_COLUMN_ALIASES`` folds complex_pLDDT into
+    pLDDT for reading a result RECORD; a legend is per (tool, column) and
+    must not be answered out of a different column's, which is why that
+    map is not reused here.
     """
     for slug in ("af2", "colabfold"):
         stored = _iptm_legend(slug)

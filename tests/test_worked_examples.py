@@ -3000,7 +3000,13 @@ class _RankCells(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag == "tr":
-            self._in_row = "cand-row" in (dict(attrs).get("class") or "")
+            # Token, not substring: templates/job_detail.html:592 writes
+            # "live-cand-row", which contains this name. No results partial
+            # renders that markup, so this is not reachable today -- matching
+            # the way the JS's classList.contains does keeps it that way.
+            self._in_row = "cand-row" in (
+                (dict(attrs).get("class") or "").split()
+            )
             if self._in_row:
                 self.rows += 1
         elif tag == "span" and self._in_row:
@@ -3022,22 +3028,28 @@ class _RankCells(HTMLParser):
 def _rank_column(html_text: str) -> list[str]:
     """The "#" column, or a loud failure naming the right cause.
 
-    A table with rows but no ``.cand-rank-n`` in any of them is the hook
-    having gone, not a tool that stopped rendering -- and the difference
-    matters, because the callers below treat an empty column as "this
-    partial renders no candidate table" and skip it. Drop the span from the
-    macro and every column comes back empty, every tool is skipped, and the
-    only thing left to fail is a coverage floor whose message sends the
-    reader looking for a deleted example. Measured: that is exactly what
-    happened under the pre-fix expression, which carried no span.
+    Rows that render without a ``.cand-rank-n`` are the hook having gone, not
+    a tool that stopped rendering -- and the difference matters, because the
+    callers below treat an empty column as "this partial renders no candidate
+    table" and skip it. Drop the span from the macro and every column comes
+    back empty, every tool is skipped, and the only thing left to fail is a
+    coverage floor whose message sends the reader looking for a deleted
+    example. Measured: that is exactly what happened under the pre-fix
+    expression, which carried no span.
+
+    PER ROW, not all-or-nothing. The equality also catches a PARTIAL loss,
+    which an "empty column" test cannot: drop the span from all rows but the
+    first and the column comes back short, and the caller then compares it
+    against a range computed from that same short column, so the expectation
+    validates itself.
     """
     parser = _RankCells()
     parser.feed(html_text)
-    assert not (parser.rows and not parser.cells), (
-        f"{parser.rows} candidate rows rendered and not one carries a "
-        ".cand-rank-n span. The macro and this reader disagree about the "
-        "hook; static/js/candidate_table.js::renumberRows writes to the "
-        "same one, so the on-screen numbers have stopped following a sort too"
+    assert len(parser.cells) == parser.rows, (
+        f"{parser.rows} candidate rows rendered but {len(parser.cells)} "
+        ".cand-rank-n spans found. The macro and this reader disagree about the "
+        "hook; static/js/candidate_table.js::renumberRows writes to the same "
+        "one, so those rows have stopped following a sort too"
     )
     return parser.cells
 

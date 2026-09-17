@@ -7,7 +7,8 @@ it is upstream's own scaling-critic detector, and the scaling checkpoints are
 ``f"ESMFold2-Experimental-Fast-base{size}-step{step}k"`` — but it matches
 scaling rows and only scaling rows, and the scaling ensemble was off by
 default. So on the default path no row matched, ``cdr_distogram_iptm_proxy``
-stayed None, and ``_classify`` — which gates antibodies on that field alone —
+stayed None, and ``_classify`` — which then gated antibodies on that field
+alone, and which since 2026-09-10 also requires ``iptm >= STRICT_IPTM`` —
 returned ``drop`` for every scFv design ever run. Reproduced 2026-08-23 against
 ``ranomics-esmfold2-design-prod``: 13 designs on two targets, 13 dropped, real
 iPTM 0.621-0.949.
@@ -229,8 +230,18 @@ def test_empty_critic_results_is_not_reported_as_a_rename(caplog):
 # stop one row's PDB appearing under another row's numbers. The holes are the
 # problem: a blank row claims the bucket and the real fold behind it is thrown
 # away. Reachable on any locked-framework scFv run, where only the CDRs vary,
-# so two batch elements converging on one designed_sequence is ordinary, and a
-# diverged fold emitting NaN is ordinary too.
+# so two batch elements CAN converge on one designed_sequence.
+#
+# NOT "ordinary", which is what this note used to claim of both that and a
+# diverged NaN fold. Neither is supported by the record: ``designs_completed``
+# counts DISTINCT sequences (run_pipeline.py builds ``designs`` one per
+# ``by_sequence`` key and sets ``designs_completed = len(designs)``), and both
+# production runs in docs/VALIDATION-LOG.md recorded 6/6 at batch_size 6 with
+# n_failures 0 and a real iPTM on all 12 designs. Zero convergence, zero
+# diverged folds, across 100% of the evidence there is. The rows below are
+# therefore a CONSTRUCTED case, not a sampled one -- which does not weaken the
+# fix, since the harm is real whenever it does fire, but does mean the trigger
+# is rare or so far unobserved rather than common.
 #
 # Users RANK these designs -- the ordering and the numbers are the product;
 # ``filter_status`` is a label on top of them.
@@ -372,12 +383,19 @@ def test_the_first_scored_row_still_wins_every_field(stub_pdb):
 
 
 def test_a_diverged_iptm_must_not_drop_a_passing_scfv():
-    """_classify gates antibodies on the CDR proxy ALONE -- never on iPTM.
+    """A NaN-iPTM row carrying a real 0.85 CDR proxy must not be discarded.
 
-    So a NaN-iPTM row carrying a real 0.85 CDR proxy is a strict_pass, and
-    discarding it for having no iPTM hands ``_pick_best`` a design the tool's
+    Discarding it for having no iPTM hands ``_pick_best`` a design the tool's
     own filter rejects. That is the #241 defect reached by a new route, and it
     needs only ONE diverged fold.
+
+    UPDATED 2026-09-10 with the scFv iPTM leg. This design's tier word moved
+    from ``strict_pass`` to ``borderline``: ``_classify`` now reads iPTM in
+    both modes, and an UNMEASURED iPTM caps the tier rather than failing it.
+    Everything this test was written to protect is unchanged and still
+    asserted below -- which row wins the bucket, the proxy that survives it,
+    and the ``_pick_best`` outcome. Only the word moved, and it moved because
+    an unmeasured interface is not a demonstrated one.
     """
     rows = [
         {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": "T|GOODCDRS",
@@ -391,10 +409,10 @@ def test_a_diverged_iptm_must_not_drop_a_passing_scfv():
     good = next(d for d in designs if d["designed_sequence"] == "T|GOODCDRS")
 
     assert good["cdr_distogram_iptm_proxy"] == 0.85
-    assert good["filter_status"] == "strict_pass"
+    assert good["filter_status"] == "borderline"
     best = run_pipeline._pick_best(designs)
     assert best["designed_sequence"] == "T|GOODCDRS"
-    assert best["filter_status"] == "strict_pass"
+    assert best["filter_status"] == "borderline"
 
 
 def test_a_scoreless_row_still_supplies_the_structure_it_carries(stub_pdb):
@@ -483,15 +501,22 @@ def test_a_scored_row_must_not_evict_a_scoreless_row_that_PASSES(stub_pdb):
     """The election runs on "carries any score", not on the iPTM.
 
     This is the case that makes the distinction load-bearing. Row 1 diverged
-    (no iPTM) but carries a real 0.85 CDR proxy, which in scFv mode is a
-    ``strict_pass`` -- ``_classify`` gates antibodies on that field ALONE and
-    never reads iptm. Row 2 has an iPTM and a failing 0.10 proxy.
+    (no iPTM) but carries a real 0.85 CDR proxy, which in scFv mode clears the
+    proxy leg. Row 2 has an iPTM and a failing 0.10 proxy.
 
     Electing on the iPTM lets row 2 evict row 1, turning a strict_pass into a
     drop and flipping ``_pick_best`` onto a design the tool's own filter
     rejects. That is the #241 defect by a new route, and it is WORSE than
     origin/main, which keeps row 1. An earlier cut of this fix shipped exactly
     that.
+
+    UPDATED 2026-09-10 with the scFv iPTM leg. This design's tier word moved
+    from ``strict_pass`` to ``borderline``: ``_classify`` now reads iPTM in
+    both modes, and an UNMEASURED iPTM caps the tier rather than failing it.
+    Everything this test was written to protect is unchanged and still
+    asserted below -- which row wins the bucket, the proxy that survives it,
+    and the ``_pick_best`` outcome. Only the word moved, and it moved because
+    an unmeasured interface is not a demonstrated one.
     """
     rows = [
         {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": CONVERGED,
@@ -508,11 +533,11 @@ def test_a_scored_row_must_not_evict_a_scoreless_row_that_PASSES(stub_pdb):
     conv = next(d for d in designs if d["designed_sequence"] == CONVERGED)
 
     assert conv["cdr_distogram_iptm_proxy"] == 0.85
-    assert conv["filter_status"] == "strict_pass"
+    assert conv["filter_status"] == "borderline"
     assert conv["pdb_key"] == "goodfold_complex.pdb"
     best = run_pipeline._pick_best(designs)
     assert best["designed_sequence"] == CONVERGED
-    assert best["filter_status"] == "strict_pass"
+    assert best["filter_status"] == "borderline"
 
 
 def test_a_scoreless_row_is_replaced_by_the_first_row_carrying_ANY_score(
@@ -523,6 +548,14 @@ def test_a_scoreless_row_is_replaced_by_the_first_row_carrying_ANY_score(
     Neither has an iPTM, so an iPTM-based election leaves the design blank --
     origin/main and the first cut both do. The 0.85 proxy is a real
     measurement and a passing one.
+
+    UPDATED 2026-09-10 with the scFv iPTM leg. This design's tier word moved
+    from ``strict_pass`` to ``borderline``: ``_classify`` now reads iPTM in
+    both modes, and an UNMEASURED iPTM caps the tier rather than failing it.
+    What this test protects is unchanged and still asserted below -- which row
+    wins the bucket, and the proxy, iptm and pdb_key that survive it. (It does
+    not call ``_pick_best``; the two tests above do.) Only the word moved, and
+    it moved because an unmeasured interface is not a demonstrated one.
     """
     rows = [
         {"critic_name": CRITIC_REAL_IPTM, "designed_sequence": CONVERGED,
@@ -536,7 +569,7 @@ def test_a_scoreless_row_is_replaced_by_the_first_row_carrying_ANY_score(
 
     assert design["iptm"] is None                       # it really did diverge
     assert design["cdr_distogram_iptm_proxy"] == 0.85
-    assert design["filter_status"] == "strict_pass"
+    assert design["filter_status"] == "borderline"
     assert design["pdb_key"] == "goodfold_complex.pdb"
 
 

@@ -13,8 +13,14 @@ invokes the gradient-descent loop from the upstream
 wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
-GPU: H100. The 150-step gradient run takes ~10-15 min per design on a
-warm container; weights pull is ~30 GB on a cold Volume. VRAM is ~27 GB
+GPU: H100. Two runs on a warm Volume put the 150-step gradient run at
+3185 s and 3233 s at batch_size=6 (docs/VALIDATION-LOG.md, with job ids).
+The batch_size=1 figure those are compared against, ~450 s, is asserted in
+that file's prose but has NO run row behind it, so "scales roughly linearly
+with batch size" is the shape of one measured point against one unsourced
+one — enough to retire the old "~10-15 min per design", not enough to
+predict a size nobody has run. Weights pull is ~30-40 GB on a cold Volume,
+which the repo records at 15-30 min; see _MAX_SESSION_S. VRAM is ~27 GB
 AT batch_size=1 because ``run_pipeline.py`` sets upstream's
 ``REUSE_ESMC = True`` before ``ESMFold2Design.load()``; upstream's own
 default of False costs ~51 GB at that same size. (This block used to
@@ -56,6 +62,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 import modal
@@ -75,12 +82,98 @@ _GPU = "H100"
 # up until someone re-creates that repo under the old owner. The old name is
 # barred by tests/test_citations_name_the_right_model.py, so it is not here.
 _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
-# 60 min ceiling per H100 worker — covers the worst-case scfv preset
-# with batch_size=6 plus weight-load tail latency on a cold container.
-_MAX_SESSION_S = 60 * 60
-# Orchestrator waits for the slowest child; 75 min gives a 15 min margin
-# over the worker timeout to absorb spawn overhead + aggregation.
-_ORCHESTRATOR_TIMEOUT_S = 75 * 60
+# 90 min ceiling per H100 worker. The 60 min it replaces claimed to cover "the
+# worst-case scfv preset with batch_size=6 plus weight-load tail latency on a
+# cold container". scfv / cd45 / trastuzumab_framework_vhvl at batch_size=6,
+# n_seeds=1 then ran 3185 s and 3233 s (docs/VALIDATION-LOG.md) — 10-12% under
+# that ceiling on a WARM Volume, with steps degrading ~19.5 s -> ~22.9 s inside
+# one run. Both runs were warm, so they do not by themselves disprove the
+# cold-container half of the old claim; what disproves it is the warm figure
+# PLUS this repo's own 15-30 min for the cold weights pull
+# (scripts/prewarm_esmfold2_design.py). 3233 + 900 already overruns 3600. A
+# worker timeout returns NOTHING after a full hour of H100 — the same
+# charged-for-nothing class as the OOM #242 fixed.
+#
+# 5400 s leaves the measured warm worst case 40% headroom and covers a cold
+# pull at the 15 min end. It does NOT comfortably cover the 30 min end
+# (3233 + 1800 = 5033 s, ~7% left), and that combination is UNMEASURED: making
+# the shared prod Volume ranomics-esmfold2-models cold would degrade live runs.
+# Keep the cold path off the user path instead — run
+# scripts/prewarm_esmfold2_design.py after anything that resets that Volume.
+#
+# WHAT THIS COSTS, stated plainly, because the first draft of this comment got
+# it wrong by claiming it was free:
+#   * The per-seed CHARGE ceiling rises $14.79 -> $15.00. settle clamps at the
+#     scaled base_hard_cap_usd ($15/seed, shared/wallet_estimates.py), and a
+#     seed only reaches that clamp at ~3650 s — which no measured run has hit
+#     (3185, 3233), but which is now reachable where it previously was not.
+#   * A run between 3600 s and 5400 s used to hit the worker timeout and be
+#     FULLY REFUNDED (no_progress_timeout is in shared/jobs._REFUNDED_FAILURE
+#     _CLASSES). It now completes and bills. That is the point of the change —
+#     the user gets designs instead of nothing — but it is a charge where
+#     there was none.
+#   * The 1-seed HOLD rises $14.79 -> $15.00, which was EXACTLY the old
+#     shared/wallet.SIGNUP_CREDIT_USD, taking headroom against the free credit
+#     to zero. SIGNUP_CREDIT_USD was raised to $20.00 in the same change to
+#     restore it; see the sizing rule there, which this bug corrected (the
+#     credit must clear the largest 1-unit HOLD, not the largest PRICE).
+#   * Unbilled H100 on a failed child rises 3600 s -> 5400 s ($8.70 -> $13.05
+#     raw), and a full-session seed now recovers cost at an effective 1.15x
+#     rather than the intended 1.70x markup. Revenue crosses below raw Modal
+#     cost at 6206 s, so 5400 stays the right side of that line.
+#
+#   * A cancelled job, or one whose orchestrator times out, used to leave its
+#     children running: run_tool spawned them and never reaped them, and only
+#     the orchestrator's call id is stored, so nothing downstream could either.
+#     The children billed on; the job eventually terminalised via cron/sweep
+#     _stuck_jobs.py (not via the status poll, which ignores the "error" status
+#     that a Modal timeout produces) and landed in a refunded failure class —
+#     up to 64 x 5400 s = $835 of raw H100 absorbed for zero revenue, against
+#     $557 at 3600 s. run_tool now reaps: see _gather_children /
+#     _reap_children and _CHILD_WAIT_BUDGET_S below. What that does NOT cover
+#     is the orchestrator container dying without unwinding (preemption, an
+#     infra kill) — there is still no persisted handle on any child, so that
+#     residual path is bounded only by each child's own _MAX_SESSION_S.
+#
+# Two values move WITH this one: ToolSpec.worst_case_gpu_seconds (else the
+# wallet hold prices a ceiling this container no longer has) and
+# _ORCHESTRATOR_TIMEOUT_S below, which derives from it rather than restating
+# it. tests/test_worst_case_hold_floor.py pins the first to EQUALITY with the
+# timeout= this container is actually handed; the second only as an inequality
+# (orchestrator > worker), with nothing asserting the derivation itself.
+_MAX_SESSION_S = 5400
+# Orchestrator waits for the slowest child; 15 min over the worker timeout
+# absorbs spawn overhead + aggregation.
+_ORCHESTRATOR_TIMEOUT_S = _MAX_SESSION_S + 15 * 60
+
+# How long ``run_tool`` blocks on its children before it gives up, reaps them
+# and aggregates whatever finished. Derived from _ORCHESTRATOR_TIMEOUT_S rather
+# than restating it: the margin has to be time this container still HAS.
+#
+# Why a self-imposed deadline rather than leaning on the Modal timeout: Modal
+# enforces ``timeout=`` by killing the task, and FunctionTimeoutError is raised
+# on the CLIENT side while reading the result (modal 1.4.2,
+# _utils/function_utils.py), never inside the container. So a ``finally`` here
+# cannot be relied on to run on the timeout path. Waking up 5 min early makes
+# the reap ordinary code, and lets the job return a partial aggregate instead of
+# returning nothing, being swept into a refunded failure class, and leaving up
+# to N_SEEDS_MAX H100s billing.
+#
+# A user cancel is the other trigger and needs no deadline: Modal cancels an
+# input by delivering SIGUSR1, whose handler raises InputCancellation, which
+# subclasses BaseException (modal 1.4.2 exception.py) precisely so user
+# ``except Exception`` cannot swallow it. A ``finally`` therefore does run.
+# That holds only while the hub cancels with the DEFAULT
+# terminate_containers=False (``ModalClient.cancel``, gpu/modal_client.py):
+# flipping that to True kills this container outright and takes the reap with
+# it. tests/test_esmfold2_orchestrator_reaps_children.py pins both halves.
+_REAP_MARGIN_S = 5 * 60
+_CHILD_WAIT_BUDGET_S = _ORCHESTRATOR_TIMEOUT_S - _REAP_MARGIN_S
+# Passes _reap_children makes over its list. 2, not 1, because a cancel that
+# raises is not recorded and the normal-return path has no outer reap to retry
+# it; not more, because the retry is unbounded gRPC inside _REAP_MARGIN_S and
+# each pass costs at most N_SEEDS_MAX round trips.
+_REAP_ATTEMPTS = 2
 _PYTHON = "python3"
 
 # Raw run artifacts get their OWN Volume, never the weights Volume: a weights
@@ -367,7 +460,7 @@ def _run_one_seed(payload: Any) -> dict:
     finally:
         # Unconditional, and in a finally: not gated on exit_code, on
         # smoke_result, or on what got uploaded. subprocess.run raises
-        # TimeoutExpired on a 60 min H100 run — the path where this function
+        # TimeoutExpired on a full-session H100 run — the path where this function
         # never returns a dict at all, so the raw pointer never reaches the hub
         # and the deterministic name is the only way back to the tree. Parking
         # it there anyway is the difference between a recoverable timeout and a
@@ -409,6 +502,168 @@ def _run_one_seed(payload: Any) -> dict:
     }
 
 
+def _reap_children(
+    children: list[tuple[int, Any]], settled: set[int]
+) -> None:
+    """Cancel every spawned child that has not reached a terminal state.
+
+    Best-effort and per-child: nothing one child raises may leave the rest
+    running, including a cancel that lands mid-reap.
+
+    ``settled`` is the set of seeds that need no cancel, and it is MUTATED:
+    each successful cancel is recorded, so calling this twice over the same
+    list and set cancels each call once. ``run_tool`` relies on that -- it
+    shares one set with :func:`_gather_children` so the inner reap and the
+    outer guard around it do not both cancel the same handles.
+
+    On the way in, ``settled`` holds only the seeds whose ``.get()`` RETURNED
+    -- the one outcome that proves a child is terminal. An exception does not
+    prove it, because a failed poll raises too while the child runs on, so
+    those seeds stay unsettled and get cancelled. The asymmetry is the point: a
+    redundant cancel of an already-terminated call costs one round trip, a
+    skipped one costs an H100 session. A cancel that RAISES is not recorded, so
+    it is retried: this makes up to _REAP_ATTEMPTS passes over the list,
+    stopping as soon as every seed is settled. On the normal-return path there
+    is no outer reap to retry it for us, so without that a single flaky gRPC
+    cancel would hand that one child its full _MAX_SESSION_S. Everything that
+    succeeded on an earlier pass is skipped, so the retry costs nothing when
+    nothing failed. Pinned by test_a_flaky_cancel_is_retried_inside_one_reap.
+
+    ``terminate_containers`` is left at its default False. That is the opposite
+    of tools/proteina/_hotspot_canary.py's explicit True, and deliberate:
+    False cancels the INPUT (SIGUSR1 -> InputCancellation in the worker's main
+    thread; CPython's ``subprocess.run`` turns any BaseException out of
+    ``communicate`` into ``process.kill()`` via its bare ``except:``, Lib/
+    subprocess.py), so ``_run_one_seed``'s ``finally`` at modal_app.py:460
+    still parks the raw archive on the way out. True kills the container
+    mid-flight and takes that archive with it. What False leaves on the table
+    is the now-idle container's scaledown window, not another session.
+    Pinned by test_reap_leaves_terminate_containers_at_its_default.
+    """
+    # ponytail: call.cancel() is left to Modal's own gRPC deadlines rather than
+    # wrapped; _REAP_MARGIN_S is this function's only budget. Wrap it in the
+    # container-side equivalent of gpu/modal_client.py:134's
+    # _bounded_modal_call if a reap is ever seen to run long.
+    # ponytail: the guard is per-iteration, not a signal mask. Every statement
+    # that could strand a child is inside the try; what is left interruptible
+    # is the loop machinery itself and the handler's own print. Closing that
+    # too means masking SIGUSR1 for the duration -- which DROPS the
+    # cancellation rather than deferring it, so the orchestrator would never
+    # learn it was cancelled. Not worth it for the remaining bytecodes.
+    pending: BaseException | None = None
+    for _attempt in range(_REAP_ATTEMPTS):
+        for seed, call in children:
+            fc_id = "?"
+            try:
+                if seed in settled:
+                    continue
+                fc_id = getattr(call, "object_id", "?")
+                call.cancel()
+                settled.add(seed)
+                print(f"[run_tool] reaped seed={seed} fc_id={fc_id}", flush=True)
+            except BaseException as exc:  # noqa: BLE001 - nothing may stop this
+                # The whole body is guarded, not just call.cancel(): a cancel
+                # lands on whichever bytecode is executing, the getattr and the
+                # print included, and escaping the loop anywhere strands every
+                # child after this one. BaseException, not Exception, because
+                # InputCancellation is not an Exception (modal 1.4.2
+                # exception.py). Ordinary failures stay swallowed -- the reap
+                # is best effort and must never be what fails the job. A
+                # non-Exception is deferred, not dropped, so the container
+                # still sees the cancel.
+                print(
+                    f"[run_tool] REAP FAILED seed={seed} fc_id={fc_id}: {exc}",
+                    flush=True,
+                )
+                if pending is None and not isinstance(exc, Exception):
+                    pending = exc
+        if all(seed in settled for seed, _ in children):
+            break
+    if pending is not None:
+        raise pending
+
+
+def _gather_children(
+    children: list[tuple[int, Any]],
+    *,
+    budget_s: float,
+    monotonic: Any = time.monotonic,
+    settled: set[int] | None = None,
+) -> tuple[list[tuple[int, dict]], list[tuple[int, str]]]:
+    """Collect child results under a wall-clock budget, reaping the rest.
+
+    Returns ``(successes, failures)`` in :func:`_aggregate`'s shape.
+
+    The budget is shared across the whole list, not per child: it is spent by
+    whichever child finishes last, and the ones after it in iteration order are
+    typically already sitting on completed results -- the wait is sequential,
+    the runs are not. So an exhausted budget still polls (``timeout=0``) rather
+    than skipping, and only a child that really has not returned is failed.
+
+    The reap is in a ``finally`` so it covers the cancel path too, where
+    InputCancellation unwinds this frame instead of returning through it.
+
+    Pass ``settled`` to share the "needs no cancel" bookkeeping with a caller
+    that reaps around this call as well; :func:`_reap_children` records its own
+    cancels in it, so the two reaps never cancel the same handle twice.
+    """
+    if settled is None:
+        settled = set()
+    deadline = monotonic() + budget_s
+    successes: list[tuple[int, dict]] = []
+    failures: list[tuple[int, str]] = []
+    try:
+        for seed, call in children:
+            remaining = max(0.0, deadline - monotonic())
+            try:
+                r = call.get(timeout=remaining)
+            except TimeoutError as exc:
+                # The BUILTIN TimeoutError, which is what modal 1.4.2 raises
+                # when the call has produced no output yet (_functions.py:327,
+                # in a module whose `from .exception import` block does not
+                # shadow the builtin). So this branch means "still running" --
+                # the child is NOT terminal and must be reaped.
+                #
+                # Modal's own FunctionTimeoutError, meaning the CHILD hit its
+                # own ceiling, is a different type: it derives from
+                # modal.exception.Error, not the builtin, so it lands in the
+                # ``except Exception`` below. Neither branch settles the seed,
+                # so a child Modal already killed picks up one redundant
+                # cancel; see that branch for why that is the cheap side.
+                failures.append(
+                    (
+                        seed,
+                        f"no result within the orchestrator's "
+                        f"{budget_s:.0f}s child budget ({exc})",
+                    )
+                )
+                print(
+                    f"[run_tool] child seed={seed} UNFINISHED at deadline",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad seed is not the job
+                # Deliberately NOT settled. This branch catches two things that
+                # cannot be told apart by type: the child's own exception, where
+                # it really is terminal, and a failure of the POLL, where it is
+                # still running -- modal.exception.ConnectionError / ClientClosed,
+                # raised once the FunctionGetOutputs retries are exhausted (modal
+                # 1.4.2 _utils/grpc_utils.py:76,123,305,307). Both are
+                # Error(Exception), and a whitelist of the child's own types is
+                # impossible because that is arbitrary user code. Leaving the
+                # seed unsettled costs one redundant cancel on an
+                # already-terminal call; settling it on a blip costs a whole
+                # H100 session.
+                failures.append((seed, str(exc)))
+                print(f"[run_tool] child seed={seed} FAILED: {exc}", flush=True)
+            else:
+                settled.add(seed)
+                successes.append((seed, r))
+                print(f"[run_tool] child seed={seed} completed", flush=True)
+    finally:
+        _reap_children(children, settled)
+    return successes, failures
+
+
 @app.function(
     image=orchestrator_image,
     cpu=2,
@@ -422,11 +677,20 @@ def run_tool(payload: Any) -> dict:
     runs over ``[seed, seed + n_seeds)``. Each child gets its own
     ``pdb_prefix=seed{N}_`` so PDB filenames don't collide in the per-job
     Storage namespace. Children run in parallel on H100s; the orchestrator
-    blocks on each call's ``.get()`` until all finish, then merges their
-    ``candidates`` and ``designs`` arrays, globally re-ranks by ipTM, and
-    returns one umbrella smoke_result. The shape matches what tools-hub's
-    ``_interpret_pipeline_return`` already consumes — fan-out is invisible
-    to the hub.
+    blocks on each call's ``.get()`` under a shared ``_CHILD_WAIT_BUDGET_S``
+    deadline, then merges their ``candidates`` and ``designs`` arrays, globally
+    re-ranks by ipTM, and returns one umbrella smoke_result. The shape matches
+    what tools-hub's ``_interpret_pipeline_return`` already consumes — fan-out
+    is invisible to the hub.
+
+    Every child this function spawns is cancelled on the way out unless it
+    reached a terminal state first — on the deadline, on a user cancel, and on
+    a cancel that lands while the spawn loop is still running.
+    :func:`_gather_children` covers the wait, the ``except BaseException``
+    around each spawn loop covers the rest, and
+    tests/test_esmfold2_orchestrator_reaps_children.py pins both. It is the
+    difference between a refunded job costing Ranomics the elapsed seconds and
+    one costing it ``n_seeds`` full H100 sessions.
 
     For ``n_seeds == 1`` this is a thin pass-through with one child spawn
     (~5s orchestrator overhead vs going direct to ``_run_one_seed``).
@@ -448,41 +712,75 @@ def run_tool(payload: Any) -> dict:
             cp.setdefault("job_spec", {})
             cp["job_spec"].setdefault("pdb_prefix", "")
             cp["job_spec"]["n_seeds"] = 1
-        # ``.remote()`` is the synchronous equivalent of ``.spawn().get()``.
-        # Returns the worker's full return dict; we pass it through unchanged.
-        return _run_one_seed.remote(cp)
+        # spawn + _gather_children, not ``.remote()``. The two are synchronous
+        # equivalents, but ``.remote()`` hands back no FunctionCall -- with no
+        # handle there is nothing to cancel, so a cancelled or timed-out
+        # single-seed run leaked its H100 exactly the way a fan-out did. The
+        # return SHAPE is unchanged: the worker's full dict, passed through,
+        # never _aggregate.
+        singleton: list[tuple[int, Any]] = []
+        single_settled: set[int] = set()
+        try:
+            call = _run_one_seed.spawn(cp)
+            singleton.append((start_seed, call))
+            print(
+                f"[run_tool] spawned child seed={start_seed} fc_id="
+                f"{getattr(call, 'object_id', '?')}",
+                flush=True,
+            )
+            singles, single_failures = _gather_children(
+                singleton, budget_s=_CHILD_WAIT_BUDGET_S, settled=single_settled
+            )
+        except BaseException:
+            _reap_children(singleton, single_settled)
+            raise
+        if singles:
+            return singles[0][1]
+        # ``.remote()`` propagated the child's exception to the hub; keep doing
+        # that rather than returning a dict _interpret_pipeline_return would
+        # read as a result.
+        raise RuntimeError(f"seed {start_seed}: {single_failures[0][1]}")
 
     children: list[tuple[int, Any]] = []
-    for i in range(n_seeds):
-        seed = start_seed + i
-        cp = copy.deepcopy(payload) if isinstance(payload, dict) else {}
-        cp.setdefault("job_spec", {})
-        cp["job_spec"]["seed"] = seed
-        cp["job_spec"]["pdb_prefix"] = f"seed{seed}_"
-        cp["job_spec"]["n_seeds"] = 1
-        call = _run_one_seed.spawn(cp)
-        children.append((seed, call))
+    settled: set[int] = set()
+    # One guard from the first spawn to the last harvest, with no unguarded
+    # statement between them. The spawn loop is n_seeds SEQUENTIAL gRPC round
+    # trips -- seconds of wall clock at N_SEEDS_MAX -- and a cancel landing
+    # there is the likeliest cancel there is (an accidental submit, retracted
+    # immediately). But the gap AFTER it matters just as much: a cancel landing
+    # on the log write or on the call into _gather_children arrives with
+    # ``children`` fully populated and no reaping frame on the stack yet, so
+    # every one of the n_seeds H100s would run to its own _MAX_SESSION_S on a
+    # job the hub refunds in full. ``settled`` is shared with _gather_children
+    # so its own reap and this one do not both cancel the same call. Pinned by
+    # tests/test_esmfold2_orchestrator_reaps_children.py's
+    # test_every_spawn_and_harvest_in_run_tool_is_inside_a_reaping_guard.
+    try:
+        for i in range(n_seeds):
+            seed = start_seed + i
+            cp = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+            cp.setdefault("job_spec", {})
+            cp["job_spec"]["seed"] = seed
+            cp["job_spec"]["pdb_prefix"] = f"seed{seed}_"
+            cp["job_spec"]["n_seeds"] = 1
+            call = _run_one_seed.spawn(cp)
+            children.append((seed, call))
+            print(
+                f"[run_tool] spawned child seed={seed} fc_id="
+                f"{getattr(call, 'object_id', '?')}",
+                flush=True,
+            )
         print(
-            f"[run_tool] spawned child seed={seed} fc_id="
-            f"{getattr(call, 'object_id', '?')}",
+            f"[run_tool] waiting for {len(children)} children to complete "
+            f"(budget {_CHILD_WAIT_BUDGET_S}s)",
             flush=True,
         )
-
-    print(
-        f"[run_tool] waiting for {len(children)} children to complete",
-        flush=True,
-    )
-
-    successes: list[tuple[int, dict]] = []
-    failures: list[tuple[int, str]] = []
-    for seed, call in children:
-        try:
-            r = call.get()
-            successes.append((seed, r))
-            print(f"[run_tool] child seed={seed} completed", flush=True)
-        except Exception as exc:
-            failures.append((seed, str(exc)))
-            print(f"[run_tool] child seed={seed} FAILED: {exc}", flush=True)
+        successes, failures = _gather_children(
+            children, budget_s=_CHILD_WAIT_BUDGET_S, settled=settled
+        )
+    except BaseException:
+        _reap_children(children, settled)
+        raise
 
     print(
         f"[run_tool] aggregation: {len(successes)} succeeded, "
@@ -632,9 +930,11 @@ def _aggregate(
     #
     # all_candidates is iPTM-sorted, so the first member of a tier is its
     # highest-iPTM member. In scFv mode the TIER is decided on the CDR
-    # distogram proxy while the RANK stays iPTM; that split is deliberate,
-    # because iPTM is the calibrated number and the proxy is a gate the
-    # panel itself calls "informative only".
+    # distogram proxy AND iPTM (the proxy leg alone until 2026-09-10) while
+    # the RANK stays iPTM alone; that split is deliberate, because iPTM is
+    # the calibrated number and the proxy is a gate leg that asks a narrower
+    # question -- whether the CDRs are placed confidently, not whether the
+    # interface is good. See _classify in run_pipeline.py.
     def _tier_of(c: dict | None) -> str:
         return str(((c or {}).get("scores") or {}).get("filter_status") or "")
 

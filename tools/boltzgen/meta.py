@@ -200,21 +200,41 @@ about: dict = {
     # third place. The refold folds the binder alone, so it says the design
     # folds to the shape it was designed as -- nothing about whether it binds.
     #
-    # And 2 A was a third bar for one metric on one page: the container's pass
-    # bar is 2.0, the results legend calls 1.5 good and 1.0 excellent
-    # (shared/score_legends.py). Both are real and they mean different things,
-    # so name which is which rather than picking one and contradicting the
-    # other four lines down the page.
+    # ONE RMSD NUMBER, AND IT IS THE ONE THE VERDICTS ARE COMPUTED FROM.
+    # This sentence read "at or under 2 &Aring; it clears the RMSD leg of the
+    # pass bar" -- the CONTAINER's RMSD_THRESHOLD (llm-proteinDesigner/docker/
+    # boltzgen/run_pipeline.py, no line number, that repo moves on its own;
+    # ``CONTAINER_GATES`` in tests/test_derived_verdicts.py names that constant
+    # and reads its value out of the sibling checkout, skipping when that repo
+    # is absent, so the 2.0 above is a cross-repo reading and not a number this
+    # repo pins) -- while every verdict beside it comes from the legend's
+    # ``good`` of 1.5: shared/score_legends.py ("boltzgen", "refolding_rmsd"),
+    # named in ``GATE_COLUMNS["boltzgen"]``. So a design at 1.8 &Aring; read
+    # "clears the RMSD leg" on this page and fell short in the cell.
+    #
+    # An earlier version of this comment called that a choice between two real
+    # bars to be labelled rather than a contradiction. It is not: the
+    # container's 2.0 labels ``filter_status`` and nothing else, and that word
+    # reaches NO surface a reader can check this sentence against. Nothing in
+    # shared/, blueprints/ or templates/ may read it for a verdict (the block
+    # above ``GATE_COLUMNS`` in shared/score_legends.py, greped by
+    # tests/test_derived_verdicts.py) and shared/exports.py drops it from every
+    # export (``_STALE_VERDICT_KEYS``). So it is not named here at all.
+    #
+    # THE COMPARATOR SITS IMMEDIATELY AFTER THE METRIC ON PURPOSE.
+    # tests/test_guide_bar_matches_legend.py reads a stated threshold only
+    # when it does, and that adjacency is what stops ordinary prose being
+    # read as a bar. Putting a clause between the two -- which is how the
+    # old sentence was written -- takes this line back out of that guard.
     "output_summary": (
         "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, and "
         "structures downloadable from a run of your own &mdash; mmCIF or "
-        "PDB, whichever the container wrote. Refolding RMSD is the design "
-        "against its own refold: at or under 2 &Aring; it clears the RMSD "
-        "leg of the pass bar, which also needs pLDDT at or above 80. "
-        "Under 1.5 &Aring; the "
-        "results tooltip calls it self-consistent. That says the binder folds "
-        "as designed, not that it binds &mdash; re-fold a shortlist against "
-        "your target to check that."
+        "PDB, whichever the container wrote. Refolding RMSD at or under "
+        "1.5 &Aring; clears the RMSD leg of the pass bar, which also needs "
+        "pLDDT at or above 80; the number is the design measured against "
+        "its own refold. That says the binder folds as designed, not that "
+        "it binds &mdash; re-fold a shortlist against your target to check "
+        "that."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
