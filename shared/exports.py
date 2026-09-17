@@ -34,7 +34,7 @@ from shared import pdb_bfactors as _pdb_bfactors
 
 def _dict_candidates(candidates) -> list:
     """The EXPORT-layer read of a candidate list: same length, same order,
-    every row a Mapping. The mirror of ``shared.jobs.display_rows``, the
+    every row a plain dict. The mirror of ``shared.jobs.display_rows``, the
     RENDER layer's read of the SAME STORED ARRAY -- the export routes reach
     ``result["candidates"]`` / ``result["designs"]`` through
     ``shared.jobs.candidate_records``, while each tool's results template
@@ -47,9 +47,12 @@ def _dict_candidates(candidates) -> list:
     ``display_rows`` IS NOT ON THIS BRANCH -- it arrives with
     ``claude/zealous-hertz-98ca24``, and until it does the page still 500s on
     such a row rather than blanking it. This side is written to match it now
-    so the two land agreeing: the two bodies were run against one probe set
-    (row types, tuple/list, and dict/str/int/None arrays) and returned equal
-    lists on every input.
+    so the two land agreeing: its body was copied out of that branch and run
+    beside this one over one probe set (row types, tuple/list, and
+    dict/str/int/None arrays), returning lists that compared equal on every
+    input. Equal BY VALUE -- this side converts a non-dict Mapping (below)
+    where the render side keeps it, and a Mapping equals the dict of its
+    items. Nothing on this branch can re-run that comparison.
 
     COERCES RATHER THAN FILTERING, and that is the whole fix. Every serializer
     here derives row identity from ``enumerate`` over this list --
@@ -75,11 +78,22 @@ def _dict_candidates(candidates) -> list:
     and a structure, which that row does not have. Pinned by
     tests/test_export_shapes.py::TestMalformedCandidateRow.
 
-    ``Mapping`` and the list/tuple guard are ``display_rows``'s, because the
-    point of this function is to agree with it. The guard is load-bearing
-    under a coercion that the old filter did not need: a candidates array
-    that is a dict or a string would otherwise become one blank row per key
-    or per character, where filtering returned ``[]``.
+    The PREDICATE ``Mapping`` and the list/tuple guard are ``display_rows``'s,
+    because the point of this function is to agree with it about WHICH ROWS
+    EXIST. The guard is load-bearing under a coercion that the old filter did
+    not need: a candidates array that is a dict or a string would otherwise
+    become one blank row per key or per character, where filtering returned
+    ``[]``.
+
+    A Mapping that is not a ``dict`` is CONVERTED rather than passed through,
+    which the render side has no reason to do: three readers downstream of
+    this one narrow the type again -- ``shared.score_legends.is_fabricated``
+    and both probes in :func:`_metric_columns` gate on
+    ``isinstance(..., dict)``. Passed through, such a row reached the CSV
+    with its ``provenance`` column dropped, so a smoke stub's invented ipTM
+    exported unmarked -- failing OPEN exactly where the old filter failed
+    closed. A plain dict is returned as it is, so the only path that copies
+    is one nothing produces today.
 
     Not imported from ``shared.jobs``: that module pulls Supabase in through
     ``shared.credits`` at import time and this one is deliberately free of it
@@ -90,7 +104,10 @@ def _dict_candidates(candidates) -> list:
     """
     if not isinstance(candidates, (list, tuple)):
         return []
-    return [c if isinstance(c, Mapping) else {} for c in candidates]
+    return [
+        c if isinstance(c, dict) else dict(c) if isinstance(c, Mapping) else {}
+        for c in candidates
+    ]
 
 
 def _decode_b64(encoded) -> Optional[bytes]:

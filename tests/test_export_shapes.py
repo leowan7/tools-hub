@@ -615,11 +615,27 @@ class TestMalformedCandidateRow:
         ``display_rows`` uses -- a row one of them blanked and the other
         kept would be a new disagreement in the change that exists to end
         one. All three serializers read such a row through ``.get`` /
-        ``.items()`` / ``[]``, which a Mapping supplies."""
-        row = MappingProxyType(
-            {"pdb_key": "designs/m.pdb", "sequence": "ACDE",
-             "rank": 7, "scores": {"iptm": 0.9}}
+        ``.items()`` / ``[]``, which a Mapping supplies.
+
+        It is CONVERTED to a plain dict on the way out, because three readers
+        downstream narrow the type again, and this asserts EQUALITY with the
+        dict export rather than naming cells so it cannot drift as columns are
+        added. Equality alone would pass if both paths broke together, so the
+        ``provenance`` cell -- the one that actually vanished, since
+        ``shared.score_legends.is_fabricated`` gates on ``isinstance(record,
+        dict)`` -- is pinned present beside it.
+        """
+        payload = {
+            "pdb_key": "designs/m.pdb", "sequence": "ACDE", "rank": 7,
+            "scores": {"iptm": 0.9,
+                       "filter_status": "smoke stub, scores fabricated"},
+        }
+        proxy_csv = candidates_to_csv([MappingProxyType(payload)])
+        assert proxy_csv == candidates_to_csv([payload])
+        assert candidates_to_fasta([MappingProxyType(payload)]) == (
+            candidates_to_fasta([payload])
         )
-        assert candidates_to_fasta([row]).splitlines()[0] == ">rank1_m.pdb"
-        csv_row = candidates_to_csv([row]).splitlines()[1].split(",")
-        assert csv_row[:3] == ["1", "designs/m.pdb", "7"], csv_row
+        header, first = proxy_csv.splitlines()[0], proxy_csv.splitlines()[1]
+        assert header.split(",")[3] == "provenance", header
+        assert first.split(",")[3] == "stub (smoke)", first
+        assert first.split(",")[:3] == ["1", "designs/m.pdb", "7"], first
