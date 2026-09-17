@@ -186,7 +186,10 @@ def api_runs_estimate():
     """Live budget + chunk-plan preview for the campaign create form."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
-    preset = (request.args.get("preset") or "pilot").strip() or "pilot"
+    # Lowercased to match the estimator's own normalisation
+    # (shared/wallet_estimates.py:618), so a cased "Validate" cannot slip
+    # past the refusal below and be priced as a campaign.
+    preset = (request.args.get("preset") or "pilot").strip().lower() or "pilot"
     try:
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
@@ -197,10 +200,9 @@ def api_runs_estimate():
         # The free pre-flight is not a paid campaign — mirror the create route.
         return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a campaign."})
     try:
-        # Thread the real variant so the estimate matches the create path (the
-        # 5 live tools default to "pilot"); today proteina is fixed-container so
-        # the figures coincide, but this stops a silent divergence if pricing
-        # ever becomes preset-dependent.
+        # Always the "pilot" default in practice: the form's fetchEstimate()
+        # sends only tool + requested_designs, never a preset
+        # (templates/runs/new.html:417-418).
         plan = cc.plan_chunks(tool, requested, preset)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)})
@@ -331,9 +333,12 @@ def compute_campaign_create():
         return _err("Unknown tool.")
     if adapter.preset_for(preset) is None:
         return _err("Unknown preset for this tool.")
-    # The free `validate` tier is a CPU-only pre-flight, not a paid campaign; it
-    # is omitted from the form and routed separately. Reject it on the paid path
-    # so a crafted request can't open a priced campaign on a config-less variant.
+    # The free `validate` tier is a pre-flight, not a paid campaign; it is
+    # omitted from the form and routed separately. Reject it on the paid path
+    # so a crafted request can't open a priced campaign on a config-less
+    # variant. Free to the CUSTOMER, not GPU-free: it does no GPU work but
+    # holds the same A100 container (tools/proteina/run_pipeline.py's "validate
+    # tier" header).
     if preset == "validate":
         return _err("The validate tier is a free pre-flight, not a campaign.")
     # IgGM affinity_maturation runs one design PER masked position PER sample, so
@@ -815,7 +820,9 @@ def compute_campaign_status(campaign_id):
     # request time — no stored verdict is read. It is NOT the number of designs
     # produced (small batches often meet nothing). ``designs_delivered`` is
     # kept as a back-compat alias for the same value.
-    hits = _campaign_candidates_meeting_bar(campaign_id, campaign.tool)
+    hits = _campaign_candidates_meeting_bar(
+        campaign_id, campaign.tool, campaign.preset,
+    )
     payload["hits"] = hits
     payload["designs_delivered"] = hits
     payload["terminal"] = campaign.status in (
@@ -830,7 +837,9 @@ def compute_campaign_status(campaign_id):
     payload["paused"] = campaign.status == "paused_insufficient_funds"
     return jsonify(payload)
 
-def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
+def _campaign_candidates_meeting_bar(
+    campaign_id: str, tool: str, preset: str | None = None,
+) -> int:
     """Sum candidates that MEET ``tool``'s quality bar across a campaign's
     succeeded children.
 
@@ -852,6 +861,14 @@ def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
     reads ``result["candidates"]`` or ``result["designs"]`` and resolves
     metrics under ``scores`` or at the record root, which is the shape bug
     that made this card under-report before.
+
+    ``preset`` is the campaign's, and it is only a FALLBACK mode for a tool
+    whose bar is keyed on the run's mode -- each child's own result answers
+    first, inside ``count_candidates_meeting_bar``. It changes nothing for any
+    tool campaigns can currently run: esmfold2-design is the only moded tool
+    and it is not in ``compute_campaigns.SUPPORTED_TOOLS``. Threaded anyway
+    because the alternative is a card that silently reads no bar the day one
+    is added, which is the shape of defect this whole class is.
     """
     client = get_service_client()
     if client is None:
@@ -869,7 +886,8 @@ def _campaign_candidates_meeting_bar(campaign_id: str, tool: str) -> int:
         return 0
     from shared.jobs import count_candidates_meeting_bar  # noqa: PLC0415
     return sum(
-        count_candidates_meeting_bar(r.get("result"), tool) for r in rows
+        count_candidates_meeting_bar(r.get("result"), tool, preset)
+        for r in rows
     )
 
 # CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
@@ -920,7 +938,15 @@ def _campaign_export(campaign_id: str, fmt: str):
             headers={"Content-Disposition": f"attachment; filename={stem}_scores.csv"},
         )
     if fmt == "fasta":
-        body = candidates_to_fasta(candidates) or (
+        # NO PRESET. A campaign's envelope carries the tool but not the
+        # preset, and no campaign tool needs one: the intersection of
+        # compute_campaigns.SUPPORTED_TOOLS and score_legends.MODE_GATE_COLUMNS
+        # is EMPTY (four of the seven declare a tool-wide bar in GATE_COLUMNS,
+        # which ignores a preset by construction, and bindcraft, proteina and
+        # iggm declare no bar at all). A moded tool added to that list later
+        # would read no bar here and get no notes -- the same answer it gives
+        # everywhere else that cannot name a run.
+        body = candidates_to_fasta(candidates, tool=agg.get("tool")) or (
             "# No sequences found in this campaign's output.\n"
         )
         return Response(

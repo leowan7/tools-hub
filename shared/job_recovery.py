@@ -92,8 +92,23 @@ def _candidate_from_partial(part: dict) -> dict:
     }
 
 
-def _list_design_files(user_id: str, job_id: str) -> list[str]:
-    """Fallback: list the design filenames present under the job's prefix."""
+# storage3's list() defaults to ``{"limit": 100}``
+# (``storage3._sync.file_api.DEFAULT_SEARCH_OPTIONS``), so every call below
+# asks for its page explicitly. _LIST_MAX bounds the walk; a prefix holding
+# more than that reconstructs from its first _LIST_MAX objects.
+# ponytail: fixed ceiling, make it configurable if a tool ever exceeds it.
+_LIST_PAGE = 100
+_LIST_MAX = 10_000
+
+
+def _list_prefix_names(user_id: str, job_id: str) -> list[str]:
+    """Every object name under the job's designs prefix, or [] on any error.
+
+    Returning [] rather than the pages that did load keeps the conservative
+    direction: callers read a missing name as a design that did not survive,
+    so an unreadable listing refunds the job instead of finalising a silently
+    truncated result as a success.
+    """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.storage import OUTPUT_BUCKET  # noqa: PLC0415
 
@@ -101,16 +116,37 @@ def _list_design_files(user_id: str, job_id: str) -> list[str]:
     if client is None:
         return []
     prefix = f"{user_id}/{job_id}/designs"
-    try:
-        listing = client.storage.from_(OUTPUT_BUCKET).list(path=prefix)
-    except Exception:
-        return []
-    names = []
-    for item in listing or []:
-        name = item.get("name") if isinstance(item, dict) else None
-        if name and name.lower().endswith((".cif", ".pdb", ".mmcif")):
-            names.append(name)
-    return sorted(names)
+    names: list[str] = []
+    for offset in range(0, _LIST_MAX, _LIST_PAGE):
+        try:
+            listing = client.storage.from_(OUTPUT_BUCKET).list(
+                path=prefix,
+                options={"limit": _LIST_PAGE, "offset": offset},
+            )
+        except Exception:
+            return []
+        rows = listing or []
+        names.extend(
+            item["name"]
+            for item in rows
+            if isinstance(item, dict) and item.get("name")
+        )
+        # Page on the RAW row count, never the filtered one: a short page is
+        # the only end-of-listing signal, and a page that is full but holds a
+        # row we skip would otherwise end the walk and drop every page after
+        # it -- the same silent truncation this pagination exists to close.
+        if len(rows) < _LIST_PAGE:
+            break
+    return names
+
+
+def _list_design_files(user_id: str, job_id: str) -> list[str]:
+    """Fallback: list the design filenames present under the job's prefix."""
+    return sorted(
+        name
+        for name in _list_prefix_names(user_id, job_id)
+        if name.lower().endswith((".cif", ".pdb", ".mmcif"))
+    )
 
 
 def reconstruct(job) -> list[dict]:  # noqa: ANN001 — ToolJob, avoid import cycle
@@ -120,20 +156,27 @@ def reconstruct(job) -> list[dict]:  # noqa: ANN001 — ToolJob, avoid import cy
     scores) and drops any whose structure is not actually in Storage. When no
     partials survive, lists the Storage prefix directly (no scores recoverable).
     Returns ``[]`` when the job produced nothing recoverable.
-    """
-    from shared.storage import output_exists  # noqa: PLC0415
 
+    Existence is tested against ONE paginated listing instead of a per-design
+    ``output_exists`` round trip. ``_partial_candidates`` runs to 1000
+    (``webhooks/modal.py:597``) and this is now reached from inside the status
+    request (``blueprints/jobs.py::job_status``), where a Storage call per
+    design would hold the worker past gunicorn's 120 s watchdog
+    (``gunicorn.conf.py:164``). Names are compared after ``_safe_filename``,
+    which is both what ``output_exists`` matched on (``shared/storage.py:464``)
+    and what wrote the object in the first place (``_output_object_path``,
+    ``shared/storage.py:383``).
+    """
+    from shared.storage import _safe_filename  # noqa: PLC0415
+
+    present = set(_list_prefix_names(job.user_id, job.id))
     partials = (job.inputs or {}).get("_partial_candidates") or []
     candidates = []
     for part in partials:
         if not isinstance(part, dict):
             continue
         basename = posixpath.basename(str(part.get("pdb_key") or ""))
-        if not basename:
-            continue
-        if not output_exists(
-            user_id=job.user_id, job_id=job.id, filename=basename
-        ):
+        if not basename or _safe_filename(basename) not in present:
             continue
         candidates.append(_candidate_from_partial(part))
     if candidates:
@@ -207,7 +250,7 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         # Failed poll with no exit code (older payload) — inconclusive.
         return None, "unknown"
 
-    # running / error / anything else — no ground truth.
+    # running / timeout / error / anything else — no ground truth.
     return None, "unknown"
 
 
@@ -235,7 +278,9 @@ def _completion_signal(job) -> str:  # noqa: ANN001
     return "complete" if completed >= total else "incomplete"
 
 
-def recover_stuck_job_result(job) -> Optional[dict]:  # noqa: ANN001
+def recover_stuck_job_result(
+    job, *, probe_modal: bool = True
+) -> Optional[dict]:  # noqa: ANN001
     """Return a finalizable ``succeeded`` result for a stuck job, or None.
 
     ``None`` means the work is not recoverable and the caller should time the
@@ -252,8 +297,26 @@ def recover_stuck_job_result(job) -> Optional[dict]:  # noqa: ANN001
        pipeline exit (exit 0, webhook merely lost) OR a heartbeat progress
        snapshot showing every design finished. An explicitly INCOMPLETE
        progress snapshot vetoes even a clean exit.
+
+    ``probe_modal=False`` skips step 1/2's Modal round trip for a caller that
+    already holds a terminal Modal verdict for this FunctionCall; recovery
+    then rests on step 3 alone. See the comment at the call site.
     """
-    inline, exit_verdict = _probe_modal(job)
+    if probe_modal:
+        inline, exit_verdict = _probe_modal(job)
+    else:
+        # ``probe_modal=False``: the caller already polled Modal this request
+        # and holds a TERMINAL verdict. Re-polling the same FunctionCall can
+        # only raise the same FunctionTimeoutError, which _probe_modal's tail
+        # maps to "unknown" regardless -- so the probe buys nothing and costs a
+        # second 90 s _bounded_modal_call inside one request. Two stacked hops
+        # is 180 s, past the 120 s gunicorn watchdog that kills the worker and
+        # every other request on it (gunicorn.conf.py:164,
+        # tests/test_modal_call_deadline.py::
+        # test_it_is_below_the_gunicorn_worker_watchdog). Recovery then rests
+        # on the heartbeat + Storage evidence below, which is the only thing
+        # that could have recovered this job anyway.
+        inline, exit_verdict = None, "unknown"
 
     # 1. Inline result already in hand (atomic tools / payload-returning runs).
     if inline is not None:

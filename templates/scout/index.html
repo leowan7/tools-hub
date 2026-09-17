@@ -6,6 +6,7 @@
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='scout.css') }}">
   <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+  <script src="{{ url_for('static', filename='js/scout-download.js') }}" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -153,6 +154,16 @@
             </div>
           </div>
         </div>
+
+        <!-- The refusal surface for the two buttons above. Deliberately NOT
+             #analyze-error: a render that finds no qualifying epitopes writes
+             'No epitopes scored above threshold' there and points the user at
+             the all-patches button, so that message can be on screen while
+             these buttons are live and a download refusal must not overwrite
+             or clear it. #analyze-error also sits outside #results-section;
+             tests/test_scout_download_refusals.py
+             test_a_refusal_is_shown_inside_the_results holds this one inside. -->
+        <p id="download-error" class="error-message" aria-live="polite" hidden></p>
 
         <!-- Data panels grid -->
         <div class="results-grid">
@@ -388,6 +399,16 @@
       var epitopes = data.epitopes || [];
       var dl = document.getElementById('download-link');
       var dlFull = document.getElementById('download-link-full');
+      // Guarded on the global: if scout-download.js failed to load, an
+      // unqualified call throws from the top of this render into the blanket
+      // catch that reports 'Network error. Please try again.', blanking a
+      // results pane that is already un-hidden and cleared -- after the
+      // analyze POST was spent. Falling back to the browser's own handling
+      // loses the refusal message, which is only as bad as before this file.
+      if (window.bindGuardedDownload) {
+        bindGuardedDownload(dl, showDownloadError);
+        bindGuardedDownload(dlFull, showDownloadError);
+      }
       dl.href = data.download_url;
       dl.style.display = epitopes.length > 0 ? 'inline-flex' : 'none';
       if (data.download_url_full) {
@@ -874,6 +895,24 @@
       if (btn) { btn.disabled = false; btn.textContent = 'Analyze epitopes'; }
     }
 
+    // Writes its own #download-error rather than #analyze-error -- see the
+    // comment on that element in the markup above. An empty message retires
+    // the surface: the guard clears it at the start of every click, so a
+    // download that succeeds after a refusal does not leave the old
+    // complaint on screen. scrollIntoView because the buttons sit well
+    // below the message.
+    function showDownloadError(msg) {
+      var el = document.getElementById('download-error');
+      // Unhide BEFORE writing. aria-live announces a CHANGE to a region
+      // already in the accessibility tree, and the markup ships this one
+      // hidden, so text-then-unhide arrives as initial content and is never
+      // read out. tests/test_scout_download_refusals.py
+      // test_the_refusal_is_announced_not_just_painted.
+      el.hidden = !msg;
+      el.textContent = msg;
+      if (msg) el.scrollIntoView({ block: 'center' });
+    }
+
     // Every element on the page that describes ONE chain's results. Called
     // unconditionally and first in _handleAnalysisResult: renderViewer is async
     // and nobody awaits it, so clearing inside it — or inside a branch only
@@ -892,6 +931,7 @@
       document.getElementById('uniprot-bar').hidden = true;
       document.getElementById('flag-ref-grid').innerHTML = '';
       document.getElementById('flag-reference').hidden = true;
+      document.getElementById('download-error').hidden = true;
     }
 
     function resetAll() {

@@ -338,12 +338,73 @@ def candidates_to_csv(candidates) -> str:
     return buf.getvalue()
 
 
-def candidates_to_fasta(candidates, sequences=None) -> str:
-    """FASTA body for a job/campaign. Binder-design tools carry a
+def _bar_scope(cand: dict, tool, preset) -> tuple[str, object]:
+    """``(tool, mode)`` to judge ONE exported row under.
+
+    A merged export carries several runs, so a row that has its own
+    ``_source_tool`` is judged by it; the scalars are the single-run routes'
+    answer for rows that carry no provenance at all. ``_source_preset`` holds
+    the run's MODE on merged rows (``shared.target_results._candidate_rows``),
+    which is exactly what the bar wants.
+    """
+    if cand.get("_source_tool"):
+        return str(cand["_source_tool"]), cand.get("_source_preset")
+    return (tool or ""), preset
+
+
+def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -> str:
+    """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
     output arrives as a separate ``sequences`` list (seq + score + recovery).
     Returns ``""`` when there is nothing to write (caller supplies the empty
-    message so the download still names sensibly)."""
+    message so the download still names sensibly).
+
+    ``tool`` / ``preset`` NAME THE RUN when every row came from one. They are
+    NOT the only source: a row carrying its own ``_source_tool`` is judged
+    from that, scalars or no scalars, which is how the merged target export
+    works (see :func:`_bar_scope` and blueprints/targets.py). So "without
+    ``tool`` nothing is judged" is true ONLY of rows with no provenance -- a
+    per-job or per-campaign export -- and an earlier version of this sentence
+    stated it unconditionally, contradicting a comment added to targets.py in
+    the same change. With them, a record that does not clear the bar carries the
+    verdict in its DESCRIPTION -- the free text after the id, which
+    :func:`_basename` already treats as a distinct field when it strips
+    whitespace out of the id itself. ``preset`` is the run's mode for a tool
+    in ``shared.score_legends.MODE_GATE_COLUMNS`` and inert elsewhere; resolve
+    it with ``score_legends.resolve_mode``.
+
+    WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
+    ``candidates[0]``, which is the container's ranking key and not its bar --
+    on esmfold2-design job 2b917b54 that is the pI 11.95 design the pipeline
+    drops. Moving it would fix the leading record and break something worse:
+    the CSV and this function take their ``rank`` LABEL from
+    :func:`export_key`, off one index into one list, so ``rank7`` is the same
+    design in both and re-sorting only this one would silently end that. NOT
+    their POSITIONS: :func:`export_key`'s own docstring says so, because this
+    function skips rows with no sequence while still numbering from the full
+    list, so a file whose first record is ``rank2`` is ordinary.
+
+    THE ZIP IS NOT THE THIRD MEMBER OF THAT SET, and two drafts of this
+    paragraph got it wrong in opposite directions. It labels nothing
+    ``rank7``: :func:`candidates_to_zip` reads ``pdb_key`` out of the same key
+    and names the entry from that. But "the ZIP has no N at all" is false too
+    -- ``key["pdb_key"] or f"candidate_{i + 1}.pdb"`` falls back to the rank
+    for a row carrying no key, which is reachable, and probed:
+    ``['designs/a.pdb', 'candidate_2.pdb', 'candidate_3.pdb']``.
+
+    The FASTA is the format that most needs the sentence anyway. The CSV
+    carries the measurements a reader could apply the bar to themselves; the
+    ZIP carries structures, whose B-factor column this module rewrites to the
+    0-100 pLDDT scale on the way out, so a reader has a confidence signal
+    there too. Only the FASTA is an id and a sequence with nothing to judge
+    by.
+
+    ``verdict_text`` renders it, never a hand-join of ``verdict.shortfalls``:
+    that drops the ``unusable`` and ``unmeasured`` halves, which is a
+    disclosure about a design whose metric was never measured going missing.
+    """
+    from shared.score_legends import judge, verdict_text  # noqa: PLC0415
+
     lines: list[str] = []
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
@@ -360,7 +421,21 @@ def candidates_to_fasta(candidates, sequences=None) -> str:
         if key.get("source_job"):
             parts.append(str(key["source_job"])[:8])
         parts.append(_basename(key["pdb_key"], f"candidate_{i + 1}"))
-        lines.append(">" + "_".join(parts))
+        header = ">" + "_".join(parts)
+        row_tool, row_mode = _bar_scope(cand, tool, preset)
+        if row_tool:
+            verdict = judge(row_tool, cand, preset=row_mode)
+            # shared.ranking's predicate, negated. A record can be BOTH
+            # "below" and carrying a declared placeholder, and the "below"
+            # branch of verdict_text reports both halves.
+            if verdict.verdict == "below" or verdict.unusable:
+                note = verdict_text(row_tool, verdict, preset=row_mode)
+                if note:
+                    header += (
+                        f" [does not meet bar: {note}]"
+                        if verdict.verdict == "below" else f" [{note}]"
+                    )
+        lines.append(header)
         for start in range(0, len(seq), 80):
             lines.append(seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):

@@ -28,8 +28,10 @@ For pilot and full tiers the Modal
 function POSTs to ``webhook_url`` — poll() still reports "running" but
 the webhook handler updates tool_jobs independently.
 
-Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. TimeoutError
-means "still running"; anything else propagates as an error dict.
+Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. The builtin
+``TimeoutError`` means "still running"; ``modal.exception.FunctionTimeoutError``
+(the container hitting its own timeout) maps to status "timeout"; anything
+else propagates as an error dict.
 
 Every Modal gRPC round trip runs inside ``_bounded_modal_call``, because the
 SDK applies no deadline of its own and these are called from request handlers.
@@ -234,13 +236,32 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("boltz2", "standalone"):      1200,
     ("boltz2", "msa_server"):      3600,
     # ESMFold2-design: gradient-based inversion of ESMFold2 on H100.
-    # ~150 steps per design at 4-6 s/step gives ~10-15 min per gradient
-    # run. Cap at 2400 s (40 min) per preset — headroom over upstream's
-    # 60-min Modal timeout, room for batch_size up to 6 and weight-load
-    # latency on a cold container. Tune downward once we have real
-    # observed wall-clock distributions from the first prod batches.
-    ("esmfold2-design", "minibinder"): 2400,
-    ("esmfold2-design", "scfv"):       2400,
+    # These rows carried "~4-6 s/step ... ~10-15 min per gradient run" and
+    # "2400 s ... room for batch_size up to 6". The first prod measurements
+    # falsify both: 150 steps at batch_size=6 ran 3185 s and 3233 s
+    # (~21 s/step; docs/VALIDATION-LOG.md), so 2400 s was 25% UNDER a run it
+    # claimed to leave room for. Step time is a function of batch size, not a
+    # constant. (The ~3 s/step implied at batch_size=1 is derived from a ~450 s
+    # figure carried only in VALIDATION-LOG prose, with no run row behind it --
+    # tools/esmfold2_design/modal_app.py labels it as such.)
+    #
+    # Corrected to 5400 to match tools/esmfold2_design/modal_app.py
+    # _MAX_SESSION_S, which is the ceiling that actually bounds these runs.
+    #
+    # Nothing is repriced by this edit, but NOT for the reason an earlier draft
+    # gave. The note at the head of this map says these values ARE used for
+    # credit pre-authorisation, and the rfdiffusion block below names two
+    # value-carrying readers. Neither can read the rows below, but for two
+    # DIFFERENT reasons, and an earlier draft lumped them together:
+    # compute_campaigns._campaign_container_seconds is genuinely unreachable
+    # (every call site is gated on SUPPORTED_TOOLS, which omits this tool);
+    # scripts/calibration/poll_results.py IS reached with this slug, but asks
+    # for preset "pilot", which has no row here, so it gets 0 and its
+    # slow-success check no-ops. So ``submit``'s non-zero check is the only
+    # live reader of these two rows, and they are corrected so the next person
+    # sizing this tool does not reason from a falsified number.
+    ("esmfold2-design", "minibinder"): 5400,
+    ("esmfold2-design", "scfv"):       5400,
     # IgGM antibody/nanobody design (diffusion) on A100-40GB. Canary-measured:
     # ~24 s per diffusion pass + ~35 s model load. Every preset is bounded to
     # MAX_TOTAL_PASSES=100 inference passes (tools.iggm), so the realistic max
@@ -292,8 +313,10 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # capped at the 7200 s (2 h) container that _MAX_SESSION_S enforces, the
     # physical bound on a single shard's spend (~$12.6 marked-up at A100-80GB).
     # BOOTSTRAP until the P4/P5 canaries measure real per-shard wall-clock;
-    # historical p90 supersedes at >=20 runs. `validate` is the free CPU-only
-    # complexa-validate pre-flight gate (no GPU); its cap is nominal.
+    # historical p90 supersedes at >=20 runs. `validate` is the free
+    # complexa-validate pre-flight gate: no GPU WORK, but the same A100
+    # container (modal_app.py declares one @app.function, gpu=_GPU), so its cap
+    # is nominal for spend, not zero.
     ("proteina", "protein_binder"): 7200,
     ("proteina", "ligand_binder"):  7200,
     ("proteina", "motif_ame"):      7200,
@@ -449,9 +472,9 @@ class ModalClient:
 
         Returns:
             dict with ``status`` in
-            ``{"running","succeeded","failed","error"}``, plus ``result``
-            (the inline GPU pipeline return dict when succeeded) and
-            ``error`` (string on error).
+            ``{"running","succeeded","failed","timeout","error"}``, plus
+            ``result`` (the inline GPU pipeline return dict when succeeded)
+            and ``error`` (string on timeout/error).
         """
         if function_call_id.startswith("fc-stub-"):
             # Offline stub path — never advances.
@@ -478,6 +501,18 @@ class ModalClient:
             fc = modal.FunctionCall.from_id(function_call_id)
             return fc.get(timeout=0)
 
+        # Resolved off the module object rather than imported at the top:
+        # ``modal`` is optional here (see ``_import_modal``) and tests stub it.
+        # ``except ()`` never matches, so a stub or a modal without the class
+        # keeps the previous behaviour instead of raising AttributeError out of
+        # the handler and 500-ing the status route.
+        _fn_timeout = getattr(
+            getattr(modal, "exception", None), "FunctionTimeoutError", None
+        )
+        function_timeout_errors = (
+            (_fn_timeout,) if isinstance(_fn_timeout, type) else ()
+        )
+
         try:
             try:
                 raw_result = _bounded_modal_call("poll", _fetch)
@@ -488,6 +523,27 @@ class ModalClient:
                 # visible in the logs — so do not let it fall into the
                 # `except TimeoutError` below and be reported as healthy.
                 raise
+            except function_timeout_errors as exc:
+                # The CONTAINER hit its own timeout: Modal recorded
+                # GENERIC_STATUS_TIMEOUT for this call and will never return a
+                # result, so this is TERMINAL, not an infra blip to retry.
+                # FunctionTimeoutError does NOT subclass builtins.TimeoutError
+                # (its base is modal.exception.TimeoutError, a separate
+                # hierarchy -- asserted against the installed modal by
+                # tests/test_modal_function_timeout.py), so without this clause
+                # it missed both TimeoutError arms and fell into ``except
+                # Exception`` as status="error" -- which no caller
+                # terminalises, leaving the job row non-terminal and its wallet
+                # hold unsettled until the stuck-job sweeper.
+                logger.warning(
+                    "Modal function timeout for fc=%s: %s", function_call_id, exc
+                )
+                return {
+                    "status": "timeout",
+                    "result": None,
+                    "gpu_seconds_used": None,
+                    "error": f"Modal function timeout: {exc}",
+                }
             except TimeoutError:
                 return {
                     "status": "running",

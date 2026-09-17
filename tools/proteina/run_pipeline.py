@@ -3873,8 +3873,16 @@ def archive_raw_outputs(out_dir: Path, dest: str | None = None) -> None:
 # validate tier (wallet-free staging gate — NOT a CPU-only container)
 # ===========================================================================
 # "free, CPU dry-run" is what this header used to say, and half of it was
-# false in the direction that costs money. WALLET-free is true: tools-hub does
-# not bill the validate preset. CPU-only is not: modal_app.py declares exactly
+# false in the direction that costs money. WALLET-free is true only as of the
+# tier row this comment now cites: before it, tools-hub priced this preset at
+# the 7200 s session ceiling, and a submit would have held $15 (traced through
+# the estimator and the gate, and reproduced in-process by emptying the tier
+# map -- not observed on a real validate run). What makes it free is
+# ``tier_gpu_seconds={"validate": 0}`` on the proteina ToolSpec in
+# shared/wallet_estimates.py, which zeroes the estimate; shared/wallet_guard.py
+# then skips the HOLD (not the preflight, so a frozen wallet is still refused),
+# and with no hold nothing settles.
+# CPU-only is not: modal_app.py declares exactly
 # one @app.function and it is unconditionally `gpu="A100-80GB"`, so this tier
 # runs on an A100 container for its whole lifetime and Modal bills wall-clock
 # rather than utilisation. Skipping GPU *work* is not the same as not

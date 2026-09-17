@@ -7,6 +7,7 @@
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='scout.css') }}">
   <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+  <script src="{{ url_for('static', filename='js/scout-download.js') }}" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -209,10 +210,31 @@
           <div class="viewer-bar">
             <div id="viewer-legend" class="viewer-legend"></div>
             <div class="viewer-downloads">
+              <!-- The server's Content-Disposition names the file, chain
+                   included; this attribute is only the fallback the HTML
+                   download algorithm uses when the header carries no filename
+                   (it checks the header FIRST). Kept because dropping it makes
+                   a refused download navigate away from the rendered report
+                   and the live viewer -- jobs reap after an hour, so that is
+                   an ordinary path, not an exotic one. The refusal itself
+                   is shown in #download-error below this bar, by the guard
+                   bound to this anchor in renderFeasibilityResults --
+                   static/js/scout-download.js, covered by
+                   tests/test_scout_download_refusals.py. -->
               <a id="download-link" class="viewer-dl-btn" style="display:none;" download="feasibility_report.csv">Download CSV</a>
             </div>
           </div>
         </div>
+
+        <!-- The refusal surface for the button above. Deliberately NOT
+             #analyze-error: arriving from an epitope card on /scout/ runs
+             the auto-load block below, which sets inputPanel.hidden = true,
+             and style.css's `[hidden] { display: none !important; }` beats
+             the inline display the old path set -- so the message was
+             painted into a display:none subtree on the main entry path and
+             scrollIntoView had nothing to scroll to. This one lives inside
+             #results-section, which is visible whenever the button is. -->
+        <p id="download-error" class="error-message" aria-live="polite" hidden></p>
 
         <!-- Known binder overlaps -->
         <div class="panel" id="binder-overlaps-section" hidden>
@@ -354,6 +376,24 @@ function showAnalyzeError(msg) {
   var el = document.getElementById('analyze-error');
   el.textContent = msg;
   el.style.display = 'block';
+}
+
+// The download button sits at the bottom of the viewer, so a refusal has
+// to be brought into view or the click reads as a no-op. See the comment
+// on #download-error for why this cannot route through #analyze-error.
+// An empty message retires the surface: the guard clears it at the start
+// of every click, so a download that succeeds after a refusal does not
+// leave the old complaint on screen.
+function showDownloadError(msg) {
+  var el = document.getElementById('download-error');
+  // Unhide BEFORE writing. aria-live announces a CHANGE to a region already
+  // in the accessibility tree, and the markup ships this one hidden, so
+  // text-then-unhide arrives as initial content and is never read out.
+  // tests/test_scout_download_refusals.py
+  // test_the_refusal_is_announced_not_just_painted.
+  el.hidden = !msg;
+  el.textContent = msg;
+  if (msg) el.scrollIntoView({ block: 'center' });
 }
 
 function resetAll() {
@@ -528,7 +568,14 @@ function renderFeasibilityResults(data) {
 
   // Download link
   var dlLink = document.getElementById('download-link');
+  document.getElementById('download-error').hidden = true;
   dlLink.href = data.download_url;
+  // Guarded on the global for the same reason as templates/scout/index.html:
+  // a scout-download.js that failed to load would throw here and abandon the
+  // rest of this render, including the results-section un-hide below.
+  if (window.bindGuardedDownload) {
+    bindGuardedDownload(dlLink, showDownloadError);
+  }
   dlLink.style.display = 'inline-block';
 
   // Known binder overlaps
