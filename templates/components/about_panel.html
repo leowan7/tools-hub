@@ -171,8 +171,9 @@ Usage:
 
     {# Straight after the pilot card, because the two are one argument:
        here is the run to start with, and here is what a run of this
-       tool actually returned. Renders nothing for the thirteen tools
-       with no captured payload. #}
+       tool actually returned. Renders nothing for a tool with no
+       worked example -- _example_context withholds one unless both
+       narration and payload are present. #}
     {{ worked_example(adapter, _pub.example) }}
 
     {% if _meta and _meta.comparison_one_liner %}
