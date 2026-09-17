@@ -30,6 +30,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):

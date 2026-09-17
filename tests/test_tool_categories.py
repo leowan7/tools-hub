@@ -29,6 +29,8 @@ from shared.tools_catalog import (
     group_catalog,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # ``CATEGORY_ORDER`` ends with the "Other" catchall, which is a fallback
 # bucket rather than a band anyone should land in. Name it instead of
 # slicing it off with ``[:-1]`` -- a slice silently changes meaning if

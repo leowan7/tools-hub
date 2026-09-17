@@ -17,6 +17,8 @@ import uuid
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):
