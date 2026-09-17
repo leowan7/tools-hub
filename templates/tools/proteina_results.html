@@ -90,28 +90,29 @@
      `validate` dry-run — which designs nothing by construction — told the
      operator its search had found nothing, and pointed at a campaign page
      that cannot exist. Traced rather than assumed: the only writer of
-     tool_jobs.campaign_id is shared/compute_campaigns.py:2020-2033, which
-     takes its preset from a campaign, and the only two routes that create a
-     campaign both refuse this preset first — blueprints/campaigns.py:337 and
-     blueprints/targets.py:243. (campaigns.py:196 refuses it too, but that is
-     the JSON estimate preview, which creates nothing.) No path UPDATEs
-     campaign_id afterwards, so a validate job cannot acquire one.
+     tool_jobs.campaign_id is shared/compute_campaigns.py::_dispatch_chunk,
+     which takes its preset from a campaign, and the only two routes that
+     create a campaign both refuse this preset first —
+     blueprints/campaigns.py:337 and blueprints/targets.py:243.
+     (campaigns.py:196 refuses it too, but that is the JSON estimate preview,
+     which creates nothing.) No path UPDATEs campaign_id afterwards, so a
+     validate job cannot acquire one.
      Observed live on job fc9d14d7 (27 GPU-seconds, succeeded).
 
      Branches on `job.preset`, which is the value job_detail.html:117 already
      prints as "Preset <x>" above this panel, not on the result's `tier`:
      preset is a NOT NULL column read straight off the row
-     (shared/jobs.py:330), while `tier` is whatever the container chose to
-     echo back. On the worked-example page job is a dict literal with neither
-     key (components/worked_example.html:80-87), so both tests are Undefined
-     and falsy and the standalone arm renders — which is the right arm for a
-     single example run anyway.
+     (shared/jobs.py::ToolJob.from_row), while `tier` is whatever the
+     container chose to echo back. On the worked-example page job is a dict
+     literal with neither key (components/worked_example.html:80-87), so both
+     tests are Undefined and falsy and the standalone arm renders — which is
+     the right arm for a single example run anyway.
 
      The validate copy names only the three checks run_validate actually
-     performs (run_pipeline.py:3886-3936). It does NOT repeat the adapter
-     description's "checks your target": that branch returns at
-     run_pipeline.py:4030, and the sole route to download_target (:2864) is
-     the prepare_custom_target call at :4239, well past it. #}
+     performs (run_pipeline.py::run_validate). It does NOT repeat the adapter
+     description's "checks your target": run_pipeline.py::_run_shard returns
+     from its validate arm, and the sole route to download_target (:2864) is
+     the prepare_custom_target call after that return, well past it. #}
   {% if job.preset == 'validate' %}
     <p class="subtitle">
       <strong>Pre-flight passed.</strong> This was the free
@@ -139,8 +140,10 @@
        ligand_binder / motif_ame can never be custom (:151, :607), so they
        are always curated; binder_length is parsed on every path but only
        consumed under `target_source == "custom"`
-       (run_pipeline.py:4009 read, :4245 sole use, inside the :4234 gate);
-       and a shard is pinned at 4x2=8 designs (__init__.py:162) — raising
+       (run_pipeline.py::_run_shard reads it, and its sole use is inside
+       that function's `target_source == "custom"` gate);
+       and a shard is pinned at 4x2=8 designs
+       (tools/proteina/__init__.py::_SHARD_DESIGNS) — raising
        the count scales the SHARD count, which makes it a campaign and so
        contradicts this arm's own first sentence. What is left is true for
        every standalone run regardless of preset or target source. #}

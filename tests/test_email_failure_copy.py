@@ -224,10 +224,11 @@ class TestResultTone:
                     job, tone="empty",
                 ) == NO_OUTPUT, (tool, payload)
 
-        # Truthy but unreadable -- the shape gpu/modal_client.py:632-646
-        # builds from a pipeline return carrying tier/runtime_seconds and
-        # no domain keys. (A bare {"status": "COMPLETED", "output": {}}
-        # yields {} instead; the falsy branch handles that one.)
+        # Truthy but unreadable -- the shape
+        # gpu/modal_client.py::_interpret_pipeline_return builds from a
+        # pipeline return carrying tier/runtime_seconds and no domain keys.
+        # (A bare {"status": "COMPLETED", "output": {}} yields {} instead;
+        # the falsy branch handles that one.)
         # An earlier version of this test asserted this was
         # a SUCCESS, which is what let the email say "your run is ready"
         # with a green View results button over a page reading

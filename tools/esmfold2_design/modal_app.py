@@ -542,8 +542,8 @@ def _reap_children(
     """
     # ponytail: call.cancel() is left to Modal's own gRPC deadlines rather than
     # wrapped; _REAP_MARGIN_S is this function's only budget. Wrap it in the
-    # container-side equivalent of gpu/modal_client.py:134's
-    # _bounded_modal_call if a reap is ever seen to run long.
+    # container-side equivalent of gpu/modal_client.py::_bounded_modal_call
+    # if a reap is ever seen to run long.
     # ponytail: the guard is per-iteration, not a signal mask. Every statement
     # that could strand a child is inside the try; what is left interruptible
     # is the loop machinery itself and the handler's own print. Closing that

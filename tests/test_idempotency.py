@@ -579,8 +579,9 @@ class _ExplodingClient:
     Not the same as no client, but NOT because the wallet gate still works --
     it does not. `get_or_create_wallet` needs this same client, so
     `wallet_preflight` returns allow=False, `requires_wallet` falls THROUGH,
-    and the handler runs (status 200). `reserve_hold` then returns None at
-    `shared/wallet.py:575`, so this particular fault does not reach a charge.
+    and the handler runs (status 200). `shared/wallet.py::reserve_hold` then
+    returns None from its own preflight-denied branch, so this particular
+    fault does not reach a charge.
     `_claim_key`'s docstring forbids writing "the wallet gate is working in
     that case" -- this docstring said it anyway and was wrong.
 

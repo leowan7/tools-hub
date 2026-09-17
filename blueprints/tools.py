@@ -240,7 +240,7 @@ def library_planner_plan():
 
     @idempotent() is retained for signed-in callers; it hands an
     anonymous request straight to the handler because load_user_context
-    returns None without a session (shared/idempotency.py:671-674).
+    returns None without a session (shared/idempotency.py::idempotent).
     """
     from tools.library_planner import plan_library  # noqa: PLC0415
 
@@ -1411,7 +1411,7 @@ def tool_preflight(tool: str):
     # verdict and its wording change with an unrelated field.
     #
     # proteina REPLACES target_chain with the contig's chains
-    # (tools/proteina/__init__.py:495-497) rather than adding to them, and its
+    # (tools/proteina/__init__.py::validate) rather than adding to them, and its
     # form tells the user to leave target_chain at "A" and name the chains in
     # the contig. Reading target_chain alone called "C73" a hotspot on an
     # untargeted chain for the exact input the template prints as its example;

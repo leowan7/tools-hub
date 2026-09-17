@@ -207,7 +207,7 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
         #
         # AND THERE IS NO FALLBACK TO candidate_metric, because one stood here
         # and could not fire: every column appears in its own
-        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py:1964-1970 iterates
+        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py::raw_metric iterates
         # ``_COLUMN_ALIASES.get(column, (column,))``, and a sweep of the whole
         # map found no column missing from its own tuple), so raw_metric
         # returning None means candidate_metric reads the same two places for
@@ -220,7 +220,7 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
             return None
         # AN INT STAYS AN INT. ``plddt_on_100`` hands back the ORIGINAL object
         # rather than its own float copy precisely so callers can format the
-        # two differently (shared/metric_glossary.py:405-411 names this
+        # two differently (shared/metric_glossary.py::plddt_on_100 names this
         # caller's og:title as the reason), and a blanket ``float()`` here
         # undid that one line later: a stored int 88 printed "pLDDT 88.000"
         # where the results page prints "88". Coerce only what is not already

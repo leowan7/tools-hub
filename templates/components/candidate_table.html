@@ -106,8 +106,8 @@
    sides now fold case identically, which is to say not at all.
    (``shared/ranking.py`` applies a third normalisation, ``str(x or "")``. It
    differs from this one only for a non-string slug, which no pooled row can
-   carry: ``shared/target_results.py:205`` assigns ``_source_tool`` from the
-   run's own ``tool`` column on every row it builds.)
+   carry: ``shared/target_results.py::_candidate_rows`` assigns
+   ``_source_tool`` from the run's own ``tool`` column on every row it builds.)
 
    THE WHOLE COUNT HANGS OFF ``and``, and that is load-bearing rather than
    stylistic. As a separate ``{% set %}`` it ran on EVERY render of this shared
@@ -507,8 +507,8 @@
              spellings had drifted apart in both directions:
 
                COMPARATOR. Every gating legend words its bar inclusively ("80
-               or more", "1.5 angstroms or less"), matching judge() at
-               shared/score_legends.py:2172 (``seen <= good`` / ``seen >=
+               or more", "1.5 angstroms or less"), matching
+               shared/score_legends.py::judge (``seen <= good`` / ``seen >=
                good``) and the against_bar definition's "a value exactly ON a
                bar counts as meeting it". The Range said "> 80", "< 1.5". On
                the 10 gate legs a design sitting exactly on the bar read as

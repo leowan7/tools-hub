@@ -1,7 +1,7 @@
 """The completion email for a succeeded proteina ``validate`` dry-run.
 
 ``validate`` designs nothing by construction: ``run_validate``
-(tools/proteina/run_pipeline.py:3886-3936) checks that the package imports,
+(tools/proteina/run_pipeline.py::run_validate) checks that the package imports,
 that every variant config is present and that a checkpoint is mounted, writes
 ``"candidates": []`` and exits. Until 2026-09-11 ``shared.email`` classified
 that payload with ``_is_empty_result``, which reads only the result SHAPE, so
@@ -136,9 +136,9 @@ class TestTone:
         """A pre-flight that FAILED its checks must keep the failed tone.
 
         run_validate's problem path writes a ``"status": "FAILED"`` result
-        payload (tools/proteina/run_pipeline.py:3909-3916) and only then
-        exits non-zero at :3918 -- the written payload is the mechanism,
-        the sys.exit is a second signal. What this test pins is the single
+        payload (tools/proteina/run_pipeline.py::run_validate) and only then
+        exits non-zero -- the written payload is the mechanism, the
+        sys.exit is a second signal. What this test pins is the single
         hop it can actually reach: _result_tone sends any job row whose
         status is not "succeeded" to the failed tone BEFORE either the
         preflight or the empty check runs. A pre-flight that found a
@@ -200,8 +200,8 @@ class TestRenderedEmail:
     def test_body_does_not_claim_the_target_was_checked(self):
         """The adapter's preset description says "checks your target + config
         load" (tools/proteina/__init__.py:848-849). The target half is false --
-        run_validate reads no target, and the branch returns at
-        run_pipeline.py:4030, before the only call that fetches one. The mail
+        run_validate reads no target, and run_pipeline.py::_run_shard returns
+        from its validate arm before the only call that fetches one. The mail
         must not inherit that claim while fixing the rest.
         """
         html, text = _rendered(_job())
@@ -248,8 +248,9 @@ class TestFallbackRenderers:
 
     A tone the dicts do not carry raises KeyError on the path taken precisely
     when something has already gone wrong -- and ``_send_completion_email``
-    (shared/jobs.py:1735-1741) wraps the whole send in ``except Exception``
-    and logs a warning, so the operator-visible result is not a crash but NO
+    (shared/jobs.py::_send_completion_email) wraps the whole send in ``except
+    Exception`` and logs a warning, so the operator-visible result is not a
+    crash but NO
     EMAIL AT ALL, for a job that completed fine.
     """
 

@@ -324,8 +324,8 @@ _SCORE_COLUMNS: dict[str, tuple[str, ...]] = {
     # BACKWARDS. It read "cross-shard diversity is assigned at the hub, not in
     # the per-shard CSV", which describes a hub step that was never written:
     # shared.compute_campaigns.aggregate_campaign_candidates pools every shard's
-    # candidates and SORTS them (passed, missing, primary metric) at
-    # compute_campaigns.py:1483-1495, with no clustering and no diversity step.
+    # candidates and SORTS them (passed, missing, primary metric) in its
+    # ``_sort_key``, with no clustering and no diversity step.
     # (Scoped to proteina design clustering. The repo DOES do MPNN sequence
     # diversification — shared/resample.py, which raises sampling_temp from
     # 0.1 to 0.5 to spread sequences over one fold — so "no diversity anywhere
@@ -3345,10 +3345,11 @@ def prepare_custom_target(
 # arithmetic on an allocator policy. See shared/pdb_preflight_rules.py
 # ::_PROTEINA, which states this the same way.
 #
-# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py:584
-# and tools/colabfold/run_pipeline.py:301, "keeps preflight from preallocating
-# most of the VRAM". proteina set none of them, and ``run_streaming`` passed no
-# ``env=`` at all, so the design subprocess inherited the bare JAX default.
+# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py
+# ::_preflight_jax_gpu and tools/colabfold/run_pipeline.py
+# ::_preflight_jax_gpu, "keeps preflight from preallocating most of the VRAM".
+# proteina set none of them, and ``run_streaming`` passed no ``env=`` at all,
+# so the design subprocess inherited the bare JAX default.
 #
 # DELIBERATE DIVERGENCE from those two: they also set TF_FORCE_UNIFIED_MEMORY=1
 # and this does not. Unified memory lets an oversized job spill to host RAM and

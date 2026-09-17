@@ -96,9 +96,10 @@ def test_adapter_shard_width_is_the_campaign_chunk_size():
     _SHARD_NSAMPLES raised to 8, _chunk_size_for still returns 8.
 
     _SHARD_DESIGNS == _SHARD_NSAMPLES * _SHARD_REPLICAS is deliberately NOT
-    asserted: __init__.py:165 defines it as exactly that product three lines
-    below its operands, so asserting it restates the definition and can fail
-    only if someone replaces the definition with a literal.
+    asserted: tools/proteina/__init__.py::_SHARD_DESIGNS is defined as exactly
+    that product, directly beneath its operands, so asserting it restates the
+    definition and can fail only if someone replaces the definition with a
+    literal.
     """
     assert _chunk_size_for("proteina") == _SHARD_DESIGNS
     # Through the override entry specifically. _chunk_size_for falls back to a
