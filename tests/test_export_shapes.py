@@ -24,6 +24,7 @@ import csv
 import io
 import struct
 import zipfile
+from types import MappingProxyType
 
 import pytest
 
@@ -417,3 +418,208 @@ class TestNonStringPdbKey:
         with pytest.raises(struct.error):
             with zipfile.ZipFile(io.BytesIO(), "w") as zf:
                 zf.writestr("d" * 65536, b"too long")
+
+
+class TestMalformedCandidateRow:
+    """A non-Mapping row in ``result["candidates"]`` / ``result["designs"]``
+    must not renumber the rows around it.
+
+    ``_dict_candidates`` used to FILTER such a row out, while all three
+    serializers derive row identity from ``enumerate`` over what it returns
+    (``export_key(c, i)`` sets ``rank = i + 1``). So one bad row silently
+    dropped a design from the download AND shifted every later design's
+    export rank, FASTA id and ZIP entry name by one. It coerces to ``{}``
+    now, matching ``shared.jobs.display_rows`` on the render side, so the
+    page and the file describe one list.
+
+    Hardening, not an observed outage: no in-repo producer writes one today.
+    The five containers that build their rows themselves (bindcraft,
+    boltzgen, pxdesign, rfantibody, rfdiffusion) are out of this repo, and
+    ``shared.jobs._slim_result_for_persist`` guards with
+    ``isinstance(cand, dict)`` rather than rejecting, so nothing blocks one
+    from being stored.
+    """
+
+    # What a container could plausibly land in a JSON array. ``True`` is in
+    # the list for the same reason ``TestNonStringPdbKey.NON_STRINGS`` has
+    # it: ``isinstance(True, int)`` is True.
+    MALFORMED = (None, "oops", ["designs/a.pdb"], 42, True)
+
+    @staticmethod
+    def _rows(malformed, position):
+        rows = [
+            {"pdb_key": f"designs/good_{i}.pdb", "sequence": "ACDE",
+             "rank": i + 1, "scores": {"iptm": 0.9}}
+            for i in range(3)
+        ]
+        rows[position] = malformed
+        return rows
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    @pytest.mark.parametrize("malformed", MALFORMED)
+    def test_the_csv_keeps_the_row_blank_and_does_not_renumber(
+        self, malformed, position
+    ):
+        """DECISION: a malformed row is a BLANK CSV ROW, not an omission.
+        The CSV is the tabular mirror of the page and the page still shows
+        the row, so the file has the same row count under the same numbers;
+        omitting it would leave a gap in a column whose values are positions.
+
+        Every position fails unfixed here, unlike the FASTA below: filtering
+        changed the CSV's ROW COUNT, so a malformed row LAST still left a
+        two-row file claiming three designs. The position axis is kept
+        because the two defects are separable -- a wrong count and a wrong
+        numbering -- and only a bad row before a good one produced both.
+
+        ``source_rank`` is the one cell on that row that is NOT empty, and
+        deliberately so: ``export_key`` falls back to ``i + 1`` for any row
+        carrying no ``rank`` of its own, malformed or not, and that fallback
+        is exactly what this change repairs. Under the filter ``i`` was the
+        position in the SURVIVING list, so every row after a dropped one
+        reported a source rank one off; coerced, ``i`` is the real position
+        again. Blanking it here instead would mean editing ``export_key``,
+        which is a different fix on a different row class.
+        """
+        lines = candidates_to_csv(self._rows(malformed, position)).splitlines()
+        header = lines[0].split(",")
+        assert [ln.split(",")[0] for ln in lines[1:]] == ["1", "2", "3"], lines
+        blank = dict(zip(header, lines[1 + position].split(",")))
+        assert blank == {
+            "rank": str(position + 1),
+            "pdb_key": "",
+            "source_rank": str(position + 1),
+            "iptm": "",
+        }, blank
+        for other in (i for i in range(3) if i != position):
+            assert f"designs/good_{other}.pdb" in lines[1 + other], lines
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    @pytest.mark.parametrize("malformed", MALFORMED)
+    def test_the_fasta_omits_the_row_and_keeps_every_other_rank(
+        self, malformed, position
+    ):
+        """DECISION: omitted, with the index preserved. ``{}`` carries no
+        sequence, so it falls into the skip ``candidates_to_fasta`` already
+        applies to a backbone with no sequence -- which is why no serializer
+        needed a new branch for this. The surviving ids still carry their
+        own 1-based positions, gap included.
+        """
+        ids = [
+            line for line in
+            candidates_to_fasta(self._rows(malformed, position)).splitlines()
+            if line.startswith(">")
+        ]
+        assert ids == [
+            f">rank{i + 1}_good_{i}.pdb" for i in range(3) if i != position
+        ], ids
+
+    @staticmethod
+    def _zip_names(rows):
+        data = candidates_to_zip(
+            rows, lambda job_id, key: None,      # force the inline b64 path
+            default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            return zf.namelist()
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    @pytest.mark.parametrize("malformed", MALFORMED)
+    def test_the_zip_keeps_the_surviving_structures_under_their_own_names(
+        self, malformed, position
+    ):
+        """DECISION: omitted, with the index preserved. ``{}`` has no inline
+        b64 and its falsy ``pdb_key`` blocks the Storage fetch, so it hits
+        the existing ``if data is None`` skip.
+
+        THIS ONE PASSES UNFIXED and is here as a regression guard only, which
+        is worth saying rather than leaving someone to discover: a KEYED row
+        is named from its own ``pdb_key``, never from the index, so filtering
+        it out shortened the archive without renaming anything left in it.
+        The index-derived ZIP names are the keyless fallback, and the test
+        below is the one that fails without the coercion.
+        """
+        rows = [
+            dict(r, pdb_content_b64="QVRPTQo=") if isinstance(r, dict) else r
+            for r in self._rows(malformed, position)
+        ]
+        assert self._zip_names(rows) == [
+            f"designs/good_{i}.pdb" for i in range(3) if i != position
+        ]
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    @pytest.mark.parametrize("malformed", MALFORMED)
+    def test_the_zip_fallback_names_do_not_shift_around_a_malformed_row(
+        self, malformed, position
+    ):
+        """The ZIP's only index-derived names, and so the only ones a
+        dropped row could move: ``candidates_to_zip`` falls back to
+        ``candidate_{i + 1}.pdb`` for a row carrying no ``pdb_key``, which is
+        reachable whenever the structure travels inline as
+        ``pdb_content_b64`` -- the b64 path does not consult the key at all.
+        ``candidates_to_fasta``'s docstring records the same archive from a
+        live probe: ``['designs/a.pdb', 'candidate_2.pdb', 'candidate_3.pdb']``.
+
+        Filtering renumbered every such entry after the malformed row, so
+        ``candidate_3.pdb`` arrived named ``candidate_2.pdb`` -- a structure
+        under another design's name, in a file whose CSV still said 3.
+        """
+        rows = [
+            {"pdb_content_b64": "QVRPTQo=", "sequence": "ACDE", "scores": {}}
+            for _ in range(3)
+        ]
+        rows[position] = malformed
+        assert self._zip_names(rows) == [
+            f"candidate_{i + 1}.pdb" for i in range(3) if i != position
+        ]
+
+    @pytest.mark.parametrize(
+        "not_a_row_list", [{"candidates": []}, "abc", 5, None, 3.5],
+    )
+    def test_a_candidates_array_that_is_not_a_row_sequence_exports_nothing(
+        self, not_a_row_list
+    ):
+        """The guard the COERCION needs and the filter did not.
+
+        Two different cases, and they fail differently without it. The dict,
+        the string and the ``None`` PASS unfixed -- iterating a dict yields
+        its keys and a string its characters, none of which were dicts, so
+        filtering happened to land on ``[]``; under a coercion each of those
+        becomes a blank row, so one malformed array would download as a file
+        claiming N designs. They are a forward guard on this change. The int
+        and the float are not iterable at all: measured against the old body,
+        both raised ``TypeError: 'int'/'float' object is not iterable``, which
+        reached the export route as a 500, and those two fail unfixed.
+        """
+        assert candidates_to_csv(not_a_row_list).splitlines()[1:] == []
+        assert candidates_to_fasta(not_a_row_list) == ""
+        data = candidates_to_zip(
+            not_a_row_list, lambda job_id, key: None, default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.namelist() == []
+
+    def test_a_tuple_of_good_rows_is_not_blanked(self):
+        """``display_rows`` accepts a tuple for the same reason: narrowing
+        the guard to ``list`` alone would export the zero-candidate empty
+        state over rows that are all perfectly good, which returns 200 with
+        a silent wrong answer rather than failing."""
+        rows = (
+            {"pdb_key": "designs/a.pdb", "sequence": "ACDE", "scores": {}},
+            {"pdb_key": "designs/b.pdb", "sequence": "FGHI", "scores": {}},
+        )
+        assert candidates_to_fasta(rows).count(">") == 2
+        assert len(candidates_to_csv(rows).splitlines()) == 3   # header + 2
+
+    def test_a_mapping_that_is_not_a_dict_is_kept_whole(self):
+        """The predicate is ``Mapping``, not ``dict``, because that is what
+        ``display_rows`` uses -- a row one of them blanked and the other
+        kept would be a new disagreement in the change that exists to end
+        one. All three serializers read such a row through ``.get`` /
+        ``.items()`` / ``[]``, which a Mapping supplies."""
+        row = MappingProxyType(
+            {"pdb_key": "designs/m.pdb", "sequence": "ACDE",
+             "rank": 7, "scores": {"iptm": 0.9}}
+        )
+        assert candidates_to_fasta([row]).splitlines()[0] == ">rank1_m.pdb"
+        csv_row = candidates_to_csv([row]).splitlines()[1].split(",")
+        assert csv_row[:3] == ["1", "designs/m.pdb", "7"], csv_row
