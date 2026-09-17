@@ -1630,9 +1630,17 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         and (c.get("pdb_key") or c.get("pdb_content_b64"))
     )
 
+    # One expression, read by BOTH delivery branches below, so the two
+    # sentences cannot disagree about number again. The full branch has
+    # n_structures == n, so it also agrees with the count in ``label``.
+    # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
+    noun = (
+        "a downloadable structure" if n_structures == 1
+        else "downloadable structures"
+    )
+
     if n_structures == n:
-        # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
-        return f"{label} and downloadable structures."
+        return f"{label} and {noun}."
 
     if n_structures:
         # A PARTLY-DELIVERED RESULT: the only SHAPE in which the old clause
@@ -1683,10 +1691,6 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # "2 candidates returned" substring in
         # tests/test_job_complete_email_headline.py pins the FULL-delivery
         # sentence, not this one, so it is not evidence for keeping n here.
-        noun = (
-            "a downloadable structure" if n_structures == 1
-            else "downloadable structures"
-        )
         return f"{label}; {n_structures} with {noun}."
 
     # NO ROW CARRIES EITHER KEY. #261 found no in-repo producer that
