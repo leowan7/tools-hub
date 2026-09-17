@@ -1,10 +1,15 @@
 """Tests for /api/jobs/<job_id>/pdb/<filename> (browser-facing).
 
 Drives the full Flask app via ``create_app()`` so the @login_required
-decorator, ``load_user_context``, and the storage-vs-inline resolver
-all execute. Storage helpers are patched at the ``app`` module
-namespace (the ``from shared.storage import ...`` binding inside app.py)
-so no real Supabase calls fire.
+decorator and the storage-vs-inline resolver both execute. Storage
+helpers are patched on ``blueprints.jobs`` — the binding the route
+body reads — rather than on ``app``.
+
+Those patches do not keep Supabase out of the picture: rendering
+404.html runs app.py's ``inject_workspace_context``, which reaches
+``shared.credits.load_user_context`` through app.py's own import, a
+binding this file never patches. The module-level ``isolate_supabase``
+mark below is what blanks the credentials.
 
 Login is faked by writing a context object to ``flask.session`` via a
 shim — same trick the wallet API tests use.
@@ -36,10 +41,8 @@ def _candidate(pdb_key: str, *, b64: str | None = None) -> dict:
 
 
 @pytest.fixture
-def flask_app(monkeypatch):
-    """Build the real app and short-circuit auth + Supabase init."""
-    # Avoid touching real Supabase on app startup.
-    monkeypatch.setattr(app_mod, "get_service_client", lambda: None, raising=False)
+def flask_app():
+    """Build the real app."""
     application = app_mod.create_app()
     application.config["TESTING"] = True
     return application
