@@ -1217,7 +1217,8 @@ def list_campaigns_for_target(
     target's page. The two lists disagree by design; filed as **A37**.
 
     Its blast radius, measured rather than assumed: **one** production caller,
-    ``blueprints/campaigns.py:95`` (``GET /campaigns``). Not the homepage, which
+    ``blueprints/campaigns.py::compute_campaigns_list`` (``GET /campaigns``). Not
+    the homepage, which
     loads ``list_jobs_for_user`` (``tool_jobs``, not campaigns) and only links
     to /campaigns.
 

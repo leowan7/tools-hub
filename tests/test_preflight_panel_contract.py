@@ -626,7 +626,7 @@ _PANEL_HOTSPOT_FORMS = {
     "boltz2":      {"preset": "standalone",
                     "binder_sequences": "M" * 40},
     # proteina resolves its target chains from the CONTIG, not from
-    # target_chain (tools/proteina/__init__.py:494-505), and validates hotspot
+    # target_chain (tools/proteina/__init__.py::validate), and validates hotspot
     # prefixes against that. Without target_input its chain set is empty and
     # every prefixed hotspot is refused — which is the same asymmetry that
     # made the panel block its own documented multi-chain flow, so the table
@@ -942,7 +942,7 @@ def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client
 
     naming H and L as absent in the same sentence that lists them as present,
     over a chain set the user never typed. proteina's own validate() replaces
-    (tools/proteina/__init__.py:495-497), so unioning also put the panel and
+    (tools/proteina/__init__.py::validate), so unioning also put the panel and
     the gate on different chain sets.
     """
     _login(client)

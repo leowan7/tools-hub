@@ -355,18 +355,18 @@ listed as already-bounded for completeness.
 
 | Call site | Path | Timeout | Verdict |
 | --- | --- | --- | --- |
-| `app.py:144` AlphaFold metadata fetch | request | 8s | bounded |
-| `app.py:165` AlphaFold PDB fetch | request | 20s | bounded |
-| `scout/routes.py:220` structure fetch | request | 30s | bounded |
+| `shared/pdb_intake.py::_fetch_alphafold_bytes` AlphaFold metadata fetch | request | 8s | bounded |
+| `shared/pdb_intake.py::_fetch_alphafold_bytes` AlphaFold PDB fetch | request | 20s | bounded |
+| `scout/routes.py::fetch_pdb` structure fetch | request | 30s | bounded |
 | `shared/email.py` all 6 Resend posts | request | 10s | bounded |
-| `shared/email.py:1705` Slack/Discord webhook | request | 10s | bounded |
-| `shared/events.py:280` PostHog capture | off-thread | 2s | bounded |
+| `shared/email.py::_post_slack` Slack/Discord webhook | request | 10s | bounded |
+| `shared/events.py::emit` PostHog capture | off-thread | 2s | bounded |
 | `shared/events.py` `log_event` Supabase insert | off-thread | 30s | bounded (PR #28) |
 | `scout/epitope_db.py` all UniProt/RCSB calls | request | 12s (`_REQUEST_TIMEOUT_SEC`) | bounded |
 | Supabase PostgREST (all `.table().execute()`) | request | 30s | bounded (PR #28) |
 | Supabase Storage (`shared/storage.py` upload + signed URL) | request | 20s default, pinned to 30s | bounded (patch applied) |
 | Stripe SDK (`billing/checkout.py`, `webhooks/stripe.py`) | request | 15s + 1 retry | bounded (patch applied) |
-| Modal `fn.spawn()` (`gpu/modal_client.py:257`) | request | Modal gRPC deadline | not app-bounded |
+| Modal `fn.spawn()` (`gpu/modal_client.py::submit`) | request | Modal gRPC deadline | not app-bounded |
 
 ### Finding 1: Supabase Storage timeout (bounded; patch applied)
 
@@ -703,12 +703,13 @@ clean whether or not Scout is still refusing anyone. Do not read that green tick
 as "resolved" — re-check once the container has served real traffic again.
 
 **One blocked lever is the one you would actually reach for.**
-`WEB_CONCURRENCY` is a service variable (`gunicorn.conf.py:42`), and because the
-anon limits are per worker (`scout/routes.py:210-217`) worker count is the only
-knob that lifts the intake and analyze walls *together*. It sits squarely inside
-this deadlock. The two limits themselves do not: `ANON_INTAKE_LIMIT` and
-`ANON_ANALYZE_LIMIT` are literal constants in `scout/routes.py` (`:131`, `:230`),
-so changing one is a push, and a push carries its own fresh suite.
+`WEB_CONCURRENCY` is a service variable (`gunicorn.conf.py` `workers`), and
+because the anon limits are per worker (`scout/ratelimit.py` module docstring,
+"What the limits ACTUALLY are, fleet-wide") worker count is the only knob that
+lifts the intake and analyze walls *together*. It sits squarely inside this
+deadlock. The two limits themselves do not: `ANON_INTAKE_LIMIT` and
+`ANON_ANALYZE_LIMIT` are literal constants in `scout/routes.py`, so changing one
+is a push, and a push carries its own fresh suite.
 
 **To clear a red suite, re-run the failed run in place** —
 `gh run rerun <run-id>` — which can flip that suite's own conclusion. A fresh

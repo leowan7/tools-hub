@@ -406,13 +406,14 @@ class TestShareCard:
 
         The test above abstains on the ``designs`` SHAPE. This one carries
         ``candidates`` -- the shape that test admits -- and must still abstain,
-        because no container ranked it. ``recover_stuck_job_result`` rebuilds
-        ``candidates`` for ANY tool, with no tool branch above it
-        (shared/job_recovery.py:286-291), filling it from the streamed partials
-        by ``.append()`` or else from a Storage file listing by ``enumerate``,
-        neither of which sorts (shared/job_recovery.py:126-146). The row is
-        then stored ``succeeded`` (shared/jobs.py:1055), so it reaches this
-        route exactly as a webhook row would.
+        because no container ranked it.
+        ``shared/job_recovery.py::recover_stuck_job_result`` rebuilds
+        ``candidates`` for ANY tool, with no tool branch above it, filling it
+        (via ``shared/job_recovery.py::reconstruct``) from the streamed
+        partials by ``.append()`` or else from a Storage file listing by
+        ``enumerate``, neither of which sorts. The row is then stored
+        ``succeeded`` by ``shared/jobs.py::timeout_stuck_job``, so it reaches
+        this route exactly as a webhook row would.
 
         The fixture's FIRST record is the worse of the two, which is the whole
         point: stream order is arrival order, not rank.

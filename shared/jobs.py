@@ -253,7 +253,7 @@ def supports_headline_claim(
     at the ``batch`` tier, and for boltz2, it is one record per INDEPENDENTLY
     SUBMITTED sequence in submission order (``designs_out`` is built by
     ``.append()`` and never sorted -- tools/af2/run_pipeline.py:1196-1399,
-    tools/boltz2/run_pipeline.py:626-728, the latter stamping ``"rank": i``
+    tools/boltz2/run_pipeline.py::main, the latter stamping ``"rank": i``
     straight off the enumeration index). Its head is whichever sequence the
     customer pasted first, and nothing about it is "top".
 
@@ -274,11 +274,12 @@ def supports_headline_claim(
 
     What the shape test costs and what it keeps, checked per shape:
     esmfold2-design writes ``candidates``
-    (tools/esmfold2_design/modal_app.py:693) so modern rows still qualify and
-    the pI 11.95 reject is still filtered; its LEGACY ``designs``-only rows
-    abstain, which is exactly what ``result["candidates"]`` returned for them
-    before any of this; bindcraft declares no gate columns yet ships a ranked
-    ``candidates`` array, and still qualifies on the shape alone.
+    (tools/esmfold2_design/modal_app.py::_aggregate) so modern rows still
+    qualify and the pI 11.95 reject is still filtered; its LEGACY
+    ``designs``-only rows abstain, which is exactly what
+    ``result["candidates"]`` returned for them before any of this; bindcraft
+    declares no gate columns yet ships a ranked ``candidates`` array, and
+    still qualifies on the shape alone.
 
     THE READ IS WHAT NEEDS THE GATE, NOT THE BAR. Applying a bar to a read
     that already existed is safe; WIDENING a read is what puts a surface in
@@ -288,14 +289,15 @@ def supports_headline_claim(
     the fix.
 
     A RECOVERED ROW CARRIES THE CANONICAL SHAPE WITHOUT THE ORDER BEHIND IT,
-    which the shape test alone cannot see. ``recover_stuck_job_result`` writes
-    ``candidates`` for ANY tool, with no tool branch above it
-    (shared/job_recovery.py:286-291), and ``reconstruct`` fills that list from
-    the streamed ``inputs._partial_candidates`` by ``.append()`` or, failing
-    that, from a Storage file listing by ``enumerate`` -- neither is a ranking
-    and neither sorts (shared/job_recovery.py:126-146). The row is then stored
-    ``succeeded`` (shared/jobs.py:1055), so it reaches every reader a webhook
-    row would. Hence the recovery writer's own ``backfilled`` flag is read
+    which the shape test alone cannot see.
+    ``shared/job_recovery.py::recover_stuck_job_result`` writes ``candidates``
+    for ANY tool, with no tool branch above it, and
+    ``shared/job_recovery.py::reconstruct`` fills that list from the streamed
+    ``inputs._partial_candidates`` by ``.append()`` or, failing that, from a
+    Storage file listing by ``enumerate`` -- neither is a ranking and neither
+    sorts. The row is then stored ``succeeded`` by
+    ``shared/jobs.py::timeout_stuck_job``, so it reaches every reader a
+    webhook row would. Hence the recovery writer's own ``backfilled`` flag is read
     here; ``test_a_recovered_run_gets_no_score_at_all`` holds it.
 
     This is WIDER than the shape test it guards, deliberately: it abstains for
@@ -525,13 +527,23 @@ _REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
 # Error buckets that map to specific failure classes. Anything not in
 # this table on a 'failed' row defaults to 'unclassified' (refund).
 _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
-    # Real production bucket strings (verified by grepping the repo):
-    "pipeline":                "tool_error",          # docker run_pipeline crashed (app.py:4652)
-    "storage":                 "infra_crash",         # Supabase Storage upload failed (app.py:4353)
-    "modal-submit":            "infra_crash",         # Modal SDK submit raised before GPU pod started (app.py:4423, 4916)
+    # Buckets this repo classifies; the emitter is cited per entry.
+    "pipeline":                "tool_error",          # docker run_pipeline crashed (blueprints/jobs.py::job_status)
+    "storage":                 "infra_crash",         # Supabase Storage upload failed (blueprints/tools.py::tool_submit)
+    # Modal SDK submit raised before the GPU pod started. Three emitters:
+    # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
+    # shared/compute_campaigns.py::_dispatch_chunk.
+    "modal-submit":            "infra_crash",
     "preflight":               "preflight_miss",      # docker-side preflight check failed (ATOMIC-TOOLS.md)
-    "cancelled":               "user_cancelled",      # belt-and-suspenders; status="cancelled" path normally catches first (jobs.py:360)
-    "overrun_safety_kill":     "safety_kill",         # server-side overrun kill (jobs.py:843)
+    # Belt-and-suspenders. classify_terminal_state below answers a
+    # status="cancelled" row from its own arm without ever reading a bucket,
+    # and mark_cancelled is the only writer of this bucket, so reaching this
+    # entry needs a `failed` row that carries it.
+    "cancelled":               "user_cancelled",
+    # Nothing in this repo writes this bucket. It is historical: migration
+    # 0029_tool_jobs_failure_class.sql backfilled rows that already carried
+    # it, and this entry keeps any such row classifying the same way.
+    "overrun_safety_kill":     "safety_kill",
     # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",

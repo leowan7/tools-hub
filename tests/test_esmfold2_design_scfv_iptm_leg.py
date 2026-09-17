@@ -238,10 +238,10 @@ def _read_text(path: str) -> str:
 def _table_columns(html: str) -> list[str]:
     """The candidate table's column keys, in header order.
 
-    ``data-col`` on the header cell (templates/components/candidate_table.html
-    :520) -- the key, beside the label the cell renders. The table is emitted
-    twice per page (wide and narrow), so the list is de-duplicated while
-    keeping first-seen order.
+    ``data-col`` on the header cell (the ``th[data-col]`` in
+    templates/components/candidate_table.html) -- the key, beside the label
+    the cell renders. The table is emitted twice per page (wide and narrow),
+    so the list is de-duplicated while keeping first-seen order.
     """
     seen = []
     for column in re.findall(r'data-col="([^"]+)"', html):
@@ -506,11 +506,11 @@ def test_no_lower_is_better_leg_can_be_the_quoted_column():
     ``_share_headline_metric`` prints at a fixed .3f while ``judge`` decides
     at the glossary format, so a leg declared coarser than .3f can be
     published on the far side of the bar the clause says it met. Seven leg
-    columns are coarser, and an earlier draft of the comment at
-    blueprints/jobs.py:433 treated all seven as exposed and offered "pI 5.995
-    under a 6.0 bar" as the example. It is not exposed: the gate arm takes a
-    leg only when ``_higher_is_better``, so no lower-is-better leg is ever the
-    quoted column, and pI is one.
+    columns are coarser, and an earlier draft of the comment in
+    blueprints/jobs.py::_top_score_for_share treated all seven as exposed and
+    offered "pI 5.995 under a 6.0 bar" as the example. It is not exposed: the
+    gate arm takes a leg only when ``_higher_is_better``, so no lower-is-better
+    leg is ever the quoted column, and pI is one.
 
     Driven the same way as
     ``test_the_share_chain_can_reach_exactly_three_renamed_columns`` rather
@@ -614,11 +614,11 @@ def test_the_share_card_quotes_the_cdr_proxy_by_name():
 # --- the sixth wired surface: the completion email ------------------------
 #
 # Every surface above waits to be opened. This one is PUSHED:
-# shared/jobs.py::complete_job sends it at shared/jobs.py:1349 the moment the
-# run finishes. It needed no edit of its own -- shared/email.py already asks
-# score_legends for the design and the verdict -- which is exactly why it
-# needs a test: nothing in that file mentions this tool or this mode, so the
-# coupling is invisible from either end.
+# shared/jobs.py::complete_job sends it the moment the run finishes. It needed
+# no edit of its own -- shared/email.py already asks score_legends for the
+# design and the verdict -- which is exactly why it needs a test: nothing in
+# that file mentions this tool or this mode, so the coupling is invisible
+# from either end.
 
 
 def _email_scfv_cand(name, iptm, proxy, rank, filter_status):
@@ -709,9 +709,10 @@ def test_a_gate_leg_renders_at_the_precision_the_share_card_prints():
     """A published clause must not show a number below the bar it claims.
 
     ``score_legends.shown_value`` judges a leg at the precision the GLOSSARY
-    renders, while the share card prints ``.3f`` (blueprints/jobs.py:458).
-    A leg declared coarser than that is therefore judged on a rounded-up
-    figure and printed as the raw one. This column was ".2f" until review:
+    renders, while the share card prints ``.3f``
+    (blueprints/jobs.py::_top_score_for_share). A leg declared coarser than
+    that is therefore judged on a rounded-up figure and printed as the raw
+    one. This column was ".2f" until review:
     raw 0.4951 rounded to "0.50", cleared the 0.50 bar, and published as
     "CDR distogram proxy 0.495" -- measured 2026-09-14 by setting the entry
     back to ".2f" and driving the chain below, and recorded at
