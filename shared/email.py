@@ -1589,31 +1589,54 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 
     label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
 
-    # The count does not imply the download, so the download half is read
-    # off the rows. The page shows an em dash in its 3D and Structure
-    # columns unless a row carries pdb_key or pdb_content_b64
-    # (candidate_table.html, has_pdb), so those two keys are what this
-    # reads -- and a per-row pdb_b64 is deliberately not a third. That
-    # gate ignores it, so honouring it here would promise a file the page
-    # does not offer (test_the_page_ignores_a_bare_pdb_b64_row).
+    # The count does not imply the download, so the clause AND ITS OWN
+    # NUMBER are read off the rows. The page shows an em dash in its 3D
+    # and Structure columns unless a row carries pdb_key or
+    # pdb_content_b64 (candidate_table.html, has_pdb), so those two keys
+    # are what this reads -- and a per-row pdb_b64 is deliberately not a
+    # third. That gate ignores it, so honouring it here would promise a
+    # file the page does not offer
+    # (test_the_page_ignores_a_bare_pdb_b64_row). The page's use_url leg
+    # also requires ``not is_example``, which no mail can reach: that is
+    # ``job_id == 'example'`` and a mailed job's id is a uuid.
     #
-    # Live, not defensive. tools/esmfold2_design/run_pipeline.py appends a
-    # row per designed sequence whose pdb_key is _save_complex_pdb's
-    # return, and that is None whenever the sequence's bucket holds no
-    # complex; the file writes no inline copy at all
-    # (test_the_live_esmfold2_design_shape_is_not_promised_a_download).
+    # Live, not defensive. tools/esmfold2_design/run_pipeline.py appends
+    # one row per designed sequence with
+    # ``pdb_key = _save_complex_pdb(...)`` and no ``continue``, and that
+    # returns None both when the bucket holds no complex and when the
+    # PDB write raises. The second is per-design, so it produces the
+    # mixed shape as readily as the empty one, and the file never writes
+    # pdb_content_b64 at all. Pinned by
+    # test_the_live_esmfold2_design_shape_is_not_promised_a_download and
+    # test_the_mails_structure_count_is_what_the_page_will_serve.
     #
-    # ANY, not all: a result where only some rows carry a structure still
-    # says "structures" and still overstates how many -- known, not fixed
-    # here. Pinned by
-    # test_a_partly_capped_result_still_overstates_and_that_residue_is_known.
-    if any(
-        isinstance(c, dict)
-        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+    # Not narrowable to pdb_key alone, though six results templates
+    # (af2, boltz2, colabfold, esmfold, iggm, opendde) rebuild each row
+    # without pdb_content_b64 and so gate on pdb_key only: the shapes
+    # that do use the inline leg reach the macro unreshaped.
+    #
+    # Unread rather than ruled out: the five container-side tools have no
+    # run_pipeline.py in this repo, and a committed example fixture is
+    # not a stand-in for one.
+    n_structures = sum(
+        1
         for c in cands
-    ):
+        if isinstance(c, dict)
+        and (c.get("pdb_key") or c.get("pdb_content_b64"))
+    )
+
+    if n_structures == n:
         # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
         return f"{label} and downloadable structures."
+
+    if n_structures:
+        # n stays in the sentence because it is what the run produced.
+        noun = (
+            "a downloadable structure" if n_structures == 1
+            else "downloadable structures"
+        )
+        return f"{label}; {n_structures} with {noun}."
+
     return f"{label} — see the job page."
 
 

@@ -2,21 +2,51 @@
 
 ``shared/email.py::_result_summary`` ends a successful composite-tool mail with
 "N candidates returned with real scores and downloadable structures." The count
-is read from ``candidate_records``. The download clause was read from
-nothing: it was appended to every candidate list, whatever the rows carried.
+is read from ``candidate_records``. The download clause was read from nothing:
+it was appended to every candidate list, whatever the rows carried. #261 made
+the clause conditional. This file now also pins its NUMBER, because a result
+where only SOME rows carry a structure kept the clause and kept overstating
+how many rows it covered.
 
 WHAT THE PAGE ACTUALLY GATES ON. ``templates/components/candidate_table.html``
 sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from ``pdb_key`` and
 ``pdb_content_b64``, and renders an em dash in the 3D and Structure columns
 (#252 renamed that header from PDB) when neither is present. The mail's check
-is those two keys and no others, so it cannot promise on the strength of a
-key those columns ignore. (It CAN still overstate how many rows carry one --
-see the residue below.)
+is those two keys and no others, so where a page hands the macro its stored
+DICT rows unchanged, and is not the worked example, the mail can never promise
+where that column abstains and its count IS that column's population. Three
+carve-outs sit behind those qualifiers. NONE OF THEM IS A KNOWN LIVE
+DIVERGENCE -- which is not the same as saying no mail reaches those tools;
+jobs on the third one's six tools do send mail, and simply cannot carry the
+shape that would diverge:
 
-THIS FIXES A LIVE DEFECT, AND THE FIRST SIX ROUNDS OF REVIEW SAID OTHERWISE.
-esmfold2_design ships a result whose every candidate row carries ``pdb_key``
-None and no inline copy, and on main that mail said "downloadable structures"
-over it while the page rendered an em dash in both columns for every row.
+  * the worked example sets ``is_example``, which suppresses the pdb_key leg
+    of the gate. It has no tool_jobs row, so no mail describes it;
+  * a NON-DICT row is counted by the mail (which guards with isinstance) and
+    raises in the macro. The whole render aborts -- the results page 500s
+    rather than showing a shorter table -- so there is no column to compare
+    against. Nothing in the repo is known to produce such a row;
+  * six results templates (templates/tools/{af2,boltz2,colabfold,esmfold,
+    iggm,opendde}_results.html) rebuild each row and drop pdb_content_b64 on
+    the way, so there the column is gated on pdb_key alone. Latent rather
+    than live -- nothing writes that key onto a ``designs`` row -- and
+    recorded in the comment in ``shared/email.py::_result_summary``. NOT
+    esmfold2_design: its reshape looks like theirs but sits in the
+    ``{% else %}`` of ``{% if output_candidates %}``, and the current
+    pipeline writes ``candidates`` 1:1 with ``designs``, so no ROW it
+    produces today is reshaped. (A zero-design payload does reach that
+    branch; it reshapes nothing there.) The branch is for stored payloads
+    predating the candidates contract, which CAN be non-empty.
+
+This file renders the stored rows through the macro directly, so it models
+none of the three.
+
+BOTH BRANCHES FIX A LIVE DEFECT, AND THE FIRST SIX ROUNDS OF REVIEW SAID
+OTHERWISE. esmfold2_design ships candidate rows carrying ``pdb_key`` None and
+no inline copy, and on main that mail said "downloadable structures" over them
+while the page rendered an em dash in both columns. Both ways a row can lose
+its key are evaluated per design, so the tool produces the MIXED result as
+readily as the all-keyless one.
 
 HOW THE ALL-KEYLESS RESULT ARISES (tools/esmfold2_design/run_pipeline.py).
 ``_save_complex_pdb`` returns None whenever the bucket's ``complex`` is None,
@@ -67,11 +97,27 @@ An earlier version of this docstring said no in-repo producer existed. It had
 censused those four tools and missed this one -- the tool with no
 Dockerfile.modal, which every sweep keyed on that file skips.
 
-THE MIXED RESULT IS STILL WRONG AND IS NOT FIXED HERE. A result where some
-rows carry a structure and some do not still says "downloadable structures"
-over all of them; see the test named for that residue. The five container-side
-tools (pxdesign, rfdiffusion, bindcraft, boltzgen, rfantibody) have no
-``run_pipeline.py`` in this repo, so their candidate shape is UNREAD.
+So the residue #261 left open was the PARTLY-capped result, which kept saying
+"downloadable structures" over all N rows while the table served fewer. THAT
+IS WHAT THIS CHANGE FIXES: the clause now carries its own count, read off the
+same two keys, and
+``test_the_mails_structure_count_is_what_the_page_will_serve`` checks that
+count against what the shipped macro rendered rather than against a literal.
+
+THE PARTIAL IS LIVE TOO, BY THE SAME MECHANISM. #261 called it "the REACHABLE
+residue" on a proteina argument that does not hold, and the count fix replaced
+that with "no in-repo producer named for either" -- which does not survive the
+census above. ``_save_complex_pdb`` returns None on TWO paths: the bucket
+holding no complex, and ``to_pdb_string()`` or ``write_text()`` raising, which
+is logged as a warning and swallowed. Both are evaluated once per design, so a
+run where some designs keep their coordinates and others do not is an ordinary
+mixed result, not a contrived one. The proteina reasoning above is correct and
+simply does not generalise -- proteina was the only tool censused when the
+"guard, not a repair" reading was formed.
+
+The five container-side tools (pxdesign, rfdiffusion, bindcraft, boltzgen,
+rfantibody) have no ``run_pipeline.py`` in this repo, so their candidate shape
+is UNREAD.
 
 THE PREMISE IS RENDERED, NOT ASSERTED.
 ``test_the_page_offers_no_per_row_download_for_the_same_payload`` puts the very
@@ -253,10 +299,10 @@ def env(isolate_supabase):
     fixture it was instantiated BEFORE the function-scoped mark at the top of
     this file could blank the environment, because pytest fills higher scopes
     first -- so ``create_app()`` ran against whatever ``load_dotenv()`` found.
-    ``DOTENV_PATH`` does not protect it: no code in this repo reads that
-    name, and app.py calls bare ``load_dotenv()``, which walks up to the .env
-    above the worktree. Few tests take this fixture, so the per-test rebuild
-    is cheap.
+    ``DOTENV_PATH`` does not protect it: no code in this repo reads that name,
+    and app.py calls bare ``load_dotenv()``, which walks up to the real .env
+    above the worktree. Few tests take this fixture -- few enough that the
+    per-test rebuild is not worth widening the scope for.
     """
     from app import create_app
 
@@ -456,25 +502,92 @@ def test_the_designs_shape_is_read_too():
         assert PROMISE not in body, (part, body)
 
 
-def test_a_partly_capped_result_still_overstates_and_that_residue_is_known():
-    """Pins ANY, not all -- and this is the REACHABLE case, not a corner.
+@pytest.mark.parametrize(("rows", "sentence"), [
+    pytest.param(
+        [_url_row(0), _capped_row(1), _inline_row(2), _capped_row(3)],
+        "4 candidates returned with real scores; "
+        "{m} with downloadable structures.",
+        id="both-legs-delivered",
+    ),
+    pytest.param(
+        [_url_row(0), _capped_row(1), _capped_row(2)],
+        "3 candidates returned with real scores; "
+        "{m} with a downloadable structure.",
+        id="one-delivered",
+    ),
+])
+def test_the_mails_structure_count_is_what_the_page_will_serve(env, rows, sentence):
+    """THE NUMBER IS MEASURED OFF THE PAGE, not written down here.
 
-    Every proteina state that reaches a success mail has at least one row with
-    a structure (the all-capped run is failed outright; see this file's
-    docstring), so a partly-delivered result is the only shape where the
-    sentence is still wrong. It says "downloadable structures" over N rows when
-    fewer than N carry one. Narrowing the claim to the delivered subset needs a
-    second count and was explicitly out of scope for this change.
+    Replaces the test named ``..._still_overstates_and_that_residue_is_known``,
+    which pinned the ANY-not-all residue #261 left open and said in its own
+    docstring that a later change narrowing the claim must rewrite it. This is
+    that change, so the old test is gone rather than skipped.
 
-    This test exists to make that residue visible and re-decidable, NOT to
-    bless it: a later change that narrows the claim fails here and must delete
-    or rewrite this test deliberately.
+    ``{m}`` is filled from the per-row download controls the shipped macro
+    rendered for THIS payload, so the test fails in both directions: if the mail
+    counts rows the table refuses, and if the table starts serving rows the mail
+    does not count. The wording around ``{m}`` is a literal on purpose --
+    deriving that too would re-implement the production expression and assert
+    nothing about it. The two cases differ in the noun, which is why both are
+    here: a fix that always wrote the plural would read "1 with downloadable
+    structures" for a row that has exactly one.
+
+    BOTH OF THE PAGE'S TWO KEYS appear in the first payload, one per row --
+    _url_row carries ``pdb_key``, _inline_row carries ``pdb_content_b64``, and
+    no fixture in this file carries both -- so a count written against
+    ``pdb_key`` alone undercounts here rather than passing.
     """
-    bodies = _mail({"candidates": [_url_row(0), _capped_row(1), _capped_row(2)]})
+    html = _render_table(env, rows)
+    offered = _per_row_controls(html)
+    assert offered["view3d"] == offered["download"], (
+        "the page's two structure controls disagree, so neither of them is the "
+        f"number this mail should be matching: {offered}"
+    )
+
+    # THE SENTENCE CARRIES TWO NUMBERS AND BOTH ARE THE PAGE'S. The one
+    # below is the structure count; this is the row count, and without it a
+    # table that quietly stopped rendering structureless rows would leave
+    # "N candidates returned" unguarded while every assertion here passed.
+    # Not hypothetical: the macro already renders a "{shown} of {total}
+    # shown" group count, and shared/ranking.py::build_tool_stats defines
+    # ``shown`` as "rows of this tool in the selected (capped) set" against a
+    # ``total`` before any cap -- so a table showing fewer rows than the
+    # payload holds is a shape this macro already models for merged tables.
+    # Anchored on the row's own class, which the macro writes once per
+    # candidate as ``cand-row``/``cand-row cand-row-top`` -- ``cand-group-row``
+    # and ``viewer-row`` do not match, and job_detail.html's
+    # ``live-cand-row`` is a JS className, not a <tr class=" opener. The
+    # trailing [ "] pins the class boundary: without it a future
+    # ``cand-row-empty`` placeholder row would be counted as a candidate.
+    # The macro's own <style> block is part of the rendered string and does
+    # contain ``.cand-table .cand-row``, but no CSS text matches the <tr
+    # class=" prefix -- a zero-row render scores 0.
+    rendered_rows = len(re.findall(r'<tr class="cand-row[ "]', html))
+    assert rendered_rows == len(rows), (
+        f"the table rendered {rendered_rows} of {len(rows)} candidate rows, "
+        f"so the mail's '{len(rows)} candidates returned' is no longer what "
+        "the page shows"
+    )
+
+    m = offered["download"]
+    # The payload has to be PARTIAL for any of this to be about the partial
+    # case. A macro that served every row -- or none -- would leave the
+    # assertions below pinning a case other tests in this file already cover.
+    assert 0 < m < len(rows), (
+        f"not a partial delivery: the table served {m} of {len(rows)} rows",
+        offered,
+    )
+
+    bodies = _mail({"candidates": rows})
+    overstated = (
+        f"{len(rows)} candidates returned with real scores and "
+        "downloadable structures"
+    )
     for part, body in bodies.items():
-        assert "3 candidates returned with real scores and downloadable structures." in body, (
-            part, body,
-        )
+        assert sentence.format(m=m) in body, (part, body)
+        # The defect itself: the clause that covered every row.
+        assert overstated not in body, (part, body)
 
 
 def test_a_non_dict_row_cannot_crash_the_mail():
