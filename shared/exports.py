@@ -121,7 +121,30 @@ def export_key(cand: dict, i: int) -> dict:
         value = cand.get(source)
         if value is not None:
             key[column] = value
-    key["pdb_key"] = cand.get("pdb_key", "")
+    raw_pdb_key = cand.get("pdb_key", "")
+    # Whatever the tool container wrote into ``job.result``, and not every
+    # container's source lives in this repo, so its TYPE is not ours to
+    # guarantee. Coerced HERE, at the definition, because a non-string
+    # aborts the WHOLE file rather than one row -- ``_basename`` (FASTA
+    # ids) and ``_safe_arcname`` (ZIP entry names) both call ``.replace``
+    # on it, and each serializer builds one document out of every row, so
+    # one bad key takes every other design in the export with it. Only the
+    # CSV survived, because ``csv`` stringifies what it writes. Same defect
+    # and same fix as the ``pdb_key`` set in
+    # templates/components/candidate_table.html and the basename in
+    # ``shared.job_recovery._candidate_from_partial``.
+    #
+    # Falsy stays falsy rather than a blanket ``str()``: ``str(0)`` is the
+    # truthy ``"0"``, a legal filename, and ``str(None)`` would name a file
+    # "None" -- where ``candidates_to_zip`` and ``candidates_to_fasta`` both
+    # fall back to ``candidate_{i + 1}`` only while the key is falsy.
+    #
+    # ``_basename`` and ``_safe_arcname`` carry no coercion of their own:
+    # every value either one receives is this line's output (they have one
+    # caller each, both in this module), so their ``str`` annotations hold
+    # once this one does. Pinned by
+    # tests/test_export_shapes.py::TestNonStringPdbKey.
+    key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
     # Whether these numbers were measured at all. The smoke tier fabricates
     # deterministic scores when no model output exists, and stripping the

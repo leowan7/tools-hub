@@ -182,3 +182,97 @@ def test_unknown_shape_returns_empty_not_error():
     assert candidate_records({"something_else": [1, 2]}) == []
     assert candidate_records(None) == []
     assert candidate_records({}) == []
+
+
+class TestNonStringPdbKey:
+    """``pdb_key`` is whatever the tool container wrote into ``job.result``,
+    and not every container's source lives in this repo, so its type is not
+    ours to guarantee. A non-string one raised AttributeError out of
+    ``_basename`` (FASTA ids) and ``_safe_arcname`` (ZIP entry names), and
+    because each serializer builds ONE document out of every row, that
+    aborted the whole download rather than dropping the one bad design.
+    Only the CSV survived, because ``csv`` stringifies what it writes.
+
+    NOT position-dependent, which is what separates this from the same
+    defect on the per-row structure route
+    (``blueprints/jobs.py::job_candidate_pdb``, fixed in f6c9463). That
+    loop RETURNS on the first basename match, so a bad row there breaks
+    only the designs listed AFTER it, and a bad row last breaks nothing --
+    f6c9463's own message records that its test passes unfixed with the
+    bad row last. Here the position is irrelevant: the serializer has to
+    walk every row to finish the file, so a bad last row aborts it exactly
+    as a bad first row does. Hence the parametrized position below.
+
+    Coerced at the definition in ``shared.exports.export_key``, which is what
+    makes one guard cover all three formats.
+    """
+
+    # A container can write any JSON scalar or container here. ``True`` is
+    # in the list because ``bool`` is the type most likely to survive a
+    # careless ``isinstance(x, int)`` guard somewhere upstream.
+    NON_STRINGS = (12345, 3.5, True, ["designs/a.pdb"], {"key": "a.pdb"})
+
+    @pytest.mark.parametrize("bad", NON_STRINGS)
+    def test_fasta_export_survives_a_non_string_pdb_key(self, bad):
+        body = candidates_to_fasta(
+            [{"pdb_key": bad, "sequence": "ACDE", "scores": {}}]
+        )
+        assert body.count(">") == 1, body
+
+    @pytest.mark.parametrize("bad", NON_STRINGS)
+    def test_zip_export_survives_a_non_string_pdb_key(self, bad):
+        data = candidates_to_zip(
+            [{"pdb_key": bad, "pdb_content_b64": "QVRPTQo="}],
+            lambda job_id, key: None,          # force the inline b64 path
+            default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert len(zf.namelist()) == 1, zf.namelist()
+
+    @pytest.mark.parametrize("position", [0, 1, 2])
+    def test_one_bad_key_anywhere_takes_the_whole_file(self, position):
+        """Both files are built from every row, so the raise reached the
+        caller with nothing written at all -- the other designs included.
+        The position is the point: a test that only ever puts the bad row
+        first would also pass against a defect that merely truncates from
+        that row onward, which is what the structure route actually had."""
+        rows = [
+            {"pdb_key": f"designs/good_{i}.pdb", "sequence": "ACDE",
+             "scores": {}}
+            for i in range(3)
+        ]
+        rows[position] = dict(rows[position], pdb_key=12345)
+        assert candidates_to_fasta(rows).count(">") == 3
+        data = candidates_to_zip(
+            [dict(r, pdb_content_b64="QVRPTQo=") for r in rows],
+            lambda job_id, key: None,
+            default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert len(zf.namelist()) == 3, zf.namelist()
+
+    @pytest.mark.parametrize("falsy", ["", None, 0])
+    def test_a_falsy_key_still_takes_the_candidate_n_fallback(self, falsy):
+        """The coercion must not turn a falsy key truthy. A falsy ``pdb_key``
+        means "no structure reference", and both serializers fall back to
+        ``candidate_{i + 1}`` on one. A blanket ``str()`` would make ``0`` the
+        legal filename ``"0"`` and ``None`` the filename ``"None"``, and both
+        would pass the ``or`` and name a design after a key that is not one."""
+        body = candidates_to_fasta(
+            [{"pdb_key": falsy, "sequence": "ACDE", "scores": {}}]
+        )
+        assert body.splitlines()[0] == ">rank1_candidate_1", body
+        data = candidates_to_zip(
+            [{"pdb_key": falsy, "pdb_content_b64": "QVRPTQo="}],
+            lambda job_id, key: None,
+            default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.namelist() == ["candidate_1.pdb"], zf.namelist()
+
+    def test_the_csv_column_is_unchanged_by_the_coercion(self):
+        """The CSV was never the broken one, so the fix must not move it.
+        ``csv`` stringified the raw value already; ``export_key`` now hands it
+        the same text itself."""
+        csv_text = candidates_to_csv([{"pdb_key": 12345, "scores": {}}])
+        assert csv_text.splitlines()[1].split(",")[1] == "12345", csv_text
