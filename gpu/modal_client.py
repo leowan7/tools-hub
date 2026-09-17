@@ -712,12 +712,18 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
                 "error": None,
             }
         if status_raw == "FAILED":
+            err = smoke.get("error")
             return {
                 "status": "failed",
                 "result": None,
                 "gpu_seconds_used": smoke.get("runtime_seconds"),
                 "exit_code": exit_code,
-                "error": _stringify_error(smoke.get("error")),
+                # The bucket travels separately from the flattened string: the
+                # poll path (blueprints/jobs.py::job_status) rebuilds an error
+                # dict for complete_job, and classify_terminal_state
+                # (shared/jobs.py) routes the wallet hold off that bucket.
+                "error_bucket": err.get("bucket") if isinstance(err, dict) else None,
+                "error": _stringify_error(err),
             }
         # Unknown status string — treat as error so we do not silently
         # succeed on a malformed result.

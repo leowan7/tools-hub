@@ -532,6 +532,7 @@ _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     "preflight":               "preflight_miss",      # docker-side preflight check failed (ATOMIC-TOOLS.md)
     "cancelled":               "user_cancelled",      # belt-and-suspenders; status="cancelled" path normally catches first (jobs.py:360)
     "overrun_safety_kill":     "safety_kill",         # server-side overrun kill (jobs.py:843)
+    "no_yield":                "completed_no_yield",  # GPU ran as ordered, every design died (esmfold/opendde/iggm run_pipeline.py)
     # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",
