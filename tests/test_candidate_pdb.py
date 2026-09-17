@@ -23,6 +23,10 @@ import pytest
 import app as app_mod
 import blueprints.jobs as jobs_mod
 
+# This file drives create_app() and real routes; without this the repo-root
+# .env service-role credentials make those runs hit the live database.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _candidate(pdb_key: str, *, b64: str | None = None) -> dict:
     cand = {"pdb_key": pdb_key, "scores": {"ipTM": 0.5}}
@@ -266,3 +270,76 @@ class TestZipFilename:
         # And the archive really does carry the .cif the name allows.
         names = zipfile.ZipFile(io.BytesIO(resp.get_data())).namelist()
         assert any(n.endswith(".cif") for n in names), names
+
+class TestPdbKeyNotAString:
+    """A container-written pdb_key whose type is not str.
+
+    job.result is stored as the container sent it
+    (webhooks/modal.py::_handle_result, blueprints/jobs.py::job_status), and
+    shared/jobs.py::_slim_result_for_persist type-checks pdb_key rather than
+    coercing it, so a non-str value arrives intact -- and posixpath.basename
+    raises TypeError on an int, float, bool, dict or list.
+
+    The blast radius is POSITION-dependent: this loop returns as soon as a
+    row's basename matches, so a bad row only breaks the designs listed
+    AFTER it. A test that puts the bad row last passes against the unfixed
+    route and proves nothing -- hence the bad row at index 0 here, and the
+    assertion on the HEALTHY design's bytes. The results page renders a
+    download link for every row (candidate_table.html coerces pdb_key at
+    its own definition, so the page survives to render them), which is what
+    makes this reachable: working-looking buttons that 500.
+    """
+
+    @pytest.mark.parametrize("bad_key", [12345, 3.5, True, {"a": 1}, ["x"]])
+    def test_bad_row_does_not_poison_a_later_design(
+        self, client, monkeypatch, bad_key
+    ):
+        user_id = str(uuid.uuid4())
+        _login(client, user_id)
+        _patch_user_ctx(monkeypatch, user_id)
+
+        pdb_text = b"ATOM      1  N   ALA A   1\n"
+        b64 = base64.b64encode(pdb_text).decode()
+        job = _job(
+            user_id=user_id,
+            candidates=[
+                {"pdb_key": bad_key, "pdb_content_b64": b64},
+                _candidate("design_2.pdb", b64=b64),
+            ],
+        )
+        _patch_job(monkeypatch, job)
+        # Inline fallback is the only path that reads pdb_key; Storage
+        # hits return before the loop.
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
+
+        resp = client.get(f"/api/jobs/{job.id}/pdb/design_2.pdb")
+        assert resp.status_code == 200, (
+            f"a row carrying pdb_key={bad_key!r} broke the download of a "
+            f"later, healthy design (got {resp.status_code})"
+        )
+        assert resp.data == pdb_text
+
+    def test_falsy_pdb_key_stays_falsy(self, client, monkeypatch):
+        """A falsy pdb_key means "no structure reference", so it must not
+        become a basename. Coercing with a bare str() would turn 0 into the
+        truthy "0", and a request for /pdb/0 would then match that row and
+        serve its bytes under a name it never claimed."""
+        user_id = str(uuid.uuid4())
+        _login(client, user_id)
+        _patch_user_ctx(monkeypatch, user_id)
+
+        b64 = base64.b64encode(b"ATOM      1  N   ALA A   1\n").decode()
+        job = _job(
+            user_id=user_id,
+            candidates=[
+                {"pdb_key": 0, "pdb_content_b64": b64},
+                _candidate("design_2.pdb", b64=b64),
+            ],
+        )
+        _patch_job(monkeypatch, job)
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
+
+        resp = client.get(f"/api/jobs/{job.id}/pdb/0")
+        assert resp.status_code == 404, (
+            "a pdb_key of 0 was coerced to the matchable basename \"0\""
+        )
