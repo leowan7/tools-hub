@@ -48,12 +48,18 @@ while the page rendered an em dash in both columns. Both ways a row can lose
 its key are evaluated per design, so the tool produces the MIXED result as
 readily as the all-keyless one.
 
-HOW THE ALL-KEYLESS RESULT ARISES (tools/esmfold2_design/run_pipeline.py).
-``_save_complex_pdb`` returns None whenever the bucket's ``complex`` is None,
-and that field is written ONLY by a ``CRITIC_REAL_IPTM`` row that claims the
-bucket -- while a bucket is created for EVERY row carrying a
-``designed_sequence``, and every bucket becomes a design. So two paths reach
-it: a design whose sequence never appeared on a ``CRITIC_REAL_IPTM`` row keeps
+HOW THE ALL-KEYLESS RESULT ARISES (``_shape_designs`` in
+tools/esmfold2_design/run_pipeline.py). Claims in this paragraph are about
+that function's own control flow; WHICH critic rows it is handed is
+upstream and unread -- see the next paragraph. ``_save_complex_pdb``
+returns None whenever the bucket's ``complex`` is None, because the call
+hands it ``bucket["complex"]`` directly; and that field has exactly one
+writer besides its initialiser, inside the ``critic_name ==
+CRITIC_REAL_IPTM and (not _claimed or ...)`` gate.
+``by_sequence.setdefault`` buckets every row whose ``designed_sequence``
+is not None, and the ``designs`` loop enumerates ``by_sequence``
+unfiltered, so every bucket becomes a design. So two paths reach it: a
+design whose sequence never appeared on a ``CRITIC_REAL_IPTM`` row keeps
 the bucket's literal None, and a claiming row may itself carry ``complex``
 None beside real scores. The design is appended ANYWAY -- no ``continue``,
 unlike the three tools above -- and copied into ``candidates``. That file
