@@ -194,13 +194,16 @@ class TestNonStringPdbKey:
     Only the CSV survived, because ``csv`` stringifies what it writes.
 
     NOT position-dependent, which is what separates this from the same
-    defect on the per-row structure route,
-    ``blueprints/jobs.py::job_candidate_pdb``, which carries no coercion
-    of its own. That loop RETURNS on the first basename match, so a bad
-    row there breaks only the requests whose own match sits after it.
-    Here the position is irrelevant: the serializer has to walk every row
-    to finish the file, so a bad last row aborts it exactly as a bad
-    first row does. Hence the parametrized position below.
+    defect class on the per-row structure route,
+    ``blueprints/jobs.py::job_candidate_pdb``: that loop RETURNS on the
+    first basename match, so a bad row there reached only the requests
+    whose own match sat after it, and its guard is tested with the bad
+    row FIRST for that reason
+    (``tests/test_candidate_pdb.py::TestPdbKeyNotAString``). Here the
+    shape of the loop makes position irrelevant -- the serializer has
+    to walk every row to finish the file, so a bad last row aborts it
+    exactly as a bad first row does. Hence the parametrized position
+    below.
 
     Coerced at the definition in ``shared.exports.export_key``, which is what
     makes one guard cover all three formats.
@@ -231,12 +234,16 @@ class TestNonStringPdbKey:
 
     @pytest.mark.parametrize("position", [0, 1, 2])
     def test_one_bad_key_anywhere_takes_the_whole_file(self, position):
-        """Both files are built from every row, so the raise reached the
-        caller with nothing written at all -- the other designs included.
-        The axis asserts the exact count at EVERY position because the
-        outcome here does not vary with position, unlike the early-return
-        loop in ``blueprints/jobs.py::job_candidate_pdb``, where it
-        does."""
+        """Before the coercion both serializers raised part-way through
+        and the caller received nothing at all, the healthy designs
+        included. The asserts below are the FIXED behaviour: all three
+        designs present, whichever row carried the bad key.
+
+        The count is asserted at EVERY position because the outcome
+        cannot vary with position -- nothing reaches the caller until
+        the walk over every row finishes. The early-return loop in
+        ``blueprints/jobs.py::job_candidate_pdb`` is the opposite shape,
+        where position decides the blast radius."""
         rows = [
             {"pdb_key": f"designs/good_{i}.pdb", "sequence": "ACDE",
              "scores": {}}
