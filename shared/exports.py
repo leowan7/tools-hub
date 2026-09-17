@@ -46,7 +46,8 @@ def _decode_b64(encoded) -> Optional[bytes]:
 
 def _safe_arcname(name: str, prefix: str = "") -> str:
     """A ZIP entry name with any traversal (``..``, absolute, backslash)
-    stripped, legit sub-directories preserved, optionally namespaced.
+    stripped, legit sub-directories preserved, optionally namespaced, and
+    bounded to a length a ZIP header can actually store.
 
     Only ``name`` is cleaned here. ``prefix`` is trusted and must already be
     built from :func:`_safe_component` segments — see :func:`candidates_to_zip`,
@@ -55,7 +56,28 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     cleaned = (name or "").replace("\\", "/").lstrip("/")
     parts = [p for p in cleaned.split("/") if p not in ("", ".", "..")]
     safe = "/".join(parts) or "candidate.pdb"
-    return f"{prefix}{safe}" if prefix else safe
+    arc = f"{prefix}{safe}" if prefix else safe
+    # A ZIP header stores the entry-name length in two bytes, so zipfile
+    # raises struct.error above 65535 of them and the caller loses the WHOLE
+    # archive rather than the one entry -- the same blast radius export_key's
+    # type coercion closes, except nothing upstream bounds a LENGTH: a
+    # container that wrote a list of every design coerces to a legal string
+    # hundreds of kB long. Truncation can make two entries collide, which
+    # zipfile allows with a UserWarning; losing the archive it does not.
+    #
+    # The rstrip is not cosmetic: a cut landing on a "/" ends the name in
+    # one, and zipfile sets the directory bit on any such name, so that
+    # entry extracts as an empty FOLDER and the design's bytes are dropped
+    # with no error at all. One character of the key decides it.
+    #
+    # tests/test_export_shapes.py::TestNonStringPdbKey pins all three --
+    # ::test_an_oversized_key_does_not_take_the_whole_zip (survival),
+    # ::test_the_bound_is_the_zip_limit_not_a_shorter_one (both edges),
+    # ::test_a_cut_landing_on_a_separator_is_still_a_file (the slash).
+    encoded = arc.encode("utf-8")
+    if len(encoded) > 65535:
+        arc = encoded[:65535].decode("utf-8", "ignore").rstrip("/")
+    return arc
 
 
 def _safe_component(value, fallback: str = "unknown") -> str:
@@ -121,7 +143,40 @@ def export_key(cand: dict, i: int) -> dict:
         value = cand.get(source)
         if value is not None:
             key[column] = value
-    key["pdb_key"] = cand.get("pdb_key", "")
+    raw_pdb_key = cand.get("pdb_key", "")
+    # Whatever the tool container wrote into ``job.result``, and not every
+    # container's source lives in this repo, so its TYPE is not ours to
+    # guarantee. Coerced HERE, at the definition, because a non-string
+    # aborts the WHOLE file rather than one row -- ``_basename`` (FASTA
+    # ids) and ``_safe_arcname`` (ZIP entry names) both call ``.replace``
+    # on it, and each serializer builds one document out of every row, so
+    # one bad key takes every other design in the export with it. Only the
+    # CSV survived, because ``csv`` stringifies what it writes. Same defect
+    # and same fix as the ``pdb_key`` set in
+    # templates/components/candidate_table.html and the basename in
+    # ``shared.job_recovery._candidate_from_partial``.
+    #
+    # Falsy stays falsy rather than a blanket ``str()``: ``str(0)`` is the
+    # truthy ``"0"``, a legal filename, and ``str(None)`` would name a file
+    # "None" -- where a falsy key is what selects the rank fallback,
+    # ``candidate_{i + 1}`` for the FASTA id and ``candidate_{i + 1}.pdb``
+    # for the ZIP entry.
+    #
+    # ``_basename`` and ``_safe_arcname`` carry no coercion of their own:
+    # every value either one receives is this line's output (they have one
+    # caller each, both in this module), so their ``str`` annotations hold
+    # once this one does. Pinned by
+    # tests/test_export_shapes.py::TestNonStringPdbKey.
+    #
+    # The TYPE is settled here. The LENGTH is not, and coercing one without
+    # the other leaves the blast radius where it was: a container that wrote
+    # a LIST coerces to a legal string long enough to overflow a ZIP header,
+    # which aborts the whole archive exactly as the AttributeError did.
+    # ``_safe_arcname`` bounds it there. ``_basename`` needs no equivalent --
+    # a long FASTA id is a long header line, not a crash, and its
+    # ``"_".join(tail.split())`` already neutralises the whitespace that
+    # would otherwise forge a second record.
+    key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
     # Whether these numbers were measured at all. The smoke tier fabricates
     # deterministic scores when no model output exists, and stripping the
