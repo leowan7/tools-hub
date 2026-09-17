@@ -313,8 +313,10 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # capped at the 7200 s (2 h) container that _MAX_SESSION_S enforces, the
     # physical bound on a single shard's spend (~$12.6 marked-up at A100-80GB).
     # BOOTSTRAP until the P4/P5 canaries measure real per-shard wall-clock;
-    # historical p90 supersedes at >=20 runs. `validate` is the free CPU-only
-    # complexa-validate pre-flight gate (no GPU); its cap is nominal.
+    # historical p90 supersedes at >=20 runs. `validate` is the free
+    # complexa-validate pre-flight gate: no GPU WORK, but the same A100
+    # container (modal_app.py declares one @app.function, gpu=_GPU), so its cap
+    # is nominal for spend, not zero.
     ("proteina", "protein_binder"): 7200,
     ("proteina", "ligand_binder"):  7200,
     ("proteina", "motif_ame"):      7200,

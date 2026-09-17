@@ -127,13 +127,22 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
-    """Write a FAILED result and exit 1."""
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1.
+
+    ``runtime_seconds`` is GPU time already burned. gpu/modal_client.py:716
+    reads this exact key on the FAILED arm as the job's gpu_seconds_used, and
+    shared/jobs.py:1389 skips the workspace compute debit when that is missing
+    or zero. It stays None for the fails that happen before any GPU work.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
     _write_result(
         {
             "status": "FAILED",
             "error": {"bucket": bucket, "check": check, "detail": detail},
+            "runtime_seconds": runtime_seconds,
             "tier": os.environ.get("JOB_TIER", ""),
             "provider_job_id": os.environ.get("JOB_ID", ""),
         }
@@ -718,6 +727,38 @@ def main() -> None:
             archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)
+
+    # A run that delivered nothing is a failure, not an empty success. Until
+    # this guard, every design dying still wrote status COMPLETED with
+    # exit_code 0 and an empty designs[], so a user whose whole run died got a
+    # green job and no results. ``binders`` empty is already rejected at the
+    # _fail above, so reaching here means every design took one of the loop's
+    # failure branches. They do not agree on a cause - an empty sequence never
+    # attempts a fold, an upload failure happens after a successful one - so
+    # neither this comment nor the detail below names one; each branch logs
+    # its own warning.
+    #
+    # This flips the billing direction, deliberately. designs_out takes every
+    # design that folded and uploaded whatever its filter_status, so an empty
+    # list never means "folded fine, nothing passed" - that still writes
+    # COMPLETED and stays billed. Before this guard a wholly-failed run wrote
+    # COMPLETED and classified as plain "succeeded", because the zero-yield
+    # check at shared/jobs.py:567 reads result["candidates"] and this tool
+    # emits "designs" - so it never reached "completed_no_yield"
+    # (jobs.py:569) and settled against the GPU time it burned
+    # (wallet.py:697). The "pipeline" bucket maps to "tool_error", a refunded
+    # class (jobs.py:519,529), and is what the poll path rewrites to anyway
+    # (blueprints/jobs.py:701). The workspace compute debit is unaffected -
+    # that reads the runtime_seconds this _fail still carries.
+    if not designs_out:
+        _fail(
+            "pipeline",
+            "no_designs",
+            f"all {designs_total} designs failed in {runtime_seconds}s; see "
+            f"the run log for the per-design cause",
+            runtime_seconds=runtime_seconds,
+        )
+
     _write_result(
         {
             "status": "COMPLETED",

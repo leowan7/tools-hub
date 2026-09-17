@@ -92,10 +92,39 @@ class _FakeJobsTable:
 
     def limit(self, n: int) -> "_FakeJobsTable":
         self._calls.append(("limit", n))
+        # TRUNCATES, because the row cap is the whole point of asking the
+        # server to exclude free-tier rows rather than dropping them here.
+        # A no-op limit() would let a starved sample look healthy. Rows are
+        # handed to the fake in the order the caller wants them returned.
+        self._rows = self._rows[:n]
         return self
+
+    @property
+    def not_(self) -> "_FakeNot":
+        return _FakeNot(self)
 
     def execute(self) -> Any:
         return type("R", (), {"data": list(self._rows)})()
+
+
+class _FakeNot:
+    """``.not_.in_(col, values)`` -- the negated-filter shape postgrest uses.
+
+    Applies the exclusion for real (server-side is where it happens in prod,
+    before the row cap), and records it so a test can assert the query asked
+    for it rather than that the rows happened not to be there.
+    """
+
+    def __init__(self, table: "_FakeJobsTable") -> None:
+        self._table = table
+
+    def in_(self, col: str, values: Any) -> "_FakeJobsTable":
+        excluded = {str(v) for v in values}
+        self._table._calls.append((f"not_in:{col}", sorted(excluded)))
+        self._table._rows = [
+            row for row in self._table._rows if str(row.get(col)) not in excluded
+        ]
+        return self._table
 
 
 class _FakeClient:
@@ -521,9 +550,10 @@ def test_percentile_matches_percentile_cont(patched_client):
 
 
 # ---------------------------------------------------------------------------
-# Per-tier override (retained as a forward-compat hook; today every shipped
-# tier has an empty tier_gpu_seconds map, so this just asserts the fall-
-# through path keeps working.)
+# Per-tier override. One tier sets one today -- proteina's free ``validate``
+# pre-flight, at 0, pinned in tests/test_free_presets_cost_nothing.py. The
+# test below covers the other direction: a tool with an empty map still falls
+# through to p90 / expected_gpu_seconds.
 # ---------------------------------------------------------------------------
 
 
@@ -537,6 +567,108 @@ def test_tier_without_override_falls_through_to_default(patched_client):
     expected = (expected_raw * WALLET_MARKUP).quantize(Decimal("0.0001"))
     estimate = estimated_cost_for_tool(None, "mpnn", {"preset": "pilot"})
     assert estimate == expected
+
+
+def _proteina_rows(count: int, seconds: float, preset: str) -> list[dict]:
+    """``count`` succeeded proteina rows of one preset and one duration."""
+    return [
+        {
+            "gpu_seconds_used": seconds,
+            "preset": preset,
+            "units": "8",
+            "nested_units": None,
+            "total_passes": None,
+        }
+        for _ in range(count)
+    ]
+
+
+def test_free_tier_rows_do_not_price_the_paid_presets(patched_client):
+    """A free tier's runs must not enter the sample that prices paid ones.
+
+    The query used to filter on tool + status + gpu_seconds_used +
+    created_at and not on preset, and a validate run records its own
+    ``runtime_seconds`` as gpu_seconds_used like any other job. A pre-flight
+    that does no GPU work, against a ~553 s shard (the canary figure on the
+    proteina spec), drags the percentile down for ``protein_binder``, which is
+    quoted from it -- the page would show a fraction of what the hold takes
+    and the settle charges. Pinned rather than observed: it needs proteina to
+    pass MIN_HISTORICAL_RUNS. A live probe on 2026-09-11 had
+    ``_historical_p90_seconds("proteina")`` returning None with a service
+    client present -- which is consistent with the sample being under the
+    minimum, though that function also returns None on a failed query.
+    """
+    paid = _proteina_rows(MIN_HISTORICAL_RUNS, 553.0, "protein_binder")
+    patched_client(paid)
+    paid_only = estimated_cost_for_tool(
+        None, "proteina", {"preset": "protein_binder", "num_designs": 8}
+    )
+
+    # Sized from the constants, not written as a literal: p90 sits in the TOP
+    # decile, so a free block under 90% of the sample leaves the cut point
+    # among the paid rows and the sample reads the same filtered or not -- the
+    # fixture can only pin the exclusion if the UNFILTERED sample would give a
+    # different answer. Filling the row cap makes the free share
+    # 480/500 = 96%, which puts the cut point inside the free block. A literal
+    # count here would go quietly vacuous the day either constant moves.
+    free_rows = _proteina_rows(
+        we._HISTORICAL_ROW_CAP - MIN_HISTORICAL_RUNS, 60.0, "validate"
+    )
+    calls = patched_client(paid + free_rows)
+    with_free = estimated_cost_for_tool(
+        None, "proteina", {"preset": "protein_binder", "num_designs": 8}
+    )
+
+    assert with_free == paid_only, (
+        f"validate rows moved the protein_binder price from ${paid_only} "
+        f"to ${with_free}"
+    )
+    # The query asked for the exclusion rather than the rows happening not to
+    # be there, and it asked before ``limit`` so the cap is spent on rows that
+    # can price something.
+    assert ("not_in:preset", ["validate"]) in calls
+    assert [c[0] for c in calls].index("not_in:preset") < [
+        c[0] for c in calls
+    ].index("limit")
+    # And the sample really is load-bearing: a paid sample of a different
+    # size does move it, so the equality above is an exclusion, not inertia.
+    patched_client(_proteina_rows(MIN_HISTORICAL_RUNS, 60.0, "protein_binder"))
+    cheaper_paid = estimated_cost_for_tool(
+        None, "proteina", {"preset": "protein_binder", "num_designs": 8}
+    )
+    assert cheaper_paid < paid_only
+
+
+def test_free_rows_do_not_crowd_the_paid_ones_out_of_the_row_cap(patched_client):
+    """The exclusion has to be server-side, ahead of ``_HISTORICAL_ROW_CAP``.
+
+    Dropping the rows in Python instead leaves them occupying the newest
+    ``_HISTORICAL_ROW_CAP`` the server returns: enough free runs and fewer
+    than MIN_HISTORICAL_RUNS paid rows survive, the p90 switches off, and the
+    price snaps back to the 7200 s bootstrap -- 13x the p90 quote on this
+    sample, which is the direction that over-quotes a customer.
+    """
+    free = _proteina_rows(we._HISTORICAL_ROW_CAP - 15, 60.0, "validate")
+    paid = _proteina_rows(MIN_HISTORICAL_RUNS * 3, 553.0, "protein_binder")
+    # Newest first, as the query orders them: the free rows come back first
+    # and would fill the window on their own.
+    calls = patched_client(free + paid)
+
+    estimate = estimated_cost_for_tool(
+        None, "proteina", {"preset": "protein_binder", "num_designs": 8}
+    )
+    spec = TOOL_SPECS["proteina"]
+    bootstrap = (
+        Decimal(str(spec.expected_gpu_seconds))
+        * Decimal(str(GPU_USD_PER_SECOND[spec.gpu_class]))
+        * WALLET_MARKUP
+    ).quantize(Decimal("0.0001"))
+    assert estimate != bootstrap, (
+        "the paid rows were crowded out of the row cap and the p90 fell back "
+        "to expected_gpu_seconds"
+    )
+    # The query asked for the exclusion; it did not merely happen to be true.
+    assert ("not_in:preset", ["validate"]) in calls
 
 
 # ---------------------------------------------------------------------------
