@@ -1589,39 +1589,24 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 
     label = f"{n} candidate{'s' if n != 1 else ''} returned with real scores"
 
-    # The download half of this sentence is not implied by the count, so that
-    # half is read off the rows -- using THE SAME TWO KEYS THE PAGE GATES ON and
-    # deliberately not a third. templates/components/candidate_table.html
-    # sets ``has_pdb`` from ``use_url or has_b64`` -- i.e. from pdb_key
-    # and pdb_content_b64 -- and renders an em dash in the 3D and Structure
-    # columns when neither is present. Accepting a key that gate ignores (a per-row
-    # pdb_b64, which no tool in this repo emits) would let this sentence
-    # promise a file the page does not offer -- the thing being prevented.
+    # The count does not imply the download, so the download half is read
+    # off the rows. The page shows an em dash in its 3D and Structure
+    # columns unless a row carries pdb_key or pdb_content_b64
+    # (candidate_table.html, has_pdb), so those two keys are what this
+    # reads -- and a per-row pdb_b64 is deliberately not a third. That
+    # gate ignores it, so honouring it here would promise a file the page
+    # does not offer (test_the_page_ignores_a_bare_pdb_b64_row).
     #
-    # LIVE, NOT DEFENSIVE, and six review rounds said otherwise.
-    # esmfold2_design ships results whose every candidate row carries pdb_key
-    # None and no inline copy: ``_save_complex_pdb`` returns None when the
-    # bucket's complex is None, that field is written only by a
-    # CRITIC_REAL_IPTM row that claims the bucket, and a bucket exists for
-    # every designed_sequence. The row is appended anyway -- no ``continue``
-    # -- and nothing fails the run: its four FAILED paths are setup and crash
-    # guards, none inspects delivery, and proteina's ``delivery_verdict`` has
-    # no analog there. On main this sentence promised structures over such a
-    # result.
+    # Live, not defensive. tools/esmfold2_design/run_pipeline.py appends a
+    # row per designed sequence whose pdb_key is _save_complex_pdb's
+    # return, and that is None whenever the sequence's bucket holds no
+    # complex; the file writes no inline copy at all
+    # (test_the_live_esmfold2_design_shape_is_not_promised_a_download).
     #
-    # proteina makes the same shape and CANNOT reach here, which is what the
-    # earlier reading generalised from: it pops pdb_key from an inline-capped
-    # design and never writes pdb_content_b64 on that leg (the n_inline_capped
-    # branch). That path needs ``not upload_endpoint`` and the hub always
-    # sends one (blueprints/tools.py); a run whose cap admits nothing is
-    # failed outright by delivery_verdict. #252 reached that conclusion for
-    # proteina and carried the same question forward as a follow-up. The five
-    # container-side tools have no run_pipeline.py in this repo, so their
-    # candidate shape is unread here.
-    #
-    # ANY, not all: a result where only some rows carry a structure still says
-    # "downloadable structures" and still overstates how many. That residue is
-    # not fixed here.
+    # ANY, not all: a result where only some rows carry a structure still
+    # says "structures" and still overstates how many -- known, not fixed
+    # here. Pinned by
+    # test_a_partly_capped_result_still_overstates_and_that_residue_is_known.
     if any(
         isinstance(c, dict)
         and (c.get("pdb_key") or c.get("pdb_content_b64"))
