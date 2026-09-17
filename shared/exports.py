@@ -46,7 +46,8 @@ def _decode_b64(encoded) -> Optional[bytes]:
 
 def _safe_arcname(name: str, prefix: str = "") -> str:
     """A ZIP entry name with any traversal (``..``, absolute, backslash)
-    stripped, legit sub-directories preserved, optionally namespaced.
+    stripped, legit sub-directories preserved, optionally namespaced, and
+    bounded to a length a ZIP header can actually store.
 
     Only ``name`` is cleaned here. ``prefix`` is trusted and must already be
     built from :func:`_safe_component` segments — see :func:`candidates_to_zip`,
@@ -55,7 +56,21 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     cleaned = (name or "").replace("\\", "/").lstrip("/")
     parts = [p for p in cleaned.split("/") if p not in ("", ".", "..")]
     safe = "/".join(parts) or "candidate.pdb"
-    return f"{prefix}{safe}" if prefix else safe
+    arc = f"{prefix}{safe}" if prefix else safe
+    # A ZIP header stores the entry-name length in two bytes, so zipfile
+    # raises struct.error above 65535 of them and the caller loses the WHOLE
+    # archive rather than the one entry -- the same blast radius export_key's
+    # type coercion closes, except nothing upstream bounds a LENGTH: a
+    # container that wrote a list of every design coerces to a legal string
+    # hundreds of kB long. Truncation can make two entries collide, which
+    # zipfile permits; losing the archive it does not.
+    # tests/test_export_shapes.py::TestNonStringPdbKey
+    # ::test_an_oversized_key_does_not_take_the_whole_zip pins the survival,
+    # ::test_the_bound_is_the_zip_limit_not_a_shorter_one pins both edges.
+    encoded = arc.encode("utf-8")
+    if len(encoded) > 65535:
+        arc = encoded[:65535].decode("utf-8", "ignore")
+    return arc
 
 
 def _safe_component(value, fallback: str = "unknown") -> str:

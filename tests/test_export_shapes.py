@@ -25,7 +25,12 @@ import zipfile
 
 import pytest
 
-from shared.exports import candidates_to_csv, candidates_to_fasta, candidates_to_zip
+from shared.exports import (
+    _safe_arcname,
+    candidates_to_csv,
+    candidates_to_fasta,
+    candidates_to_zip,
+)
 from shared.jobs import candidate_records
 from shared.refold import extract_top_n_sequences
 
@@ -286,3 +291,42 @@ class TestNonStringPdbKey:
         the same text itself."""
         csv_text = candidates_to_csv([{"pdb_key": 12345, "scores": {}}])
         assert csv_text.splitlines()[1].split(",")[1] == "12345", csv_text
+
+    def test_an_oversized_key_does_not_take_the_whole_zip(self):
+        """Coercing the TYPE does not close the whole-file blast radius on its
+        own. A ZIP header stores the entry-name length in two bytes, so a
+        ``str()`` of a big container -- a list naming every design, say --
+        aborts the archive out of ``struct.error`` where it used to abort out
+        of ``AttributeError``, losing the healthy designs exactly as before.
+        The bound in ``shared.exports._safe_arcname`` is the one guard of its
+        own that the definition-level coercion does NOT make redundant,
+        because it is a length and nothing upstream supplies one.
+
+        The FASTA half is asserted here too, and needs no bound: a long id is
+        a long header line, not a crash. Measured, not assumed."""
+        rows = [
+            {"pdb_key": "designs/big.pdb" * 6000, "sequence": "ACDE",
+             "scores": {}, "pdb_content_b64": "QVRPTQo="},
+            {"pdb_key": "designs/good.pdb", "sequence": "EFGH",
+             "scores": {}, "pdb_content_b64": "QVRPTQo="},
+        ]
+        data = candidates_to_zip(
+            rows, lambda job_id, key: None, default_job_id="job-1"
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+        assert len(names) == 2, [len(n) for n in names]
+        assert "designs/good.pdb" in names, names
+        assert max(len(n.encode("utf-8")) for n in names) <= 65535, \
+            [len(n) for n in names]
+        assert candidates_to_fasta(rows).count(">") == 2
+
+    def test_the_bound_is_the_zip_limit_not_a_shorter_one(self):
+        """65535 bytes is the last name a ZIP header can store, so that one
+        passes through untouched and only 65536 is cut. A tighter bound would
+        silently rename entries that were always legal, and a looser one would
+        not fix anything. Bytes, not characters: the header counts the encoded
+        name, so one multi-byte character is two of the 65535."""
+        assert _safe_arcname("d" * 65535) == "d" * 65535
+        assert len(_safe_arcname("d" * 65536).encode("utf-8")) == 65535
+        assert len(_safe_arcname("\u00e9" * 40000).encode("utf-8")) <= 65535
