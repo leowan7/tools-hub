@@ -208,8 +208,9 @@ class TestNonStringPdbKey:
     """
 
     # A container can write any JSON scalar or container here. ``True`` is
-    # in the list because ``bool`` is the type most likely to survive a
-    # careless ``isinstance(x, int)`` guard somewhere upstream.
+    # in the list because ``isinstance(True, int)`` is True, the same trap
+    # ``blueprints/jobs.py::_share_headline_metric`` guards its scores
+    # against.
     NON_STRINGS = (12345, 3.5, True, ["designs/a.pdb"], {"key": "a.pdb"})
 
     @pytest.mark.parametrize("bad", NON_STRINGS)
@@ -233,9 +234,10 @@ class TestNonStringPdbKey:
     def test_one_bad_key_anywhere_takes_the_whole_file(self, position):
         """Both files are built from every row, so the raise reached the
         caller with nothing written at all -- the other designs included.
-        The position is the point: a test that only ever puts the bad row
-        first would also pass against a defect that merely truncates from
-        that row onward, which is what the structure route actually had."""
+        The axis asserts the exact count at EVERY position because the
+        outcome here does not vary with position, unlike the same defect
+        on the per-row structure route, where f6c9463's message records
+        that its test passes unfixed with the bad row last."""
         rows = [
             {"pdb_key": f"designs/good_{i}.pdb", "sequence": "ACDE",
              "scores": {}}
@@ -254,9 +256,11 @@ class TestNonStringPdbKey:
     @pytest.mark.parametrize("falsy", ["", None, 0])
     def test_a_falsy_key_still_takes_the_candidate_n_fallback(self, falsy):
         """The coercion must not turn a falsy key truthy. A falsy ``pdb_key``
-        means "no structure reference", and both serializers fall back to
-        ``candidate_{i + 1}`` on one. A blanket ``str()`` would make ``0`` the
-        legal filename ``"0"`` and ``None`` the filename ``"None"``, and both
+        means "no structure reference", and each serializer falls back to the
+        rank on one -- ``candidate_{i + 1}`` for the FASTA id, and the same
+        name with ``.pdb`` for the ZIP entry, as the two asserts below spell
+        out. A blanket ``str()`` would make ``0`` the legal filename ``"0"``
+        and ``None`` the filename ``"None"``, and both
         would pass the ``or`` and name a design after a key that is not one."""
         body = candidates_to_fasta(
             [{"pdb_key": falsy, "sequence": "ACDE", "scores": {}}]

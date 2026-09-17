@@ -136,8 +136,9 @@ def export_key(cand: dict, i: int) -> dict:
     #
     # Falsy stays falsy rather than a blanket ``str()``: ``str(0)`` is the
     # truthy ``"0"``, a legal filename, and ``str(None)`` would name a file
-    # "None" -- where ``candidates_to_zip`` and ``candidates_to_fasta`` both
-    # fall back to ``candidate_{i + 1}`` only while the key is falsy.
+    # "None" -- where a falsy key is what selects the rank fallback,
+    # ``candidate_{i + 1}`` for the FASTA id and ``candidate_{i + 1}.pdb``
+    # for the ZIP entry.
     #
     # ``_basename`` and ``_safe_arcname`` carry no coercion of their own:
     # every value either one receives is this line's output (they have one
