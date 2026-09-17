@@ -605,11 +605,11 @@
         {% set raw_pdb_key = cand.get('pdb_key') %}
         {# pdb_key is whatever the container wrote into job.result, so its
            TYPE is not ours to guarantee: bindcraft, boltzgen, pxdesign,
-           rfantibody and rfdiffusion ship no run_pipeline.py and no
-           image definition here (`git ls-files tools/<slug>/` returns
-           meta.py, __init__.py and a captured example, nothing that
-           runs), so whatever key they emit is produced outside this
-           repo. Every use below aborts
+           rfantibody and rfdiffusion have no run_pipeline.py and no
+           image definition in this repo -- only an adapter that
+           submits the job -- so the code that FILLS job.result, and
+           with it whatever key they emit, is not here to read.
+           Every use below aborts
            the WHOLE render rather than one cell: the `| urlencode` inside
            `pdb_url` raises ValueError on a list and silently yields "a=1"
            for a dict, and `'.' in pdb_key` in the download cell raises
