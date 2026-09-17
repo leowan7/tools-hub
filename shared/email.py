@@ -1459,22 +1459,23 @@ def _is_preflight_result(job) -> bool:  # noqa: ANN001
 
     Keyed on the job row, not on the result payload: ``preset`` is a NOT
     NULL column (supabase/migrations/0005_tool_jobs.sql:29) read straight
-    off the row (shared/jobs.py:330), while the payload is whatever the
-    container echoed back.
+    off the row (shared/jobs.py::ToolJob.from_row), while the payload is
+    whatever the container echoed back.
 
     That is safe because the row's preset is the SAME VALUE that chose the
     container's branch, not an independent label that could drift from it.
-    One ``preset.slug`` feeds both: blueprints/tools.py:2033 writes it to
-    the row via ``create_job(preset=...)`` and :2333 hands the same slug to
-    ``modal_client.submit``, which stamps it into the payload as both
-    ``tier`` and ``job_tier`` (gpu/modal_client.py:567-568) -- and the
+    One ``preset.slug`` feeds both: ``blueprints/tools.py::tool_submit``
+    writes it to the row via ``create_job(preset=...)`` and hands the same
+    slug to ``modal_client.submit``, which stamps it into the payload as
+    both ``tier`` and ``job_tier``
+    (``gpu/modal_client.py::ModalClient._build_payload``) -- and the
     container derives its own ``preset`` from exactly those
-    (run_pipeline.py:3959) before testing it at :4028. So a row reading
-    ``validate`` ran ``run_validate``, and a row reading anything else did
-    not. ``tools/proteina/run_pipeline.py``
-    :4028 dispatches to ``run_validate`` and returns at :4030, and
-    ``run_validate`` (:3886-3936) writes ``"candidates": []`` on its only
-    success path -- so a succeeded validate job is ALWAYS zero-candidate.
+    (``tools/proteina/run_pipeline.py::_run_shard``) before testing it. So a
+    row reading ``validate`` ran ``run_validate``, and a row reading anything
+    else did not. ``_run_shard`` dispatches to ``run_validate`` and returns
+    from that arm, and ``tools/proteina/run_pipeline.py::run_validate``
+    writes ``"candidates": []`` on its only success path -- so a succeeded
+    validate job is ALWAYS zero-candidate.
     Its problem path writes a FAILED payload and ``sys.exit(1)``s instead of
     reaching that write; either way this helper is never consulted for it,
     because ``_result_tone`` tests ``status != "succeeded"`` first. (How a
@@ -1554,7 +1555,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     # success path: "your run is ready" over a green View results, to a
     # page whose viewer and Download PDB are both gated on a truthy
     # pdb_b64 (templates/tools/af2_results.html:130,244) and a download
-    # route that answers 404 without one (blueprints/jobs.py:1400-1406).
+    # route that answers 404 without one
+    # (blueprints/jobs.py::af2_download_pdb).
     # No pipeline writes that payload today -- the three run_pipeline.py
     # files all _fail instead (tools/af2:699, tools/colabfold:763,
     # tools/esmfold:787), and the batch preset writes "designs", caught
@@ -1573,18 +1575,18 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     #
     # But the live defect is not a future tool's shape. It is a payload
     # carrying ONLY run metadata -- {"tier": "pilot",
-    # "runtime_seconds": 90}. gpu/modal_client.py:632-646 builds it from a
-    # pipeline return carrying tier/runtime_seconds and no domain keys,
-    # either flat or beside an empty "output" dict. (An "output": {} with
-    # no wrapper-level tier yields {} instead, which the falsy branch
-    # above catches -- both were executed against that function.)
-    # test_an_unreadable_payload_asserts_nothing_about_it
-    # (tests/test_email_failure_copy.py:226-231) pins the classification.
-    # The page agrees: job_detail renders its results block for any
-    # truthy result and that block reads
-    # candidate_records, so it shows "Candidates (0)". Calling that a
-    # success sent "your run is ready", a green View results button and
-    # "validate the top design" over a page saying it returned none.
+    # "runtime_seconds": 90}. gpu/modal_client.py::_interpret_pipeline_return
+    # builds it from a pipeline return carrying tier/runtime_seconds and no
+    # domain keys, either flat or beside an empty "output" dict. (An
+    # "output": {} with no wrapper-level tier yields {} instead, which the
+    # falsy branch above catches -- both were executed against that
+    # function.) tests/test_email_failure_copy.py::TestResultTone::
+    # test_an_unreadable_payload_asserts_nothing_about_it pins the
+    # classification. The page agrees: job_detail renders its results block
+    # for any truthy result and that block reads candidate_records, so it
+    # shows "Candidates (0)". Calling that a success sent "your run is
+    # ready", a green View results button and "validate the top design"
+    # over a page saying it returned none.
     #
     # So: metadata-only is empty, anything carrying an unrecognised KEY is
     # still a success. Narrow on purpose -- it fixes the live path without
@@ -1630,26 +1632,27 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # operator their search found nothing.
         #
         # Three things stay OUT of this copy on purpose:
-        #  * the adapter's "checks your target + config load"
-        #    (tools/proteina/__init__.py:848-849) -- the target half is
-        #    false, run_validate reads no target;
+        #  * the adapter's "checks your target + config load" (the
+        #    ``validate`` Preset in tools/proteina/__init__.py::adapter) --
+        #    the target half is false, run_validate reads no target;
         #  * the empty-tone levers (binder length / hotspots / more
         #    designs), false here for the same reasons they were cut from
         #    the page in a7845a1;
-        #  * any money claim. The preset LABEL says free
-        #    (tools/proteina/__init__.py:846) but nothing in this module
+        #  * any money claim. The preset LABEL says free (that same
+        #    Preset's ``label``) but nothing in this module
         #    enforces that, and _cost_breakdown_line below is this mail's
         #    only voice on cost: it suppresses itself on the failed tone
-        #    (:598-601), whose summary is the one other branch here that
-        #    mentions money (:1485). This branch adds no second voice, so
-        #    the summary and the cost line can never disagree.
+        #    (its ``tone == "failed"`` arm), whose summary is the one other
+        #    branch here that mentions money (``_result_summary``'s
+        #    ``no_charge`` arm). This branch adds no second voice, so the
+        #    summary and the cost line can never disagree.
         #    (Whether a validate run is in fact free is NOT settled here:
         #    estimated_cost_for_tool has no validate exemption and
         #    wallet_guard skips the hold only at an estimate of <= 0
-        #    (shared/wallet_guard.py:204), so the "No wallet charge" in
-        #    the preset description at :848-849 is unverified. Deliberately
-        #    left alone -- a billing question with its own blast radius,
-        #    not email copy.)
+        #    (shared/wallet_guard.py::requires_wallet, its ``free_run``
+        #    arm), so the "No wallet charge" in that Preset's description
+        #    is unverified. Deliberately left alone -- a billing question
+        #    with its own blast radius, not email copy.)
         return (
             "Pre-flight passed: the design container is ready — the pipeline "
             "package imports, every variant config is present, and a model "

@@ -763,7 +763,7 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
     # ── ESMFold2-design (gradient design + critic re-score) ──────────
     # HYPHEN, NOT UNDERSCORE. The registered slug is "esmfold2-design"
-    # (tools/esmfold2_design/__init__.py:240) even though the package
+    # (tools/esmfold2_design/__init__.py::adapter) even though the package
     # directory is esmfold2_design, and this entry shipped keyed on the
     # directory name. Nothing raised: an unknown tool simply has no legend and
     # no bar, so the feature was inert for this tool while its own test passed

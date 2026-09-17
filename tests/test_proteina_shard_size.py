@@ -88,7 +88,7 @@ def _designs_row() -> str:
 def test_adapter_shard_width_is_the_campaign_chunk_size():
     """Two independent literals, and this is the only thing tying them.
 
-    tools/proteina/__init__.py:162-165 builds _SHARD_DESIGNS from
+    tools/proteina/__init__.py::_SHARD_DESIGNS is built from
     _SHARD_NSAMPLES x _SHARD_REPLICAS. shared/compute_campaigns.py:514 sets
     _CHUNK_SIZE_OVERRIDE["proteina"] = 8 as a separate literal. Neither file
     reads the other, so editing the generation profile moves _SHARD_DESIGNS
@@ -96,9 +96,10 @@ def test_adapter_shard_width_is_the_campaign_chunk_size():
     _SHARD_NSAMPLES raised to 8, _chunk_size_for still returns 8.
 
     _SHARD_DESIGNS == _SHARD_NSAMPLES * _SHARD_REPLICAS is deliberately NOT
-    asserted: __init__.py:165 defines it as exactly that product three lines
-    below its operands, so asserting it restates the definition and can fail
-    only if someone replaces the definition with a literal.
+    asserted: tools/proteina/__init__.py::_SHARD_DESIGNS is defined as exactly
+    that product, directly beneath its operands, so asserting it restates the
+    definition and can fail only if someone replaces the definition with a
+    literal.
     """
     assert _chunk_size_for("proteina") == _SHARD_DESIGNS
     # Through the override entry specifically. _chunk_size_for falls back to a

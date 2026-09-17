@@ -8,7 +8,7 @@ stated a bar, so the same bar was written twice in one tooltip -- once by the
 tool and once by a global string keyed only on the metric name. The two
 spellings had drifted apart in both directions:
 
-  COMPARATOR. ``judge()`` (shared/score_legends.py:2172) is
+  COMPARATOR. ``judge()`` (shared/score_legends.py::judge) is
   ``meets = seen <= good if lower_is_better else seen >= good``, so a value
   sitting exactly on the bar MEETS it, and every gating legend words it that
   way ("80 or more", "1.5 angstroms or less", "4 or more of 7"). So does the

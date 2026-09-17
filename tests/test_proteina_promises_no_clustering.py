@@ -25,9 +25,9 @@ WHAT IS ACTUALLY THERE, measured 2026-09-10.
    credentials — and point 2 is why it does not change the answer.
 
 2. No code in this repo ORIGINATES a value. The only ingest is
-   ``_pick`` over ``_SCORE_COLUMNS.items()`` at run_pipeline.py:3559, whose
-   ``cluster_id`` entry (:390) lists one candidate column name that appears in
-   neither reward-CSV header
+   ``_pick`` over ``_SCORE_COLUMNS.items()`` in run_pipeline.py::parse_designs,
+   whose ``cluster_id`` entry (:390) lists one candidate column name that
+   appears in neither reward-CSV header
    pinned in
    tests/test_proteina_smoke.py::TestRewardParse. No captured reward CSV is
    committed anywhere in this repo — every header it records is a hand-written
@@ -40,7 +40,7 @@ WHAT IS ACTUALLY THERE, measured 2026-09-10.
 3. The hub ranks; it does not cluster.
    ``shared.compute_campaigns.aggregate_campaign_candidates`` pools every
    sub-job's candidates and sorts by ``(passed, missing, primary metric)``
-   (compute_campaigns.py:1483-1495). No diversity step there. (The repo does
+   in its ``_sort_key``. No diversity step there. (The repo does
    contain MPNN *sequence* diversification (``shared/resample.py``, which
    raises sampling temperature to spread sequences over one fold) — a different
    thing on a different tool. "No diversity anywhere in the repo" would be
