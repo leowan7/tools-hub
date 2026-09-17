@@ -294,19 +294,23 @@ class TestNonStringPdbKey:
 
     def test_an_oversized_key_does_not_take_the_whole_zip(self):
         """Coercing the TYPE does not close the whole-file blast radius on its
-        own. A ZIP header stores the entry-name length in two bytes, so a
-        ``str()`` of a big container -- a list naming every design, say --
-        aborts the archive out of ``struct.error`` where it used to abort out
-        of ``AttributeError``, losing the healthy designs exactly as before.
-        The bound in ``shared.exports._safe_arcname`` is the one guard of its
-        own that the definition-level coercion does NOT make redundant,
-        because it is a length and nothing upstream supplies one.
+        own. A ZIP header stores the entry-name length in two bytes, and the
+        list below -- 4000 design names, which is what a container writing its
+        manifest into ``pdb_key`` would produce -- coerces to 106890 legal
+        characters. That aborts the archive out of ``struct.error`` where it
+        used to abort out of ``AttributeError``, losing the healthy designs
+        exactly as before.
 
-        The FASTA half is asserted here too, and needs no bound: a long id is
-        a long header line, not a crash. Measured, not assumed."""
+        So the bound in ``shared.exports._safe_arcname`` is the one guard of
+        its own that the definition-level coercion does NOT make redundant:
+        it is a length, and nothing upstream supplies one.
+
+        The row is a real list rather than a long string because the whole
+        chain is the claim -- container writes a container, ``export_key``
+        coerces it, the bound keeps the archive openable."""
         rows = [
-            {"pdb_key": "designs/big.pdb" * 6000, "sequence": "ACDE",
-             "scores": {}, "pdb_content_b64": "QVRPTQo="},
+            {"pdb_key": ["designs/design_%d.pdb" % i for i in range(4000)],
+             "sequence": "ACDE", "scores": {}, "pdb_content_b64": "QVRPTQo="},
             {"pdb_key": "designs/good.pdb", "sequence": "EFGH",
              "scores": {}, "pdb_content_b64": "QVRPTQo="},
         ]
@@ -314,12 +318,45 @@ class TestNonStringPdbKey:
             rows, lambda job_id, key: None, default_job_id="job-1"
         )
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            names = zf.namelist()
-        assert len(names) == 2, [len(n) for n in names]
-        assert "designs/good.pdb" in names, names
-        assert max(len(n.encode("utf-8")) for n in names) <= 65535, \
-            [len(n) for n in names]
-        assert candidates_to_fasta(rows).count(">") == 2
+            infos = zf.infolist()
+        assert len(infos) == 2, [i.filename[:40] for i in infos]
+        assert "designs/good.pdb" in [i.filename for i in infos]
+        assert max(len(i.filename.encode("utf-8")) for i in infos) <= 65535
+        # Every entry is a FILE carrying its bytes, not an empty directory.
+        assert all(not i.is_dir() and i.file_size for i in infos), \
+            [(i.filename[:20], i.is_dir(), i.file_size) for i in infos]
+
+    def test_a_long_key_is_a_long_fasta_id_and_not_a_crash(self):
+        """The FASTA half needs no bound, and that is a measurement rather
+        than an assumption. The key is separator-free ON PURPOSE: ``_basename``
+        returns the last ``/`` segment, so a long key full of separators
+        reaches the header as a short tail and an assertion on it would hold
+        for any input length whatsoever -- which is exactly what an earlier
+        version of this test asserted, under a docstring claiming it had been
+        measured."""
+        body = candidates_to_fasta(
+            [{"pdb_key": "b" * 90000, "sequence": "ACDE", "scores": {}}]
+        )
+        header = body.splitlines()[0]
+        assert header.startswith(">rank1_"), header[:40]
+        assert len(header) == 90007, len(header)
+
+    def test_a_cut_landing_on_a_separator_is_still_a_file(self):
+        """A truncation that lands exactly on a ``/`` leaves the name ending
+        in one, and zipfile sets the directory bit on any such name: that
+        entry extracts as an empty FOLDER and the design's bytes are gone,
+        silently, for that one design. One character of the key decides it,
+        so it is pinned rather than reasoned about."""
+        key = "x" * 65534 + "/" + "y" * 100
+        data = candidates_to_zip(
+            [{"pdb_key": key, "pdb_content_b64": "QVRPTQo="}],
+            lambda job_id, _key: None, default_job_id="job-1",
+        )
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            info = zf.infolist()[0]
+        assert not info.filename.endswith("/"), info.filename[-8:]
+        assert not info.is_dir(), info.filename[-8:]
+        assert info.file_size == 5, info.file_size
 
     def test_the_bound_is_the_zip_limit_not_a_shorter_one(self):
         """65535 bytes is the last name a ZIP header can store, so that one

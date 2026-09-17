@@ -63,13 +63,20 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     # type coercion closes, except nothing upstream bounds a LENGTH: a
     # container that wrote a list of every design coerces to a legal string
     # hundreds of kB long. Truncation can make two entries collide, which
-    # zipfile permits; losing the archive it does not.
-    # tests/test_export_shapes.py::TestNonStringPdbKey
-    # ::test_an_oversized_key_does_not_take_the_whole_zip pins the survival,
-    # ::test_the_bound_is_the_zip_limit_not_a_shorter_one pins both edges.
+    # zipfile allows with a UserWarning; losing the archive it does not.
+    #
+    # The rstrip is not cosmetic: a cut landing on a "/" ends the name in
+    # one, and zipfile sets the directory bit on any such name, so that
+    # entry extracts as an empty FOLDER and the design's bytes are dropped
+    # with no error at all. One character of the key decides it.
+    #
+    # tests/test_export_shapes.py::TestNonStringPdbKey pins all three --
+    # ::test_an_oversized_key_does_not_take_the_whole_zip (survival),
+    # ::test_the_bound_is_the_zip_limit_not_a_shorter_one (both edges),
+    # ::test_a_cut_landing_on_a_separator_is_still_a_file (the slash).
     encoded = arc.encode("utf-8")
     if len(encoded) > 65535:
-        arc = encoded[:65535].decode("utf-8", "ignore")
+        arc = encoded[:65535].decode("utf-8", "ignore").rstrip("/")
     return arc
 
 
@@ -160,6 +167,15 @@ def export_key(cand: dict, i: int) -> dict:
     # caller each, both in this module), so their ``str`` annotations hold
     # once this one does. Pinned by
     # tests/test_export_shapes.py::TestNonStringPdbKey.
+    #
+    # The TYPE is settled here. The LENGTH is not, and coercing one without
+    # the other leaves the blast radius where it was: a container that wrote
+    # a LIST coerces to a legal string long enough to overflow a ZIP header,
+    # which aborts the whole archive exactly as the AttributeError did.
+    # ``_safe_arcname`` bounds it there. ``_basename`` needs no equivalent --
+    # a long FASTA id is a long header line, not a crash, and its
+    # ``"_".join(tail.split())`` already neutralises the whitespace that
+    # would otherwise forge a second record.
     key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
     # Whether these numbers were measured at all. The smoke tier fabricates
