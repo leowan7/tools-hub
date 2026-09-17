@@ -199,7 +199,8 @@ class TestRenderedEmail:
 
     def test_body_does_not_claim_the_target_was_checked(self):
         """The adapter's preset description says "checks your target + config
-        load" (tools/proteina/__init__.py:848-849). The target half is false --
+        load" (the ``validate`` Preset in tools/proteina/__init__.py::adapter).
+        The target half is false --
         run_validate reads no target, and run_pipeline.py::_run_shard returns
         from its validate arm before the only call that fetches one. The mail
         must not inherit that claim while fixing the rest.

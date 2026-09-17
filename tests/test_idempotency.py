@@ -562,8 +562,9 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
 
     NOT because "the wallet gate refuses". It does not: nine of the ten guarded
     routes carry no wallet decorator, and the one that does falls THROUGH on a
-    null wallet row (`shared/wallet_guard.py:219-224`). `_claim_key`'s own
-    docstring forbids the near-identical "the wallet decorator refuses"; this
+    null wallet row (`shared/wallet_guard.py::requires_wallet`, its
+    `wallet_row is None` arm). `_claim_key`'s own docstring forbids the
+    near-identical "the wallet decorator refuses"; this
     docstring reached for the same false idea in different words and was
     wrong.
     """

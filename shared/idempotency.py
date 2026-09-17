@@ -265,8 +265,8 @@ def _claim_key(
     over: only one of the ten guarded routes carries ``requires_wallet`` at all
     (``blueprints/tools.py::tool_submit``), and the decorator it carries is
     ``shared/wallet_guard.py``'s, which on a null wallet row deliberately falls
-    THROUGH to the handler (:219-224) rather than blocking. The
-    ``requires_wallet`` that does gate on a preflight is
+    THROUGH to the handler (its ``wallet_row is None`` arm) rather than
+    blocking. The ``requires_wallet`` that does gate on a preflight is
     ``shared/wallet.py::requires_wallet`` and it is wired to no route at all.
     An earlier version of this paragraph claimed that chain and was wrong.
 

@@ -22,8 +22,10 @@ Both sentences are false on a SUCCEEDED free ``validate`` run, observed live
    ``tool_jobs.campaign_id`` is
    ``shared/compute_campaigns.py::_dispatch_chunk``,
    which takes its preset from a campaign, and both routes that create a
-   campaign refuse this preset first (``blueprints/campaigns.py:337``,
-   ``blueprints/targets.py:243``). Nothing UPDATEs ``campaign_id`` later. So
+   campaign refuse this preset first
+   (``blueprints/campaigns.py::compute_campaign_create``,
+   ``blueprints/targets.py::_collect_launch_specs``). Nothing UPDATEs
+   ``campaign_id`` later. So
    there is no campaign page to check and no sibling shard to pool with.
 
 3. The campaign sentence is also wrong for a STANDALONE paid run. proteina is

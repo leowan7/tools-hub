@@ -394,7 +394,8 @@ class TestSucceededFoldWithNoStructure:
     tone and was mailed "your run is ready" over a green View results —
     to a page whose viewer and Download PDB are both gated on a truthy
     ``pdb_b64`` (templates/tools/af2_results.html:130,244) and whose
-    download route answers 404 without one (blueprints/jobs.py:1400).
+    download route answers 404 without one
+    (blueprints/jobs.py::af2_download_pdb).
 
     A MISSING key is deliberately left alone. tools/colabfold/meta.py:134
     ships a payload with no ``pdb_b64`` at all, and the forward-compat

@@ -253,7 +253,7 @@ def supports_headline_claim(
     at the ``batch`` tier, and for boltz2, it is one record per INDEPENDENTLY
     SUBMITTED sequence in submission order (``designs_out`` is built by
     ``.append()`` and never sorted -- tools/af2/run_pipeline.py:1196-1399,
-    tools/boltz2/run_pipeline.py:626-728, the latter stamping ``"rank": i``
+    tools/boltz2/run_pipeline.py::main, the latter stamping ``"rank": i``
     straight off the enumeration index). Its head is whichever sequence the
     customer pasted first, and nothing about it is "top".
 

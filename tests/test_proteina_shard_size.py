@@ -88,7 +88,7 @@ def _designs_row() -> str:
 def test_adapter_shard_width_is_the_campaign_chunk_size():
     """Two independent literals, and this is the only thing tying them.
 
-    tools/proteina/__init__.py:162-165 builds _SHARD_DESIGNS from
+    tools/proteina/__init__.py::_SHARD_DESIGNS is built from
     _SHARD_NSAMPLES x _SHARD_REPLICAS. shared/compute_campaigns.py:514 sets
     _CHUNK_SIZE_OVERRIDE["proteina"] = 8 as a separate literal. Neither file
     reads the other, so editing the generation profile moves _SHARD_DESIGNS

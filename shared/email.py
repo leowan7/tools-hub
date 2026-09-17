@@ -1555,7 +1555,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     # success path: "your run is ready" over a green View results, to a
     # page whose viewer and Download PDB are both gated on a truthy
     # pdb_b64 (templates/tools/af2_results.html:130,244) and a download
-    # route that answers 404 without one (blueprints/jobs.py:1400-1406).
+    # route that answers 404 without one
+    # (blueprints/jobs.py::af2_download_pdb).
     # No pipeline writes that payload today -- the three run_pipeline.py
     # files all _fail instead (tools/af2:699, tools/colabfold:763,
     # tools/esmfold:787), and the batch preset writes "designs", caught
@@ -1631,14 +1632,14 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # operator their search found nothing.
         #
         # Three things stay OUT of this copy on purpose:
-        #  * the adapter's "checks your target + config load"
-        #    (tools/proteina/__init__.py:848-849) -- the target half is
-        #    false, run_validate reads no target;
+        #  * the adapter's "checks your target + config load" (the
+        #    ``validate`` Preset in tools/proteina/__init__.py::adapter) --
+        #    the target half is false, run_validate reads no target;
         #  * the empty-tone levers (binder length / hotspots / more
         #    designs), false here for the same reasons they were cut from
         #    the page in a7845a1;
-        #  * any money claim. The preset LABEL says free
-        #    (tools/proteina/__init__.py:846) but nothing in this module
+        #  * any money claim. The preset LABEL says free (that same
+        #    Preset's ``label``) but nothing in this module
         #    enforces that, and _cost_breakdown_line below is this mail's
         #    only voice on cost: it suppresses itself on the failed tone
         #    (its ``tone == "failed"`` arm), whose summary is the one other
@@ -1648,10 +1649,10 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         #    (Whether a validate run is in fact free is NOT settled here:
         #    estimated_cost_for_tool has no validate exemption and
         #    wallet_guard skips the hold only at an estimate of <= 0
-        #    (shared/wallet_guard.py:204), so the "No wallet charge" in
-        #    the preset description at :848-849 is unverified. Deliberately
-        #    left alone -- a billing question with its own blast radius,
-        #    not email copy.)
+        #    (shared/wallet_guard.py::requires_wallet, its ``free_run``
+        #    arm), so the "No wallet charge" in that Preset's description
+        #    is unverified. Deliberately left alone -- a billing question
+        #    with its own blast radius, not email copy.)
         return (
             "Pre-flight passed: the design container is ready — the pipeline "
             "package imports, every variant config is present, and a model "
