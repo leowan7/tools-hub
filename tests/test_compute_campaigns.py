@@ -67,13 +67,16 @@ def test_chunk_size_per_tool():
     assert _chunk_size_for("rfantibody") == 16
     # proteina: the fixed generation profile one container runs
     # (tools.proteina._SHARD_NSAMPLES 4 x _SHARD_REPLICAS 2). Here for
-    # LOCALITY, not for new coverage -- test_proteina_smoke.py:649 already
-    # asserts _CHUNK_SIZE_OVERRIDE["proteina"] == 8 and catches strictly more
-    # (deleting the override entry leaves _chunk_size_for deriving 8 anyway),
-    # and test_pdb_preflight.py:1696 pins the same number a third time. What
-    # none of them can see is a SENTENCE, which is how meta.py shipped a
-    # worked example calling a 64-design container "one shard" with the suite
-    # green; tests/test_proteina_shard_size.py is what covers that.
+    # LOCALITY, not for new coverage --
+    # test_proteina_smoke.py::TestPricingWiring.test_campaign_registries
+    # already asserts _CHUNK_SIZE_OVERRIDE["proteina"] == 8 and catches
+    # strictly more (deleting the override entry leaves _chunk_size_for
+    # deriving 8 anyway), and
+    # test_pdb_preflight.py::test_proteina_runtime_scales_per_SHARD_not_per_hundred_designs
+    # pins the same number a third time. What none of them can see is a
+    # SENTENCE, which is how meta.py shipped a worked example calling a
+    # 64-design container "one shard" with the suite green;
+    # tests/test_proteina_shard_size.py is what covers that.
     assert _chunk_size_for("proteina") == 8
 
 

@@ -88,7 +88,7 @@
    no target_id (components/results_shell.html:131) -- but they are no longer
    unchanged, as this comment used to say: since the # column became a
    position they number straight through their sub-jobs like everything else,
-   which is what their own CSV already did (shared/exports.py:119).
+   which is what their own CSV already did (shared/exports.py::export_key).
 
    ``pooled`` still reaches the numbering, indirectly: it gates ``grouped``
    just below, and a grouped table counts with grp.n instead. Its other two
@@ -687,7 +687,7 @@
                that the column was not ascending.) On af2 and iggm rank is a
                production
                index -- af2's over its INPUT records
-               (tools/af2/run_pipeline.py:944, which advances past records
+               (tools/af2/run_pipeline.py::_write_consolidated_fasta, which advances past records
                dropped before the model ever sees them), iggm's over its
                output files -- and the partial then re-sorts by score
                before rendering (templates/tools/af2_results.html:70 sorts on
@@ -696,18 +696,19 @@
                production indices under a "#" heading, on a page whose own
                narration talks the reader OUT of row one ("the opposite of
                what you would conclude by reading row one",
-               tools/af2/meta.py:258-260) and so needs the reader to be able
+               tools/af2/meta.py::EXAMPLE) and so needs the reader to be able
                to find which row that is.
 
-               shared/exports.py:119 already numbers the CSV by position
-               (``{"rank": i + 1}``) and demotes the payload value to
-               source_rank at :125, so the screen now uses the CSV's
-               CONVENTION. Not its values: the CSV numbers the STORED order
-               while the re-sorting partials above render a different one, so
-               on af2 and iggm screen #4 and CSV rank 4 are different designs.
-               That divergence predates this change and shared/exports.py:101
-               already disclaims rank as a cross-surface identifier -- pdb_key
-               plus source_job is the join, never the number.
+               shared/exports.py::export_key already numbers the CSV by
+               position (``{"rank": i + 1}``) and demotes the payload value to
+               source_rank, so the screen now uses the CSV's CONVENTION. Not
+               its values: the CSV numbers the STORED order while the
+               re-sorting partials above render a different one, so on af2 and
+               iggm screen #4 and CSV rank 4 are different designs. That
+               divergence predates this change and
+               shared/exports.py::export_key already disclaims rank as a
+               cross-surface identifier -- pdb_key plus source_job is the
+               join, never the number.
 
                Nothing keys off what this cell prints. The star button, the
                3D viewer and the lab-submit modal all key off ``idx``

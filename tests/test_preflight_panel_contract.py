@@ -759,7 +759,7 @@ _GATE_SLUGS = ["rfdiffusion", "bindcraft", "pxdesign"]
 @pytest.mark.parametrize("slug", _GATE_SLUGS)
 @pytest.mark.parametrize("hotspots", [
     "A5,B7", "A5, B7", "A5;B7",
-    "A5 B7",        # whitespace: what tools/base.py:99 accepts
+    "A5 B7",  # whitespace: what tools/base.py::parse_hotspot_residues accepts
     "5 7", "5,7",
     "A5", "5",
 ])

@@ -132,10 +132,12 @@ def _fail(
 ) -> None:
     """Write a FAILED result and exit 1.
 
-    ``runtime_seconds`` is GPU time already burned. gpu/modal_client.py:716
-    reads this exact key on the FAILED arm as the job's gpu_seconds_used, and
-    shared/jobs.py:1389 skips the workspace compute debit when that is missing
-    or zero. It stays None for the fails that happen before any GPU work.
+    ``runtime_seconds`` is GPU time already burned.
+    gpu/modal_client.py::_interpret_pipeline_return reads this exact key on
+    the FAILED arm as the job's gpu_seconds_used, and
+    shared/jobs.py::_charge_workspace_for_completed_job skips the workspace
+    compute debit when that is missing or zero. It stays None for the fails
+    that happen before any GPU work.
     """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
     _write_result(
@@ -743,13 +745,16 @@ def main() -> None:
     # list never means "folded fine, nothing passed" - that still writes
     # COMPLETED and stays billed. Before this guard a wholly-failed run wrote
     # COMPLETED and classified as plain "succeeded", because the zero-yield
-    # check at shared/jobs.py:567 reads result["candidates"] and this tool
-    # emits "designs" - so it never reached "completed_no_yield"
-    # (jobs.py:569) and settled against the GPU time it burned
-    # (wallet.py:697). The "pipeline" bucket maps to "tool_error", a refunded
-    # class (jobs.py:519,529), and is what the poll path rewrites to anyway
-    # (blueprints/jobs.py:701). The workspace compute debit is unaffected -
-    # that reads the runtime_seconds this _fail still carries.
+    # check at shared/jobs.py::classify_terminal_state reads
+    # result["candidates"] and this tool emits "designs" - so it never
+    # reached "completed_no_yield" (jobs.py::classify_terminal_state) and
+    # settled against the GPU time it burned (wallet.py::settle_hold). The
+    # "pipeline" bucket maps to "tool_error"
+    # (jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS), a refunded class
+    # (jobs.py::_REFUNDED_FAILURE_CLASSES), and is what the poll path
+    # rewrites to anyway (blueprints/jobs.py::job_status). The workspace
+    # compute debit is unaffected - that reads the runtime_seconds this _fail
+    # still carries.
     if not designs_out:
         _fail(
             "pipeline",

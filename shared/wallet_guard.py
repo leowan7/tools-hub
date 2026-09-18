@@ -210,8 +210,8 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             # ToolSpec's ``tier_gpu_seconds``), and returning here would have
             # handed that preset a submit path that never sees
             # ``wallet_frozen``. A PAID submit meets that flag twice -- in
-            # ``wallet_preflight`` (shared/wallet.py:498) and again inside the
-            # SQL ``try_hold_for_job``
+            # ``wallet_preflight`` (shared/wallet.py::wallet_preflight) and
+            # again inside the SQL ``try_hold_for_job``
             # (supabase/migrations/0035_phase2_remove_daily_cap.sql:57-65,
             # which returns NULL for a frozen wallet). A free run never takes a
             # hold, so the SQL check is unreachable for it and preflight is the

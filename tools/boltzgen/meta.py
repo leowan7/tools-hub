@@ -151,7 +151,7 @@ about: dict = {
         {
             "name": "Binder length (min/max)",
             # The peptide floor read 5 here and in boltzgen_form.html.
-            # ``_parse_inputs`` in __init__.py:92-95 refuses anything under
+            # ``_parse_inputs`` in __init__.py::validate refuses anything under
             # 10 and the form inputs carry min="10", so 5 was a number the
             # tool rejects — and this block renders on the SAME page as the
             # form, so the two said different things one scroll apart.

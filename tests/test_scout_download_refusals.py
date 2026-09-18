@@ -20,12 +20,12 @@ filename -- it only turns a refusal into a full navigation that throws the user
 off the rendered report and the live 3Dmol viewer.
 
 THE PROPERTY THAT MATTERS, and the one a naive ``!r.ok`` check gets wrong:
-``login_required`` (``shared/auth.py:696``) answers a dead session with a 302 to
-``/login``, and ``fetch`` FOLLOWS redirects by default, yielding a 200 HTML
-page. ``r.ok`` is then TRUE, so an ok/not-ok guard hands the browser the login
-page to save as a ``.csv`` -- the same class of silent wrong file the guard
-exists to prevent. ``test_a_followed_login_redirect_is_never_treated_as_a_file``
-holds that up.
+``login_required`` (``shared/auth.py::login_required``) answers a dead session
+with a 302 to ``/login``, and ``fetch`` FOLLOWS redirects by default, yielding a
+200 HTML page. ``r.ok`` is then TRUE, so an ok/not-ok guard hands the browser
+the login page to save as a ``.csv`` -- the same class of silent wrong file the
+guard exists to prevent.
+``test_a_followed_login_redirect_is_never_treated_as_a_file`` holds that up.
 
 A HEAD probe was considered and rejected: HEAD strips the body, which is the
 ``error`` string this whole change exists to surface.

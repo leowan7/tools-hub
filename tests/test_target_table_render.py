@@ -271,7 +271,7 @@ def test_single_tool_headers_keep_data_col_so_sorting_still_works():
 def test_multi_tool_headers_are_the_seven_fixed_columns():
     # "Structure", not "PDB": the column serves .cif for four of the five
     # boltzgen example rows, and for any opendde row whose cif->pdb
-    # conversion failed (tools/opendde/run_pipeline.py:500-509).
+    # conversion failed (tools/opendde/run_pipeline.py::main).
     # What this pins is the fixed SET of seven and its order,
     # which the rename does not touch.
     table = _parse(_multi_tool_table())
@@ -864,7 +864,7 @@ def test_a_single_job_table_numbers_by_position_too():
       templates/tools/iggm_results.html:40 on epitope contacts), so af2's
       ten rows rendered 0,9,6,1,8,4,7,5,3,2 -- production indices under a
       "#" heading, on a page whose narration says "row one"
-      (tools/af2/meta.py:260).
+      (tools/af2/meta.py::EXAMPLE).
 
     The fixture is itself the tell: a THREE-ROW single-job table whose ranks
     start at 90 is not a shape any pipeline here produces, so the old
@@ -875,11 +875,11 @@ def test_a_single_job_table_numbers_by_position_too():
 
     The payload's own rank is not lost by numbering positionally: the CSV
     keeps it as ``source_rank`` beside a positional ``rank``
-    (shared/exports.py:119,125). It is NOT on screen, though -- this macro
-    renders no name column, and on a worked-example page the pdb_key links
-    are suppressed too -- so the number here is the only row identity a
-    reader sees, which is the argument for it being a position rather than a
-    field whose meaning changes per tool.
+    (shared/exports.py::export_key). It is NOT on screen, though -- this macro
+    renders no name column, and on a worked-example page the pdb_key links are
+    suppressed too -- so the number here is the only row identity a reader
+    sees, which is the argument for it being a position rather than a field
+    whose meaning changes per tool.
 
     Pinned on thirteen of the fourteen partials by
     tests/test_worked_examples.py::TestTheRankColumnIsAPosition (mpnn renders
