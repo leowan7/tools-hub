@@ -49,7 +49,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 
 @pytest.fixture(scope="module")
-def flask_app():
+def flask_app(isolate_supabase_module):
     """Same shape as tests/test_multichain_iptm_notice.py's.
 
     Local rather than shared, because that file's is module-scoped and moving

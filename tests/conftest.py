@@ -155,7 +155,7 @@ def _forbid_real_supabase_clients():
 
 
 @pytest.fixture(scope="module")
-def all_tools_app():
+def all_tools_app(isolate_supabase_module):
     """Every registered adapter flagged on, not a remembered subset."""
     import app as app_module  # noqa: PLC0415  (populates tools.base registry)
     from shared.feature_flags import flag_name  # noqa: PLC0415
@@ -184,10 +184,14 @@ def all_tools_app():
     # the file, which is collection order, but nothing enforces it.
     #
     # Ordering note: a module-scoped fixture is built before the
-    # function-scoped isolate_supabase blanks the credentials. That is
-    # safe because create_app() captures no Supabase client --
-    # get_service_client() is called inside inject_workspace_context,
-    # a context processor, so it runs per render instead.
+    # function-scoped isolate_supabase blanks the credentials, so this
+    # requests isolate_supabase_module to blank them for its own setup
+    # too. create_app() does capture no Supabase client of its own --
+    # get_service_client() is called inside inject_workspace_context, a
+    # context processor, so it runs per render instead -- but that is a
+    # property of create_app() today rather than something a fixture
+    # should rest on. pytest_collection_modifyitems below requires the
+    # twin on every app fixture of a scope wider than function.
     with pytest.MonkeyPatch.context() as mp:
         for slug in slugs:
             mp.setenv(flag_name(slug), "on")
@@ -251,39 +255,120 @@ def _app_building_fixtures(source: str) -> frozenset[str]:
     )
 
 
-_APP_BUILDING_FIXTURES = _app_building_fixtures(
-    pathlib.Path(__file__).read_text(encoding="utf-8")
-)
+def _fixture_scope(node: ast.AST) -> str:
+    """The ``scope=`` on a fixture decorator, or pytest's default."""
+    for dec in node.decorator_list:
+        if isinstance(dec, ast.Call):
+            for kw in dec.keywords:
+                if kw.arg == "scope" and isinstance(kw.value, ast.Constant):
+                    return str(kw.value.value)
+    return "function"
 
 
-def _unisolated(items, app_fixtures, cache=None):
-    """Map file -> one offending nodeid for items that reach the app unisolated.
+def _early_app_fixtures(source: str) -> frozenset[str]:
+    """App-building fixtures a function-scoped mark cannot protect.
+
+    pytest builds a module- or class-scoped fixture BEFORE the function-scoped
+    ``isolate_supabase``, so a module-level mark does not cover what that
+    fixture does during its own setup -- the #296 mechanism, and the reason
+    ``isolate_supabase_module`` exists. The twin only helps as a real
+    dependency edge, so the fixture has to request it by name; a mark on the
+    tests cannot order two module-scoped fixtures against each other.
+
+    Returned names are the app fixtures of a wider scope that do not request
+    it. Enforced by ``test_the_mark_does_not_clear_an_early_fixture`` in
+    tests/test_supabase_isolation_enforced.py.
+
+    Ceiling: only a fixture that calls ``create_app`` in its own body is
+    seen, because ``_builds_app`` walks that node alone. One that delegates
+    to a module-level helper is not.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    return frozenset(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any("fixture" in ast.unparse(d) for d in node.decorator_list)
+        and _builds_app(node)
+        and _fixture_scope(node) != "function"
+        and "isolate_supabase_module" not in {a.arg for a in node.args.args}
+    )
+
+
+_TESTS_DIR = pathlib.Path(__file__).parent
+_CONFTEST_SRC = pathlib.Path(__file__).read_text(encoding="utf-8")
+_APP_BUILDING_FIXTURES = _app_building_fixtures(_CONFTEST_SRC)
+_EARLY_APP_FIXTURES = _early_app_fixtures(_CONFTEST_SRC)
+
+
+def _under_tests(path) -> bool:
+    """True when ``path`` sits under this conftest's directory.
+
+    A conftest's fixtures are not visible outside its own directory, and a
+    repo-root run also collects ``tools/library_planner/tests``. Flagging a
+    file there would print a remedy that cannot resolve. Enforced by
+    ``test_a_file_outside_the_tests_directory_is_not_policed``.
+    """
+    if path is None:
+        return False
+    try:
+        pathlib.Path(path).relative_to(_TESTS_DIR)
+    except ValueError:
+        return False
+    return True
+
+
+def _unisolated(items, app_fixtures, cache=None, early_fixtures=frozenset()):
+    """Map file -> (nodeid, reason) for items that reach the app unisolated.
 
     Reads ``item.fixturenames`` -- the closure pytest computed -- rather than
     the mark text, so a per-class mark or a fixture chain that requests the
     module twin counts, while a mark whose name resolves to neither fixture
     still reads as missing.
 
-    Enforced by ``test_gate_clears_either_isolation_fixture`` and
-    ``test_a_misspelled_mark_still_reads_as_missing`` in
+    Two ways of failing, and the early-fixture one is tested FIRST because
+    those files DO carry the mark -- it is simply built too late to cover the
+    fixture's own setup.
+
+    Enforced by ``test_gate_clears_either_isolation_fixture``,
+    ``test_a_misspelled_mark_still_reads_as_missing`` and
+    ``test_the_mark_does_not_clear_an_early_fixture`` in
     tests/test_supabase_isolation_enforced.py.
     """
     cache = {} if cache is None else cache
     offenders = {}
     for item in items:
         names = set(getattr(item, "fixturenames", ()))
+        path = getattr(item, "path", None)
+        key = str(path)
+        if path is not None and key not in cache:
+            try:
+                src = pathlib.Path(path).read_text(encoding="utf-8")
+                cache[key] = (_builds_app(ast.parse(src)), _early_app_fixtures(src))
+            except (OSError, SyntaxError, ValueError):
+                cache[key] = (False, frozenset())
+        builds, file_early = cache[key] if path is not None else (False, frozenset())
+
+        early = sorted(names & (early_fixtures | file_early))
+        if early:
+            offenders.setdefault(
+                key,
+                (
+                    item.nodeid,
+                    f"{early[0]} builds the app before a function-scoped mark "
+                    "fires; it must request isolate_supabase_module itself",
+                ),
+            )
+            continue
         if names & _ISOLATION_FIXTURES:
             continue
-        path = getattr(item, "path", None)
-        if path is not None and str(path) not in cache:
-            try:
-                cache[str(path)] = _builds_app(
-                    ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
-                )
-            except (OSError, SyntaxError, ValueError):
-                cache[str(path)] = False
-        if names & app_fixtures or (path is not None and cache[str(path)]):
-            offenders.setdefault(str(path), item.nodeid)
+        if names & app_fixtures or builds:
+            offenders.setdefault(
+                key, (item.nodeid, "no isolation fixture in the closure")
+            )
     return offenders
 
 
@@ -298,21 +383,33 @@ def pytest_collection_modifyitems(config, items):
     (#296, #299, #302, #308) closed that gap by hand and it reopened each
     time.
 
-    Ceiling: the gate sees only the items collected, so a single-file run
-    polices that file alone and the full run is what binds.
+    Two failure modes are refused: no isolation fixture in the closure at all,
+    and an app fixture of a scope wider than function that does not request
+    ``isolate_supabase_module`` -- the second is the one that a green suite
+    and a module-level mark both look clean under.
+
+    Ceilings: the gate sees only the items collected, so a single-file run
+    polices that file alone and the full run is what binds; and it polices
+    only files under this directory, because the fixtures it prescribes are
+    not visible outside it.
     """
     global _COLLECTION_GATE_SAW
-    _COLLECTION_GATE_SAW = len(items)
-    offenders = _unisolated(items, _APP_BUILDING_FIXTURES)
+    scoped = [item for item in items if _under_tests(getattr(item, "path", None))]
+    _COLLECTION_GATE_SAW = len(scoped)
+    offenders = _unisolated(
+        scoped, _APP_BUILDING_FIXTURES, early_fixtures=_EARLY_APP_FIXTURES
+    )
     if offenders:
         listing = "\n".join(
-            f"  {p}\n      e.g. {n}" for p, n in sorted(offenders.items())
+            f"  {path}\n      {reason}\n      e.g. {nodeid}"
+            for path, (nodeid, reason) in sorted(offenders.items())
         )
         raise pytest.UsageError(
             f"{len(offenders)} test file(s) reach the Flask app without Supabase "
             f"isolation:\n{listing}\n\n"
-            'Add `pytestmark = pytest.mark.usefixtures("isolate_supabase")` at '
-            "module level. If a MODULE-scoped fixture builds the app, have that "
-            "fixture request `isolate_supabase_module` instead -- a "
-            "function-scoped mark is built too late for it."
+            "Apply whichever remedy the line above names: either "
+            '`pytestmark = pytest.mark.usefixtures("isolate_supabase")` at module '
+            "level, or -- for a MODULE- or CLASS-scoped fixture that builds the "
+            "app -- that fixture requesting `isolate_supabase_module` itself, "
+            "because a function-scoped mark is built too late for it."
         )

@@ -40,7 +40,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     """The real app, so the macro and the routes run with the globals
     and the blueprints they actually ship with."""
     import app as app_module
@@ -200,7 +200,7 @@ class TestTheEsmfoldDownloadAgreesWithItsPage:
     """End to end, on the page the defect was found on."""
 
     @pytest.fixture(scope="class")
-    def page(self):
+    def page(self, isolate_supabase_module):
         import app as app_module
         from shared.feature_flags import flag_name
         from tools import base as tool_base

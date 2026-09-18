@@ -3,8 +3,9 @@
 The gate refuses a run in which a test reaches the Flask app without Supabase
 isolation. A green suite is no evidence for it on its own: the suite is
 currently clean, so the gate returns "no offenders" whether it works or is
-inert. Every assertion here therefore either feeds the gate an offender it
-must flag, or reads state only a gate pytest actually invoked could have set.
+inert. The assertions here are therefore of three kinds: they exercise a
+predicate directly, feed the gate an offender it must flag, or read state only
+a gate pytest actually invoked could have set.
 """
 
 from __future__ import annotations
@@ -107,6 +108,82 @@ def test_gate_ignores_a_file_that_never_reaches_the_app(tmp_path, ct):
     plain = tmp_path / "plain.py"
     plain.write_text("def test_x():\n    assert True\n", encoding="utf-8")
     assert ct._unisolated([_item(plain)], frozenset()) == {}
+
+
+# --- built too early for the mark to help (the #296 mechanism) -----------
+
+
+def _early_caller(tmp_path, twin=False):
+    """A file whose module-scoped fixture builds the app, with or without the twin."""
+    arg = "isolate_supabase_module" if twin else ""
+    f = tmp_path / ("early_twin.py" if twin else "early.py")
+    f.write_text(
+        """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(%s):
+    import app as app_module
+
+    return app_module.create_app()
+"""
+        % arg,
+        encoding="utf-8",
+    )
+    return f
+
+
+def test_a_wider_scoped_app_fixture_without_the_twin_is_early(ct):
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+
+
+def test_the_twin_clears_a_wider_scoped_app_fixture(ct):
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(isolate_supabase_module):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_function_scoped_app_fixture_is_not_early(ct):
+    """A function-scoped fixture is built after the mark, so the mark covers it."""
+    src = """import pytest
+
+
+@pytest.fixture
+def app():
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_the_mark_does_not_clear_an_early_fixture(tmp_path, ct):
+    """The point of the rule: these files DO carry the mark, too late to matter."""
+    early = _item(_early_caller(tmp_path), ["tools_app", "isolate_supabase"])
+    assert ct._unisolated([early], frozenset()) != {}
+
+    twinned = _item(
+        _early_caller(tmp_path, twin=True), ["tools_app", "isolate_supabase"]
+    )
+    assert ct._unisolated([twinned], frozenset()) == {}
+
+
+def test_a_file_outside_the_tests_directory_is_not_policed(tmp_path, ct):
+    """A root run also collects tools/library_planner/tests, which cannot see
+    the fixtures this gate prescribes -- flagging it would print dead advice."""
+    assert ct._under_tests(tmp_path / "x.py") is False
+    assert ct._under_tests(pathlib.Path(ct.__file__)) is True
+    assert ct._under_tests(None) is False
 
 
 # --- the gate is wired ---------------------------------------------------
