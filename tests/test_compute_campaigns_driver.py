@@ -18,6 +18,8 @@ from shared.compute_campaigns import (
     drive_campaign,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Stateful fake Supabase client (select / insert / update / eq / in_)

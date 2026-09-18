@@ -29,6 +29,8 @@ import pytest
 from shared import jobs as jobs_mod
 from shared.jobs import timeout_stuck_job
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Fake Supabase store with CAS-honouring update (copied shape from
