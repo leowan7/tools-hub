@@ -493,3 +493,40 @@ def test_the_compare_page_survives_a_malformed_row(all_tools_app):
     assert html.count("(3 total)") == 2
     # And the headline is a real design, not the coerced blank.
     assert "good_design_0" in html
+
+
+def test_the_export_and_render_accessors_agree_by_value():
+    """The page and the download read ONE stored array through two
+    hand-written accessors, so a row that one shows and the other writes
+    cannot disagree -- that divergence IS the defect #295 fixed on the export
+    side, and coercing on only one side would re-create it one click apart.
+
+    Equal BY VALUE, not identity: ``_dict_candidates`` converts a non-dict
+    Mapping where ``display_rows`` keeps it, and a Mapping equals the dict of
+    its items. ``shared/exports.py``'s ``_dict_candidates`` docstring names
+    this test as the pin.
+    """
+    from types import MappingProxyType
+
+    from shared.exports import _dict_candidates
+    from shared.jobs import display_rows
+
+    rows = [
+        {"name": "good"},
+        "design_1 failed",
+        None,
+        7,
+        [],
+        True,
+        {},
+        MappingProxyType({"name": "proxy"}),
+    ]
+    for container in (list, tuple):
+        arg = container(rows)
+        assert _dict_candidates(arg) == display_rows(arg), container.__name__
+        # Length is the point: a filter on either side renumbers the other.
+        assert len(display_rows(arg)) == len(rows), container.__name__
+
+    # A container that is not a list/tuple is empty on BOTH sides, not raising.
+    for not_a_list in (None, "candidates", 7, {"candidates": []}):
+        assert _dict_candidates(not_a_list) == display_rows(not_a_list) == []
