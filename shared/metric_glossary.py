@@ -356,24 +356,24 @@ _FORMAT: dict[str, str] = {
     # the two a 0-1 confidence would otherwise take here.
     #
     # THIS STRING IS WHAT JUDGES THE LEG, not just what prints it:
-    # score_legends.shown_value (shared/score_legends.py:1801) rounds the
+    # score_legends.shown_value (shared/score_legends.py::shown_value) rounds the
     # reading to this format before comparing it to the bar, and _reading
-    # (shared/score_legends.py:1820) writes the verdict sentence at it. So
+    # (shared/score_legends.py::_reading) writes the verdict sentence at it. So
     # the format sets the width of the window where judge() says "meets" and
     # run_pipeline._classify (raw ">= 0.50",
-    # tools/esmfold2_design/run_pipeline.py:418) says "drop".
+    # tools/esmfold2_design/run_pipeline.py::_classify) says "drop".
     #
     # At ".2f" that window ran from just above 0.4950 to 0.50, and the share
     # card prints the raw value at three decimals unconditionally
-    # (blueprints/jobs.py:458), so a design inside it published the clause
-    # "CDR distogram proxy 0.495" under wording asserting it cleared 0.50.
-    # Measured by setting this entry to ".2f" and driving
-    # blueprints.jobs._top_score_for_share: raw 0.4951 published that clause,
-    # raw 0.4950 published nothing. At ".3f" the window starts at 0.4996
-    # (0.4995 is judged below) and the card prints "0.500" -- the number it
-    # judged. templates/components/candidate_table.html:882 lists this column
-    # with ipTM for the same reason, so the cell, the verdict beside it and
-    # the card all show the same three decimals.
+    # (blueprints/jobs.py::_top_score_for_share), so a design inside it
+    # published the clause "CDR distogram proxy 0.495" under wording
+    # asserting it cleared 0.50. Measured by setting this entry to ".2f" and
+    # driving blueprints.jobs._top_score_for_share: raw 0.4951 published that
+    # clause, raw 0.4950 published nothing. At ".3f" the window starts at
+    # 0.4996 (0.4995 is judged below) and the card prints "0.500" -- the
+    # number it judged. templates/components/candidate_table.html lists this
+    # column with ipTM in its ``%.3f`` branch for the same reason, so the
+    # cell, the verdict beside it and the card all show three decimals.
     # test_a_gate_leg_renders_at_the_precision_the_share_card_prints pins it.
     "CDR_iPTM_proxy": ".3f",
 }

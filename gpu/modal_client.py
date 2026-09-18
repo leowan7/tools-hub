@@ -122,7 +122,7 @@ _T = TypeVar("_T")
 # up is a **billed GPU job with no job row tracking it**. One call, one
 # budget, per method.
 #
-# Coupling to record: ``gunicorn.conf.py:164`` floors the watchdog at 60 s
+# Coupling to record: ``gunicorn.conf.py::timeout`` floors the watchdog at 60 s
 # (`max(60, GUNICORN_TIMEOUT)`). Setting GUNICORN_TIMEOUT below 90 puts the
 # watchdog back underneath this cap and restores the old take-out-the-worker
 # behaviour. Do not lower it without lowering this too.

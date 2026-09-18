@@ -450,14 +450,15 @@ def _patch_user_ctx(monkeypatch):
     stubbed — that delta was real connection attempts.
 
       1+2. blueprints.tools.load_user_context / get_or_create_wallet
-           (blueprints/tools.py:686 — wallet panel first paint).
+           (blueprints/tools.py::tool_form — wallet panel first paint).
       3.   app.load_user_context — the app-level inject_workspace_context
-           context processor (app.py:400) fires on EVERY render_template and
-           binds load_user_context in the *app* namespace, so patching the
-           blueprints.tools binding does not reach it. With only user_email
-           in the session it would call _resolve_user_id -> Supabase
-           auth.admin.list_users(). Returning None short-circuits it at
-           app.py:435 and the nav degrades gracefully.
+           context processor (app.py::inject_workspace_context) fires on EVERY
+           render_template and binds load_user_context in the *app* namespace,
+           so patching the blueprints.tools binding does not reach it. With
+           only user_email in the session it would call _resolve_user_id ->
+           Supabase auth.admin.list_users(). Returning None short-circuits it
+           at app.py::inject_workspace_context and the nav degrades
+           gracefully.
 
     Note: seeding sess["user_id"] instead would make this WORSE — it skips
     list_users() but lets get_tier(), active_workspaces_count(), and the nav

@@ -494,8 +494,9 @@ def test_reconstruct_pages_the_listing_instead_of_probing_each_design(
     when Modal reports a container timeout (``blueprints/jobs.py::job_status``),
     so ``reconstruct`` shares that request's budget. Probing Storage once per
     streamed partial put up to 1000 sequential calls (the
-    ``_partial_candidates`` cap, ``webhooks/modal.py:597``) on a worker whose
-    gunicorn watchdog fires at 120 s (``gunicorn.conf.py:164``).
+    ``_partial_candidates`` cap, ``webhooks/modal.py::_hb_merge_inputs``) on a
+    worker whose gunicorn watchdog fires at 120 s
+    (``gunicorn.conf.py::timeout``).
 
     Paging also has to walk past storage3's ``limit: 100`` default
     (``storage3._sync.file_api.DEFAULT_SEARCH_OPTIONS``): one unpaged listing

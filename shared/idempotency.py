@@ -273,21 +273,20 @@ def _claim_key(
     One configuration is deliberately NOT given the open answer, because it is
     the one where open is most dangerous. With ``SUPABASE_URL`` and an anon key
     set but no service-role key, ``get_service_client`` returns a live ANON
-    client (shared/credits.py:59-64) rather than None, and migration 0004
-    enables RLS on this table with no policies -- so the SELECT reads empty and
-    the INSERT is refused, and this refuses with it. The cost is that
-    ``/library-planner/plan`` and, for signed-in callers only,
+    client (shared/credits.py::get_service_client) rather than None, and
+    migration 0004 enables RLS on this table with no policies -- so the SELECT
+    reads empty and the INSERT is refused, and this refuses with it. The cost is
+    that ``/library-planner/plan`` and, for signed-in callers only,
     ``/developability/score`` -- which spend nothing -- also 503 in a
     half-configured dev environment. Signed-in only because that route is
     deliberately anonymous (blueprints/tools.py:117-119 carries no
-    ``@login_required``) and the decorator hands an anonymous request straight
-    to the handler, so it never reaches this function without a user. The
-    alternative is
-    worse: a PRODUCTION deploy that lost its service-role key would fail open
-    on the money routes and silently double-charge every double-click, which is
-    exactly the hole this function was rewritten to close. A loud 503 naming
-    the ledger is the better half of that trade, and `credits.py` already logs
-    the missing key on the way past.
+    ``@login_required``) and the decorator hands an anonymous request straight to
+    the handler, so it never reaches this function without a user. The
+    alternative is worse: a PRODUCTION deploy that lost its service-role key
+    would fail open on the money routes and silently double-charge every
+    double-click, which is exactly the hole this function was rewritten to close.
+    A loud 503 naming the ledger is the better half of that trade, and
+    `credits.py` already logs the missing key on the way past.
 
     ``"unavailable"`` is a live client whose query FAILED. Two very different
     faults land there and the refusal is sized for the narrower one. A fault
@@ -313,9 +312,10 @@ def _claim_key(
     ``developability_score``, ``library_planner_plan``) pay the refusal without
     the benefit, and ``job_cancel`` is the one that stings: a user cannot STOP
     a running job while the ledger is down. They are guarded anyway because a
-    replay of any of them costs real work (blueprints/lab_projects.py:1286-1298
-    is the enumeration), and splitting the stance per route would mean a guard
-    whose safety depends on correctly classifying every future route.
+    replay of any of them costs real work
+    (blueprints/lab_projects.py::campaigns_submit is the enumeration), and
+    splitting the stance per route would mean a guard whose safety depends on
+    correctly classifying every future route.
     """
     client = get_service_client()
     if client is None:

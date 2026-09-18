@@ -358,7 +358,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # decide how strongly to word the claim, under a comment asserting that a
     # non-"meets" pick means no bar applied. It does not.
     # ``headline_candidate`` returns the first record not shown to fall short
-    # and does not re-rank (shared/jobs.py:196), so a REJECTED record 0
+    # and does not re-rank (shared/jobs.py::headline_candidate), so a REJECTED record 0
     # followed by an UNMEASURED record 1 yields "unjudged" with the bar very
     # much applied. Probed on pxdesign: rank0 ipTM 0.99 rejected on pLDDT,
     # rank1 ipTM 0.80 unmeasured, and it quoted ``ipTM 0.800`` -- a figure
@@ -723,7 +723,7 @@ def job_status(job_id: str):
             # the same error and reach the same "unknown" verdict -- while
             # spending a SECOND bounded 90 s call in this request. Two stacked
             # hops is 180 s, past gunicorn's 120 s worker watchdog
-            # (gunicorn.conf.py:164). Pinned by
+            # (gunicorn.conf.py::timeout). Pinned by
             # tests/test_modal_function_timeout.py.
             timeout_stuck_job(job.id, probe_modal=False)
             job = get_job(job_id, user_id=ctx.user_id)
@@ -1151,7 +1151,7 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     a ranking. `_top_score_for_share` feeds this from `headline_candidate`,
     whose contract is "the first record that is neither shown to fall short
     NOR built on a declared placeholder, in the order the pipeline stored
-    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
+    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py::headline_candidate).
     This line read "Top score {top_score}." until #266 landed that change on
     main (359f417) -- defensible while the value was `candidates[0]` off a ranking
     container, false once the pick became bar-first: on job 2b917b54 the

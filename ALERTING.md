@@ -372,7 +372,7 @@ listed as already-bounded for completeness.
 
 `shared/storage.py` `upload_input` and `presigned_input_url` run inside the
 job-submit request path. They use `get_service_client()`
-(`shared/credits.py:51`), which builds the client with `_client_options()`. That
+(`shared/credits.py::get_service_client`), which builds the client with `_client_options()`. That
 options object set only `postgrest_client_timeout`; Storage (storage3) uses a
 **separate** `storage_client_timeout`.
 

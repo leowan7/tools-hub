@@ -328,10 +328,10 @@ _STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
 # a test; `tests/test_proteina_promises_no_clustering.py` now pins it.
 #
 # THE FIX HAS TO LIVE HERE rather than in the pipeline. This header is built
-# from what is STORED, and stored rows are expected to carry
-# ``"cluster_id": null`` inside ``result`` (run_pipeline.py writes the key,
-# webhooks/modal.py:549 copies it through) -- expected, not observed: the
-# production jobs table has not been read from here.
+# from what is STORED, and stored rows are expected to carry ``"cluster_id":
+# null`` inside ``result`` (run_pipeline.py writes the key,
+# webhooks/modal.py::_sanitize_candidate copies it through) -- expected, not
+# observed: the production jobs table has not been read from here.
 #
 # Scoped by NAME, across every tool, because no RENDERED column list declares
 # ``cluster_id`` -- ``shared/result_columns.py`` and all 14

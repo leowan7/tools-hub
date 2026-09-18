@@ -719,7 +719,7 @@ def test_every_way_the_ledger_can_break_refuses(label, store, client):
 # the interleaving a read-then-write claim cannot survive.
 #
 # Threads are the test's mechanism, not the production one, and the difference
-# matters for how urgently this reads. `gunicorn.conf.py:42` sets
+# matters for how urgently this reads. `gunicorn.conf.py::workers` sets
 # `workers = max(1, _int_env("WEB_CONCURRENCY", 2))` and sets neither
 # `worker_class` nor `threads`, so the shipped default is TWO WORKER PROCESSES.
 # Two processes race on one Postgres table exactly as two threads do. This was

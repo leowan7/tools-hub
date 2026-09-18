@@ -142,10 +142,10 @@ class _PanelParagraphs(HTMLParser):
 @pytest.fixture
 def app(monkeypatch):
     # FLAG_TOOL_PROTEINA does NOT gate this partial, despite the obvious
-    # reading: tools/base.get() is a bare registry lookup (tools/base.py:188)
+    # reading: tools/base.get() is a bare registry lookup (tools/base.py::get)
     # with no flag check, and the page renders identically without it -- the
     # flag gates campaign create/estimate (FLAG_GATED_CAMPAIGN_TOOLS) and the
-    # send_target_tools loop (blueprints/jobs.py:303). It is set so the
+    # send_target_tools loop (blueprints/jobs.py::job_detail). It is set so the
     # fixture matches how the tool is configured in production, not because
     # anything here needs it.
     monkeypatch.setenv("FLAG_TOOL_PROTEINA", "on")

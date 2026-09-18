@@ -146,8 +146,8 @@ _MAX_STANDALONE_PAGES = 200
 def _is_refold(job: Mapping[str, Any]) -> bool:
     """True when a standalone job is a refold re-measurement, not a design run.
 
-    ``blueprints/jobs.py:415`` stamps ``_refold_of_job_id`` into the new job's
-    ``inputs`` and nothing else writes that key.
+    ``blueprints/jobs.py::_spawn_refold_job`` stamps ``_refold_of_job_id``
+    into the new job's ``inputs`` and nothing else writes that key.
 
     The ``isinstance`` guard is not defensive decoration. ``tool_jobs.inputs``
     is ``jsonb NOT NULL``, so SQL NULL is impossible, but a jsonb scalar (a
@@ -349,12 +349,13 @@ def _read_standalone_jobs(
 
     ``.eq("user_id", user_id)``
         The tenancy boundary, and the whole of it. ``get_service_client``
-        authenticates with the service-role key (shared/credits.py:51-72),
-        which bypasses RLS, so the ``FOR SELECT USING (auth.uid() = user_id)``
-        policy at supabase/migrations/0005_tool_jobs.sql:59 is not a backstop
-        here. ``tool_jobs.target_id`` is a plain nullable column with no
-        parentage predicate, so owning the target does not imply owning the
-        row: the two gates are independent and both are required.
+        authenticates with the service-role key
+        (shared/credits.py::get_service_client), which bypasses RLS, so the
+        ``FOR SELECT USING (auth.uid() = user_id)`` policy at
+        supabase/migrations/0005_tool_jobs.sql:59 is not a backstop here.
+        ``tool_jobs.target_id`` is a plain nullable column with no parentage
+        predicate, so owning the target does not imply owning the row: the two
+        gates are independent and both are required.
     ``.is_("campaign_id", "null")``
         ``_dispatch_chunk`` stamps the parent's ``target_id`` on EVERY campaign
         sub-job, so without this filter every campaign child comes back a

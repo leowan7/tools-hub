@@ -1154,9 +1154,10 @@ def test_a_residue_sandwiched_between_two_modified_ones_keeps_its_key():
     it was never assigned.
 
     It matters more than the MSE labels themselves, because X is an ordinary
-    canonical residue: pipeline.py:356 admits it into patches, where MSE is
-    filtered out under either spelling. Found by independent review, which
-    measured 39 such keys across a 70-structure corpus (17 of them non-loop).
+    canonical residue: pipeline.py::run_pipeline admits it into patches,
+    where MSE is filtered out under either spelling. Found by independent
+    review, which measured 39 such keys across a 70-structure corpus (17 of
+    them non-loop).
     """
     path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
     text = path.read_text()
@@ -1190,7 +1191,7 @@ def test_phi_psi_does_not_cut_at_hetatm_spelled_canonical_residues():
     independent review caught: the first version cut the peptide here, losing
     the residue's own label and dropping BOTH its neighbours to "loop" --
     and the neighbours are ordinary ATOM residues, so the pipeline consumes
-    them (pipeline.py:356 admits them into patches, and _majority_ss /
+    them (pipeline.py::run_pipeline admits them into patches, and _majority_ss /
     _continuous_ss_score read them).
     """
     path = Path(__file__).resolve().parents[1] / "static" / "example" / "1HEW.pdb"
