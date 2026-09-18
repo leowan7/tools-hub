@@ -748,3 +748,82 @@ def test_a_ranked_candidates_list_still_renders_without_a_bar():
             f"position, and says a design that IS the only one listed is "
             f"not the first: {body!r}"
         )
+
+
+def _recovered(*, backfilled: bool) -> dict:
+    """The result a recovered run actually stores.
+
+    Transcribed from the two writers, not invented: scores hold ONLY the keys
+    ``_candidate_from_partial`` copies off a streamed partial -- ipTM, pLDDT,
+    i_pae and nothing else (shared/job_recovery.py:72-92) -- and the pdb_key is
+    its ``f"designs/{basename}"``. The wrapper is
+    ``recover_stuck_job_result``'s (shared/job_recovery.py:287-291);
+    scripts/finalize_stuck_job.py:76-80 writes the identical dict.
+
+    NO ``pI``, deliberately. A first draft of this fixture gave the rebuilt
+    candidates one, which no recovery path writes, and it changed the measured
+    mail: the callout led with ipTM 0.950 and "Meets pI 6 and ipTM 0.75"
+    instead of the ipTM 0.800 and "Not measured: pI" the real shape produces.
+    """
+    result = {
+        "candidates": [
+            {"rank": 0, "pdb_key": "designs/d_first.pdb",
+             "scores": {"ipTM": 0.80, "pLDDT": 0.86}},
+            {"rank": 1, "pdb_key": "designs/d_second.pdb",
+             "scores": {"ipTM": 0.99, "pLDDT": 0.93}},
+        ],
+        "candidate_count": 2,
+    }
+    if backfilled:
+        result["backfilled"] = True
+    return result
+
+
+def test_a_recovered_run_gets_no_email_callout():
+    """A recovered row carries the canonical SHAPE with no ordering behind it.
+
+    ``recover_stuck_job_result`` writes ``candidates`` for ANY tool, with no
+    tool branch above it, and ``reconstruct`` fills that list from the streamed
+    partials by ``.append()`` or, failing that, from a Storage file listing by
+    ``enumerate`` (shared/job_recovery.py:116-146). Neither sorts. The row is
+    then finalized ``succeeded`` through ``complete_job``
+    (shared/jobs.py:1071-1076), which is the call that mails this email -- so a
+    recovered run reaches this surface exactly as a webhook row does.
+
+    THE SHAPE TEST CANNOT SEE THAT, which is the reason the inlined copy this
+    module used to exercise was worth collapsing rather than merely
+    de-duplicating. Measured on this fixture before the collapse, the mail read
+    "Top design: ipTM 0.800 (designs/d_first.pdb)" -- the FIRST partial to
+    arrive -- while an ipTM of 0.99 sat unmentioned in the same run, and the
+    two bodies were BYTE-IDENTICAL with and without the flag.
+
+    That byte-identity is why the second half of this test exists: the same
+    result minus the flag must still render the callout, or these assertions
+    would pass for a shape reason and say nothing about
+    ``supports_headline_claim``'s ``backfilled`` arm.
+    """
+    bodies = _bodies(_sent(_job(result=_recovered(backfilled=True))))
+    for part, body in bodies.items():
+        assert "Top design" not in body, (
+            f"the {part} body headlines a design out of a list that recovery "
+            f"rebuilt and never ranked: {body!r}"
+        )
+        assert "0.800" not in body and "d_first" not in body, body
+        # The mail is still sent, and still counts what was recovered.
+        assert "2 candidates returned" in body, body
+    # The same positive needle the shape-gate tests take, for the same reason:
+    # every assertion above is a negative, and send_job_complete_email falls
+    # back to an inline body carrying no callout when the template raises.
+    assert "Ranomics Tools." in bodies["text"], (
+        "the plain-text body did not come from job_complete.txt, so the "
+        "absence of a callout above is not evidence about the gate"
+    )
+
+    # THE PREMISE: the flag is the only difference.
+    unflagged = _bodies(_sent(_job(result=_recovered(backfilled=False))))
+    for part, body in unflagged.items():
+        assert "Top design" in body and "0.800" in body, (
+            f"the {part} body dropped the callout for a ranked candidates list "
+            f"that carries no backfilled flag, so the assertions above are "
+            f"evidence about the SHAPE test, not about the flag: {body!r}"
+        )
