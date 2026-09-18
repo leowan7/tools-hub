@@ -9,7 +9,9 @@ re-enables it per-test via monkeypatch to exercise the guard directly.
 
 from __future__ import annotations
 
+import ast
 import os
+import pathlib
 
 import pytest
 
@@ -52,11 +54,9 @@ def isolate_supabase(monkeypatch):
 
         pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
-    This is deliberately opt-in rather than autouse: making the whole suite
-    hermetic in one move would change the environment of every test in the
-    suite -- ~7,400 of them (7,432 collected as of this commit; run
-    ``pytest -q --collect-only | tail -1`` for the current number rather than
-    trusting this one). That is its own change with its own blast radius.
+    Opt-in rather than autouse. ``pytest_collection_modifyitems`` at the foot
+    of this file is what keeps the opt-in from lapsing: it refuses a run in
+    which a test reaches the app without one of these two fixtures.
     """
     for name in _SUPABASE_ENV:
         monkeypatch.setenv(name, "")
@@ -195,3 +195,124 @@ def all_tools_app():
         flask_app = app_module.create_app()
         flask_app.config["TESTING"] = True
         yield flask_app, slugs
+
+
+# --- Collection gate: the isolation mark cannot quietly lapse ------------
+
+_ISOLATION_FIXTURES = frozenset({"isolate_supabase", "isolate_supabase_module"})
+
+# Number of items the gate last inspected. Asserted non-zero by
+# `test_the_gate_actually_ran` in tests/test_supabase_isolation_enforced.py:
+# a hook pytest never calls would leave this at 0 while every other
+# assertion in that file still passed.
+_COLLECTION_GATE_SAW = 0
+
+
+def _builds_app(node: ast.AST) -> bool:
+    """True when ``node`` contains a real ``create_app(...)`` call.
+
+    AST rather than substring: files under ``tests/`` name ``create_app`` in a
+    docstring or comment without calling it, and a mention reaches no app.
+
+    Enforced by ``test_a_mention_is_not_a_call`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    return any(
+        isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == "create_app")
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == "create_app")
+        )
+        for n in ast.walk(node)
+    )
+
+
+def _app_building_fixtures(source: str) -> frozenset[str]:
+    """Fixture names defined in ``source`` whose own body builds an app.
+
+    A file that never writes ``create_app`` still reaches one by requesting
+    such a fixture -- ``all_tools_app`` above is the current example. A file
+    that only requests it would look clean to a caller-only check.
+
+    Enforced by ``test_app_building_fixtures_finds_the_real_one`` and
+    ``test_gate_flags_a_fixture_mediated_reacher`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    return frozenset(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any("fixture" in ast.unparse(d) for d in node.decorator_list)
+        and _builds_app(node)
+    )
+
+
+_APP_BUILDING_FIXTURES = _app_building_fixtures(
+    pathlib.Path(__file__).read_text(encoding="utf-8")
+)
+
+
+def _unisolated(items, app_fixtures, cache=None):
+    """Map file -> one offending nodeid for items that reach the app unisolated.
+
+    Reads ``item.fixturenames`` -- the closure pytest computed -- rather than
+    the mark text, so a per-class mark or a fixture chain that requests the
+    module twin counts, while a mark whose name resolves to neither fixture
+    still reads as missing.
+
+    Enforced by ``test_gate_clears_either_isolation_fixture`` and
+    ``test_a_misspelled_mark_still_reads_as_missing`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    cache = {} if cache is None else cache
+    offenders = {}
+    for item in items:
+        names = set(getattr(item, "fixturenames", ()))
+        if names & _ISOLATION_FIXTURES:
+            continue
+        path = getattr(item, "path", None)
+        if path is not None and str(path) not in cache:
+            try:
+                cache[str(path)] = _builds_app(
+                    ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
+                )
+            except (OSError, SyntaxError, ValueError):
+                cache[str(path)] = False
+        if names & app_fixtures or (path is not None and cache[str(path)]):
+            offenders.setdefault(str(path), item.nodeid)
+    return offenders
+
+
+def pytest_collection_modifyitems(config, items):
+    """Refuse the run when a test reaches the app without Supabase isolation.
+
+    ``app.py`` calls ``load_dotenv()`` at import, so on a machine holding the
+    repo ``.env`` a test that builds the app runs with REAL service-role
+    credentials. ``_forbid_real_supabase_clients`` above is the runtime
+    backstop, but it only fires once a code path actually constructs a client;
+    a file missing the mark stays quiet until one does. Four hand sweeps
+    (#296, #299, #302, #308) closed that gap by hand and it reopened each
+    time.
+
+    Ceiling: the gate sees only the items collected, so a single-file run
+    polices that file alone and the full run is what binds.
+    """
+    global _COLLECTION_GATE_SAW
+    _COLLECTION_GATE_SAW = len(items)
+    offenders = _unisolated(items, _APP_BUILDING_FIXTURES)
+    if offenders:
+        listing = "\n".join(
+            f"  {p}\n      e.g. {n}" for p, n in sorted(offenders.items())
+        )
+        raise pytest.UsageError(
+            f"{len(offenders)} test file(s) reach the Flask app without Supabase "
+            f"isolation:\n{listing}\n\n"
+            'Add `pytestmark = pytest.mark.usefixtures("isolate_supabase")` at '
+            "module level. If a MODULE-scoped fixture builds the app, have that "
+            "fixture request `isolate_supabase_module` instead -- a "
+            "function-scoped mark is built too late for it."
+        )
