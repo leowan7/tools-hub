@@ -219,13 +219,18 @@
                 so this sentence cannot become an over-promise unnoticed.
 
                 What this copy does NOT speak for is /targets/<id>/launch,
-                which fans out to several tools and runs size checks only
-                (shared/targets.py::size_error) rather than preflight_for_tool.
-                That is a separate surface with its own open item — see the
-                bindcraft paragraph above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
-                shared/score_legends.py and
-                docs/HANDOFF-2026-08-07-multichain-finish.md — and it is why
-                bindcraft stays in the ipTM banner set.
+                which fans out to several tools and does not call
+                preflight_for_tool. It is not ungated:
+                shared/targets.py::size_error draws the size cap and
+                shared/pdb_preflight.py::multi_chain_refusal draws the capability
+                rule, the latter sharing _multi_chain_block with the submit gate
+                above, so a two-chain bindcraft launch is refused there too. What
+                that route skips is the rest of preflight — the normalizer
+                dry-run, the residue floor, the gap and hotspot-survival rules —
+                all of which read a structure a target-bound launch never
+                downloads. Why bindcraft stays in the ipTM banner set anyway is
+                the bindcraft paragraph above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
+                shared/score_legends.py.
              2. The hotspot picker below is NOT chainPrefixed for bindcraft
                 (see the held flag in the script block at the bottom of this
                 file). Type "A296", click once in the viewer, and the field is
@@ -371,9 +376,15 @@
         emptyMessageId: 'hotspot-empty',
         surfaceToggleId: 'hotspot-surface-toggle',
         clearBtnId: 'hotspot-clear-btn',
-        // chainPrefixed is HELD here, not declined — the one deviation from
-        // docs/HANDOFF-2026-08-07-multichain-finish.md item 1a, recorded
-        // rather than made quietly.
+        // chainPrefixed is HELD here, not declined — bindcraft is one of the
+        // two forms whose picker does not pass it
+        // (tests/test_hotspot_picker_runtime.py::BARE_INT_FORMS; the other is
+        // rfantibody, which is off on principle, per the comment above that
+        // constant), and it is the only one of the two whose hold is pending
+        // verification. The per-form split is pinned by
+        // tests/test_hotspot_picker_runtime.py::
+        // test_harness_reports_the_flag_each_form_actually_passes, so this is
+        // recorded rather than made quietly.
         //
         // Turning it on changes what reaches upstream BindCraft for every
         // single-chain user who clicks, from "25,30" to "A25,A30":
