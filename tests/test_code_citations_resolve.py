@@ -223,12 +223,15 @@ def _py_names(rel: str) -> tuple[frozenset[str], dict]:
             Descending with ``ast.walk`` instead harvests the base object of
             ``os.environ["X"] = y`` and puts ``os`` -- an import -- into the
             name set, which is the thing this file refuses to accept as a
-            definition. It pulled in 11 names that way, 9 of which -- in 9
-            files -- nothing else in the file defines, so they resolved
-            falsely: ``os`` in ``gunicorn.conf.py``, ``stripe`` in four
-            ``scripts/deploy/pass7_*.py``, and ``sys`` in four
-            ``tools/proteina/*.py``. Pinned by
-            ``test_a_subscript_target_does_not_define_its_base_object``.
+            definition. Measured over the tree, that descent pulled in 11
+            names, 9 of which -- in 9 files -- nothing else in the file
+            defines, so they resolved falsely. ``os`` in ``gunicorn.conf.py``
+            is the only subscript; the other 8 are ATTRIBUTE targets --
+            ``stripe`` in four ``scripts/deploy/pass7_*.py`` and ``sys`` in
+            four ``tools/proteina/*.py`` -- so the attribute shape is the
+            common one, not the exotic one. Those counts are a measurement and
+            no test enforces them; one instance of each shape is pinned by
+            ``test_a_subscript_or_attribute_target_does_not_define_its_base``.
             """
             if isinstance(target, ast.Name):
                 yield target.id
@@ -413,14 +416,26 @@ def test_a_citation_wrapped_at_the_colons_is_still_found():
     assert list(_citations(on_second)) == []
 
 
-def test_a_subscript_target_does_not_define_its_base_object():
+def test_a_subscript_or_attribute_target_does_not_define_its_base():
     """``os.environ["X"] = y`` must not put ``os`` into the name set.
 
-    ``gunicorn.conf.py`` is the live instance: ``import os`` on line 13, then
-    ``os.environ["PROMETHEUS_MULTIPROC_DIR"] = ...`` at module level on line
-    208. Nothing in that file defines ``os``.
+    ``gunicorn.conf.py`` is the live subscript instance: ``import os`` on line
+    13, then ``os.environ["PROMETHEUS_MULTIPROC_DIR"] = ...`` at module level
+    on line 208. Nothing in that file defines ``os``.
+
+    The ATTRIBUTE shape is the commoner one -- 8 of the 9 names the old
+    ``ast.walk`` descent leaked -- so it gets its own assert.
+    ``tools/proteina/_design_canary.py`` imports ``sys`` and assigns
+    ``sys.stdout`` at module level on line 140; nothing there defines ``sys``.
+    Both shapes are covered by the same fall-through, which yields nothing for
+    any node kind this function does not name.
+
+    These are asserted as line numbers rather than ``::`` citations because
+    the whole point is that neither name is a definition -- a ``::`` citation
+    to one would be a citation this file is built to reject.
     """
     assert not _symbol_exists("gunicorn.conf.py", "os")
+    assert not _symbol_exists("tools/proteina/_design_canary.py", "sys")
     # Tuple unpacking still binds, or narrowing the descent would be a hole of
     # its own: ``SAMPLE_MIN, SAMPLE_MAX, SAMPLE_DEFAULT = 1, 4, 1``.
     assert _symbol_exists("tools/opendde/__init__.py", "SAMPLE_MAX")
