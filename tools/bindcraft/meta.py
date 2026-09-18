@@ -240,10 +240,11 @@ PILOT: dict | None = {
 # Captured from job 1c4d5803 (2026-05-28) with
 # scripts/capture_example_result.py. Every figure is read back off that run:
 # the scores from the payload in example/result.json, the runtime from the
-# job row (1170 GPU-seconds, 19m57s wall clock), and the cost from the wallet
-# ledger -- a $4.3697 hold with $2.325 released as surplus, so $2.0447 was
-# actually charged. That reconciles with the rate card exactly:
-# 1170 s * $0.001028 (A100-80GB) * 1.70 markup = $2.0447.
+# job row (1170 GPU-seconds, so 19.5 min; the job's timestamps in
+# docs/VALIDATION-LOG.md, 18:31:18 to 18:50:51, span 19m33s), and the cost
+# from the wallet ledger -- a $4.3697 hold with $2.325 released as surplus,
+# so $2.0447 was actually charged. That reconciles with the rate card
+# exactly: 1170 s * $0.001028 (A100-80GB) * 1.70 markup = $2.0447.
 #
 # The target is a PUBLISHED structure and is named for that reason: 4ZQK is
 # the human PD-1/PD-L1 complex and chain A is PD-L1. This is the same target,

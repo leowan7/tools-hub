@@ -205,15 +205,19 @@
 
                 "AT SUBMIT" MEANS BOTH PATHS OFF THIS FORM, and that was
                 checked by executing them, not by reading. A review traced the
-                hard gate in blueprints/tools.py::tool_submit — conditioned on
-                ``pdb_bytes is not None``, assigned only by a fresh upload or
-                the AlphaFold fetch — and concluded that submitting a SAVED
-                two-chain target (``reuse_pdb_token="target:<uuid>"``) would
-                skip the refusal this copy promises. It does not: a staged
-                reuse token meets a SECOND gate in that same function, which
+                hard gate in blueprints/tools.py::tool_submit — the
+                ``adapter.slug in PREFLIGHT_TOOLS and pdb_bytes is not None``
+                branch, and ``pdb_bytes`` really is assigned only by a fresh
+                upload, the CIF conversion of one, or the AlphaFold fetch — and
+                concluded that submitting a SAVED two-chain target
+                (``reuse_pdb_token="target:<uuid>"``) would skip the refusal
+                this copy promises. It does not: that path leaves ``pdb_bytes``
+                None and meets a second gate later in the same
+                ``tool_submit``, the ``check_bytes is not None`` branch, which
                 re-inspects the copied bytes through
-                shared/pdb_intake.py::_verify_reuse_pdb_bytes and runs the same
-                preflight_for_tool. Both paths are now driven end to end by
+                shared/pdb_intake.py::_verify_reuse_pdb_bytes — and that helper
+                runs the same preflight_for_tool. Both paths are now driven
+                end to end by
                 tests/test_multichain_form_affordances.py::
                 test_the_gated_forms_refusal_promise_holds_on_every_path_from_the_form,
                 so this sentence cannot become an over-promise unnoticed.
