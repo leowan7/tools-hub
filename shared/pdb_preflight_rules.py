@@ -74,18 +74,21 @@ class SizeEnvelope:
         without the other rescales every estimate that tool makes. WHAT it
         anchors differs per tool -- for some the count the form defaults to,
         for others a fixed batch width -- and nothing makes the two agree, so
-        do not read an envelope's value as that tool's form default. Only two
+        do not read an envelope's value as that tool's form default. Three
         are pinned to anything at all: bindcraft's, by
         tests/test_pdb_preflight.py::
-        test_bindcraft_runtime_curve_reproduces_its_one_measured_run, and
-        proteina's, by tests/test_proteina_shard_size.py::
+        test_bindcraft_runtime_curve_reproduces_its_one_measured_run;
+        pxdesign's, by tests/test_pdb_preflight.py::
+        test_pxdesign_runtime_curve_anchors_on_one_run_and_discloses_the_rest;
+        and proteina's, by tests/test_proteina_shard_size.py::
         test_preflight_runtime_baseline_is_the_shard_width.
 
-    The per-tool values of those two are deliberately NOT restated here. A
-    list in this docstring cannot fail when one of the envelopes below moves,
-    and this one had drifted twice over: it read "1.0 for ... rfantibody"
-    against an envelope of 1.2, and "100 for diffusion tools" against
-    proteina and pxdesign at 8. Read the envelopes; they are the values.
+    The per-tool values of ``runtime_alpha`` and ``runtime_baseline_designs``
+    are deliberately NOT restated here. A list in this docstring cannot fail
+    when one of the envelopes below moves, and this one had drifted twice
+    over: it read "1.0 for ... rfantibody" against an envelope of 1.2, and
+    "100 for diffusion tools" against proteina and pxdesign at 8. Read the
+    envelopes; they are the values.
     tests/test_pdb_preflight.py::
     test_bindcraft_runtime_curve_reproduces_its_one_measured_run is what a
     checkable version looks like -- it reads the validator's own fallback out
@@ -252,8 +255,21 @@ class ToolRules:
 # 120 aa anchor, while the two pxdesign pilot rows in
 # docs/VALIDATION-LOG.md are whole multi-design jobs on ~115-130 aa
 # targets that finished in 8.4 and 7.7 min.
-# Re-anchoring it is a separate calibration on its own evidence, not a
-# side effect of this one.
+# Re-anchoring it was deferred as a separate calibration on its own
+# evidence rather than a side effect of that one. THE PARAGRAPH BELOW
+# IS THAT CALIBRATION. This note is kept because it records why the
+# two were split, not because pxdesign is still unanchored.
+#
+# PXDESIGN IS NO LONGER ONE OF THOSE "other tools". Its base was a
+# published BindCraft per-trajectory rate applied per design, and it
+# over-quoted all three pxdesign runs on record -- 8.4x on the smallest,
+# 27x on the middle one, 208x on the largest. It is now anchored on ONE
+# of those runs, and the other two are not evidence for it. See the
+# _PXDESIGN envelope below for the arithmetic, and for the two residuals
+# the re-anchor leaves in place rather than fixing. No other envelope in
+# this file is touched. _BINDCRAFT carried the same 300.0 on the same
+# published rate until #314 re-anchored it on its own measured run --
+# that was a separate change and this one does not revisit it.
 #
 # The estimate is surfaced in the preflight panel as advisory copy. It
 # no longer blocks submit — the tier-collapse PR retired the wall-clock
@@ -439,9 +455,92 @@ _PXDESIGN = ToolRules(
         hard_cap_target_aa=600,      # BindCraft ~600 aa practical target ceiling
         soft_warn_target_aa=360,
         hard_cap_combined_aa=950,    # BindCraft: ~950 aa (target + binder) on 80GB
-        runtime_base_min=300.0,      # AF2-IG validation per design
-        runtime_alpha=1.3,
-        runtime_baseline_designs=8,  # pxdesign default num_designs
+        # RE-ANCHORED (2026-09-18). The 300.0 this replaces carried the
+        # comment "AF2-IG validation per design" and was the same published
+        # BindCraft figure that _BINDCRAFT above carried until #314 --
+        # a per-TRAJECTORY rate applied per DESIGN. It implied 37.5 min for ONE design at the
+        # 120 aa anchor and quoted 206 min for the run measured below, which
+        # took 7.7. Every pxdesign run in docs/VALIDATION-LOG.md that
+        # SUCCEEDED finished inside 25 min. That is a property of the
+        # successes and not of the tool: two FAIL rows are also on record,
+        # and the one of them carrying a runtime, a mini_pilot at 4517
+        # GPU-s, ran 75.3 min before dying at 78.5%. Nothing below models a
+        # failure, so a curve fitted to the successes cannot bound one.
+        #
+        # THE ANCHOR is the 2026-05-26 pilot, job 79228f03 in
+        # docs/VALIDATION-LOG.md: 462 GPU-s (7.7 min) for num_designs=5
+        # against 1HEW chain A. That chain is 129 residues -- counted off
+        # static/example/1HEW.pdb, not asserted -- so the size correction is
+        # 1.10 and the anchor is nearly independent of the exponent below.
+        # It is the closest of the three runs to this curve's own default
+        # operating point (5 designs against a baseline of 8). Solved
+        # exactly it gives 11.21.
+        #
+        # 11.2 IS THAT SOLVED VALUE and it is the whole basis. The other
+        # two runs do NOT corroborate it and are not used to set it. Backing
+        # a base out of either means dividing by its size factor, which
+        # raises the target ratio to the exponent below -- and that exponent
+        # is unmeasured. Doing it anyway gives 35.51 from job 816fc4a9 (504
+        # GPU-s, 2 designs, 4ZQK chain A, ~115 aa) and 1.44 from the
+        # 25-design worked example in tools/pxdesign/example/result.json
+        # (1380 GPU-s, runtime_minutes 23.0, ~420 aa over two chains). A
+        # 25-fold spread is not a corroboration, and averaging into it would
+        # be false precision resting on an exponent this file cannot measure.
+        #
+        # THE THREE RUNS DO NOT FIT THIS CURVE and no value of base makes
+        # them. Their per-design rates are 4.20, 1.54 and 0.92 min at
+        # n=2, 5 and 25 -- a fixed overhead this estimator has no term for.
+        # Choosing base is therefore choosing WHERE to be right, and this
+        # one is right at the anchor. TWO RESIDUALS FOLLOW, disclosed rather
+        # than fixed, both pinned by tests/test_pdb_preflight.py::
+        # test_pxdesign_runtime_curve_anchors_on_one_run_and_discloses_the_rest:
+        #   - at n=2 the estimate falls to the max(5.0) floor in
+        #     runtime_estimate_min against a measured 8.4 min, ~40% LOW.
+        #   - on the 420 aa worked example the estimate is ~178 min against
+        #     a measured 23.0, ~8x HIGH. That one is the exponent's doing
+        #     and no base fixes it; see runtime_alpha below.
+        # Both are far smaller than what they replace: at 300.0 the same two
+        # runs were quoted 745% and 20675% high.
+        #
+        # NOT RECONCILED, and not touched here: the catalog advertises a
+        # "30 to 60 min" pilot run in EIGHT places across
+        # tools/pxdesign/meta.py, tools/pxdesign/__init__.py and
+        # templates/tools/pxdesign_form.html. Count them with the REGEX
+        # "30.*60" and nothing narrower. Six read "30 to 60"; the module
+        # docstring of tools/pxdesign/__init__.py uses a real en dash; and
+        # the preset table at the top of the form writes that dash as a
+        # literal \u2013 escape, six characters, so it survives even a
+        # search for the en dash itself. The three pilot
+        # runs above measured 7.7, 8.4 and 23.0 min, so every one finished
+        # below the bottom of that band: it is wrong independently of this
+        # curve, and moving all eight is a change on its own evidence.
+        runtime_base_min=11.2,       # job 79228f03 solved at the 120 aa anchor
+        runtime_alpha=1.3,           # UNCHANGED and still unmeasured. The
+                                     # three runs cannot calibrate it: their
+                                     # target sizes are confounded with their
+                                     # design counts (the largest target is
+                                     # also the 25-design run), and a
+                                     # log-linear fit through all three
+                                     # returns alpha = -0.87 -- runtime
+                                     # FALLING as the target grows. That is
+                                     # the confounding, not a measurement,
+                                     # and it is why this stays on the
+                                     # AF2-IG reasoning it arrived with. The
+                                     # test named above recomputes that fit.
+                                     # This exponent, not the base, is what
+                                     # quotes the worked example ~8x high:
+                                     # it stretches a 3.5x target ratio to
+                                     # 5.1x. Pinning it needs two target
+                                     # sizes at one design count and no two
+                                     # pxdesign runs on record share one.
+        runtime_baseline_designs=8,  # the form default: ``num_designs``
+                                     # falls back to "8" in
+                                     # tools/pxdesign/__init__.py::validate
+                                     # and in the number input in
+                                     # templates/tools/pxdesign_form.html.
+                                     # Both are checked by the test named
+                                     # above; bindcraft's had drifted off
+                                     # its form silently, pxdesign's had not.
         cap_basis="literature",      # BindCraft/Pacesa 2025 practical ceiling
     ),
     gap=GapThresholds(

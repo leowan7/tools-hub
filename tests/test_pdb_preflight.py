@@ -1981,3 +1981,212 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
         f"{default_designs} designs while the catalog and About panel "
         f"advertise '{band} min' for that same default"
     )
+
+
+def test_pxdesign_runtime_curve_anchors_on_one_run_and_discloses_the_rest():
+    """pxdesign's runtime anchor is three real pilot runs that do not fit.
+
+    The three, all pilot tier, all passing the user's ``num_designs``
+    straight through ``tools.pxdesign.build_payload`` to the container:
+
+        job 79228f03  2026-05-26   462 GPU-s   5 designs   1HEW chain A
+        job 816fc4a9  2026-05-27   504 GPU-s   2 designs   4ZQK chain A
+        worked example             1380 GPU-s  25 designs  ~420 aa, 2 chains
+
+    The first two are rows in docs/VALIDATION-LOG.md. The third is
+    tools/pxdesign/example/result.json, which stores ``runtime_minutes``
+    23.0 and ``total_designs`` 25 as data and is reconciled against the
+    wallet ledger in the EXAMPLE header of tools/pxdesign/meta.py.
+
+    THE CANDIDATE COUNTS ARE NOT THE DESIGN COUNTS on the first two and
+    must not be used as such. Both surfaced exactly 2 candidates, all
+    below threshold. The mechanism that produces that shape is the pilot
+    fallback emitting top-N when nothing passes the filter, named in the
+    comment above the ``job_tier`` key in
+    tools/boltzgen/__init__.py::build_payload -- but that is BOLTZGEN's
+    comment, gating BOLTZGEN's tier on its own ipTM/pLDDT/RMSD thresholds.
+    pxdesign's build_payload sets no ``job_tier`` and its container is not
+    in this repo, so "the same fallback ran here" is an INFERENCE from a
+    sibling tool, not something this repo records. It is load-bearing: the
+    rates below divide by the ``num_designs`` REQUESTED, which assumes all
+    of them were generated and scored. Dividing by candidates instead
+    would make the two runs agree for the wrong reason.
+
+    WHY THEY DO NOT FIT. Per-design rate falls 4.20 -> 1.54 -> 0.92 min as
+    n goes 2 -> 5 -> 25: a fixed overhead, for which
+    ``shared/pdb_preflight_rules.py::runtime_estimate_min`` has no term.
+    Its form is strictly proportional to n, so no one base satisfies all
+    three and choosing one is choosing WHERE to be right. The choice is a
+    SINGLE anchor, job 79228f03, because its 5 designs sit closest to this
+    curve's own baseline of 8: a design correction of 0.625, the nearest to
+    1 of the three (the others are 0.25 and 3.125). It is NOT the nearest
+    in target SIZE and an earlier draft of this docstring said it was --
+    job 816fc4a9 at 115 aa is 5 from the 120 aa reference where this one is
+    9, and needs the smaller size correction of the two (0.95x against
+    1.10x). That run is rejected on design count, not size: 2 designs is a
+    quarter of the baseline, and the falling rates above are exactly the
+    low-n end a strictly proportional form gets most wrong. The other two
+    are treated as residuals to disclose (check 2) and never as
+    corroboration.
+
+    ``runtime_alpha`` is NOT pinned and CANNOT be calibrated from these
+    runs. That is check (4) below rather than a claim in prose: target
+    size is confounded with design count across them (the 420 aa run is
+    also the 25-design run), and the log-linear fit through all three
+    returns a NEGATIVE exponent. Pinning an exponent properly needs two
+    target sizes at one design count, which is what
+    ``test_proteina_runtime_curve_bends_with_target_size`` in this file
+    has and this tool does not.
+    """
+    import inspect as _inspect
+    import math as _math
+    import re as _re
+    from pathlib import Path as _Path
+
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.pxdesign as _pxdesign
+
+    rules = TOOL_RULES["pxdesign"]
+    repo = _Path(__file__).resolve().parent.parent
+
+    # 1HEW chain A is COUNTED, not restated: preflight sizes a target on
+    # surviving protein residues, and this is the structure job 79228f03
+    # ran against. Hen lysozyme is 129 residues, so a copy that disagreed
+    # would be the wrong file rather than a new measurement.
+    anchor_aa = len({
+        line[22:27]
+        for line in (repo / "static" / "example" / "1HEW.pdb").read_text().splitlines()
+        if line.startswith("ATOM") and line[21:22] == "A"
+    })
+    assert anchor_aa == 129, f"1HEW chain A counts {anchor_aa}, expected 129"
+
+    # (1) Reproduce the anchor run. This is the ONLY run the constants are
+    #     fitted to, so the band is the +/-5% that the single-anchor
+    #     bindcraft and proteina checks in this file use, not a wider one.
+    #     The shipped constants put job 79228f03 at 7.69 min against a
+    #     measured 7.70. Mutating runtime_base_min and re-running this
+    #     test: 10.7 and 11.4 pass, 10.6 and 11.5 fail. Only the LOWER edge
+    #     is this check's -- the upper one is check (2)'s over-quote
+    #     ceiling, which bites at 11.41, below this check's own 11.78. That
+    #     is the trade-off working as intended: base cannot be raised to
+    #     soften the n=2 under-read without worsening the large-target
+    #     over-quote. The OLD base=300 put this run at 206 min, 2575% out.
+    anchor_min = 462.0 / 60.0
+    est = runtime_estimate_min(rules, target_aa=anchor_aa, num_designs=5)
+    residual = abs(est - anchor_min) / anchor_min
+    assert residual <= 0.05, (
+        f"base={rules.size.runtime_base_min} alpha={rules.size.runtime_alpha} "
+        f"baseline={rules.size.runtime_baseline_designs} puts job 79228f03 at "
+        f"{est:.2f} min against a measured {anchor_min:.2f} "
+        f"({residual:.0%} out)"
+    )
+    # The anchor clears the estimator's max(5.0, est) floor, so what passed
+    # above is the curve and not the floor standing in for it.
+    assert est > 5.0
+
+    # (2) The other two runs are NOT fitted, and this pins how wrong they
+    #     are so the envelope comment cannot go stale about it. The 420 aa
+    #     bound is a CEILING, not an equality: a change that shrinks that
+    #     residual passes, and only a regression fails. Asserting the
+    #     current value exactly would pin a known defect in place and fail
+    #     the day someone fixes it. The n=2 run needs a different shape --
+    #     see the mutation note below it.
+    #
+    #     Do NOT rewrite this as a corroboration of runtime_base_min. An
+    #     earlier draft interpolated these two runs in the design-count
+    #     dimension and read 12.21 off the line, which is arithmetically
+    #     right and means nothing: the two runs sit at 115 and ~420 aa, so
+    #     the line crosses a 3.6x target-size gap that ``runtime_base_min``
+    #     is defined to exclude. Size-normalising both to 120 aa first --
+    #     which needs the very exponent this test refuses to calibrate --
+    #     turns the slope NEGATIVE and reads 7.74 instead.
+    est_n2 = runtime_estimate_min(rules, target_aa=115, num_designs=2)
+    #     A CEILING ON THE RESIDUAL WOULD BE INERT, so this asserts the
+    #     mechanism instead. ``runtime_estimate_min`` ends in
+    #     max(5.0, est), which caps this run for every base below ~21.1,
+    #     so the under-read is 0.405 whatever the constants say: measured
+    #     by mutation, ``residual <= 0.41`` passes at base=0.001 AND at
+    #     the 300.0 this change removes, i.e. it could not have caught
+    #     the defect this test exists for. What IS pinnable is the claim
+    #     the _PXDESIGN comment actually makes -- that the FLOOR and not
+    #     the curve decides this run. That stops being true above ~21.1.
+    #
+    #     The 40% below is a LITERAL on purpose. Recomputing the residual
+    #     for the message would print whatever the broken constants imply
+    #     rather than what the envelope discloses -- at base=300.0 that
+    #     reads -745%, a negative under-read, in the one failure this
+    #     test exists to produce.
+    assert est_n2 == 5.0, (
+        f"job 816fc4a9 now estimates {est_n2:.2f} min against a measured "
+        f"8.4, instead of resting on the max(5.0) floor. The ~40% "
+        f"under-read the _PXDESIGN envelope discloses is a floor "
+        f"artefact, and that is no longer what this run is -- re-read "
+        f"that comment before changing this"
+    )
+    over = (runtime_estimate_min(rules, target_aa=420, num_designs=25) - 23.0) / 23.0
+    assert over <= 6.9, (
+        f"the 25-design worked example is now over-quoted by {over:.0%}; the "
+        f"_PXDESIGN comment discloses ~676% (~178 min against a measured "
+        f"23.0). If this shrank, update the comment"
+    )
+
+    # (3) The baseline is still the form default, read out of the validator
+    #     rather than restated here. bindcraft's had stopped tracking its
+    #     form silently before #314 re-anchored it -- nothing failed, the
+    #     panel just quoted a runtime for a design count no form submits.
+    src = _inspect.getsource(_pxdesign.validate)
+    m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
+    assert m, (
+        "could not find the num_designs fallback in "
+        "tools/pxdesign/__init__.py::validate -- if the parse changed, fix "
+        "this test rather than deleting it; the drift it guards is silent"
+    )
+    default_designs = int(m.group(1))
+    assert rules.size.runtime_baseline_designs == default_designs, (
+        f"runtime_baseline_designs={rules.size.runtime_baseline_designs} but "
+        f"validate() defaults num_designs to {default_designs}; the preflight "
+        f"panel is quoting a runtime for a design count the form never submits"
+    )
+    # The form input carries its OWN default and a user submitting the form
+    # untouched never reaches the validator's fallback, so both have to
+    # agree or the number pinned above describes neither path.
+    form = (repo / "templates" / "tools" / "pxdesign_form.html").read_text()
+    shown = _re.search(
+        r'name="num_designs"[^>]*?pre_value\(\s*pre_fill\s*,\s*"num_designs"\s*,\s*"(\d+)"\s*\)',
+        form,
+    )
+    assert shown and int(shown.group(1)) == default_designs, (
+        f"the num_designs input in templates/tools/pxdesign_form.html shows "
+        f"{shown.group(1) if shown else 'no parseable'} default while "
+        f"validate() falls back to {default_designs}"
+    )
+
+    # (4) The exponent is left alone, and this is the evidence for that.
+    #     Fitting all three runs log-linearly -- the only fit they support
+    #     -- returns a NEGATIVE alpha, i.e. runtime FALLING as the target
+    #     grows. That is the confounding between target size and design
+    #     count, not a measurement, so alpha stays on the AF2-IG reasoning
+    #     it arrived with. Recomputed here rather than asserted in a
+    #     comment; it turns into a real signal the moment a run is added.
+    #     No change to the shipped constants can fail it -- ``runs`` is
+    #     literal and runtime_alpha reaches only the failure message. It
+    #     guards the table beside it, which is the one thing a comment
+    #     asserting a fit result cannot do for itself.
+    runs = [
+        (anchor_aa, 5, 462.0 / 60.0),
+        (115, 2, 504.0 / 60.0),
+        (420, 25, 1380.0 / 60.0),
+    ]
+    xs = [_math.log(aa / 120.0) for aa, _n, _t in runs]
+    ys = [_math.log(t) - _math.log(n / 8.0) for _aa, n, t in runs]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    fitted_alpha = (
+        sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        / sum((x - mx) ** 2 for x in xs)
+    )
+    assert fitted_alpha < 0.0, (
+        f"the three pilot runs now fit a positive exponent ({fitted_alpha:.2f}); "
+        f"if a run was added or corrected, runtime_alpha="
+        f"{rules.size.runtime_alpha} may finally be calibratable and this "
+        f"test's premise needs re-reading"
+    )
