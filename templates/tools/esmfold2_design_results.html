@@ -135,7 +135,7 @@
 {% set is_antibody        = output.get('is_antibody', preset == 'scfv') %}
 {% set target_label       = output.get('target_label') or output.get('target_name') or 'target' %}
 {% set binder_label       = output.get('binder_label') or output.get('binder_name') or '—' %}
-{% set raw_designs        = output.get('designs', []) %}
+{% set raw_designs        = display_rows(output.get('designs')) %}
 {% set trajectory_steps   = output.get('trajectory_steps') %}
 {% set tier               = output.get('tier') %}
 {% set runtime_seconds    = output.get('runtime_seconds') %}
@@ -152,7 +152,7 @@
    globally re-ranked across seeds, seed-tagged in each scores dict).
    Fall back to a local reshape of designs[] for legacy/single-seed
    outputs that pre-dated the candidates contract. #}
-{% set output_candidates = output.get('candidates') %}
+{% set output_candidates = display_rows(output.get('candidates')) %}
 {% if output_candidates %}
   {% set candidates = output_candidates %}
 {% else %}

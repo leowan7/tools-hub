@@ -81,6 +81,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, ranking, score_legends
 from shared import pdb_bfactors
+from shared.jobs import display_rows
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -166,6 +167,11 @@ def _env() -> Environment:
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
+    # candidate_table.html:70 coerces its own rows, so a non-Mapping row
+    # cannot reach the `.get` calls below it. This mirror renders the
+    # macro outside create_app, so it has to carry that global too;
+    # without it every render here raises 'display_rows' is undefined.
+    env.globals["display_rows"] = display_rows
     env.globals["csrf_input"] = lambda: ""
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")
     return env

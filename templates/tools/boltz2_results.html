@@ -25,7 +25,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output             = job.result or {} %}
-{% set raw_designs        = output.get('designs', []) %}
+{% set raw_designs        = display_rows(output.get('designs')) %}
 {% set hotspots_requested = output.get('hotspots_requested', []) %}
 {% set antigen_length     = output.get('antigen_length') %}
 {% set tier               = output.get('tier') %}

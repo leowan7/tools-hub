@@ -15,7 +15,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output = job.result or {} %}
-{% set raw_designs = output.get('designs', []) %}
+{% set raw_designs = display_rows(output.get('designs')) %}
 {% set plddt  = output.get('plddt_per_residue') or [] %}
 {% set ptm    = output.get('ptm') %}
 {% set iptm   = output.get('iptm') %}
