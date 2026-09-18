@@ -1410,7 +1410,10 @@ class TestIptmThresholdHasOneSource:
 
         passed on all 14 pages: 0.75 is in the union because **ipTM**'s
         band contains it. pLDDT is a 0-100 scale in the same file
-        ("> 80 very high confidence"), so that sentence is not merely
+        (its band then read "> 80 very high confidence"; it now reads
+        "90 or more very high confidence; 70-90 confident; 50-70 low",
+        still 0-100 and still stating no decimal, so nothing here
+        changes), so that sentence is not merely
         unsourced, it is NONSENSE — and the guard written to be
         structural rather than phrase-guessing waved it through. A
         number is only sourced by the metric it is stated about.
