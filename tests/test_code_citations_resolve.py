@@ -39,9 +39,12 @@ buys no protection against a rename and would churn prose instead:
     CHECKED, which exempting the path would not.
   * A template path is resolved the way Jinja resolves it, relative to the
     loader root: ``components/results_shell.html`` is
-    ``templates/components/results_shell.html``. Both paths written that way
-    are real files, so the alternative was not an exemption but a wrong
-    claim that they live outside this repo.
+    ``templates/components/results_shell.html``. No ``::`` citation is
+    written that way today, so this changes no verdict on its own. It is
+    here because ``_candidates`` is also what the ``.html`` measurement
+    below runs on, and both paths spelled that way are real files -- calling
+    them out-of-repo made that measurement wrong, and would mis-handle the
+    first citation someone writes beside an ``{% include %}``.
 
 The DOTTED form is checked strictly: ``tests/test_data_retention.py::_FakeTable.is_``
 requires ``is_`` inside ``_FakeTable``, not merely somewhere in the file.
@@ -182,15 +185,22 @@ def _citations(text: str):
     marked = {i + 1 for i, ln in enumerate(text.split("\n")) if _NOT_A_CITATION in ln}
     for m in _TOKEN.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
-        # The token's own line or the one above it, so a marker never has to be
-        # crammed onto an already-long line of code.
-        if line in marked or line - 1 in marked:
-            continue
         symbol = m.group(2)
+        end = m.end()
         if symbol.endswith("_"):
-            tail = _WRAP_TAIL.match(text, m.end())
+            tail = _WRAP_TAIL.match(text, end)
             if tail is not None:
                 symbol += tail.group(1)
+                end = tail.end()
+        # ANY line the token occupies, plus the one above it -- the line above
+        # so a marker never has to be crammed onto an already-long line of
+        # code, and the rest because _GAP and _WRAP_TAIL let a single token
+        # straddle two lines. Checking only the first would ignore a marker
+        # written on the continuation, which reads as the natural place to put
+        # it. Pinned by the last assert in
+        # test_a_citation_wrapped_at_the_colons_is_still_found.
+        if any(n in marked for n in range(line - 1, text.count("\n", 0, end) + 2)):
+            continue
         yield line, m.group(1), symbol
 
 
@@ -213,8 +223,12 @@ def _py_names(rel: str) -> tuple[frozenset[str], dict]:
             Descending with ``ast.walk`` instead harvests the base object of
             ``os.environ["X"] = y`` and puts ``os`` -- an import -- into the
             name set, which is the thing this file refuses to accept as a
-            definition. 14 such names across 8 files did exactly that. Pinned
-            by ``test_a_subscript_target_does_not_define_its_base_object``.
+            definition. It pulled in 11 names that way, 9 of which -- in 9
+            files -- nothing else in the file defines, so they resolved
+            falsely: ``os`` in ``gunicorn.conf.py``, ``stripe`` in four
+            ``scripts/deploy/pass7_*.py``, and ``sys`` in four
+            ``tools/proteina/*.py``. Pinned by
+            ``test_a_subscript_target_does_not_define_its_base_object``.
             """
             if isinstance(target, ast.Name):
                 yield target.id
@@ -393,6 +407,10 @@ def test_a_citation_wrapped_at_the_colons_is_still_found():
     assert list(_citations(after_colons)) == [(1, "shared/jobs.py", "complete_job")]
     # The gap is ONE line break. A citation cannot reach across a blank line.
     assert list(_citations("shared/jobs.py\n\n::complete_job")) == []
+    # The marker works on EITHER line a wrapped citation occupies, not just
+    # the first -- the continuation reads as the natural place to put it.
+    on_second = f"x = 'shared/jobs.py::\n# complete_job'  # {_NOT_A_CITATION}"
+    assert list(_citations(on_second)) == []
 
 
 def test_a_subscript_target_does_not_define_its_base_object():
