@@ -240,6 +240,18 @@ def leaky_app():
     assert ct._early_app_fixtures("import pytest", shared) == frozenset()
 
 
+def test_a_keyword_only_twin_counts(ct):
+    """pytest resolves keyword-only fixture params, so the gate must too."""
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(*, isolate_supabase_module):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
 def test_a_cycle_between_helpers_terminates(ct):
     """Without the ``seen`` guard this raises RecursionError instead."""
     src = """import pytest
