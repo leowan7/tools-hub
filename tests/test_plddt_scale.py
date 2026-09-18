@@ -94,7 +94,7 @@ def _stub_job(tool: str, scores: dict):
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     import app as app_module
     from shared.feature_flags import flag_name
     from tools import base as tool_base
@@ -456,10 +456,11 @@ def test_every_plddt_key_the_exporter_can_meet_is_registered():
 
     assert scalar_keys, "no example payload carries a scalar pLDDT"
 
-    # ...and example payloads are the WRONG source on their own. Six
-    # tools ship no example, and more importantly the CSV's root keys are
-    # not written by a tool at all -- webhooks/modal.py persists a fixed
-    # dict for every composite pipeline. Deriving from it covers all
+    # ...and example payloads are the WRONG source on their own: the
+    # glob above reaches only what a tool captured, and more importantly
+    # the CSV's root keys are not written by a tool at all --
+    # webhooks/modal.py persists a fixed dict for every composite
+    # pipeline. Deriving from it covers all
     # fourteen. This is what catches ``plddt``, which no example payload
     # carries as a scalar root key and which is not a display column
     # either, so both earlier guards were blind to it.

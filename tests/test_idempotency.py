@@ -562,8 +562,9 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
 
     NOT because "the wallet gate refuses". It does not: nine of the ten guarded
     routes carry no wallet decorator, and the one that does falls THROUGH on a
-    null wallet row (`shared/wallet_guard.py:219-224`). `_claim_key`'s own
-    docstring forbids the near-identical "the wallet decorator refuses"; this
+    null wallet row (`shared/wallet_guard.py::requires_wallet`, its
+    `wallet_row is None` arm). `_claim_key`'s own docstring forbids the
+    near-identical "the wallet decorator refuses"; this
     docstring reached for the same false idea in different words and was
     wrong.
     """
@@ -579,8 +580,9 @@ class _ExplodingClient:
     Not the same as no client, but NOT because the wallet gate still works --
     it does not. `get_or_create_wallet` needs this same client, so
     `wallet_preflight` returns allow=False, `requires_wallet` falls THROUGH,
-    and the handler runs (status 200). `reserve_hold` then returns None at
-    `shared/wallet.py:575`, so this particular fault does not reach a charge.
+    and the handler runs (status 200). `shared/wallet.py::reserve_hold` then
+    returns None from its own preflight-denied branch, so this particular
+    fault does not reach a charge.
     `_claim_key`'s docstring forbids writing "the wallet gate is working in
     that case" -- this docstring said it anyway and was wrong.
 

@@ -62,6 +62,25 @@ def isolate_supabase(monkeypatch):
 
 
 @pytest.fixture(scope="module")
+def isolate_supabase_module():
+    """Module-scoped twin of ``isolate_supabase``.
+
+    pytest builds a module-scoped fixture BEFORE the function-scoped
+    ``isolate_supabase``, so a fixture that renders a signed-in page
+    during its own setup reaches the real database even in a file that
+    already carries the module-level mark -- the mark cannot fire early
+    enough. Request this from the fixture that builds the app.
+
+    ``MonkeyPatch.context()`` is the same setenv/undo as ``monkeypatch``,
+    held open over the module's lifetime instead of one test's.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        for name in _SUPABASE_ENV:
+            mp.setenv(name, "")
+        yield
+
+
+@pytest.fixture(scope="module")
 def all_tools_app():
     """Every registered adapter flagged on, not a remembered subset."""
     import app as app_module  # noqa: PLC0415  (populates tools.base registry)

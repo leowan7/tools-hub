@@ -561,11 +561,13 @@ def create_app() -> Flask:
         return url_for("auth.login", next=request.full_path.rstrip("?"))
     flask_app.jinja_env.globals["signin_url"] = _signin_url
 
-    # No ``next=`` here on purpose: auth.signup's GET hardcodes
-    # next="/" (blueprints/auth.py:135) and never reads request.args,
-    # so a next param would be a decorative query string that lies
-    # about where the user lands. Sign-up goes through email
-    # confirmation anyway.
+    # No ``next=`` here. The original reason -- that signup ignored it --
+    # stopped being true at 8af5eac: blueprints/auth.py::signup now reads
+    # ``request.values.get("next")`` through the same ``safe_next``
+    # allowlist login uses, and threads it into every render. It still
+    # never REDIRECTS to it, and the confirmation mail hardcodes
+    # ``{public_base}/login``, so where a new account lands is not this
+    # link's to set.
     def _signup_url() -> str:
         return url_for("auth.signup")
     flask_app.jinja_env.globals["signup_url"] = _signup_url

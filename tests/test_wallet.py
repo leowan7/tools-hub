@@ -1013,8 +1013,11 @@ def test_auto_reload_monthly_cap_blocks(store, email_log):
     #    month_total read 0, the cap did not block, and the call fell through
     #    to a real off-session Stripe charge. Anchored to the month start now.
     # 2. auto_reload_if_needed checks the 24 HOUR rate limit BEFORE the monthly
-    #    cap (shared/wallet.py:766 vs :769). Early on the 1st, "inside this
-    #    calendar month" and "more than 24 hours ago" have no overlap at all,
+    #    cap: in shared/wallet.py::auto_reload_if_needed the
+    #    ``_auto_reload_count_24h`` return comes first and the
+    #    ``month_total + reload_amount > monthly_cap`` return second. Early on
+    #    the 1st, "inside this calendar month" and "more than 24 hours ago"
+    #    have no overlap at all,
     #    so no seed timestamp can reach the cap check. The rate limiter is a
     #    different gate with its own test above, so it is stubbed out here
     #    rather than worked around: this test is about the cap.

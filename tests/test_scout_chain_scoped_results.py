@@ -29,6 +29,8 @@ import pytest
 from scout import epitope_db
 from scout.flags import _CSV_COLUMNS_BASE
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TMP = Path("tmp")
 
 # Distinct residue numbering per chain. The response echoes ``chain`` straight

@@ -250,7 +250,7 @@ _POINTS_AT_FURNITURE = re.compile(
 
 
 @pytest.fixture(scope="module")
-def flask_app():
+def flask_app(isolate_supabase_module):
     os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
     from app import create_app
 
@@ -320,8 +320,8 @@ def test_boltzgen_left_the_banner_set_and_its_caveat_did_not_vanish():
     assert "boltzgen" not in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
     # ``legend_text``, not ``["explanation"]``: the caveat lives in the
     # legend's optional ``caveat`` field, because ``explanation`` is a
-    # one-line slot shared by 32 legends and the era note is 380 characters
-    # that only one of them needs. NOT because the caveat is false in the
+    # one-line slot every legend shares, and boltzgen's era note overruns it
+    # and only that legend needs it. NOT because the caveat is false in the
     # email — that reasoning shipped for a round and was wrong; the mail is
     # sent about stored results too, and shared/score_legends.email_caption
     # now carries the caveat there on a multi-chain job. What has to survive
@@ -1401,8 +1401,8 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     legend = get_legend("boltzgen", "ipTM")
     # ASSERTED ON WHAT THE TABLE SHOWS, which is ``explanation`` plus the
     # optional ``caveat``. The era distinction sits in ``caveat`` and not in
-    # ``explanation`` because ``explanation`` is a one-line slot shared by 32
-    # legends and is handed to the job-completion email for every tool — NOT
+    # ``explanation`` because ``explanation`` is a one-line slot every legend
+    # shares and is handed to the job-completion email for every tool — NOT
     # because the email is exempt from caveats. It is not: complete_job also
     # runs from the stuck-job sweeper, the inline poll and
     # scripts/finalize_stuck_job.py, so that mail can be about a result read

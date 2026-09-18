@@ -224,10 +224,11 @@ class TestResultTone:
                     job, tone="empty",
                 ) == NO_OUTPUT, (tool, payload)
 
-        # Truthy but unreadable -- the shape gpu/modal_client.py:632-646
-        # builds from a pipeline return carrying tier/runtime_seconds and
-        # no domain keys. (A bare {"status": "COMPLETED", "output": {}}
-        # yields {} instead; the falsy branch handles that one.)
+        # Truthy but unreadable -- the shape
+        # gpu/modal_client.py::_interpret_pipeline_return builds from a
+        # pipeline return carrying tier/runtime_seconds and no domain keys.
+        # (A bare {"status": "COMPLETED", "output": {}} yields {} instead;
+        # the falsy branch handles that one.)
         # An earlier version of this test asserted this was
         # a SUCCESS, which is what let the email say "your run is ready"
         # with a green View results button over a page reading
@@ -393,7 +394,8 @@ class TestSucceededFoldWithNoStructure:
     tone and was mailed "your run is ready" over a green View results —
     to a page whose viewer and Download PDB are both gated on a truthy
     ``pdb_b64`` (templates/tools/af2_results.html:130,244) and whose
-    download route answers 404 without one (blueprints/jobs.py:1400).
+    download route answers 404 without one
+    (blueprints/jobs.py::af2_download_pdb).
 
     A MISSING key is deliberately left alone. tools/colabfold/meta.py:134
     ships a payload with no ``pdb_b64`` at all, and the forward-compat

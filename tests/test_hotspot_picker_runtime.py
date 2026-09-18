@@ -84,7 +84,7 @@ needs_node = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def flask_app():
+def flask_app(isolate_supabase_module):
     os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
     from app import create_app
 

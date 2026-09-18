@@ -20,6 +20,8 @@ import pytest
 
 from blueprints.auth import safe_next
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):

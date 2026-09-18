@@ -136,7 +136,7 @@ ANON_RATE_WINDOW_SECONDS = 600
 # moving this -- which one binds depends on the shape of the lab, not its
 # size, so moving one alone serves only half of them. But do NOT import that
 # block's charge arithmetic: intake has no session tier and no pairing
-# (ratelimit.py:863, no session_limit), so here 1 request = 1 charge exactly
+# (ratelimit.py::anon_rate_limit, no session_limit), so here 1 request = 1 charge
 # and the fleet wall is exactly 20.
 ANON_INTAKE_LIMIT = 10
 

@@ -8,7 +8,7 @@ stated a bar, so the same bar was written twice in one tooltip -- once by the
 tool and once by a global string keyed only on the metric name. The two
 spellings had drifted apart in both directions:
 
-  COMPARATOR. ``judge()`` (shared/score_legends.py:2172) is
+  COMPARATOR. ``judge()`` (shared/score_legends.py::judge) is
   ``meets = seen <= good if lower_is_better else seen >= good``, so a value
   sitting exactly on the bar MEETS it, and every gating legend words it that
   way ("80 or more", "1.5 angstroms or less", "4 or more of 7"). So does the
@@ -21,10 +21,15 @@ spellings had drifted apart in both directions:
   the one a user hits: boltz2's hotspot count is an integer out of 7, where
   "4 or more" and "> 4" differ by a whole design.
 
-  BAND. GLOSSARY["pLDDT"] calls "> 80" very high confidence. All six legends
+  BAND. GLOSSARY["pLDDT"] called "> 80" very high confidence. All six legends
   on the pLDDT column reserve that tier for 90 and up ("80 or more is
   confidently folded; 90 or more is high confidence"), as does the AlphaFold2
-  paper the entry cites.
+  paper the entry cites. Suppressing the Range answered that for the six and
+  left it live on the one displayed pLDDT column that has no legend to
+  suppress it with -- opendde's -- where it stayed wrong and visible. The
+  string was corrected on 2026-09-17 and ``TestTheGlobalPlddtBand`` below
+  pins both halves, the number and the exposure. This file described that
+  drift from the day it landed and checked only the comparator.
 
 THE FIX IS SUBTRACTION, NOT REWORDING, and this file pins both halves of it.
 The condition became ``not leg``: the global Range renders exactly where the
@@ -138,11 +143,23 @@ _EXPECTED_SUPPRESSED = {
 #: global string is the reader's only answer and must survive. Measured over
 #: shared/result_columns.py plus the column lists the per-tool results
 #: templates set inline. A fix that stripped the Range unconditionally would
-#: pass every other test in this file and silently cost these eight.
+#: pass every other test in this file and silently cost these nine.
+#:
+#: ("opendde", "pLDDT") WAS NOT IN THIS SET when it landed, and it is the
+#: pair that matters most: it is the only displayed pLDDT column on the site
+#: with no per-tool legend, so it is the only place the global pLDDT band
+#: still reaches a reader. opendde lists the column conditionally
+#: (templates/tools/opendde_results.html, ``if opt.plddt``); a run that asked
+#: for pLDDT shows it, and this tooltip. Every other pLDDT column either
+#: carries a legend (bindcraft, boltz2, boltzgen, pxdesign, rfantibody,
+#: rfdiffusion) or is keyed ``mean_pLDDT`` (af2, colabfold, esmfold) or
+#: ``af2_plddt`` (proteina), and GLOSSARY holds no entry under either of
+#: those two keys, so those tooltips print no Range and no definition.
 _EXPECTED_KEEPS_RANGE = {
     ("boltz2", "against_bar"),
     ("boltzgen", "against_bar"),
     ("esmfold", "pTM"),
+    ("opendde", "pLDDT"),
     ("opendde", "ranking_score"),
     ("proteina", "total_reward"),
     ("pxdesign", "against_bar"),
@@ -374,3 +391,184 @@ def test_a_suppressed_tooltip_still_says_what_good_is(tooltip):
         "bar, which is the one way this change could cost a reader an "
         "answer:\n  " + "\n  ".join(silent)
     )
+
+
+#: The nine (tool, column) pairs carrying a pLDDT legend. Three are keyed
+#: ``mean_pLDDT`` -- af2, colabfold and esmfold display the column under that
+#: name -- which is why this is nine while the docstring above says six: six
+#: sit on the column spelled ``pLDDT``. Hardcoded as the anti-vacuity floor for
+#: ``TestTheGlobalPlddtBand``. The boundary there is derived from whatever
+#: ``_plddt_legend_pairs`` finds, so a tenth pLDDT legend has to agree with
+#: the band too; this set only holds that scan to the nine already here.
+_PLDDT_LEGENDS = {
+    ("af2", "mean_pLDDT"),
+    ("bindcraft", "pLDDT"),
+    ("boltz2", "pLDDT"),
+    ("boltzgen", "pLDDT"),
+    ("colabfold", "mean_pLDDT"),
+    ("esmfold", "mean_pLDDT"),
+    ("pxdesign", "pLDDT"),
+    ("rfantibody", "pLDDT"),
+    ("rfdiffusion", "pLDDT"),
+}
+
+#: AlphaFold2's confidence bands, transcribed ONCE from the paper
+#: GLOSSARY["pLDDT"] itself cites (Jumper et al., Nature 2021): very high above
+#: 90, confident 70-90, low 50-70, very low below 50. Every number the global
+#: band states has to be one of these edges. This is the one check in this
+#: class that cannot be derived from the repo -- a paper is not importable --
+#: so it is written as a transcription naming its source, not as a rederivation.
+_AF2_BAND_EDGES = {50.0, 70.0, 90.0}
+
+#: Any number, for reading boundaries out of a band or a legend explanation.
+_BAND_NUM = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _clauses(text: str) -> list[str]:
+    """A band or a legend explanation split into its tier clauses.
+
+    Both write one tier per semicolon-separated clause ("80 or more is
+    confidently folded; 90 or more is high confidence"), so a clause is the
+    unit that ties a tier WORD to the number it starts at. The split is
+    load-bearing: over a whole explanation "high" and "80" co-occur in all
+    nine, and the defect was exactly a tier word sitting on the wrong number.
+    """
+    return [c for c in text.split(";") if c.strip()]
+
+
+def _top_tier_start(text: str) -> float | None:
+    """Where ``text`` starts calling a pLDDT "high", or None if it never does.
+
+    The lowest number in any clause naming that tier. ``very high`` contains
+    ``high`` and that is the point: the glossary's superlative and the legends'
+    "high confidence" are the same boundary claim, and the defect was the
+    glossary drawing it ten points lower than every legend does. Matched on a
+    word boundary, so a clause these strings could grow -- "50 or more,
+    higher is better" -- contributes its 50 to no tier.
+    """
+    starts = [
+        float(n)
+        for clause in _clauses(text)
+        if re.search(r"\bhigh\b", clause, re.I)
+        for n in _BAND_NUM.findall(clause)
+    ]
+    return min(starts) if starts else None
+
+
+def _plddt_legend_pairs() -> set[tuple[str, str]]:
+    """Every (tool, column) in SCORE_LEGENDS whose column names a pLDDT.
+
+    Scanned, not listed, so a pLDDT legend added after this file was written
+    has to agree with the global band too. ``_PLDDT_LEGENDS`` above is the
+    floor that keeps this scan from silently finding nothing.
+    """
+    return {
+        (slug, col)
+        for slug, col in score_legends.SCORE_LEGENDS
+        if "plddt" in col.lower()
+    }
+
+
+class TestTheGlobalPlddtBand:
+    """The global pLDDT band says what the rest of the site says.
+
+    ``GLOSSARY["pLDDT"]["good_range"]`` is keyed on the metric alone, so it is
+    written once and rendered wherever a pLDDT column has no legend of its own.
+    It read "> 80 very high confidence; 60-80 acceptable", disagreeing with two
+    things at once: the AlphaFold2 paper cited four lines below it in the same
+    entry (very high is 90 and up, and the 70 edge falls inside 60-80, so that
+    band mixed "confident" with "low"), and all nine per-tool pLDDT legends,
+    every one of which puts 80 at "confidently folded" and reserves its top
+    tier for 90. #277 stopped the string rendering beside a metric the tool has
+    a legend for, which answered it for six columns and not at all for the one
+    column with no legend to be suppressed by.
+    """
+
+    def test_the_legend_scan_is_not_vacuous(self):
+        """Both sides of the next test are derived; derive one from nothing
+        and the comparison passes on an empty set."""
+        found = _plddt_legend_pairs()
+        assert _PLDDT_LEGENDS <= found, (
+            "the scan no longer reaches every pLDDT legend it was written "
+            f"for: {sorted(_PLDDT_LEGENDS - found)}"
+        )
+        silent = sorted(
+            pair
+            for pair in found
+            if _top_tier_start(
+                str(score_legends.SCORE_LEGENDS[pair].get("explanation", ""))
+            )
+            is None
+        )
+        assert not silent, (
+            "these pLDDT legends name no top tier at all, so the boundary "
+            f"below is derived from fewer legends than exist: {silent}"
+        )
+
+    def test_the_band_starts_its_top_tier_where_every_legend_does(self):
+        """The invariant, with both sides read rather than retyped.
+
+        Neither 80 nor 90 is written into this assertion: the boundary is
+        whatever every pLDDT legend agrees on, and the band has to agree.
+        Recalibrate the legends and this follows them; move the band on its
+        own and it fails.
+        """
+        legend_starts = {
+            _top_tier_start(
+                str(score_legends.SCORE_LEGENDS[pair].get("explanation", ""))
+            )
+            for pair in _plddt_legend_pairs()
+        }
+        # A legend naming no top tier puts None in this set, and sorted()
+        # cannot compare that to a float. Keyed so None sorts last; a set
+        # holds at most one, so two of them never meet.
+        shown = sorted(legend_starts, key=lambda s: (s is None, s))
+        assert len(legend_starts) == 1, (
+            "the pLDDT legends no longer agree with each other on where "
+            f"the top tier starts: {shown}. Fix that first; there is no "
+            "single number for the global band to match."
+        )
+        legend_start = legend_starts.pop()
+        band = metric_glossary.GLOSSARY["pLDDT"]["good_range"]
+        band_start = _top_tier_start(band)
+        assert band_start == legend_start, (
+            f"the global pLDDT band {band!r} starts its top tier at "
+            f"{band_start}, while all nine per-tool legends start theirs at "
+            f"{legend_start}. A reader on a column with no legend is told a "
+            "design sits at the top of a scale that every other surface on "
+            "this site calls one tier down."
+        )
+
+    def test_every_boundary_the_band_states_is_an_edge_of_the_cited_paper(self):
+        """The other half of the drift: "60-80" straddled the 70 edge, so one
+        band spanned two of the paper's. A number that is not an edge is a tier
+        drawn here and attributed, by the citation rendered four words later,
+        to Jumper et al."""
+        entry = metric_glossary.GLOSSARY["pLDDT"]
+        band = entry["good_range"]
+        stated = {float(n) for n in _BAND_NUM.findall(band)}
+        assert stated, f"the pLDDT band states no number at all: {band!r}"
+        assert stated <= _AF2_BAND_EDGES, (
+            f"the pLDDT band {band!r} states "
+            f"{sorted(stated - _AF2_BAND_EDGES)}, which is not among "
+            f"AlphaFold2's band edges {sorted(_AF2_BAND_EDGES)}. The entry "
+            f"renders {entry['citation']!r} immediately after the band, so a "
+            "boundary that paper does not draw is published under its name."
+        )
+
+    def test_the_band_is_live_on_a_page(self, tooltip):
+        """The exposure, measured rather than assumed.
+
+        The three tests above are worth running only because a reader sees
+        this string, and they see it in exactly one place: opendde's pLDDT
+        column, the only displayed pLDDT column with no legend of its own.
+        ``_EXPECTED_KEEPS_RANGE`` covers the pair; this names why it is there,
+        so that a later change suppressing the Range everywhere cannot quietly
+        turn the band tests into a check on text nobody reads.
+        """
+        text = tooltip("opendde", "pLDDT")
+        assert metric_glossary.GLOSSARY["pLDDT"]["good_range"] in text, (
+            "opendde's pLDDT tooltip no longer carries the global band, so "
+            "nothing on the site renders it and the band tests above guard a "
+            f"string no reader sees:\n\n{text}"
+        )
