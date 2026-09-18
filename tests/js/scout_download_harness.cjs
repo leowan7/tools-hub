@@ -100,6 +100,18 @@ async function scenario(response, opts) {
 
 const json = (body) => ({ json: () => Promise.resolve(body) });
 const notJson = () => ({ json: () => Promise.reject(new SyntaxError('not json')) });
+// A Headers-alike. The JSON stubs above deliberately have none, which is what
+// keeps them on the guard's json() branch -- an absent content-type reads as
+// ''. Only the text cases below declare one.
+const hdr = (v) => ({
+  get: (k) => (String(k).toLowerCase() === 'content-type' ? v : null),
+});
+// The AF2 shape: text/plain, and a body that is a shell comment. .json() is
+// present AND rejecting so a guard that ignored the content-type would fall
+// to GENERIC rather than crash -- the assertion then names the missing
+// message, not a TypeError.
+const text = (ctype, body) => Object.assign(
+  { headers: hdr(ctype), text: () => Promise.resolve(body) }, notJson());
 
 (async function () {
   const out = {};
@@ -127,6 +139,29 @@ const notJson = () => ({ json: () => Promise.reject(new SyntaxError('not json'))
   // ...and so does an empty/!error JSON body.
   out.json_without_error = await scenario(Object.assign(
     { ok: false, redirected: false }, json({})));
+
+  // ---- text/plain refusals: blueprints/jobs.py af2_download_pdb / _pae ----
+  // Their bodies carry no Content-Disposition, so an unguarded click navigates
+  // to them. Quoted verbatim, minus the '# ' that suits a file on disk.
+  out.text_refusal = await scenario(Object.assign(
+    { ok: false, redirected: false },
+    text('text/plain; charset=utf-8', "# No PDB in this job's result.\n")));
+  out.text_refusal_pae = await scenario(Object.assign(
+    { ok: false, redirected: false },
+    text('text/plain', '# Malformed PAE payload.\n')));
+  // Nothing but the marker. Showing it would reopen an empty box, which is
+  // the silence the guard exists to end, so it must fall to GENERIC.
+  out.text_refusal_blank = await scenario(Object.assign(
+    { ok: false, redirected: false }, text('text/plain', '#\n')));
+  // Same routes, HTML refusal: render_template("404.html") on a job that is
+  // not the caller's or not an af2 job. Not ours to quote.
+  out.html_refusal = await scenario(Object.assign(
+    { ok: false, redirected: false, headers: hdr('text/html; charset=utf-8') },
+    notJson()));
+  // A text/plain body on the OK path is a download, not a message: the guard
+  // must not read the content-type before it has decided ok-ness.
+  out.text_ok = await scenario(Object.assign(
+    { ok: true, redirected: false }, text('text/plain', '# not a refusal\n')));
 
   out.network = await scenario('network');
 
