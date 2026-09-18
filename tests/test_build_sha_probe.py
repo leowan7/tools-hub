@@ -23,6 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):

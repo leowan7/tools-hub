@@ -56,6 +56,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # THE VALUES AS JOB 2b917b54 ACTUALLY STORES THEM, unrounded, matching
 # tests/test_jobs_compare_headline.py. Rounded stand-ins let a display-precision

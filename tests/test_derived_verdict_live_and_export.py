@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 _JID = "11111111-2222-3333-4444-555555555555"
 
 

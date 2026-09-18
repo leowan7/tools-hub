@@ -24,9 +24,11 @@ import pytest
 
 from shared.score_legends import GATE_COLUMNS, gate_bar_text
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture(scope="module")
-def env():
+def env(isolate_supabase_module):
     """The app's REAL Jinja environment, inside a request context.
 
     Not a hand-built Environment with a few globals bolted on: the point of
