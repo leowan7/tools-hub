@@ -53,8 +53,10 @@ def isolate_supabase(monkeypatch):
         pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
     This is deliberately opt-in rather than autouse: making the whole suite
-    hermetic in one move would change the environment of ~1500 existing tests,
-    which is its own change with its own blast radius.
+    hermetic in one move would change the environment of every test in the
+    suite -- ~7,400 of them (7,432 collected as of this commit; run
+    ``pytest -q --collect-only | tail -1`` for the current number rather than
+    trusting this one). That is its own change with its own blast radius.
     """
     for name in _SUPABASE_ENV:
         monkeypatch.setenv(name, "")
@@ -78,6 +80,59 @@ def isolate_supabase_module():
         for name in _SUPABASE_ENV:
             mp.setenv(name, "")
         yield
+
+
+_REAL_CLIENT_ALLOWED = ("tests/test_rls.py",)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _forbid_real_supabase_clients():
+    """Fail the test that builds a REAL Supabase client instead of letting it.
+
+    ``isolate_supabase`` blanks the credentials so ``get_service_client()``
+    returns None long before a constructor is reached; this is the backstop
+    for a file that is missing the mark. All four in-app build sites import
+    ``create_client`` INSIDE the function (``shared/credits.py``,
+    ``shared/supabase_client.py``, ``scout/handoff.py``, ``scout/quota.py``),
+    so the name resolves at call time and patching the module attribute
+    intercepts every one of them.
+
+    ``tests/test_rls.py`` is the one deliberate exception: its subject IS a
+    live Row-Level-Security check against the real project, and it skips
+    itself when the credentials are absent.
+
+    Session scope matters. A function-scoped fixture is built AFTER a
+    module-scoped one, so it cannot see a client built during a module-scoped
+    fixture's own setup -- the same ordering that let four marked files reach
+    production in #296.
+
+    With the supabase package absent no call site can build a client at all,
+    so the guard has nothing to protect and steps aside.
+    """
+    try:
+        import supabase  # noqa: PLC0415
+    except ImportError:
+        yield
+        return
+
+    real = supabase.create_client
+
+    def _guarded(*args, **kwargs):
+        current = os.environ.get("PYTEST_CURRENT_TEST", "<no active test>")
+        if current.startswith(_REAL_CLIENT_ALLOWED):
+            return real(*args, **kwargs)
+        raise AssertionError(
+            f"{current} built a REAL Supabase client, which reaches the "
+            "production project. Add "
+            '`pytestmark = pytest.mark.usefixtures("isolate_supabase")` to the '
+            "file; if the app is built by a module-scoped fixture, have that "
+            "fixture request `isolate_supabase_module` instead -- a "
+            "function-scoped mark fires too late for it."
+        )
+
+    supabase.create_client = _guarded
+    yield
+    supabase.create_client = real
 
 
 @pytest.fixture(scope="module")
