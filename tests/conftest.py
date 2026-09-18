@@ -82,6 +82,25 @@ def isolate_supabase_module():
         yield
 
 
+class _RealSupabaseClientRefused(BaseException):
+    """Deliberately NOT an ``Exception``.
+
+    Every in-app build site wraps the constructor in ``except Exception:`` and
+    returns None -- ``shared.credits.get_service_client``,
+    ``shared.supabase_client.get_supabase_client``,
+    ``scout.handoff._get_service_client`` and
+    ``scout.quota._get_service_client``. An ``Exception`` alarm is swallowed by
+    the very code it indicts: the forgetful test then passes holding a ``None``
+    client, which is exactly the silent rot this guard exists to stop.
+    ``BaseException`` passes through those handlers, and pytest still reports
+    it as a failure rather than aborting the session.
+
+    Enforced by ``test_the_alarm_is_not_swallowed_by_app_code`` in
+    ``tests/test_supabase_client_guard.py``, which reaches the guard through
+    ``get_service_client`` and fails if the alarm is caught on the way out.
+    """
+
+
 _REAL_CLIENT_ALLOWED = ("tests/test_rls.py",)
 
 
@@ -121,7 +140,7 @@ def _forbid_real_supabase_clients():
         current = os.environ.get("PYTEST_CURRENT_TEST", "<no active test>")
         if current.startswith(_REAL_CLIENT_ALLOWED):
             return real(*args, **kwargs)
-        raise AssertionError(
+        raise _RealSupabaseClientRefused(
             f"{current} built a REAL Supabase client, which reaches the "
             "production project. Add "
             '`pytestmark = pytest.mark.usefixtures("isolate_supabase")` to the '

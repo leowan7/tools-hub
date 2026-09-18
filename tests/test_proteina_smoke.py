@@ -74,6 +74,8 @@ from tools.base import get as get_adapter
 #     defect these tests exist to catch, and it would have silenced all 51.
 from tools.proteina import run_pipeline as rp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # A tiny two-chain structure with the awkward cases baked in: an MSE HETATM
 # (biotite counts it as protein, an ATOM-only parser would not), a water HETATM
