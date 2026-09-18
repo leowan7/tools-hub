@@ -514,9 +514,15 @@
                the 10 gate legs a design sitting exactly on the bar read as
                meeting it in the cell and short of it four words later.
 
-               BAND. GLOSSARY["pLDDT"] calls "> 80" very high confidence; all
-               six legends on the pLDDT column reserve that tier for 90 and up,
-               as does the AlphaFold2 paper the entry cites.
+               BAND. GLOSSARY["pLDDT"] called "> 80" very high confidence;
+               all six legends on the pLDDT column reserve that tier for 90
+               and up, as does the AlphaFold2 paper the entry cites.
+               Suppressing the Range answered that here and nowhere else:
+               the string kept rendering on opendde's pLDDT column, which
+               has no legend to suppress it with. It was corrected to the
+               paper's bands on 2026-09-17
+               (tests/test_column_tooltip_states_one_bar.py,
+               TestTheGlobalPlddtBand).
 
              The two barless legends (boltzgen ipTM, bindcraft surface
              hydrophobicity) were already suppressed here for a different
