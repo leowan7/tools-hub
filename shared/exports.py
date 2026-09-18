@@ -44,15 +44,15 @@ def _dict_candidates(candidates) -> list:
     functions are the only place the page and the download can disagree
     about which rows exist.
 
-    ``display_rows`` IS NOT ON THIS BRANCH -- it arrives with
-    ``claude/zealous-hertz-98ca24``, and until it does the page still 500s on
-    such a row rather than blanking it. This side is written to match it now
-    so the two land agreeing: its body was copied out of that branch and run
-    beside this one over one probe set (row types, tuple/list, and
-    dict/str/int/None arrays), returning lists that compared equal on every
-    input. Equal BY VALUE -- this side converts a non-dict Mapping (below)
-    where the render side keeps it, and a Mapping equals the dict of its
-    items. Nothing on this branch can re-run that comparison.
+    ``display_rows`` landed after this function, in the change that carried
+    ``claude/zealous-hertz-98ca24``. This side was written first and to match
+    it, so the two agree by neither shared code nor shared author -- they are
+    separate bodies that return the same thing. Equal BY VALUE, not identity:
+    this side converts a non-dict Mapping (below) where the render side keeps
+    it, and a Mapping equals the dict of its items. That equality was once
+    unrunnable here because only one side existed; both are now on one branch,
+    and it is pinned by tests/test_malformed_candidate_row_render.py::
+    test_the_export_and_render_accessors_agree_by_value.
 
     COERCES RATHER THAN FILTERING, and that is the whole fix. Every serializer
     here derives row identity from ``enumerate`` over this list --

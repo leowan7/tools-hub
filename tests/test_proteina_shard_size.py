@@ -62,6 +62,8 @@ from shared.compute_campaigns import (
 from tools.proteina import _SHARD_DESIGNS
 from tools.proteina import meta
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 

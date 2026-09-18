@@ -14,10 +14,6 @@
      live here (prefixed .bindcraft-) so we don't touch the shared
      stylesheet. Copy is kept in sync with tools/bindcraft/meta.py by
      hand. #}
-  {% set preset_runtime_rows = [
-    {"slug": "pilot", "runtime": "~45 min", "target": "Your uploaded target"}
-  ] %}
-
   <style>
     .bindcraft-layout {
       display: grid;
@@ -164,7 +160,8 @@
 
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
-      <strong>BindCraft pilot runs ~45 min on A100-80GB.</strong>
+      <strong>A 4-design BindCraft pilot runs ~30 to 45 min on A100-80GB;
+      larger counts take proportionally longer.</strong>
       Results are emailed on completion; you can close this tab.
     </div>
   </div>
@@ -311,11 +308,11 @@
           </div>
           {% endif %}
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            First time on this target? Start with 4 designs (~45 min) to
+            First time on this target? Start with 4 designs (~30 to 45 min) to
             confirm your hotspots and binder length range, then scale to
             100+ once the small batch looks reasonable. BindCraft
-            trajectories are heavy (~30 min each) so larger campaigns
-            run for days. Billed by actual GPU consumed; cancellation
+            optimises each design individually (~10 min each) so larger
+            campaigns run for days. Billed by actual GPU consumed; cancellation
             does not refund time already used.
           </div>
 

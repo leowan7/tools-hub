@@ -61,6 +61,14 @@
    target mode (pooled across tools), the campaign id in campaign mode (merged
    across sub-jobs of one tool), else the job id. ``export_base`` routes exports
    to whichever of the three owns this table. #}
+{# The deepest sink every candidate table routes through, and the only one
+   targets/detail.html passes through -- its `{{ candidate_table(...) }}`
+   calls this macro directly,
+   not via results_shell. A row that is not a Mapping raises on the first
+   `.get` below; display_rows turns it into {} without renumbering the rest,
+   because the shortlist posts each row's `_source_index` and the lab handoff
+   indexes the RAW stored list with it. #}
+{% set candidates = display_rows(candidates) %}
 {% set scope = target_id if target_id else (campaign_id if campaign_id else job_id) %}
 {% set export_base = ('/targets/' ~ target_id) if target_id else (('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id)) %}
 {% set table_id = 'cand-table-' ~ scope %}
@@ -514,9 +522,15 @@
                the 10 gate legs a design sitting exactly on the bar read as
                meeting it in the cell and short of it four words later.
 
-               BAND. GLOSSARY["pLDDT"] calls "> 80" very high confidence; all
-               six legends on the pLDDT column reserve that tier for 90 and up,
-               as does the AlphaFold2 paper the entry cites.
+               BAND. GLOSSARY["pLDDT"] called "> 80" very high confidence;
+               all six legends on the pLDDT column reserve that tier for 90
+               and up, as does the AlphaFold2 paper the entry cites.
+               Suppressing the Range answered that here and nowhere else:
+               the string kept rendering on opendde's pLDDT column, which
+               has no legend to suppress it with. It was corrected to the
+               paper's bands on 2026-09-17
+               (tests/test_column_tooltip_states_one_bar.py,
+               TestTheGlobalPlddtBand).
 
              The two barless legends (boltzgen ipTM, bindcraft surface
              hydrophobicity) were already suppressed here for a different
@@ -603,17 +617,19 @@
         {% set src_job     = cand.get('_source_job_id') or job_id %}
         {% set src_idx     = cand.get('_source_index') if cand.get('_source_index') is not none else idx %}
         {% set raw_pdb_key = cand.get('pdb_key') %}
-        {# pdb_key is whatever the container wrote into job.result. Five of
-           the fourteen tools build it container-side, outside this repo,
-           so its TYPE is not ours to guarantee, and every use below aborts
-           the WHOLE render rather than one cell: the `| urlencode` inside
-           `pdb_url` raises ValueError on a list and silently yields "a=1"
-           for a dict, and `'.' in pdb_key` in the download cell raises
-           TypeError on an int. Coerced HERE, at the definition, so one
-           guard covers the
-           url, the download attribute and the extension label. The falsy
-           branch is unchanged: None/'' still take the design_N.pdb
-           default rather than becoming the string "None". #}
+        {# pdb_key is whatever the container wrote into job.result, so its
+           TYPE is not ours to guarantee: bindcraft, boltzgen, pxdesign,
+           rfantibody and rfdiffusion have no run_pipeline.py and no image
+           definition in this repo, so the code that FILLS job.result, and
+           with it whatever key they emit, is not here to read. Every use
+           below aborts the WHOLE render rather than one cell: the
+           `| urlencode` inside `pdb_url` raises ValueError on a list and
+           silently yields "a=1" for a dict, and `'.' in pdb_key` in the
+           download cell raises TypeError on an int. Coerced HERE, at the
+           definition, so one guard covers the url, the download attribute
+           and the extension label. The falsy branch is unchanged: None/''
+           still take the design_N.pdb default rather than becoming the
+           string "None". #}
         {% set pdb_key     = (raw_pdb_key | string) if raw_pdb_key
                              else 'design_' ~ (idx + 1) ~ '.pdb' %}
         {% set has_b64     = cand.get('pdb_content_b64') %}

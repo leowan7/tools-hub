@@ -15,8 +15,11 @@ So the table is ordered on a RELATIVE statistic instead: where a design sits
 inside its own comparable population. That is the only quantity that means
 the same thing for an ipTM row and an ipAE row.
 
-This module owns that statistic and nothing else. It performs no I/O itself:
-every function here is a pure transform over dicts the caller already loaded.
+This module owns that statistic. Not everything here is statistics: the
+``ordinal`` helpers and ``sort_by_number`` are presentation, kept beside the
+ranking because what they format or order is the ranking itself. It performs
+no I/O itself: every function here is a pure transform over dicts the caller
+already loaded.
 It does import ``shared.jobs`` and ``shared.result_columns``, and
 ``shared.jobs`` imports ``get_service_client`` at module level, so this
 module is not free of a transitive database import. What it never does is
@@ -855,3 +858,62 @@ def rank_candidates(
         "limit": limit,
         "sort_mode": effective_mode,
     }
+
+
+# ---------------------------------------------------------------------------
+# Template sort key
+# ---------------------------------------------------------------------------
+
+def sort_by_number(
+    rows: Iterable[Mapping[str, Any]],
+    attribute: str,
+    reverse: bool = False,
+) -> list[Mapping[str, Any]]:
+    """``sort(attribute=)`` for a column that is allowed to be null.
+
+    Presentation, like ``ordinal_suffix``: it ranks nothing, it only orders
+    rows a template already built. Registered as the ``sort_by_number`` Jinja
+    filter in ``app.create_app`` and called by
+    the per-tool results partials that order candidate rows
+    (``grep -rn "sort_by_number" templates/``).
+
+    WHY IT EXISTS. Jinja's own ``sort(attribute=)`` compares the raw values, so
+    one null beside one number raises ``TypeError``, and because
+    ``templates/job_detail.html`` includes the results partial through a bare
+    ``{% include tool_results_partial %}`` that exception 500s the whole
+    results page. Only a MIXED column raises: Jinja's key is a list and list
+    comparison short-circuits on ``==``, so an all-null column sorts fine and a
+    fixture that nulls every row passes against the unfixed template. Both
+    cases are pinned in tests/test_results_sort_nullable.py.
+
+    ``attribute`` is a dotted path read with ``Mapping.get`` at each step
+    ("scores.ipTM", "rank"). These partials build plain dicts, so there is no
+    attribute-access fallback: a non-Mapping partway down the path reads as
+    unmeasured rather than as an object to getattr.
+
+    A row whose key is not a finite real number -- null, absent, a string, a
+    bool, NaN, inf, or an int too large to be a float -- sorts LAST in BOTH
+    directions. That is why descending negates the value instead of passing
+    ``reverse=`` to ``sorted``: ``reverse=True`` over a (missing, value) tuple
+    would lift the unmeasured rows to the top. Ties keep input order either
+    way, which is what boltz2_results.html's "designs with equal ipTM keep
+    their submission order" relies on.
+    """
+    def key(row: Mapping[str, Any]) -> tuple[int, float]:
+        value: Any = row
+        for part in attribute.split("."):
+            value = value.get(part) if isinstance(value, Mapping) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return (1, 0.0)
+        try:
+            number = float(value)
+        except OverflowError:
+            # A JSON int wider than a float. Unmeasured beats raising: this
+            # function exists so that the results page cannot 500 on its
+            # own sort key.
+            return (1, 0.0)
+        if not math.isfinite(number):
+            return (1, 0.0)
+        return (0, -number if reverse else number)
+
+    return sorted(rows, key=key)

@@ -28,6 +28,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, ranking, score_legends
 from shared import pdb_bfactors
+from shared.jobs import display_rows
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -40,6 +41,10 @@ _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    # candidate_table.html coerces its own rows so a row that is not a
+    # Mapping cannot reach the `.get` calls in it. This env renders that
+    # macro outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["metric_glossary"] = metric_glossary.GLOSSARY
     env.globals["score_legends_for"] = score_legends.score_legends_for
@@ -1489,8 +1494,15 @@ def test_the_download_label_is_the_extension_the_row_actually_serves(
 def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
     """job.result is container output, so the key's TYPE is not ours.
 
-    Five of the fourteen tools build their keys container-side,
-    outside this repo. Three separate expressions in the macro abort
+    bindcraft, boltzgen, pxdesign, rfantibody and rfdiffusion ship no
+    run_pipeline.py and no image definition in this repo, so whatever
+    key they emit is built container-side. Their committed fixtures are
+    not a second source: pxdesign's 25 candidates and rfdiffusion's 8
+    carry rank and scores only. rfdiffusion's meta.py says its
+    container does return a pdb_key per candidate and that capture
+    dropped it; pxdesign's records the same scores-only shape without
+    saying whether a key was ever there.
+    Three separate expressions in the macro abort
     the WHOLE render -- the results page, not one cell -- on a
     non-str: `| urlencode` raises ValueError on a list, and
     `'.' in pdb_key` raises TypeError on an int. A first attempt

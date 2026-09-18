@@ -35,6 +35,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, pdb_bfactors, ranking, refold, score_legends
+from shared.jobs import display_rows
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -44,6 +45,10 @@ _TEMPLATES = _ROOT / "templates"
 
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    # candidate_table.html coerces its own rows so a row that is not a
+    # Mapping cannot reach the `.get` calls in it. This env renders that
+    # macro outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["metric_glossary"] = metric_glossary.GLOSSARY
     env.globals["score_legends_for"] = score_legends.score_legends_for

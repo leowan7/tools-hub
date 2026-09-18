@@ -15,7 +15,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output = job.result or {} %}
-{% set raw_designs = output.get('designs', []) %}
+{% set raw_designs = display_rows(output.get('designs')) %}
 {% set plddt  = output.get('plddt_per_residue') or [] %}
 {% set ptm    = output.get('ptm') %}
 {% set iptm   = output.get('iptm') %}
@@ -67,7 +67,7 @@
         },
     }) %}
   {% endfor %}
-  {% set candidates = candidates | sort(attribute='scores.mean_pLDDT', reverse=True) %}
+  {% set candidates = candidates | sort_by_number('scores.mean_pLDDT', reverse=True) %}
   {% set columns = ['mean_pLDDT', 'ipTM', 'pTM', 'AA', 'chains'] %}
 
   <div class="panel" style="margin-top:1rem;">
@@ -242,12 +242,59 @@
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
       {% if pdb_b64 %}
-        <a href="{{ url_for('jobs.af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
-        <a href="{{ url_for('jobs.af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
+        <a id="af2-dl-pdb" href="{{ url_for('jobs.af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
+        <a id="af2-dl-pae" href="{{ url_for('jobs.af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
         <a href="{{ url_for('tools.tool_form', tool='mpnn') }}?resample_from={{ job.id }}" class="btn-secondary" style="margin-left:0.5rem;"
            title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">
           Resample sequence with MPNN
         </a>
+
+        {# Neither download route sets Content-Disposition on a refusal, and
+           these anchors carry no `download` attribute, so an unguarded click
+           NAVIGATES to the bare body -- off this page, its NGL viewer and the
+           metrics above. The refusal a stale tab gets does not even say that much:
+           @login_required answers a dead session with a 302 to /login
+           (shared/auth.py login_required), which a browser follows into a
+           login form with nothing on it about a download. So the click is
+           probed and the answer is written here instead.
+
+           .error-box, not Scout's .error-message: that one is defined in
+           static/scout.css, which base.html does not load here. It sets
+           colour, border and padding and no display, so borrowing it would
+           not hide the refusal -- it would strip the error framing and
+           leave it reading as body text. The class carried here is checked
+           against static/style.css by
+           tests/test_af2_download_refusals.py
+           test_the_surface_is_styled_by_the_stylesheet_this_page_loads. #}
+        <p id="af2-download-error" class="error-box" aria-live="polite"
+           style="margin-top:0.75rem;margin-bottom:0;" hidden></p>
+        <script src="{{ url_for('static', filename='js/scout-download.js') }}"></script>
+        <script>
+          (function () {
+            // Unhide BEFORE writing: aria-live announces a CHANGE to a region
+            // already in the tree, and this ships hidden, so text-then-unhide
+            // arrives as initial content and is never read out. An empty
+            // message retires the surface -- the guard clears it at the start
+            // of every click, so a download that succeeds after a refusal does
+            // not leave the old complaint on screen. The order is held by
+            // tests/test_af2_download_refusals.py
+            // test_the_surface_is_unhidden_before_it_is_written. No
+            // scrollIntoView: unlike Scout's showDownloadError
+            // (templates/scout/index.html), this surface renders directly
+            // under the buttons.
+            function showDownloadError(msg) {
+              var el = document.getElementById('af2-download-error');
+              el.hidden = !msg;
+              el.textContent = msg || '';
+            }
+            var pdb = document.getElementById('af2-dl-pdb');
+            var pae = document.getElementById('af2-dl-pae');
+            if (window.bindGuardedDownload) {
+              bindGuardedDownload(pdb, showDownloadError);
+              bindGuardedDownload(pae, showDownloadError);
+            }
+          }());
+        </script>
       {% endif %}
     </div>
     {% endif %}

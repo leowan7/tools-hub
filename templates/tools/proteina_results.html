@@ -12,13 +12,16 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output     = job.result or {} %}
-{# ``or []``, not ``get(..., [])``: the default applies only when the key is
-   ABSENT, so a stored ``"candidates": null`` returns None — and the numbering
-   loop below sits outside the ``{% if candidates %}`` the panel is guarded by,
-   so a null there stopped rendering the whole page with "'NoneType' object is
-   not iterable". Both writers emit a list today; this is the guard, not a
+{# ``display_rows``, not ``get(..., [])``: the default applies only when the
+   key is ABSENT, so a stored ``"candidates": null`` returns None — and the
+   numbering loop below sits outside the ``{% if candidates %}`` the panel is
+   guarded by, so a null there stopped rendering the whole page with
+   "'NoneType' object is not iterable". That same loop calls `.get` on every
+   row before the macro ever runs, so the macro's own coercion is too late to
+   help it; display_rows answers both, and leaves the list's length and order
+   alone. Both writers emit a list of dicts today; this is the guard, not a
    report of a live failure. #}
-{% set candidates = output.get('candidates') or [] %}
+{% set candidates = display_rows(output.get('candidates')) %}
 {% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd'] %}
 
 {# WHICH RESIDUE NUMBERING THE DOWNLOADED FILES CARRY. Upstream renumbers every

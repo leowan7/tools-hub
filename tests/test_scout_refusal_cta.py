@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = REPO_ROOT / "templates" / "scout" / "index.html"
 HARNESS = REPO_ROOT / "tests" / "js" / "scout_refusal_harness.cjs"

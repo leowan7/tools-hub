@@ -135,7 +135,7 @@
 {% set is_antibody        = output.get('is_antibody', preset == 'scfv') %}
 {% set target_label       = output.get('target_label') or output.get('target_name') or 'target' %}
 {% set binder_label       = output.get('binder_label') or output.get('binder_name') or '—' %}
-{% set raw_designs        = output.get('designs', []) %}
+{% set raw_designs        = display_rows(output.get('designs')) %}
 {% set trajectory_steps   = output.get('trajectory_steps') %}
 {% set tier               = output.get('tier') %}
 {% set runtime_seconds    = output.get('runtime_seconds') %}
@@ -152,7 +152,7 @@
    globally re-ranked across seeds, seed-tagged in each scores dict).
    Fall back to a local reshape of designs[] for legacy/single-seed
    outputs that pre-dated the candidates contract. #}
-{% set output_candidates = output.get('candidates') %}
+{% set output_candidates = display_rows(output.get('candidates')) %}
 {% if output_candidates %}
   {% set candidates = output_candidates %}
 {% else %}
@@ -174,11 +174,6 @@
         'pI': d.get('isoelectric_point') if not is_antibody else none,
     } %}
     {% set _ = _scores.update({'CDR_iPTM_proxy': _proxy} if is_antibody else {'iPTM_proxy': _proxy}) %}
-    {# ``_sort_iptm``: sorting on scores.ipTM directly raises TypeError — and
-       500s the whole results page — the moment ONE design has a null iPTM
-       and another has a number, which happens whenever the real-iPTM critic
-       row is missing for a single design. Sort on a defaulted mirror
-       instead, with unmeasured last. #}
     {% set _ = candidates.append({
         '_source_index': loop.index0,
         'rank': d.get('rank'),
@@ -187,10 +182,9 @@
         'scores': _scores,
         'sequence': d.get('sequence'),
         'designed_sequence': d.get('designed_sequence'),
-        '_sort_iptm': d.get('iptm') if d.get('iptm') is number else -1,
     }) %}
   {% endfor %}
-  {% set candidates = candidates | sort(attribute='_sort_iptm', reverse=True) %}
+  {% set candidates = candidates | sort_by_number('scores.ipTM', reverse=True) %}
 {% endif %}
 
 {# The best design is the top-iPTM design INSIDE the best non-empty quality

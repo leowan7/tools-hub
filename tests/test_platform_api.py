@@ -19,6 +19,8 @@ from flask import Flask
 from shared.api_keys import APIKeyContext
 from tools.platform_api import platform_api_bp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _build_app() -> Flask:
     app = Flask(__name__)

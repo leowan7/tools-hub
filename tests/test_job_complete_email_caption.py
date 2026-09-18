@@ -306,9 +306,9 @@ def test_the_boltzgen_caption_is_in_the_mail_and_describes_only_the_mail(chain):
     # failed — see tests/test_boltzgen_iptm_has_no_cofold_bar.py.
     #
     # The underlying rule survives: a one-line interpretation has to leave the
-    # reader able to act. For 31 legends that is still a threshold pair. For
-    # this one it is that the familiar scale is the wrong one and a re-fold is
-    # what settles it, so that is what gets asserted.
+    # reader able to act. For a legend with a bar that is still a threshold
+    # pair. For this one it is that the familiar scale is the wrong one and
+    # a re-fold is what settles it, so that is what gets asserted.
     assert "0.7 does not apply" in caption, (
         "the caption states a number without saying the 0.7 scale every other "
         f"tool here uses is not the one to read it on: {caption!r}"
@@ -690,3 +690,91 @@ def test_no_legend_text_describes_a_table():
         "no legend carries a caveat any more, so the ``caveat`` half of this "
         "check guards nothing; re-point it rather than leave it passing"
     )
+
+
+# Postgres orders jsonb object keys by (length, then bytewise), so THIS is the
+# order a proteina result is read back in -- not the order the container wrote
+# it. ``af2_iptm`` leads and ``binder_scrmsd`` is last, which is why the order
+# is spelled out here instead of left to whatever a literal happens to hold:
+# the chooser takes the FIRST scored column carrying a legend, so a fixture in
+# container order would let a wrongly-registered ``af2_iptm`` pass unnoticed.
+# The values are the rank-1 row of tools/proteina/example/result.json.
+_PROTEINA_SCORES_AS_STORED = {
+    "af2_iptm": 0.8906,
+    "af2_plddt": 0.885,
+    "rf3_score": None,
+    "total_reward": -0.1827,
+    "binder_scrmsd": 1.3234,
+}
+
+
+def _proteina_job() -> ToolJob:
+    """One succeeded protein_binder design, shaped as the web tier stores it."""
+    return ToolJob.from_row({
+        "id": str(uuid.uuid4()),
+        "user_id": str(uuid.uuid4()),
+        "tool": "proteina",
+        "preset": "protein_binder",
+        "status": "succeeded",
+        "inputs": {"target_chain": "A"},
+        "result": {"candidates": [{
+            "rank": 1,
+            "name": "bon_orig9_r0",
+            "pdb_key": "designs/design_0.pdb",
+            "scores": dict(_PROTEINA_SCORES_AS_STORED),
+        }]},
+        "error": None,
+        "modal_function_call_id": "fc-stub-p",
+        "job_token": "t" * 64,
+        "gpu_seconds_used": 3447,
+        "created_at": "2026-09-12T12:00:00Z",
+        "started_at": "2026-09-12T12:00:01Z",
+        "completed_at": "2026-09-12T13:00:00Z",
+    })
+
+
+def test_the_proteina_mail_captions_the_one_column_that_can_carry_a_sentence():
+    """proteina reaches this chooser -- it stores a ranked ``candidates[]`` --
+    and until a legend existed it mailed a bare number under a blank caption.
+
+    The chooser walks the stored scores and takes the first that HAS a legend,
+    so this also asserts it walks PAST ``af2_iptm``, ``af2_plddt`` and
+    ``total_reward``. Those are unregistered on purpose: each names a
+    different quantity under the ligand preset, and a legend is keyed on
+    (tool, column) with no preset in it. shared/score_legends.py argues it
+    beside the entry.
+
+    Driven through ``_sent``/``_bodies`` rather than off the returned tuple,
+    for this file's own reason: the caption is assembled in one module and
+    rendered in another, and the defect lived in the join.
+    """
+    job = _proteina_job()
+    label, value, caption, _pdb, judgement, _pos = (
+        email_mod._top_candidate_summary(job=job, tone="success")
+    )
+    assert (label, value) == ("binder_scrmsd", "1.323"), (label, value)
+    assert caption == SCORE_LEGENDS[("proteina", "binder_scrmsd")]["explanation"]
+
+    # NO BAR IS INVENTED. proteina declares no GATE_COLUMNS entry and the
+    # legend carries no ``good``, so the judgement slot stays empty rather
+    # than printing "meets" off a threshold nobody calibrated.
+    assert judgement == "", judgement
+
+    for part, body in _bodies(_sent(job)).items():
+        assert caption in body, (part, body)
+        assert "1.323" in body, (part, body)
+
+
+def test_the_other_proteina_columns_stay_unregistered():
+    """The refusal, pinned. Registering any of these gives the mail a caption
+    that is false under one of the two scoring presets -- and, because the
+    chooser takes the first legended column in jsonb order, gives it the
+    headline number too. tests/test_proteina_smoke.py::TestRewardParse holds
+    the two fixtures those presets parse to; ``total_reward`` does not even
+    share a sign between them.
+    """
+    registered = {
+        col for col in _PROTEINA_SCORES_AS_STORED
+        if get_legend("proteina", col) is not None
+    }
+    assert registered == {"binder_scrmsd"}, registered

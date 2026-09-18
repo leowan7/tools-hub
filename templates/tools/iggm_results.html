@@ -8,7 +8,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output            = job.result or {} %}
-{% set raw_designs       = output.get('designs', []) %}
+{% set raw_designs       = display_rows(output.get('designs')) %}
 {% set run_task          = output.get('run_task') %}
 {% set tier              = output.get('tier') %}
 {% set antigen_chain     = output.get('antigen_chain') %}
@@ -37,7 +37,7 @@
   }) %}
 {% endfor %}
 
-{% set candidates = candidates | sort(attribute='scores.epitope_contacts', reverse=True) %}
+{% set candidates = candidates | sort_by_number('scores.epitope_contacts', reverse=True) %}
 {% set columns = ['epitope_contacts'] %}
 
 {# Top summary panel. #}

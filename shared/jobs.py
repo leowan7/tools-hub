@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -114,8 +115,9 @@ def candidate_records(result: Optional[dict]) -> list:
 
     ``candidates`` is preferred when both are present (esmfold2_design emits
     both). The result is normalized for the legacy wrapped shape first, so a
-    ``result.output.candidates`` row is read the same as a flat one. Returns
-    ``[]`` for any other shape.
+    ``result.output.candidates`` row is read the same as a flat one. A tuple
+    is read like a list and copied, so the return is always a ``list`` and
+    every row keeps its position. Returns ``[]`` for any other shape.
     """
     result = _normalize_result_shape(result)
     if not isinstance(result, dict):
@@ -124,6 +126,8 @@ def candidate_records(result: Optional[dict]) -> list:
         recs = result.get(key)
         if isinstance(recs, list):
             return recs
+        if isinstance(recs, tuple):
+            return list(recs)
     return []
 
 
@@ -149,9 +153,68 @@ def candidate_count(result: Optional[dict]) -> Optional[int]:
         return None
     for key in ("candidates", "designs"):
         recs = result.get(key)
-        if isinstance(recs, list):
+        if isinstance(recs, (list, tuple)):
             return len(recs)
     return None
+
+
+def display_rows(rows) -> list:
+    """The RENDER-layer read of a candidate list: same length, same order,
+    every row a Mapping.
+
+    :func:`candidate_records` deliberately does NOT do this, and must not.
+    Its list is indexed BY POSITION downstream: ``shared/target_results.py``
+    and ``shared/compute_campaigns.py`` stamp each row's ``_source_index``
+    from ``enumerate`` over the raw list -- skipping non-Mapping rows but
+    still counting them -- and the three ``candidate_records(job.result)``
+    call sites in ``blueprints/lab_projects.py`` index straight into it
+    through ``shared/storage.py::stage_campaign_candidates`` to stage the
+    starred design for the wet lab. Dropping a malformed row there would
+    renumber every row after it and ship the lab a DIFFERENT design from
+    the one the user starred.
+
+    So this coerces instead of filtering. A non-Mapping row becomes ``{}``,
+    which renders as a row of em dashes and leaves every later row on its own
+    index. Counts are therefore unchanged -- the malformed row is still shown
+    and still counted, which is what keeps the page, the completion email and
+    ``_source_index`` describing one list.
+
+    A tuple is read like a list -- here, and in ``candidate_records`` and
+    ``candidate_count`` above, so the page, the completion email and the
+    exports agree on how many rows a tuple holds. Narrowing this to ``list``
+    alone would render the zero-candidate empty state over rows that are all
+    perfectly good: a silent wrong answer, and worse than the crash it
+    replaces, because the page still returns 200 and nothing reports it.
+    Widening it here alone would have preserved a divergence rather than
+    created one: before this change the partials iterated the raw value, so
+    a tuple already rendered rows the email did not count and the download
+    did not contain. Routing them all through one reader is what made that
+    fixable in one place. Both are pinned by
+    tests/test_malformed_candidate_row_render.py::
+    test_a_tuple_of_good_rows_is_not_blanked and
+    ::test_a_tuple_container_is_counted_the_same_everywhere. Anything that is
+    not a row sequence -- a dict, a scalar, ``None`` -- still returns ``[]``.
+
+    Some sibling readers still gate on ``list`` alone -- in this file, in
+    shared/email.py and in blueprints/admin.py, over ``candidates`` and over
+    the ``sequences`` array the mpnn partial renders through this same
+    function. None of them renders the candidate table this change is about,
+    and a ``list`` gate skips its branch against a tuple rather than counting
+    it wrong. Measured, a tuple under ``sequences`` drops ``_result_summary``
+    from "2 sequences returned with score and recovery" to the generic "Your
+    run finished"; its ``candidates`` wording already routes through
+    :func:`candidate_records` above. Naming them one by one only drifts --
+    three drafts of this paragraph miscounted or miscategorised them. What
+    these arrays want is one shared shape predicate and one shared test,
+    which this change does not add.
+
+    Hardening, not a report of a live failure: no in-repo producer writes a
+    non-dict row. The render layer was simply the only reader with no guard,
+    while the aggregators above it already had one.
+    """
+    if not isinstance(rows, (list, tuple)):
+        return []
+    return [r if isinstance(r, Mapping) else {} for r in rows]
 
 
 def headline_candidate(
