@@ -174,11 +174,6 @@
         'pI': d.get('isoelectric_point') if not is_antibody else none,
     } %}
     {% set _ = _scores.update({'CDR_iPTM_proxy': _proxy} if is_antibody else {'iPTM_proxy': _proxy}) %}
-    {# ``_sort_iptm``: sorting on scores.ipTM directly raises TypeError — and
-       500s the whole results page — the moment ONE design has a null iPTM
-       and another has a number, which happens whenever the real-iPTM critic
-       row is missing for a single design. Sort on a defaulted mirror
-       instead, with unmeasured last. #}
     {% set _ = candidates.append({
         '_source_index': loop.index0,
         'rank': d.get('rank'),
@@ -187,10 +182,9 @@
         'scores': _scores,
         'sequence': d.get('sequence'),
         'designed_sequence': d.get('designed_sequence'),
-        '_sort_iptm': d.get('iptm') if d.get('iptm') is number else -1,
     }) %}
   {% endfor %}
-  {% set candidates = candidates | sort(attribute='_sort_iptm', reverse=True) %}
+  {% set candidates = candidates | sort_by_number('scores.ipTM', reverse=True) %}
 {% endif %}
 
 {# The best design is the top-iPTM design INSIDE the best non-empty quality
