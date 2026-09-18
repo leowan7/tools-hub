@@ -72,9 +72,13 @@ this guard and are a separate sweep, not a silent hole. Every count below is
 measured over the tree MINUS this file: the examples spelled out here are
 themselves instances, so a re-measurement that includes them runs high.
 
-  * A continuation ``::symbol`` whose path is the one named a line or two
-    above (``shared/exports.py:149-151`` lists three tests that way). 17 of
-    these exist. They cannot be resolved by inheriting the nearest path
+  * A continuation ``::symbol`` whose path is named a line or two above AND
+    is already spoken for by a citation of its own -- in
+    ``shared/exports.py:148-151`` the path carries ``TestNonStringPdbKey`` and
+    three more tests follow on bare ``::`` lines, unreachable because the path
+    was consumed by its own match. 17 of these exist, and every one is that
+    shape. A path left BARE at the end of a line is a different shape and IS
+    read, by the ``_GAP`` in the token above; none of the 17 is that. They cannot be resolved by inheriting the nearest path
     without also matching ``::after``, ``::ffff`` and GitHub Actions'
     ``::error``, which a scan of the tree finds 21 of -- a heuristic whose own
     misses would be silent, which is what this file refuses to ship.
