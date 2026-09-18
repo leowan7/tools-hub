@@ -2341,8 +2341,9 @@ def judge(
             # ``good`` is indexed unconditionally below. Deliberately BELOW
             # the two branches above rather than beside the None check: a
             # declared placeholder must still reach ``unusable``, which
-            # shared/ranking.py:431 and shared/jobs.py:223 both read to sink
-            # those rows. Same pin as above makes this unreachable too.
+            # shared/ranking.py::annotate_rows and
+            # shared/jobs.py::headline_candidate both read to sink those
+            # rows. Same pin as above makes this unreachable too.
             unmeasured.append(label)
             continue
         good = float(legend["good"])

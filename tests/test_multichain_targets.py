@@ -514,7 +514,8 @@ def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
 # half, and it has no chain of its own — so something must attribute it, and
 # for a long time two components attributed it differently:
 #
-#   tools/base.py:108     bare 520 on "A,B"  ->  "A520"   (FIRST named chain)
+#   tools/base.py::parse_hotspot_residues
+#                         bare 520 on "A,B"  ->  "A520"   (FIRST named chain)
 #   _check_hotspots       bare 520 on "A,B"  ->  in range on the UNION
 #
 # On any target whose chains carry different numbering — a Fab H/L, any
@@ -795,10 +796,11 @@ def test_the_three_hotspot_validators_give_the_same_answer():
     # was true and the second was not: before multi-chain there was only ever
     # one named chain, so "the union" and "the first chain" were the same
     # sentence, and generalising to the union picked a rule no consumer
-    # implements. tools/base.py:108 sends a bare 505 as "A505"; proteina's
-    # _parse_hotspots sends it as contig_chains[0] + 505. 505 exists on chain B
-    # alone, so all three used to green-light a token that addresses chain A —
-    # which runs 1..40 — and the run was funded and then died in the container.
+    # implements. tools/base.py::parse_hotspot_residues sends a bare 505 as
+    # "A505"; proteina's _parse_hotspots sends it as contig_chains[0] + 505.
+    # 505 exists on chain B alone, so all three used to green-light a token
+    # that addresses chain A — which runs 1..40 — and the run was funded and
+    # then died in the container.
     assert _all_three([5]) == (True, True, True)          # 5 IS on chain A
     assert _all_three([505]) == (False, False, False)     # 505 is on B only
     # A bare number on neither chain still fails everywhere.

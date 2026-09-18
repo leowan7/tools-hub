@@ -63,7 +63,7 @@ def _designs_shape() -> dict:
 
     Copied from what the pipelines actually persist, NOT invented: metrics sit
     at the record ROOT under the pipeline's own lowercase names, and there is
-    no nested ``scores`` dict (see tools/boltz2/run_pipeline.py:652-666 and
+    no nested ``scores`` dict (see tools/boltz2/run_pipeline.py::main and
     the equivalents in af2/colabfold/esmfold/iggm). An earlier version of this
     fixture gave designs rows a nested ``scores``, which made the CSV and FASTA
     assertions below pass against a shape no tool emits.

@@ -8,9 +8,9 @@ was bounced to /login?next=/library-planner.
 
 Safe to open because the handler spends nothing and persists nothing:
 ``plan_library`` is pure arithmetic over the posted form
-(tools/library_planner/planner.py:141) with no GPU call, no wallet
+(tools/library_planner/planner.py::plan_library) with no GPU call, no wallet
 charge, no job row and no storage write. The same reasoning opened
-/developability (blueprints/tools.py:100) and these tests mirror
+/developability (blueprints/tools.py::developability) and these tests mirror
 tests/test_developability_anonymous.py.
 
 Both halves are pinned: the routes answer anonymously, AND the input

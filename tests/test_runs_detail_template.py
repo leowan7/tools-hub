@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import pytest
 from flask import render_template
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):

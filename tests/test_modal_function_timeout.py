@@ -180,8 +180,9 @@ def test_status_route_terminalises_a_timeout_poll(status_route):
     # succeeded off Storage rather than refunded with its results discarded.
     # probe_modal=False: recovery must not spend a SECOND bounded 90 s Modal
     # call in this request -- two stacked hops is 180 s, past gunicorn's 120 s
-    # worker watchdog (gunicorn.conf.py:164). The re-probe could only re-raise
-    # the same FunctionTimeoutError and reach the same "unknown" verdict.
+    # worker watchdog (gunicorn.conf.py::timeout). The re-probe could only
+    # re-raise the same FunctionTimeoutError and reach the same "unknown"
+    # verdict.
     assert calls == [("timeout_stuck_job", "job-1", False)], (
         "a 'timeout' poll left the job row untouched; the wallet hold is "
         "neither settled nor released until the 6h stuck-job sweeper"

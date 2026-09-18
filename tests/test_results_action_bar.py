@@ -195,7 +195,7 @@ def test_the_shortlist_and_export_controls_are_all_secondary():
     # the container wrote, and that is not always .pdb -- boltzgen writes
     # .cif for four of the five rows in tools/boltzgen/example/result.json,
     # and opendde falls back to .cif whenever its cif->pdb conversion
-    # fails (tools/opendde/run_pipeline.py:500-509; all four rows in its
+    # fails (tools/opendde/run_pipeline.py::main; all four rows in its
     # own example converted, so they are .pdb).
     # The label is only this test's handle on the control -- what it
     # pins is that the control is SECONDARY, which is unchanged.

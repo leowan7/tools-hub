@@ -34,6 +34,8 @@ from tools.esmfold2_design.run_pipeline import (
     _pick_best,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # Job verify242-bs6-1789054528, 2026-09-10 15:45 UTC. The log pairs these
 # explicitly ("proxy 0.618 with ipTM 0.436" and so on). The 0.396/0.400 pair
 # is the one place the pairing is ambiguous in the source text, and it does
@@ -625,9 +627,9 @@ def _email_scfv_cand(name, iptm, proxy, rank, filter_status):
     """A candidate in the key order run_pipeline.py stores.
 
     The ORDER matters to this surface and to no other:
-    shared/email.py:367-370 leads with the first stored column that has a
+    shared/email.py::_top_candidate_summary leads with the first stored column that has a
     registered legend, and this change gave ``CDR_iPTM_proxy`` its first one. ipTM is written first
-    (tools/esmfold2_design/run_pipeline.py:1181), so the headline column does
+    (tools/esmfold2_design/run_pipeline.py::_run), so the headline column does
     not move -- asserted below, because the two files have no other link.
     """
     return {
@@ -716,11 +718,11 @@ def test_a_gate_leg_renders_at_the_precision_the_share_card_prints():
     raw 0.4951 rounded to "0.50", cleared the 0.50 bar, and published as
     "CDR distogram proxy 0.495" -- measured 2026-09-14 by setting the entry
     back to ".2f" and driving the chain below, and recorded at
-    shared/metric_glossary.py:337.
+    shared/metric_glossary.py::_FORMAT.
 
     Both legs of this bar are ".3f", so the card prints the number it judged,
-    and templates/components/candidate_table.html:882 gives the results cell
-    the same width so the table does not contradict the verdict beside it.
+    and templates/components/candidate_table.html's ``%.3f`` branch gives
+    the cell the same width so the table does not contradict the verdict.
     The repo's other seven gate legs are coarser and predate this change;
     this test does not assert anything about them.
     """
@@ -747,8 +749,8 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
     a results cell rendered coarser than that prints one figure while the
     verdict quotes another. A raw 0.4949 showed "0.49" in the cell under a
     verdict reading "CDR distogram proxy 0.495, below 0.5" until this column
-    joined ipTM in the ``.3f`` branch at
-    templates/components/candidate_table.html:882.
+    joined ipTM in the ``%.3f`` branch of
+    templates/components/candidate_table.html.
 
     THE PAGE PRINTS THE PROXY TWICE. The best-design header above the
     sequence carries its own literal formats
@@ -781,8 +783,8 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
         "CDR distogram proxy 0.495, below 0.5"
     )
 
-    # The minibinder header keeps .2f, because its column keeps the table's
-    # .2f else-branch (templates/components/candidate_table.html:904).
+    # The minibinder header keeps .2f, because its column keeps the format
+    # chain's final ``{% else %}`` in templates/components/candidate_table.html.
     minibinder = _render(
         flask_app, is_antibody=False,
         scores={"ipTM": 0.90, "iPTM_proxy": 0.4949, "final_loss": 1.0,
