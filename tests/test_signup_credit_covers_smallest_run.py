@@ -1,8 +1,8 @@
 """The signup credit must admit every tool's SMALLEST REAL RUN.
 
 ``SIGNUP_CREDIT_USD`` was historically sized against the dearest displayed PILOT
-PRICE (``tests/test_help_tool_guides.py::test_signup_credit_actually_covers
-_every_pilot`` still checks that, and it is the weaker of the two). What
+PRICE -- ``tests/test_help_tool_guides.py::test_signup_credit_actually_covers_every_pilot``
+still checks that, and it is the weaker of the two. What
 ultimately admits a job is the CUSHIONED HOLD: ``shared/wallet_guard`` reserves
 ``cushioned_hold_usd`` via ``shared.wallet.reserve_hold``, which refuses on
 ``balance < hold`` before any SQL runs. On any tool carrying a
