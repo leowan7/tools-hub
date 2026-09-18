@@ -38,6 +38,7 @@ rest of the app. No extra configuration.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Optional
 
 from shared import pdb_bfactors as _pdb_bfactors
@@ -225,7 +226,12 @@ def stage_campaign_candidates(
     for idx in indices:
         if idx < 0 or idx >= len(candidates):
             continue
-        cand = candidates[idx] or {}
+        # `or {}` alone does not neutralise a TRUTHY non-dict: the `.get`
+        # below would raise on a bare string. Same coercion the render
+        # layer applies, at the one sink all three lab-handoff callers
+        # route through -- the three `candidates=candidate_records(
+        # job.result)` call sites in blueprints/lab_projects.py.
+        cand = candidates[idx] if isinstance(candidates[idx], Mapping) else {}
         raw_key = cand.get("pdb_key") or f"candidate_{idx}.pdb"
         encoded = cand.get("pdb_content_b64")
         data = None

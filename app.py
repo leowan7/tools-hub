@@ -95,6 +95,7 @@ from shared.jobs import (
     cancel_job,
     complete_job,
     create_job,
+    display_rows,
     get_job,
     list_campaign_labels_for_user,
     list_jobs_for_user,
@@ -486,6 +487,19 @@ def create_app() -> Flask:
     # render_template and 500s the results page. See
     # shared.ranking.sort_by_number.
     flask_app.jinja_env.filters["sort_by_number"] = _ranking.sort_by_number
+
+    # The results partials read job.result DIRECTLY rather than through
+    # candidate_records, so this is the render layer's only guard against
+    # a candidate row that is not a dict. A global rather than a filter
+    # because results_shell.html is imported WITHOUT context, and both
+    # forms resolve off the environment either way.
+    #
+    # It depends on sort_by_number above: the {} it substitutes for a bad
+    # row carries no score, which is exactly the null-beside-a-number the
+    # built-in sort(attribute=) raised on. Pinned by
+    # tests/test_malformed_candidate_row_render.py::
+    # test_a_null_metric_beside_a_number_cannot_500_the_sort.
+    flask_app.jinja_env.globals["display_rows"] = display_rows
     # Exposed so the target page can tell a PAUSED run from a still-running one
     # without a second copy of the status set in markup. It must stay
     # CAMPAIGN_TERMINAL_STATUSES and never CAMPAIGN_STATUSES: the two disagree
