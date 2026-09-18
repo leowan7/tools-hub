@@ -27,6 +27,8 @@ import pytest
 
 from shared.workspaces import PreflightResult, Workspace
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # A valid ColabFold standalone FASTA (ubiquitin, 76 aa, canonical AA).
 # The smoke preset was removed, so every submit must carry a real

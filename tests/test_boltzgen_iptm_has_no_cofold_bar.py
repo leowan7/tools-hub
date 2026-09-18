@@ -151,6 +151,8 @@ from shared import metric_glossary, ranking  # noqa: E402
 from tools import base as tool_base  # noqa: E402
 from tools.boltzgen import meta as _bg_meta  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 _GLOBAL_IPTM_RANGE = metric_glossary.GLOSSARY["ipTM"]["good_range"]
 

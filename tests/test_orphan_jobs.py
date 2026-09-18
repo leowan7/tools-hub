@@ -28,6 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _synthetic_pdb_bytes(num_residues: int = 80, chain: str = "A") -> bytes:
     """Produce a minimal-but-valid PDB with ``num_residues`` ALA on chain.

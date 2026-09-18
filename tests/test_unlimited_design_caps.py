@@ -24,6 +24,8 @@ import pytest
 
 import shared.compute_campaigns as cc
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 

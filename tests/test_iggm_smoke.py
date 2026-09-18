@@ -29,6 +29,8 @@ import pytest
 from tools import iggm as ig
 from tools.base import get as get_adapter
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # A valid heavy chain (>= ANTIBODY_LEN_MIN aa, canonical) reused across tests.
 HEAVY = (

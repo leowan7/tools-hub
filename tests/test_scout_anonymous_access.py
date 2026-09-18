@@ -30,6 +30,8 @@ from scout import ratelimit
 from scout.flags import _CSV_COLUMNS_BASE
 from scout.jobs import count_job_dirs, create_job_dir, read_owner
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TMP = Path("tmp")
 
 # The scoring pipeline needs freesasa, which is a C extension this repo does

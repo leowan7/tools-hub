@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 import pytest
 from flask import render_template
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
