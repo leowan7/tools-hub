@@ -7,8 +7,8 @@ caller can close the tab and receive the final results by email.
 BindCraft is structure-based de novo binder design built on
 JAX + AlphaFold2 multimer + ColabDesign. Every run requires a
 caller-supplied target PDB (``requires_pdb=True``). The only preset
-shipped is ``pilot`` (caller-controlled ``num_designs`` 1-24,
-default 8).
+shipped is ``pilot`` (caller-controlled ``num_designs`` 1-500,
+default 4 -- the range :func:`validate` below enforces at :83).
 """
 
 from __future__ import annotations
@@ -75,10 +75,11 @@ def validate(
     except ValueError:
         return None, "num_designs must be a whole number."
     # Tier-collapse PR: raised the per-job cap from 24 to 500. BindCraft
-    # trajectories are expensive (~30 min each on A100-80GB), so the
-    # wallet $500 hard cap typically constrains real campaigns long
-    # before this validator's ceiling. Bigger campaigns top up the
-    # wallet.
+    # designs are expensive (~10 min each on A100-80GB -- job 1c4d5803
+    # billed 1170 GPU-s for 2 designs, reconciled against the wallet
+    # ledger in meta.py's worked-example header), so the wallet $500
+    # hard cap typically constrains real campaigns long before this
+    # validator's ceiling. Bigger campaigns top up the wallet.
     if num_designs < 1 or num_designs > 500:
         return None, "num_designs must be between 1 and 500."
 
@@ -122,7 +123,7 @@ adapter = ToolAdapter(
     label="BindCraft",
     blurb=(
         "Upload your target structure, mark the residues you want "
-        "gripped, and get back new mini-proteins of 60 to 150 residues "
+        "gripped, and get back new mini-proteins of 50 to 150 residues "
         "built to grip them, already refolded and filtered. Sessions "
         "run up to four hours; results are emailed when they finish."
     ),
