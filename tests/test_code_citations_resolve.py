@@ -14,7 +14,7 @@ a citation that cannot be resolved FAILS rather than being skipped. The only
 exceptions are ``_OUTSIDE_THIS_REPO`` and lines marked ``not-a-citation``,
 both enumerated below.
 
-Three things the guard deliberately accepts, because tightening any of them
+Four things the guard deliberately accepts, because tightening any of them
 buys no protection against a rename and would churn prose instead:
 
   * A bare symbol may be defined at ANY depth -- a method, a nested ``def``,
@@ -37,6 +37,11 @@ buys no protection against a rename and would churn prose instead:
     here to suit this repo's vantage point fails
     ``.github/workflows/contracts-drift.yml``. Stripping keeps the symbol
     CHECKED, which exempting the path would not.
+  * A template path is resolved the way Jinja resolves it, relative to the
+    loader root: ``components/results_shell.html`` is
+    ``templates/components/results_shell.html``. Both paths written that way
+    are real files, so the alternative was not an exemption but a wrong
+    claim that they live outside this repo.
 
 The DOTTED form is checked strictly: ``tests/test_data_retention.py::_FakeTable.is_``
 requires ``is_`` inside ``_FakeTable``, not merely somewhere in the file.
@@ -46,17 +51,35 @@ exemption: it is written in the LINE form (``lab_projects.py:521``) precisely
 because it is showing what a line citation costs, and this guard only reads
 the ``::`` form.
 
-The 56 LINE citations that point at an ``.html`` template stay in that form,
-and #309 was right to leave them. Converting them wholesale would LOSE
-precision: measured over all 56, only 10 sit inside a narrow macro
-(``candidate_table``, ``results_panel``, ``worked_example``,
-``about_reference_card``, ``preflight_panel``), 27 would collapse to
-``block content``/``block og_image`` -- a whole page body, far coarser than a
-line -- and 19 sit inside no named region at all. This guard is still why
-that is not a gap: it resolves an ``.html`` target to its
-``{% macro %}``/``{% block %}`` names and a ``.js`` target to its declared
-functions already, so any that someone does convert are checked from then on
-with no change here.
+The LINE citations that point at an ``.html`` template stay in that form, and
+#309 was right to leave them. Converting them wholesale would LOSE precision:
+measured over all of them (57 when this landed), only 10 sit inside a narrow
+macro -- ``candidate_table``, ``results_panel``, ``worked_example``,
+``about_reference_card``, ``preflight_panel``. Every other one falls inside a
+page-level ``block content``/``block og_image``, which is a whole page body
+and far coarser than the line it would replace, or inside no named region at
+all. This guard is still why that is not a gap: it resolves an ``.html``
+target to its ``{% macro %}``/``{% block %}`` names and a ``.js`` target to
+its declared functions already, so any that someone does convert are checked
+from then on with no change here.
+
+WHAT THIS DOES NOT COVER, stated rather than left as a zero. The token above
+needs a PATH. Two abbreviations in this repo elide it, so they are outside
+this guard and are a separate sweep, not a silent hole. Every count below is
+measured over the tree MINUS this file: the examples spelled out here are
+themselves instances, so a re-measurement that includes them runs high.
+
+  * A continuation ``::symbol`` whose path is the one named a line or two
+    above (``shared/exports.py:149-151`` lists three tests that way). 17 of
+    these exist. They cannot be resolved by inheriting the nearest path
+    without also matching ``::after``, ``::ffff`` and GitHub Actions'
+    ``::error``, which a scan of the tree finds 21 of -- a heuristic whose own
+    misses would be silent, which is what this file refuses to ship.
+  * A module shorthand with no extension, ``test_multichain_targets::
+    test_split_hotspot``. 17 of these exist, across 3 files, naming 5
+    modules that are all tracked. Widening the token to bare identifiers
+    would match any ``a::b`` in any file, so these convert in prose or not
+    at all.
 """
 
 from __future__ import annotations
@@ -89,10 +112,22 @@ _OUTSIDE_THIS_REPO = frozenset(
 # ``tests/test_supabase_client_guard.py``.
 _NOT_A_CITATION = "not-a-citation"
 
+# A line break either side of the ``::``. 79-column prose wraps at the nearest
+# space, and a citation is mostly space-free, so the ``::`` boundary is where
+# the wrapper lands: 25 citations across 18 files break there, both ways --
+# ``blueprints/tools.py`` then ``::_normalize_clone_pre_fill``
+# (``templates/tools/rfdiffusion_form.html:259``), and
+# ``tests/test_malformed_candidate_row_render.py::`` then
+# ``test_a_tuple_of_good_rows_is_not_blanked`` (``shared/jobs.py:245``).
+# Without this they match nothing at all, which is a blind spot reported as a
+# zero -- the failure this guard exists to prevent. Pinned by
+# ``test_a_citation_wrapped_at_the_colons_is_still_found``.
+_GAP = r"(?:\n[ \t]*(?:#|\*|//)?[ \t]*)?"
+
 _TOKEN = re.compile(
     r"(?<![A-Za-z0-9_./-])"
-    r"([A-Za-z0-9_./-]+\.(?:py|html|js))"
-    r"::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"([A-Za-z0-9_./-]+\.(?:py|html|js))" + _GAP + r"::" + _GAP + r"("
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
 )
 
 # Long snake_case names get wrapped by the 79-column prose in this repo, and a
@@ -172,13 +207,28 @@ def _py_names(rel: str) -> tuple[frozenset[str], dict]:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         }
 
+        def bound(target):
+            """Names an assignment target BINDS. A subscript/attribute binds none.
+
+            Descending with ``ast.walk`` instead harvests the base object of
+            ``os.environ["X"] = y`` and puts ``os`` -- an import -- into the
+            name set, which is the thing this file refuses to accept as a
+            definition. 14 such names across 8 files did exactly that. Pinned
+            by ``test_a_subscript_target_does_not_define_its_base_object``.
+            """
+            if isinstance(target, ast.Name):
+                yield target.id
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for element in target.elts:
+                    yield from bound(element)
+            elif isinstance(target, ast.Starred):
+                yield from bound(target.value)
+
         def module_level(body) -> None:
             for n in body:
                 if isinstance(n, ast.Assign):
                     for target in n.targets:
-                        flat.update(
-                            nd.id for nd in ast.walk(target) if isinstance(nd, ast.Name)
-                        )
+                        flat.update(bound(target))
                 elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
                     flat.add(n.target.id)
                 elif isinstance(n, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
@@ -230,6 +280,14 @@ def _candidates(citing: str, path: str) -> list[str]:
     from_parent = path.removeprefix("tools-hub/")
     if from_parent != path and from_parent in _TRACKED_SET:
         return [from_parent]
+    # Jinja addresses a template relative to the loader root, so prose written
+    # alongside ``{% include "components/results_shell.html" %}`` names the
+    # same path the engine does, without the ``templates/`` prefix. Both such
+    # paths in the tree are real files, so calling them out-of-repo would have
+    # been wrong. Pinned by ``test_a_loader_relative_template_path_resolves``.
+    from_templates = f"templates/{path}"
+    if from_templates in _TRACKED_SET:
+        return [from_templates]
     if "/" in path:
         return []
     sibling = f"{citing.rsplit('/', 1)[0]}/{path}" if "/" in citing else path
@@ -272,7 +330,7 @@ def test_every_code_citation_resolves_to_a_real_symbol():
 def test_the_scan_still_reaches_the_citations():
     """Tripwire: a broken regex or walker would otherwise pass on an empty set.
 
-    The tree carried 442 tokens when this landed. The floor is slack enough to
+    The tree carried 467 tokens when this landed. The floor is slack enough to
     delete a file's worth of prose and tight enough that a scan returning
     nothing is red.
     """
@@ -318,6 +376,47 @@ def test_a_sibling_repo_path_resolves_rather_than_being_exempted():
     # Still a real check, and still only for a path that exists.
     assert not _symbol_exists("gpu/modal_client.py", "ModalClient._build_payload_X")
     assert _candidates("contracts/rpc.py", "tools-hub/gpu/no_such_file.py") == []
+
+
+def test_a_citation_wrapped_at_the_colons_is_still_found():
+    """A break at the ``::`` must not make a citation vanish from the scan.
+
+    Both directions occur in the tree, and before ``_GAP`` both matched
+    nothing at all -- 25 citations that the guard silently never checked.
+    The reported line is the PATH's, not the continuation's.
+    """
+    at_colons = "see blueprints/tools.py\n   ::_normalize_clone_pre_fill now"
+    assert list(_citations(at_colons)) == [
+        (1, "blueprints/tools.py", "_normalize_clone_pre_fill")
+    ]
+    after_colons = "pinned by shared/jobs.py::\n    # complete_job and more"
+    assert list(_citations(after_colons)) == [(1, "shared/jobs.py", "complete_job")]
+    # The gap is ONE line break. A citation cannot reach across a blank line.
+    assert list(_citations("shared/jobs.py\n\n::complete_job")) == []
+
+
+def test_a_subscript_target_does_not_define_its_base_object():
+    """``os.environ["X"] = y`` must not put ``os`` into the name set.
+
+    ``gunicorn.conf.py`` is the live instance: ``import os`` on line 13, then
+    ``os.environ["PROMETHEUS_MULTIPROC_DIR"] = ...`` at module level on line
+    208. Nothing in that file defines ``os``.
+    """
+    assert not _symbol_exists("gunicorn.conf.py", "os")
+    # Tuple unpacking still binds, or narrowing the descent would be a hole of
+    # its own: ``SAMPLE_MIN, SAMPLE_MAX, SAMPLE_DEFAULT = 1, 4, 1``.
+    assert _symbol_exists("tools/opendde/__init__.py", "SAMPLE_MAX")
+
+
+def test_a_loader_relative_template_path_resolves():
+    """Jinja names a template without the ``templates/`` prefix, and so does
+    the prose written beside an ``{% include %}``. Both such paths are real.
+    """
+    assert _candidates(
+        "templates/components/candidate_table.html", "components/results_shell.html"
+    ) == ["templates/components/results_shell.html"]
+    # Only for a template that exists -- this is resolution, not an exemption.
+    assert _candidates("templates/x.html", "components/no_such_template.html") == []
 
 
 def test_a_wrapped_symbol_rejoins_without_moving_the_line_number():
