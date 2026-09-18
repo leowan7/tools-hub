@@ -265,41 +265,114 @@ def _fixture_scope(node: ast.AST) -> str:
     return "function"
 
 
-def _early_app_fixtures(source: str) -> frozenset[str]:
+def _module_functions(source: str) -> dict[str, ast.AST]:
+    """Every ``def`` in ``source`` by name, methods and nested defs included.
+
+    The two walks below follow bare names -- a call to ``_build()``, an
+    argument named ``tools_app`` -- and this is what those names resolve
+    against. A later definition wins, as it does at module level in Python.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    """Bare function names called anywhere inside ``node``."""
+    return {
+        n.func.id
+        for n in ast.walk(node)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+
+
+def _reaches_app(node: ast.AST, funcs: dict, seen=None) -> bool:
+    """``_builds_app``, following calls into helpers defined alongside it.
+
+    A fixture whose body is ``return _build()`` reaches the app just as surely
+    as one that names ``create_app``, and the gate exists to refuse that shape.
+    ``seen`` terminates on a recursive or mutually recursive helper.
+
+    Enforced by ``test_a_delegating_fixture_is_still_early`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    seen = set() if seen is None else seen
+    if node.name in seen:
+        return False
+    seen.add(node.name)
+    if _builds_app(node):
+        return True
+    return any(
+        _reaches_app(funcs[name], funcs, seen)
+        for name in _called_names(node) & funcs.keys()
+    )
+
+
+def _reaches_twin(node: ast.AST, funcs: dict, seen=None) -> bool:
+    """True when ``isolate_supabase_module`` is in this fixture's own closure.
+
+    Follows fixture arguments, so a fixture handed the twin through an
+    intermediate fixture counts as isolated -- pytest builds the whole chain
+    before the fixture that depends on it. Nothing here checks the scope of an
+    intermediate: pytest raises ScopeMismatch when a wider-scoped fixture
+    requests a narrower one, so every fixture reachable this way is already
+    module-scoped or wider.
+
+    Enforced by ``test_the_twin_through_an_intermediate_clears_it`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    seen = set() if seen is None else seen
+    if node.name in seen:
+        return False
+    seen.add(node.name)
+    args = {a.arg for a in node.args.args}
+    if "isolate_supabase_module" in args:
+        return True
+    return any(_reaches_twin(funcs[a], funcs, seen) for a in args & funcs.keys())
+
+
+def _early_app_fixtures(source: str, shared: dict | None = None) -> frozenset[str]:
     """App-building fixtures a function-scoped mark cannot protect.
 
     pytest builds a module- or class-scoped fixture BEFORE the function-scoped
     ``isolate_supabase``, so a module-level mark does not cover what that
     fixture does during its own setup -- the #296 mechanism, and the reason
     ``isolate_supabase_module`` exists. The twin only helps as a real
-    dependency edge, so the fixture has to request it by name; a mark on the
-    tests cannot order two module-scoped fixtures against each other.
+    dependency edge, so the fixture has to reach it through its arguments; a
+    mark on the tests cannot order two module-scoped fixtures against each
+    other.
 
-    Returned names are the app fixtures of a wider scope that do not request
-    it. Enforced by ``test_the_mark_does_not_clear_an_early_fixture`` in
-    tests/test_supabase_isolation_enforced.py.
+    Returned names are the wider-scoped app fixtures DEFINED in ``source`` that
+    do not reach the twin. ``shared`` supplies definitions the file uses
+    without defining -- conftest's own, when reading a test file -- so a chain
+    that leaves the file is still followed, while an offender is still
+    reported against the file that declares it.
 
-    Ceiling: only a fixture that calls ``create_app`` in its own body is
-    seen, because ``_builds_app`` walks that node alone. One that delegates
-    to a module-level helper is not.
+    Ceiling: both walks resolve bare names against ``source`` plus ``shared``.
+    A fixture that reaches the app or the twin through an import, a class
+    attribute or a plugin is not seen.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return frozenset()
+    own = _module_functions(source)
+    funcs = {**(shared or {}), **own}
     return frozenset(
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and any("fixture" in ast.unparse(d) for d in node.decorator_list)
-        and _builds_app(node)
+        name
+        for name, node in own.items()
+        if any("fixture" in ast.unparse(d) for d in node.decorator_list)
         and _fixture_scope(node) != "function"
-        and "isolate_supabase_module" not in {a.arg for a in node.args.args}
+        and _reaches_app(node, funcs)
+        and not _reaches_twin(node, funcs)
     )
 
 
 _TESTS_DIR = pathlib.Path(__file__).parent
 _CONFTEST_SRC = pathlib.Path(__file__).read_text(encoding="utf-8")
+_CONFTEST_FUNCS = _module_functions(_CONFTEST_SRC)
 _APP_BUILDING_FIXTURES = _app_building_fixtures(_CONFTEST_SRC)
 _EARLY_APP_FIXTURES = _early_app_fixtures(_CONFTEST_SRC)
 
@@ -347,7 +420,10 @@ def _unisolated(items, app_fixtures, cache=None, early_fixtures=frozenset()):
         if path is not None and key not in cache:
             try:
                 src = pathlib.Path(path).read_text(encoding="utf-8")
-                cache[key] = (_builds_app(ast.parse(src)), _early_app_fixtures(src))
+                cache[key] = (
+                    _builds_app(ast.parse(src)),
+                    _early_app_fixtures(src, _CONFTEST_FUNCS),
+                )
             except (OSError, SyntaxError, ValueError):
                 cache[key] = (False, frozenset())
         builds, file_early = cache[key] if path is not None else (False, frozenset())
@@ -359,7 +435,8 @@ def _unisolated(items, app_fixtures, cache=None, early_fixtures=frozenset()):
                 (
                     item.nodeid,
                     f"{early[0]} builds the app before a function-scoped mark "
-                    "fires; it must request isolate_supabase_module itself",
+                    "fires; it must reach isolate_supabase_module through its "
+                    "own arguments",
                 ),
             )
             continue
@@ -410,6 +487,7 @@ def pytest_collection_modifyitems(config, items):
             "Apply whichever remedy the line above names: either "
             '`pytestmark = pytest.mark.usefixtures("isolate_supabase")` at module '
             "level, or -- for a MODULE- or CLASS-scoped fixture that builds the "
-            "app -- that fixture requesting `isolate_supabase_module` itself, "
+            "app -- that fixture reaching `isolate_supabase_module` through "
+        "its own arguments, "
             "because a function-scoped mark is built too late for it."
         )

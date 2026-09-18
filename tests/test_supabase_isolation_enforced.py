@@ -178,6 +178,88 @@ def test_the_mark_does_not_clear_an_early_fixture(tmp_path, ct):
     assert ct._unisolated([twinned], frozenset()) == {}
 
 
+_SHARED_TWIN = """import pytest
+
+
+@pytest.fixture(scope="module")
+def isolated_env(isolate_supabase_module):
+    return True
+"""
+
+
+def test_a_delegating_fixture_is_still_early(ct):
+    """Naming a helper rather than create_app does not escape the rule."""
+    src = """import pytest
+
+
+def _build():
+    return create_app()
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return _build()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+
+
+def test_the_twin_through_an_intermediate_clears_it(ct):
+    """pytest builds the whole chain first, so the twin need not be direct."""
+    src = _SHARED_TWIN + """
+
+@pytest.fixture(scope="module")
+def tools_app(isolated_env):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_chain_that_leaves_the_file_is_followed(ct):
+    """A test file uses conftest's fixtures without defining them."""
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(isolated_env):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+    shared = ct._module_functions(_SHARED_TWIN)
+    assert ct._early_app_fixtures(src, shared) == frozenset()
+
+
+def test_an_offender_in_shared_is_not_reported_against_the_file(ct):
+    """Otherwise one conftest fault would be blamed on every file collected."""
+    shared = ct._module_functions("""import pytest
+
+
+@pytest.fixture(scope="module")
+def leaky_app():
+    return create_app()
+""")
+    assert ct._early_app_fixtures("import pytest", shared) == frozenset()
+
+
+def test_a_cycle_between_helpers_terminates(ct):
+    """Without the ``seen`` guard this raises RecursionError instead."""
+    src = """import pytest
+
+
+def _a():
+    return _b()
+
+
+def _b():
+    return _a()
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return _a()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
 def test_a_file_outside_the_tests_directory_is_not_policed(tmp_path, ct):
     """A root run also collects tools/library_planner/tests, which cannot see
     the fixtures this gate prescribes -- flagging it would print dead advice."""
