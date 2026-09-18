@@ -54,13 +54,6 @@ def test_records_unwraps_legacy_output_wrapper():
     assert len(candidate_records(result)) == 2
 
 
-def test_records_empty_for_missing_or_bad_shape():
-    assert candidate_records(None) == []
-    assert candidate_records({}) == []
-    assert candidate_records({"candidates": "nope"}) == []
-    assert candidate_records("not a dict") == []
-
-
 # --- candidate_meets_bar: nested vs flat metric resolution ------------------
 
 

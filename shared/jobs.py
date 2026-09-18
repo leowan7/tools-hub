@@ -99,6 +99,53 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
 # cannot slip in beside it.
 
 
+def is_candidate_array(value: object) -> bool:
+    """True iff ``value`` is a per-candidate array -- the ONE shape answer.
+
+    ``result["candidates"]``, ``result["designs"]`` and ``result["sequences"]``
+    used to be shape-checked by every reader separately, in this module, in
+    shared/email.py and in blueprints/admin.py. Spelling the test once per
+    reader let them disagree, and the disagreements were SILENT: a shape one
+    reader accepted and another rejected cost a wrong count, a wrong headline
+    noun or a wrong persisted blob rather than an error. Every reader that
+    LOOKS ONE OF THOSE KEYS UP AND ANSWERS ITS SHAPE now calls this, so the
+    next shape question is answered here rather than once more. That is
+    narrower than "every reader": a function that CONSUMES the array without
+    ever asking what shape it is -- iterating it, counting it, indexing it --
+    never answered the question, and several do exactly that and are left
+    alone. ``test_no_reader_spells_its_own_shape_gate`` in
+    tests/test_candidate_array_shape.py derives the answering set from the
+    source and fails on a raw ``isinstance`` gate over one of those keys.
+
+    A READER OUTSIDE THAT SET, deliberately: ``shared/exports.py``'s
+    ``_dict_candidates`` is handed the array rather than looking it up, and
+    keeps its own ``(list, tuple)`` line. Its docstring gives the reason, and
+    names this module: importing from here pulls Supabase in through the
+    ``shared.credits`` import above, which that module stays free of. So the
+    two agree by test rather than by shared code:
+    tests/test_malformed_candidate_row_render.py::
+    test_the_export_and_render_accessors_agree_by_value asserts
+    ``_dict_candidates(x) == display_rows(x)`` for a list AND a tuple, which
+    fails if either side's shape answer moves without the other.
+
+    A ``tuple`` counts: Jinja iterates one, so the templates rendered rows the
+    ``list``-only readers did not count -- see :func:`display_rows` for the
+    divergence that widening removed. Nothing else counts. The array is
+    indexed BY POSITION downstream (``shared/storage.py`` stages the starred
+    design out of :func:`candidate_records` with the index the user posted),
+    which a ``set`` has no stable order to answer and a generator would let
+    the first reader consume; ``str`` and ``bytes`` are sequences that would
+    iterate into characters.
+
+    SHAPE ONLY, deliberately. Which key to read, whether the result is
+    normalised first, and what an EMPTY array means stay with each caller,
+    because those are the points where the readers differ ON PURPOSE --
+    :func:`candidate_count` records why an empty array must short-circuit the
+    key search rather than fall through to the other key.
+    """
+    return isinstance(value, (list, tuple))
+
+
 def candidate_records(result: Optional[dict]) -> list:
     """Return a job result's per-candidate list, tolerant of the tool's shape.
 
@@ -124,10 +171,12 @@ def candidate_records(result: Optional[dict]) -> list:
         return []
     for key in ("candidates", "designs"):
         recs = result.get(key)
-        if isinstance(recs, list):
-            return recs
-        if isinstance(recs, tuple):
-            return list(recs)
+        if is_candidate_array(recs):
+            # Not a shape test: the shape question was answered above. An
+            # already-list array is returned BY REFERENCE, as it always has
+            # been, and anything else the predicate accepts is copied so the
+            # return type is a list either way.
+            return recs if isinstance(recs, list) else list(recs)
     return []
 
 
@@ -153,7 +202,7 @@ def candidate_count(result: Optional[dict]) -> Optional[int]:
         return None
     for key in ("candidates", "designs"):
         recs = result.get(key)
-        if isinstance(recs, (list, tuple)):
+        if is_candidate_array(recs):
             return len(recs)
     return None
 
@@ -179,12 +228,15 @@ def display_rows(rows) -> list:
     and still counted, which is what keeps the page, the completion email and
     ``_source_index`` describing one list.
 
-    A tuple is read like a list -- here, and in ``candidate_records`` and
-    ``candidate_count`` above, so the page, the completion email and the
-    exports agree on how many rows a tuple holds. Narrowing this to ``list``
-    alone would render the zero-candidate empty state over rows that are all
-    perfectly good: a silent wrong answer, and worse than the crash it
-    replaces, because the page still returns 200 and nothing reports it.
+    A tuple is read like a list -- here and in every other reader of this
+    array: :func:`is_candidate_array` answers that for the readers that route
+    through it, and ``shared/exports.py``'s ``_dict_candidates``, which keeps
+    its own line instead, is held level with them by test. So the page, the
+    completion email and the exports agree on how many rows a tuple holds.
+    Narrowing this to ``list`` alone would render the zero-candidate empty
+    state over rows that are all perfectly good: a silent wrong answer, and
+    worse than the crash it replaces, because the page still returns 200 and
+    nothing reports it.
     Widening it here alone would have preserved a divergence rather than
     created one: before this change the partials iterated the raw value, so
     a tuple already rendered rows the email did not count and the download
@@ -195,24 +247,23 @@ def display_rows(rows) -> list:
     ::test_a_tuple_container_is_counted_the_same_everywhere. Anything that is
     not a row sequence -- a dict, a scalar, ``None`` -- still returns ``[]``.
 
-    Some sibling readers still gate on ``list`` alone -- in this file, in
-    shared/email.py and in blueprints/admin.py, over ``candidates`` and over
-    the ``sequences`` array the mpnn partial renders through this same
-    function. None of them renders the candidate table this change is about,
-    and a ``list`` gate skips its branch against a tuple rather than counting
-    it wrong. Measured, a tuple under ``sequences`` drops ``_result_summary``
-    from "2 sequences returned with score and recovery" to the generic "Your
-    run finished"; its ``candidates`` wording already routes through
-    :func:`candidate_records` above. Naming them one by one only drifts --
-    three drafts of this paragraph miscounted or miscategorised them. What
-    these arrays want is one shared shape predicate and one shared test,
-    which this change does not add.
+    The other readers of the same array were ``list``-only when this one was
+    widened, which is the divergence :func:`is_candidate_array` closed. They
+    are not listed here, because a list inside a docstring cannot notice the
+    next reader: tests/test_candidate_array_shape.py derives the set from the
+    source instead, and fails on a reader that looks one of the keys up and
+    still spells its own ``isinstance`` gate. A reader HANDED the array is
+    outside that sweep however it gates -- this function is one, and so is
+    ``shared/exports.py``'s ``_dict_candidates``, which unlike this one keeps
+    its own gate for the import reason :func:`is_candidate_array` records,
+    along with the test that holds the two level. The sweep cannot enumerate
+    that class, so this is not a claim that those are the only two.
 
     Hardening, not a report of a live failure: no in-repo producer writes a
     non-dict row. The render layer was simply the only reader with no guard,
     while the aggregators above it already had one.
     """
-    if not isinstance(rows, (list, tuple)):
+    if not is_candidate_array(rows):
         return []
     return [r if isinstance(r, Mapping) else {} for r in rows]
 
@@ -376,8 +427,8 @@ def supports_headline_claim(
     are describing -- the same contract :func:`candidate_count` keeps.
     """
     normalized = _normalize_result_shape(result)
-    if not isinstance(normalized, dict) or not isinstance(
-        normalized.get("candidates"), list
+    if not isinstance(normalized, dict) or not is_candidate_array(
+        normalized.get("candidates")
     ):
         return False
     return not normalized.get("backfilled")
@@ -640,7 +691,7 @@ def classify_terminal_state(
         candidates = None
         if isinstance(result, dict):
             candidates = result.get("candidates")
-        if isinstance(candidates, list) and len(candidates) == 0:
+        if is_candidate_array(candidates) and len(candidates) == 0:
             return "completed_no_yield"
         return "succeeded"
 
@@ -1301,11 +1352,17 @@ def _slim_result_for_persist(result: Optional[dict]) -> Optional[dict]:
     only one): smoke/mini_pilot tiers carry a bare-filename ``pdb_key`` with no
     upload, and any design whose upload failed is listed in ``failed_uploads``.
     Returns a shallow copy; the input is never mutated.
+
+    A tuple candidates array is slimmed like a list -- :func:`is_candidate_array`
+    is the shape gate -- and comes back as a ``list``, same length and same
+    order, because ``slimmed`` is built by ``.append``. That is the shape the
+    row would have had anyway: this value is about to be JSON-serialised into
+    ``tool_jobs.result``, which has no tuple.
     """
     if not isinstance(result, dict):
         return result
     candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    if not is_candidate_array(candidates) or not candidates:
         return result
 
     import posixpath  # noqa: PLC0415

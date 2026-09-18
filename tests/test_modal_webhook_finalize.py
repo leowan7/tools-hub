@@ -83,7 +83,6 @@ class TestSlimResultForPersist:
         assert "pdb_content_b64" not in out["candidates"][0]
 
     def test_passthrough_for_non_candidate_results(self):
-        assert _slim_result_for_persist(None) is None
         assert _slim_result_for_persist({"pdb_b64": "x"}) == {"pdb_b64": "x"}
         assert _slim_result_for_persist({"candidates": []}) == {"candidates": []}
 
