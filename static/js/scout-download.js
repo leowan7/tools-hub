@@ -96,10 +96,10 @@
         // button no longer offers. Silent on purpose -- the pane a message
         // would land in has just been re-rendered.
         if (link.href !== url) { release(); return; }
-        // login_required (shared/auth.py:696) answers a dead session with a 302
-        // to /login, which fetch FOLLOWS to a 200 HTML page. Without this
-        // redirect check that reads as success and the browser saves the login
-        // page as a .csv.
+        // shared/auth.py::login_required answers a dead session with a 302 to
+        // /login, which fetch FOLLOWS to a 200 HTML page. Without this redirect
+        // check that reads as success and the browser saves the login page as a
+        // .csv.
         if (r.redirected) { release(); showError(EXPIRED); return; }
         if (r.ok) {
           release();

@@ -25,9 +25,9 @@ failure modes it protects against are both invisible otherwise:
 
 So the fake applies its filters, applies the column projection, and enforces
 the same max_rows clamp the real backend does. Precedent for that stance is
-tests/test_data_retention.py:168-173, which says the same thing about the same
-method. ``class _FakeQuery`` in tests/test_campaign_results.py is the weaker
-precedent: it implements only select/eq/order/range and would raise on
+tests/test_data_retention.py::_FakeTable.is_, which says the same thing about
+the same method. ``class _FakeQuery`` in tests/test_campaign_results.py is the
+weaker precedent: it implements only select/eq/order/range and would raise on
 ``.is_()``. (Cited by name, not by line: that file is under edit on this
 branch and its line numbers move.)
 

@@ -165,8 +165,8 @@ LENGTH_SLACK_AA = 2
 # took 673 s puts a HARD upper bound of $2.958/hr on the true rate; $2.50/hr
 # leaves a 123 s container overhead (cold start, three volume mounts, archive
 # tar, two volume commits), which is the plausible reading. The repo's own
-# $3.70/hr card (shared/wallet.py:106) is arithmetically impossible here — it
-# implies 538 billed seconds for a 673 s pipeline.
+# $3.70/hr card (shared/wallet.py::GPU_USD_PER_SECOND) is arithmetically
+# impossible here — it implies 538 billed seconds for a 673 s pipeline.
 USD_PER_SECOND = 2.50 / 3600.0
 # The BUDGET uses the upper bound, not the point estimate. A ceiling priced at
 # the optimistic end of its own uncertainty cannot do its job: at $2.958/hr the

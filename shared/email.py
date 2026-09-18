@@ -1562,9 +1562,9 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     # tools/esmfold:787), and the batch preset writes "designs", caught
     # one branch up -- so this closes the gap "designs" reached production
     # through rather than a live path.
-    # A MISSING key stays untouched by design: tools/colabfold/meta.py:134
-    # ships a payload with no pdb_b64 at all, and an unrecognised shape
-    # keeps the forward-compat default below.
+    # A MISSING key stays untouched by design: tools/colabfold/meta.py::EXAMPLE
+    # ships a payload with no pdb_b64 at all, and an unrecognised shape keeps
+    # the forward-compat default below.
     # TestSucceededFoldWithNoStructure pins both sides.
     if "pdb_b64" in result:
         return _is_structureless(result)

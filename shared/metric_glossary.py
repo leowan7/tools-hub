@@ -273,13 +273,13 @@ GLOSSARY: dict[str, dict] = {
     # its raw key.
     #
     # The definition names both variants deliberately. This is NOT one quantity:
-    # tools/proteina/run_pipeline.py:116-117, verified there against the P-2 and
-    # P-3 canary reward CSVs, records that the protein_binder reward comes from
-    # the AF2 refold and equals -i_pAE, while the ligand_binder reward comes
-    # from the RF3 fold. Describing it as a single score would be wrong, and it
-    # is why shared/ranking.py keys its cohorts on (tool, preset) rather than on
-    # tool alone: two proteina runs at different presets must never be ranked
-    # against each other.
+    # tools/proteina/run_pipeline.py::_SCORE_COLUMNS, verified there against the
+    # P-2 and P-3 canary reward CSVs, records that the protein_binder reward
+    # comes from the AF2 refold and equals -i_pAE, while the ligand_binder
+    # reward comes from the RF3 fold. Describing it as a single score would be
+    # wrong, and it is why shared/ranking.py keys its cohorts on (tool, preset)
+    # rather than on tool alone: two proteina runs at different presets must
+    # never be ranked against each other.
     # ADDED BECAUSE A TEMPLATE WAS STATING A THRESHOLD THIS FILE DID NOT HOLD.
     # components/about_panel.html renders a general "what good looks like"
     # legend on all 14 tool pages, and its recovery entry read "well

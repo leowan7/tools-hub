@@ -11,10 +11,10 @@ and it fell through to the generic ``except Exception`` as ``status="error"``.
 Before this fix ``blueprints/jobs.py::job_status`` branched only on succeeded
 / failed / running, so an "error" poll left the row NON-TERMINAL: the wallet
 hold was neither settled nor released and the user watched a spinner until
-``cron/sweep_stuck_jobs.py`` caught it at ``STUCK_RUNNING_AGE_HOURS``
-(default 6). That sweeper is the only other terminaliser ``esmfold2-design``
-has -- its ``WEBHOOK_URL`` is documented "unused at launch" and heartbeats are
-still a TODO (``tools/esmfold2_design/run_pipeline.py:13``, ``:93``).
+``cron/sweep_stuck_jobs.py`` caught it at ``STUCK_RUNNING_AGE_HOURS`` (default
+6). That sweeper is the only other terminaliser ``esmfold2-design`` has -- its
+``WEBHOOK_URL`` is documented "unused at launch" and heartbeats are still a
+TODO (both in ``tools/esmfold2_design/run_pipeline.py``'s module docstring).
 
 The exception hierarchy is asserted against the INSTALLED modal, not restated
 from the docs, so this file reports it if a future modal release reparents the

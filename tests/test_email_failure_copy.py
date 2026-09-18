@@ -397,10 +397,10 @@ class TestSucceededFoldWithNoStructure:
     download route answers 404 without one
     (blueprints/jobs.py::af2_download_pdb).
 
-    A MISSING key is deliberately left alone. tools/colabfold/meta.py:134
-    ships a payload with no ``pdb_b64`` at all, and the forward-compat
-    default pinned by test_succeeded_with_unknown_shape_is_success keeps
-    an unrecognised shape a success.
+    A MISSING key is deliberately left alone. tools/colabfold/meta.py::EXAMPLE
+    ships a payload with no ``pdb_b64`` at all, and the forward-compat default
+    pinned by test_succeeded_with_unknown_shape_is_success keeps an
+    unrecognised shape a success.
 
     No pipeline in this repo writes a blank ``pdb_b64`` on a succeeded
     job today: all three call ``_fail`` instead when the structure is
