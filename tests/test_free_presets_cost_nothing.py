@@ -285,13 +285,14 @@ def test_a_frozen_wallet_still_refuses_a_free_run(offline_estimator):
     """Free means nothing is charged, not that nothing is checked.
 
     A paid submit meets ``wallet_frozen`` in ``wallet_preflight``
-    (shared/wallet.py:498) and again in the SQL ``try_hold_for_job``. A free
-    run takes no hold, so only the first is left. That is why the tier row
-    could not ship on its own: while a zero estimate returned before the
-    preflight call, adding it WOULD have given this preset a submit path that
-    never sees the flag, and each run spawns the A100 container Ranomics pays
-    for. Would, not did -- before the tier row this preset priced at $12.5827
-    and went down the paid path, where a frozen wallet refused it.
+    (shared/wallet.py::wallet_preflight) and again in the SQL
+    ``try_hold_for_job``. A free run takes no hold, so only the first is
+    left. That is why the tier row could not ship on its own: while a zero
+    estimate returned before the preflight call, adding it WOULD have given
+    this preset a submit path that never sees the flag, and each run spawns
+    the A100 container Ranomics pays for. Would, not did -- before the tier
+    row this preset priced at $12.5827 and went down the paid path, where a
+    frozen wallet refused it.
     """
     seen: dict = {}
     gate_app = _gate_app("proteina", seen)

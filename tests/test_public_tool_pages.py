@@ -1570,7 +1570,7 @@ class TestProteinaScoringClaimIsConsistent:
     # into one stack. It deliberately does NOT trigger on a sentence
     # naming one model and the force field, and there is a live one:
     #
-    #   tools/proteina/__init__.py:811, the protein_binder preset --
+    #   tools/proteina/__init__.py::adapter, the protein_binder preset --
     #   "Search is scored by AlphaFold2 confidence plus a force-field
     #   reward" -- against Dockerfile.modal:229-231's "protein_binder
     #   scores on AF2 alone".

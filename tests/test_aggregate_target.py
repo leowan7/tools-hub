@@ -31,15 +31,15 @@ precedent: it implements only select/eq/order/range and would raise on
 ``.is_()``. (Cited by name, not by line: that file is under edit on this
 branch and its line numbers move.)
 
-THE SAME DOCTRINE APPLIES TO THE TWO OWNERSHIP GATES, which are not queries
-this module issues but calls it makes. Every read here runs through the
-service-role client, which bypasses RLS (shared/credits.py:51-72 against the
+THE SAME DOCTRINE APPLIES TO THE TWO OWNERSHIP GATES, which are not queries this
+module issues but calls it makes. Every read here runs through the service-role
+client, which bypasses RLS (shared/credits.py::get_service_client against the
 ``auth.uid() = user_id`` policy at 0005_tool_jobs.sql:59), so the ``user_id``
-keyword IS the boundary. A stub that swallowed ``user_id`` in ``**kw`` would
-make a cross tenant read untestable by construction, so ``_stub_campaign_lister``
-models the real gate at shared/compute_campaigns.py:1063-1065 instead, and
-foreign rows are seeded on the target so an omitted filter has something to
-leak.
+keyword IS the boundary. A stub that swallowed ``user_id`` in ``**kw`` would make
+a cross tenant read untestable by construction, so ``_stub_campaign_lister``
+models the real gate at shared/compute_campaigns.py::list_campaigns_for_target
+instead, and foreign rows are seeded on the target so an omitted filter has
+something to leak.
 
 AND THE OWNERSHIP GATE HAS THREE ANSWERS, NOT TWO. ``shared.targets.get_target``
 returns None for a target that is absent, for one that is another tenant's, AND
@@ -401,7 +401,7 @@ def _install(monkeypatch, *, rows=(), campaigns=(), targets=(("T", OWNER),),
         return _StubTarget(target_id, user_id)
 
     def _stub_campaign_lister(target_id, *, user_id=None, include_drafts=False):
-        """Models shared/compute_campaigns.py:1063-1069.
+        """Models shared/compute_campaigns.py::list_campaigns_for_target.
 
         The owner filter is applied ONLY when user_id is given, exactly as the
         real function does, so an aggregator that omits the keyword leaks every

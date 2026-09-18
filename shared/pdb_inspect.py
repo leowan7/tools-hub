@@ -400,15 +400,15 @@ def validate_hotspots(
 
     THE BARE CASE USED TO UNION, AND THE UNION WAS NEVER WHAT RAN. Nothing
     downstream reads an unprefixed hotspot as "any named chain": ``tools/
-    base.py:108`` rewrites it onto ``target_chains[0]`` before building the
-    payload, and proteina's ``_parse_hotspots`` promotes it onto
-    ``contig_chains[0]``. So on a target whose chains are numbered differently
-    — a Fab H/L, any heterocomplex — a bare number that exists only on the
-    SECOND chain passed here and then addressed the first one on the GPU.
-    proteina makes that live rather than theoretical: it deliberately emits
-    ``hotspot_residues`` as bare author numbers (so the routes' range checks
-    keep working) while sending the prefixed ``hotspot_spec`` upstream, so
-    every proteina multi-chain campaign reaches this function unprefixed.
+    base.py::parse_hotspot_residues`` rewrites it onto ``target_chains[0]``
+    before building the payload, and proteina's ``_parse_hotspots`` promotes
+    it onto ``contig_chains[0]``. So on a target whose chains are numbered
+    differently — a Fab H/L, any heterocomplex — a bare number that exists
+    only on the SECOND chain passed here and then addressed the first one on
+    the GPU. proteina makes that live rather than theoretical: it deliberately
+    emits ``hotspot_residues`` as bare author numbers (so the routes' range
+    checks keep working) while sending the prefixed ``hotspot_spec`` upstream,
+    so every proteina multi-chain campaign reaches this function unprefixed.
     Checking the first chain is what makes this function judge the token the
     run will actually match on.
 

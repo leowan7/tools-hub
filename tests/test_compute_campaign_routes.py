@@ -105,7 +105,8 @@ def test_estimate_refuses_the_validate_tier_whatever_its_casing(client, monkeypa
     """The free pre-flight must not come back priced because of a capital V.
 
     This refusal compared the raw query arg while the estimator lowercases
-    its own ``preset`` (shared/wallet_estimates.py:618), so "Validate"
+    its own ``preset``
+    (shared/wallet_estimates.py::estimated_cost_for_tool), so "Validate"
     missed the refusal and was priced as a campaign. proteina is the only
     tool carrying a "validate" preset, so it is the only one that can
     observe this; its flag has to be on for the request to get past the

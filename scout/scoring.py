@@ -582,7 +582,7 @@ _PYDSSP_MAX_RESIDUES = 2000
 # chain_id=None. That is exactly what a 3-residue ALA-only chain ALREADY did on
 # the old code (also measured), so the old asymmetry was the anomaly: a short
 # canonical chain was fatal while a short MSE chain was invisible.
-# run_pipeline always passes a chain_id (scout/pipeline.py:416), and with a
+# run_pipeline always passes a chain_id (scout/pipeline.py::run_pipeline), and with a
 # chain_id set the short neighbour is never looked at, so production is
 # unaffected -- 129 labels either way. Only a caller using the chain_id=None
 # default can see this.

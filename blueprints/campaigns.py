@@ -187,7 +187,7 @@ def api_runs_estimate():
     from shared import compute_campaigns as cc  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
     # Lowercased to match the estimator's own normalisation
-    # (shared/wallet_estimates.py:618), so a cased "Validate" cannot slip
+    # (shared/wallet_estimates.py::estimated_cost_for_tool), so a cased "Validate" cannot slip
     # past the refusal below and be priced as a campaign.
     preset = (request.args.get("preset") or "pilot").strip().lower() or "pilot"
     try:

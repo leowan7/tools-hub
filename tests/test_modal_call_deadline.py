@@ -8,10 +8,10 @@ is bounded. A stale channel therefore means the handshake succeeds, the request
 is written, and the response never arrives — the call blocks forever.
 
 ``ModalClient.submit`` and ``.poll`` are reachable from
-``blueprints/jobs.py:529``, ``blueprints/tools.py:1912`` and
-``blueprints/jobs.py:310``. This repo has already taken that outage once, from
-the same cause on the same host: see the note in ``shared/supabase_client.py``
-for 2026-06-10.
+``blueprints/jobs.py::_spawn_refold_job``,
+``blueprints/tools.py::tool_submit`` and ``blueprints/jobs.py::job_status``.
+This repo has already taken that outage once, from the same cause on the same
+host: see the note in ``shared/supabase_client.py`` for 2026-06-10.
 
 Today gunicorn's sync worker is killed at ``timeout``, which contains the
 damage at the cost of every other request on that worker. That backstop
@@ -221,7 +221,7 @@ class TestTheShippedDeadline:
         which takes out every other in-flight request on that worker, the
         exact outcome bounding the call exists to avoid.
 
-        ``gunicorn.conf.py:164`` defaults ``timeout`` to 120.
+        ``gunicorn.conf.py::timeout`` defaults ``timeout`` to 120.
         """
         assert modal_client._MODAL_CALL_TIMEOUT_SEC < 120
 

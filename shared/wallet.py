@@ -821,16 +821,16 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     no charge, and no mail — for up to 24h after we asked them to act. Stripe
     definitively did not charge in that case, so releasing the claim there
     would be safe and would remove the dead wait, EXCEPT that
-    ``_classify_off_session_error`` (billing/checkout.py:145-147) also routes
-    UNKNOWN failures to the same non-retryable branch, and an unknown failure
-    may well have charged the card. Two of its reasons are already
-    unambiguous — ``expired_card`` and ``insufficient_funds`` reach the caller
-    only from a ``CardError`` carrying that code, so neither one charged — but
-    plain ``card_declined`` is also what the unknown fallback returns, and
-    that is the reason a real decline usually carries. Releasing the claim on
-    the two safe reasons alone would be sound; it is not in this change, and
-    until it is, the dead wait is the safe side and is left in place
-    knowingly.
+    ``_classify_off_session_error``
+    (billing/checkout.py::_classify_off_session_error) also routes UNKNOWN
+    failures to the same non-retryable branch, and an unknown failure may well
+    have charged the card. Two of its reasons are already unambiguous —
+    ``expired_card`` and ``insufficient_funds`` reach the caller only from a
+    ``CardError`` carrying that code, so neither one charged — but plain
+    ``card_declined`` is also what the unknown fallback returns, and that is
+    the reason a real decline usually carries. Releasing the claim on the two
+    safe reasons alone would be sound; it is not in this change, and until it
+    is, the dead wait is the safe side and is left in place knowingly.
 
     The monthly cap rides on the same claim rather than getting one of its
     own, and is only partly bounded by it. The cap reads SETTLED

@@ -3070,7 +3070,7 @@ class TestTheRankColumnIsAPosition:
     by score before rendering (templates/tools/af2_results.html:70,
     templates/tools/iggm_results.html:40), so af2's ten rows rendered
     0,9,6,1,8,4,7,5,3,2 -- production indices under a "#" heading, on a page
-    whose narration hinges on which row is row one (tools/af2/meta.py:260).
+    whose narration hinges on which row is row one (tools/af2/meta.py::EXAMPLE).
 
     TWO TESTS, because they fail for different reasons. The first reads
     today's captured payloads and is what a reader actually sees. The

@@ -260,12 +260,13 @@ def stage_campaign_candidates(
         # AT WRITE TIME, WHICH THE #202 NOTE SAID TO AVOID. It said to
         # convert at whatever READS the bucket; there is nothing to hook.
         # `presigned_campaign_url` signs only the operator-uploaded results
-        # envelope (tools/platform_api/routes.py:806), never these objects,
-        # and staff open them through the Supabase console. So the choice is
-        # here or nowhere. It is also less of a departure than it sounds:
-        # this bucket is a derived CRO deliverable keyed by campaign, not a
-        # source of truth. tool-outputs still holds the untouched original,
-        # and that is the copy every guarantee is written against.
+        # envelope (tools/platform_api/routes.py::get_experiment_results),
+        # never these objects, and staff open them through the Supabase
+        # console. So the choice is here or nowhere. It is also less of a
+        # departure than it sounds: this bucket is a derived CRO deliverable
+        # keyed by campaign, not a source of truth. tool-outputs still holds
+        # the untouched original, and that is the copy every guarantee is
+        # written against.
         #
         # The gate does the discriminating, so no tool slug is consulted:
         # af2/colabfold/pxdesign already store 0-100 and decline on their

@@ -208,13 +208,13 @@
 
                 "AT SUBMIT" MEANS BOTH PATHS OFF THIS FORM, and that was
                 checked by executing them, not by reading. A review traced the
-                hard gate at blueprints/tools.py:1267 — which is conditioned on
+                hard gate in blueprints/tools.py::tool_submit — conditioned on
                 ``pdb_bytes is not None``, assigned only by a fresh upload or
                 the AlphaFold fetch — and concluded that submitting a SAVED
                 two-chain target (``reuse_pdb_token="target:<uuid>"``) would
                 skip the refusal this copy promises. It does not: a staged
-                reuse token meets the second gate at blueprints/tools.py:1606,
-                which re-inspects the copied bytes through
+                reuse token meets a SECOND gate in that same function, which
+                re-inspects the copied bytes through
                 shared/pdb_intake.py::_verify_reuse_pdb_bytes and runs the same
                 preflight_for_tool. Both paths are now driven end to end by
                 tests/test_multichain_form_affordances.py::

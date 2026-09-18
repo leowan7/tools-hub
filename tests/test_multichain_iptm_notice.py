@@ -10,10 +10,10 @@ plausible-looking number.
 Stated at that level on purpose. An earlier version of this docstring, and of
 the banner, said "a MAX over residues" and quoted "~0.9 for a real crystal
 dimer" — and four pipeline files in this repo describe ipTM as interface-pTM
-"averaged over EVERY chain pair" instead (tools/af2/run_pipeline.py:202 and
-three siblings). The conclusion holds under either reduction; the figure does
-not. See the comment above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
-shared/score_legends.py.
+"averaged over EVERY chain pair" instead
+(tools/af2/run_pipeline.py::archive_raw and three siblings). The conclusion
+holds under either reduction; the figure does not. See the comment above
+MULTICHAIN_IPTM_UNRELIABLE_TOOLS in shared/score_legends.py.
 
 Every test here asserts BOTH directions. A presence-only test passes against a
 banner that renders unconditionally, which would put a scary caveat on every

@@ -840,7 +840,7 @@ class TestTheHeadlineMetricChain:
         ``plddt_on_100`` hands back the ORIGINAL object for a value already on
         0-100 rather than its own ``float()`` copy, and names THIS route's
         og:title as the reason it bothers
-        (shared/metric_glossary.py:405-411). A blanket ``float()`` in
+        (shared/metric_glossary.py::plddt_on_100). A blanket ``float()`` in
         ``_reading`` undid that one line later, so a stored int 88 read
         "88.000" on the share card while the results page read "88" -- two
         surfaces disagreeing about a number neither of them computed.
@@ -931,7 +931,7 @@ class TestTheBarDecidesWhetherThereIsAClause:
         The first repair branched on the pick's verdict, under a comment
         asserting that a non-meets pick means no bar applied. It does not.
         ``headline_candidate`` returns the first record not shown to fall
-        short and does not re-rank (shared/jobs.py:196), so a REJECTED record
+        short and does not re-rank (shared/jobs.py::headline_candidate), so a REJECTED record
         0 followed by an UNMEASURED record 1 yields "unjudged" with the bar
         very much applied -- and the card then quoted record 1's number while
         a higher-ranked design sat dropped above it.

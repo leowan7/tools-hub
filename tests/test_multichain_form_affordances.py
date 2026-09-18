@@ -260,8 +260,8 @@ def test_hotspot_copy_shows_a_chain_prefixed_example(slug, pages):
 @pytest.mark.parametrize("slug", REWRITTEN_COPY_FORMS)
 def test_hotspot_copy_says_a_bare_number_means_the_first_chain(slug, pages):
     """The ambiguity that actually bites: on an "A,B" target, is "296" chain A
-    or chain B? tools/base.py:108 attributes it to the FIRST target chain, and
-    that is silent unless the form says so."""
+    or chain B? tools/base.py::parse_hotspot_residues attributes it to the
+    FIRST target chain, and that is silent unless the form says so."""
     help_text = pages[slug].help_after("hotspot_residues").lower()
     assert "first" in help_text, (
         f"{slug}: hotspot help never says a bare number means the first "
@@ -294,7 +294,7 @@ def test_proteina_points_at_its_own_multi_chain_route(pages):
     "A12-157,B12-157"), not by listing chains in ``target_chain``, so telling
     users to type "A,B" there would send them down the wrong path. The field
     still gets the 32-char cap, because its own validator allows 32
-    (tools/proteina/__init__.py:508) and the form contradicted it at 4."""
+    (tools/proteina/__init__.py::validate) and the form contradicted it at 4."""
     help_text = pages["proteina"].help_after("target_chain").lower()
     assert "several chains" in help_text and "region" in help_text, (
         f"proteina: target chain help no longer points at the contig field. "
@@ -390,15 +390,15 @@ def test_the_gated_forms_refusal_promise_holds_on_every_path_from_the_form(
     """bindcraft's help says a second chain "is refused when you submit". This
     executes the submit, on BOTH ways a structure can reach it.
 
-    WHY BOTH. A review read the hard gate at blueprints/tools.py:1267 —
+    WHY BOTH. A review read the hard gate in blueprints/tools.py::tool_submit —
     ``adapter.slug in PREFLIGHT_TOOLS and pdb_bytes is not None`` — noticed
     that only a fresh upload and the AlphaFold fetch ever assign ``pdb_bytes``,
     and concluded that picking a saved two-chain target and submitting would
     sail past the refusal the copy promises. That trace is correct about that
     gate and wrong about the route: a ``target:`` token stages bytes and then
-    meets the SECOND gate at blueprints/tools.py:1606, which re-inspects the
-    resolved bytes through shared/pdb_intake.py::_verify_reuse_pdb_bytes and
-    runs the same ``preflight_for_tool``. Two gates, one promise.
+    meets a SECOND gate in that same function, which re-inspects the resolved
+    bytes through shared/pdb_intake.py::_verify_reuse_pdb_bytes and runs the
+    same ``preflight_for_tool``. Two gates, one promise.
 
     So this asserts the PROMISE (nothing reaches the GPU, and the user is told
     why) rather than either gate, and it is parametrised so that closing one
@@ -497,9 +497,10 @@ def test_gated_forms_still_post_what_was_typed(slug, pages):
 
 @pytest.mark.parametrize("template", ["targets/new.html", "targets/launch.html"])
 def test_design_target_forms_are_not_capped_at_two_chains(template, flask_app):
-    """A target saved here pre-fills every later run (shared/targets.py:979), so
-    a 4-char cap on this path re-imposes the two-chain limit on exactly the
-    users who run the same target repeatedly."""
+    """A target saved here pre-fills every later run
+    (shared/targets.py::target_defaults_for_form), so a 4-char cap on this path
+    re-imposes the two-chain limit on exactly the users who run the same target
+    repeatedly."""
     from tools.proteina import _MAX_CHAIN_FIELD
 
     src = (flask_app.jinja_env.get_or_select_template(template).filename)

@@ -491,10 +491,10 @@
 
          THE PROXY FORMAT FOLLOWS THE MODE, NOT THE STORED KEY. A pre-split
          scFv run holds the legacy ``iPTM_proxy`` spelling, and the table
-         still heads it CDR_iPTM_proxy and renders it at .3f
-         (components/candidate_table.html:882), so keying this line on which
-         spelling is present would print .2f above a .3f cell on exactly the
-         historical rows this branch exists to judge. Pinned by
+         still heads it CDR_iPTM_proxy and renders it at .3f in
+         components/candidate_table.html's ``%.3f`` branch, so keying this
+         line on which spelling is present would print .2f above a .3f cell
+         on exactly the historical rows this branch exists to judge. Pinned by
          test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged. #}
       {% if best_candidate %}
         {% set _bs = best_candidate.get('scores') or {} %}

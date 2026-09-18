@@ -12,13 +12,14 @@ Estimate sources, in priority order:
 2. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
    (the pilot-tier default). Used for new tools without enough history.
 
-(``ToolSpec.tier_gpu_seconds`` overrides both sources for one preset.
-One tier sets it today -- proteina's free ``validate`` pre-flight, at 0
--- and every other shipped tier falls through to historical p90 or the
-pilot default. A 0 there is what makes a free preset actually free: for a
+(``ToolSpec.tier_gpu_seconds`` overrides both sources for one preset. One
+tier sets it today -- proteina's free ``validate`` pre-flight, at 0 -- and
+every other shipped tier falls through to historical p90 or the pilot
+default. A 0 there is what makes a free preset actually free: for a
 signed-in user with a wallet row, ``shared/wallet_guard.py`` skips the HOLD
 on ``estimate <= 0`` -- not the preflight -- so no hold is placed and, with
-no ``hold_tx_id`` on the job, ``shared/jobs.py:1390-1391`` settles nothing.)
+no ``hold_tx_id`` on the job,
+``shared/jobs.py::_settle_wallet_hold_for_completed_job`` settles nothing.)
 
 Parameter scaling: when the submitted ``params`` include a scaling
 parameter (``num_designs`` and friends), the base ``gpu_seconds`` is
@@ -460,19 +461,20 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # base_hard_cap, on the tier advertised as free. Would, not did -- that
         # is the estimator and the gate traced and re-run in-process, not a
         # completed validate job. Nor would the hold have lapsed unused:
-        # ``_interpret_pipeline_return`` reports
-        # the container's own ``runtime_seconds`` as gpu_seconds_used
+        # ``_interpret_pipeline_return`` reports the container's own
+        # ``runtime_seconds`` as gpu_seconds_used
         # (``gpu/modal_client.py::_interpret_pipeline_return``) and
-        # shared/jobs.py settles a billed class at
-        # that number -- traced through those two functions, not observed on a
-        # completed validate run. 0 restores the promise: the estimate is
-        # $0.0000 and wallet_guard's ``free_run`` branch skips the hold, so with
-        # no hold_tx_id shared/jobs.py:1390-1391 settles nothing. It skips the
-        # HOLD only -- the submit still goes through ``wallet_preflight``, so a
-        # frozen wallet is still refused. Free to the CUSTOMER only:
-        # modal_app.py's single @app.function takes ``gpu=_GPU`` with no branch
-        # (modal_app.py:246-248, _GPU = "A100-80GB" at :69), so Ranomics still
-        # pays for the container (run_pipeline.py's "validate tier" header).
+        # shared/jobs.py settles a billed class at that number -- traced through
+        # those two functions, not observed on a completed validate run. 0
+        # restores the promise: the estimate is $0.0000 and wallet_guard's
+        # ``free_run`` branch skips the hold, so with no hold_tx_id
+        # shared/jobs.py::_settle_wallet_hold_for_completed_job settles nothing.
+        # It skips the HOLD only -- the submit still goes through
+        # ``wallet_preflight``, so a frozen wallet is still refused. Free to the
+        # CUSTOMER only: modal_app.py's single @app.function takes ``gpu=_GPU``
+        # with no branch (modal_app.py:246-248, _GPU = "A100-80GB" at :69), so
+        # Ranomics still pays for the container (run_pipeline.py's "validate
+        # tier" header).
         # ponytail: ``cushioned_hold_usd`` still returns the
         # worst_case_gpu_seconds floor ($12.5827) for this preset, because that
         # floor reads the spec and ignores a zero point estimate. Nothing prices
