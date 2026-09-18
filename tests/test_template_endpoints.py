@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 
 # First arg of url_for(...) when it is a plain literal. Dynamic endpoints

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _make_app(monkeypatch, *, platform_api, public_base=None, railway=None):
     """Build a fresh app with a controlled, cookie-relevant environment.

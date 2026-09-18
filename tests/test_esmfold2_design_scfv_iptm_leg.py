@@ -34,6 +34,8 @@ from tools.esmfold2_design.run_pipeline import (
     _pick_best,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # Job verify242-bs6-1789054528, 2026-09-10 15:45 UTC. The log pairs these
 # explicitly ("proxy 0.618 with ipTM 0.436" and so on). The 0.396/0.400 pair
 # is the one place the pairing is ambiguous in the source text, and it does
