@@ -26,11 +26,15 @@ buys no protection against a rename and would churn prose instead:
     re-export must still go red, so ``ast.Import``/``ast.ImportFrom`` are
     not collected. No citation in the tree resolves that way today.
   * A directory-less citation (``base.py::parse_hotspot_residues``) resolves
-    against the citing file's own directory first, then against every tracked
-    file with that basename. Where the basename is ambiguous -- nine tool
-    directories each hold a ``run_pipeline.py`` -- the symbol need only exist
-    in ONE candidate. That is weaker than an exact path but not inert: no
-    ``run_pipeline.py`` defining ``_run_shard`` means red.
+    against every tracked file with that basename. Where the basename is
+    ambiguous -- nine tool directories each hold a ``run_pipeline.py`` -- the
+    symbol need only exist in ONE candidate. That is weaker than an exact path
+    but not inert: no ``run_pipeline.py`` defining ``_run_shard`` means red.
+    This bullet used to say the citing file's own directory was tried FIRST
+    and the rest after. The code returned the sibling and stopped, so a
+    citation whose symbol lived in a same-named file elsewhere went red though
+    it was correct -- which is what happened when #312 landed. In this one
+    case the PROSE was the accurate half; the fix was to the code.
   * A ``tools-hub/``-prefixed path resolves by dropping the prefix. The two
     files in ``contracts/`` are byte-locked to the sibling llm-proteinDesigner
     repo, so they are written from the directory holding BOTH -- editing one
@@ -319,9 +323,15 @@ def _candidates(citing: str, path: str) -> list[str]:
         return [from_templates]
     if "/" in path:
         return []
-    sibling = f"{citing.rsplit('/', 1)[0]}/{path}" if "/" in citing else path
-    if sibling in _TRACKED_SET:
-        return [sibling]
+    # A bare basename is ambiguous: five tracked files are named ``jobs.py`` or
+    # ``campaigns.py``. The file beside the citing one is the likeliest
+    # reading, but making it the ONLY reading turns correct citations red --
+    # ``shared/score_legends.py`` cites ``campaigns.py::compute_campaign_refold``
+    # and ``jobs.py::job_refold``, both defined under ``blueprints/`` while a
+    # same-named file sits in ``shared/`` beside the citing file. Offer every
+    # same-named file and let the symbol choose, which is all a token naming no
+    # directory can honestly say. Pinned by
+    # ``test_a_bare_basename_is_not_narrowed_to_the_sibling``.
     return _BY_BASENAME.get(path, [])
 
 
@@ -412,6 +422,26 @@ def test_a_sibling_repo_path_resolves_rather_than_being_exempted():
     # Still a real check, and still only for a path that exists.
     assert not _symbol_exists("gpu/modal_client.py", "ModalClient._build_payload_X")
     assert _candidates("contracts/rpc.py", "tools-hub/gpu/no_such_file.py") == []
+
+
+def test_a_bare_basename_is_not_narrowed_to_the_sibling():
+    """A bare ``campaigns.py`` may mean any tracked file so named, not the
+    nearest one. Preferring the sibling EXCLUSIVELY reported two correct
+    citations in ``shared/score_legends.py`` as rot, which is how this was
+    found: the guard went red when those citations merged from #312.
+    """
+    for path, symbol, home in (
+        ("campaigns.py", "compute_campaign_refold", "blueprints/campaigns.py"),
+        ("jobs.py", "job_refold", "blueprints/jobs.py"),
+    ):
+        got = _candidates("shared/score_legends.py", path)
+        assert f"shared/{path}" in got, got
+        assert home in got, got
+        # Not a tie the sibling could have won: it does not define the symbol.
+        assert not _symbol_exists(f"shared/{path}", symbol)
+        assert _symbol_exists(home, symbol)
+    # A basename matching nothing tracked is still unresolvable.
+    assert _candidates("shared/score_legends.py", "no_such_file.py") == []
 
 
 def test_a_citation_wrapped_at_the_colons_is_still_found():
