@@ -1370,8 +1370,13 @@ def _download_labels(html: str) -> list:
 # href, download filename and label of ONE anchor, captured together.
 # Read through separate scans they can be paired across rows, and the
 # defect this pins is exactly two fields of one anchor disagreeing.
+# The URL arm carries the extra cand-pdb-download hook that binds it to the
+# refusal guard (static/js/candidate_table.js::initTable); the inline arm
+# serves its own bytes and does not. Spelled as those two shapes rather
+# than [^"]* so a THIRD class still has to be declared here.
 _DOWNLOAD_RE = re.compile(
-    r'<a href="([^"]*)"\s+download="([^"]*)"\s+class="btn-secondary"\s+'
+    r'<a href="([^"]*)"\s+download="([^"]*)"\s+'
+    r'class="btn-secondary(?: cand-pdb-download)?"\s+'
     r'style="padding:\.2rem \.5rem;font-size:\.8rem;">(\.[^<]*)</a>'
 )
 
