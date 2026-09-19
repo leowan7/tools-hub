@@ -30,10 +30,10 @@
   metric columns replace the per-tool ones: Tool, Score and Pctile, where Score
   prints each row's OWN primary metric beside that metric's name. No number is
   ever compared across tools, because the tools do not share a scale: the same
-  ``ipTM`` label is an AF2 re-score for rfdiffusion and BoltzGen's own
-  confidence head for boltzgen, and shared/score_legends.py:8-11 already records
-  that they do not mean the same thing. Ranking is by WITHIN-tool percentile,
-  which is scale invariant, so it needs no such comparison.
+  ``ipTM`` label is an AF2 re-score for rfdiffusion and BoltzGen's own confidence
+  head for boltzgen, and shared/score_legends.py's module docstring already
+  records that they do not mean the same thing. Ranking is by WITHIN-tool
+  percentile, which is scale invariant, so it needs no such comparison.
 
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py

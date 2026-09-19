@@ -237,10 +237,10 @@ def test_the_rate_card_values_are_what_modal_charges() -> None:
 
     These are the rate card's OWN documented USD/hour figures, divided by 3600.
     They are deliberately conservative upper bounds, not Modal's list prices --
-    shared/wallet.py:120 says so, and A100-40GB is "rounded up from $2.10
-    list". Do not "correct" them against modal.com/pricing: that would
-    under-bill A100-40GB by 18%. A typo here misprices every job on that class,
-    in both the quote and the charge, with no other test noticing.
+    shared/wallet.py::GPU_USD_PER_SECOND says so, and A100-40GB is "rounded up
+    from $2.10 list". Do not "correct" them against modal.com/pricing: that
+    would under-bill A100-40GB by 18%. A typo here misprices every job on that
+    class, in both the quote and the charge, with no other test noticing.
     """
     expected_usd_per_hour = {
         "A10G": 0.75, "A100-40GB": 2.57, "A100-80GB": 3.70,

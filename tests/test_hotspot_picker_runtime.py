@@ -425,11 +425,11 @@ def test_single_chain_typed_bare_ints_are_preserved_across_a_click(
 # The seam: what the picker EMITS must be what the server PARSES
 # ---------------------------------------------------------------------------
 #
-# tests/test_multichain_targets.py:234-237 records why this matters: every
-# earlier test checked one side of a seam — the adapter emits "A,B" (true) and
-# the shared parsers accept "A B" (also true) — and nothing asserted that the
-# emitted form is an accepted form. The picker is the same shape of seam, one
-# layer further out: it writes the string the browser posts.
+# tests/test_multichain_targets.py's "The seam" note records why this matters:
+# every earlier test checked one side of a seam — the adapter emits "A,B" (true)
+# and the shared parsers accept "A B" (also true) — and nothing asserted that
+# the emitted form is an accepted form. The picker is the same shape of seam,
+# one layer further out: it writes the string the browser posts.
 
 @needs_node
 @pytest.mark.parametrize("slug", CHAIN_PREFIXED_FORMS)
