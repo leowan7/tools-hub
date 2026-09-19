@@ -74,11 +74,12 @@ themselves instances, so a re-measurement that includes them runs high.
 
   * A continuation ``::symbol`` whose path is named a line or two above AND
     is already spoken for by a citation of its own -- in
-    ``shared/exports.py:148-151`` the path carries ``TestNonStringPdbKey`` and
-    three more tests follow on bare ``::`` lines, unreachable because the path
-    was consumed by its own match. 17 of these exist, and every one is that
+    ``shared/exports.py::_safe_arcname`` the path is consumed by its own match
+    on ``TestNonStringPdbKey``, and three more tests follow it on bare ``::``
+    lines that nothing can reach. 17 of these exist, and every one is that
     shape. A path left BARE at the end of a line is a different shape and IS
-    read, by the ``_GAP`` in the token above; none of the 17 is that. They cannot be resolved by inheriting the nearest path
+    read, by the ``_GAP`` in the token above; none of the 17 is that.
+    They cannot be resolved by inheriting the nearest path
     without also matching ``::after``, ``::ffff`` and GitHub Actions'
     ``::error``, which a scan of the tree finds 21 of -- a heuristic whose own
     misses would be silent, which is what this file refuses to ship.
@@ -125,7 +126,8 @@ _NOT_A_CITATION = "not-a-citation"
 # ``blueprints/tools.py`` then ``::_normalize_clone_pre_fill``
 # (``templates/tools/rfdiffusion_form.html:259``), and
 # ``tests/test_malformed_candidate_row_render.py::`` then
-# ``test_a_tuple_of_good_rows_is_not_blanked`` (``shared/jobs.py:245``).
+# ``test_a_tuple_of_good_rows_is_not_blanked``, in
+# ``shared/jobs.py::display_rows``.
 # Without this they match nothing at all, which is a blind spot reported as a
 # zero -- the failure this guard exists to prevent. Pinned by
 # ``test_a_citation_wrapped_at_the_colons_is_still_found``.
@@ -351,13 +353,16 @@ def test_every_code_citation_resolves_to_a_real_symbol():
 def test_the_scan_still_reaches_the_citations():
     """Tripwire: a broken regex or walker would otherwise pass on an empty set.
 
-    491 tokens, measured on this branch merged with main at ``f65551d``. It was
-    467 before that merge: #309 converted 20 more line citations to this form,
-    so a count written inside the file that counts it goes stale by work done
-    somewhere else entirely. Re-measure before quoting it; the assert below
-    deliberately does not, because a FLOOR is what survives other people's
-    commits. It is slack enough to delete a file's worth of prose and tight
-    enough that a scan returning nothing is red.
+    491 tokens as this commit leaves the tree, and none of that movement came
+    from writing a test: 467 before main was merged in at ``d78e0b0``, +22
+    from the two commits that merge carried, +2 from the two line citations
+    converted to symbol form in this file by this commit. A count written
+    inside the file that counts it moves under all three. Do not trust this
+    line -- import the module and read ``len(_CITATIONS)``, which is the whole
+    measurement. The assert below deliberately does not quote it, because a
+    FLOOR is the part that survives other people's commits: slack enough to
+    delete a file's worth of prose, tight enough that a scan returning nothing
+    is red.
     """
     assert len(_CITATIONS) >= 400, f"only {len(_CITATIONS)} citations found"
 
