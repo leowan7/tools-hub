@@ -26,15 +26,24 @@ buys no protection against a rename and would churn prose instead:
     re-export must still go red, so ``ast.Import``/``ast.ImportFrom`` are
     not collected. No citation in the tree resolves that way today.
   * A directory-less citation (``base.py::parse_hotspot_residues``) resolves
-    against every tracked file with that basename. Where the basename is
-    ambiguous -- nine tool directories each hold a ``run_pipeline.py`` -- the
-    symbol need only exist in ONE candidate. That is weaker than an exact path
-    but not inert: no ``run_pipeline.py`` defining ``_run_shard`` means red.
-    This bullet used to say the citing file's own directory was tried FIRST
-    and the rest after. The code returned the sibling and stopped, so a
-    citation whose symbol lived in a same-named file elsewhere went red though
-    it was correct -- which is what happened when #312 landed. In this one
-    case the PROSE was the accurate half; the fix was to the code.
+    against the citing file's own directory, and stops there: a bare basename
+    means the file next door. Only where nothing of that name sits next door
+    does it fall back to every tracked file with that basename, and then the
+    symbol need only exist in ONE of them -- weaker than an exact path, but
+    not inert: no ``run_pipeline.py`` defining ``_run_shard`` means red.
+
+    This bullet used to describe a sibling-FIRST lookup with the rest as
+    fallback, which the code has never done. Reading the prose as a
+    description of the code, I widened the code to match it. A reviewer showed
+    what that cost: ``tools/af2/modal_app.py:192`` cites
+    ``modal_app.py::run_tool`` and eight sibling tools define ``run_tool``
+    too, so the widened resolver would have stayed green on a rename of the
+    only file that citation can mean. The code was right; the prose and my fix
+    to it were both wrong. What raised the question was two bare citations in
+    ``shared/score_legends.py`` that the strict rule called rot -- they were
+    under-qualified, not rotted, and are now qualified like the four citations
+    beside them in the same comment. See ``_rot_message`` for the wording that
+    now tells those two cases apart.
   * A ``tools-hub/``-prefixed path resolves by dropping the prefix. The two
     files in ``contracts/`` are byte-locked to the sibling llm-proteinDesigner
     repo, so they are written from the directory holding BOTH -- editing one
@@ -339,15 +348,26 @@ def _candidates(citing: str, path: str) -> list[str]:
         return [from_templates]
     if "/" in path:
         return []
-    # A bare basename is ambiguous: five tracked files are named ``jobs.py`` or
-    # ``campaigns.py``. The file beside the citing one is the likeliest
-    # reading, but making it the ONLY reading turns correct citations red --
-    # ``shared/score_legends.py`` cites ``campaigns.py::compute_campaign_refold``
-    # and ``jobs.py::job_refold``, both defined under ``blueprints/`` while a
-    # same-named file sits in ``shared/`` beside the citing file. Offer every
-    # same-named file and let the symbol choose, which is all a token naming no
-    # directory can honestly say. Pinned by
-    # ``test_a_bare_basename_is_not_narrowed_to_the_sibling``.
+    # A bare basename is ambiguous -- nine tracked files are named
+    # ``run_pipeline.py`` and thirty-one ``__init__.py`` -- so the file beside
+    # the citing one is taken as the reading, and ONLY it. That is the strict
+    # choice and it is deliberate: ``tools/af2/modal_app.py:192`` cites
+    # ``modal_app.py::run_tool``, which eight sibling tools also define, so
+    # offering every same-named file leaves that citation green after a rename
+    # of the one file it means -- measured, not argued. The same holds for the
+    # bare ``validate`` citation in ``tools/boltzgen/meta.py``, whose basename
+    # offers thirty-one candidates, fourteen of them defining that symbol.
+    # The cost is that a bare basename meaning a same-named file ELSEWHERE
+    # goes red -- correctly, because the repo convention is a qualified path
+    # (450 of 505 citations carried a directory when this was measured), and
+    # ``_rot_message`` says which path to write. This comment used to quote
+    # that bare citation in full; the guard read the quotation as a citation
+    # and reported it, which is the mechanism working, so the sentence names
+    # the symbol instead.
+    # Pinned by ``test_a_bare_basename_resolves_to_the_sibling_and_stops``.
+    sibling = f"{citing.rsplit('/', 1)[0]}/{path}" if "/" in citing else path
+    if sibling in _TRACKED_SET:
+        return [sibling]
     return _BY_BASENAME.get(path, [])
 
 
@@ -362,23 +382,55 @@ def _all_citations() -> list[tuple[str, int, str, str]]:
 _CITATIONS = _all_citations()
 
 
+def _rot_message(citing: str, line: int, path: str, symbol: str) -> str | None:
+    """Why this citation is red, or ``None`` if it resolves.
+
+    Split out of the guard so the UNDER-QUALIFIED branch is reachable from a
+    test. No citation in the tree reaches it today, because the two that did
+    were qualified in this same commit -- and a branch that only fires on
+    someone else's future mistake is exactly the branch that rots unexercised.
+    Pinned by ``test_an_under_qualified_citation_is_told_where_to_look``.
+    """
+    candidates = _candidates(citing, path)
+    if not candidates:
+        return (
+            f"{citing}:{line} cites {path}::{symbol} -- no such file is "
+            f"tracked (fix the path, or add it to _OUTSIDE_THIS_REPO)"
+        )
+    if any(_symbol_exists(c, symbol) for c in candidates):
+        return None
+    # Resolution is deliberately narrow, so "not defined here" and "defined,
+    # but in a file you did not name" are different failures with different
+    # fixes. Saying so is not a nicety: reading the second as the first is how
+    # the resolver came to be loosened for the whole tree in an earlier draft
+    # of this file, which cost the rename detection the comment above defends.
+    elsewhere = [
+        c
+        for c in _BY_BASENAME.get(path.rsplit("/", 1)[-1], [])
+        if c not in candidates and _symbol_exists(c, symbol)
+    ]
+    if elsewhere:
+        return (
+            f"{citing}:{line} cites {path}::{symbol} -- UNDER-QUALIFIED, not "
+            f"rotted: {symbol} is not in {', '.join(candidates)} but is "
+            f"defined in {', '.join(elsewhere)}. Write that path into the "
+            f"citation."
+        )
+    return (
+        f"{citing}:{line} cites {path}::{symbol} -- {symbol} is not "
+        f"defined in {', '.join(candidates)}"
+    )
+
+
 def test_every_code_citation_resolves_to_a_real_symbol():
     """The guard. One message listing every rotted citation, not the first."""
     rotted = []
     for citing, line, path, symbol in _CITATIONS:
         if path in _OUTSIDE_THIS_REPO:
             continue
-        candidates = _candidates(citing, path)
-        if not candidates:
-            rotted.append(
-                f"{citing}:{line} cites {path}::{symbol} -- no such file is "
-                f"tracked (fix the path, or add it to _OUTSIDE_THIS_REPO)"
-            )
-        elif not any(_symbol_exists(c, symbol) for c in candidates):
-            rotted.append(
-                f"{citing}:{line} cites {path}::{symbol} -- {symbol} is not "
-                f"defined in {', '.join(candidates)}"
-            )
+        message = _rot_message(citing, line, path, symbol)
+        if message:
+            rotted.append(message)
     assert not rotted, "\n".join(["rotted code citations:", *rotted])
 
 
@@ -443,24 +495,86 @@ def test_a_sibling_repo_path_resolves_rather_than_being_exempted():
     assert _candidates("contracts/rpc.py", "tools-hub/gpu/no_such_file.py") == []
 
 
-def test_a_bare_basename_is_not_narrowed_to_the_sibling():
-    """A bare ``campaigns.py`` may mean any tracked file so named, not the
-    nearest one. Preferring the sibling EXCLUSIVELY reported two correct
-    citations in ``shared/score_legends.py`` as rot, which is how this was
-    found: the guard went red when those citations merged from #312.
+def test_a_bare_basename_resolves_to_the_sibling_and_stops():
+    """A bare ``campaigns.py`` means the one next door, not any of that name.
+
+    This is the strict reading and it is what keeps rename detection: were the
+    fallback offered here too, ``tools/af2/modal_app.py``'s citation of
+    ``modal_app.py::run_tool`` would stay green after that symbol was renamed,
+    because eight sibling tools (at the time of writing) define ``run_tool``
+    as well. That was measured by renaming it and re-resolving that one
+    citation, not argued.
+
+    Measured at the level of the CITATION, which is the honest scope of the
+    claim. The whole GUARD happens to go red on that rename either way, and
+    the first attempt to demonstrate the loss missed it for that reason: the
+    same file also cites ``tools/af2/modal_app.py::run_tool`` in full at :175,
+    and a qualified citation fails under either rule. Both at-risk citations
+    have such a twin today -- the bare ``validate`` one is shadowed by a
+    qualified citation in ``templates/tools/boltzgen_form.html:221``. So the
+    widening would not have turned this suite green on any rename I can
+    currently write; it would have
+    removed one of two independent reasons for the red, leaving a guard that
+    passes as soon as somebody edits the other citation. The strictness is
+    worth keeping for that, not for a live hole.
     """
-    for path, symbol, home in (
-        ("campaigns.py", "compute_campaign_refold", "blueprints/campaigns.py"),
-        ("jobs.py", "job_refold", "blueprints/jobs.py"),
-    ):
-        got = _candidates("shared/score_legends.py", path)
-        assert f"shared/{path}" in got, got
-        assert home in got, got
-        # Not a tie the sibling could have won: it does not define the symbol.
-        assert not _symbol_exists(f"shared/{path}", symbol)
-        assert _symbol_exists(home, symbol)
+    assert _candidates("shared/score_legends.py", "campaigns.py") == [
+        "shared/campaigns.py"
+    ]
+    assert _candidates("tools/af2/modal_app.py", "modal_app.py") == [
+        "tools/af2/modal_app.py"
+    ]
+    # The reason it matters, measured: the fallback would offer further files
+    # that define ``run_tool``, any one of which would mask a rename.
+    others = [
+        c
+        for c in _BY_BASENAME["modal_app.py"]
+        if c != "tools/af2/modal_app.py" and _symbol_exists(c, "run_tool")
+    ]
+    assert len(others) >= 2, others
+    # With no same-named file next door, every candidate is offered instead.
+    assert (
+        _candidates("shared/score_legends.py", "run_pipeline.py")
+        == _BY_BASENAME["run_pipeline.py"]
+    )
     # A basename matching nothing tracked is still unresolvable.
     assert _candidates("shared/score_legends.py", "no_such_file.py") == []
+
+
+def test_an_under_qualified_citation_is_told_where_to_look():
+    """Strictness is only safe if the failure says which path to write.
+
+    This is the case that misled me. ``shared/score_legends.py`` cited
+    ``campaigns.py::compute_campaign_refold`` with no directory; the symbol
+    lives in ``blueprints/campaigns.py``, a ``shared/campaigns.py`` sits beside
+    the citing file, and the guard reported it in the same words it uses for a
+    symbol that no longer exists anywhere. I read that as rot in the guard and
+    widened the resolver. The citation was simply under-qualified -- as four
+    others in the very same comment block were not -- and is now qualified.
+    The wording below is what would have said so.
+    """
+    message = _rot_message(
+        "shared/score_legends.py", 1387, "campaigns.py", "compute_campaign_refold"
+    )
+    assert message is not None
+    assert "UNDER-QUALIFIED" in message, message
+    assert "blueprints/campaigns.py" in message, message
+    # A symbol defined NOWHERE must not borrow this wording.
+    plain = _rot_message(
+        "shared/score_legends.py", 1, "campaigns.py", "no_such_symbol_anywhere"
+    )
+    assert plain is not None
+    assert "UNDER-QUALIFIED" not in plain, plain
+    # ...and the real citation, now qualified, resolves.
+    assert (
+        _rot_message(
+            "shared/score_legends.py",
+            1387,
+            "blueprints/campaigns.py",
+            "compute_campaign_refold",
+        )
+        is None
+    )
 
 
 def test_a_citation_wrapped_at_the_colons_is_still_found():
