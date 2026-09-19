@@ -1,0 +1,340 @@
+"""The collection gate in tests/conftest.py, and proof it can fail.
+
+The gate refuses a run in which a test reaches the Flask app without Supabase
+isolation. A green suite is no evidence for it on its own: the suite is
+currently clean, so the gate returns "no offenders" whether it works or is
+inert. The assertions here are therefore of three kinds: they exercise a
+predicate directly, feed the gate an offender it must flag, or read state only
+a gate pytest actually invoked could have set.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+import types
+
+import pytest
+
+
+def _live_conftest(config):
+    """The conftest module object pytest loaded, not a fresh import of it.
+
+    A second import would carry its own ``_COLLECTION_GATE_SAW = 0`` and make
+    the wiring assertion below unfalsifiable.
+    """
+    for plugin in config.pluginmanager.get_plugins():
+        path = (getattr(plugin, "__file__", "") or "").replace("\\", "/")
+        if path.endswith("tests/conftest.py"):
+            return plugin
+    raise AssertionError("tests/conftest.py is not registered as a pytest plugin")
+
+
+@pytest.fixture
+def ct(request):
+    return _live_conftest(request.config)
+
+
+def _item(path, fixturenames=(), nodeid="tests/fake.py::test_x"):
+    return types.SimpleNamespace(
+        path=path, fixturenames=tuple(fixturenames), nodeid=nodeid
+    )
+
+
+def _caller(tmp_path, name="calls_app.py"):
+    f = tmp_path / name
+    f.write_text("def create_app():\n    pass\n\n\napp = create_app()\n", encoding="utf-8")
+    return f
+
+
+# --- the predicate -------------------------------------------------------
+
+
+def test_a_mention_is_not_a_call(ct):
+    mention = ast.parse("'create_app() in a docstring'\n# create_app()\n")
+    assert ct._builds_app(mention) is False
+    assert ct._builds_app(ast.parse("create_app()")) is True
+
+
+def test_an_attribute_call_counts(ct):
+    """all_tools_app reaches the app as ``app_module.create_app()``."""
+    assert ct._builds_app(ast.parse("app_module.create_app()")) is True
+
+
+def test_app_building_fixtures_finds_the_real_one(ct):
+    names = ct._app_building_fixtures(
+        pathlib.Path(ct.__file__).read_text(encoding="utf-8")
+    )
+    assert "all_tools_app" in names
+    assert "isolate_supabase" not in names
+
+
+# --- the gate, fed an offender it must flag ------------------------------
+
+
+def test_gate_flags_an_unisolated_caller(tmp_path, ct):
+    """The positive control: without this the suite's 0 offenders prove nothing."""
+    offenders = ct._unisolated([_item(_caller(tmp_path))], frozenset())
+    assert len(offenders) == 1
+
+
+@pytest.mark.parametrize("fixture", ["isolate_supabase", "isolate_supabase_module"])
+def test_gate_clears_either_isolation_fixture(tmp_path, ct, fixture):
+    offenders = ct._unisolated([_item(_caller(tmp_path), [fixture])], frozenset())
+    assert offenders == {}
+
+
+def test_a_misspelled_mark_still_reads_as_missing(tmp_path, ct):
+    """The closure carries whatever the mark named, so a typo resolves to nothing."""
+    offenders = ct._unisolated(
+        [_item(_caller(tmp_path), ["isolate_supabse"])], frozenset()
+    )
+    assert len(offenders) == 1
+
+
+def test_gate_flags_a_fixture_mediated_reacher(tmp_path, ct):
+    """A file that never writes create_app still reaches one via all_tools_app."""
+    plain = tmp_path / "no_call.py"
+    plain.write_text("def test_x():\n    pass\n", encoding="utf-8")
+    app_fixtures = frozenset({"all_tools_app"})
+
+    assert ct._unisolated([_item(plain, ["all_tools_app"])], app_fixtures) != {}
+    assert ct._unisolated(
+        [_item(plain, ["all_tools_app", "isolate_supabase"])], app_fixtures
+    ) == {}
+
+
+def test_gate_ignores_a_file_that_never_reaches_the_app(tmp_path, ct):
+    plain = tmp_path / "plain.py"
+    plain.write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    assert ct._unisolated([_item(plain)], frozenset()) == {}
+
+
+# --- built too early for the mark to help (the #296 mechanism) -----------
+
+
+def _early_caller(tmp_path, twin=False):
+    """A file whose module-scoped fixture builds the app, with or without the twin."""
+    arg = "isolate_supabase_module" if twin else ""
+    f = tmp_path / ("early_twin.py" if twin else "early.py")
+    f.write_text(
+        """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(%s):
+    import app as app_module
+
+    return app_module.create_app()
+"""
+        % arg,
+        encoding="utf-8",
+    )
+    return f
+
+
+def test_a_wider_scoped_app_fixture_without_the_twin_is_early(ct):
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+
+
+def test_the_twin_clears_a_wider_scoped_app_fixture(ct):
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(isolate_supabase_module):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_function_scoped_app_fixture_is_not_early(ct):
+    """A function-scoped fixture is built after the mark, so the mark covers it."""
+    src = """import pytest
+
+
+@pytest.fixture
+def app():
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_the_mark_does_not_clear_an_early_fixture(tmp_path, ct):
+    """The point of the rule: these files DO carry the mark, too late to matter."""
+    early = _item(_early_caller(tmp_path), ["tools_app", "isolate_supabase"])
+    assert ct._unisolated([early], frozenset()) != {}
+
+    twinned = _item(
+        _early_caller(tmp_path, twin=True), ["tools_app", "isolate_supabase"]
+    )
+    assert ct._unisolated([twinned], frozenset()) == {}
+
+
+_SHARED_TWIN = """import pytest
+
+
+@pytest.fixture(scope="module")
+def isolated_env(isolate_supabase_module):
+    return True
+"""
+
+
+def test_a_delegating_fixture_is_still_early(ct):
+    """Naming a helper rather than create_app does not escape the rule."""
+    src = """import pytest
+
+
+def _build():
+    return create_app()
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return _build()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+
+
+def test_the_twin_through_an_intermediate_clears_it(ct):
+    """pytest builds the whole chain first, so the twin need not be direct."""
+    src = _SHARED_TWIN + """
+
+@pytest.fixture(scope="module")
+def tools_app(isolated_env):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_chain_that_leaves_the_file_is_followed(ct):
+    """A test file uses conftest's fixtures without defining them."""
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(isolated_env):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset({"tools_app"})
+    shared = ct._module_functions(_SHARED_TWIN)
+    assert ct._early_app_fixtures(src, shared) == frozenset()
+
+
+def test_an_offender_in_shared_is_not_reported_against_the_file(ct):
+    """Otherwise one conftest fault would be blamed on every file collected."""
+    shared = ct._module_functions("""import pytest
+
+
+@pytest.fixture(scope="module")
+def leaky_app():
+    return create_app()
+""")
+    assert ct._early_app_fixtures("import pytest", shared) == frozenset()
+
+
+def test_a_keyword_only_twin_counts(ct):
+    """pytest resolves keyword-only fixture params, so the gate must too."""
+    src = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(*, isolate_supabase_module):
+    return create_app()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_twin_pytest_will_not_resolve_is_not_protection(ct):
+    """Naming the twin is not enough; pytest must actually resolve it."""
+    tpl = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(%s):
+    return create_app()
+"""
+    unresolved = (
+        "*, isolate_supabase_module=None",  # defaulted keyword-only
+        "isolate_supabase_module=None",  # defaulted positional-or-keyword
+        "isolate_supabase_module, /",  # positional-only
+    )
+    for shape in unresolved:
+        assert ct._early_app_fixtures(tpl % shape) == frozenset({"tools_app"}), shape
+
+
+def test_a_cycle_between_helpers_terminates(ct):
+    """Without the ``seen`` guard this raises RecursionError instead."""
+    src = """import pytest
+
+
+def _a():
+    return _b()
+
+
+def _b():
+    return _a()
+
+
+@pytest.fixture(scope="module")
+def tools_app():
+    return _a()
+"""
+    assert ct._early_app_fixtures(src) == frozenset()
+
+
+def test_a_file_outside_the_tests_directory_is_not_policed(tmp_path, ct):
+    """A root run also collects tools/library_planner/tests, which cannot see
+    the fixtures this gate prescribes -- flagging it would print dead advice."""
+    assert ct._under_tests(tmp_path / "x.py") is False
+    assert ct._under_tests(pathlib.Path(ct.__file__)) is True
+    assert ct._under_tests(None) is False
+
+
+def test_an_aliased_create_app_import_is_still_a_build(ct):
+    """`from app import create_app as ca` then `ca()` reaches the app.
+
+    The literal-name check read this shape as clean, which is the dangerous
+    direction: it certifies a file the gate exists to refuse. Nothing in the
+    tree writes it today, and in a drift guard that is not a defence.
+    """
+    aliased = "from app import create_app as ca\n\ndef f():\n    return ca()\n"
+    assert ct._create_app_aliases(aliased) == frozenset({"ca"})
+    assert ct._builds_app(ast.parse(aliased), ct._create_app_aliases(aliased)) is True
+    # the un-aliased default under-reports rather than over-reports
+    assert ct._builds_app(ast.parse(aliased)) is False
+
+    plain = "from app import create_app\n\ndef f():\n    return create_app()\n"
+    assert ct._create_app_aliases(plain) == frozenset()
+    assert ct._builds_app(ast.parse(plain)) is True
+
+    # and the wiring, not just the leaf: the real entry point must see it
+    fixture_src = (
+        "import pytest\n"
+        "from app import create_app as ca\n\n"
+        '@pytest.fixture(scope="module")\n'
+        "def tools_app():\n"
+        "    return ca()\n"
+    )
+    assert ct._app_building_fixtures(fixture_src) == frozenset({"tools_app"})
+    assert ct._early_app_fixtures(fixture_src) == frozenset({"tools_app"})
+
+
+# --- the gate is wired ---------------------------------------------------
+
+
+def test_the_gate_actually_ran(ct):
+    """Proves pytest invoked the hook in THIS session.
+
+    Every assertion above calls ``_unisolated`` directly and would pass just
+    the same if ``pytest_collection_modifyitems`` were misspelled and never
+    called. This one reads the counter the hook itself sets.
+    """
+    assert ct._COLLECTION_GATE_SAW > 0

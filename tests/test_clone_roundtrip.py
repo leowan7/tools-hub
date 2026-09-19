@@ -105,7 +105,7 @@ _FORM: dict[str, str] = {
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     """Every registered adapter, flagged on."""
     import app as app_module
     from shared.feature_flags import flag_name

@@ -66,7 +66,7 @@ DEAD_URL_PATTERNS = (
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     import os
 
     import app as app_module
