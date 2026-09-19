@@ -64,12 +64,32 @@ class SizeEnvelope:
         estimator.
     ``runtime_alpha``
         Exponent for target-size scaling; runtime ~ (target_aa/120)^alpha.
-        1.0 for ~linear (boltzgen, rfantibody), 1.2 for diffusion+AF2
-        validation (rfdiffusion), 1.5 for AF2-backprop loops (bindcraft).
+        Above 1 where the tool re-folds the complex inside an optimisation
+        loop, near 1 where cost rises roughly linearly with target size, and
+        below 1 where a fixed batch amortises the per-target work.
     ``runtime_baseline_designs``
         Number of designs at the ``runtime_base_min`` anchor. Used so the
         estimator linearly scales when the user requests more/fewer designs.
-        100 for diffusion tools, 10 for bindcraft (default trajectories).
+        It is meaningful only paired with the base it anchors: moving one
+        without the other rescales every estimate that tool makes. WHAT it
+        anchors differs per tool -- for some the count the form defaults to,
+        for others a fixed batch width -- and nothing makes the two agree, so
+        do not read an envelope's value as that tool's form default. Only two
+        are pinned to anything at all: bindcraft's, by
+        tests/test_pdb_preflight.py::
+        test_bindcraft_runtime_curve_reproduces_its_one_measured_run, and
+        proteina's, by tests/test_proteina_shard_size.py::
+        test_preflight_runtime_baseline_is_the_shard_width.
+
+    The per-tool values of those two are deliberately NOT restated here. A
+    list in this docstring cannot fail when one of the envelopes below moves,
+    and this one had drifted twice over: it read "1.0 for ... rfantibody"
+    against an envelope of 1.2, and "100 for diffusion tools" against
+    proteina and pxdesign at 8. Read the envelopes; they are the values.
+    tests/test_pdb_preflight.py::
+    test_bindcraft_runtime_curve_reproduces_its_one_measured_run is what a
+    checkable version looks like -- it reads the validator's own fallback out
+    of its source rather than repeating the number.
 
     Note: the prior ``runtime_hard_cap_min`` field was retired by the
     tier-collapse PR. Wall-clock is no longer a preflight block; long
@@ -216,7 +236,24 @@ class ToolRules:
 #   rfantibody 41 min @ 412 aa × 4 designs  →  base=200 min @ 120 aa × 100
 #   designs assuming alpha=1.2. Other tools scaled proportionally from
 #   published per-design rates (RFdiffusion ~5-10 min/design at small
-#   targets, BindCraft ~30 min/trajectory, BoltzGen ~5-10 min/design).
+#   targets, BoltzGen ~5-10 min/design).
+#
+# BindCraft is the exception and is NOT in that list any more: its anchor
+# is measured rather than published. The ~30 min/trajectory figure that
+# used to sit here over-read the one real bindcraft run by ~3x. See the
+# _BINDCRAFT envelope below for the run and the arithmetic. Every OTHER
+# envelope in this file is deliberately left on its published rate — this
+# change re-baselines bindcraft and nothing else.
+#
+# One of them is known to be wrong in the same direction: _PXDESIGN’s
+# runtime base carries the comment "AF2-IG validation per design", so it
+# rests on the same kind of published per-design figure this change just
+# corrected for bindcraft. It implies 37.5 min for ONE design at the
+# 120 aa anchor, while the two pxdesign pilot rows in
+# docs/VALIDATION-LOG.md are whole multi-design jobs on ~115-130 aa
+# targets that finished in 8.4 and 7.7 min.
+# Re-anchoring it is a separate calibration on its own evidence, not a
+# side effect of this one.
 #
 # The estimate is surfaced in the preflight panel as advisory copy. It
 # no longer blocks submit — the tier-collapse PR retired the wall-clock
@@ -303,9 +340,52 @@ _BINDCRAFT = ToolRules(
         hard_cap_target_aa=500,      # Week 2: 350 → 500 (Pacesa 2025)
         soft_warn_target_aa=300,
         hard_cap_combined_aa=600,
-        runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
-        runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
-        runtime_baseline_designs=10, # bindcraft default trajectories
+        # RE-ANCHORED (2026-09-18) on the only bindcraft run this repo has
+        # measured: job 1c4d5803, 1170 GPU-s billed for 2 designs (19.5 min)
+        # against 4ZQK chain A (~115 aa by its 18-132 crystal numbering, so
+        # within ~5% of this curve's 120 aa anchor and taken straight with
+        # no size correction). Reconciled against the wallet ledger in the
+        # worked-example header of tools/bindcraft/meta.py, recorded in
+        # docs/VALIDATION-LOG.md, and cited again by
+        # tools/bindcraft/__init__.py::validate. ~10 min/design.
+        # It is ONE POINT AND NOT A FIT, and it is the only point there is:
+        # job 1c4d5803 is the only bindcraft run in the tree with a recorded
+        # completion time. The 2026-04-22 4Z18 pilot in
+        # docs/VALIDATION-LOG.md passed but logs its GPU seconds as
+        # "(not captured)", and the Week 2 calibration run
+        # (docs/CALIBRATION-WEEK2.md, "Observed results") was CANCELLED at
+        # 2717 s on a 412 aa target, so it timed a cancellation, not a run.
+        #
+        # One point, but not the only constraint, and that is what makes
+        # this a correction rather than a guess: the tool already SHIPS the
+        # same rate on another surface. ``PRESET_RUNTIME["pilot"]
+        # ["typical_minutes"]`` in tools/bindcraft/meta.py reads "30 to 45",
+        # tied there to the ``num_designs`` default of 4 -- 7.5 to 11.25
+        # min/design, which brackets the measured ~10 -- and
+        # shared/tools_catalog.py and blueprints/tools.py render it to the
+        # user. The OLD constants put those same 4 designs at 120 min
+        # (300 * (120/120)**1.5 * 4/10), 2.7x the top of the band this
+        # tool's own page promises, because a published ~30
+        # min/TRAJECTORY rate was being applied per DESIGN.
+        #
+        # 40.0 is rounded DOWN from the 41.6 that run solves for. The
+        # residual, the band containment and the baseline-vs-validator match
+        # are all pinned by tests/test_pdb_preflight.py::
+        # test_bindcraft_runtime_curve_reproduces_its_one_measured_run.
+        runtime_base_min=40.0,       # 4 designs × ~10 min at the 120 aa anchor
+        runtime_alpha=1.5,           # UNCHANGED, and still unmeasured: one run
+                                     # is one target size, so it carries no
+                                     # size-scaling evidence either way. The
+                                     # AF2-multimer + ColabDesign-backprop
+                                     # reasoning behind 1.5 is the same guess
+                                     # it was before this re-anchor. The test
+                                     # below does reject alpha>=2.0, but only
+                                     # through the LEVEL at 115 aa with base
+                                     # held at 40 -- that is not evidence of
+                                     # bending, which needs a second size.
+        runtime_baseline_designs=4,  # the form default: ``num_designs`` falls
+                                     # back to "4" in
+                                     # tools/bindcraft/__init__.py::validate
         cap_basis="literature",      # Pacesa 2025 default-settings examples
     ),
     gap=GapThresholds(

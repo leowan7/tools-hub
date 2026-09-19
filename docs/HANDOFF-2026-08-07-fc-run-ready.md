@@ -1,6 +1,7 @@
 # The Fc multi-chain run — staged, verified, ready to launch
 
-Written 2026-08-07, closing item 3 of `HANDOFF-2026-08-07-multichain-finish.md`.
+Written 2026-08-07, for the run half of the multi-chain finish. The UI and
+gate work it sits behind landed in PR #125 (`431a157`).
 Everything below is verified; nothing here has been submitted. **You click Run.**
 
 ## Launch this
