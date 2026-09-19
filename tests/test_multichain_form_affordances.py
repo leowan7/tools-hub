@@ -1,6 +1,7 @@
 """The binder forms must let a user TYPE a multi-chain target and understand it.
 
-Two defects from ``docs/HANDOFF-2026-08-07-multichain-finish.md`` items 1b/1c:
+Two defects. The ``1b``/``1c`` labels are local to this file: the section
+markers below refer back to these two paragraphs and to nothing else.
 
 1b. ``maxlength="4"`` on ``target_chain``. ``"A,B"`` is 3 characters and fits;
     ``"A,B,C"`` is 5 and **cannot be typed at all**. The backend supports N

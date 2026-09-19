@@ -13,8 +13,7 @@ So this renders each tool form through its real Flask route, pulls the inline
 ``static/js/hotspot_picker.js`` in a stubbed DOM (``tests/js/``). Assertions are
 on emitted behaviour, not on source text.
 
-Three bugs are pinned, all of them from
-``docs/HANDOFF-2026-08-07-multichain-finish.md`` item 1a:
+Three bugs are pinned:
 
 * on a multi-chain target the picker is INERT — ``_chains()`` returns the
   literal ``["A,B"]``, the NGL selection ``:A,B`` matches nothing and the chain
