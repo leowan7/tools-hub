@@ -252,6 +252,24 @@ def tools_app(*, isolate_supabase_module):
     assert ct._early_app_fixtures(src) == frozenset()
 
 
+def test_a_twin_pytest_will_not_resolve_is_not_protection(ct):
+    """Naming the twin is not enough; pytest must actually resolve it."""
+    tpl = """import pytest
+
+
+@pytest.fixture(scope="module")
+def tools_app(%s):
+    return create_app()
+"""
+    unresolved = (
+        "*, isolate_supabase_module=None",  # defaulted keyword-only
+        "isolate_supabase_module=None",  # defaulted positional-or-keyword
+        "isolate_supabase_module, /",  # positional-only
+    )
+    for shape in unresolved:
+        assert ct._early_app_fixtures(tpl % shape) == frozenset({"tools_app"}), shape
+
+
 def test_a_cycle_between_helpers_terminates(ct):
     """Without the ``seen`` guard this raises RecursionError instead."""
     src = """import pytest

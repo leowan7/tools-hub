@@ -317,20 +317,28 @@ def _reaches_app(node: ast.AST, funcs: dict, seen=None) -> bool:
 def _argnames(node: ast.AST) -> set[str]:
     """Every parameter name pytest will resolve as a fixture request.
 
-    ``node.args.args`` alone misses a keyword-only parameter, and pytest does
-    resolve those: probed on this pytest, a module-scoped fixture declared
-    ``def f(*, dep)`` receives ``dep`` and the test passes. Missing them here
-    would refuse a correctly isolated fixture -- and since the hook raises
-    ``UsageError``, that refusal aborts the whole session rather than one file.
+    Mirrors the rule pytest itself applies in
+    ``_pytest.compat.getfuncargnames``: a parameter is a fixture request when
+    it is positional-or-keyword or keyword-only AND has no default. Both
+    halves of that rule carry weight, in opposite directions.
 
-    Positional-only is deliberately not included: ``def f(dep, /)`` is NOT
-    resolved (pytest raises TypeError), so a fixture cannot reach the twin
-    that way.
+    Keyword-only must be counted. Missing it would refuse a correctly isolated
+    fixture, and since the hook raises ``UsageError`` that refusal aborts the
+    whole session rather than one file.
 
-    Enforced by ``test_a_keyword_only_twin_counts`` in
+    A DEFAULTED parameter must not be counted, and neither must a
+    positional-only one: pytest passes the former its default and rejects the
+    latter, so in neither shape does the twin actually run. Counting one is the
+    dangerous direction -- it certifies an app fixture that nothing isolates.
+
+    Enforced by ``test_a_keyword_only_twin_counts`` and
+    ``test_a_twin_pytest_will_not_resolve_is_not_protection`` in
     tests/test_supabase_isolation_enforced.py.
     """
-    return {a.arg for a in node.args.args + node.args.kwonlyargs}
+    args = node.args
+    required = args.args[: max(0, len(args.args) - len(args.defaults))]
+    required += [k for k, d in zip(args.kwonlyargs, args.kw_defaults) if d is None]
+    return {a.arg for a in required}
 
 
 def _reaches_twin(node: ast.AST, funcs: dict, seen=None) -> bool:
