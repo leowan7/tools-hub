@@ -145,10 +145,11 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     # entry extracts as an empty FOLDER and the design's bytes are dropped
     # with no error at all. One character of the key decides it.
     #
-    # tests/test_export_shapes.py::TestNonStringPdbKey pins all three --
-    # ::test_an_oversized_key_does_not_take_the_whole_zip (survival),
-    # ::test_the_bound_is_the_zip_limit_not_a_shorter_one (both edges),
-    # ::test_a_cut_landing_on_a_separator_is_still_a_file (the slash).
+    # tests/test_export_shapes.py::TestNonStringPdbKey pins all three -- the
+    # archive's survival, both edges of the bound, and the slash, in order:
+    # tests/test_export_shapes.py::test_an_oversized_key_does_not_take_the_whole_zip
+    # tests/test_export_shapes.py::test_the_bound_is_the_zip_limit_not_a_shorter_one
+    # tests/test_export_shapes.py::test_a_cut_landing_on_a_separator_is_still_a_file
     encoded = arc.encode("utf-8")
     if len(encoded) > 65535:
         arc = encoded[:65535].decode("utf-8", "ignore").rstrip("/")
