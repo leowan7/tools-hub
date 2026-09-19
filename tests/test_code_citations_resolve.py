@@ -132,12 +132,15 @@ _NOT_A_CITATION = "not-a-citation"
 
 # A line break either side of the ``::``. 79-column prose wraps at the nearest
 # space, and a citation is mostly space-free, so the ``::`` boundary is where
-# the wrapper lands: 25 citations across 18 files break there, both ways --
-# ``blueprints/tools.py`` then ``::_normalize_clone_pre_fill``
+# the wrapper lands. It breaks both ways -- ``blueprints/tools.py`` then
+# ``::_normalize_clone_pre_fill``
 # (``templates/tools/rfdiffusion_form.html:259``), and
 # ``tests/test_malformed_candidate_row_render.py::`` then
 # ``test_a_tuple_of_good_rows_is_not_blanked``, in
 # ``shared/jobs.py::display_rows``.
+# 25 of these existed across 18 files when ``_GAP`` was written, and 26 across
+# the same 18 as this branch merges main. Read both as stamps, not as a live
+# figure: any PR that reflows a comment anywhere moves the first number.
 # Without this they match nothing at all, which is a blind spot reported as a
 # zero -- the failure this guard exists to prevent. Pinned by
 # ``test_a_citation_wrapped_at_the_colons_is_still_found``.
@@ -159,8 +162,15 @@ _TOKEN = re.compile(
 #
 # Applied at the matched token's own end, NOT substituted across the whole file
 # first. Joining first deletes a newline, so every later citation in that file
-# is reported one line early per join -- which was wrong at 24 sites, by up to
-# five lines in ``tools/proteina/run_pipeline.py``. Pinned by
+# is reported one line early per join -- by up to five lines in
+# ``tools/proteina/run_pipeline.py``, which is the half that matters, because
+# it means the error is not a uniform off-by-one a reader could correct for.
+# A tree-wide count of the affected sites stood here and has been removed: it
+# read 24, and the predicate that reproduces the five exactly at every commit
+# tested gives 28 at ``2d1f977``, the commit that WROTE the 24, then 34 before
+# this branch merged main and 36 after. It neither reproduced nor held still,
+# and the predicate behind it was never written down -- the same defect as the
+# two ``17``s described in the tripwire below. Pinned by
 # ``test_a_wrapped_symbol_rejoins_without_moving_the_line_number``.
 #
 # The mirror case -- a break just BEFORE the underscore -- is NOT rejoined,
@@ -240,13 +250,19 @@ def _py_names(rel: str) -> tuple[frozenset[str], dict]:
             ``os.environ["X"] = y`` and puts ``os`` -- an import -- into the
             name set, which is the thing this file refuses to accept as a
             definition. Measured over the tree, that descent pulled in 11
-            names, 9 of which -- in 9 files -- nothing else in the file
-            defines, so they resolved falsely. ``os`` in ``gunicorn.conf.py``
-            is the only subscript; the other 8 are ATTRIBUTE targets --
-            ``stripe`` in four ``scripts/deploy/pass7_*.py`` and ``sys`` in
-            four ``tools/proteina/*.py`` -- so the attribute shape is the
-            common one, not the exotic one. Those counts are a measurement and
-            no test enforces them; one instance of each shape is pinned by
+            distinct ``(file, name)`` pairs, 9 of which -- in 9 files --
+            nothing else in the file defines, so they resolved falsely. The
+            predicate is the PAIRS: count occurrences instead and the same
+            tree reads 15 and 13, because ``sys`` is assigned twice in each of
+            the four proteina scripts. ``os`` in ``gunicorn.conf.py`` is the
+            only subscript; the other 8 are ATTRIBUTE targets -- ``stripe`` in
+            four ``scripts/deploy/pass7_*.py`` and ``sys`` in four
+            ``tools/proteina/*.py`` -- so the attribute shape is the common
+            one, not the exotic one. The 2 pairs that are NOT false are
+            ``create_args`` and ``_GENERIC_RESULT``, each genuinely defined in
+            its own file. Unlike the other counts in this file these held
+            unchanged across the main merge, but no test enforces them; one
+            instance of each shape is pinned by
             ``test_a_subscript_or_attribute_target_does_not_define_its_base``.
             """
             if isinstance(target, ast.Name):
@@ -369,16 +385,19 @@ def test_every_code_citation_resolves_to_a_real_symbol():
 def test_the_scan_still_reaches_the_citations():
     """Tripwire: a broken regex or walker would otherwise pass on an empty set.
 
-    491 tokens as this commit leaves the tree, and none of that movement came
-    from writing a test: 467 before main was merged in at ``d78e0b0``, +22
-    from the two commits that merge carried, +2 from the two line citations
-    converted to symbol form in this file by this commit. A count written
-    inside the file that counts it moves under all three. Do not trust this
-    line -- import the module and read ``len(_CITATIONS)``, which is the whole
-    measurement. The assert below deliberately does not quote it, because a
-    FLOOR is the part that survives other people's commits: slack enough to
-    delete a file's worth of prose, tight enough that a scan returning nothing
-    is red.
+    No token count is written here, on purpose. Every count this docstring has
+    carried was right when measured and stale within days, and not once
+    because of an edit to this file: citations move whenever any PR touches
+    prose anywhere in the tree, which happened repeatedly while this one PR
+    was open. Read ``len(_CITATIONS)`` instead -- that import IS the
+    measurement, so it cannot disagree with itself the way a sentence about it
+    can.
+
+    The assert below is a FLOOR for the same reason: slack enough to delete a
+    file's worth of prose, tight enough that a scan returning nothing is red.
+    An exact count here would be a test that goes red on other people's
+    commits, which trains the next reader to raise the number without ever
+    asking what moved.
     """
     assert len(_CITATIONS) >= 400, f"only {len(_CITATIONS)} citations found"
 
