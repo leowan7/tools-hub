@@ -351,9 +351,13 @@ def test_every_code_citation_resolves_to_a_real_symbol():
 def test_the_scan_still_reaches_the_citations():
     """Tripwire: a broken regex or walker would otherwise pass on an empty set.
 
-    The tree carried 467 tokens when this landed. The floor is slack enough to
-    delete a file's worth of prose and tight enough that a scan returning
-    nothing is red.
+    491 tokens, measured on this branch merged with main at ``f65551d``. It was
+    467 before that merge: #309 converted 20 more line citations to this form,
+    so a count written inside the file that counts it goes stale by work done
+    somewhere else entirely. Re-measure before quoting it; the assert below
+    deliberately does not, because a FLOOR is what survives other people's
+    commits. It is slack enough to delete a file's worth of prose and tight
+    enough that a scan returning nothing is red.
     """
     assert len(_CITATIONS) >= 400, f"only {len(_CITATIONS)} citations found"
 
