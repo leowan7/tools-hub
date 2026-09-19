@@ -396,7 +396,10 @@ def _rot_message(citing: str, line: int, path: str, symbol: str) -> str | None:
     if not candidates:
         return (
             f"{citing}:{line} cites {path}::{symbol} -- no such file is "
-            f"tracked (fix the path, or add it to _OUTSIDE_THIS_REPO)"
+            f"tracked. If it is an example or a synthetic pytest node id, mark "
+            f"the line {_NOT_A_CITATION}; if the file is real but lives in "
+            f"another repo, add it to _OUTSIDE_THIS_REPO; otherwise fix the "
+            f"path."
         )
     if any(_symbol_exists(c, symbol) for c in candidates):
         return None
@@ -596,6 +599,42 @@ def test_an_under_qualified_citation_is_told_where_to_look():
         )
         is None
     )
+
+
+def test_an_untracked_path_is_pointed_at_the_marker():
+    """The branch a new file trips, and the one cure its message left out.
+
+    CI found this before any local run could: the branch fires on a path that
+    is not tracked, and a citation-shaped token only becomes untracked when
+    someone ELSE commits one. `tests/test_supabase_isolation_enforced.py`
+    arrived on main carrying a synthetic pytest node id as a default argument
+    -- a node id is spelled exactly like a citation, and there is no way to
+    tell them apart from the token alone, so this branch will keep firing on
+    them.
+
+    The message used to offer two cures and neither fitted. Adding a fictional
+    path to the sibling-repo allowlist is worse than the failure it silences,
+    because the allowlist is keyed on the path and would exempt a REAL citation
+    someone later writes to that name.
+
+    Asserting the cure works, not just that the message names it: the marked
+    form of the same token is dropped by the scanner.
+    """
+    msg = _rot_message("tests/x.py", 1, "tests/does_not_exist.py", "test_y")
+    assert msg is not None
+    assert _NOT_A_CITATION in msg, msg
+    assert "_OUTSIDE_THIS_REPO" in msg, msg
+    # The cure itself, on a node-id-shaped token: marked, the scan drops it.
+    # The literal below needs the marker for the reason the message gives, and
+    # the message is how I found that out -- it fired on this line, in the
+    # wording added three lines up. An example the scanner must actually read
+    # is the case the marker is reserved for.
+    node_id = "tests/does_not_exist.py::test_y"  # not-a-citation
+    assert list(_citations(f"nodeid = '{node_id}'")) == [
+        (1, "tests/does_not_exist.py", "test_y")
+    ]
+    marked = f"nodeid = '{node_id}'  # {_NOT_A_CITATION}"
+    assert list(_citations(marked)) == []
 
 
 def test_a_qualified_citation_is_not_called_under_qualified():
