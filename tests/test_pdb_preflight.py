@@ -1860,3 +1860,123 @@ def test_size_refusal_pluralises_and_names_what_it_counted():
     assert "623 residues" in v.reason
     one = _proteina_size(1)          # min-residue floor fires, not the cap
     assert one.kind is VerdictKind.NEEDS_FIX
+
+
+def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
+    """The bindcraft runtime anchor is a single real job, so pin it to that job.
+
+    Job 1c4d5803: 1170 GPU-s for 2 designs against 4ZQK chain A (~115 aa),
+    2026-05-28. The figures and their wallet-ledger reconciliation are in the
+    worked-example header of tools/bindcraft/meta.py, the primary record is
+    the row in docs/VALIDATION-LOG.md, and the same run is cited by
+    tools/bindcraft/__init__.py::validate.
+
+    Three things are pinned. The FIRST is the anchor; the other two are the
+    ways it rotted or could rot without anything failing.
+
+    ``runtime_alpha`` is NOT pinned to 1.5 and cannot be, because the run is a
+    single target size only 4.2% off this curve's 120 aa anchor: (115/120)
+    **alpha barely moves over the plausible range, so the residual below is
+    nearly blind to the exponent. It is not entirely blind -- solving the
+    tolerance gives alpha in about [-0.55, 1.80], so a large drift is caught
+    (verified by mutation: alpha=3.0 estimates 17.60 min, 9.7% out, FAILS)
+    while 1.5 and 1.0 are indistinguishable here. Treat size scaling as
+    unmeasured until a second target size is run. What pinning an exponent
+    actually looks like is
+    ``test_proteina_runtime_curve_bends_with_target_size`` in this file, and
+    it needs two target sizes to do it.
+
+    1. The curve reproduces that run within 5%. The shipped constants put it
+       at 18.76 min against 19.5, a 3.8% residual, so +/-5% is the tightest
+       round band that admits the fit HERE. That is the rule
+       ``test_proteina_runtime_estimate_is_anchored_to_the_measured_shard``
+       follows for its single anchor, as against the +/-10% that
+       ``test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards``
+       uses, where one band must cover the worst residual across three points.
+       The old base=300 / baseline=10 constants -- a published ~30
+       min/TRAJECTORY rate applied per DESIGN -- put this run at 56 min, 2.9x
+       over, so the looser band would have caught them too; what +/-5% adds is
+       that it also refuses the quieter drift: executed, base 39.5 and 43.6
+       pass while 39.0 and 44.0 fail, where +/-10% passed everything from 37.5
+       to 45.0. Both bounds are far clear of the estimator's max(5.0, est)
+       floor, so this cannot be satisfied by the floor instead of the anchor.
+
+    2. The estimate at the default design count stays inside the band this
+       tool already advertises. ``PRESET_RUNTIME["pilot"]`` is rendered to
+       users by shared/tools_catalog.py and blueprints/tools.py, so a curve
+       outside it contradicts the page the user read on the way to the form
+       -- which is exactly what the old constants did, quoting 120 min
+       (300 * (120/120)**1.5 * 4/10) under a catalog promising 30 to 45.
+       The band is PARSED, not restated -- the same rule
+       tests/test_proteina_shard_size.py::
+       test_about_runtime_row_names_the_width_it_was_measured_at follows --
+       so moving either surface fails here instead of drifting apart quietly.
+
+    3. ``runtime_baseline_designs`` still equals the form default. It is a
+       DIVISOR (shared/pdb_preflight_rules.py::runtime_estimate_min), so it
+       only reads as "the estimate at the default design count" while it
+       tracks whatever ``validate`` falls back to. It stopped tracking once
+       already, silently, when that default moved to 4: nothing failed, the
+       panel just quoted a runtime for a design count no form submits. Read
+       the fallback out of the validator rather than restating it here, so
+       it cannot drift the same way twice.
+    """
+    import inspect as _inspect
+    import re as _re
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.bindcraft as _bindcraft
+    from tools.bindcraft import meta as _meta
+
+    rules = TOOL_RULES["bindcraft"]
+
+    # (1) Reproduce job 1c4d5803. Anchored on the BILLED 1170 GPU-seconds:
+    #     that is the figure the wallet ledger reconciles against the rate
+    #     card, and tools/bindcraft/example/result.json independently stores
+    #     the same run as runtime_minutes 19.5. The job's own timestamps
+    #     (18:31:18 to 18:50:51, docs/VALIDATION-LOG.md) span 1173 s, 0.3%
+    #     away, so the choice between the two records cannot move this
+    #     assertion. A third figure, 19m57s, used to sit in the meta.py
+    #     header; it matched neither record and this change corrects it.
+    est = runtime_estimate_min(rules, target_aa=115, num_designs=2)
+    measured_min = 1170.0 / 60.0
+    residual = abs(est - measured_min) / measured_min
+    assert residual <= 0.05, (
+        f"base={rules.size.runtime_base_min} alpha={rules.size.runtime_alpha} "
+        f"baseline={rules.size.runtime_baseline_designs} puts job 1c4d5803 at "
+        f"{est:.1f} min against a measured {measured_min:.1f} "
+        f"({residual:.0%} out)"
+    )
+
+    # (3) The baseline is the validator's own default, read from its source.
+    #     Checked before (2) because (2)'s premise is that this IS the
+    #     default design count.
+    src = _inspect.getsource(_bindcraft.validate)
+    m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
+    assert m, (
+        "could not find the num_designs fallback in "
+        "tools/bindcraft/__init__.py::validate -- if the parse changed, fix "
+        "this test rather than deleting it; the drift it guards is silent"
+    )
+    default_designs = int(m.group(1))
+    assert rules.size.runtime_baseline_designs == default_designs, (
+        f"runtime_baseline_designs={rules.size.runtime_baseline_designs} but "
+        f"validate() defaults num_designs to {default_designs}; the preflight "
+        f"panel is quoting a runtime for a design count the form never submits"
+    )
+
+    # (2) And the default-count estimate sits inside the advertised band.
+    band = str(_meta.PRESET_RUNTIME["pilot"]["typical_minutes"])
+    bounds = [float(x) for x in _re.findall(r"\d+(?:\.\d+)?", band)]
+    assert len(bounds) == 2, (
+        f"PRESET_RUNTIME['pilot']['typical_minutes'] is {band!r}, which is "
+        f"not the two-number range this check assumes"
+    )
+    lo, hi = bounds
+    at_default = runtime_estimate_min(
+        rules, target_aa=120, num_designs=default_designs
+    )
+    assert lo <= at_default <= hi, (
+        f"the preflight panel estimates {at_default:.1f} min for "
+        f"{default_designs} designs while the catalog and About panel "
+        f"advertise '{band} min' for that same default"
+    )
