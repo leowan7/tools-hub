@@ -613,8 +613,17 @@ def test_a_qualified_citation_is_not_called_under_qualified():
     That pair is spelled out below as two arguments and not as a ``::`` token,
     because this guard reads prose. Writing the example in full is what turned
     the suite red on the commit that added it -- in this function's new wording,
-    which declined to call it under-qualified. The mechanism working on its own
-    author, for the third time in this file.
+    which declined to call it under-qualified.
+
+    This paragraph used to end "for the third time in this file". That count is
+    deleted rather than corrected. Its predicate was never written down, and the
+    readings available do not agree: a red run naming a citation inside this
+    file, an authoring episode, an occasion a comment here records. Nor could a
+    reader settle it, since none of the three is countable from the tree. The
+    recurrence is the point and it carries without a number; what IS checkable
+    here is the residue it left -- the ``not-a-citation`` marker inside
+    ``test_a_wrapped_symbol_rejoins_without_moving_the_line_number``, and prose
+    like this that names the two halves apart instead of quoting the token.
 
     Both wordings still name where the symbol is, because that is the half a
     reader acts on either way.
