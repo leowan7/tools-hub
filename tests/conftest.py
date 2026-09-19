@@ -212,19 +212,50 @@ _ISOLATION_FIXTURES = frozenset({"isolate_supabase", "isolate_supabase_module"})
 _COLLECTION_GATE_SAW = 0
 
 
-def _builds_app(node: ast.AST) -> bool:
+def _create_app_aliases(source: str) -> frozenset[str]:
+    """Local names that an aliased import bound to ``create_app``.
+
+    ``from app import create_app as ca`` makes ``ca()`` a build, and matching
+    only the literal name reads such a file as clean. Nothing in the tree
+    writes that import today; the gate exists to refuse shapes that land
+    later, so the alias is resolved rather than assumed absent.
+
+    Enforced by ``test_an_aliased_create_app_import_is_still_a_build`` in
+    tests/test_supabase_isolation_enforced.py.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    return frozenset(
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == "create_app" and alias.asname
+    )
+
+
+def _builds_app(node: ast.AST, aliases: frozenset[str] = frozenset()) -> bool:
     """True when ``node`` contains a real ``create_app(...)`` call.
 
     AST rather than substring: files under ``tests/`` name ``create_app`` in a
     docstring or comment without calling it, and a mention reaches no app.
 
-    Enforced by ``test_a_mention_is_not_a_call`` in
+    ``aliases`` carries the local names an aliased import bound to
+    ``create_app``. Callers pass ``_create_app_aliases`` of the SAME source;
+    the default empty set matches the literal name only, so a caller that
+    forgets it under-reports rather than over-reports.
+
+    Enforced by ``test_a_mention_is_not_a_call`` and
+    ``test_an_aliased_create_app_import_is_still_a_build`` in
     tests/test_supabase_isolation_enforced.py.
     """
+    names = {"create_app"} | aliases
     return any(
         isinstance(n, ast.Call)
         and (
-            (isinstance(n.func, ast.Name) and n.func.id == "create_app")
+            (isinstance(n.func, ast.Name) and n.func.id in names)
             or (isinstance(n.func, ast.Attribute) and n.func.attr == "create_app")
         )
         for n in ast.walk(node)
@@ -246,12 +277,13 @@ def _app_building_fixtures(source: str) -> frozenset[str]:
         tree = ast.parse(source)
     except SyntaxError:
         return frozenset()
+    aliases = _create_app_aliases(source)
     return frozenset(
         node.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and any("fixture" in ast.unparse(d) for d in node.decorator_list)
-        and _builds_app(node)
+        and _builds_app(node, aliases)
     )
 
 
@@ -292,7 +324,7 @@ def _called_names(node: ast.AST) -> set[str]:
     }
 
 
-def _reaches_app(node: ast.AST, funcs: dict, seen=None) -> bool:
+def _reaches_app(node: ast.AST, funcs: dict, seen=None, aliases=frozenset()) -> bool:
     """``_builds_app``, following calls into helpers defined alongside it.
 
     A fixture whose body is ``return _build()`` reaches the app just as surely
@@ -306,10 +338,10 @@ def _reaches_app(node: ast.AST, funcs: dict, seen=None) -> bool:
     if node.name in seen:
         return False
     seen.add(node.name)
-    if _builds_app(node):
+    if _builds_app(node, aliases):
         return True
     return any(
-        _reaches_app(funcs[name], funcs, seen)
+        _reaches_app(funcs[name], funcs, seen, aliases)
         for name in _called_names(node) & funcs.keys()
     )
 
@@ -387,12 +419,13 @@ def _early_app_fixtures(source: str, shared: dict | None = None) -> frozenset[st
     """
     own = _module_functions(source)
     funcs = {**(shared or {}), **own}
+    aliases = _create_app_aliases(source)
     return frozenset(
         name
         for name, node in own.items()
         if any("fixture" in ast.unparse(d) for d in node.decorator_list)
         and _fixture_scope(node) != "function"
-        and _reaches_app(node, funcs)
+        and _reaches_app(node, funcs, aliases=aliases)
         and not _reaches_twin(node, funcs)
     )
 
@@ -448,7 +481,7 @@ def _unisolated(items, app_fixtures, cache=None, early_fixtures=frozenset()):
             try:
                 src = pathlib.Path(path).read_text(encoding="utf-8")
                 cache[key] = (
-                    _builds_app(ast.parse(src)),
+                    _builds_app(ast.parse(src), _create_app_aliases(src)),
                     _early_app_fixtures(src, _CONFTEST_FUNCS),
                 )
             except (OSError, SyntaxError, ValueError):

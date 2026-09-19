@@ -298,6 +298,35 @@ def test_a_file_outside_the_tests_directory_is_not_policed(tmp_path, ct):
     assert ct._under_tests(None) is False
 
 
+def test_an_aliased_create_app_import_is_still_a_build(ct):
+    """`from app import create_app as ca` then `ca()` reaches the app.
+
+    The literal-name check read this shape as clean, which is the dangerous
+    direction: it certifies a file the gate exists to refuse. Nothing in the
+    tree writes it today, and in a drift guard that is not a defence.
+    """
+    aliased = "from app import create_app as ca\n\ndef f():\n    return ca()\n"
+    assert ct._create_app_aliases(aliased) == frozenset({"ca"})
+    assert ct._builds_app(ast.parse(aliased), ct._create_app_aliases(aliased)) is True
+    # the un-aliased default under-reports rather than over-reports
+    assert ct._builds_app(ast.parse(aliased)) is False
+
+    plain = "from app import create_app\n\ndef f():\n    return create_app()\n"
+    assert ct._create_app_aliases(plain) == frozenset()
+    assert ct._builds_app(ast.parse(plain)) is True
+
+    # and the wiring, not just the leaf: the real entry point must see it
+    fixture_src = (
+        "import pytest\n"
+        "from app import create_app as ca\n\n"
+        '@pytest.fixture(scope="module")\n'
+        "def tools_app():\n"
+        "    return ca()\n"
+    )
+    assert ct._app_building_fixtures(fixture_src) == frozenset({"tools_app"})
+    assert ct._early_app_fixtures(fixture_src) == frozenset({"tools_app"})
+
+
 # --- the gate is wired ---------------------------------------------------
 
 
