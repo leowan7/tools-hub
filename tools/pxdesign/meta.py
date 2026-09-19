@@ -51,11 +51,58 @@ example_output_id: str | None = None
 # Runtime + cost reference rendered as a table on the form page.
 # Values mirror the ``Preset`` tuples in ``__init__.py`` and the
 # ``GPU_TIMEOUT`` map in ``gpu/modal_client.py``.
+#
+# THE BAND IS MEASURED, and it is design-count dependent. Every pilot run
+# on record, all three of them:
+#
+#     designs   GPU-s   wallclock   source
+#        2       504      8.4 min   job 816fc4a9, docs/VALIDATION-LOG.md
+#        5       462      7.7 min   job 79228f03, docs/VALIDATION-LOG.md
+#       25      1380     23.0 min   ``runtime_minutes`` in
+#                                   tools/pxdesign/example/result.json
+#
+# "8 to 25 min" is those runs taken to the minute. 25 rounds the slowest,
+# 23.0, UP -- the load-bearing direction, because an estimate that reads
+# low is the one that strands a caller. 8 is the fastest, 7.7, rounded
+# the other way, so the floor sits 0.3 min ABOVE one run; that is the
+# only place the band is tighter than a measurement, and a floor of 7
+# would advertise a speed NO run has reached -- the fastest was 7.7.
+# Pinned by test_band_brackets_every_measured_run in
+# tests/test_pxdesign_runtime_band.py.
+#
+# NO ENDPOINT IS ATTRIBUTED TO A DESIGN COUNT, because the record does
+# not order that way. The 2-design run took 8.4 min and the 5-design run
+# 7.7 -- MORE designs, LESS time -- and the four smoke successes in
+# docs/VALIDATION-LOG.md ran ONE design in 16.5 to 17.5 min, twice the
+# 2-design pilot. (Smoke is a different tier on a baked target, which is
+# why those runs are not in the band's derivation; they are named here
+# because they refute a per-count reading of it. All four land inside
+# 8 to 25 anyway.) Count and target size are also confounded -- the
+# 25-design run is the largest target too -- so no per-design rate can
+# be separated out of three points. The band is quoted with the RANGE it
+# was measured over and nothing finer.
+#
+# IT DOES NOT COVER THE WHOLE INPUT DOMAIN. The form accepts 1 to 1000
+# designs (num_designs in templates/tools/pxdesign_form.html, bounds
+# re-checked in tools/pxdesign/__init__.py::prepare); the largest run on
+# record is 25. Above that the band is an extrapolation, so every
+# surface says what it was measured over rather than implying it holds
+# to 1000. Target size is unmeasured past the ~420 aa example against a
+# 600 aa hard cap (hard_cap_target_aa in shared/pdb_preflight_rules.py).
+#
+# IT BOUNDS SUCCESSES ONLY. docs/VALIDATION-LOG.md also carries a
+# mini_pilot FAIL that ran 75.3 min before dying at 78.5%; a band fitted
+# to runs that finished cannot bound one that does not.
+#
+# This replaced "30 to 60 min", which all three runs finished below.
+# tests/test_pxdesign_runtime_band.py holds every surface that carries the
+# band -- here, in tools/pxdesign/__init__.py and in
+# templates/tools/pxdesign_form.html -- against the measurements above.
 preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
-        "runtime": "30 to 60 min",
+        "runtime": "8 to 25 min",
         "target": "Your uploaded target",
     },
 )
@@ -113,13 +160,16 @@ about: dict = {
         {
             "name": "Number of designs",
             "explanation": (
-                "How many candidates to score. Higher counts increase "
-                "cost and runtime linearly."
+                "How many candidates to score. Cost rises with the "
+                "count. Runtime rises far more slowly and not in "
+                "step with it: two designs took 8.4 min, five took "
+                "7.7, and twenty-five took 23.0. Past twenty-five "
+                "nothing has been measured, so allow more time."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "30 to 60 min"},
+        {"preset": "pilot", "typical": "8 to 25 min, measured at 2 to 25 designs"},
     ],
     # 0.75 IS THE LEGEND'S BAR, AND DELIBERATELY NOT THE CONTAINER'S
     # 0.70. Both surfaces that render this sentence -- the tool form's

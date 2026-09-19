@@ -13,9 +13,14 @@
      (preset_runtime_rows). Mirrored here as Jinja literals because the
      generic tool_form route in app.py is out of scope for this phase
      and does not inject per-tool meta into the template context. Keep
-     the two in sync when either changes. #}
+     the two in sync when either changes. The runtime band is the span
+     of the three pilot runs on record (8.4 min at 2 designs, 7.7 at 5,
+     23.0 at 25), derived in the preset_runtime_rows comment in
+     tools/pxdesign/meta.py. The three surfaces in this file and the
+     six that tools/pxdesign serves out of Python are pinned together
+     by tests/test_pxdesign_runtime_band.py. #}
   {% set preset_runtime_rows = [
-    {"slug": "pilot", "runtime": "30\u201360 min", "target": "Your uploaded target"}
+    {"slug": "pilot", "runtime": "8 to 25 min", "target": "Your uploaded target"}
   ] %}
 
   <style>
@@ -165,7 +170,10 @@
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
       <strong>Heads up. Long-running job.</strong>
-      PXDesign pilot runs ~30 to 60 min on A100-80GB.
+      PXDesign pilot runs 8 to 25 min on A100-80GB. That is every pilot
+      run on record, measured at 2 to 25 designs against targets up to
+      about 420 residues; more designs cost more but do not add time in
+      step. Past that, nothing has been measured, so allow longer.
       Stay on this page or return via <a href="{{ url_for('jobs.jobs_list') }}">/jobs</a>
       to check status; results auto-refresh when done.
     </div>
@@ -258,7 +266,7 @@
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Runs against your own target. Upload PDB, pick hotspots, set binder length. Results emailed (~30 to 60 min on A100-80GB).
+            Runs against your own target. Upload PDB, pick hotspots, set binder length. Results emailed (8 to 25 min on A100-80GB).
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}
