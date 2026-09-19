@@ -389,7 +389,8 @@ def _rot_message(citing: str, line: int, path: str, symbol: str) -> str | None:
     test. No citation in the tree reaches it today, because the two that did
     were qualified in this same commit -- and a branch that only fires on
     someone else's future mistake is exactly the branch that rots unexercised.
-    Pinned by ``test_an_under_qualified_citation_is_told_where_to_look``.
+    Pinned by ``test_an_under_qualified_citation_is_told_where_to_look`` and
+    ``test_a_qualified_citation_is_not_called_under_qualified``.
     """
     candidates = _candidates(citing, path)
     if not candidates:
@@ -404,17 +405,37 @@ def _rot_message(citing: str, line: int, path: str, symbol: str) -> str | None:
     # fixes. Saying so is not a nicety: reading the second as the first is how
     # the resolver came to be loosened for the whole tree in an earlier draft
     # of this file, which cost the rename detection the comment above defends.
+    #
+    # Only a same-basename move is found, because that is the set the resolver
+    # could plausibly have been expected to search. A symbol that moved to a
+    # differently-named file falls through to the plain message below, so the
+    # wording says "a same-named file" and not "it is now here".
     elsewhere = [
         c
         for c in _BY_BASENAME.get(path.rsplit("/", 1)[-1], [])
         if c not in candidates and _symbol_exists(c, symbol)
     ]
     if elsewhere:
+        # WHICH failure this is turns on the citation, not on the search: a
+        # citation is under-qualified only if it left the directory off. The
+        # first draft decided it by `if elsewhere` alone, so a citation naming
+        # `shared/jobs.py` in full, for a `job_refold` that had moved to
+        # `blueprints/jobs.py` -- a moved symbol, the exact rot this guard is
+        # for -- was told it was "not rotted". Reproduced before fixing; pinned
+        # by ``test_a_qualified_citation_is_not_called_under_qualified``, whose
+        # code states that pair precisely, as two arguments rather than a token
+        # this scan would read as a live citation.
+        if "/" not in path:
+            return (
+                f"{citing}:{line} cites {path}::{symbol} -- UNDER-QUALIFIED, "
+                f"not rotted: {symbol} is not in {', '.join(candidates)} but "
+                f"is defined in {', '.join(elsewhere)}. Write that path into "
+                f"the citation."
+            )
         return (
-            f"{citing}:{line} cites {path}::{symbol} -- UNDER-QUALIFIED, not "
-            f"rotted: {symbol} is not in {', '.join(candidates)} but is "
-            f"defined in {', '.join(elsewhere)}. Write that path into the "
-            f"citation."
+            f"{citing}:{line} cites {path}::{symbol} -- {symbol} is not "
+            f"defined in {', '.join(candidates)}; a same-named file defines "
+            f"it: {', '.join(elsewhere)}. Moved, or the wrong directory?"
         )
     return (
         f"{citing}:{line} cites {path}::{symbol} -- {symbol} is not "
@@ -575,6 +596,41 @@ def test_an_under_qualified_citation_is_told_where_to_look():
         )
         is None
     )
+
+
+def test_a_qualified_citation_is_not_called_under_qualified():
+    """A citation that named its directory cannot be under-qualified.
+
+    The first draft of ``_rot_message`` chose its wording on ``if elsewhere``
+    alone -- "the symbol is in some file of this basename" -- which does not
+    discriminate the two cases it claimed to separate. A citation naming
+    ``shared/jobs.py`` in full, for a ``job_refold`` that lives in
+    ``blueprints/jobs.py``, is a MOVED symbol -- the rot this guard exists for
+    -- and it was reported as "UNDER-QUALIFIED, not rotted". Twenty basenames in
+    the tree have more than one tracked file, so the reachable class is not
+    exotic: nine ``modal_app.py`` and nine ``run_pipeline.py`` among them.
+
+    That pair is spelled out below as two arguments and not as a ``::`` token,
+    because this guard reads prose. Writing the example in full is what turned
+    the suite red on the commit that added it -- in this function's new wording,
+    which declined to call it under-qualified. The mechanism working on its own
+    author, for the third time in this file.
+
+    Both wordings still name where the symbol is, because that is the half a
+    reader acts on either way.
+    """
+    moved = _rot_message("shared/score_legends.py", 1, "shared/jobs.py", "job_refold")
+    assert moved is not None
+    assert "UNDER-QUALIFIED" not in moved, moved
+    assert "blueprints/jobs.py" in moved, moved
+    # The bare form of the same citation keeps the under-qualified wording.
+    bare = _rot_message("shared/score_legends.py", 1, "jobs.py", "job_refold")
+    assert bare is not None
+    assert "UNDER-QUALIFIED" in bare, bare
+    assert "blueprints/jobs.py" in bare, bare
+    # Both are red. The wording differs; the verdict does not.
+    assert _symbol_exists("blueprints/jobs.py", "job_refold")
+    assert not _symbol_exists("shared/jobs.py", "job_refold")
 
 
 def test_a_citation_wrapped_at_the_colons_is_still_found():
