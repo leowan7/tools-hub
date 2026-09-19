@@ -72,22 +72,28 @@ this guard and are a separate sweep, not a silent hole. Every count below is
 measured over the tree MINUS this file: the examples spelled out here are
 themselves instances, so a re-measurement that includes them runs high.
 
-  * A continuation ``::symbol`` whose path is named a line or two above AND
-    is already spoken for by a citation of its own -- in
+  * A continuation ``::symbol`` whose path sits on an earlier line AND is
+    already spoken for by a citation of its own -- in
     ``shared/exports.py::_safe_arcname`` the path is consumed by its own match
-    on ``TestNonStringPdbKey``, and three more tests follow it on bare ``::``
-    lines that nothing can reach. 17 of these exist, and every one is that
-    shape. A path left BARE at the end of a line is a different shape and IS
-    read, by the ``_GAP`` in the token above; none of the 17 is that.
-    They cannot be resolved by inheriting the nearest path
-    without also matching ``::after``, ``::ffff`` and GitHub Actions'
-    ``::error``, which a scan of the tree finds 21 of -- a heuristic whose own
-    misses would be silent, which is what this file refuses to ship.
+    on ``TestNonStringPdbKey``, and three more tests follow it with no path
+    left to reach. The connector varies (nothing, ``and``, ``/``), so this is
+    a relationship between two lines, not a prefix you can grep for. A path
+    left BARE at the end of a line is the opposite case and IS read -- so by
+    construction, since anything ``_GAP`` reads is a match and therefore never
+    reaches the unmatched set at all.
   * A module shorthand with no extension, ``test_multichain_targets::
-    test_split_hotspot``. 17 of these exist, across 3 files, naming 5
-    modules that are all tracked. Widening the token to bare identifiers
-    would match any ``a::b`` in any file, so these convert in prose or not
-    at all.
+    test_split_hotspot``: the modules are tracked, but the token carries no
+    path for ``_candidates`` to resolve, and widening it to bare identifiers
+    would match any ``a::b`` anywhere.
+
+    Neither converts by inheriting the nearest path -- that also matches
+    ``::after``, ``::ffff`` and GitHub Actions' ``::error``, and its own misses
+    would be silent, which is what this file refuses to ship. To size either
+    blind spot, scan the tracked tree for ``::`` plus an identifier and
+    subtract the spans ``_TOKEN`` already matches. No count is frozen here on
+    purpose: this docstring asserted 17 of each until a re-measurement could
+    reproduce neither, because the predicate behind them was never written
+    down and the two shapes overlap.
 """
 
 from __future__ import annotations
