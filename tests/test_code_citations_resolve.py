@@ -135,8 +135,22 @@ _OUTSIDE_THIS_REPO = frozenset(
 )
 
 # A line carrying this marker holds a ``path::symbol`` token that is data, not
-# a reference -- currently one fabricated pytest nodeid, in
-# ``tests/test_supabase_client_guard.py``.
+# a reference. The recurring case is the pytest node id: it is spelled exactly
+# like a citation, nothing in the token separates the two, so this marker is
+# the only cure and a new one arrives whenever somebody writes a node id.
+# ``test_an_untracked_path_is_pointed_at_the_marker`` pins the cure.
+#
+# A count stood here, naming the one file that then carried a node id. It was
+# true when written and false by the end of the same pull request, falsified by
+# the mechanism it described: a node id landed on main, this guard refused it,
+# and curing that wrote further marked lines. A count of this set cannot
+# survive in a file holding part of the set. ``git grep`` it for the live one.
+#
+# Matching is by substring, so a line that merely NAMES the marker exempts
+# itself and the line below -- starting with the assignment underneath, which
+# cannot avoid holding its own value. Nothing testable follows: a citation
+# hidden under a marker is indistinguishable from a token deliberately marked
+# as data, which is what the marker is for. A documented limit, not a defect.
 _NOT_A_CITATION = "not-a-citation"
 
 # A line break either side of the ``::``. 79-column prose wraps at the nearest
