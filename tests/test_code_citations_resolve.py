@@ -80,33 +80,53 @@ its declared functions already, so any that someone does convert are checked
 from then on with no change here.
 
 WHAT THIS DOES NOT COVER, stated rather than left as a zero. The token above
-needs a PATH. Two abbreviations in this repo elide it, so they are outside
-this guard and are a separate sweep, not a silent hole. Every count below is
-measured over the tree MINUS this file: the examples spelled out here are
-themselves instances, so a re-measurement that includes them runs high.
+needs a PATH, so anything that elides one is outside this scan. Two shorthand
+dialects used to be listed here and are gone: a continuation ``::symbol``
+inheriting a path named a line or two above, and a module shorthand with no
+extension (``test_multichain_targets`` standing for
+``tests/test_multichain_targets.py``). Both were rewritten into the full form
+in prose rather than caught by a wider regex -- inheriting the nearest path
+also swallows ``::after``, ``::ffff`` and GitHub Actions' ``::error``, and
+bare identifiers match any ``a::b`` in any file, while the continuation's
+connector varies (nothing, ``and``, ``/``), so it is a relationship between
+two lines rather than a prefix to grep for. Either heuristic's own misses
+would have been silent, which is what this file refuses to ship. What moved
+when they were written out is ``len(_CITATIONS)``; no count is written down
+here, for the reason given in ``test_the_scan_still_reaches_the_citations``
+below.
 
-  * A continuation ``::symbol`` whose path sits on an earlier line AND is
-    already spoken for by a citation of its own -- in
-    ``shared/exports.py::_safe_arcname`` the path is consumed by its own match
-    on ``TestNonStringPdbKey``, and three more tests follow it with no path
-    left to reach. The connector varies (nothing, ``and``, ``/``), so this is
-    a relationship between two lines, not a prefix you can grep for. A path
-    left BARE at the end of a line is the opposite case and IS read -- so by
-    construction, since anything ``_GAP`` reads is a match and therefore never
-    reaches the unmatched set at all.
-  * A module shorthand with no extension, ``test_multichain_targets::
-    test_split_hotspot``: the modules are tracked, but the token carries no
-    path for ``_candidates`` to resolve, and widening it to bare identifiers
-    would match any ``a::b`` anywhere.
+Three shapes are still outside the token, each on purpose. Every count is
+measured over the tree MINUS this file, because the examples named here are
+themselves instances.
 
-    Neither converts by inheriting the nearest path -- that also matches
-    ``::after``, ``::ffff`` and GitHub Actions' ``::error``, and its own misses
-    would be silent, which is what this file refuses to ship. To size either
-    blind spot, scan the tracked tree for ``::`` plus an identifier and
-    subtract the spans ``_TOKEN`` already matches. No count is frozen here on
-    purpose: this docstring asserted 17 of each until a re-measurement could
-    reproduce neither, because the predicate behind them was never written
-    down and the two shapes overlap.
+  * A pytest node id that appends a method to a class citation. The path and
+    the class ARE read and the class IS checked --
+    tests/test_scout_anon_charge_pairing.py::TestTheChargeCannotBeEvaded, in
+    ``scout/routes.py``, resolves like any other citation -- but the method
+    after the second ``::`` is not read, the path in front of it having been
+    consumed by the class's own match. 3 of these, in ``scout/routes.py``,
+    ``shared/email.py`` and ``tests/test_proteina_empty_state_branches.py``.
+    Respelling them ``Class.method`` would cover the method and destroy the
+    pasteable node id, which is what that shape is for.
+  * A symbol named only at runtime, ``f"{module}::{func}"``. 6 of these: 4 in
+    ``tests/test_candidate_array_shape.py`` and 2 in
+    ``tests/test_proteina_canary.py``. A text scan has no literal path to
+    read there. Each is resolved by the test that builds it -- ``func in
+    by_name`` in
+    tests/test_candidate_array_shape.py::test_every_reader_routes_through_the_one_predicate
+    and tests/test_candidate_array_shape.py::test_the_allowlist_is_not_stale,
+    ``_func_node(path, "_poll_vram")`` in
+    tests/test_proteina_canary.py::test_the_loop_does_not_gate_the_first_sample_on_the_stop_flag
+    and
+    tests/test_proteina_canary.py::test_an_already_stopped_poller_still_records_a_reading
+    -- so a rename goes red where those are written, not here.
+  * A Modal deploy name or CLI target, ``ranomics-af2-prod::run_tool`` and
+    ``modal run ...::run_tool``. 4 of these, in ``tools/af2/__init__.py``,
+    ``tools/mpnn/__init__.py``, ``tools/mpnn/modal_app.py`` and
+    ``tools/mpnn/_canary_fixed_positions.py``. The left side is an app name
+    or an ellipsis, not a file in this tree, so there is nothing to resolve.
+    The spellings in those same tool directories that DO name a file --
+    modal_app.py::run_tool -- are read and checked.
 """
 
 from __future__ import annotations

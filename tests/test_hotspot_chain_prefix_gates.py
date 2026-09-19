@@ -8,7 +8,7 @@ red. What is left is what no trunk test reaches.
 
 WHAT IS ACTUALLY UNPINNED IN TRUNK. Not the chain-attribution logic — trunk
 covers that thoroughly, including the chain-blind suggestion pool, which
-``test_multichain_targets::test_nearest_suggestions_come_from_the_hotspots_own_chain``
+``tests/test_multichain_targets.py::test_nearest_suggestions_come_from_the_hotspots_own_chain``
 catches with a purpose-built overlapping fixture of its own. What no trunk
 test asserts is ``PreflightVerdict.nearest_clean_residues``. Every trunk
 suggestion test calls ``shared.pdb_preflight._nearest_clean_residues``
@@ -28,39 +28,43 @@ right and the wrong reason. Here ``B101..B115`` sit inside the ±10 window of a
 dropped ``"A105"``, so a union pool produces suggestions labelled ``"A101"``
 and up: residues that do not exist.
 
-WHAT WAS REMOVED, AND WHAT COVERS IT NOW (verified test by test):
+WHAT WAS REMOVED, AND WHAT COVERS IT NOW (verified test by test). Every path
+below is written out rather than elided, which is what puts these citations
+inside tests/test_code_citations_resolve.py:
 
   prefixed tokens in range on a multi-chain target
-      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract
+      -> tests/test_multichain_targets.py::test_validate_hotspots_keeps_the_bare_int_contract
   whitespace chain field with prefixed tokens
-      -> test_targets::test_validate_hotspots_accepts_a_multi_chain_target
+      -> tests/test_targets.py::test_validate_hotspots_accepts_a_multi_chain_target
          (the chain field is split once, before any per-token work, so the
          separator is not a per-token-kind property)
   a prefixed token checked against its own chain only
-      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract
-         and ::test_a_hotspot_is_checked_against_the_chain_it_names
+      -> tests/test_multichain_targets.py::test_validate_hotspots_keeps_the_bare_int_contract
+         and tests/test_multichain_targets.py::test_a_hotspot_is_checked_against_the_chain_it_names
   suggestions drawn from the hotspot's own chain, prefixed
-      -> test_multichain_targets::test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain
-         and ::test_nearest_suggestions_come_from_the_hotspots_own_chain
+      -> tests/test_multichain_targets.py::test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain
+         and tests/test_multichain_targets.py::test_nearest_suggestions_come_from_the_hotspots_own_chain
          (both at the ``_nearest_clean_residues`` seam, not the verdict)
   a token naming an untargeted chain
-      -> test_multichain_targets::test_split_hotspot ("C25", ["A","B"])
+      -> tests/test_multichain_targets.py::test_split_hotspot ("C25", ["A","B"])
   mixed bare and prefixed in one list
-      -> test_multichain_targets::test_mixed_bare_and_prefixed (adapter parser)
-         plus ::test_validate_hotspots_keeps_the_bare_int_contract (both token
-         kinds through this function)
+      -> tests/test_multichain_targets.py::test_mixed_bare_and_prefixed (adapter
+         parser) plus
+         tests/test_multichain_targets.py::test_validate_hotspots_keeps_the_bare_int_contract
+         (both token kinds through this function)
   preflight accepts prefixed hotspots end to end
-      -> test_multichain_targets::test_preflight_keeps_the_hotspots_validate_emits
-         (rfdiffusion, pxdesign) and ::test_boltzgen_does_not_silently_discard_hotspots
+      -> tests/test_multichain_targets.py::test_preflight_keeps_the_hotspots_validate_emits
+         (rfdiffusion, pxdesign) and
+         tests/test_multichain_targets.py::test_boltzgen_does_not_silently_discard_hotspots
   preflight drops a prefixed hotspot on the wrong chain
-      -> test_multichain_targets::test_a_hotspot_is_checked_against_the_chain_it_names
+      -> tests/test_multichain_targets.py::test_a_hotspot_is_checked_against_the_chain_it_names
   bare ints keep their values and types
-      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract,
-         test_pdb_inspect::test_hotspots_in_range /
-         ::test_hotspots_out_of_range_caught /
-         ::test_hotspots_against_missing_chain_all_rejected
+      -> tests/test_multichain_targets.py::test_validate_hotspots_keeps_the_bare_int_contract,
+         tests/test_pdb_inspect.py::test_hotspots_in_range /
+         tests/test_pdb_inspect.py::test_hotspots_out_of_range_caught /
+         tests/test_pdb_inspect.py::test_hotspots_against_missing_chain_all_rejected
   bare-int preflight verdict unchanged
-      -> test_multichain_targets::test_single_chain_bare_int_hotspots_are_byte_identical
+      -> tests/test_multichain_targets.py::test_single_chain_bare_int_hotspots_are_byte_identical
 
 Every assertion below has been mutation-checked against the shipped
 implementation: a chain-blind suggestion pool, bare suggestion labels, a
@@ -148,7 +152,7 @@ def test_prefixed_hotspot_on_a_single_chain_target_is_in_range(report):
     prefix against the list of chains the target names, and every trunk case
     with a valid prefixed token passes a TWO-element list. tools/base.py has
     its own separate parser loop (``parse_hotspot_residues``), so
-    test_multichain_targets::test_single_chain_prefixed_tokens_normalize_to_strings
+    tests/test_multichain_targets.py::test_single_chain_prefixed_tokens_normalize_to_strings
     covers that implementation and not this one — an "only prefix-match when
     more than one chain is named" regression would pass the whole suite.
     """
@@ -167,8 +171,9 @@ def test_repair_suggestions_never_leak_in_from_another_chain(pdb):
     and up: residues that do not exist. A pool confined to chain A finds
     nothing within ±10 of 105 and correctly offers nothing.
 
-    Be precise about what this adds. trunk's test_multichain_targets::
-    test_nearest_suggestions_come_from_the_hotspots_own_chain already catches
+    Be precise about what this adds. trunk's
+    tests/test_multichain_targets.py::test_nearest_suggestions_come_from_the_hotspots_own_chain
+    already catches
     the chain-blind pool, with its own overlapping fixture — a mutation to
     ``pool = union`` turns BOTH red, which is how that was established rather
     than assumed. What it does not do, and no trunk test does, is read the

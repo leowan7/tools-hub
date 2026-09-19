@@ -224,8 +224,9 @@ def test_every_candidate_in_the_shortlist_is_converted():
     the whole file green. Two of the three production call sites pass a
     non-empty prefix --
     blueprints/lab_projects.py::_submit_campaign_shortlist (campaign)
-    and ::_submit_target_shortlist (target); only
-    ::_submit_job_shortlist (legacy single-job) omits it -- so a
+    and blueprints/lab_projects.py::_submit_target_shortlist (target);
+    only blueprints/lab_projects.py::_submit_job_shortlist (legacy
+    single-job) omits it -- so a
     prefix-conditioned regression would have hit the majority of real
     handoffs invisibly.
 

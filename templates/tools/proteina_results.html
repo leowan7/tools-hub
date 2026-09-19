@@ -143,7 +143,8 @@
        false for most runs that reach this arm. A curated run REFUSES
        hotspots and contigs outright (tools/proteina/__init__.py::validate)
        and ligand_binder / motif_ame can never be custom (the same
-       function, gated on ::_CUSTOM_TARGET_PRESETS), so they
+       function, gated on
+       tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS), so they
        are always curated; binder_length is parsed on every path but only
        consumed under `target_source == "custom"`
        (run_pipeline.py::_run_shard reads it, and its sole use is inside

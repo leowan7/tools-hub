@@ -182,8 +182,8 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # is_real, test_the_token_the_gate_judges_is_the_token_the_payload_ships and
 # test_hotspot_residues_stays_bare_ints_on_a_single_chain_run, all in
 # tests/test_proteina_hotspot_chain_semantics.py. The direct-call refusal below:
-# TestJobSpecAliases::test_bare_ints_on_a_MULTI_chain_target_are_refused in
-# tests/test_proteina_delivery.py.
+# tests/test_proteina_delivery.py::test_bare_ints_on_a_MULTI_chain_target_are_refused,
+# a method of TestJobSpecAliases.
 #
 # The two are EXCLUSIVE, and that is a deliberate correction rather than an
 # accident of the gate. Inlining alongside an upload would put a second copy of
