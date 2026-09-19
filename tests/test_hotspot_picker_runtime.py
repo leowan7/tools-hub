@@ -4,15 +4,16 @@
 ``initHotspotPicker``. That cannot see whether a form passes ``chainPrefixed``,
 because the flag lives inside an object literal — and ``chainPrefixed`` is the
 whole difference between a picker that works on a multi-chain target and one
-that is inert on it. Nothing in ``tests/`` mentions ``chainPrefixed`` today.
+that is inert on it. Before this file nothing exercised the flag;
+``test_harness_reports_the_flag_each_form_actually_passes`` below is what
+now pins the per-form split.
 
 So this renders each tool form through its real Flask route, pulls the inline
 ``<script>`` the page actually ships, and executes it against the real
 ``static/js/hotspot_picker.js`` in a stubbed DOM (``tests/js/``). Assertions are
 on emitted behaviour, not on source text.
 
-Three bugs are pinned, all of them from
-``docs/HANDOFF-2026-08-07-multichain-finish.md`` item 1a:
+Three bugs are pinned:
 
 * on a multi-chain target the picker is INERT — ``_chains()`` returns the
   literal ``["A,B"]``, the NGL selection ``:A,B`` matches nothing and the chain

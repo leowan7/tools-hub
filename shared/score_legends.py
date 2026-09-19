@@ -1373,11 +1373,22 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # a stopgap.
 #
 # bindcraft is included even though multi_chain_container_ready=False blocks
-# the tool-form path, because the campaign and target-launch routes may not
-# call preflight_for_tool at all (an open item in
-# docs/HANDOFF-2026-08-07-multichain-finish.md). The notice is non-blocking,
-# so a false positive costs a sentence and a false negative costs trust in a
-# number.
+# it. When this set was written that block reached the tool-form path only,
+# because POST /campaigns and POST /targets/<id>/launch funded and drove runs
+# without calling preflight_for_tool. They still do not call it, but the
+# capability half was since extracted into
+# shared/pdb_preflight.py::multi_chain_refusal and wired into both
+# (blueprints/campaigns.py::compute_campaign_create and
+# blueprints/targets.py::_collect_launch_specs, reached from
+# ::target_launch_submit), and it shares
+# shared/pdb_preflight.py::_multi_chain_block with the submit gate — so all
+# THREE of those routes refuse a two-chain bindcraft run today. Those three
+# are the ones checked; the refold paths
+# (campaigns.py::compute_campaign_refold, jobs.py::job_refold) were not, so
+# read this as three routes closed and not as a claim about every surface.
+# Membership is kept as belt-and-braces rather than as cover for a live
+# hole: the notice is non-blocking, so a false positive costs a sentence and
+# a false negative costs trust in a number.
 #
 # PROTEINA IS DELIBERATELY ABSENT, and it is the exclusion worth arguing,
 # because proteina is the only tool that has actually run a multi-chain target
