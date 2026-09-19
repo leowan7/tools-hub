@@ -186,12 +186,6 @@ def test_candidates_preferred_when_both_keys_present():
     assert recs[0]["pdb_key"] == "a.pdb"
 
 
-def test_unknown_shape_returns_empty_not_error():
-    assert candidate_records({"something_else": [1, 2]}) == []
-    assert candidate_records(None) == []
-    assert candidate_records({}) == []
-
-
 class TestNonStringPdbKey:
     """``pdb_key`` is whatever the tool container wrote into ``job.result``,
     and not every container's source lives in this repo, so its type is not

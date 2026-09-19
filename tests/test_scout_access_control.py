@@ -37,6 +37,8 @@ from scout.jobs import (
     safe_job_dir,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 USER_A = "user-a-11111111"
 USER_B = "user-b-22222222"
 
