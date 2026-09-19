@@ -151,9 +151,9 @@ def cohort_key_for(row: Mapping[str, Any]) -> tuple[str, Optional[str]]:
 
     NOT the tool alone. proteina's ``total_reward`` is ``-i_pAE`` under the
     protein_binder preset and an RF3 composite under ligand_binder
-    (tools/proteina/run_pipeline.py:116-117), so percentile ranking two
-    proteina runs at different presets against each other would compare two
-    different quantities that happen to share a column name.
+    (tools/proteina/run_pipeline.py::_SCORE_COLUMNS), so percentile ranking
+    two proteina runs at different presets against each other would compare
+    two different quantities that happen to share a column name.
 
     A blank preset normalizes to absent, so ``""`` and ``None`` are ONE
     population and not two half sized ones. Both mean "this row carries no

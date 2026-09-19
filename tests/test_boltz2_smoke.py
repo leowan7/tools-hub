@@ -506,9 +506,10 @@ class TestZeroDesignsFailsTheJob:
         assert result["error"]["check"] == "no_designs"
         assert isinstance(result.get("runtime_seconds"), int), (
             "a failed run must still report the GPU time it burned: "
-            "gpu/modal_client.py:716 reads runtime_seconds off the FAILED arm "
-            "as gpu_seconds_used, and shared/jobs.py:1389 skips the workspace "
-            "compute debit when it is missing")
+            "gpu/modal_client.py::_interpret_pipeline_return reads "
+            "runtime_seconds off the FAILED arm as gpu_seconds_used, and "
+            "shared/jobs.py::_charge_workspace_for_completed_job skips the "
+            "workspace compute debit when it is missing")
 
     def test_a_folded_design_still_completes(self, tmp_path, monkeypatch):
         """Positive control: the guard must not fire when designs survive."""

@@ -767,9 +767,10 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     # directory is esmfold2_design, and this entry shipped keyed on the
     # directory name. Nothing raised: an unknown tool simply has no legend and
     # no bar, so the feature was inert for this tool while its own test passed
-    # over the dead key. shared/tool_meta.py:4 records the same trap costing a
-    # PILOT card that silently did not render. tests/test_derived_verdicts.py
-    # now asserts every tool key here is in tools.base._REGISTRY.
+    # over the dead key. shared/tool_meta.py's module docstring records the same
+    # trap: a PILOT card that silently did not render.
+    # tests/test_derived_verdicts.py now asserts every tool key here is in
+    # tools.base._REGISTRY.
     #
     # A GATE LEG IN MINIBINDER MODE ONLY, via MODE_GATE_COLUMNS; it was a
     # tooltip and nothing else until then. esmfold2-design still declares no
