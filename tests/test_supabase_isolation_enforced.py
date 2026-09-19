@@ -35,6 +35,7 @@ def ct(request):
     return _live_conftest(request.config)
 
 
+# not-a-citation: tests/fake.py is a synthetic pytest node id, not a reference.
 def _item(path, fixturenames=(), nodeid="tests/fake.py::test_x"):
     return types.SimpleNamespace(
         path=path, fixturenames=tuple(fixturenames), nodeid=nodeid

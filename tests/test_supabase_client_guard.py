@@ -36,6 +36,7 @@ def test_the_rls_tripwire_is_exempt(monkeypatch):
     is the enforcement: a release that stopped refusing would fail here rather
     than quietly start building clients.
     """
+    # not-a-citation: a fabricated pytest nodeid, not a reference to a symbol.
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_rls.py::test_x (call)")
     with pytest.raises(Exception) as excinfo:  # noqa: PT011
         supabase.create_client("", "")
