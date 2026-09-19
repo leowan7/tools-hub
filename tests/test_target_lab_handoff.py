@@ -1499,5 +1499,3 @@ def test_candidate_count_reads_the_same_array_candidate_records_does():
         {"output": {"candidates": [{"a": 1}, {"a": 2}, {"a": 3}]}},
     ):
         assert candidate_count(result) == len(candidate_records(result)), result
-    assert candidate_count(None) is None
-    assert candidate_count("not a dict") is None

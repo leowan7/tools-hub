@@ -163,10 +163,12 @@ def _empty_noun(job) -> str:  # noqa: ANN001
     "candidates" stays the default: every candidate-producing tool lands
     there, and the wording is pinned for them by TestEmptyToneRendering.
     """
+    from shared.jobs import is_candidate_array  # noqa: PLC0415
+
     result = job.result if isinstance(job.result, dict) else {}
     if not result:
         return "no output"
-    if isinstance(result.get("sequences"), list):
+    if is_candidate_array(result.get("sequences")):
         return "no sequences"
     if _is_structureless(result):
         return "no structure"
@@ -281,7 +283,7 @@ def _top_candidate_summary(
     ``candidate_records``, not ``result["candidates"]``: it unwraps the legacy
     ``result["output"]`` nesting, so a wrapped row is read and judged instead of
     rendering nothing, and it reads the ``designs[]`` shape — but see the
-    ranked-list gate below (the ``isinstance(... "candidates", list)`` check),
+    ranked-list gate below (the ``is_candidate_array(... "candidates")`` check),
     which is what keeps that second half from turning this block on for tools
     whose ``designs[]`` is not a ranked list.
     """
@@ -296,6 +298,7 @@ def _top_candidate_summary(
         _normalize_result_shape,
         candidate_records,
         headline_candidate,
+        is_candidate_array,
     )
 
     tool_slug = getattr(job, "tool", "") or ""
@@ -373,7 +376,7 @@ def _top_candidate_summary(
     # gate and ``candidate_records`` read one view of the result and cannot
     # disagree about which list is being described.
     normalized = _normalize_result_shape(result)
-    if not isinstance((normalized or {}).get("candidates"), list):
+    if not is_candidate_array((normalized or {}).get("candidates")):
         return ("", "", "", "", "", "")
 
     scores = top.get("scores")
@@ -1527,6 +1530,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     The one carve-out is a payload built ONLY of _RUN_METADATA_KEYS, which
     has no output key of any kind rather than an unfamiliar one.
     """
+    from shared.jobs import is_candidate_array  # noqa: PLC0415
+
     result = job.result or {}
     if not isinstance(result, dict):
         return False
@@ -1539,13 +1544,13 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
         # the results are on the job page -- to a page with none.
         return True
     seqs = result.get("sequences")
-    if isinstance(seqs, list):
+    if is_candidate_array(seqs):
         return len(seqs) == 0
     cands = result.get("candidates")
-    if isinstance(cands, list):
+    if is_candidate_array(cands):
         return len(cands) == 0
     designs = result.get("designs")
-    if isinstance(designs, list):
+    if is_candidate_array(designs):
         return len(designs) == 0
     # Keyed on PRESENCE, like the three branches above, not on truthiness.
     # The old line here was ``if result.get("pdb_b64"): return False`` --
@@ -1562,9 +1567,9 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
     # tools/esmfold:787), and the batch preset writes "designs", caught
     # one branch up -- so this closes the gap "designs" reached production
     # through rather than a live path.
-    # A MISSING key stays untouched by design: tools/colabfold/meta.py:134
-    # ships a payload with no pdb_b64 at all, and an unrecognised shape
-    # keeps the forward-compat default below.
+    # A MISSING key stays untouched by design: tools/colabfold/meta.py::EXAMPLE
+    # ships a payload with no pdb_b64 at all, and an unrecognised shape keeps
+    # the forward-compat default below.
     # TestSucceededFoldWithNoStructure pins both sides.
     if "pdb_b64" in result:
         return _is_structureless(result)
@@ -1597,6 +1602,8 @@ def _is_empty_result(job) -> bool:  # noqa: ANN001
 
 
 def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
+    from shared.jobs import is_candidate_array  # noqa: PLC0415
+
     if tone == "failed":
         err = job.error or {}
         if isinstance(err, dict):
@@ -1677,7 +1684,7 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
                 "page, or rerun it."
             )
         seqs = result.get("sequences")
-        if isinstance(seqs, list):
+        if is_candidate_array(seqs):
             return (
                 "The run finished but no sequences were returned. See the job "
                 "page for details, or rerun with different parameters."
@@ -1709,7 +1716,7 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 
     # Sequence-design tools (D1 MPNN, future LigandMPNN): 'sequences[]'.
     seqs = result.get("sequences")
-    if isinstance(seqs, list):
+    if is_candidate_array(seqs):
         n = len(seqs)
         return (
             f"{n} sequence{'s' if n != 1 else ''} returned with score and "

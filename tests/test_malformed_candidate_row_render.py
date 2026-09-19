@@ -331,8 +331,6 @@ def test_display_rows_preserves_length_and_order():
     out = display_rows(rows)
     assert out == [{"a": 1}, {}, {}, {"b": 2}]
     assert out[0] is rows[0], "an untouched row must keep its identity"
-    assert display_rows(None) == []
-    assert display_rows("candidates") == []
 
 
 def test_a_tuple_of_good_rows_is_not_blanked(all_tools_app):

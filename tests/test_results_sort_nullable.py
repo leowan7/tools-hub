@@ -37,6 +37,8 @@ import pytest
 
 from shared.ranking import sort_by_number
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 RESULTS_PARTIALS = Path(__file__).resolve().parents[1] / "templates" / "tools"
 
 
@@ -60,7 +62,7 @@ PARTIALS: dict[str, tuple[str, str, object]] = {
 
 
 @pytest.fixture(scope="module")
-def env():
+def env(isolate_supabase_module):
     """The app's REAL Jinja environment, inside a request context."""
     from app import create_app
 

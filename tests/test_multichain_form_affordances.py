@@ -1,6 +1,7 @@
 """The binder forms must let a user TYPE a multi-chain target and understand it.
 
-Two defects from ``docs/HANDOFF-2026-08-07-multichain-finish.md`` items 1b/1c:
+Two defects. The ``1b``/``1c`` labels are local to this file: the section
+markers below refer back to these two paragraphs and to nothing else.
 
 1b. ``maxlength="4"`` on ``target_chain``. ``"A,B"`` is 3 characters and fits;
     ``"A,B,C"`` is 5 and **cannot be typed at all**. The backend supports N
@@ -20,11 +21,11 @@ first click, and the grouping alone is what put the sibling forms' copy on it.
 Each tuple below carries the behaviour that earns membership.
 
 Assertions are on PARSED ATTRIBUTES and RENDERED TEXT, never on template
-source. ``tests/test_candidate_table_js_contract.py:11-31`` is a catalogue of
-what source-substring assertions cost here: four of thirteen hooks were held
-up by CSS rules and template comments rather than by the code they claimed to
-pin, so the tests passed while the feature was broken. A Jinja comment
-containing the right words satisfies a grep and ships nothing.
+source. ``tests/test_candidate_table_js_contract.py``'s module docstring is a
+catalogue of what source-substring assertions cost here: four of thirteen
+hooks were held up by CSS rules and template comments rather than by the code
+they claimed to pin, so the tests passed while the feature was broken. A Jinja
+comment containing the right words satisfies a grep and ships nothing.
 """
 from __future__ import annotations
 

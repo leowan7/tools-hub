@@ -23,6 +23,8 @@ from scripts.check_refusal_rate import (
     totals,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # A scrape in the shape prometheus_client actually renders one, including the
 # HELP/TYPE lines, a _created gauge, and routes that are not Scout's.
 EXPOSITION = """\

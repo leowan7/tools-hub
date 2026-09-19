@@ -81,6 +81,8 @@ from shared.score_legends import SCORE_LEGENDS
 from shared.tool_meta import meta_for
 from tools import base as tool_base
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # A superset of the comparator spellings today's summaries use: the ten
 # thresholds they state are written with >=, <=, >, <, "at or above" and "at
 # or under" only, and the rest are here for prose not yet written. Entities are

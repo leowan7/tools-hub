@@ -279,7 +279,7 @@ def _claim_key(
     that ``/library-planner/plan`` and, for signed-in callers only,
     ``/developability/score`` -- which spend nothing -- also 503 in a
     half-configured dev environment. Signed-in only because that route is
-    deliberately anonymous (blueprints/tools.py:117-119 carries no
+    deliberately anonymous (blueprints/tools.py::developability_score carries no
     ``@login_required``) and the decorator hands an anonymous request straight to
     the handler, so it never reaches this function without a user. The
     alternative is worse: a PRODUCTION deploy that lost its service-role key

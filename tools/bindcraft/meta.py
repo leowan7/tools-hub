@@ -10,9 +10,9 @@ Shapes
     PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
                          ``typical_minutes`` is a bare human-readable range
                          (e.g. ``"30 to 45"``); both consumers append " min"
-                         themselves (shared/tools_catalog.py:188,
-                         blueprints/tools.py:710), so it carries no unit and
-                         no parenthetical.
+                         themselves (shared/tools_catalog.py::_build_tools_catalog,
+                         blueprints/tools.py::_preset_runtime_text), so it
+                         carries no unit and no parenthetical.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink for the BindCraft paper.
     github_url        — upstream repository.
@@ -28,11 +28,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Typical wall-clock per preset. BindCraft ships only the ``pilot``
-# preset, whose runtime scales with the trajectory count rather than
-# sitting on a fixed floor: the quoted range is the ``num_designs``
-# default of 4 (tools/bindcraft/__init__.py:72, and the pilot preset
-# description at :134-140). Larger counts take proportionally longer.
+# Typical wall-clock per preset. BindCraft ships only the ``pilot`` preset,
+# whose runtime scales with the trajectory count rather than sitting on a fixed
+# floor: the quoted range is the ``num_designs`` default of 4
+# (tools/bindcraft/__init__.py::validate, and the pilot preset description at
+# tools/bindcraft/__init__.py::adapter). Larger counts take proportionally
+# longer.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "pilot": {"typical_minutes": "30 to 45"},
 }

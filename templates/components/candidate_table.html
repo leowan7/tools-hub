@@ -30,10 +30,10 @@
   metric columns replace the per-tool ones: Tool, Score and Pctile, where Score
   prints each row's OWN primary metric beside that metric's name. No number is
   ever compared across tools, because the tools do not share a scale: the same
-  ``ipTM`` label is an AF2 re-score for rfdiffusion and BoltzGen's own
-  confidence head for boltzgen, and shared/score_legends.py:8-11 already records
-  that they do not mean the same thing. Ranking is by WITHIN-tool percentile,
-  which is scale invariant, so it needs no such comparison.
+  ``ipTM`` label is an AF2 re-score for rfdiffusion and BoltzGen's own confidence
+  head for boltzgen, and shared/score_legends.py's module docstring already
+  records that they do not mean the same thing. Ranking is by WITHIN-tool
+  percentile, which is scale invariant, so it needs no such comparison.
 
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
@@ -164,6 +164,21 @@
   margin-bottom: .9rem;
 }
 .cand-export-btns { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+/* Refusal surface for the per-design .pdb downloads. Styled here rather
+   than with scout.css's .error-message, which no page rendering this macro
+   loads; --error/--error-bg are static/style.css tokens, which base.html
+   does load. */
+.cand-download-error {
+  margin: 0 0 .7rem 0;
+  font-size: .8rem;
+  color: var(--error);
+  background: var(--error-bg);
+  border: 1px solid rgba(196, 91, 83, .2);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  padding: .45rem .7rem;
+  line-height: 1.4;
+}
 .cand-shortlist-bar { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
 .cand-shortlist-bar span { font-size: .9rem; color: var(--text-secondary); white-space: nowrap; }
 /* Replaces the disabled-button state. A `disabled` primary CTA carrying only
@@ -466,6 +481,11 @@
    rfdiffusion passes at 0.65 (shared/score_legends.py), so a header legend
    would state one tool's bar over another tool's number. Multi-tool resolves
    the legend PER CELL from that row's own tool instead. #}
+{# Where a refused .pdb download is READ. Ships hidden; static/js/
+   candidate_table.js::initTable binds every .cand-pdb-download anchor below
+   to the shared guard and writes here. Keyed on `scope` like table_id above,
+   so a page holding two panels gets one surface each. #}
+<p id="cand-dl-err-{{ scope }}" class="cand-download-error" aria-live="polite" hidden></p>
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
@@ -984,9 +1004,12 @@
               {% set _ext = (pdb_key.rsplit('.', 1)[-1] | lower)
                             if '.' in pdb_key else 'pdb' %}
               {% if use_url %}
+              {# cand-pdb-download is the hook initTable binds the refusal
+                 guard to. Only this branch needs it: the data: URL below
+                 carries its own bytes and has no server left to refuse. #}
               <a href="{{ pdb_url }}"
                  download="{{ pdb_key }}"
-                 class="btn-secondary"
+                 class="btn-secondary cand-pdb-download"
                  style="padding:.2rem .5rem;font-size:.8rem;">.{{ _ext }}</a>
               {% else %}
               <a href="data:chemical/x-pdb;base64,{{ b64_on_100 }}"
@@ -1162,5 +1185,6 @@
 {% endif %}
 
 <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/scout-download.js') }}"></script>
 <script src="{{ url_for('static', filename='js/candidate_table.js') }}"></script>
 {% endmacro %}

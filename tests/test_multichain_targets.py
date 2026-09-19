@@ -226,10 +226,10 @@ def test_build_payload_forwards_the_multichain_shape(name, mod):
 #
 # Canonicalising to "A,B" was correct at the adapter boundary and broke
 # everything downstream of it, because eight parsers in shared/ split on
-# whitespace only. blueprints/tools.py:1204 feeds the POST-validate value
-# into preflight_for_tool, and blueprints/tools.py:1223 blocks submit on
-# `not verdict.ok` — so every multi-chain submission was refused with
-# "Target chain 'A,B' isn't in this PDB. Found chain(s): A, B."
+# whitespace only. blueprints/tools.py::tool_submit feeds the POST-validate
+# value into preflight_for_tool and then blocks submit on `not verdict.ok` —
+# so every multi-chain submission was refused with "Target chain 'A,B' isn't
+# in this PDB. Found chain(s): A, B."
 #
 # The tests above did not catch it because each one checks a single side of
 # the seam: the adapter emits "A,B" (true), and the shared parsers accept

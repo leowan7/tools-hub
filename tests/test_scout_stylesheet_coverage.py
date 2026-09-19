@@ -42,6 +42,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 REPO = Path(__file__).resolve().parents[1]
 SCOUT_CSS = REPO / "static" / "scout.css"
 HUB_SHEETS = [REPO / "static" / "style.css", REPO / "static" / "wallet.css"]
