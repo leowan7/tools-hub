@@ -30,3 +30,11 @@ runs/
 # Proteina direct-call scratch (Modal call id + collected designs)
 .proteina_direct_call_state.json
 proteina_direct_out/
+
+# Gate 1 boltz2 smoke scratch (Modal call log + parked raw trees). The call
+# log is reattach state: tracking it would make a rerun reattach to a dead
+# call instead of spawning.
+gate1_calls.jsonl
+gate1_results.json
+raw_gate1/
+raw_selfcheck/
