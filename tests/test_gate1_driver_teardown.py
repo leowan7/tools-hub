@@ -9,7 +9,9 @@ is finally needed:
      deadline exit -- a leak is bounded only by modal's `_MAX_SESSION_S`
      (3600 s, tools/boltz2/modal_app.py), $2.57 against a $0.79 ceiling;
   2. the window between the spawn and the fsynced call id, which sits
-     outside that loop, leaves nothing running unrecorded;
+     outside that loop, leaves nothing running unrecorded -- and the id
+     reaches the console before the write, so a cancel that fails there
+     still leaves a findable container;
   3. a failed raw re-download neither destroys an already-fetched archive --
      the only evidence separating "folds" from "no folds" -- nor scores 0
      while that archive sits unread;
@@ -43,7 +45,7 @@ def _install_modal(monkeypatch, behaviour):
     """
     rec = types.SimpleNamespace(
         cancels=[], spawns=[], read_file=lambda path: iter(()),
-        spawn_id="fc-SPAWNED",
+        spawn_id="fc-SPAWNED", cancel_raises=None,
     )
 
     class FunctionTimeoutError(Exception):
@@ -74,7 +76,11 @@ def _install_modal(monkeypatch, behaviour):
             raise AssertionError(behaviour)
 
         def cancel(self, terminate_containers=False):
+            # Recorded before it can raise, so a test can assert the
+            # attempt was made as well as what became of it.
             rec.cancels.append((self.object_id, terminate_containers))
+            if rec.cancel_raises is not None:
+                raise rec.cancel_raises
 
     def _spawn(payload):
         rec.spawns.append(payload)
@@ -247,6 +253,45 @@ def test_lost_call_id_tears_the_container_down(monkeypatch, tmp_path):
     else:
         raise AssertionError("the unloggable id did not fail the write")
     assert rec.cancels == [(rec.spawn_id, True)]
+
+
+class _PrintableButUnloggable:
+    """An id `json.dumps` refuses but an f-string renders.
+
+    Stands in for any failure of the call-log write -- a full or read-only
+    CWD is the realistic one -- while keeping the id readable on the
+    console, which is the half under test here.
+    """
+
+    def __repr__(self):
+        return "fc-UNSTOPPABLE"
+
+
+def test_cancel_failure_after_a_lost_id_still_names_the_container(
+    monkeypatch, tmp_path, capsys
+):
+    """Both halves of the spawn window can fail together, and plausibly do.
+
+    Whatever fails the write can fail the control-plane cancel as well, and
+    then the console holds the only record of the id anywhere. Two things
+    have to hold: the write's error is the diagnosis, so the cancel must not
+    replace it, and the id must already have been printed by then.
+    """
+    rec = _prepare(monkeypatch, tmp_path, "ok")
+    rec.spawn_id = _PrintableButUnloggable()
+    rec.cancel_raises = ConnectionError("control plane unreachable")
+    try:
+        _exec()
+    except ConnectionError:
+        raise AssertionError("the cancel's error masked the write's")
+    except TypeError:
+        pass                                       # the WRITE's error, kept
+    else:
+        raise AssertionError("the unloggable id did not fail the write")
+    assert rec.cancels == [(rec.spawn_id, True)]   # it did try to cancel
+    out = capsys.readouterr().out
+    assert "spawned call=fc-UNSTOPPABLE" in out    # printed BEFORE the write
+    assert "modal app history" in out              # and the operator is told
 
 
 def test_previous_ledger_is_not_clobbered(monkeypatch, tmp_path):

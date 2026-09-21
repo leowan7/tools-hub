@@ -93,8 +93,9 @@ SPEND. Two independent bounds, neither of them a promise in prose:
   1. Per job: Modal kills the container at _MAX_SESSION_S = 3600 s,
      _MAX_SESSION_S in tools/boltz2/modal_app.py.
   2. This driver: each job is spawned, its FunctionCall id written to disk and
-     fsynced BEFORE anything blocks (a write that fails cancels the container
-     rather than leave it running unrecorded), and cancelled with
+     fsynced BEFORE anything blocks (a write that fails tears the container
+     down, and prints the id if that teardown fails too, rather than
+     leave it running unrecorded), and cancelled with
      terminate_containers=True at its own deadline. The deadlines sum to at
      most BUDGET_S, which is CEILING_USD at the A100-40GB raw rate in
      GPU_USD_PER_SECOND, shared/wallet_estimates.py. Modal-direct calls
@@ -295,21 +296,32 @@ for tier, deadline in DEADLINES:
             "deadline_s": deadline,
             "spawned_at": time.time(),
         }
+        elapsed_before = 0.0
+        # Printed BEFORE the write rather than after it: if the write
+        # fails, this line is the only place the id exists, and the
+        # operator needs it for `modal app history` should the cancel
+        # below fail too.
+        print(f"\n[{tier}] spawned call={fc.object_id} job_id={job_id} deadline={deadline}s", flush=True)
         # The container is live from the spawn above, and nothing can
         # cancel it until its id reaches disk. If that write fails the id is
-        # gone, so tear the container down rather than leave it running with
-        # no record of how to stop it. This window sits BEFORE the poll loop,
-        # so the loop's own `finally` does not cover it.
+        # gone from disk, so tear the container down rather than leave it
+        # running with no record of how to stop it. This window sits BEFORE
+        # the poll loop, so the loop's own `finally` does not cover it.
         try:
             with open(CALL_LOG, "a") as fh:
                 fh.write(json.dumps(rec) + "\n")
                 fh.flush()
                 os.fsync(fh.fileno())
         except BaseException:  # noqa: BLE001 -- KeyboardInterrupt counts too
-            fc.cancel(terminate_containers=True)
+            try:
+                fc.cancel(terminate_containers=True)
+            except Exception as exc:  # noqa: BLE001 -- teardown must not mask the write failure
+                print(
+                    f"[{tier}] cancel failed after an unlogged spawn -- kill "
+                    f"call={fc.object_id} by hand, `modal app history`: {exc!r}",
+                    flush=True,
+                )
             raise
-        elapsed_before = 0.0
-        print(f"\n[{tier}] spawned call={fc.object_id} job_id={job_id} deadline={deadline}s", flush=True)
 
     # Billed seconds run from the spawn, not from this process starting, so the
     # deadline and the spend total both have to count the pre-reattach life.
