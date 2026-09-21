@@ -243,8 +243,9 @@ def display_rows(rows) -> list:
     did not contain. Routing them all through one reader is what made that
     fixable in one place. Both are pinned by
     tests/test_malformed_candidate_row_render.py::
-    test_a_tuple_of_good_rows_is_not_blanked and
-    ::test_a_tuple_container_is_counted_the_same_everywhere. Anything that is
+    test_a_tuple_of_good_rows_is_not_blanked and by
+    tests/test_malformed_candidate_row_render.py::
+    test_a_tuple_container_is_counted_the_same_everywhere. Anything that is
     not a row sequence -- a dict, a scalar, ``None`` -- still returns ``[]``.
 
     The other readers of the same array were ``list``-only when this one was
