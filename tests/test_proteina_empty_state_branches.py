@@ -87,7 +87,8 @@ _FILTER_CLAIM = "cleared the reward filters"
 # ignored on at least one run shape that reaches that arm: a curated run
 # rejects hotspots and contigs, and ligand_binder / motif_ame can never be
 # custom -- both refusals live in tools/proteina/__init__.py::validate, the
-# second gated on ::_CUSTOM_TARGET_PRESETS; binder_length reaches the model
+# second gated on tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS;
+# binder_length reaches the model
 # only under target_source == "custom" (passed inside that branch of
 # tools/proteina/run_pipeline.py::_run_shard); and a shard is pinned at 8
 # designs (tools/proteina/__init__.py::_SHARD_DESIGNS), so raising the count

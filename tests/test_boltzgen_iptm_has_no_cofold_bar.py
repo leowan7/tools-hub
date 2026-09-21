@@ -307,10 +307,10 @@ def test_the_barless_legends_are_the_ones_declared_here():
     shared/score_legends.py carries that account, and the account of why the
     tool's other four columns get no legend of any kind.
 
-    A barless legend cannot silently become a gate leg: test_derived_verdicts
-    ::test_every_gate_column_has_a_legend requires a numeric ``good`` on
-    every column in GATE_COLUMNS, and bindcraft and proteina declare none at
-    all.
+    A barless legend cannot silently become a gate leg:
+    tests/test_derived_verdicts.py::test_every_gate_column_has_a_legend
+    requires a numeric ``good`` on every column in GATE_COLUMNS, and
+    bindcraft and proteina declare none at all.
     """
     barless = {k for k, v in SCORE_LEGENDS.items() if "good" not in v}
     assert barless == {

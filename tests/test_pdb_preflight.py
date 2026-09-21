@@ -1459,9 +1459,10 @@ def test_the_proteina_comment_table_is_the_canonical_measurement_table():
     Every number below that table is argued from it — the quadratic, the two
     power-law exponents, the percentage of the card at the cap, the runtime
     fit, and ultimately hard_cap_target_aa itself. The shipped CONSTANTS are
-    pinned, and the canary's copy of the same three rows is pinned (tests/
-    test_proteina_canary.py::...::test_the_quoted_measurements_match_the_
-    canonical_table), but the rows the constants are justified BY were free to
+    pinned, and the canary's copy of the same three rows is pinned
+    (tests/test_proteina_canary.py::
+    test_the_quoted_measurements_match_the_canonical_table), but the rows the
+    constants are justified BY were free to
     move: change 8,943 to 9,943 in that comment and the whole suite stayed
     green, while the next person to re-derive the cap would re-derive it from
     a reading nobody took. That is the same failure the canary-footer pin

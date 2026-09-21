@@ -1380,12 +1380,13 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # shared/pdb_preflight.py::multi_chain_refusal and wired into both
 # (blueprints/campaigns.py::compute_campaign_create and
 # blueprints/targets.py::_collect_launch_specs, reached from
-# ::target_launch_submit), and it shares
+# blueprints/targets.py::target_launch_submit), and it shares
 # shared/pdb_preflight.py::_multi_chain_block with the submit gate — so all
 # THREE of those routes refuse a two-chain bindcraft run today. Those three
 # are the ones checked; the refold paths
-# (campaigns.py::compute_campaign_refold, jobs.py::job_refold) were not, so
-# read this as three routes closed and not as a claim about every surface.
+# (blueprints/campaigns.py::compute_campaign_refold and
+# blueprints/jobs.py::job_refold) were not, so read this as three routes
+# closed and not as a claim about every surface.
 # Membership is kept as belt-and-braces rather than as cover for a live
 # hole: the notice is non-blocking, so a false positive costs a sentence and
 # a false negative costs trust in a number.
