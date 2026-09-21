@@ -324,7 +324,7 @@
 
            The unqualified "Nothing was charged." this replaces was true only on
            a target where nothing else had happened. Standalone tool_jobs
-           reserve a wallet hold (shared/wallet_guard.py::reserve_hold) and
+           reserve a wallet hold (shared/wallet_guard.py::requires_wallet) and
            refolds bill on the completion path (charge_for_job), so on any
            target carrying either it was a false statement about money. Scoped
            to the drafts it needs no context to be true, which is why there is
