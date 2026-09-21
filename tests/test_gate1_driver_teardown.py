@@ -1,17 +1,21 @@
 """The gate1 driver's money guards, exercised with `modal` stubbed out.
 
-`scripts/gate1_boltz2_smoke.py` spawns a billed A100. Three of its guards
-exist only to bound what a failure costs, so each one is invisible on the
+`scripts/gate1_boltz2_smoke.py` spawns a billed A100. Its spend guards exist
+only to bound what a failure costs, so every one of them is invisible on the
 happy path and is exactly the code that will not have been exercised when it
 is finally needed:
 
   1. every exit from the poll loop leaves the container dead, not just the
      deadline exit -- a leak is bounded only by modal's `_MAX_SESSION_S`
      (3600 s, tools/boltz2/modal_app.py), $2.57 against a $0.79 ceiling;
-  2. a failed raw re-download does not destroy an already-fetched archive,
-     which is the only evidence separating "folds" from "no folds";
-  3. a stale call-log record is cancelled rather than reattached to, and a
-     previous run's ledger is never overwritten.
+  2. the window between the spawn and the fsynced call id, which sits
+     outside that loop, leaves nothing running unrecorded;
+  3. a failed raw re-download neither destroys an already-fetched archive --
+     the only evidence separating "folds" from "no folds" -- nor scores 0
+     while that archive sits unread;
+  4. a stale call-log record is cancelled rather than reattached to, and the
+     sweep covers every recorded tier, not just the one that tripped it;
+  5. a previous run's ledger is never overwritten.
 
 These run the REAL driver as `__main__` through `runpy`, against a fake
 `modal`, so what is under test is the shipped file rather than a paraphrase
@@ -38,7 +42,8 @@ def _install_modal(monkeypatch, behaviour):
     only axis the teardown tests vary.
     """
     rec = types.SimpleNamespace(
-        cancels=[], spawns=[], read_file=lambda path: iter(())
+        cancels=[], spawns=[], read_file=lambda path: iter(()),
+        spawn_id="fc-SPAWNED",
     )
 
     class FunctionTimeoutError(Exception):
@@ -73,7 +78,7 @@ def _install_modal(monkeypatch, behaviour):
 
     def _spawn(payload):
         rec.spawns.append(payload)
-        return _Call("fc-SPAWNED")
+        return _Call(rec.spawn_id)
 
     modal = types.ModuleType("modal")
     modal.exception = exc
@@ -101,7 +106,10 @@ def _prepare(monkeypatch, tmp_path, behaviour, call_log=None):
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.chdir(tmp_path)
     if call_log is not None:
-        (tmp_path / "gate1_calls.jsonl").write_text(json.dumps(call_log) + "\n")
+        records = call_log if isinstance(call_log, list) else [call_log]
+        (tmp_path / "gate1_calls.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records)
+        )
     return rec
 
 
@@ -201,6 +209,46 @@ def test_fresh_call_log_still_reattaches(monkeypatch, tmp_path, capsys):
     assert rec.spawns == []
 
 
+def test_stale_sweep_cancels_every_recorded_call(monkeypatch, tmp_path):
+    """The tripped tier is not the only one that can hold a live container.
+
+    Tiers run in order, so on a multi-tier resume the EARLIER tier is the one
+    whose record ages past its deadline while the LATER tier is still burning.
+    Cancelling only the tripped tier would abandon that live A100 -- and the
+    remedy the guard prints (move the call log aside) would then destroy the
+    only record of its call id.
+    """
+    stale_first = _record("gate1-standalone-OLD", "fc-OLD-DONE", 86400)
+    live_second = dict(
+        _record("gate1-msa_server-NOW", "fc-LIVE-BURNING", 10), tier="msa_server"
+    )
+    rec = _prepare(monkeypatch, tmp_path, "ok", call_log=[stale_first, live_second])
+    kind = _exec()
+    assert kind == "SystemExit(1)"
+    assert ("fc-OLD-DONE", True) in rec.cancels        # the corpse
+    assert ("fc-LIVE-BURNING", True) in rec.cancels    # and the live one
+    assert rec.spawns == []
+
+
+def test_lost_call_id_tears_the_container_down(monkeypatch, tmp_path):
+    """The window between the spawn and the fsynced id is not the poll loop's.
+
+    Nothing can cancel a container until its id reaches disk, so a failed
+    write would otherwise leave a live A100 with no record of how to stop it.
+    Here the id is unserialisable, which fails the write with the container
+    already up.
+    """
+    rec = _prepare(monkeypatch, tmp_path, "ok")
+    rec.spawn_id = object()
+    try:
+        _exec()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("the unloggable id did not fail the write")
+    assert rec.cancels == [(rec.spawn_id, True)]
+
+
 def test_previous_ledger_is_not_clobbered(monkeypatch, tmp_path):
     _prepare(monkeypatch, tmp_path, "ok")
     prior = tmp_path / "gate1_results.json"
@@ -249,7 +297,13 @@ def _refetch_scenario(fetch, rec, tmp_path):
     return first, second, before, after
 
 
-def test_failed_refetch_leaves_the_cached_archive_intact(monkeypatch, tmp_path):
+def test_failed_refetch_falls_back_to_the_cached_archive(monkeypatch, tmp_path):
+    """Preserving the archive is only half the fix -- it has to be read.
+
+    Scoring 0 while an archive proving a fold sits on disk would abort the
+    run on a transient Volume blip, which is the same wrong answer the
+    truncating version gave, just without the data loss.
+    """
     rec = _install_modal(monkeypatch, "ok")
     monkeypatch.syspath_prepend(SCRIPTS)
     monkeypatch.delitem(sys.modules, "gate1_raw", raising=False)
@@ -259,8 +313,8 @@ def test_failed_refetch_leaves_the_cached_archive_intact(monkeypatch, tmp_path):
         gate1_raw.folds_in_raw, rec, tmp_path
     )
     assert first[0] == 1, first          # the good fetch really saw a fold
-    assert second == (0, 0, None)        # the failure scores 0, never raises
-    assert after == before               # and the good archive survives it
+    assert second[0] == 1, second        # and the blip still scores that fold
+    assert after == before               # off an archive that survived intact
 
 
 def _prefix_folds_in_raw(job_id, raw_dir):

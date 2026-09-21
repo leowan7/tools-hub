@@ -93,7 +93,8 @@ SPEND. Two independent bounds, neither of them a promise in prose:
   1. Per job: Modal kills the container at _MAX_SESSION_S = 3600 s,
      _MAX_SESSION_S in tools/boltz2/modal_app.py.
   2. This driver: each job is spawned, its FunctionCall id written to disk and
-     fsynced BEFORE anything blocks, and cancelled with
+     fsynced BEFORE anything blocks (a write that fails cancels the container
+     rather than leave it running unrecorded), and cancelled with
      terminate_containers=True at its own deadline. The deadlines sum to at
      most BUDGET_S, which is CEILING_USD at the A100-40GB raw rate in
      GPU_USD_PER_SECOND, shared/wallet_estimates.py. Modal-direct calls
@@ -238,9 +239,11 @@ for tier, deadline in DEADLINES:
     # again would pay for the same fold twice. The id is on disk because it is
     # written and fsynced before anything blocks.
     prior = None
+    logged = []
     if os.path.exists(CALL_LOG):
         for line in open(CALL_LOG):
             r = json.loads(line)
+            logged.append(r)
             if r["tier"] == tier:
                 prior = r
     if prior is not None and time.time() - prior["spawned_at"] > prior["deadline_s"]:
@@ -250,19 +253,28 @@ for tier, deadline in DEADLINES:
         # container: modal's cap is _MAX_SESSION_S (3600 s), _MAX_SESSION_S in
         # tools/boltz2/modal_app.py, NOT this driver's deadline, so between
         # those two ages the call may still be LIVE -- which is why this
-        # cancels rather than merely skipping. Cancelling a finished call is a
-        # no-op, so cancelling unconditionally is the safe action.
+        # cancels rather than merely skipping. The cancel is unconditional
+        # rather than conditioned on the call's state: the `except` below
+        # absorbs a call that has already finished, so the unconditional form
+        # is safe whether or not the container is still up.
         age = time.time() - prior["spawned_at"]
         print(
             f"\n[{tier}] call log entry is {age:.0f}s old, past its "
-            f"{prior['deadline_s']}s deadline -- cancelling it and stopping. "
-            f"Move {CALL_LOG} aside to start a fresh run.",
+            f"{prior['deadline_s']}s deadline -- cancelling every recorded "
+            f"call and stopping. Move {CALL_LOG} aside to start a fresh run.",
             flush=True,
         )
-        try:
-            modal.FunctionCall.from_id(prior["call_id"]).cancel(terminate_containers=True)
-        except Exception as exc:  # noqa: BLE001 -- already gone is the common case
-            print(f"[{tier}] cancel: {exc!r}", flush=True)
+        # EVERY record, not just this tier's. Tiers run in order, so on a
+        # multi-tier resume it is the EARLIER tier whose record ages past its
+        # deadline while the LATER tier holds the live container. Cancelling
+        # only the tripped tier would walk away from that live A100 -- and the
+        # remedy printed above then destroys the only record of its call id.
+        for r in logged:
+            try:
+                modal.FunctionCall.from_id(r["call_id"]).cancel(terminate_containers=True)
+                print(f"[{tier}]   cancelled {r['tier']} call={r['call_id']}", flush=True)
+            except Exception as exc:  # noqa: BLE001 -- already gone is the common case
+                print(f"[{tier}]   cancel {r['call_id']}: {exc!r}", flush=True)
         raise SystemExit(1)
     if prior is not None:
         rec = prior
@@ -283,10 +295,19 @@ for tier, deadline in DEADLINES:
             "deadline_s": deadline,
             "spawned_at": time.time(),
         }
-        with open(CALL_LOG, "a") as fh:
-            fh.write(json.dumps(rec) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        # The container is live from the spawn above, and nothing can
+        # cancel it until its id reaches disk. If that write fails the id is
+        # gone, so tear the container down rather than leave it running with
+        # no record of how to stop it. This window sits BEFORE the poll loop,
+        # so the loop's own `finally` does not cover it.
+        try:
+            with open(CALL_LOG, "a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except BaseException:  # noqa: BLE001 -- KeyboardInterrupt counts too
+            fc.cancel(terminate_containers=True)
+            raise
         elapsed_before = 0.0
         print(f"\n[{tier}] spawned call={fc.object_id} job_id={job_id} deadline={deadline}s", flush=True)
 

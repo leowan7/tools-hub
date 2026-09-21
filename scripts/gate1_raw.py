@@ -23,7 +23,9 @@ def folds_in_raw(job_id, raw_dir=RAW_DIR):
 
     Returns (n_pdb, n_files_under_out, local_path). A missing or unreadable
     tar returns (0, 0, None): absence of evidence is scored as no fold, never
-    as a pass, and never raises mid-budget.
+    as a pass, and never raises mid-budget. A download that fails while an
+    archive an earlier call already fetched is still on disk is scored off
+    that archive -- absence of evidence, not evidence thrown away.
     """
     os.makedirs(raw_dir, exist_ok=True)
     local = os.path.join(raw_dir, f"{job_id}.tgz")
@@ -43,7 +45,17 @@ def folds_in_raw(job_id, raw_dir=RAW_DIR):
         os.replace(part, local)
     except Exception as exc:  # noqa: BLE001 -- a 0, never a crash on the budget
         print(f"  raw tar unavailable for {job_id}: {exc!r}")
-        return 0, 0, None
+        # An earlier call may already have parked a good archive -- which is
+        # the whole point of the .part sidecar above. Scoring 0 with that
+        # archive sitting on disk would abort the run on a transient Volume
+        # blip while the evidence of a PASS went unread, so preserving it is
+        # only half the fix: it has to be read.
+        try:
+            with tarfile.open(local, "r:gz") as tf:
+                under_out = [n for n in tf.getnames() if "/out/" in n]
+        except Exception:  # noqa: BLE001 -- no cached archive either
+            return 0, 0, None
+        print(f"  falling back to the cached archive at {local}")
     return sum(n.endswith(".pdb") for n in under_out), len(under_out), local
 
 
