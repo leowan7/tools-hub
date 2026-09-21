@@ -21,7 +21,9 @@ is finally needed:
 
 These run the REAL driver as `__main__` through `runpy`, against a fake
 `modal`, so what is under test is the shipped file rather than a paraphrase
-of it. No GPU, no network, no spend.
+of it. No GPU, no network, no spend. `monkeypatch` owns the globals they
+set and `_drop_imported_scripts` removes the ones they import, which
+`test_nothing_leaks_into_the_rest_of_the_suite` checks.
 """
 import io
 import json
@@ -32,9 +34,29 @@ import tarfile
 import time
 import types
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(REPO, "scripts")
 DRIVER = os.path.join(SCRIPTS, "gate1_boltz2_smoke.py")
+
+
+@pytest.fixture(autouse=True)
+def _drop_imported_scripts():
+    """Remove the script modules these tests import.
+
+    `monkeypatch` restores what it is handed, but the refetch tests reach
+    `gate1_raw` through `delitem(..., raising=False)` on a key that is
+    normally absent, which records nothing to undo. The module then stays in
+    `sys.modules` bound to a dead `modal` stub, where anything importing it
+    later would pick it up.
+    """
+    yield
+    for name in ("gate1_raw", "gate1_boltz2_smoke"):
+        sys.modules.pop(name, None)
+
+
+_STUBS = []          # every fake `modal` this file installs
 
 
 def _install_modal(monkeypatch, behaviour):
@@ -97,6 +119,7 @@ def _install_modal(monkeypatch, behaviour):
             read_file=lambda path: rec.read_file(path)
         )
     )
+    _STUBS.append(modal)
     monkeypatch.setitem(sys.modules, "modal", modal)
     monkeypatch.setitem(sys.modules, "modal.exception", exc)
     return rec
@@ -396,3 +419,15 @@ def test_negative_control_truncate_before_read_destroys_the_archive(
     assert first[0] == 1, first          # same starting point as the test above
     assert second == (0, 0, None)        # scores the same 0 ...
     assert after != before               # ... but has eaten the evidence
+
+
+def test_nothing_leaks_into_the_rest_of_the_suite():
+    """Runs last, so it sees whatever every test above it left behind.
+
+    Measured before the fixture existed: `gate1_raw` survived the file.
+    """
+    assert not [n for n in ("gate1_raw", "gate1_boltz2_smoke") if n in sys.modules]
+    # `modal` is not checked for absence: another test file may legitimately
+    # have imported the real one, and monkeypatch restoring THAT is correct.
+    # What must never survive is a stub of ours.
+    assert sys.modules.get("modal") not in _STUBS
