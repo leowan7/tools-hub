@@ -45,11 +45,13 @@ spent:
 
 ANTIGEN. RCSB 3RQ3 chain A, fetched by the container straight from
 files.rcsb.org. 107 aa, zero unknown residues, and an exact substring of the
-109 aa TIGIT target sequence the archived designs were optimised against --
-re-checked at this commit against the committed fixture, i.e. the 3RQ3
-download's chain A inside the seed3_demo-b2-tigit-s1 target_seq in
-gate1_binders.json. Serving it from RCSB sidesteps both options PLAN-v2
-section 6 flagged: no write to production Supabase, nothing published.
+109 aa TIGIT target sequence the archived designs were optimised against.
+That check ran on 2026-09-21 against a fresh files.rcsb.org download, which
+is NOT in this repo -- reproducing it means re-fetching 3RQ3.pdb and matching
+its chain A into the seed3_demo-b2-tigit-s1 target_seq in gate1_binders.json,
+which is the only half of the comparison the repo carries. Serving it from
+RCSB sidesteps both options PLAN-v2 section 6 flagged: no write to production
+Supabase, nothing published.
 
 BINDERS. Three archived designs spanning ESM iPTM 0.102 / 0.621 / 0.949.
 Against this antigen the TIGIT design is a COGNATE pair and the cd45 and IL-4
@@ -203,6 +205,14 @@ fn = modal.Function.from_name("ranomics-boltz2-prod", "run_tool")
 out_all = {"manifest": manifest, "antigen_url": ANTIGEN_URL, "jobs": []}
 spent_s = 0.0
 
+# Never clobber a previous run's ledger -- it records real money. Resolved
+# once, before the loop, so every tier of THIS run appends to one file.
+result_log = RESULT_LOG
+_n = 1
+while os.path.exists(result_log):
+    result_log = f"{os.path.splitext(RESULT_LOG)[0]}.{_n}.json"
+    _n += 1
+
 for tier, deadline in DEADLINES:
     job_id = f"gate1-{tier}-{int(time.time())}"
     payload = {
@@ -233,6 +243,27 @@ for tier, deadline in DEADLINES:
             r = json.loads(line)
             if r["tier"] == tier:
                 prior = r
+    if prior is not None and time.time() - prior["spawned_at"] > prior["deadline_s"]:
+        # Past its own deadline, so reattaching is wrong twice over. The
+        # accounting: `wall` below counts from spawned_at, so a day-old record
+        # would report tens of dollars for a run that spent nothing. The
+        # container: modal's cap is _MAX_SESSION_S (3600 s), _MAX_SESSION_S in
+        # tools/boltz2/modal_app.py, NOT this driver's deadline, so between
+        # those two ages the call may still be LIVE -- which is why this
+        # cancels rather than merely skipping. Cancelling a finished call is a
+        # no-op, so cancelling unconditionally is the safe action.
+        age = time.time() - prior["spawned_at"]
+        print(
+            f"\n[{tier}] call log entry is {age:.0f}s old, past its "
+            f"{prior['deadline_s']}s deadline -- cancelling it and stopping. "
+            f"Move {CALL_LOG} aside to start a fresh run.",
+            flush=True,
+        )
+        try:
+            modal.FunctionCall.from_id(prior["call_id"]).cancel(terminate_containers=True)
+        except Exception as exc:  # noqa: BLE001 -- already gone is the common case
+            print(f"[{tier}] cancel: {exc!r}", flush=True)
+        raise SystemExit(1)
     if prior is not None:
         rec = prior
         job_id = rec["job_id"]
@@ -263,29 +294,53 @@ for tier, deadline in DEADLINES:
     # deadline and the spend total both have to count the pre-reattach life.
     t0 = time.time() - elapsed_before
     out, err, killed = None, None, False
-    while True:
-        left = deadline - (time.time() - t0)
-        if left <= 0:
-            killed = True
-            print(f"[{tier}] DEADLINE {deadline}s -- cancel(terminate_containers=True)", flush=True)
-            fc.cancel(terminate_containers=True)
-            break
-        try:
-            out = fc.get(timeout=min(30.0, left))
-            break
-        except FunctionTimeoutError as exc:
-            err = f"modal killed the container at its own timeout: {exc!r}"
-            break
-        except (ModalPollTimeout, TimeoutError):
-            # modal 1.4.2 raises the BUILTIN TimeoutError from
-            # FunctionCall.get(timeout=), not modal.exception.TimeoutError.
-            # Catching only the modal class treated the first poll window as a
-            # fatal error and orphaned a live container on 2026-09-16.
-            el = time.time() - t0
-            print(f"[{tier}]   ... {el:5.0f}s  ${(spent_s + el) * RATE:.2f} cumulative", flush=True)
-        except Exception as exc:  # noqa: BLE001 -- record and move on, never hang on the budget
-            err = repr(exc)
-            break
+    # Set only where the container is known dead: modal returned, modal killed
+    # it at its own timeout, or this driver cancelled it. Anything else leaves
+    # the call live and is cleaned up in the `finally`.
+    settled = False
+    try:
+        while True:
+            left = deadline - (time.time() - t0)
+            if left <= 0:
+                killed = True
+                print(f"[{tier}] DEADLINE {deadline}s -- cancel(terminate_containers=True)", flush=True)
+                fc.cancel(terminate_containers=True)
+                settled = True
+                break
+            try:
+                out = fc.get(timeout=min(30.0, left))
+                settled = True
+                break
+            except FunctionTimeoutError as exc:
+                # The function hit its own timeout, so modal has already torn
+                # the container down -- nothing left to cancel.
+                err = f"modal killed the container at its own timeout: {exc!r}"
+                settled = True
+                break
+            except (ModalPollTimeout, TimeoutError):
+                # modal 1.4.2 raises the BUILTIN TimeoutError from
+                # FunctionCall.get(timeout=), not modal.exception.TimeoutError.
+                # Catching only the modal class treated the first poll window as
+                # a fatal error and orphaned a live container on 2026-09-16.
+                el = time.time() - t0
+                print(f"[{tier}]   ... {el:5.0f}s  ${(spent_s + el) * RATE:.2f} cumulative", flush=True)
+            except Exception as exc:  # noqa: BLE001 -- record and move on, never hang on the budget
+                err = repr(exc)
+                break
+    finally:
+        # The two exits that leave a live container: the generic `except`
+        # above, and KeyboardInterrupt, which is not an Exception and unwinds
+        # straight through the loop. On either, the deadline never fires and
+        # the only remaining bound is _MAX_SESSION_S (3600 s) -- $2.57 at RATE,
+        # against a $0.79 ceiling. That bound is what SPEND item 2 in the
+        # docstring promises, so it has to hold on every path out of the loop,
+        # not just the deadline one.
+        if not settled:
+            print(f"[{tier}] exiting with the call live -- cancel(terminate_containers=True)", flush=True)
+            try:
+                fc.cancel(terminate_containers=True)
+            except Exception as exc:  # noqa: BLE001 -- teardown must not mask the original failure
+                print(f"[{tier}] cancel failed, check `modal app history`: {exc!r}", flush=True)
 
     wall = time.time() - t0
     spent_s += wall
@@ -302,7 +357,7 @@ for tier, deadline in DEADLINES:
         "raw_local": raw_local,
     }
     out_all["jobs"].append(job)
-    with open(RESULT_LOG, "w") as fh:
+    with open(result_log, "w") as fh:
         json.dump(out_all, fh, indent=2)
     print(
         f"[{tier}] done wall={wall:.0f}s ${wall * RATE:.2f} killed={killed} err={err}",
@@ -339,5 +394,5 @@ for tier, deadline in DEADLINES:
         break
 
 print(f"\nTOTAL {spent_s:.0f}s = ${spent_s * RATE:.2f} of ${CEILING_USD:.2f}")
-print(f"call ids in {CALL_LOG}; results in {RESULT_LOG}")
+print(f"call ids in {CALL_LOG}; results in {result_log}")
 print("raw trees: modal volume get ranomics-boltz2-raw <job_id>.tgz")

@@ -35,6 +35,6 @@ proteina_direct_out/
 # log is reattach state: tracking it would make a rerun reattach to a dead
 # call instead of spawning.
 gate1_calls.jsonl
-gate1_results.json
+gate1_results*.json
 raw_gate1/
 raw_selfcheck/

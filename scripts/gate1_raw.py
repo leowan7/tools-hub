@@ -27,13 +27,20 @@ def folds_in_raw(job_id, raw_dir=RAW_DIR):
     """
     os.makedirs(raw_dir, exist_ok=True)
     local = os.path.join(raw_dir, f"{job_id}.tgz")
+    part = local + ".part"
     try:
         vol = modal.Volume.from_name(RAW_VOLUME)
-        with open(local, "wb") as fh:
+        # Download to a sidecar and rename only once the whole archive is on
+        # disk AND parses. `open(local, "wb")` truncates before the first byte
+        # arrives, so a read that failed mid-stream would destroy a good
+        # archive an earlier call had already fetched -- and this tar is the
+        # only thing that separates "folds" from "no folds".
+        with open(part, "wb") as fh:
             for chunk in vol.read_file(f"{job_id}.tgz"):
                 fh.write(chunk)
-        with tarfile.open(local, "r:gz") as tf:
+        with tarfile.open(part, "r:gz") as tf:
             under_out = [n for n in tf.getnames() if "/out/" in n]
+        os.replace(part, local)
     except Exception as exc:  # noqa: BLE001 -- a 0, never a crash on the budget
         print(f"  raw tar unavailable for {job_id}: {exc!r}")
         return 0, 0, None
