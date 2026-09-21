@@ -50,6 +50,10 @@ def _drop_imported_scripts():
     normally absent, which records nothing to undo. The module then stays in
     `sys.modules` bound to a dead `modal` stub, where anything importing it
     later would pick it up.
+
+    Remove this fixture and `test_nothing_leaks_into_the_rest_of_the_suite`
+    goes red. That is the in-repo evidence for the leak; the `delitem`
+    mechanism above is only the explanation offered for it.
     """
     yield
     for name in ("gate1_raw", "gate1_boltz2_smoke"):
@@ -425,6 +429,10 @@ def test_nothing_leaks_into_the_rest_of_the_suite():
     """Runs last, so it sees whatever every test above it left behind.
 
     Measured before the fixture existed: `gate1_raw` survived the file.
+
+    Selected on its own it passes vacuously -- there are no teardowns ahead
+    of it to observe. It guards only in a whole-file or whole-suite run,
+    which is how CI invokes it.
     """
     assert not [n for n in ("gate1_raw", "gate1_boltz2_smoke") if n in sys.modules]
     # `modal` is not checked for absence: another test file may legitimately
