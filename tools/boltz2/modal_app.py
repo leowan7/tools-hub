@@ -20,9 +20,13 @@ Self-contained rationale: Modal deploys only the single file you pass to
 portability bugs with sibling-module imports, so the same self-contained
 pattern applies here.
 
-GPU: A100-40GB. The fold kernel is ~15 s on this SKU; the long tail is
-weight load (~30 s cold) and, for the ``msa_server`` preset, MSA fetch
-from the public ColabFold MMseqs2 endpoint.
+GPU: A100-40GB. A warm single-sequence fold is ~69 s on this SKU and the
+one-time model load is ~13 s, both measured — provenance and caveats in
+the runtime note in ``tools/boltz2/__init__.py``. The "~15 s kernel plus
+a ~30 s cold weight load" split this replaces was wrong in both terms:
+designs 2 and 3 of that run were warm and still took 68.5 s and 69.5 s.
+The ``msa_server`` preset adds an MSA fetch from the public ColabFold
+MMseqs2 endpoint and measures ~214 s/design aggregate, ~3x standalone.
 """
 
 from __future__ import annotations
@@ -41,8 +45,32 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-40GB"
-# 60 min ceiling — covers the worst-case msa_server preset (~3 min/design)
-# at the soft 10-binder limit, plus weight load + MSA fetch tail latency.
+# 60 min ceiling. The "soft 10-binder limit" this comment used to lean on
+# does not exist. The enforced ceilings live in ``tools/boltz2/__init__.py``
+# and are both applied in its ``validate``: ``MAX_BINDERS = 50``, and
+# ``MAX_BINDERS_BY_PRESET["msa_server"] = 16``, sized against THIS constant.
+# ``tools/boltz2/meta.py`` advertises that pair to users.
+#
+# EXTRAPOLATING the measured rates, the two presets land on opposite sides
+# of this ceiling. standalone (81.9 s first design including model load,
+# ~69 s marginal): 81.9 + 49 * 69 = ~3463 s, ~4% UNDER. msa_server
+# (~214 s/design aggregate, measured 2026-09-21): 50 * 214 = ~10700 s,
+# ~3x OVER — it crosses 3600 s at the 17th binder, so a 50-binder
+# msa_server run CANNOT finish inside this timeout, which is why that
+# preset is capped at 16 (~3424 s) rather than 50. Both are extrapolations
+# from three folds at 242-246 aa, not measured 50-binder runs, and longer
+# binders push both higher. The "~15 s/design" figure this ceiling was
+# reasoned against put the standalone run at 750 s, which is why the
+# headroom read as ample.
+#
+# Deliberately NOT raised here. An overrun is survivable: each design is
+# PUT to its own presigned URL as that fold completes, by
+# ``tools/boltz2/run_pipeline.py::upload_pdb`` called from inside the
+# per-binder loop in ``tools/boltz2/run_pipeline.py::main``, so a timeout
+# loses the tail of the batch rather than the run. The msa_server cap
+# refuses only the batch sizes the arithmetic above says overrun; raising
+# this ceiling, lifting that cap back to 50, or chunking still all belong
+# with a real large-batch measurement, which does not exist yet.
 _MAX_SESSION_S = 3600
 _PYTHON = "python3"
 # Where ``run_pipeline.py`` tars its complete work tree at teardown, and where

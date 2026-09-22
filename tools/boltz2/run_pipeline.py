@@ -12,13 +12,17 @@ Two presets:
 
 - ``standalone`` (default) — single-sequence cofold (YAML ``msa: empty``
   per chain). The right choice for designed sequences (MPNN, RFantibody,
-  BindCraft, etc.) where there is no informative MSA. ~15 s / design on
-  A100-40GB once warm.
+  BindCraft, etc.) where there is no informative MSA. ~69 s / design on
+  A100-40GB once warm, measured on 242-246 aa binders against a 107 aa
+  antigen — provenance and caveats in ``tools/boltz2/__init__.py``.
 - ``msa_server`` — Boltz fetches MSAs from the public ColabFold MMseqs2
-  endpoint via ``--use_msa_server``. ~3 min / design. Better for natural
-  / near-native sequences; for designed sequences the MSA is usually
-  dominated by the closest natural homologues and the result barely
-  differs from ``standalone``.
+  endpoint via ``--use_msa_server``. ~214 s / design aggregate (~3.6 min),
+  measured 2026-09-21 on the same three binders; the MSA fetch and the GPU
+  compute were not timed separately. Intended for natural / near-native
+  sequences. On the one head-to-head we have run it made decoy
+  discrimination WORSE on designed binders rather than merely equivalent —
+  the cognate-minus-decoy ipTM margin fell 37% — so ``standalone`` stays
+  the default. See ``docs/VALIDATION-LOG.md``.
 
 Environment variables (set by ``tools/boltz2/modal_app.py``):
 
