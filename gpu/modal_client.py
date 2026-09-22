@@ -228,11 +228,40 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # (3600 s) so a 500-record run that hits the modal session ceiling
     # surfaces a clean timeout instead of silently truncating designs.
     ("esmfold", "batch"):          3600,
-    # Boltz-2 cofold: ``standalone`` = single-sequence (~60 s/design); cap
-    # at 1200 s covers a 10-binder run with weight-load headroom.
-    # ``msa_server`` = --use_msa_server (~3 min/design including MSA
-    # fetch); cap at 3600 s covers a 10-binder run including the
-    # public-server tail latency. Modal hard timeout is 3600 s.
+    # Boltz-2 cofold. ``standalone`` = single-sequence, MEASURED at ~69 s
+    # marginal and 81.9 s for the first design including model load.
+    # ``msa_server`` = --use_msa_server, MEASURED at ~214 s/design
+    # aggregate over a 3-design run (job gate1-msa_server-1790046491,
+    # 2026-09-21) — not the "~3 min/design" this comment used to carry,
+    # and not a marginal rate: the MSA fetch and the GPU compute were not
+    # timed separately. Provenance and caveats for both tiers in the
+    # runtime note in ``tools/boltz2/__init__.py``. The ~60 s/design this
+    # comment used to carry for standalone was a guess; it happens to sit
+    # near the measurement, but its twin in the adapter guessed 15 s.
+    #
+    # Both rows are sized against "a 10-binder run", which is NOT the
+    # ceiling the product enforces: ``tools/boltz2/__init__.py::validate``
+    # allows ``MAX_BINDERS = 50`` and ``tools/boltz2/meta.py`` advertises
+    # 50 to users. Extrapolating the measured rates, a 50-binder run is
+    # ~3463 s on standalone (~2.9x this row, passing 1200 s at 18 binders)
+    # and ~10700 s on msa_server (~3x the 3600 s row below, passing it at
+    # 17 binders). Neither preset can finish 50 binders inside its row.
+    #
+    # Left at 1200/3600 anyway, because for boltz2 these rows are INERT
+    # beyond the ``cap == 0`` guard in ``submit`` below: the cap is not in
+    # the ``ToolPayload`` that ``_build_payload`` sends, so it bounds
+    # nothing on the GPU side; no non-test caller reads the
+    # ``gpu_seconds_cap`` that ``SubmitResult`` returns; and both callers
+    # of ``preset_gpu_seconds`` miss this tool — boltz2 is absent from
+    # ``shared/compute_campaigns.py::SUPPORTED_TOOLS`` (which gates
+    # ``_campaign_container_seconds``) and
+    # ``scripts/calibration/poll_results.py`` asks for preset "pilot",
+    # which has no boltz2 row. boltz2 is priced from ``TOOL_SPECS`` in
+    # ``shared/wallet_estimates.py`` instead, so the file header's
+    # "used for credit pre-authorisation" does not describe these two
+    # rows. Re-derive that before making the cap load-bearing; sizing it
+    # honestly needs a real large-batch measurement, which does not exist.
+    # Modal hard timeout is 3600 s.
     ("boltz2", "standalone"):      1200,
     ("boltz2", "msa_server"):      3600,
     # ESMFold2-design: gradient-based inversion of ESMFold2 on H100.

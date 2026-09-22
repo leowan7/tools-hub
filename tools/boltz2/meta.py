@@ -21,10 +21,31 @@ from __future__ import annotations
 from typing import Optional
 
 
-# Typical wall-clock per preset. Used by the About panel runtime table.
+# Typical wall-clock per preset. Rendered as f"{typical_minutes} min" by
+# blueprints/tools.py::_preset_runtime_text and by the inline copy of that
+# logic in shared/tools_catalog.py::_build_tools_catalog, which also joins
+# the presets into a "<fastest> to <slowest>" band — so each value has to
+# read as ONE token with " min" appended.
+#
+# standalone: MEASURED at ~69 s/design marginal (1.15 min), and 81.9 s for a
+# one-design run because that one carries the model load. Job
+# gate1-standalone-1789842854, A100-40GB, 2026-09-19, 242-246 aa binders
+# against a 107 aa antigen, n=1 per design — full provenance and caveats in
+# the runtime note in tools/boltz2/__init__.py. "~1.2" is the marginal rate;
+# the about["runtime_table"] row below carries the single-binder figure too,
+# since that cell is not limited to one token. This replaces "<1", which came
+# from a "~15 s/design" figure that was never measured and is ~4.6x off.
+#
+# msa_server: MEASURED at 214 s/design (3.6 min) by Gate 1 Rung B, job
+# gate1-msa_server-1790046491, 2026-09-21 — same image and same three binders
+# as Rung A, 643 s of pipeline runtime for 3 designs. This replaces "~3",
+# which was a launch estimate and read ~19% fast. Unlike standalone this is an
+# AGGREGATE, not a marginal rate: no per-design interval was resolved and the
+# MSA-fetch / GPU-compute split was not measured, so there is no model-load
+# term to subtract. Same provenance note in tools/boltz2/__init__.py.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "<1"},
-    "msa_server": {"typical_minutes": "~3"},
+    "standalone": {"typical_minutes": "~1.2"},
+    "msa_server": {"typical_minutes": "~3.6"},
 }
 
 paper_citation: str = "Passaro et al., bioRxiv 2025"
@@ -118,14 +139,32 @@ about: dict = {
                 "<strong>Single-sequence</strong> (default) folds in "
                 "<code>msa: empty</code> mode, the right choice "
                 "for designed sequences. <strong>With MSA</strong> "
-                "fetches MSAs from the public ColabFold MMseqs2 endpoint "
-                "and is slower but more accurate on natural sequences."
+                "fetches MSAs from the public ColabFold MMseqs2 endpoint. "
+                "It is ~3x slower, and on the one comparison we have run "
+                "&mdash; three designed antibody binders &mdash; it "
+                "separated the real binder from decoys WORSE, so it is not "
+                "the default. Whether it helps on genuinely natural "
+                "sequences is untested here."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "standalone", "typical": "<1 min/design"},
-        {"preset": "msa_server", "typical": "~3 min/design"},
+        {
+            "preset": "standalone",
+            "typical": (
+                "~1.2 min/design measured; a single binder is ~1.5 min end "
+                "to end, carrying the one-time model load and container "
+                "spawn"
+            ),
+        },
+        {
+            "preset": "msa_server",
+            "typical": (
+                "~3.6 min/design measured; ~3x the single-sequence "
+                "default, which also separated decoys better on the one "
+                "head-to-head we have run"
+            ),
+        },
     ],
     "output_summary": (
         "Per-design folded complex PDB + ipTM, pTM, complex_pLDDT, "
