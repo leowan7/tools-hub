@@ -53,6 +53,9 @@ a drift guard that silently covers nothing is worse than no guard:
 from __future__ import annotations
 
 import ast
+import io
+import re
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -446,3 +449,274 @@ def test_the_overrun_monitor_measures_against_the_billed_rate() -> None:
         "0.70x the $9.00 estimate, so the 1.5x band is never crossed"
     )
     assert warn.called
+
+
+# ---------------------------------------------------------------------------
+# prose and user-facing strings -- the class this file did not cover
+# ---------------------------------------------------------------------------
+#
+# Everything above pins STRUCTURED labels: the wallet spec, the three rate
+# cards, the preflight panel's ``gpu=`` mirror. None of them read a sentence.
+#
+# rfantibody shipped the same wrong class on TWO customer-facing surfaces: a
+# Preset description ending "Results emailed when run completes; A100-80GB."
+# (tools/rfantibody/__init__.py, rendered on /help/tools/rfantibody via
+# templates/help/tool_guide.html:99) and the line "Results emailed when the
+# run completes (A100-80GB)." on the submit form itself
+# (templates/tools/rfantibody_form.html). Its spec, its TOOL_RULES entry, its
+# shared/modal_gpu_metadata.py row, docs/CALIBRATION-WEEK2.md and its OWN
+# module docstring all said A100-40GB. Five structured sources agreed and the
+# two strings a customer actually reads did not.
+#
+# Scope is deliberate. Over tools/*/*.py, a blanket "every GPU-class token
+# must match the spec" flags 5 mentions and 4 of them are correct as written:
+#
+#   tools/colabfold/modal_app.py   A10G -- module docstring, the 24GB A10G
+#                                     named as the option that WOULD OOM
+#   tools/esmfold/modal_app.py     A10G -- module docstring, same shape
+#   tools/iggm/modal_app.py        A100-80GB -- module docstring, the
+#                                     future upgrade path for _GPU + wallet
+#   tools/pxdesign/meta.py        A100-40GB -- comment narrating the
+#                                     2026-09-01 correction AWAY from 40GB
+#
+# All four are docstrings or comments, i.e. narration about hardware: a
+# rejected alternative, a future path, a past correction. Both defects were
+# live text. So the discriminator is exactly that -- exclude docstrings and
+# comments -- and it separates the 5 into 4 and 1 with no allowlist of
+# individual lines to rot. ``test_narration_is_excluded`` pins those four so
+# the discriminator cannot be quietly widened back onto them.
+#
+# templates/tools/<dir>_form.html is included because that is where the
+# second copy lived, and because it costs nothing: all 14 form templates are
+# named for a tools/ directory, and with rfantibody fixed every GPU mention
+# in them already agrees with its spec. HTML comments are blanked for the
+# same reason as Python ones.
+#
+# What this does NOT close: GPU classes named anywhere else -- docs/,
+# shared/, the other templates -- and a docstring that goes stale. Both are
+# live holes.
+
+_GPU_LABEL_RE = re.compile(
+    r"(?<![0-9A-Za-z-])("
+    + "|".join(sorted((re.escape(k) for k in GPU_USD_PER_SECOND), key=len,
+                      reverse=True))
+    # No trailing hyphen in the lookahead, so "A10G-24GB" reads as a mention
+    # of A10G rather than as no mention at all.
+    + r")(?![0-9A-Za-z])"
+)
+
+
+def _docstring_lines(tree: ast.AST) -> set[int]:
+    """Line numbers covered by a module/class/function docstring."""
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            end = first.end_lineno or first.lineno
+            lines.update(range(first.lineno, end + 1))
+    return lines
+
+
+def _comment_spans(text: str) -> dict[int, list[tuple[int, int]]]:
+    """``lineno -> [(col_start, col_end)]`` for every ``#`` comment.
+
+    Tokenized rather than split on ``#``, so a ``#`` inside a string literal
+    -- which is exactly the kind of line this guard exists to read -- is not
+    mistaken for the start of a comment.
+    """
+    spans: dict[int, list[tuple[int, int]]] = {}
+    for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+        if tok.type == tokenize.COMMENT:
+            spans.setdefault(tok.start[0], []).append(
+                (tok.start[1], tok.end[1])
+            )
+    return spans
+
+
+def _blank_html_comments(text: str) -> str:
+    """Replace every ``<!-- -->`` body with spaces, keeping line numbers.
+
+    Blanked rather than deleted so the reported line number stays the one a
+    reader opens. No form template has a GPU class inside a comment today;
+    this is here so that commenting a block out cannot turn this guard red.
+    """
+    return re.sub(
+        r"<!--.*?-->",
+        lambda m: re.sub(r"[^\n]", " ", m.group(0)),
+        text,
+        flags=re.S,
+    )
+
+
+def _mentions_in(text: str, rel: str, slug: str, skip: set[int],
+                 comments: dict[int, list[tuple[int, int]]],
+                 ) -> list[tuple[str, int, str, str, str]]:
+    found = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if lineno in skip:
+            continue
+        for match in _GPU_LABEL_RE.finditer(line):
+            if any(start <= match.start() < end
+                   for start, end in comments.get(lineno, [])):
+                continue
+            found.append((rel, lineno, match.group(1), slug, line.strip()))
+    return found
+
+
+def _scan_prose_mentions(
+) -> tuple[list[tuple[str, int, str, str, str]], list[str]]:
+    """``(mentions, unmapped_forms)`` for live GPU-class mentions.
+
+    A mention is ``(rel, lineno, label, slug, line)``. Live means outside
+    every docstring and comment, in ``tools/<dir>/*.py`` or
+    ``templates/tools/<dir>_form.html``.
+
+    tools/ directories with no wallet spec (developability, library_planner,
+    platform_api -- none of them GPU tools) have no truth to compare against
+    and are skipped; a GPU app added without a spec is caught instead by
+    ``test_every_container_has_a_wallet_spec``. A form template whose stem is
+    not a known slug is NOT skipped silently -- it is returned in
+    ``unmapped_forms`` for ``test_every_form_template_maps_to_a_spec`` to
+    fail on. Returned rather than raised because this runs at import to feed
+    a parametrize: an exception here is a collection error that takes the
+    other ~100 pricing-drift tests in this module down with it.
+    """
+    found: list[tuple[str, int, str, str, str]] = []
+    for path in sorted((_REPO_ROOT / "tools").glob("*/*.py")):
+        slug = _DIR_TO_SLUG.get(path.parent.name, path.parent.name)
+        if slug not in TOOL_SPECS:
+            continue
+        rel = str(path.relative_to(_REPO_ROOT)).replace("\\", "/")
+        text = path.read_text(encoding="utf-8")
+        found += _mentions_in(
+            text, rel, slug,
+            _docstring_lines(ast.parse(text)),
+            _comment_spans(text),
+        )
+    unmapped: list[str] = []
+    for path in sorted((_REPO_ROOT / "templates" / "tools")
+                       .glob("*_form.html")):
+        directory = path.name[: -len("_form.html")]
+        slug = _DIR_TO_SLUG.get(directory, directory)
+        rel = str(path.relative_to(_REPO_ROOT)).replace("\\", "/")
+        if slug not in TOOL_SPECS:
+            unmapped.append(rel)
+            continue
+        text = _blank_html_comments(path.read_text(encoding="utf-8"))
+        found += _mentions_in(text, rel, slug, set(), {})
+    return found, unmapped
+
+
+_PROSE_MENTIONS, _UNMAPPED_FORMS = _scan_prose_mentions()
+
+
+def test_every_form_template_maps_to_a_spec() -> None:
+    """A form whose stem is not a slug drops that tool out of the scan."""
+    assert not _UNMAPPED_FORMS, (
+        f"form templates with no wallet spec: {_UNMAPPED_FORMS}. Their GPU "
+        "labels are unpinned. Add a spec, or map the name in _DIR_TO_SLUG."
+    )
+
+
+def test_the_prose_scan_is_not_empty() -> None:
+    """Guard the guard: a scan that matches nothing parametrizes to green.
+
+    A regex typo, a rename of ``tools/``, or a GPU_USD_PER_SECOND key edit
+    would each leave the test below collecting zero cases and reporting pass.
+    The floors are below the counts measured on the commit that added this
+    (43 mentions across 14 of the 15 specs) -- a smoke alarm, not a target.
+    """
+    assert len(_PROSE_MENTIONS) >= 30, (
+        f"only {len(_PROSE_MENTIONS)} live GPU-class mentions found; this "
+        "guard was reading 43. Either the scan broke or the labels moved out "
+        "of the files it reads."
+    )
+    slugs = {slug for _, _, _, slug, _ in _PROSE_MENTIONS}
+    assert len(slugs) >= 12, (
+        f"live GPU-class mentions found for only {len(slugs)} slugs "
+        f"({sorted(slugs)}); this guard was covering 14."
+    )
+    files = {rel.rsplit("/", 1)[0] for rel, _, _, _, _ in _PROSE_MENTIONS}
+    assert any(f.startswith("templates/") for f in files), (
+        "no form-template mentions collected; the second surface this guard "
+        "was written for has dropped out of the scan."
+    )
+
+
+@pytest.mark.parametrize(
+    "rel,lineno,label,slug,line",
+    _PROSE_MENTIONS,
+    ids=[f"{rel}:{lineno}" for rel, lineno, _, _, _ in _PROSE_MENTIONS],
+)
+def test_prose_gpu_labels_match_the_wallet_spec(
+    rel: str, lineno: int, label: str, slug: str, line: str
+) -> None:
+    """A GPU class named in live text must be the one the wallet prices."""
+    expected = TOOL_SPECS[slug].gpu_class
+    assert label == expected, (
+        f"{rel}:{lineno} says {label!r} but TOOL_SPECS[{slug!r}].gpu_class is "
+        f"{expected!r}, which is what prices the estimate, the hold and the "
+        f"charge. Change the label to {expected!r}, or -- if the hardware "
+        "really moved -- the spec and every mirror named in this file's "
+        "module docstring. If instead this line is about some OTHER tool's "
+        "hardware, this guard cannot tell: move it into a comment or a "
+        f"docstring, where narration belongs. Offending line: {line}"
+    )
+
+
+# ``(rel, label, snippet)``: narration this guard must keep excluding.
+# ``test_narration_is_excluded`` re-reads each one on every run, so this
+# list does not rest on a reading somebody did once. Anchored on a snippet
+# of the sentence rather than a line number --
+# a line number here is a trip-wire that turns this guard red when somebody
+# adds an import above it, and rots silently when somebody does not notice.
+_NARRATION = [
+    ("tools/colabfold/modal_app.py", "A10G",
+     "the 24GB A10G would OOM"),
+    ("tools/esmfold/modal_app.py", "A10G",
+     "so A10G-24GB would OOM"),
+    ("tools/iggm/modal_app.py", "A100-80GB",
+     "the wallet ``gpu_class`` to A100-80GB together"),
+    ("tools/pxdesign/meta.py", "A100-40GB",
+     "priced 1380 s at A100-40GB"),
+]
+
+
+@pytest.mark.parametrize("rel,label,snippet", _NARRATION)
+def test_narration_is_excluded(rel: str, label: str, snippet: str) -> None:
+    """The four correct-as-written mentions must stay unflagged.
+
+    Asserted in both directions: the sentence still exists and still carries
+    the label (so this cannot pass by the narration having been deleted), and
+    no LIVE mention of that label is reported from that file (so widening the
+    discriminator onto docstrings or comments fails here rather than turning
+    four correct lines red).
+
+    The second direction is ``(file, label)`` rather than ``(file, line)`` on
+    purpose: every one of these four files is the only place its own label
+    could legitimately appear as narration, so pairing the two is precise
+    without pinning a line that ordinary edits move.
+    """
+    text = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+    assert snippet in text, (
+        f"{rel} no longer contains {snippet!r}. The narration this guard "
+        "excludes was rewritten or removed; re-read it and update "
+        "_NARRATION."
+    )
+    assert label in snippet, f"_NARRATION entry for {rel} is self-inconsistent"
+    flagged = {(r, lab) for r, _, lab, _, _ in _PROSE_MENTIONS}
+    assert (rel, label) not in flagged, (
+        f"{rel} now reports a LIVE mention of {label!r}, but that label "
+        "appears there only as narration -- a rejected alternative, a future "
+        "path or a past correction. Either the docstring/comment exclusion "
+        "has been narrowed, or real code there genuinely names the wrong "
+        "class."
+    )
