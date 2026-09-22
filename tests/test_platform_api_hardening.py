@@ -8,11 +8,74 @@ small group of tests) that fails without the fix and passes with it.
 
 from __future__ import annotations
 
-import time
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+
+
+_REAL_THREAD = threading.Thread
+
+
+class _InlineThread:
+    """``threading.Thread`` stand-in that runs the target on the caller's thread.
+
+    ``dispatch_webhook`` and ``sweep_due_deliveries`` both detach
+    ``_bounded_dispatch`` onto a daemon thread. A REAL one outlives the test
+    that spawned it, which is the shape PR #328 (e580d9c) closed in
+    ``shared/events.py``: monkeypatch teardown restores the real
+    ``_update_delivery`` and ``_session.post`` while the worker is still
+    inside ``_dispatch_once``, so the worker goes on to resolve Supabase
+    credentials and POST for real, attributed to ``<no active test>``.
+    Running the dispatch on the caller's thread keeps it inside the test that
+    installed those fakes.
+
+    ``daemon`` is asserted rather than ignored so that swapping the thread out
+    cannot quietly drop the fire-and-forget property ``shared/webhooks.py``
+    documents in its module docstring ("fired from a background daemon
+    thread so the API response returns immediately").
+
+    Install it via ``_inline_dispatch_thread``, never directly.
+    """
+
+    def __init__(self, *, target, kwargs, name, daemon):
+        assert daemon is True, f"{name} must stay fire-and-forget"
+        self._target = target
+        self._kwargs = kwargs
+        self.name = name
+        self.daemon = daemon
+
+    def start(self):
+        self._target(**self._kwargs)
+
+
+def _inline_dispatch_thread(*args, **kwargs):
+    """Patch over ``webhooks.threading.Thread`` to inline the dispatch only.
+
+    ``shared/webhooks.py`` imports ``threading`` as a plain module import, so
+    patching ``Thread`` through it swaps the class for EVERY thread that
+    module builds, not just the two dispatch ones.
+    ``_resolve_addrinfo_bounded`` builds one as well and bounds a slow
+    resolver with ``worker.join(timeout)`` / ``worker.is_alive()`` -- running
+    that one inline would make the lookup unbounded and void the cap it
+    exists for. So only ``_bounded_dispatch`` is inlined; every other thread
+    is handed to the real class -- including any built positionally, which
+    the two dispatch sites never are, and which matter because the patch
+    lands on the stdlib ``threading`` module itself and so is visible to
+    every library that spawns a thread while it is installed.
+
+    The target is compared against the module attribute rather than the
+    original function so that a test which stubs ``_bounded_dispatch`` before
+    installing this (``test_sweep_due_deliveries_dispatches_each_row``) still
+    gets its stub inlined.
+    """
+    from shared import webhooks as wh
+
+    if args or kwargs.get("target") is not wh._bounded_dispatch:
+        return _REAL_THREAD(*args, **kwargs)
+    return _InlineThread(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # FIX #4 — webhook payload carries the real delivery_id
@@ -48,6 +111,7 @@ def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch):
     monkeypatch.setattr(webhooks_mod, "_enqueue_delivery", _fake_enqueue)
     monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
     monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
+    monkeypatch.setattr(webhooks_mod.threading, "Thread", _inline_dispatch_thread)
 
     delivery_id = webhooks_mod.dispatch_webhook(
         campaign_id="c1",
@@ -59,12 +123,6 @@ def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch):
         },
         target_url="https://example.com/hook",
     )
-
-    # Wait for the dispatch thread to finish.
-    for _ in range(50):
-        if "body" in captured:
-            break
-        time.sleep(0.05)
 
     assert delivery_id is not None
     # The id baked into the row matches the id we got back.
@@ -1129,17 +1187,9 @@ def test_sweep_due_deliveries_dispatches_each_row(monkeypatch):
 
     monkeypatch.setattr(wh, "_bounded_dispatch", _fake_bounded)
 
-    # Patch Thread to run inline so the test can observe dispatches
-    # without waiting for daemon threads.
-    class _InlineThread:
-        def __init__(self, target, kwargs, name, daemon):
-            self._target = target
-            self._kwargs = kwargs
-
-        def start(self):
-            self._target(**self._kwargs)
-
-    monkeypatch.setattr(wh.threading, "Thread", _InlineThread)
+    # Run inline so the test observes the dispatches without waiting on --
+    # or leaking -- daemon threads. See _inline_dispatch_thread.
+    monkeypatch.setattr(wh.threading, "Thread", _inline_dispatch_thread)
 
     count = wh.sweep_due_deliveries(limit=50)
     assert count == 3
@@ -1336,6 +1386,7 @@ def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
     monkeypatch.setattr(webhooks_mod, "_enqueue_delivery", _fake_enqueue)
     monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
     monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
+    monkeypatch.setattr(webhooks_mod.threading, "Thread", _inline_dispatch_thread)
 
     webhooks_mod.dispatch_webhook(
         campaign_id="c-cr01",
@@ -1348,11 +1399,6 @@ def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
         },
         target_url="https://example.com/hook",
     )
-
-    for _ in range(50):
-        if "body" in captured:
-            break
-        time.sleep(0.05)
 
     # owner_user_id lives in the persisted row's payload.
     assert enqueued["payload"]["owner_user_id"] == "tenant-A"
