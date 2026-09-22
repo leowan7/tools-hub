@@ -1,8 +1,9 @@
 """Offline unit tests for the Boltz-2 cofold atomic tool.
 
-Currently covers ``run_pipeline.archive_raw_outputs`` only — the raw-output
-capture that runs from a ``finally`` on every exit path. This file is the home
-for further boltz2 offline tests; it is named for the ``test_<tool>_smoke.py``
+Covers ``run_pipeline.archive_raw_outputs`` — the raw-output capture that runs
+from a ``finally`` on every exit path — plus the zero-design and ``--no_kernels``
+contracts, and the adapter's preset-aware binder cap. This file is the home for
+further boltz2 offline tests; it is named for the ``test_<tool>_smoke.py``
 convention the other tools follow, not because the coverage is broad yet.
 
 It also carries the set's cross-tool tests. boltz2, opendde and proteina each
@@ -28,6 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools import boltz2 as b2
 from tools.boltz2 import run_pipeline as rp
 from tools.opendde import run_pipeline as opendde_rp
 from tools.proteina import run_pipeline as proteina_rp
@@ -550,3 +552,100 @@ class TestKernelsStayOff:
             "the boltz2 image installs plain boltz, so cuequivariance is not "
             "present; without --no_kernels the kernel path imports it and every "
             "fold dies")
+
+
+# ---------------------------------------------------------------------------
+# 5 — validate(): the binder cap is preset-aware
+# ---------------------------------------------------------------------------
+
+
+# Gate 1 Rung B, job gate1-msa_server-1790046491: 643 s of pipeline runtime for
+# 3 designs. An AGGREGATE per-design figure over three 242-246 aa binders, not
+# a marginal rate and not a measured 50-binder run — provenance and caveats in
+# the runtime note in tools/boltz2/__init__.py.
+MSA_SERVER_S_PER_DESIGN = 214.0
+
+_MODAL_APP_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "tools", "boltz2", "modal_app.py",
+)
+
+
+def _modal_app_constant(name):
+    """Read a module-level constant out of modal_app.py without importing it.
+
+    Importing that module constructs a ``modal.App`` and resolves an Image from
+    the Dockerfile, neither of which belongs in an offline test.
+    """
+    with open(_MODAL_APP_SRC, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(name + " is not a module-level assignment in "
+                         + _MODAL_APP_SRC)
+
+
+def _form(preset, n_binders):
+    seq = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+    return {
+        "preset": preset,
+        "target_chain": "A",
+        "binder_sequences": "\n".join([seq] * n_binders),
+    }
+
+
+class TestPresetBinderCap:
+    """``msa_server`` folds ~3x slower than ``standalone`` against one shared
+    Modal timeout, so the two presets cannot share one binder ceiling.
+
+    Without a preset-aware cap a user could submit 50 binders on msa_server,
+    be billed for the full hour the run takes, and receive only the designs
+    that finished before the timeout — the rest lost with no warning anywhere
+    in the form, the validator or the estimate.
+    """
+
+    def test_standalone_still_takes_the_full_batch(self):
+        inputs, err = b2.validate(_form("standalone", b2.MAX_BINDERS), {})
+        assert err is None, err
+        assert len(inputs["binder_sequences"]) == b2.MAX_BINDERS
+
+    def test_msa_server_takes_its_own_ceiling(self):
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        inputs, err = b2.validate(_form("msa_server", cap), {})
+        assert err is None, err
+        assert len(inputs["binder_sequences"]) == cap
+
+    def test_msa_server_refuses_one_over(self):
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        inputs, err = b2.validate(_form("msa_server", cap + 1), {})
+        assert inputs is None
+        assert str(cap) in err and str(cap + 1) in err
+        # The refusal has to be actionable, or it just moves the surprise.
+        assert "single-sequence" in err, err
+
+    def test_the_batch_standalone_takes_is_refused_on_msa_server(self):
+        inputs, err = b2.validate(_form("msa_server", b2.MAX_BINDERS), {})
+        assert inputs is None, (
+            "50 binders on msa_server extrapolate to ~10700 s against a "
+            "3600 s timeout; accepting the batch is the silent truncation"
+        )
+
+    def test_the_cap_is_the_largest_batch_that_fits_the_timeout(self):
+        """Pins the derivation, because 3600 lives in another file.
+
+        Moving ``_MAX_SESSION_S`` or the measured rate without re-deriving the
+        cap goes red here rather than silently re-opening the truncation.
+        """
+        ceiling = _modal_app_constant("_MAX_SESSION_S")
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        assert cap * MSA_SERVER_S_PER_DESIGN <= ceiling, (
+            "cap of %d extrapolates to %.0f s, past the %d s timeout"
+            % (cap, cap * MSA_SERVER_S_PER_DESIGN, ceiling)
+        )
+        assert (cap + 1) * MSA_SERVER_S_PER_DESIGN > ceiling, (
+            "cap of %d leaves room for another design inside %d s"
+            % (cap, ceiling)
+        )

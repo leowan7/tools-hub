@@ -17,20 +17,31 @@ decoys (0.719, 0.619), preserving the ESM prior's rank order (0.949 / 0.621 /
 0.102) -- but the cd45 decoy rose from 0.102 to 0.619, so a 0.70 ipTM gate
 would PASS the IL4 decoy.
 
-STILL UNMEASURED: the msa_server tier. Rung A dropped it to halve the price
-and nothing has priced it since, so the "~3 min / design" in
-tools/boltz2/__init__.py remains the only figure for it and remains
-unverified. Re-adding it to DEADLINES is what this file is kept for; at the
-1700 s deadline of the original two-tier plan that is a further ~$1.21 and
-needs its own per-job spend approval.
+RUNG B, RUN 2026-09-21 on its own per-job approval: the msa_server tier, and
+the answer is that it makes decoy discrimination WORSE. 661 s wall / $0.47 of
+an authorised $0.65, 3 folded .pdb of 3, job gate1-msa_server-1790046491. ipTM
+cd45_decoy 0.801, IL4_decoy 0.675, TIGIT_cognate 0.948: the cognate holds
+(0.953 -> 0.948) while the WORST decoy by the ESM prior climbs 0.619 -> 0.801,
+so the cognate-to-best-decoy margin collapses 0.234 -> 0.147 and the two
+decoys swap rank. Not a thin-MSA artifact -- ~17.5-18.5k UniRef and ~2.4-2.8k
+paired sequences per design, against a Rung A archive carrying no MSA files at
+all. Keep standalone as the default: cheaper AND better separation. Full
+write-up, including the framework-homology hypothesis for WHY, is in
+docs/VALIDATION-LOG.md under "## Boltz-2".
 
-THE THREE QUESTIONS, as they stood before that run. Boltz-2 had never run in
-this repo, and as of THIS commit docs/VALIDATION-LOG.md still carries no
-boltz2 rows -- only the placeholder line under the combined "AF2-IG, Boltz-2,
-LigandMPNN, RF2-standalone, RFdiff-standalone" heading (checked against
-origin/main at fbf6edf). The run above ended the first of those; the
-validation-log row is outstanding. What this buys before any design GPU is
-spent:
+That run also priced the tier's runtime: 643 s / 3 = 214 s/design against the
+"~3 min / design" in tools/boltz2/__init__.py, ~19% optimistic. Better than
+that file's OTHER figure -- "~15 s / design" for standalone, measured ~69 s
+above, 4.6x out -- but short in the same direction, which is why DEADLINES
+below was NOT sized on it. Sizing on it would have given 553 s and cancelled
+this run at 84% complete.
+
+THE THREE QUESTIONS, as they stood before Rung A. Boltz-2 had never run in
+this repo, and docs/VALIDATION-LOG.md carried no boltz2 rows at all -- only
+the placeholder line under the combined "AF2-IG, Boltz-2, LigandMPNN,
+RF2-standalone, RFdiff-standalone" heading. #320 closed that gap on 2026-09-21: it added the
+"## Boltz-2" section with the Rung A row and dropped Boltz-2 from the
+placeholder. This commit adds the Rung B row above it. What the runs bought before any design GPU is spent:
   (i)   does the deployed container run at all;
   (ii)  real seconds/design on a ~350-residue scFv + antigen complex, the only
         number that lets Gate 3 be priced honestly;
@@ -101,7 +112,7 @@ SPEND. Two independent bounds, neither of them a promise in prose:
      GPU_USD_PER_SECOND, shared/wallet_estimates.py. Modal-direct calls
      bypass the wallet, so the raw rate -- not the 1.70x marked-up one -- is
      the real dollars.
-     Teardown is not instantaneous, so treat $0.79 as the target and ~$0.83
+     Teardown is not instantaneous, so treat $0.64 as the target and ~$0.68
      as the true worst case. Should this client die before it can cancel,
      the only bound left is Modal's own _MAX_SESSION_S (modal_app.py), and
      at that cap one container is $2.57.
@@ -130,7 +141,7 @@ if __name__ != "__main__":
 
 RATE = 0.000714          # GPU_USD_PER_SECOND["A100-40GB"] $/s,
                          # shared/wallet_estimates.py
-CEILING_USD = 0.79       # Gate 1 Rung A ceiling: standalone only
+CEILING_USD = 0.65       # Gate 1 Rung B ceiling: msa_server only
 BUDGET_S = int(CEILING_USD / RATE)
 
 ANTIGEN_URL = "https://files.rcsb.org/download/3RQ3.pdb"
@@ -143,17 +154,29 @@ HOTSPOTS = [40, 42, 44, 46, 48]
 # request_upload_urls (run_pipeline.py) is never paid.
 UPLOAD_ENDPOINT = "http://127.0.0.1:1/upload"
 
-# RUNG A: standalone only; an msa_server tier is deferred and NOT scheduled.
-# The boltz2-weights Volume (modal_app.py) is ALREADY WARM, so this run pays
-# no weight download and the deadline is effectively all fold time.
+# RUNG B: msa_server only. Rung A bought standalone on 2026-09-19 (3/3 folds,
+# $0.16), so scheduling it again would pay a second time for a measured answer.
+#
+# 900 s is a SPEND CEILING, not an estimate, and deliberately not derived from
+# the "~3 min / design" figure -- the docstring says why that figure is not
+# trustworthy. At RATE it is $0.64. Refusing to size on that figure is what
+# saved the run: it took 661 s, and the 553 s that "~3 min / design" implies
+# would have cancelled it at 84% complete. The cancel path stayed the
+# fallback and did not fire -- had it, folds_in_raw() still counts whatever
+# reached the tar, so a per-design rate survives a cancelled run.
+#
 # `modal volume ls boltz2-weights` on 2026-09-19 listed boltz2_conf.ckpt,
 # boltz2_aff.ckpt and mols.tar, 5.7 GiB between them, all three stamped
-# 2026-05-29, plus a mols/ directory older still at 2025-02-18. Nothing in
-# it was written by this run. Note that contradicts BOTH the
-# "~1 GB of model weights" comment beside the Volume in modal_app.py (still
-# present there at this commit) and an
-# earlier draft of this one that called the download cold.
-DEADLINES = [("standalone", 1100)]
+# 2026-05-29, plus a mols/ directory older still at 2025-02-18, and Rung A
+# wrote nothing to it. That contradicts the "~1 GB of model weights" comment
+# beside the Volume in modal_app.py, still present there at this commit. The
+# same listing immediately before and after the 2026-09-21 Rung B run gave
+# the same four entries at the same timestamps and sizes, so Rung B wrote
+# nothing to it either and no weights download came out of the 900 s. That
+# says nothing about container cold start, which is a separate cost and was
+# not separately measured; nor was the split between MSA-server fetch and GPU
+# compute, so 214 s/design is an aggregate.
+DEADLINES = [("msa_server", 900)]
 assert sum(d for _, d in DEADLINES) <= BUDGET_S, "deadlines exceed the ceiling"
 
 PICKS = [
@@ -365,7 +388,7 @@ for tier, deadline in DEADLINES:
         # above, and KeyboardInterrupt, which is not an Exception and unwinds
         # straight through the loop. On either, the deadline never fires and
         # the only remaining bound is _MAX_SESSION_S (3600 s) -- $2.57 at RATE,
-        # against a $0.79 ceiling. That bound is what SPEND item 2 in the
+        # against the $0.65 ceiling. That bound is what SPEND item 2 in the
         # docstring promises, so it has to hold on every path out of the loop,
         # not just the deadline one.
         if not settled:
@@ -404,11 +427,14 @@ for tier, deadline in DEADLINES:
     if out is not None:
         print(f"[{tier}] return: {json.dumps(out)[:600]}", flush=True)
 
-    # ABORT POINT, PLAN-v2 section 4: do not pay for msa_server if standalone
-    # never produced a fold. Under Rung A the loop has one tier, so this can
-    # only end an already-final iteration -- it is kept load-bearing for when
-    # msa_server is re-added to DEADLINES, and the rationale below is why it
-    # reads the tar rather than the return value.
+    # ABORT POINT, PLAN-v2 section 4: do not pay for a later tier if this one
+    # produced no fold. Deliberately NOT keyed on a tier name. It read
+    # `tier == "standalone"`, which went silently inert the moment DEADLINES
+    # was rescheduled to msa_server alone -- taking the "produced no fold"
+    # line with it, so a failed run would have exited quiet. Caught by
+    # test_generic_exception_cancels_the_container, which asserts that line
+    # is printed. The rationale below is why it reads the tar rather than the
+    # return value.
     #
     # The test reads the parked tar, NOT the return value, and not
     # designs_completed. Two failures drove that:
@@ -422,8 +448,8 @@ for tier, deadline in DEADLINES:
     #     before msa_server no matter what the GPU did.
     # folds_in_raw() reads what the container actually wrote to disk, which is
     # the only place the two cases differ.
-    if tier == "standalone" and (err or killed or not n_pdb):
-        print("\nstandalone produced no fold -- stopping.", flush=True)
+    if err or killed or not n_pdb:
+        print(f"\n{tier} produced no fold -- stopping.", flush=True)
         break
 
 print(f"\nTOTAL {spent_s:.0f}s = ${spent_s * RATE:.2f} of ${CEILING_USD:.2f}")
