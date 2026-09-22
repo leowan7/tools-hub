@@ -7,7 +7,8 @@ is finally needed:
 
   1. every exit from the poll loop leaves the container dead, not just the
      deadline exit -- a leak is bounded only by modal's `_MAX_SESSION_S`
-     (3600 s, tools/boltz2/modal_app.py), $2.57 against a $0.79 ceiling;
+     (3600 s, tools/boltz2/modal_app.py), $2.57 against the CEILING_USD
+     the driver is currently scheduled at;
   2. the window between the spawn and the fsynced call id, which sits
      outside that loop, leaves nothing running unrecorded -- and the id
      reaches the console before the write, so a cancel that fails there
@@ -25,6 +26,7 @@ of it. No GPU, no network, no spend. `monkeypatch` owns the globals they
 set and `_drop_imported_scripts` removes the ones they import, which
 `test_nothing_leaks_into_the_rest_of_the_suite` checks.
 """
+import ast
 import io
 import json
 import os
@@ -39,6 +41,31 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(REPO, "scripts")
 DRIVER = os.path.join(SCRIPTS, "gate1_boltz2_smoke.py")
+
+
+def _scheduled():
+    """The (tier, deadline) DEADLINES holds, read without importing.
+
+    Importing the driver raises by design and running it spawns a billed
+    A100, so this comes from the source text. Keying the call-log fixtures
+    off it is what keeps those tests exercising call-log logic rather than
+    whichever tier happens to be scheduled: reattach and the stale sweep
+    both match on `r["tier"] == tier`, so a hardcoded name silently stops
+    matching the day DEADLINES changes.
+    """
+    src = io.open(DRIVER, encoding="utf-8").read()
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "DEADLINES" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)[0]
+    raise AssertionError("DEADLINES not found in " + DRIVER)
+
+
+TIER, DEADLINE_S = _scheduled()
+# The sweep test needs a second, unscheduled tier to prove it cancels calls
+# beyond the one that tripped it.
+OTHER_TIER = "standalone" if TIER != "standalone" else "msa_server"
 
 
 @pytest.fixture(autouse=True)
@@ -199,12 +226,12 @@ def test_clean_return_does_not_cancel(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _record(job, call_id, age_s):
+def _record(job, call_id, age_s, tier=None):
     return {
-        "tier": "standalone",
+        "tier": TIER if tier is None else tier,
         "job_id": job,
         "call_id": call_id,
-        "deadline_s": 1100,
+        "deadline_s": DEADLINE_S,
         "spawned_at": time.time() - age_s,
     }
 
@@ -216,7 +243,7 @@ def test_stale_call_log_is_cancelled_never_reattached(
         monkeypatch,
         tmp_path,
         "ok",
-        call_log=_record("gate1-standalone-OLD", "fc-STALE", 86400),
+        call_log=_record(f"gate1-{TIER}-OLD", "fc-STALE", 86400),
     )
     kind = _exec()
     out = capsys.readouterr().out
@@ -233,7 +260,7 @@ def test_fresh_call_log_still_reattaches(monkeypatch, tmp_path, capsys):
         monkeypatch,
         tmp_path,
         "ok",
-        call_log=_record("gate1-standalone-NOW", "fc-FRESH", 10),
+        call_log=_record(f"gate1-{TIER}-NOW", "fc-FRESH", 10),
     )
     _exec()
     # Reattach is the whole point of the call log: a killed client must not
@@ -251,9 +278,9 @@ def test_stale_sweep_cancels_every_recorded_call(monkeypatch, tmp_path):
     remedy the guard prints (move the call log aside) would then destroy the
     only record of its call id.
     """
-    stale_first = _record("gate1-standalone-OLD", "fc-OLD-DONE", 86400)
-    live_second = dict(
-        _record("gate1-msa_server-NOW", "fc-LIVE-BURNING", 10), tier="msa_server"
+    stale_first = _record(f"gate1-{TIER}-OLD", "fc-OLD-DONE", 86400)
+    live_second = _record(
+        f"gate1-{OTHER_TIER}-NOW", "fc-LIVE-BURNING", 10, tier=OTHER_TIER
     )
     rec = _prepare(monkeypatch, tmp_path, "ok", call_log=[stale_first, live_second])
     kind = _exec()

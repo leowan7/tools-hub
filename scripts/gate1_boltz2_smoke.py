@@ -17,12 +17,16 @@ decoys (0.719, 0.619), preserving the ESM prior's rank order (0.949 / 0.621 /
 0.102) -- but the cd45 decoy rose from 0.102 to 0.619, so a 0.70 ipTM gate
 would PASS the IL4 decoy.
 
-STILL UNMEASURED: the msa_server tier. Rung A dropped it to halve the price
-and nothing has priced it since, so the "~3 min / design" in
-tools/boltz2/__init__.py remains the only figure for it and remains
-unverified. Re-adding it to DEADLINES is what this file is kept for; at the
-1700 s deadline of the original two-tier plan that is a further ~$1.21 and
-needs its own per-job spend approval.
+RUNG B, CONFIGURED BUT NOT AUTHORISED: the msa_server tier, still unmeasured.
+Rung A dropped it to halve the price and nothing has priced it since, so the
+"~3 min / design" in tools/boltz2/__init__.py remains the only figure for it
+and remains unverified. That same file's OTHER runtime figure -- "~15 s /
+design" for standalone -- measured ~69 s above, 4.6x out, so "~3 min" is a
+guess from a source with a known error of that size. DEADLINES below is
+therefore NOT sized on it: 900 s is a spend ceiling, not a prediction. At the
+1700 s of the original two-tier plan this tier would be ~$1.21; at 900 s it is
+~$0.64. Either way it needs its own per-job spend approval, and as of this
+commit it has NOT been given one.
 
 THE THREE QUESTIONS, as they stood before that run. Boltz-2 had never run in
 this repo, and as of THIS commit docs/VALIDATION-LOG.md still carries no
@@ -101,7 +105,7 @@ SPEND. Two independent bounds, neither of them a promise in prose:
      GPU_USD_PER_SECOND, shared/wallet_estimates.py. Modal-direct calls
      bypass the wallet, so the raw rate -- not the 1.70x marked-up one -- is
      the real dollars.
-     Teardown is not instantaneous, so treat $0.79 as the target and ~$0.83
+     Teardown is not instantaneous, so treat $0.64 as the target and ~$0.68
      as the true worst case. Should this client die before it can cancel,
      the only bound left is Modal's own _MAX_SESSION_S (modal_app.py), and
      at that cap one container is $2.57.
@@ -130,7 +134,7 @@ if __name__ != "__main__":
 
 RATE = 0.000714          # GPU_USD_PER_SECOND["A100-40GB"] $/s,
                          # shared/wallet_estimates.py
-CEILING_USD = 0.79       # Gate 1 Rung A ceiling: standalone only
+CEILING_USD = 0.65       # Gate 1 Rung B ceiling: msa_server only
 BUDGET_S = int(CEILING_USD / RATE)
 
 ANTIGEN_URL = "https://files.rcsb.org/download/3RQ3.pdb"
@@ -143,17 +147,24 @@ HOTSPOTS = [40, 42, 44, 46, 48]
 # request_upload_urls (run_pipeline.py) is never paid.
 UPLOAD_ENDPOINT = "http://127.0.0.1:1/upload"
 
-# RUNG A: standalone only; an msa_server tier is deferred and NOT scheduled.
-# The boltz2-weights Volume (modal_app.py) is ALREADY WARM, so this run pays
-# no weight download and the deadline is effectively all fold time.
+# RUNG B: msa_server only. Rung A bought standalone on 2026-09-19 (3/3 folds,
+# $0.16), so scheduling it again would pay a second time for a measured answer.
+#
+# 900 s is a SPEND CEILING, not an estimate, and deliberately not derived from
+# the "~3 min / design" figure -- the docstring says why that figure is not
+# trustworthy. At RATE it is $0.64. If ~3 min/design does hold, three designs
+# land near 553 s (~$0.39), well inside it. If it does not, the cancel fires at
+# 900 s and folds_in_raw() still counts whatever reached the tar, so a
+# per-design rate survives a cancelled run.
+#
 # `modal volume ls boltz2-weights` on 2026-09-19 listed boltz2_conf.ckpt,
 # boltz2_aff.ckpt and mols.tar, 5.7 GiB between them, all three stamped
-# 2026-05-29, plus a mols/ directory older still at 2025-02-18. Nothing in
-# it was written by this run. Note that contradicts BOTH the
-# "~1 GB of model weights" comment beside the Volume in modal_app.py (still
-# present there at this commit) and an
-# earlier draft of this one that called the download cold.
-DEADLINES = [("standalone", 1100)]
+# 2026-05-29, plus a mols/ directory older still at 2025-02-18, and Rung A
+# wrote nothing to it. That contradicts the "~1 GB of model weights" comment
+# beside the Volume in modal_app.py, still present there at this commit.
+# Whether it is still warm TODAY is unchecked here; a cold pull and the MSA
+# fetch both come out of the 900 s.
+DEADLINES = [("msa_server", 900)]
 assert sum(d for _, d in DEADLINES) <= BUDGET_S, "deadlines exceed the ceiling"
 
 PICKS = [
@@ -404,11 +415,14 @@ for tier, deadline in DEADLINES:
     if out is not None:
         print(f"[{tier}] return: {json.dumps(out)[:600]}", flush=True)
 
-    # ABORT POINT, PLAN-v2 section 4: do not pay for msa_server if standalone
-    # never produced a fold. Under Rung A the loop has one tier, so this can
-    # only end an already-final iteration -- it is kept load-bearing for when
-    # msa_server is re-added to DEADLINES, and the rationale below is why it
-    # reads the tar rather than the return value.
+    # ABORT POINT, PLAN-v2 section 4: do not pay for a later tier if this one
+    # produced no fold. Deliberately NOT keyed on a tier name. It read
+    # `tier == "standalone"`, which went silently inert the moment DEADLINES
+    # was rescheduled to msa_server alone -- taking the "produced no fold"
+    # line with it, so a failed run would have exited quiet. Caught by
+    # test_generic_exception_cancels_the_container, which asserts that line
+    # is printed. The rationale below is why it reads the tar rather than the
+    # return value.
     #
     # The test reads the parked tar, NOT the return value, and not
     # designs_completed. Two failures drove that:
@@ -422,8 +436,8 @@ for tier, deadline in DEADLINES:
     #     before msa_server no matter what the GPU did.
     # folds_in_raw() reads what the container actually wrote to disk, which is
     # the only place the two cases differ.
-    if tier == "standalone" and (err or killed or not n_pdb):
-        print("\nstandalone produced no fold -- stopping.", flush=True)
+    if err or killed or not n_pdb:
+        print(f"\n{tier} produced no fold -- stopping.", flush=True)
         break
 
 print(f"\nTOTAL {spent_s:.0f}s = ${spent_s * RATE:.2f} of ${CEILING_USD:.2f}")
