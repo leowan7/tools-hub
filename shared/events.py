@@ -137,6 +137,26 @@ def log_event(
         # the event is unattributable. Drop to keep the table clean.
         return
 
+    # Whether a client is obtainable at all is decided HERE, on the caller's
+    # thread, before anything is detached. Building the client stays in the
+    # worker -- that is the expensive half, and the request-path stall this
+    # module exists to avoid -- but the environment read behind it is free.
+    #
+    # A worker that resolves credentials in its own body reads whatever
+    # environment is live when the OS happens to schedule it, which need not
+    # be the caller's. Under pytest that is the environment AFTER the spawning
+    # test's ``isolate_supabase`` teardown has put the real .env credentials
+    # back, so the worker built a client against the production project and
+    # only the ``create_client`` guard in tests/conftest.py turned it around.
+    # Deciding before the spawn means no worker outlives its test to begin
+    # with, and a deployment with no Supabase credentials stops spawning a
+    # thread per event just to discover that. Pinned by
+    # tests/test_events_thread_isolation.py.
+    from shared.credits import service_client_available  # noqa: PLC0415
+
+    if not service_client_available():
+        return
+
     payload = {
         "user_id": user_id,
         "session_id": (session_id or "")[:64] or None,
