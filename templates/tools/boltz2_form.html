@@ -165,7 +165,10 @@
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
             One sequence per line, or FASTA with <code>&gt;name</code>
             headers. Each sequence folds independently against the antigen.
-            20 to 400&nbsp;aa per binder, up to 50 binders per run.
+            20 to 400&nbsp;aa per binder, and up to 50 binders per run on
+            the single-sequence preset. With MSA the limit is 16: at about
+            3.6&nbsp;min per design, a larger batch would run past the
+            60-minute run ceiling and the tail would be cut off.
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

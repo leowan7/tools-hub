@@ -241,11 +241,15 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     #
     # Both rows are sized against "a 10-binder run", which is NOT the
     # ceiling the product enforces: ``tools/boltz2/__init__.py::validate``
-    # allows ``MAX_BINDERS = 50`` and ``tools/boltz2/meta.py`` advertises
-    # 50 to users. Extrapolating the measured rates, a 50-binder run is
-    # ~3463 s on standalone (~2.9x this row, passing 1200 s at 18 binders)
-    # and ~10700 s on msa_server (~3x the 3600 s row below, passing it at
-    # 17 binders). Neither preset can finish 50 binders inside its row.
+    # allows ``MAX_BINDERS = 50`` on standalone and
+    # ``MAX_BINDERS_BY_PRESET["msa_server"] = 16`` on the slower preset, and
+    # ``tools/boltz2/meta.py`` advertises both to users. Extrapolating the
+    # measured rates, a 50-binder standalone run is ~3463 s (~2.9x this row,
+    # passing 1200 s at 18 binders), so standalone still cannot finish its
+    # own maximum inside its row. msa_server now can: its 16 extrapolate to
+    # ~3424 s, inside the 3600 s row below — which is the ceiling that cap
+    # was sized against, 50 being ~10700 s and crossing 3600 s at the 17th
+    # binder.
     #
     # Left at 1200/3600 anyway, because for boltz2 these rows are INERT
     # beyond the ``cap == 0`` guard in ``submit`` below: the cap is not in

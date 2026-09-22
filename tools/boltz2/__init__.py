@@ -84,12 +84,41 @@ from tools.base import Preset, ToolAdapter, register
 
 
 # ---------------------------------------------------------------------------
-# Bounds (also enforced on the pipeline side for direct ``modal run`` use).
+# Bounds. Enforced HERE only: ``run_pipeline.py::main`` defends the tier value
+# and the no-binders case and nothing else, so a direct ``modal run`` is bound
+# by none of these.
 # ---------------------------------------------------------------------------
 
 BINDER_LEN_MIN = 20
 BINDER_LEN_MAX = 400
 MAX_BINDERS = 50
+# msa_server gets its own ceiling, below MAX_BINDERS, because the two presets
+# fold at rates ~3x apart against ONE shared 60 min Modal function timeout
+# (``_MAX_SESSION_S`` in ``tools/boltz2/modal_app.py``). Extrapolating the
+# per-design rates measured above: 50 standalone binders are 81.9 + 49 * 69 =
+# ~3463 s, ~4% under that ceiling, while 50 msa_server binders are 50 * 214 =
+# ~10700 s, ~3x over, crossing 3600 s at the 17th. Hence 16, which extrapolates
+# to 16 * 214 = ~3424 s, ~5% of headroom.
+#
+# Both totals are EXTRAPOLATIONS from three folds at 242-246 aa, not measured
+# 50-binder runs, and a longer binder folds slower. So 16 refuses the batch
+# sizes the arithmetic says cannot finish; it does not certify that 16 always
+# will. What it removes is the SILENT part: before this cap a user could submit
+# 50 on msa_server, pay for an hour of A100 time and receive ~16 designs, with
+# nothing in the form, the validator or the estimate having said so.
+#
+# Capped here rather than by raising ``_MAX_SESSION_S``, on cost as much as on
+# evidence: that constant lives in ``modal_app.py``, which the deploy trigger
+# in ``.github/workflows/deploy-modal.yml`` does NOT exclude (this file and
+# ``meta.py`` it does), and sizing it honestly needs the large-batch
+# measurement that still does not exist. An overrun stays survivable either
+# way, which is why this is a product cap and not a data-loss fix: each design
+# is PUT to its own presigned URL as it completes, from inside the per-binder
+# loop in ``run_pipeline.py::main``, so a timeout costs the tail, not the run.
+#
+# Enforced in ``validate`` below and pinned by
+# ``tests/test_boltz2_smoke.py::TestPresetBinderCap``.
+MAX_BINDERS_BY_PRESET = {"msa_server": 16}
 ANTIGEN_CHAIN_MAX = 4
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
 
@@ -194,11 +223,20 @@ def validate(
         return None, bind_err
     if not binders:
         return None, "Could not parse any binder sequences."
-    if len(binders) > MAX_BINDERS:
-        return None, (
-            f"Max {MAX_BINDERS} binder sequences per run "
+    max_binders = MAX_BINDERS_BY_PRESET.get(preset, MAX_BINDERS)
+    if len(binders) > max_binders:
+        msg = (
+            f"Max {max_binders} binder sequences per run on this preset "
             f"(received {len(binders)})."
         )
+        if max_binders < MAX_BINDERS:
+            msg += (
+                " This preset folds ~3x slower, so a batch that size would "
+                "run past the 60-minute ceiling and the tail would be cut "
+                "off. Split it into smaller runs, or use the single-sequence "
+                f"preset, which takes up to {MAX_BINDERS}."
+            )
+        return None, msg
 
     for b in binders:
         name = b["name"]

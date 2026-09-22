@@ -130,7 +130,11 @@ about: dict = {
                 "Paste one sequence per line, or upload as FASTA "
                 "(<code>&gt;name</code> headers). Each sequence folds "
                 "independently against the antigen. 20 to 400 aa per "
-                "binder, up to 50 binders per run."
+                "binder, and up to 50 binders per run on the "
+                "single-sequence preset. <strong>With MSA the limit is "
+                "16</strong>: that preset is ~3x slower, so a larger batch "
+                "would run past the 60-minute run ceiling and the tail "
+                "would be cut off."
             ),
         },
         {
