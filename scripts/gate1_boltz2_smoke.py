@@ -17,24 +17,31 @@ decoys (0.719, 0.619), preserving the ESM prior's rank order (0.949 / 0.621 /
 0.102) -- but the cd45 decoy rose from 0.102 to 0.619, so a 0.70 ipTM gate
 would PASS the IL4 decoy.
 
-RUNG B, CONFIGURED BUT NOT AUTHORISED: the msa_server tier, still unmeasured.
-Rung A dropped it to halve the price and nothing has priced it since, so the
-"~3 min / design" in tools/boltz2/__init__.py remains the only figure for it
-and remains unverified. That same file's OTHER runtime figure -- "~15 s /
-design" for standalone -- measured ~69 s above, 4.6x out, so "~3 min" is a
-guess from a source with a known error of that size. DEADLINES below is
-therefore NOT sized on it: 900 s is a spend ceiling, not a prediction. At the
-1700 s of the original two-tier plan this tier would be ~$1.21; at 900 s it is
-~$0.64. Either way it needs its own per-job spend approval, and as of this
-commit it has NOT been given one.
+RUNG B, RUN 2026-09-21 on its own per-job approval: the msa_server tier, and
+the answer is that it makes decoy discrimination WORSE. 661 s wall / $0.47 of
+an authorised $0.65, 3 folded .pdb of 3, job gate1-msa_server-1790046491. ipTM
+cd45_decoy 0.801, IL4_decoy 0.675, TIGIT_cognate 0.948: the cognate holds
+(0.953 -> 0.948) while the WORST decoy by the ESM prior climbs 0.619 -> 0.801,
+so the cognate-to-best-decoy margin collapses 0.234 -> 0.147 and the two
+decoys swap rank. Not a thin-MSA artifact -- ~17.5-18.5k UniRef and ~2.4-2.8k
+paired sequences per design, against a Rung A archive carrying no MSA files at
+all. Keep standalone as the default: cheaper AND better separation. Full
+write-up, including the framework-homology hypothesis for WHY, is in
+docs/VALIDATION-LOG.md under "## Boltz-2".
 
-THE THREE QUESTIONS, as they stood before that run. Boltz-2 had never run in
-this repo, and as of THIS commit docs/VALIDATION-LOG.md still carries no
-boltz2 rows -- only the placeholder line under the combined "AF2-IG, Boltz-2,
-LigandMPNN, RF2-standalone, RFdiff-standalone" heading (checked against
-origin/main at fbf6edf). The run above ended the first of those; the
-validation-log row is outstanding. What this buys before any design GPU is
-spent:
+That run also priced the tier's runtime: 643 s / 3 = 214 s/design against the
+"~3 min / design" in tools/boltz2/__init__.py, ~19% optimistic. Better than
+that file's OTHER figure -- "~15 s / design" for standalone, measured ~69 s
+above, 4.6x out -- but short in the same direction, which is why DEADLINES
+below was NOT sized on it. Sizing on it would have given 553 s and cancelled
+this run at 84% complete.
+
+THE THREE QUESTIONS, as they stood before Rung A. Boltz-2 had never run in
+this repo, and docs/VALIDATION-LOG.md carried no boltz2 rows at all -- only
+the placeholder line under the combined "AF2-IG, Boltz-2, LigandMPNN,
+RF2-standalone, RFdiff-standalone" heading. #320 closed that gap on 2026-09-21: it added the
+"## Boltz-2" section with the Rung A row and dropped Boltz-2 from the
+placeholder. This commit adds the Rung B row above it. What the runs bought before any design GPU is spent:
   (i)   does the deployed container run at all;
   (ii)  real seconds/design on a ~350-residue scFv + antigen complex, the only
         number that lets Gate 3 be priced honestly;
@@ -152,18 +159,23 @@ UPLOAD_ENDPOINT = "http://127.0.0.1:1/upload"
 #
 # 900 s is a SPEND CEILING, not an estimate, and deliberately not derived from
 # the "~3 min / design" figure -- the docstring says why that figure is not
-# trustworthy. At RATE it is $0.64. If ~3 min/design does hold, three designs
-# land near 553 s (~$0.39), well inside it. If it does not, the cancel fires at
-# 900 s and folds_in_raw() still counts whatever reached the tar, so a
-# per-design rate survives a cancelled run.
+# trustworthy. At RATE it is $0.64. Refusing to size on that figure is what
+# saved the run: it took 661 s, and the 553 s that "~3 min / design" implies
+# would have cancelled it at 84% complete. The cancel path stayed the
+# fallback and did not fire -- had it, folds_in_raw() still counts whatever
+# reached the tar, so a per-design rate survives a cancelled run.
 #
 # `modal volume ls boltz2-weights` on 2026-09-19 listed boltz2_conf.ckpt,
 # boltz2_aff.ckpt and mols.tar, 5.7 GiB between them, all three stamped
 # 2026-05-29, plus a mols/ directory older still at 2025-02-18, and Rung A
 # wrote nothing to it. That contradicts the "~1 GB of model weights" comment
-# beside the Volume in modal_app.py, still present there at this commit.
-# Whether it is still warm TODAY is unchecked here; a cold pull and the MSA
-# fetch both come out of the 900 s.
+# beside the Volume in modal_app.py, still present there at this commit. The
+# same listing immediately before and after the 2026-09-21 Rung B run gave
+# the same four entries at the same timestamps and sizes, so Rung B wrote
+# nothing to it either and no weights download came out of the 900 s. That
+# says nothing about container cold start, which is a separate cost and was
+# not separately measured; nor was the split between MSA-server fetch and GPU
+# compute, so 214 s/design is an aggregate.
 DEADLINES = [("msa_server", 900)]
 assert sum(d for _, d in DEADLINES) <= BUDGET_S, "deadlines exceed the ceiling"
 
@@ -376,7 +388,7 @@ for tier, deadline in DEADLINES:
         # above, and KeyboardInterrupt, which is not an Exception and unwinds
         # straight through the loop. On either, the deadline never fires and
         # the only remaining bound is _MAX_SESSION_S (3600 s) -- $2.57 at RATE,
-        # against a $0.79 ceiling. That bound is what SPEND item 2 in the
+        # against the $0.65 ceiling. That bound is what SPEND item 2 in the
         # docstring promises, so it has to hold on every path out of the loop,
         # not just the deadline one.
         if not settled:
