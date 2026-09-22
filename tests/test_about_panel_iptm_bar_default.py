@@ -104,7 +104,7 @@ NO_SHARED_SCALE = "no cross-tool band to compare it to"
 
 #: Rendered on both surfaces, and the reason the no-legend branch still
 #: prints the general band rather than dropping the sentence:
-#: test_public_tool_pages::test_every_general_legend_reads_the_glossary
+#: tests/test_public_tool_pages.py::test_every_general_legend_reads_the_glossary
 #: asserts this string is on /tools/mpnn, and mpnn has no ipTM legend.
 BAND = GLOSSARY["ipTM"]["good_range"]
 
@@ -341,7 +341,7 @@ def test_only_a_legend_without_a_bar_drops_the_general_band(all_tools_app):
     panel's own preamble already says each tool reports a subset of these
     metrics -- so it keeps the general band and only loses the pointer.
     Dropping the band there would also break
-    test_public_tool_pages::test_every_general_legend_reads_the_glossary,
+    tests/test_public_tool_pages.py::test_every_general_legend_reads_the_glossary,
     which asserts the band renders on /tools/mpnn."""
     wrong = {}
     for (slug, surface), text in _entries(all_tools_app).items():

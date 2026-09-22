@@ -598,7 +598,10 @@ class TestStillGated:
         "path",
         [
             "/scout/feasibility",
-            "/scout/feasibility/download/" + str(uuid.uuid4()),
+            # A fixed literal rather than str(uuid.uuid4()): pytest renders a
+            # string argvalue into this case's node ID, so a fresh value here
+            # would give the test a different node ID on every collection.
+            "/scout/feasibility/download/00000000-0000-0000-0000-000000000001",
         ],
     )
     def test_feasibility_get_requires_login(self, client, path):
