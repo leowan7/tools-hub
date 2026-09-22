@@ -2498,3 +2498,255 @@ def test_rf_runtime_baselines_are_100_designs_not_the_form_default():
         f"live then -- or one of the two records is wrong, and the "
         f"docstring above calls this run independently corroborated."
     )
+
+
+def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
+    """Pin rfdiffusion's two-term curve to the split it was derived from.
+
+    ``tools/rfdiffusion/meta.py`` records the tool's cost as a fixed
+    diffusion + MPNN stage plus a per-design AlphaFold2 re-score, and that
+    decomposition is what ``shared/pdb_preflight_rules.py``'s
+    ``_RFDIFFUSION`` envelope encodes -- ``runtime_fixed_min`` is the fixed
+    stage and ``runtime_base_min`` the per-design one, both normalised to the
+    estimator's 120 aa pivot. Every number below is READ out of meta.py
+    rather than transcribed, because the whole point of the re-anchor is
+    that this file and that one stop drifting apart: #240 (``b692593``)
+    measured 277.5 s/design, carried it into the chunking and cost path, and
+    left this envelope quoting ~11 min for a job that takes 37.
+
+    FOUR things are pinned, and only the third is the anchor.
+
+    1. meta.py's split reproduces meta.py's own recorded job. ``700 + 190*8
+       = 2220`` GPU-s for job 25471e07 exactly. If that stops holding, the
+       model this envelope is derived from has moved and the constants below
+       are stale by construction -- catching that HERE is the point, because
+       nothing else in the repo reads that sentence.
+
+    2. The two design counts the form page advertises are the two the
+       seconds sentence covers, and the advertised band brackets them. The
+       band is the rounded presentation of the same two numbers (~24.3 min
+       shown as 25, ~37.0 shown inside a 40 ceiling), so it is checked
+       against the seconds it was derived from rather than against the
+       curve: asserting the curve lands inside the rounded text would pin
+       meta.py's rounding as a constraint on the estimator.
+
+    3. The curve reproduces BOTH recorded ends within 5%. It lands 0.014%
+       out at each, because the constants are that same split divided
+       through -- so this is ONE anchor expressed twice, NOT two independent
+       confirmations, and the band is the +/-5% that
+       ``test_bindcraft_runtime_curve_reproduces_its_one_measured_run``
+       uses for its single anchor rather than the looser +/-10% reserved
+       for a band covering genuinely separate points. Both ends sit far
+       above the estimator's ``max(5.0, est)`` floor, so neither can be
+       satisfied by the floor instead of the anchor.
+
+       ``runtime_alpha`` is NOT pinned here and cannot be. Both ends are the
+       SAME target (4ZQK chain A, ~115 aa), 4.2% off the 120 aa pivot, so
+       ``(115/120)**alpha`` barely moves over any plausible range. Two
+       design counts measure the design axis, not the size axis. Treat size
+       scaling as unmeasured for this tool.
+
+    4. All three constants are load-bearing, proved by mutation rather than
+       asserted. A two-term fit has an obvious failure mode a residual check
+       alone will not catch: constants that trade off against each other and
+       still pass at one point. Moving each in turn must break the fit.
+
+    The form default is checked too. ``runtime_baseline_designs`` stays at
+    100 (pinned as a value by
+    ``test_rf_runtime_baselines_are_100_designs_not_the_form_default``) and
+    the form defaults to 4, so the estimate a default submit shows IS one of
+    the two ends pinned here -- which is only true while that default is one
+    of the advertised counts.
+    """
+    import dataclasses as _dc
+    import inspect as _inspect
+    import re as _re
+
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.rfdiffusion as _rfdiffusion
+    import tools.rfdiffusion.meta as _meta
+
+    rules = TOOL_RULES["rfdiffusion"]
+
+    # meta.py's runtime note is a comment, so flow it into plain text before
+    # reading numbers out of it -- the figures wrap across comment lines.
+    _src = _inspect.getsource(_meta)
+    _flowed = " ".join(
+        _re.sub(r"^\s*#\s?", "", line) for line in _src.split("\n")
+    )
+
+    def _one(pattern, what):
+        m = _re.search(pattern, _flowed)
+        assert m, (
+            f"could not read {what} out of tools/rfdiffusion/meta.py. If that "
+            f"note was reworded, fix this parse rather than deleting the "
+            f"test: the envelope's constants are derived from it and nothing "
+            f"else in the repo reads it."
+        )
+        return m
+
+    # (1) The split reproduces the recorded job.
+    _m = _one(
+        r"fixed ~(\d+) s of diffusion \+ MPNN plus ~(\d+) s per design",
+        "the fixed + per-design split",
+    )
+    fixed_s, per_design_s = int(_m.group(1)), int(_m.group(2))
+    recorded_s = int(
+        _one(r"ran (\d+)\s+GPU-seconds", "the recorded job").group(1)
+    )
+    four_s = int(
+        _one(r"four designs is ~(\d+) s", "the 4-design figure").group(1)
+    )
+    assert fixed_s + per_design_s * 8 == recorded_s, (
+        f"meta.py models the job as {fixed_s} s fixed + {per_design_s} s per "
+        f"design, which puts 8 designs at "
+        f"{fixed_s + per_design_s * 8} s against the {recorded_s} GPU-s it "
+        f"records for job 25471e07. The envelope below is derived from that "
+        f"split, so it is stale the moment the split stops fitting."
+    )
+    assert fixed_s + per_design_s * 4 == four_s, (
+        f"the same split puts 4 designs at {fixed_s + per_design_s * 4} s "
+        f"against the {four_s} s meta.py states"
+    )
+
+    # (2) The advertised band is the rounded presentation of those seconds.
+    band = _meta.preset_runtime_rows[0]["runtime"]
+    nums = [int(x) for x in _re.findall(r"\d+", band)]
+    assert len(nums) == 4, (
+        f"preset_runtime_rows[0]['runtime'] is {band!r}, which is not the "
+        f"'LO to HI min (A to B designs)' shape this check assumes"
+    )
+    lo_min, hi_min, lo_designs, hi_designs = nums
+    assert (lo_designs, hi_designs) == (4, 8), (
+        f"the form page advertises {lo_designs} to {hi_designs} designs "
+        f"while the runtime note covers 4 and 8; one of the two moved"
+    )
+    assert lo_min in (four_s // 60, -(-four_s // 60)), (
+        f"the page advertises a {lo_min} min floor while its own note puts "
+        f"4 designs at {four_s / 60.0:.2f} min"
+    )
+    assert hi_min >= -(-recorded_s // 60), (
+        f"the page advertises a {hi_min} min ceiling under the "
+        f"{recorded_s / 60.0:.2f} min its own note records for 8 designs"
+    )
+
+    # (3) The curve reproduces both ends. 115 aa is 4ZQK chain A, the target
+    #     both runs used.
+    def _resid(env, n, measured_s):
+        est = runtime_estimate_min(
+            _dc.replace(rules, size=env), target_aa=115, num_designs=n
+        )
+        return est, abs(est - measured_s / 60.0) / (measured_s / 60.0)
+
+    for n, measured_s in ((lo_designs, four_s), (hi_designs, recorded_s)):
+        est, residual = _resid(rules.size, n, measured_s)
+        assert residual <= 0.05, (
+            f"fixed={rules.size.runtime_fixed_min} "
+            f"base={rules.size.runtime_base_min} "
+            f"alpha={rules.size.runtime_alpha} "
+            f"baseline={rules.size.runtime_baseline_designs} puts the "
+            f"{n}-design run at {est:.2f} min against a recorded "
+            f"{measured_s / 60.0:.2f} ({residual:.1%} out)"
+        )
+        assert est > 5.0, (
+            f"the {n}-design estimate {est:.2f} is at or under the "
+            f"estimator's max(5.0, est) floor, so the band above would be "
+            f"satisfied by the floor rather than by the anchor"
+        )
+
+    # (4) Each constant is load-bearing. Move one, the fit must break at one
+    #     end or the other -- a two-term model that still passed both ends
+    #     after a constant moved would mean the two terms were absorbing each
+    #     other and the residuals above proved nothing.
+    for field, value in (
+        ("runtime_fixed_min", 0.0),
+        ("runtime_base_min", rules.size.runtime_base_min * 2),
+        ("runtime_baseline_designs", 4),
+    ):
+        broken = _dc.replace(rules.size, **{field: value})
+        worst = max(
+            _resid(broken, n, s)[1]
+            for n, s in ((lo_designs, four_s), (hi_designs, recorded_s))
+        )
+        assert worst > 0.05, (
+            f"setting {field}={value} still fits both recorded runs to "
+            f"{worst:.1%}, so the assertions above are not actually pinning "
+            f"it and the two terms are absorbing each other"
+        )
+
+    # The default submit lands on one of the two pinned ends.
+    _fallback = _re.search(
+        r'form\.get\("num_designs"\)\s*or\s*"(\d+)"',
+        _inspect.getsource(_rfdiffusion.validate),
+    )
+    assert _fallback, (
+        "could not find the num_designs fallback in "
+        "tools/rfdiffusion/__init__.py::validate -- if the parse changed, "
+        "fix this test rather than deleting it; the drift it guards is silent"
+    )
+    assert int(_fallback.group(1)) in (lo_designs, hi_designs), (
+        f"validate() defaults num_designs to {_fallback.group(1)}, which is "
+        f"neither of the {lo_designs}/{hi_designs} design counts this test "
+        f"pins, so a default submit now shows an estimate nothing here "
+        f"covers"
+    )
+
+
+def test_zero_fixed_term_leaves_every_other_envelope_bit_identical():
+    """The new fixed term must be an exact no-op wherever it is 0.0.
+
+    ``runtime_fixed_min`` was added for rfdiffusion alone. Folding it into
+    the estimator as ``(fixed + base * design_factor) * size_factor`` is the
+    same arithmetic but RE-ASSOCIATES the multiplication, and that form was
+    executed against this grid: it moves the last bit at 36 of the 405
+    points below, on tools this change is not supposed to touch at all.
+    ``shared/pdb_preflight_rules.py::runtime_estimate_min`` therefore adds
+    it as a separate term, where ``+ 0.0`` is an exact IEEE-754 identity.
+
+    This asserts that by recomputing the OLD expression, spelled out, and
+    demanding exact equality rather than closeness. Approximate equality
+    would pass against the re-associated form and defeat the whole check.
+    """
+    from shared.pdb_preflight_rules import (
+        SizeEnvelope,
+        TOOL_RULES,
+        runtime_estimate_min,
+    )
+
+    assert SizeEnvelope.runtime_fixed_min == 0.0, (
+        "SizeEnvelope.runtime_fixed_min no longer defaults to 0.0, so a new "
+        "envelope that does not mention it silently gets a fixed stage"
+    )
+
+    with_fixed = sorted(
+        slug for slug, r in TOOL_RULES.items() if r.size.runtime_fixed_min
+    )
+    assert with_fixed == ["rfdiffusion"], (
+        f"envelopes carrying a fixed term are now {with_fixed}. That is a "
+        f"legitimate change, but the module header and SizeEnvelope docstring "
+        f"in shared/pdb_preflight_rules.py both say rfdiffusion is the only "
+        f"one -- update them, then update this assertion."
+    )
+
+    grid = [
+        (aa, n)
+        for aa in (1, 30, 61, 115, 120, 200, 331, 500, 720)
+        for n in (1, 2, 3, 4, 8, 16, 100, 137, 1000)
+    ]
+    for slug, rules in TOOL_RULES.items():
+        if rules.size.runtime_fixed_min:
+            continue
+        for aa, n in grid:
+            size_factor = (aa / 120.0) ** rules.size.runtime_alpha
+            design_factor = n / rules.size.runtime_baseline_designs
+            was = max(
+                5.0,
+                rules.size.runtime_base_min * size_factor * design_factor,
+            )
+            now = runtime_estimate_min(rules, target_aa=aa, num_designs=n)
+            assert now == was, (
+                f"{slug} at {aa} aa x {n} designs now estimates {now!r} "
+                f"where the pre-fixed-term expression gives {was!r}. "
+                f"runtime_fixed_min is 0.0 here, so the only way this moves "
+                f"is a re-associated product."
+            )
