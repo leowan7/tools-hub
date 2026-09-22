@@ -716,18 +716,14 @@ _PXDESIGN = ToolRules(
         # Both are far smaller than what they replace: at 300.0 the same two
         # runs were quoted 745% and 20675% high.
         #
-        # NOT RECONCILED, and not touched here: the catalog advertises a
-        # "30 to 60 min" pilot run in EIGHT places across
-        # tools/pxdesign/meta.py, tools/pxdesign/__init__.py and
-        # templates/tools/pxdesign_form.html. Count them with the REGEX
-        # "30.*60" and nothing narrower. Six read "30 to 60"; the module
-        # docstring of tools/pxdesign/__init__.py uses a real en dash; and
-        # the preset table at the top of the form writes that dash as a
-        # literal \u2013 escape, six characters, so it survives even a
-        # search for the en dash itself. The three pilot
-        # runs above measured 7.7, 8.4 and 23.0 min, so every one finished
-        # below the bottom of that band: it is wrong independently of this
-        # curve, and moving all eight is a change on its own evidence.
+        # RECONCILED SEPARATELY, and still not this curve's business: the
+        # catalog used to advertise a "30 to 60 min" pilot run, which all
+        # three runs above finished below. It now reads "8 to 25 min" on
+        # every surface, moved on its own evidence in commit 8a20c46 and
+        # pinned by tests/test_pxdesign_runtime_band.py. That band is
+        # advertised copy for one preset; this is a per-request cost gate
+        # over the whole input domain, so the two are allowed to diverge
+        # and the residuals above are where they do.
         runtime_base_min=11.2,       # job 79228f03 solved at the 120 aa anchor
         runtime_alpha=1.3,           # UNCHANGED and still unmeasured. The
                                      # three runs cannot calibrate it: their
