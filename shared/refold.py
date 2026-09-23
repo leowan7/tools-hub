@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,13 @@ class CandidateSeq:
 
     @property
     def fasta_header(self) -> str:
-        return f"rank{self.rank}_{self.pdb_key}"
+        # The key's stem: a Boltz-2 refold names its input file after this
+        # header (tools/boltz2/run_pipeline.py::main), so "designs/" points
+        # into a missing folder, and a kept ".pdb" makes boltz name its output
+        # folders "*.pdb", which tools/boltz2/run_pipeline.py::collect_outputs
+        # returns in place of the model.
+        # tests/test_boltz2_smoke.py::TestRefoldToBoltz2Folds
+        return f"rank{self.rank}_{PurePosixPath(self.pdb_key).stem}"
 
 
 def _candidate_sequence(cand: dict) -> Optional[str]:

@@ -928,3 +928,97 @@ class TestBinderNamesGetTheirOwnObject:
         )
 
         assert len({_output_object_path("u", "j", k) for k in keys}) == 2, keys
+
+
+# ---------------------------------------------------------------------------
+# 7 - a Refold skips validate, so its binder name must fold as it stands
+# ---------------------------------------------------------------------------
+
+
+def _boltz_writes_its_tree(yaml_path, out_dir, msa_server):
+    """Stand-in for ``run_boltz``: the model and confidence files boltz 2.2.1
+    writes for one yaml under ``--output_format pdb``, at the paths it names
+    after the yaml's stem. boltz's main.py names the results folder after the
+    stem, data/parse/yaml.py and data/parse/schema.py make the stem the record
+    id, and data/write/writer.py names the model's folder and files after the
+    record id. Read at tag v2.2.1, the version tools/boltz2/Dockerfile.modal
+    pins.
+
+    It refuses the two inputs real boltz refuses, so that a pipeline which
+    stopped writing a usable yaml cannot pass on this stand-in's goodwill:
+
+    * a path that does not exist — boltz declares its data argument
+      ``click.Path(exists=True)`` (main.py:818) and exits non-zero;
+    * a suffix outside .yaml/.yml/.fa/.fas/.fasta — ``process_input``
+      (main.py:548-561) raises "Unable to parse filetype", the caller skips
+      the record, and boltz exits 0 having written no model.
+    """
+    if not yaml_path.exists():
+        return 2  # click's usage-error exit code
+    if yaml_path.suffix.lower() not in (".yaml", ".yml", ".fa", ".fas", ".fasta"):
+        return 0  # parsed nothing, wrote nothing — the job fails on "no PDB emitted"
+    stem = yaml_path.stem
+    pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
+    pred.mkdir(parents=True)
+    (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
+    (pred / f"confidence_{stem}_model_0.json").write_text(json.dumps({"iptm": 0.8}))
+    return 0
+
+
+class TestRefoldToBoltz2Folds:
+    """``blueprints/jobs.py::_spawn_refold_job`` bypasses validate and names
+    the binder ``shared/refold.py::CandidateSeq.fasta_header``.
+
+    Carries a Refold from the hub into ``main``. Real: the refold spawn, the
+    boltz2 adapter's ``build_payload``, ``main``'s yaml naming and
+    ``collect_outputs``. Stubbed: the job row, storage, the Modal hop and its
+    callback URLs, boltz (``_boltz_writes_its_tree``), and ``main``'s other
+    I/O edges (``TestZeroDesignsFailsTheJob._arrange``).
+    """
+
+    @pytest.mark.parametrize("pdb_key, name", [
+        ("designs/design_001.pdb", "rank1_design_001"),
+        ("designs/design_002.cif", "rank1_design_002"),
+    ])
+    def test_a_refold_of_a_stored_design_completes(
+        self, tmp_path, monkeypatch, pdb_key, name,
+    ):
+        import blueprints.jobs as J
+        from shared.refold import candidate_seq_from_record
+
+        seq = candidate_seq_from_record(
+            {"rank": 1, "pdb_key": pdb_key, "sequence": _SEQ_A}, 0)
+        src = SimpleNamespace(
+            id="src-job-1", tool="rfdiffusion", target_id=None,
+            inputs={"target_chain": "A", "_pdb_storage_path": "u/src/target.pdb"},
+        )
+        submitted = {}
+        monkeypatch.setattr(J, "presigned_input_url",
+                            lambda path, expires_seconds=None: "https://signed")
+        monkeypatch.setattr(J, "create_job",
+                            lambda **k: SimpleNamespace(id="new-job", job_token="tok"))
+        monkeypatch.setattr(J, "url_for", lambda *a, **k: "http://hook")
+        monkeypatch.setattr(J, "current_app", SimpleNamespace(
+            modal_client=SimpleNamespace(submit=lambda *a, **k: submitted.update(k))))
+
+        assert J._spawn_refold_job(
+            SimpleNamespace(user_id="u"), b2.adapter, "boltz2", seq, src, "label",
+        ) == "new-job"
+
+        real_collect_outputs = rp.collect_outputs
+        result_file = TestZeroDesignsFailsTheJob()._arrange(tmp_path, monkeypatch, rc=0)
+        monkeypatch.setattr(rp, "collect_outputs", real_collect_outputs)
+        monkeypatch.setattr(rp, "run_boltz", _boltz_writes_its_tree)
+        payload = json.loads(os.environ["JOB_PAYLOAD"])
+        # gpu/modal_client.py::ModalClient._build_payload ships the submitted
+        # inputs as job_spec, which tools/boltz2/modal_app.py::_build_run_env
+        # puts in JOB_PAYLOAD.
+        payload["job_spec"] = submitted["inputs"]
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+
+        rp.main()
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "COMPLETED", result
+        assert result["designs_completed"] == 1, result
+        assert result["designs"][0]["name"] == name, result["designs"][0]
