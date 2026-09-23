@@ -1197,6 +1197,7 @@ def _run_batch(
                         "status": "COMPLETED",
                         "tier": "batch",
                         "designs_total": designs_total,
+                        "designs_folded": 0,
                         "designs_completed": 0,
                         "n_failures": n_failures,
                         "designs": [],
@@ -1282,6 +1283,17 @@ def _run_batch(
                     )
                     rec_info["failed"] = True
                     return
+                # The fold is decided HERE — a structure was written and it is
+                # not a stub — and therefore before the upload, which is a
+                # separate network hop with its own failure. designs_out cannot
+                # stand in for this: its append is downstream of that hop, so a
+                # run whose every fold succeeded and whose every upload failed
+                # leaves it empty, indistinguishable from a run that folded
+                # nothing. After the size check, not before it, so the count
+                # never claims a structure the branch above just rejected.
+                # Summed into n_folded once streaming ends, beside the
+                # existing done/failed sums.
+                rec_info["folded"] = True
 
                 user_name = rec_info["name"]
                 pdb_key = (
@@ -1349,18 +1361,31 @@ def _run_batch(
                 )
                 return  # unreachable
 
+            n_folded = sum(
+                1 for info in record_map.values() if info.get("folded")
+            )
             if exit_code != 0:
                 logger.error(
-                    "colabfold consolidated exit %d after %d/%d designs streamed",
-                    exit_code, len(designs_out), designs_total,
+                    "colabfold consolidated exit %d after %d/%d designs folded, "
+                    "%d delivered",
+                    exit_code, n_folded, designs_total, len(designs_out),
                 )
                 if not designs_out:
-                    _fail(
-                        "tool-invocation",
-                        "exit",
-                        f"colabfold_batch consolidated exited {exit_code} "
-                        "with zero completed designs.",
-                    )
+                    if n_folded:
+                        detail = (
+                            f"{n_folded} of {designs_total} designs folded but 0 "
+                            f"uploaded, and colabfold_batch consolidated exited "
+                            f"{exit_code} — the delivery hop failed, not the "
+                            f"folds; see the per-design upload warnings in the "
+                            f"run log, and this job's raw archive for the "
+                            f"structures"
+                        )
+                    else:
+                        detail = (
+                            f"colabfold_batch consolidated exited {exit_code} "
+                            "with zero completed designs."
+                        )
+                    _fail("tool-invocation", "exit", detail)
 
             # Account for records colabfold skipped silently or that failed
             # post-fold processing.
@@ -1377,11 +1402,24 @@ def _run_batch(
             archive_work_dir(_td)
 
     runtime_seconds = int(time.time() - start)
+    # Unlike boltz2, this tool's zero-design abort only fires when colabfold
+    # itself exited non-zero (see the guard above), so an all-uploads-failed
+    # run that exited 0 still writes a COMPLETED result and still bills. That
+    # is deliberately left alone here; what changes is that the counts and the
+    # log no longer blame the model for it.
+    if n_folded and not designs_out:
+        logger.error(
+            "%d of %d designs folded but 0 uploaded in %ds — the delivery hop "
+            "failed, not the folds; see the per-design upload warnings above, "
+            "and this job's raw archive for the structures",
+            n_folded, designs_total, runtime_seconds,
+        )
     _write_result(
         {
             "status": "COMPLETED",
             "tier": "batch",
             "designs_total": designs_total,
+            "designs_folded": n_folded,
             "designs_completed": len(designs_out),
             "n_failures": n_failures,
             "designs": designs_out,
@@ -1398,8 +1436,9 @@ def _run_batch(
         designs_total=designs_total,
     )
     logger.info(
-        "batch pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
-        len(designs_out), designs_total, n_failures, runtime_seconds,
+        "batch pipeline ok — %d/%d designs folded, %d delivered, %d failures, "
+        "runtime=%ds",
+        n_folded, designs_total, len(designs_out), n_failures, runtime_seconds,
     )
 
 
