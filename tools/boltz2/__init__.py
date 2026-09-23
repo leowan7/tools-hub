@@ -274,7 +274,7 @@ def validate(
         if "/" in name or "\0" in name or name.startswith("."):
             return None, (
                 f"Binder {name!r}: a binder's name becomes a file name, so it "
-                f"cannot contain '/' or start with '.'. Rename it."
+                f"cannot contain '/' or a NUL byte, or start with '.'. Rename it."
             )
         if len(name.encode("utf-8")) > BINDER_NAME_MAX_BYTES:
             return None, (

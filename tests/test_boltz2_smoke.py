@@ -642,18 +642,19 @@ class TestBinderNameIsAFileName:
         assert not result_file.exists(), (
             "the raise escapes main before any results file is written")
 
-    @pytest.mark.parametrize("name", [
-        "4D5/trastuzumab",
-        ".hidden",
-        "..",
-        "a\0b",
-        "x" * 201,
-        "é" * 101,  # 202 bytes in UTF-8
+    @pytest.mark.parametrize("name, cause", [
+        ("4D5/trastuzumab", "'/'"),
+        (".hidden", "start with '.'"),
+        ("..", "start with '.'"),
+        ("a\0b", "NUL"),
+        ("x" * 201, "201 bytes"),
+        ("é" * 101, "202 bytes"),  # 202 bytes in UTF-8
     ])
-    def test_validate_refuses_a_name_that_cannot_be_a_file_name(self, name):
+    def test_validate_refuses_a_name_that_cannot_be_a_file_name(self, name, cause):
         inputs, err = b2.validate(_named_form("VHH-12", name), {})
         assert inputs is None, f"validate accepted {name!r}"
         assert repr(name) in err, f"the refusal must name the binder: {err!r}"
+        assert cause in err, f"the refusal must name the cause: {err!r}"
 
     @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
     def test_validate_still_accepts_names_linux_can_hold(self, name):
