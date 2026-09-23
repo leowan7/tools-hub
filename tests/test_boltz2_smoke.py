@@ -971,14 +971,22 @@ class TestBinderNamesGetTheirOwnObject:
 # ---------------------------------------------------------------------------
 
 
-def _boltz_writes_its_tree(yaml_path, out_dir, msa_server):
+def _boltz_writes_its_tree(data_path, out_dir, msa_server):
     """Stand-in for ``run_boltz``: the model and confidence files boltz 2.2.1
-    writes for one yaml under ``--output_format pdb``, at the paths it names
-    after the yaml's stem. boltz's main.py names the results folder after the
-    stem, data/parse/yaml.py and data/parse/schema.py make the stem the record
-    id, and data/write/writer.py names the model's folder and files after the
-    record id. Read at tag v2.2.1, the version tools/boltz2/Dockerfile.modal
-    pins.
+    writes under ``--output_format pdb``, at the paths it names after each
+    input's stem. boltz's main.py names the results folder after the data
+    argument's stem, data/parse/yaml.py and data/parse/schema.py make an
+    input's stem the record id, and data/write/writer.py names the model's
+    folder and files after the record id. Read at tag v2.2.1, the version
+    tools/boltz2/Dockerfile.modal pins.
+
+    ``data_path`` is one yaml or a DIRECTORY of them —
+    ``run_pipeline.run_boltz`` passes a directory, one chunk of designs to a
+    process. A directory yields a SINGLE results folder named after it, one
+    ``predictions/<record>`` inside it per input. That is the layout the
+    2026-09-23 A100 probes captured off the container (PR #341: three records,
+    then five, each run's records all under one
+    ``boltz_results_in/predictions/``).
 
     It refuses the two inputs real boltz refuses, so that a pipeline which
     stopped writing a usable yaml cannot pass on this stand-in's goodwill:
@@ -987,18 +995,62 @@ def _boltz_writes_its_tree(yaml_path, out_dir, msa_server):
       ``click.Path(exists=True)`` (main.py:818) and exits non-zero;
     * a suffix outside .yaml/.yml/.fa/.fas/.fasta — ``process_input``
       (main.py:548-561) raises "Unable to parse filetype", the caller skips
-      the record, and boltz exits 0 having written no model.
+      the record, and boltz exits 0 having written no model. Applied per
+      input, so a directory holding nothing parseable also writes no model.
     """
-    if not yaml_path.exists():
+    if not data_path.exists():
         return 2  # click's usage-error exit code
-    if yaml_path.suffix.lower() not in (".yaml", ".yml", ".fa", ".fas", ".fasta"):
-        return 0  # parsed nothing, wrote nothing — the job fails on "no PDB emitted"
-    stem = yaml_path.stem
-    pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
-    pred.mkdir(parents=True)
-    (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
-    (pred / f"confidence_{stem}_model_0.json").write_text(json.dumps({"iptm": 0.8}))
+    inputs = sorted(data_path.iterdir()) if data_path.is_dir() else [data_path]
+    results = out_dir / f"boltz_results_{data_path.stem}"
+    for src in inputs:
+        if src.suffix.lower() not in (".yaml", ".yml", ".fa", ".fas", ".fasta"):
+            continue  # parsed nothing, wrote nothing — "no PDB emitted" for it
+        stem = src.stem
+        pred = results / "predictions" / stem
+        pred.mkdir(parents=True)
+        (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
+        (pred / f"confidence_{stem}_model_0.json").write_text(
+            json.dumps({"iptm": 0.8})
+        )
     return 0
+
+
+class TestTheBoltzStandInMatchesBoltz:
+    """``_boltz_writes_its_tree`` is the only boltz the class below runs, so a
+    pipeline that stopped writing a usable yaml would pass on the stand-in's
+    goodwill unless it keeps refusing what the real tool refuses — and the
+    refold test would pass vacuously if the stand-in wrote nothing at all.
+    Pins the three behaviours its docstring claims.
+    """
+
+    def test_a_directory_folds_every_record_into_one_results_folder(self, tmp_path):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for record_id in ("d_000", "d_001"):
+            (in_dir / f"{record_id}.yaml").write_text("sequences: []\n")
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(in_dir, out, msa_server=False) == 0
+
+        predictions = out / "boltz_results_in" / "predictions"
+        assert sorted(p.name for p in predictions.iterdir()) == ["d_000", "d_001"]
+        assert (predictions / "d_001" / "d_001_model_0.pdb").exists()
+        assert (predictions / "d_001" / "confidence_d_001_model_0.json").exists()
+
+    def test_a_path_that_does_not_exist_is_a_usage_error(self, tmp_path):
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(tmp_path / "gone.yaml", out, False) == 2
+        assert not out.exists()
+
+    def test_an_unparseable_suffix_writes_no_model(self, tmp_path):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "d_000.pdb").write_text("ATOM\n")
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(in_dir, out, False) == 0
+        assert not out.exists()
 
 
 class TestRefoldToBoltz2Folds:
