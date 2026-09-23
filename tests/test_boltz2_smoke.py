@@ -942,7 +942,21 @@ def _boltz_writes_its_tree(yaml_path, out_dir, msa_server):
     stem, data/parse/yaml.py and data/parse/schema.py make the stem the record
     id, and data/write/writer.py names the model's folder and files after the
     record id. Read at tag v2.2.1, the version tools/boltz2/Dockerfile.modal
-    pins."""
+    pins.
+
+    It refuses the two inputs real boltz refuses, so that a pipeline which
+    stopped writing a usable yaml cannot pass on this stand-in's goodwill:
+
+    * a path that does not exist — boltz declares its data argument
+      ``click.Path(exists=True)`` (main.py:818) and exits non-zero;
+    * a suffix outside .yaml/.yml/.fa/.fas/.fasta — ``process_input``
+      (main.py:548-561) raises "Unable to parse filetype", the caller skips
+      the record, and boltz exits 0 having written no model.
+    """
+    if not yaml_path.exists():
+        return 2  # click's usage-error exit code
+    if yaml_path.suffix.lower() not in (".yaml", ".yml", ".fa", ".fas", ".fasta"):
+        return 0  # parsed nothing, wrote nothing — the job fails on "no PDB emitted"
     stem = yaml_path.stem
     pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
     pred.mkdir(parents=True)

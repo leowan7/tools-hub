@@ -566,7 +566,7 @@ def test_spawn_refold_boltz2_falls_back_to_campaign_antigen(monkeypatch):
         inputs={"target_chain": "A", "hotspot_residues": [10, 12]},  # no _pdb_storage_path
     )
     seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
-                          fasta_header="rank1_d1.pdb")
+                          fasta_header="rank1_d1")
     captured = {}
     monkeypatch.setattr(J, "presigned_input_url",
                         lambda path, expires_seconds=None: captured.setdefault("antigen", path) or "https://signed")
@@ -618,7 +618,7 @@ def test_spawn_refold_inherits_the_source_jobs_target(monkeypatch):
     src = SimpleNamespace(id="subjob-1", tool="rfdiffusion", target_id="t-42",
                           inputs={"target_chain": "A"})
     seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
-                          fasta_header="rank1_d1.pdb")
+                          fasta_header="rank1_d1")
     captured = {}
     monkeypatch.setattr(J, "create_job", lambda **k: (
         captured.update(k) or SimpleNamespace(id="new-job", job_token="tok")
@@ -651,7 +651,7 @@ def test_spawn_refold_of_an_untargeted_run_carries_no_target(monkeypatch):
     src = SimpleNamespace(id="j-1", tool="rfdiffusion", target_id=None,
                           inputs={"target_chain": "A"})
     seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
-                          fasta_header="rank1_d1.pdb")
+                          fasta_header="rank1_d1")
     captured = {}
     monkeypatch.setattr(J, "create_job", lambda **k: (
         captured.update(k) or SimpleNamespace(id="new-job", job_token="tok")
