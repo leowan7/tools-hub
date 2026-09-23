@@ -235,9 +235,7 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # 2026-09-21) — not the "~3 min/design" this comment used to carry,
     # and not a marginal rate: the MSA fetch and the GPU compute were not
     # timed separately. Provenance and caveats for both tiers in the
-    # runtime note in ``tools/boltz2/__init__.py``. The ~60 s/design this
-    # comment used to carry for standalone was a guess; it happens to sit
-    # near the measurement, but its twin in the adapter guessed 15 s.
+    # runtime note in ``tools/boltz2/__init__.py``.
     #
     # Both rows are sized against "a 10-binder run", which is NOT the
     # ceiling the product enforces: ``tools/boltz2/__init__.py::validate``
