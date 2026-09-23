@@ -60,6 +60,8 @@ from shared.score_legends import (
     verdict_text,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 DROP_NAME = "design_0"
 PASS_NAME = "design_1"
 
@@ -661,45 +663,78 @@ class TestModeAwareBar:
         assert gate_columns("boltzgen", "nonsense") == gate_columns("boltzgen")
 
     def test_the_mode_decides_which_legs_apply(self):
-        """pI is null by construction on an scFv run, so it can only ever be a
-        MINIBINDER leg -- as a tool-wide one it would leave every antibody
-        design permanently unjudged. That scoping is the whole reason this is
-        not a GATE_COLUMNS entry."""
+        """pI is null by construction on an scFv run and the CDR proxy is null
+        on a minibinder one, so neither can be a tool-wide leg: either one
+        would leave every design of the other mode permanently unjudged. That
+        scoping is the whole reason these are not GATE_COLUMNS entries."""
         assert gate_columns("esmfold2-design", "minibinder") == ("pI", "ipTM")
-        # An scFv record: no pI, and it must not be judged against one.
-        scfv = _cand("ab_0", 0.30, None, 1, proxy=0.62)
-        assert judge("esmfold2-design", scfv, preset="scfv").verdict == (
-            "unjudged"
+        assert gate_columns("esmfold2-design", "scfv") == (
+            "CDR_iPTM_proxy", "ipTM",
         )
+        # An scFv record: no pI, and it must not be judged against one. It
+        # clears its proxy leg and fails on ipTM -- the measured shape of
+        # job verify242-bs6-1789054528, which is what this branch is for.
+        scfv = _cand("ab_0", 0.30, None, 1, proxy=0.62)
+        ab = judge("esmfold2-design", scfv, preset="scfv")
+        assert ab.verdict == "below"
+        assert [s for s in ab.shortfalls if "ipTM" in s] == list(ab.shortfalls)
+        assert ab.unmeasured == (), "pI is not a leg of this mode"
         # The same record in minibinder mode falls short on the ipTM leg its
         # mode does gate: measured and under 0.75.
         mini = judge("esmfold2-design", scfv, preset="minibinder")
         assert mini.verdict == "below"
         assert any("ipTM" in s for s in mini.shortfalls)
 
-    def test_scfv_declares_no_bar_and_the_proxy_carries_no_legend(self):
-        """A MODE-SCOPED BAR CANNOT CARRY A MODE-SCOPED LEGEND, which is why
-        the scFv leg was removed rather than reworded.
+    def test_the_scfv_leg_got_its_own_column_so_it_could_get_a_legend(self):
+        """A MODE-SCOPED BAR CANNOT CARRY A MODE-SCOPED LEGEND. That is why
+        the scFv leg was refused twice, and what the 2026-09-14 column split
+        changed.
 
         MODE_GATE_COLUMNS is keyed on (tool, mode); SCORE_LEGENDS is keyed on
         (tool, column) and ``score_legends_for(tool)`` hands the set out with
-        no mode. The tool's own results page lists iPTM_proxy in BOTH modes
-        and renders that legend as the column tooltip, and the completion
-        email picks the first scored column that HAS a legend -- so an
-        scFv-worded legend went to customers on minibinder runs, where the
-        column holds a different quantity and _classify gates on neither it
-        nor 0.50. The column was also blank in every production run.
+        no mode. While BOTH modes wrote their proxy under ``iPTM_proxy``, one
+        explanation string had to be true of two different quantities: the
+        tool's own results page renders it as the column tooltip in whichever
+        mode is showing, and the completion email picks the first scored
+        column that HAS a legend. run_pipeline.py now emits one key per mode,
+        so the scFv column has a legend of its own and the minibinder column
+        still has none.
         """
         from shared.score_legends import score_legends_for
 
-        assert gate_columns("esmfold2-design", "scfv") == ()
-        assert "iPTM_proxy" not in score_legends_for("esmfold2-design")
-        # An scFv design with a measured proxy is therefore unjudged, not
-        # judged against a bar this tool cannot state for that mode.
-        scfv = _cand("ab_0", 0.30, None, 1, proxy=0.62)
+        legends = score_legends_for("esmfold2-design")
+        assert "CDR_iPTM_proxy" in legends
+        assert "iPTM_proxy" not in legends, (
+            "the minibinder proxy is not a gate leg and must stay unexplained"
+        )
+        # A design that clears BOTH legs meets; one that clears only the
+        # proxy does not. Both pairs are measured rows of job
+        # verify242-bs6-1789054528.
         assert judge(
-            "esmfold2-design", scfv, preset="scfv"
-        ).verdict == "unjudged"
+            "esmfold2-design", _cand("ab_1", 0.844, None, 1, proxy=0.799),
+            preset="scfv",
+        ).verdict == "meets"
+        assert judge(
+            "esmfold2-design", _cand("ab_0", 0.436, None, 2, proxy=0.618),
+            preset="scfv",
+        ).verdict == "below"
+
+    def test_a_prescript_row_is_judged_through_the_legacy_spelling(self):
+        """EVERY scFv RUN DELIVERED BEFORE THE SPLIT stored its proxy under
+        ``iPTM_proxy``, and the GPU image keeps doing so until it is
+        redeployed. ``_COLUMN_ALIASES`` carries that spelling so those rows
+        are judged rather than read as unjudged, which would take every past
+        run's keeper count to zero instead of re-labelling it.
+
+        ``_cand`` writes the legacy key, so every other assertion in this
+        file exercises that path; this one says so out loud.
+        """
+        legacy = _cand("ab_0", 0.30, None, 1, proxy=0.62)
+        assert "iPTM_proxy" in legacy["scores"]
+        assert "CDR_iPTM_proxy" not in legacy["scores"]
+        verdict = judge("esmfold2-design", legacy, preset="scfv")
+        assert verdict.verdict == "below"
+        assert verdict.unmeasured == (), "the alias must find the proxy"
 
     def test_an_unknown_mode_reads_no_bar_rather_than_the_wrong_one(self):
         """A job whose stored preset is neither mode (an old default string)

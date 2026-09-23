@@ -10,9 +10,9 @@ different good designs" as a reason to pick the tool;
 ``about["output_summary"]`` listed "a structural diversity cluster id" among the
 outputs; ``reward_attributions`` credited "Foldseek / MMseqs2 / DSSP —
 post-hoc diversity clustering". Meanwhile every proteina results table carried a
-``cluster_id`` column, which the renderer prints as an em dash for a null
-(templates/components/candidate_table.html:761 — :789 is the branch for a
-non-null unparseable value, a distinction that file draws at :785).
+``cluster_id`` column, which templates/components/candidate_table.html prints
+as an em dash for a null in its ``{% if raw is none %}`` branch — NOT the
+later ``{% if fval is none %}`` branch, for a non-null unparseable value.
 
 WHAT IS ACTUALLY THERE, measured 2026-09-10.
 
@@ -25,9 +25,9 @@ WHAT IS ACTUALLY THERE, measured 2026-09-10.
    credentials — and point 2 is why it does not change the answer.
 
 2. No code in this repo ORIGINATES a value. The only ingest is
-   ``_pick`` over ``_SCORE_COLUMNS.items()`` at run_pipeline.py:3559, whose
-   ``cluster_id`` entry (:390) lists one candidate column name that appears in
-   neither reward-CSV header
+   ``_pick`` over ``_SCORE_COLUMNS.items()`` in run_pipeline.py::parse_designs,
+   whose ``cluster_id`` entry (:390) lists one candidate column name that
+   appears in neither reward-CSV header
    pinned in
    tests/test_proteina_smoke.py::TestRewardParse. No captured reward CSV is
    committed anywhere in this repo — every header it records is a hand-written
@@ -40,7 +40,7 @@ WHAT IS ACTUALLY THERE, measured 2026-09-10.
 3. The hub ranks; it does not cluster.
    ``shared.compute_campaigns.aggregate_campaign_candidates`` pools every
    sub-job's candidates and sorts by ``(passed, missing, primary metric)``
-   (compute_campaigns.py:1483-1495). No diversity step there. (The repo does
+   in its ``_sort_key``. No diversity step there. (The repo does
    contain MPNN *sequence* diversification (``shared/resample.py``, which
    raises sampling temperature to spread sequences over one fold) — a different
    thing on a different tool. "No diversity anywhere in the repo" would be
@@ -674,7 +674,7 @@ def test_cluster_id_never_reaches_a_downloadable_csv():
     ``shared.exports._metric_columns`` builds its header from the STORED
     payload's ``scores`` keys, so /jobs/<id> export.csv kept shipping an empty
     column one click from the page that had stopped showing it. Stored rows are
-    expected to carry the key (run_pipeline writes it, webhooks/modal.py:549
+    expected to carry the key (run_pipeline writes it, webhooks/modal.py::_sanitize_candidate
     copies it through) — expected, not observed: the production jobs table has
     not been read. Either way the fix belongs at the export layer, since no
     pipeline change can rewrite a row that is already stored.

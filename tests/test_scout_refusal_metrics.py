@@ -28,6 +28,8 @@ import pytest
 from scout import ratelimit
 from scout import routes as scout_routes
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 BOGUS_JOB = "3f8e0c92-0000-4000-8000-abc"
 
 

@@ -15,7 +15,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output         = job.result or {} %}
-{% set raw_designs    = output.get('designs', []) %}
+{% set raw_designs    = display_rows(output.get('designs')) %}
 {% set plddt          = output.get('plddt_per_residue', []) %}
 {% set mean_plddt     = output.get('mean_plddt') %}
 {% set iptm           = output.get('iptm') %}
@@ -58,7 +58,7 @@
         },
     }) %}
   {% endfor %}
-  {% set candidates = candidates | sort(attribute='scores.mean_pLDDT', reverse=True) %}
+  {% set candidates = candidates | sort_by_number('scores.mean_pLDDT', reverse=True) %}
   {% set columns = ['mean_pLDDT', 'ipTM', 'pTM', 'AA', 'chains'] %}
 
   <div class="panel" style="margin-top:1rem;">

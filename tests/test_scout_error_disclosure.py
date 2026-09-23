@@ -53,6 +53,8 @@ import pytest
 from scout import ratelimit
 from scout.errors import ScoutInputError
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TMP = Path("tmp")
 
 # A path shaped like something a real deployment would rather not publish.

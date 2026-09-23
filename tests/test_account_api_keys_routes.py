@@ -24,6 +24,8 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 _TOKEN = "platform-api-csrf-token-xyz"
 
 

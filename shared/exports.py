@@ -25,6 +25,7 @@ import base64
 import csv
 import io
 import zipfile
+from collections.abc import Mapping
 from typing import Callable, Optional
 
 from shared import metric_glossary as _metric_glossary
@@ -32,7 +33,81 @@ from shared import pdb_bfactors as _pdb_bfactors
 
 
 def _dict_candidates(candidates) -> list:
-    return [c for c in (candidates or []) if isinstance(c, dict)]
+    """The EXPORT-layer read of a candidate list: same length, same order,
+    every row a plain dict. The mirror of ``shared.jobs.display_rows``, the
+    RENDER layer's read of the SAME STORED ARRAY -- the export routes reach
+    ``result["candidates"]`` / ``result["designs"]`` through
+    ``shared.jobs.candidate_records``, while each tool's results template
+    reads the key it stores under itself and wraps it in ``display_rows``
+    (a Jinja global; see ``templates/tools/proteina_results.html`` and
+    ``boltz2_results.html``). Two accessors over one array, so these two
+    functions are the only place the page and the download can disagree
+    about which rows exist.
+
+    ``display_rows`` landed after this function, in the change that carried
+    ``claude/zealous-hertz-98ca24``. This side was written first and to match
+    it, so the two agree by neither shared code nor shared author -- they are
+    separate bodies that return the same thing. Equal BY VALUE, not identity:
+    this side converts a non-dict Mapping (below) where the render side keeps
+    it, and a Mapping equals the dict of its items. That equality was once
+    unrunnable here because only one side existed; both are now on one branch,
+    and it is pinned by tests/test_malformed_candidate_row_render.py::
+    test_the_export_and_render_accessors_agree_by_value.
+
+    COERCES RATHER THAN FILTERING, and that is the whole fix. Every serializer
+    here derives row identity from ``enumerate`` over this list --
+    :func:`export_key` sets ``rank = i + 1`` -- so dropping a row renumbered
+    every design after it and carried the FASTA ids and ZIP entry names with
+    it. Once the page blanks such a row instead of 500ing, it shows N rows
+    while the download had N-1 under different numbers, one click apart.
+
+    A ``{}`` row needed no new skip in any of the three formats. Measured:
+
+    * CSV -- a blank row under its own rank, later rows unmoved.
+    * FASTA -- dropped by the existing ``if not seq`` (``{}`` carries no
+      sequence), and :func:`candidates_to_fasta` numbers from the full list,
+      so the next record keeps its own rank. Same path a backbone with no
+      sequence already takes; :func:`export_key`'s docstring documents it.
+    * ZIP -- dropped by the existing ``if data is None`` (no inline b64, and
+      a falsy ``pdb_key`` blocks the Storage fetch), later entries named from
+      their own keys.
+
+    So a malformed row is a BLANK CSV ROW and an OMISSION from the FASTA and
+    the ZIP, both with the index preserved. The CSV is the tabular mirror of
+    the page and the page still shows the row; the other two carry a sequence
+    and a structure, which that row does not have. Pinned by
+    tests/test_export_shapes.py::TestMalformedCandidateRow.
+
+    The PREDICATE ``Mapping`` and the list/tuple guard are ``display_rows``'s,
+    because the point of this function is to agree with it about WHICH ROWS
+    EXIST. The guard is load-bearing under a coercion that the old filter did
+    not need: a candidates array that is a dict or a string would otherwise
+    become one blank row per key or per character, where filtering returned
+    ``[]``.
+
+    A Mapping that is not a ``dict`` is CONVERTED rather than passed through,
+    which the render side has no reason to do: three readers downstream of
+    this one narrow the type again -- ``shared.score_legends.is_fabricated``
+    and both probes in :func:`_metric_columns` gate on
+    ``isinstance(..., dict)``. Passed through, such a row reached the CSV
+    with its ``provenance`` column dropped, so a smoke stub's invented ipTM
+    exported unmarked -- failing OPEN exactly where the old filter failed
+    closed. A plain dict is returned as it is, so the only path that copies
+    is one nothing produces today.
+
+    Not imported from ``shared.jobs``: that module pulls Supabase in through
+    ``shared.credits`` at import time and this one is deliberately free of it
+    (see the module docstring), so two duplicated lines are the cheaper edge.
+
+    Hardening, not a live failure: no in-repo producer writes a non-Mapping
+    candidate row today.
+    """
+    if not isinstance(candidates, (list, tuple)):
+        return []
+    return [
+        c if isinstance(c, dict) else dict(c) if isinstance(c, Mapping) else {}
+        for c in candidates
+    ]
 
 
 def _decode_b64(encoded) -> Optional[bytes]:
@@ -46,7 +121,8 @@ def _decode_b64(encoded) -> Optional[bytes]:
 
 def _safe_arcname(name: str, prefix: str = "") -> str:
     """A ZIP entry name with any traversal (``..``, absolute, backslash)
-    stripped, legit sub-directories preserved, optionally namespaced.
+    stripped, legit sub-directories preserved, optionally namespaced, and
+    bounded to a length a ZIP header can actually store.
 
     Only ``name`` is cleaned here. ``prefix`` is trusted and must already be
     built from :func:`_safe_component` segments — see :func:`candidates_to_zip`,
@@ -55,7 +131,29 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     cleaned = (name or "").replace("\\", "/").lstrip("/")
     parts = [p for p in cleaned.split("/") if p not in ("", ".", "..")]
     safe = "/".join(parts) or "candidate.pdb"
-    return f"{prefix}{safe}" if prefix else safe
+    arc = f"{prefix}{safe}" if prefix else safe
+    # A ZIP header stores the entry-name length in two bytes, so zipfile
+    # raises struct.error above 65535 of them and the caller loses the WHOLE
+    # archive rather than the one entry -- the same blast radius export_key's
+    # type coercion closes, except nothing upstream bounds a LENGTH: a
+    # container that wrote a list of every design coerces to a legal string
+    # hundreds of kB long. Truncation can make two entries collide, which
+    # zipfile allows with a UserWarning; losing the archive it does not.
+    #
+    # The rstrip is not cosmetic: a cut landing on a "/" ends the name in
+    # one, and zipfile sets the directory bit on any such name, so that
+    # entry extracts as an empty FOLDER and the design's bytes are dropped
+    # with no error at all. One character of the key decides it.
+    #
+    # tests/test_export_shapes.py::TestNonStringPdbKey pins all three -- the
+    # archive's survival, both edges of the bound, and the slash, in order:
+    # tests/test_export_shapes.py::test_an_oversized_key_does_not_take_the_whole_zip
+    # tests/test_export_shapes.py::test_the_bound_is_the_zip_limit_not_a_shorter_one
+    # tests/test_export_shapes.py::test_a_cut_landing_on_a_separator_is_still_a_file
+    encoded = arc.encode("utf-8")
+    if len(encoded) > 65535:
+        arc = encoded[:65535].decode("utf-8", "ignore").rstrip("/")
+    return arc
 
 
 def _safe_component(value, fallback: str = "unknown") -> str:
@@ -121,7 +219,40 @@ def export_key(cand: dict, i: int) -> dict:
         value = cand.get(source)
         if value is not None:
             key[column] = value
-    key["pdb_key"] = cand.get("pdb_key", "")
+    raw_pdb_key = cand.get("pdb_key", "")
+    # Whatever the tool container wrote into ``job.result``, and not every
+    # container's source lives in this repo, so its TYPE is not ours to
+    # guarantee. Coerced HERE, at the definition, because a non-string
+    # aborts the WHOLE file rather than one row -- ``_basename`` (FASTA
+    # ids) and ``_safe_arcname`` (ZIP entry names) both call ``.replace``
+    # on it, and each serializer builds one document out of every row, so
+    # one bad key takes every other design in the export with it. Only the
+    # CSV survived, because ``csv`` stringifies what it writes. Same defect
+    # and same fix as the ``pdb_key`` set in
+    # templates/components/candidate_table.html and the basename in
+    # ``shared.job_recovery._candidate_from_partial``.
+    #
+    # Falsy stays falsy rather than a blanket ``str()``: ``str(0)`` is the
+    # truthy ``"0"``, a legal filename, and ``str(None)`` would name a file
+    # "None" -- where a falsy key is what selects the rank fallback,
+    # ``candidate_{i + 1}`` for the FASTA id and ``candidate_{i + 1}.pdb``
+    # for the ZIP entry.
+    #
+    # ``_basename`` and ``_safe_arcname`` carry no coercion of their own:
+    # every value either one receives is this line's output (they have one
+    # caller each, both in this module), so their ``str`` annotations hold
+    # once this one does. Pinned by
+    # tests/test_export_shapes.py::TestNonStringPdbKey.
+    #
+    # The TYPE is settled here. The LENGTH is not, and coercing one without
+    # the other leaves the blast radius where it was: a container that wrote
+    # a LIST coerces to a legal string long enough to overflow a ZIP header,
+    # which aborts the whole archive exactly as the AttributeError did.
+    # ``_safe_arcname`` bounds it there. ``_basename`` needs no equivalent --
+    # a long FASTA id is a long header line, not a crash, and its
+    # ``"_".join(tail.split())`` already neutralises the whitespace that
+    # would otherwise forge a second record.
+    key["pdb_key"] = str(raw_pdb_key) if raw_pdb_key else ""
     key["source_rank"] = cand.get("rank", i + 1)
     # Whether these numbers were measured at all. The smoke tier fabricates
     # deterministic scores when no model output exists, and stripping the
@@ -198,10 +329,10 @@ _STALE_VERDICT_KEYS = frozenset({"filter_status", "passed"})
 # a test; `tests/test_proteina_promises_no_clustering.py` now pins it.
 #
 # THE FIX HAS TO LIVE HERE rather than in the pipeline. This header is built
-# from what is STORED, and stored rows are expected to carry
-# ``"cluster_id": null`` inside ``result`` (run_pipeline.py writes the key,
-# webhooks/modal.py:549 copies it through) -- expected, not observed: the
-# production jobs table has not been read from here.
+# from what is STORED, and stored rows are expected to carry ``"cluster_id":
+# null`` inside ``result`` (run_pipeline.py writes the key,
+# webhooks/modal.py::_sanitize_candidate copies it through) -- expected, not
+# observed: the production jobs table has not been read from here.
 #
 # Scoped by NAME, across every tool, because no RENDERED column list declares
 # ``cluster_id`` -- ``shared/result_columns.py`` and all 14

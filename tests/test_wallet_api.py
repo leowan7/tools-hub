@@ -28,6 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -433,9 +435,18 @@ class TestRequiresWalletBlocksAtMoment3:
 
 
 class TestRequiresWalletMoment1NoGate:
-    """A zero estimate (smoke tier) lets the handler run with no hold."""
+    """A zero estimate (a free tier) runs with no hold -- but is still gated.
 
-    def test_zero_estimate_skips_gate_and_no_hold(self, client):
+    It used to return before ``wallet_preflight``, and this test asserted
+    that. The one real free tier -- proteina's ``validate`` -- still spawns
+    the A100 container its Modal app declares unconditionally, so the zero
+    estimate now skips only the reservation: preflight runs, and a frozen
+    wallet is refused like any other submit (see shared/wallet_guard.py's
+    ``free_run``). The refusal itself is pinned against the REAL preflight in
+    tests/test_free_presets_cost_nothing.py; preflight is a stub here.
+    """
+
+    def test_zero_estimate_is_preflighted_but_places_no_hold(self, client):
         from app import requires_wallet
         ran = {"called": False}
 
@@ -455,22 +466,37 @@ class TestRequiresWalletMoment1NoGate:
             "/smoke", view_func=handler, methods=["POST"]
         )
 
+        from shared.wallet import PreflightResult, REASON_OK
+
         with flask_app.test_client() as c, patch(
             "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
             "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("0"),
         ), patch(
+            "shared.wallet_guard.get_or_create_wallet",
+            return_value={"balance_usd": 0.0, "wallet_frozen": False},
+        ), patch(
             "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
             "shared.wallet_guard.wallet_reserve_hold"
         ) as reserve:
+            preflight.return_value = PreflightResult(
+                allow=True,
+                reason=REASON_OK,
+                estimated_cost_usd=Decimal("0"),
+                balance_usd=Decimal("0"),
+                deficit_usd=Decimal("0"),
+                hard_cap_usd=Decimal("0.15"),
+            )
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"
             resp = c.post("/smoke", data={"preset": "smoke"})
         assert ran["called"] is True
-        # Neither preflight nor reserve called when estimate is zero.
-        preflight.assert_not_called()
+        # Preflight IS consulted; only the reservation is skipped. This fails
+        # if ``free_run`` moves back above the preflight call. What preflight
+        # then DOES with a zero estimate is not exercised here -- it is a stub.
+        preflight.assert_called_once()
         reserve.assert_not_called()
 
 

@@ -16,18 +16,18 @@ not re-implemented here.
 WHAT THIS MODULE IS NOT
 -----------------------
 It is NOT a generalisation of ``aggregate_campaign_candidates``
-(shared/compute_campaigns.py:1177). That function has zero diff from this
-work, deliberately: the two paths differ in the ownership gate, the row source
-(one table versus two), the dedupe scope, the ranking key, the envelope, the
-sentinel, and whether standalone jobs exist at all. They share about fifteen
-lines, and unifying the rest would put the four tests pinning the legacy
-campaign sort permanently at risk to save them.
+(shared/compute_campaigns.py::aggregate_campaign_candidates). That function
+has zero diff from this work, deliberately: the two paths differ in the
+ownership gate, the row source (one table versus two), the dedupe scope, the
+ranking key, the envelope, the sentinel, and whether standalone jobs exist at
+all. They share about fifteen lines, and unifying the rest would put the four
+tests pinning the legacy campaign sort permanently at risk to save them.
 
 TWO INHERITED BEHAVIOURS THIS MODULE DOES NOT COPY
 --------------------------------------------------
 1. ``aggregate_campaign_candidates`` wraps its fetch in a bare
-   ``except Exception`` and returns an empty envelope (:1230-1237). That idiom
-   turns an unmodelled builder method into an empty table with a green suite.
+   ``except Exception`` and returns an empty envelope. That idiom turns an
+   unmodelled builder method into an empty table with a green suite.
    Here a read failure logs with ``exc_info`` and sets ``partial``, which
    travels in the envelope so the page can disclose it. What that does and does
    not cover is enumerated below; it is not a blanket claim.
@@ -50,16 +50,18 @@ Neither is closable from this file.
 
 1. :func:`~shared.compute_campaigns.list_campaigns_for_target` catches its own
    paging failure, logs, and returns the runs it managed to read
-   (shared/compute_campaigns.py:1077-1081). A SHORT run list is therefore
-   invisible here, and because it never raises, the ``except`` around the call
-   below is depth against a future change rather than a live path.
+   (shared/compute_campaigns.py::list_campaigns_for_target). A SHORT run list
+   is therefore invisible here, and because it never raises, the ``except``
+   around the call below is depth against a future change rather than a live
+   path.
 2. :func:`~shared.compute_campaigns.iter_succeeded_children` stops at
    ``_MAX_CHILD_PAGES`` with only a ``logger.error`` and then returns NORMALLY
-   (shared/compute_campaigns.py:1170-1174), so a campaign truncated at the page
-   bound reads here as a complete one. Out of reach with today's constants
-   (``MAX_SUBJOBS_PER_CAMPAIGN`` x ``DEFAULT_MAX_ATTEMPTS`` is 100,000 against a
-   101,000-row budget) but reachable by a campaign row whose ``max_attempts``
-   was raised out of band, since that column is read per campaign.
+   (shared/compute_campaigns.py::iter_succeeded_children), so a campaign
+   truncated at the page bound reads here as a complete one. Out of reach with
+   today's constants (``MAX_SUBJOBS_PER_CAMPAIGN`` x ``DEFAULT_MAX_ATTEMPTS``
+   is 100,000 against a 101,000-row budget) but reachable by a campaign row
+   whose ``max_attempts`` was raised out of band, since that column is read
+   per campaign.
 
 Both need a completeness out-param on the callee, which is outside this phase.
 So ``partial is False`` means "no read THIS module issued failed", not "the run
@@ -144,8 +146,8 @@ _MAX_STANDALONE_PAGES = 200
 def _is_refold(job: Mapping[str, Any]) -> bool:
     """True when a standalone job is a refold re-measurement, not a design run.
 
-    ``blueprints/jobs.py:415`` stamps ``_refold_of_job_id`` into the new job's
-    ``inputs`` and nothing else writes that key.
+    ``blueprints/jobs.py::_spawn_refold_job`` stamps ``_refold_of_job_id``
+    into the new job's ``inputs`` and nothing else writes that key.
 
     The ``isinstance`` guard is not defensive decoration. ``tool_jobs.inputs``
     is ``jsonb NOT NULL``, so SQL NULL is impossible, but a jsonb scalar (a
@@ -192,9 +194,9 @@ def _candidate_rows(
     as ``source_chunk`` (a provenance column is omitted from the CSV when NO
     row carries it, so an absent key on standalone rows costs nothing). The
     campaign aggregator stamps the same key from the same column
-    (shared/compute_campaigns.py:1262); without it here the target table
-    cannot say which of a run's sub-jobs produced a design, and ``#0`` from
-    every campaign would be indistinguishable.
+    (shared/compute_campaigns.py::aggregate_campaign_candidates); without it
+    here the target table cannot say which of a run's sub-jobs produced a
+    design, and ``#0`` from every campaign would be indistinguishable.
 
     ``_source_preset`` IS THE RUN'S MODE FOR A MODED TOOL, not necessarily its
     stored preset, and that is deliberate. This key is what
@@ -347,12 +349,13 @@ def _read_standalone_jobs(
 
     ``.eq("user_id", user_id)``
         The tenancy boundary, and the whole of it. ``get_service_client``
-        authenticates with the service-role key (shared/credits.py:51-72),
-        which bypasses RLS, so the ``FOR SELECT USING (auth.uid() = user_id)``
-        policy at supabase/migrations/0005_tool_jobs.sql:59 is not a backstop
-        here. ``tool_jobs.target_id`` is a plain nullable column with no
-        parentage predicate, so owning the target does not imply owning the
-        row: the two gates are independent and both are required.
+        authenticates with the service-role key
+        (shared/credits.py::get_service_client), which bypasses RLS, so the
+        ``FOR SELECT USING (auth.uid() = user_id)`` policy at
+        supabase/migrations/0005_tool_jobs.sql:59 is not a backstop here.
+        ``tool_jobs.target_id`` is a plain nullable column with no parentage
+        predicate, so owning the target does not imply owning the row: the two
+        gates are independent and both are required.
     ``.is_("campaign_id", "null")``
         ``_dispatch_chunk`` stamps the parent's ``target_id`` on EVERY campaign
         sub-job, so without this filter every campaign child comes back a
@@ -549,10 +552,10 @@ def aggregate_target_candidates(
                        return statement
 
     ``ok`` IS THE SENTINEL, not ``tools == []``. ``_campaign_export`` gates on
-    ``agg.get("tool") is None`` (blueprints/campaigns.py:687-688); under that
-    idiom an owned but EMPTY target would 404 a paying user's freshly launched
-    work. ``ok=True`` with ``tools == []`` means yours and empty: render an
-    empty state, export an empty file.
+    ``agg.get("tool") is None`` (blueprints/campaigns.py::_campaign_export);
+    under that idiom an owned but EMPTY target would 404 a paying user's
+    freshly launched work. ``ok=True`` with ``tools == []`` means yours and
+    empty: render an empty state, export an empty file.
 
     ``passed_total`` uses ``count_candidates_meeting_bar``'s per-RESULT semantics
     summed over the deduped jobs, so a target total equals the sum of the run
@@ -566,7 +569,8 @@ def aggregate_target_candidates(
     tests; do not print them as one number and do not "unify" them.
 
     ``provisional`` is computed over CAMPAIGNS ONLY, against
-    ``CAMPAIGN_TERMINAL_STATUSES`` (shared/compute_campaigns.py:226) and never
+    ``CAMPAIGN_TERMINAL_STATUSES``
+    (shared/compute_campaigns.py::CAMPAIGN_TERMINAL_STATUSES) and never
     ``CAMPAIGN_STATUSES``. The statuses that DISCRIMINATE the two sets are
     ``funded``, ``running`` and ``completing``: all three are members of
     ``CAMPAIGN_STATUSES``, so under that set a mid-flight run reads as
@@ -592,12 +596,13 @@ def aggregate_target_candidates(
     effective_mode = sort_mode if sort_mode in SORT_MODES else SORT_PERCENTILE
 
     # The client is resolved BEFORE the ownership gate, and the order is
-    # load-bearing. ``shared.targets`` binds the same ``get_service_client``
-    # object this module does (shared/targets.py:30), so whenever there is no
-    # client ``get_target`` also answers None. Gate first and every no-client
-    # request answers "not found", which leaves the owned-but-unreadable
-    # branch below unreachable in production while a test can still construct
-    # it: a branch that certifies an outcome no user can ever receive.
+    # load-bearing. ``shared.targets`` imports the same
+    # ``shared.credits.get_service_client`` object this module does, so
+    # whenever there is no client ``shared/targets.py::get_target`` also
+    # answers None. Gate first and every no-client request answers "not
+    # found", which leaves the owned-but-unreadable branch below unreachable
+    # in production while a test can still construct it: a branch that
+    # certifies an outcome no user can ever receive.
     client = get_service_client()
     if client is None:
         logger.warning("target_results: no service client for target %s", target_id)
@@ -630,11 +635,11 @@ def aggregate_target_candidates(
     #
     # Never one .in_() over every campaign id. Three reasons, all of which a
     # later "optimisation" would break: _MAX_CHILD_PAGES
-    # (shared/compute_campaigns.py:1137) is derived PER CAMPAIGN and widened to
-    # an IN list silently truncates; one pathological 50k-child campaign would
-    # exhaust a shared page budget and truncate every campaign after it; and
-    # the per-campaign dedupe map below is only per-campaign because the read
-    # is (see _merge_child_rows).
+    # (shared/compute_campaigns.py::_MAX_CHILD_PAGES) is derived PER CAMPAIGN
+    # and widened to an IN list silently truncates; one pathological 50k-child
+    # campaign would exhaust a shared page budget and truncate every campaign
+    # after it; and the per-campaign dedupe map below is only per-campaign
+    # because the read is (see _merge_child_rows).
     try:
         campaigns = list(
             list_campaigns_for_target(target_id, user_id=user_id)
@@ -687,9 +692,9 @@ def aggregate_target_candidates(
         # colabfold), so one design becomes two rows attributed to two tools.
         # It merges in SILENTLY without this filter: refolds carry no
         # campaign_id and _spawn_refold_job stamps target_id
-        # (blueprints/jobs.py:424-431), and candidate_records reads designs[]
-        # (shared/jobs.py:109-112), which is exactly the shape boltz2 and
-        # esmfold emit.
+        # (blueprints/jobs.py::_spawn_refold_job), and candidate_records reads
+        # designs[] (shared/jobs.py::candidate_records), which is exactly the
+        # shape boltz2 and esmfold emit.
         if _is_refold(job):
             refold_jobs += 1
             continue

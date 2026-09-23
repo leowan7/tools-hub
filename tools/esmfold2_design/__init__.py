@@ -200,10 +200,30 @@ def validate(
             "batch_size": batch_size,
             "target": " + ".join(label_bits),
             # n_seeds * batch_size = total designs returned. n_seeds fans
-            # out to parallel Modal children (same wall-clock as one
-            # seed), batch_size runs N designs inside one gradient pass.
-            # The wallet estimator treats each design as one billable
-            # unit so cost scales linearly with both axes.
+            # out to parallel Modal children (roughly one seed's wall
+            # clock); batch_size runs N designs inside one child, so it
+            # adds no container and roughly multiplies that child's wall
+            # clock. The HOLD scales with n_seeds ONLY -- the spec's
+            # scaling_param is "n_seeds" (shared/wallet_estimates.py), not
+            # n_designs_total. The CHARGE is a different number and scales
+            # with BOTH: settle bills compute_charge_usd on measured GPU
+            # seconds (shared/jobs.py::_charge_workspace_for_completed_job
+            # -> shared/wallet.py::compute_charge_usd),
+            # clamped to the hard cap, so the two measured batch-6 runs
+            # bill $13.0868 (3185 s) and $13.2841 (3233 s) against $1.8490
+            # at the ~450 s batch-1 anchor -- all under the $15.00 cap at
+            # n_seeds=1, so the hold still covers it. (Those two are
+            # measured; the batch-1 anchor is VALIDATION-LOG prose with no
+            # run row, so $1.8490 is an estimate. An earlier draft of this
+            # comment billed "3209 s", which is the AVERAGE of the two runs
+            # and not a run that happened.) This comment
+            # used to say cost "scales linearly with both axes", then that
+            # batch_size "moves TIME, not cost". The first was wrong about
+            # rounding (1 seed $9.8614, 8 seeds $78.8909 -- linear in
+            # gpu_seconds, differing only by the 4dp rounding applied to
+            # each); the second was wrong about the bill.
+            # n_designs_total is stamped for the job record; it does not
+            # move the hold.
             "parameters": {"n_designs_total": n_seeds * batch_size},
         },
         None,

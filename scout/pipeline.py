@@ -571,10 +571,9 @@ def run_pipeline(
 FEASIBILITY_CSV_COLUMNS = [
     "epitope_id",
     # Same reason as CSV_COLUMNS: this file is written per job dir, not per
-    # chain, and /scout/feasibility/download serves it with no chain parameter
-    # at all. A chain-B request that stops at the results gate leaves chain A's
-    # file in place, so without this stamp the delivered CSV cannot say which
-    # chain it describes.
+    # chain, so without this stamp the delivered CSV cannot say which chain it
+    # describes. /scout/feasibility/download reads it to decide whether the
+    # file matches the chain being asked for.
     "chain_id",
     "residues",
     "residue_count",
@@ -634,6 +633,14 @@ def run_feasibility_pipeline(
     pdb_path = Path(pdb_path)
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_path}")
+
+    # NB: this writes feasibility_results.csv only at the very end, so a raise
+    # leaves the PREVIOUS run's file on disk. Do not "fix" that by deleting on
+    # entry: one user click runs this pipeline TWICE (the
+    # /scout/feasibility/progress SSE, then POST /scout/feasibility/analyze
+    # re-running it to read the numbers back), so an entry-delete destroys a
+    # good result whenever the second run fails. Staleness is handled where the
+    # file is READ, in feasibility_download.
 
     def _emit(stage: str, pct: int) -> None:
         if progress_callback is not None:

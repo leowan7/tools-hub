@@ -38,8 +38,9 @@ af2 and colabfold is false.
 WHAT THIS FILE DOES NOT PIN. "Declares one" here means an ipTM legend in
 shared/score_legends.py carrying ``good`` -- the machine-readable bar,
 which is what the template consults. It is NOT a check that the tool's
-guide PAGE prints that number, nor that the two agree where both exist
--- pxdesign's guide states ipTM >= 0.70 against a declared 0.75. Two
+guide PAGE prints that number, nor that the two agree where both exist;
+tests/test_guide_bar_matches_legend.py pins that half, and pxdesign's
+guide stated ipTM >= 0.70 against a declared 0.75 until it landed. Two
 further limits: every check reads the ipTM ``<dd>`` only, so a pointer
 placed elsewhere on the page is invisible to it, and the clause is
 matched by phrase, so a reworded one is too. The sets differ: on
@@ -62,11 +63,12 @@ from shared.score_legends import SCORE_LEGENDS, get_legend
 # _public_tool_context -> _build_public_tool_context -> _pilot_context ->
 # estimated_cost_for_tool -> _historical_p90_seconds, an uncached Supabase
 # SELECT on tool_jobs_p90
-# (shared/wallet_estimates.py:672). Counted on this branch by wrapping
-# those functions: 10 of the 28 pages an _entries call renders reach the
-# SELECT -- the 14 guide pages build no such context at all, and af2,
-# colabfold, esmfold and opendde stop short of it. _entries memoises on
-# the module-scoped app, so its 28 renders happen once for the module:
+# (shared/wallet_estimates.py::_historical_p90_seconds). Counted on this
+# branch by wrapping those functions: 10 of the 28 pages an _entries call
+# renders reach the SELECT -- the 14 guide pages build no such context at
+# all, and af2, colabfold, esmfold and opendde stop short of it. _entries
+# memoises on the module-scoped app, so its 28 renders happen once for the
+# module:
 # 10 live SELECTs total, not 10 on each of the five call sites.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -102,7 +104,7 @@ NO_SHARED_SCALE = "no cross-tool band to compare it to"
 
 #: Rendered on both surfaces, and the reason the no-legend branch still
 #: prints the general band rather than dropping the sentence:
-#: test_public_tool_pages::test_every_general_legend_reads_the_glossary
+#: tests/test_public_tool_pages.py::test_every_general_legend_reads_the_glossary
 #: asserts this string is on /tools/mpnn, and mpnn has no ipTM legend.
 BAND = GLOSSARY["ipTM"]["good_range"]
 
@@ -339,7 +341,7 @@ def test_only_a_legend_without_a_bar_drops_the_general_band(all_tools_app):
     panel's own preamble already says each tool reports a subset of these
     metrics -- so it keeps the general band and only loses the pointer.
     Dropping the band there would also break
-    test_public_tool_pages::test_every_general_legend_reads_the_glossary,
+    tests/test_public_tool_pages.py::test_every_general_legend_reads_the_glossary,
     which asserts the band renders on /tools/mpnn."""
     wrong = {}
     for (slug, surface), text in _entries(all_tools_app).items():

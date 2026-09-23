@@ -404,6 +404,54 @@
     restoreStarState(table, scope);
     updateShortlistUI(scope);
 
+    // Guard the per-design .pdb downloads. These anchors carry `download`,
+    // so the browser -- not this page -- handles the answer, and every
+    // refusal blueprints/jobs.py::job_candidate_pdb composes is invisible:
+    // the not-found 404 and the malformed-payload 500 return a text/plain
+    // body with no Content-Disposition, the missing-job 404 renders
+    // 404.html, and the route is @login_required, so a stale tab's click
+    // is answered with a 302 to /login that fetch FOLLOWS to a 200 page.
+    // Chrome writes nothing; Firefox saves the refusal AS the .pdb. Same
+    // defect and the same guard as the Scout downloads.
+    //
+    // One surface per table, not per row -- there are as many anchors as
+    // designs, and this callback scrolls the surface into view. Binding is
+    // idempotent because bindGuardedDownload ASSIGNS link.onclick, which is
+    // what makes this safe under the duplicate script tags a page with two
+    // panels emits; the `rebound` scenario in
+    // tests/js/scout_download_harness.cjs is what holds that. The wiring
+    // below is pinned by tests/test_candidate_table_js_contract.py.
+    //
+    // ponytail: probe-then-replay, so a download that SUCCEEDS fetches
+    // twice. The probe's release() is r.body.cancel(), a client-side abort
+    // that lands after job_candidate_pdb has already run download_output
+    // and bfactors_on_100_bytes over the whole file, so cancelling saves
+    // neither the Storage egress nor the rewrite. Inherent to reusing the
+    // shipped guard; a refusal check that does not decode the file would
+    // be the upgrade.
+    var dlErr = document.getElementById('cand-dl-err-' + scope);
+    if (window.bindGuardedDownload && dlErr) {
+      table.querySelectorAll('a.cand-pdb-download').forEach(function (a) {
+        window.bindGuardedDownload(a, function (msg) {
+          // Unhide BEFORE writing: aria-live announces a change to a region
+          // already in the tree, and this one ships hidden, so text-then-
+          // unhide arrives as initial content and is never read out.
+          dlErr.hidden = !msg;
+          // Name the file. bindGuardedDownload clears the surface at CLICK
+          // time and writes nothing on its success path, so a slow refusal
+          // from an earlier row can land after a later row downloaded
+          // cleanly. Nothing it can show names the design: the three
+          // constants in static/js/scout-download.js are fixed strings, and
+          // so are the two text/plain bodies this route composes
+          // ("# Candidate PDB not found.", "# Malformed PDB payload." in
+          // blueprints/jobs.py::job_candidate_pdb). Unlabelled, the message
+          // would describe the wrong design.
+          dlErr.textContent = msg ? a.getAttribute('download') + ': ' + msg : '';
+          if (msg) dlErr.scrollIntoView({ block: 'center' });
+        });
+      });
+    }
+
     // Star toggle
     table.addEventListener('click', function (e) {
       var btn = e.target.closest('.star-btn');

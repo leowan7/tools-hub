@@ -1459,9 +1459,10 @@ def test_the_proteina_comment_table_is_the_canonical_measurement_table():
     Every number below that table is argued from it — the quadratic, the two
     power-law exponents, the percentage of the card at the cap, the runtime
     fit, and ultimately hard_cap_target_aa itself. The shipped CONSTANTS are
-    pinned, and the canary's copy of the same three rows is pinned (tests/
-    test_proteina_canary.py::...::test_the_quoted_measurements_match_the_
-    canonical_table), but the rows the constants are justified BY were free to
+    pinned, and the canary's copy of the same three rows is pinned
+    (tests/test_proteina_canary.py::
+    test_the_quoted_measurements_match_the_canonical_table), but the rows the
+    constants are justified BY were free to
     move: change 8,943 to 9,943 in that comment and the whole suite stayed
     green, while the next person to re-derive the cap would re-derive it from
     a reading nobody took. That is the same failure the canary-footer pin
@@ -1860,3 +1861,892 @@ def test_size_refusal_pluralises_and_names_what_it_counted():
     assert "623 residues" in v.reason
     one = _proteina_size(1)          # min-residue floor fires, not the cap
     assert one.kind is VerdictKind.NEEDS_FIX
+
+
+def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
+    """The bindcraft runtime anchor is a single real job, so pin it to that job.
+
+    Job 1c4d5803: 1170 GPU-s for 2 designs against 4ZQK chain A (~115 aa),
+    2026-05-28. The figures and their wallet-ledger reconciliation are in the
+    worked-example header of tools/bindcraft/meta.py, the primary record is
+    the row in docs/VALIDATION-LOG.md, and the same run is cited by
+    tools/bindcraft/__init__.py::validate.
+
+    Three things are pinned. The FIRST is the anchor; the other two are the
+    ways it rotted or could rot without anything failing.
+
+    ``runtime_alpha`` is NOT pinned to 1.5 and cannot be, because the run is a
+    single target size only 4.2% off this curve's 120 aa anchor: (115/120)
+    **alpha barely moves over the plausible range, so the residual below is
+    nearly blind to the exponent. It is not entirely blind -- solving the
+    tolerance gives alpha in about [-0.55, 1.80], so a large drift is caught
+    (verified by mutation: alpha=3.0 estimates 17.60 min, 9.7% out, FAILS)
+    while 1.5 and 1.0 are indistinguishable here. Treat size scaling as
+    unmeasured until a second target size is run. What pinning an exponent
+    actually looks like is
+    ``test_proteina_runtime_curve_bends_with_target_size`` in this file, and
+    it needs two target sizes to do it.
+
+    1. The curve reproduces that run within 5%. The shipped constants put it
+       at 18.76 min against 19.5, a 3.8% residual, so +/-5% is the tightest
+       round band that admits the fit HERE. That is the rule
+       ``test_proteina_runtime_estimate_is_anchored_to_the_measured_shard``
+       follows for its single anchor, as against the +/-10% that
+       ``test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards``
+       uses, where one band must cover the worst residual across three points.
+       The old base=300 / baseline=10 constants -- a published ~30
+       min/TRAJECTORY rate applied per DESIGN -- put this run at 56 min, 2.9x
+       over, so the looser band would have caught them too; what +/-5% adds is
+       that it also refuses the quieter drift: executed, base 39.5 and 43.6
+       pass while 39.0 and 44.0 fail, where +/-10% passed everything from 37.5
+       to 45.0. Both bounds are far clear of the estimator's max(5.0, est)
+       floor, so this cannot be satisfied by the floor instead of the anchor.
+
+    2. The estimate at the default design count stays inside the band this
+       tool already advertises. ``PRESET_RUNTIME["pilot"]`` is rendered to
+       users by shared/tools_catalog.py and blueprints/tools.py, so a curve
+       outside it contradicts the page the user read on the way to the form
+       -- which is exactly what the old constants did, quoting 120 min
+       (300 * (120/120)**1.5 * 4/10) under a catalog promising 30 to 45.
+       The band is PARSED, not restated -- the same rule
+       tests/test_proteina_shard_size.py::
+       test_about_runtime_row_names_the_width_it_was_measured_at follows --
+       so moving either surface fails here instead of drifting apart quietly.
+
+    3. ``runtime_baseline_designs`` still equals the form default. It is a
+       DIVISOR (shared/pdb_preflight_rules.py::runtime_estimate_min), so it
+       only reads as "the estimate at the default design count" while it
+       tracks whatever ``validate`` falls back to. It stopped tracking once
+       already, silently, when that default moved to 4: nothing failed, the
+       panel just quoted a runtime for a design count no form submits. Read
+       the fallback out of the validator rather than restating it here, so
+       it cannot drift the same way twice.
+    """
+    import inspect as _inspect
+    import re as _re
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.bindcraft as _bindcraft
+    from tools.bindcraft import meta as _meta
+
+    rules = TOOL_RULES["bindcraft"]
+
+    # (1) Reproduce job 1c4d5803. Anchored on the BILLED 1170 GPU-seconds:
+    #     that is the figure the wallet ledger reconciles against the rate
+    #     card, and tools/bindcraft/example/result.json independently stores
+    #     the same run as runtime_minutes 19.5. The job's own timestamps
+    #     (18:31:18 to 18:50:51, docs/VALIDATION-LOG.md) span 1173 s, 0.3%
+    #     away, so the choice between the two records cannot move this
+    #     assertion. A third figure, 19m57s, used to sit in the meta.py
+    #     header; it matched neither record and this change corrects it.
+    est = runtime_estimate_min(rules, target_aa=115, num_designs=2)
+    measured_min = 1170.0 / 60.0
+    residual = abs(est - measured_min) / measured_min
+    assert residual <= 0.05, (
+        f"base={rules.size.runtime_base_min} alpha={rules.size.runtime_alpha} "
+        f"baseline={rules.size.runtime_baseline_designs} puts job 1c4d5803 at "
+        f"{est:.1f} min against a measured {measured_min:.1f} "
+        f"({residual:.0%} out)"
+    )
+
+    # (3) The baseline is the validator's own default, read from its source.
+    #     Checked before (2) because (2)'s premise is that this IS the
+    #     default design count.
+    src = _inspect.getsource(_bindcraft.validate)
+    m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
+    assert m, (
+        "could not find the num_designs fallback in "
+        "tools/bindcraft/__init__.py::validate -- if the parse changed, fix "
+        "this test rather than deleting it; the drift it guards is silent"
+    )
+    default_designs = int(m.group(1))
+    assert rules.size.runtime_baseline_designs == default_designs, (
+        f"runtime_baseline_designs={rules.size.runtime_baseline_designs} but "
+        f"validate() defaults num_designs to {default_designs}; the preflight "
+        f"panel is quoting a runtime for a design count the form never submits"
+    )
+
+    # (2) And the default-count estimate sits inside the advertised band.
+    band = str(_meta.PRESET_RUNTIME["pilot"]["typical_minutes"])
+    bounds = [float(x) for x in _re.findall(r"\d+(?:\.\d+)?", band)]
+    assert len(bounds) == 2, (
+        f"PRESET_RUNTIME['pilot']['typical_minutes'] is {band!r}, which is "
+        f"not the two-number range this check assumes"
+    )
+    lo, hi = bounds
+    at_default = runtime_estimate_min(
+        rules, target_aa=120, num_designs=default_designs
+    )
+    assert lo <= at_default <= hi, (
+        f"the preflight panel estimates {at_default:.1f} min for "
+        f"{default_designs} designs while the catalog and About panel "
+        f"advertise '{band} min' for that same default"
+    )
+
+
+def test_pxdesign_runtime_curve_anchors_on_one_run_and_discloses_the_rest():
+    """pxdesign's runtime anchor is three real pilot runs that do not fit.
+
+    The three, all pilot tier, all passing the user's ``num_designs``
+    straight through ``tools.pxdesign.build_payload`` to the container:
+
+        job 79228f03  2026-05-26   462 GPU-s   5 designs   1HEW chain A
+        job 816fc4a9  2026-05-27   504 GPU-s   2 designs   4ZQK chain A
+        worked example             1380 GPU-s  25 designs  ~420 aa, 2 chains
+
+    The first two are rows in docs/VALIDATION-LOG.md. The third is
+    tools/pxdesign/example/result.json, which stores ``runtime_minutes``
+    23.0 and ``total_designs`` 25 as data and is reconciled against the
+    wallet ledger in the EXAMPLE header of tools/pxdesign/meta.py.
+
+    THE CANDIDATE COUNTS ARE NOT THE DESIGN COUNTS on the first two and
+    must not be used as such. Both surfaced exactly 2 candidates, all
+    below threshold. The mechanism that produces that shape is the pilot
+    fallback emitting top-N when nothing passes the filter, named in the
+    comment above the ``job_tier`` key in
+    tools/boltzgen/__init__.py::build_payload -- but that is BOLTZGEN's
+    comment, gating BOLTZGEN's tier on its own ipTM/pLDDT/RMSD thresholds.
+    pxdesign's build_payload sets no ``job_tier`` and its container is not
+    in this repo, so "the same fallback ran here" is an INFERENCE from a
+    sibling tool, not something this repo records. It is load-bearing: the
+    rates below divide by the ``num_designs`` REQUESTED, which assumes all
+    of them were generated and scored. Dividing by candidates instead
+    would make the two runs agree for the wrong reason.
+
+    WHY THEY DO NOT FIT. Per-design rate falls 4.20 -> 1.54 -> 0.92 min as
+    n goes 2 -> 5 -> 25: a fixed overhead, for which
+    ``shared/pdb_preflight_rules.py::runtime_estimate_min`` has no term.
+    Its form is strictly proportional to n, so no one base satisfies all
+    three and choosing one is choosing WHERE to be right. The choice is a
+    SINGLE anchor, job 79228f03, because its 5 designs sit closest to this
+    curve's own baseline of 8: a design correction of 0.625, the nearest to
+    1 of the three (the others are 0.25 and 3.125). It is NOT the nearest
+    in target SIZE and an earlier draft of this docstring said it was --
+    job 816fc4a9 at 115 aa is 5 from the 120 aa reference where this one is
+    9, and needs the smaller size correction of the two (0.95x against
+    1.10x). That run is rejected on design count, not size: 2 designs is a
+    quarter of the baseline, and the falling rates above are exactly the
+    low-n end a strictly proportional form gets most wrong. The other two
+    are treated as residuals to disclose (check 2) and never as
+    corroboration.
+
+    ``runtime_alpha`` is NOT pinned and CANNOT be calibrated from these
+    runs. That is check (4) below rather than a claim in prose: target
+    size is confounded with design count across them (the 420 aa run is
+    also the 25-design run), and the log-linear fit through all three
+    returns a NEGATIVE exponent. Pinning an exponent properly needs two
+    target sizes at one design count, which is what
+    ``test_proteina_runtime_curve_bends_with_target_size`` in this file
+    has and this tool does not.
+    """
+    import inspect as _inspect
+    import math as _math
+    import re as _re
+    from pathlib import Path as _Path
+
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.pxdesign as _pxdesign
+
+    rules = TOOL_RULES["pxdesign"]
+    repo = _Path(__file__).resolve().parent.parent
+
+    # 1HEW chain A is COUNTED, not restated: preflight sizes a target on
+    # surviving protein residues, and this is the structure job 79228f03
+    # ran against. Hen lysozyme is 129 residues, so a copy that disagreed
+    # would be the wrong file rather than a new measurement.
+    anchor_aa = len({
+        line[22:27]
+        for line in (repo / "static" / "example" / "1HEW.pdb").read_text().splitlines()
+        if line.startswith("ATOM") and line[21:22] == "A"
+    })
+    assert anchor_aa == 129, f"1HEW chain A counts {anchor_aa}, expected 129"
+
+    # (1) Reproduce the anchor run. This is the ONLY run the constants are
+    #     fitted to, so the band is the +/-5% that the single-anchor
+    #     bindcraft and proteina checks in this file use, not a wider one.
+    #     The shipped constants put job 79228f03 at 7.69 min against a
+    #     measured 7.70. Mutating runtime_base_min and re-running this
+    #     test: 10.7 and 11.4 pass, 10.6 and 11.5 fail. Only the LOWER edge
+    #     is this check's -- the upper one is check (2)'s over-quote
+    #     ceiling, which bites at 11.41, below this check's own 11.78. That
+    #     is the trade-off working as intended: base cannot be raised to
+    #     soften the n=2 under-read without worsening the large-target
+    #     over-quote. The OLD base=300 put this run at 206 min, 2575% out.
+    anchor_min = 462.0 / 60.0
+    est = runtime_estimate_min(rules, target_aa=anchor_aa, num_designs=5)
+    residual = abs(est - anchor_min) / anchor_min
+    assert residual <= 0.05, (
+        f"base={rules.size.runtime_base_min} alpha={rules.size.runtime_alpha} "
+        f"baseline={rules.size.runtime_baseline_designs} puts job 79228f03 at "
+        f"{est:.2f} min against a measured {anchor_min:.2f} "
+        f"({residual:.0%} out)"
+    )
+    # The anchor clears the estimator's max(5.0, est) floor, so what passed
+    # above is the curve and not the floor standing in for it.
+    assert est > 5.0
+
+    # (2) The other two runs are NOT fitted, and this pins how wrong they
+    #     are so the envelope comment cannot go stale about it. The 420 aa
+    #     bound is a CEILING, not an equality: a change that shrinks that
+    #     residual passes, and only a regression fails. Asserting the
+    #     current value exactly would pin a known defect in place and fail
+    #     the day someone fixes it. The n=2 run needs a different shape --
+    #     see the mutation note below it.
+    #
+    #     Do NOT rewrite this as a corroboration of runtime_base_min. An
+    #     earlier draft interpolated these two runs in the design-count
+    #     dimension and read 12.21 off the line, which is arithmetically
+    #     right and means nothing: the two runs sit at 115 and ~420 aa, so
+    #     the line crosses a 3.6x target-size gap that ``runtime_base_min``
+    #     is defined to exclude. Size-normalising both to 120 aa first --
+    #     which needs the very exponent this test refuses to calibrate --
+    #     turns the slope NEGATIVE and reads 7.74 instead.
+    est_n2 = runtime_estimate_min(rules, target_aa=115, num_designs=2)
+    #     A CEILING ON THE RESIDUAL WOULD BE INERT, so this asserts the
+    #     mechanism instead. ``runtime_estimate_min`` ends in
+    #     max(5.0, est), which caps this run for every base below ~21.1,
+    #     so the under-read is 0.405 whatever the constants say: measured
+    #     by mutation, ``residual <= 0.41`` passes at base=0.001 AND at
+    #     the 300.0 this change removes, i.e. it could not have caught
+    #     the defect this test exists for. What IS pinnable is the claim
+    #     the _PXDESIGN comment actually makes -- that the FLOOR and not
+    #     the curve decides this run. That stops being true above ~21.1.
+    #
+    #     The 40% below is a LITERAL on purpose. Recomputing the residual
+    #     for the message would print whatever the broken constants imply
+    #     rather than what the envelope discloses -- at base=300.0 that
+    #     reads -745%, a negative under-read, in the one failure this
+    #     test exists to produce.
+    assert est_n2 == 5.0, (
+        f"job 816fc4a9 now estimates {est_n2:.2f} min against a measured "
+        f"8.4, instead of resting on the max(5.0) floor. The ~40% "
+        f"under-read the _PXDESIGN envelope discloses is a floor "
+        f"artefact, and that is no longer what this run is -- re-read "
+        f"that comment before changing this"
+    )
+    over = (runtime_estimate_min(rules, target_aa=420, num_designs=25) - 23.0) / 23.0
+    assert over <= 6.9, (
+        f"the 25-design worked example is now over-quoted by {over:.0%}; the "
+        f"_PXDESIGN comment discloses ~676% (~178 min against a measured "
+        f"23.0). If this shrank, update the comment"
+    )
+
+    # (3) The baseline is still the form default, read out of the validator
+    #     rather than restated here. bindcraft's had stopped tracking its
+    #     form silently before #314 re-anchored it -- nothing failed, the
+    #     panel just quoted a runtime for a design count no form submits.
+    src = _inspect.getsource(_pxdesign.validate)
+    m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
+    assert m, (
+        "could not find the num_designs fallback in "
+        "tools/pxdesign/__init__.py::validate -- if the parse changed, fix "
+        "this test rather than deleting it; the drift it guards is silent"
+    )
+    default_designs = int(m.group(1))
+    assert rules.size.runtime_baseline_designs == default_designs, (
+        f"runtime_baseline_designs={rules.size.runtime_baseline_designs} but "
+        f"validate() defaults num_designs to {default_designs}; the preflight "
+        f"panel is quoting a runtime for a design count the form never submits"
+    )
+    # The form input carries its OWN default and a user submitting the form
+    # untouched never reaches the validator's fallback, so both have to
+    # agree or the number pinned above describes neither path.
+    form = (repo / "templates" / "tools" / "pxdesign_form.html").read_text()
+    shown = _re.search(
+        r'name="num_designs"[^>]*?pre_value\(\s*pre_fill\s*,\s*"num_designs"\s*,\s*"(\d+)"\s*\)',
+        form,
+    )
+    assert shown and int(shown.group(1)) == default_designs, (
+        f"the num_designs input in templates/tools/pxdesign_form.html shows "
+        f"{shown.group(1) if shown else 'no parseable'} default while "
+        f"validate() falls back to {default_designs}"
+    )
+
+    # (4) The exponent is left alone, and this is the evidence for that.
+    #     Fitting all three runs log-linearly -- the only fit they support
+    #     -- returns a NEGATIVE alpha, i.e. runtime FALLING as the target
+    #     grows. That is the confounding between target size and design
+    #     count, not a measurement, so alpha stays on the AF2-IG reasoning
+    #     it arrived with. Recomputed here rather than asserted in a
+    #     comment; it turns into a real signal the moment a run is added.
+    #     No change to the shipped constants can fail it -- ``runs`` is
+    #     literal and runtime_alpha reaches only the failure message. It
+    #     guards the table beside it, which is the one thing a comment
+    #     asserting a fit result cannot do for itself.
+    runs = [
+        (anchor_aa, 5, 462.0 / 60.0),
+        (115, 2, 504.0 / 60.0),
+        (420, 25, 1380.0 / 60.0),
+    ]
+    xs = [_math.log(aa / 120.0) for aa, _n, _t in runs]
+    ys = [_math.log(t) - _math.log(n / 8.0) for _aa, n, t in runs]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    fitted_alpha = (
+        sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        / sum((x - mx) ** 2 for x in xs)
+    )
+    assert fitted_alpha < 0.0, (
+        f"the three pilot runs now fit a positive exponent ({fitted_alpha:.2f}); "
+        f"if a run was added or corrected, runtime_alpha="
+        f"{rules.size.runtime_alpha} may finally be calibratable and this "
+        f"test's premise needs re-reading"
+    )
+
+
+def test_rf_runtime_baselines_are_100_designs_not_the_form_default():
+    """rfantibody and rfdiffusion anchor at 100 designs while their forms default to 4.
+
+    That gap looks like a bug and is not one. Both validators fall back to
+    ``num_designs=4`` (tools/rfantibody/__init__.py::validate,
+    tools/rfdiffusion/__init__.py::validate) while both envelopes anchor
+    ``runtime_baseline_designs`` at 100, so the estimator scales a default
+    submission by 4/100. Both now write that 100 out although it equals
+    ``SizeEnvelope``'s dataclass default, so every anchor in this table is
+    visible at its own site -- bindcraft 4, pxdesign 8, proteina 8.
+
+    THIS TEST AND ``test_bindcraft_runtime_curve_reproduces_its_one_measured_run``
+    ABOVE GIVE OPPOSITE ADVICE ON PURPOSE. That one asserts bindcraft's
+    baseline still EQUALS its form default; this one asserts these two
+    still DIFFER from theirs. Both are right because
+    ``runtime_baseline_designs`` is a divisor, and the only rule is that it
+    must carry the same units as the ``runtime_base_min`` sitting beside
+    it. bindcraft's base was re-derived per 4 designs and the pair moved
+    together (300 -> 40 and 10 -> 4). rfantibody's base was derived per 100
+    designs and was deliberately left alone. Neither convention is the
+    house style; the PAIRING is the invariant. Moving one member of either
+    pair without the other re-scales that tool's panel silently.
+
+    boltzgen is now the only tool left inheriting the 100 implicitly. It
+    gets no residual pin -- its anchor is a sampling batch rather than a
+    calibration run, its form field is ``budget`` rather than
+    ``num_designs``, and its own comment already names the count of 100
+    beside its runtime_base_min -- but its effective value IS asserted
+    below, because writing the 100 out on the two tools above stopped
+    them from pinning the shared default on boltzgen's behalf. Mutating
+    ``SizeEnvelope.runtime_baseline_designs`` to 4 fails this test only
+    through that one line.
+
+    Both validator fallbacks are read from source, because the reason 100
+    survives is that these forms default to 4 -- if a form ever moved to
+    100 the two surfaces would agree by accident and this test's whole
+    premise would need re-reading.
+
+    The rfantibody anchors, at two target sizes:
+
+      * docs/CALIBRATION-WEEK2.md job #1 -- 1JFF chain A, 412 aa, 4 designs,
+        2489 s. The same doc scales it to "num_designs=100 ~ 17 hours",
+        which is where a 100-design anchor came from in the first place.
+        This run is CIRCULAR: runtime_base_min was back-projected from it,
+        so with alpha held at 1.2 its residual is runtime_base_min/236.02
+        identically, for any inputs. It is pinned as a REGRESSION guard on
+        the constant, not as evidence for it. At 25% it bounds the base to
+        (177.02, 295.03), which admits 236 as readily as the shipped 200.
+      * tools/rfantibody/meta.py's third worked example -- 4ZQK chain A,
+        2026-09-08. Independent, and every input it turns on is RECORDED,
+        which is the whole reason this is the second anchor and e29a462d
+        is not. The design count and the runtime are read out of
+        tools/rfantibody/example/result.json by the body below rather than
+        transcribed here, so they cannot drift from their source.
+
+    What that example records: ``"total_designs": 4``, with
+    ``"candidate_count": 20`` confirming the 4 -> 20 ProteinMPNN fanout, so
+    the 4 is a BACKBONE count and not a candidate count -- the very
+    ambiguity that made e29a462d unusable. And ``"runtime_minutes": 13.9``,
+    of which meta.py's ``"runtime": "14 minutes"`` is the rounded display
+    form. The target size, 115 aa for 4ZQK chain A, is attested by three
+    real Modal runs recorded in shared/pdb_preflight_rules.py -- the
+    "VERIFIED on GPU 2026-08-05" notes on _RFDIFFUSION, _BOLTZGEN and
+    _PXDESIGN, each returning {A:115, ...}. meta.py's "crystal numbering
+    18-132" agrees with 115 but is a numbering range rather than a count,
+    so it is not what is relied on: at 100 aa the factor-of-2 band below
+    would fail, so this anchor is only sound because the count is recorded
+    independently of that range.
+
+    A second and INDEPENDENT record of that run corroborates the 13.9:
+    ``"cost_usd": "1.01"`` (tools/rfantibody/meta.py EXAMPLE) is the
+    CUSTOMER-facing charge, raw GPU cost times WALLET_MARKUP -- the
+    convention stated and enforced by tests/test_worked_examples.py
+    ::TestExampleNumbersComeFromThePayload
+    ::test_recorded_cost_is_what_this_tool_would_charge, which skips
+    rfantibody only because it needs an example's gpu_seconds and this
+    example records none. A charge converts back to seconds only through
+    the tool's own GPU class, and this slug's is pinned rather than
+    asserted: it declares ``TOOL_RULES["rfantibody"].gpu`` = A100-40GB,
+    and tests/test_gpu_class_drift.py
+    ::test_wallet_gpu_class_matches_container asserts the wallet bills it
+    at exactly that field. shared/wallet.py prices A100-40GB
+    at $0.000714/s before a WALLET_MARKUP of 1.70 -- $0.0012138/s, so $1.01
+    is 832 s = 13.87 min, 0.2% from the recorded figure. The body asserts
+    this below, deriving the rate from shared.wallet rather than quoting it.
+
+    Converting at the wrong class is the trap, and it is convincing: at the
+    A100-80GB rate the same charge implies 9.63 min and looks 1.44x off,
+    and 1.44 is only 0.001028/0.000714. Each of the six tools with an
+    envelope in pdb_preflight_rules.py records a worked example with both a
+    duration and a cost, and every one of the six sits within 0.23% of its
+    OWN declared class's marked-up rate -- three at each of the two.
+
+    The curve says 7.60 min against that 13.9, so the panel quotes 1.83x
+    FAST. That is why the band below is a factor of 2 and not tighter: the
+    live residual is 0.547 against a 0.5 floor, thin because the
+    under-quote is real, not because there is slack to tune away.
+
+    What this test therefore does NOT do: corner ``runtime_base_min``, or
+    corner ``runtime_alpha``. One run is one equation, so each band here is
+    quoted holding the other constant -- job #1 alone admits alpha in
+    (1.101, 1.515) at base=200, measured by bisection. The two anchors
+    cannot both be fitted by this curve at all: holding alpha at 1.2, job
+    #1 demands a base of 236.0 and the September run demands 365.7, outside
+    job #1's own 25% band of (177.02, 295.03), so no single base satisfies
+    both. The two-point slope -- the alpha one power law through both
+    measurements needs, independent of the base because both runs used the
+    same design count -- is 0.857, well under the shipped 1.2: a target
+    3.58x the size took only 2.98x the time, the signature of a fixed
+    per-job cost that a purely multiplicative model cannot express
+    (_RFDIFFUSION has the same term stated upstream, ~700 s fixed + ~190
+    s/design). Re-basing on either run alone would break the other, so
+    nothing here is re-based.
+
+    docs/VALIDATION-LOG.md job e29a462d is deliberately ABSENT. Its design
+    count is recorded nowhere: the row says "5 ranked candidates", which is
+    a candidate count, and stage 2 runs ProteinMPNN at seqs_per_backbone=5,
+    so it reads as ONE backbone. num_designs is the divisor, so the live
+    readings put its estimate between 5.0 (the floor, exercising no curve
+    at all) and 9.50. Do not re-add it without a recorded count.
+
+    The estimator's max(5.0, est) floor is not pinned here; the assertions
+    below reject only a floor that swallows an anchor outright.
+
+    rfdiffusion gets the baseline assertion but NOT a residual pin: its
+    ``runtime_base_min`` reproduced its one usable PRE-update run and is now
+    ~3.2x low because llm-proteinDesigner#23 multiplied the container's
+    runtime by 2.76x (804 -> 2220 GPU-s on one job shape). Pinning a
+    residual against the current constants would certify that staleness as
+    correct. The evidence for both halves is in the comment on
+    ``_RFDIFFUSION`` in shared/pdb_preflight_rules.py.
+
+    Advisory only either way: ``runtime_estimate_min`` reaches users through
+    shared/pdb_intake.py and templates/components/preflight_panel.html and
+    nothing else. Re-verified at this commit -- no wallet, pricing or submit
+    gate reads it (``over_hard``/``over_warn`` in
+    shared/pdb_preflight.py::_check_size_envelope key on target_aa, never
+    runtime).
+    """
+    import dataclasses as _dataclasses
+    import inspect as _inspect
+    import json as _json
+    import pathlib as _pathlib
+    import re as _re
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.rfantibody as _rfantibody
+    import tools.rfdiffusion as _rfdiffusion
+
+    # The path is written out per slug rather than interpolated. An
+    # f-string path is invisible to tests/test_code_citations_resolve.py
+    # ::test_every_code_citation_resolves_to_a_real_symbol -- its token stops
+    # at the brace -- so an interpolated citation is unresolvable where a
+    # literal one goes red if validate() is ever renamed.
+    for slug, mod, cite in (
+        ("rfantibody", _rfantibody, "tools/rfantibody/__init__.py::validate"),
+        ("rfdiffusion", _rfdiffusion, "tools/rfdiffusion/__init__.py::validate"),
+    ):
+        rules = TOOL_RULES[slug]
+        src = _inspect.getsource(mod.validate)
+        m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
+        assert m, (
+            f"could not find the num_designs fallback in "
+            f"{cite} -- if the parse changed, fix "
+            f"this test rather than deleting it; it is the premise for why "
+            f"runtime_baseline_designs may differ from the form default"
+        )
+        form_default = int(m.group(1))
+        assert form_default == 4, (
+            f"{cite} now defaults num_designs "
+            f"to {form_default}, not 4. The docstring above argues from a "
+            f"form default of 4 throughout; update it with this line. A "
+            f"bare != assertion would have let this drift green."
+        )
+        assert rules.size.runtime_baseline_designs == 100, (
+            f"{slug} runtime_baseline_designs is "
+            f"{rules.size.runtime_baseline_designs}, not 100. If this was "
+            f"changed to track the form default of {form_default} -- as "
+            f"bindcraft's legitimately does -- then runtime_base_min has to "
+            f"move with it: rfantibody's was derived per 100 designs, so at "
+            f"a baseline of 4 its measured runs come out 13.7x to 21.2x "
+            f"over. See docs/CALIBRATION-WEEK2.md."
+        )
+        assert form_default != rules.size.runtime_baseline_designs, (
+            f"{cite} now defaults num_designs to "
+            f"{form_default}, which equals runtime_baseline_designs. This "
+            f"test assumes they differ ON PURPOSE; re-read its docstring "
+            f"before relaxing anything here."
+        )
+
+    # boltzgen is the last tool inheriting SizeEnvelope's default, so pin
+    # it here: the two tools above now set the value explicitly and no
+    # longer catch a change to the default itself.
+    assert TOOL_RULES["boltzgen"].size.runtime_baseline_designs == 100, (
+        "boltzgen inherits SizeEnvelope.runtime_baseline_designs; a change "
+        "to that default silently re-scales its runtime estimate"
+    )
+
+    # Everything above pins a FIELD. This pins that the estimator still
+    # READS it: rewriting runtime_estimate_min's design_factor divisor as a
+    # literal 100 leaves every assertion above green -- rfantibody's
+    # baseline IS 100 -- while silently re-scaling bindcraft (4) by 25x and
+    # pxdesign (8) and proteina (8) by 12.5x.
+    _half = _dataclasses.replace(
+        TOOL_RULES["rfantibody"],
+        size=_dataclasses.replace(
+            TOOL_RULES["rfantibody"].size, runtime_baseline_designs=50
+        ),
+    )
+    _full_est = runtime_estimate_min(
+        TOOL_RULES["rfantibody"], target_aa=412, num_designs=4
+    )
+    _half_est = runtime_estimate_min(_half, target_aa=412, num_designs=4)
+    assert abs(_half_est - 2 * _full_est) < 1e-9, (
+        f"halving runtime_baseline_designs moved the estimate from "
+        f"{_full_est:.4f} to {_half_est:.4f}, not to {2 * _full_est:.4f}; "
+        f"runtime_estimate_min no longer divides by the envelope's own "
+        f"runtime_baseline_designs, so the assertions above are vacuous"
+    )
+
+    # The September anchor is READ from the worked example rather than
+    # transcribed, so this test and the tool page cannot drift apart. The
+    # fanout assertion is what distinguishes a backbone count from a
+    # candidate count -- getting that wrong is what made e29a462d unusable.
+    _example = _json.loads(
+        (_pathlib.Path(_rfantibody.__file__).parent / "example" / "result.json")
+        .read_text(encoding="utf-8")
+    )
+    _sept_designs = _example["total_designs"]
+    _sept_measured_min = float(_example["runtime_minutes"])
+    assert _sept_designs == 4, (
+        f"tools/rfantibody/example/result.json now records "
+        f"{_sept_designs} designs, not 4. The docstring above reasons from "
+        f"4 throughout; re-read it before touching this line."
+    )
+    assert _example["candidate_count"] == 5 * _sept_designs, (
+        f"the worked example records {_example['candidate_count']} "
+        f"candidates for {_sept_designs} designs, breaking the 5x "
+        f"ProteinMPNN fanout that makes total_designs a BACKBONE count. If "
+        f"that ratio really changed, the anchor may no longer be a "
+        f"num_designs measurement at all."
+    )
+
+    # rfantibody only. Job #1 is a regression pin at 25% -- it is circular,
+    # see the docstring. The September run is the independent one and gets
+    # a factor-of-2 band: the curve runs 1.83x fast against it, so a
+    # tighter band would fail today and a looser one would stop catching
+    # anything. The two anchors pull in opposite directions and cannot both
+    # be fitted; neither band is a fit.
+    rules = TOOL_RULES["rfantibody"]
+    for target_aa, num_designs, measured_min, lo, hi, job in (
+        (412, 4, 2489.0 / 60.0, 0.75, 1.25,
+         "CALIBRATION-WEEK2.md job #1 (1JFF/A), circular regression pin"),
+        (115, _sept_designs, _sept_measured_min, 0.5, 2.0,
+         "rfantibody/example/result.json (4ZQK/A, 2026-09-08), independent"),
+    ):
+        est = runtime_estimate_min(rules, target_aa=target_aa, num_designs=num_designs)
+        ratio = est / measured_min
+        assert lo <= ratio <= hi, (
+            f"base={rules.size.runtime_base_min} "
+            f"alpha={rules.size.runtime_alpha} "
+            f"baseline={rules.size.runtime_baseline_designs} puts {job} at "
+            f"{est:.2f} min against a measured {measured_min:.2f} "
+            f"(ratio {ratio:.3f}, band [{lo}, {hi}])"
+        )
+        assert est > 5.0, (
+            f"{job} estimate {est:.2f} is at or under the estimator's "
+            f"max(5.0, est) floor, so the band above would be satisfied by "
+            f"the floor rather than by the anchor"
+        )
+
+    # What makes the September run an INDEPENDENT anchor rather than one
+    # recorded number: its cost is a second record of the same run, and at
+    # rfantibody's own GPU class it reproduces the runtime. Derive the rate
+    # instead of quoting it, so the tool's class, the rate card and the
+    # markup are all in the loop.
+    import tools.rfantibody.meta as _rfantibody_meta
+    from shared.wallet import (
+        GPU_USD_PER_SECOND,
+        WALLET_MARKUP,
+        gpu_usd_per_second,
+    )
+
+    # gpu_usd_per_second() falls back to the A100-80GB rate for any string
+    # it does not recognise, which is exactly the misreading described
+    # above -- so pin the lookup, not just the result.
+    assert rules.gpu in GPU_USD_PER_SECOND, (
+        f"rfantibody declares gpu={rules.gpu!r}, which is not a key in "
+        f"shared.wallet.GPU_USD_PER_SECOND, so gpu_usd_per_second() would "
+        f"fall back to the A100-80GB default and price this run at the "
+        f"wrong class"
+    )
+    _charge_rate = gpu_usd_per_second(rules.gpu) * float(WALLET_MARKUP)
+    _cost_implied_min = (
+        float(_rfantibody_meta.EXAMPLE["cost_usd"]) / _charge_rate / 60.0
+    )
+    _skew = abs(_cost_implied_min - _sept_measured_min) / _sept_measured_min
+    assert _skew < 0.05, (
+        f"the September run's two records no longer agree: cost_usd "
+        f'{_rfantibody_meta.EXAMPLE["cost_usd"]} at {rules.gpu} '
+        f"({_charge_rate:.7f}/s incl. {WALLET_MARKUP}x markup) implies "
+        f"{_cost_implied_min:.2f} min against a recorded "
+        f"{_sept_measured_min} ({_skew:.1%} apart). Either the rate card "
+        f"moved since 2026-09-08 -- in which case pin the rate that was "
+        f"live then -- or one of the two records is wrong, and the "
+        f"docstring above calls this run independently corroborated."
+    )
+
+
+def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
+    """Pin rfdiffusion's two-term curve to the split it was derived from.
+
+    ``tools/rfdiffusion/meta.py`` records the tool's cost as a fixed
+    diffusion + MPNN stage plus a per-design AlphaFold2 re-score, and that
+    decomposition is what ``shared/pdb_preflight_rules.py``'s
+    ``_RFDIFFUSION`` envelope encodes -- ``runtime_fixed_min`` is the fixed
+    stage and ``runtime_base_min`` the per-design one, both normalised to the
+    estimator's 120 aa pivot. Every number below is READ out of meta.py
+    rather than transcribed, because the whole point of the re-anchor is
+    that this file and that one stop drifting apart: #240 (``b692593``)
+    measured 277.5 s/design, carried it into the chunking and cost path, and
+    left this envelope quoting ~11 min for a job that takes 37.
+
+    FOUR things are pinned, and only the third is the anchor.
+
+    1. meta.py's split reproduces meta.py's own recorded job. ``700 + 190*8
+       = 2220`` GPU-s for job 25471e07 exactly. If that stops holding, the
+       model this envelope is derived from has moved and the constants below
+       are stale by construction -- catching that HERE is the point, because
+       nothing else in the repo reads that sentence.
+
+    2. The two design counts the form page advertises are the two the
+       seconds sentence covers, and the advertised band brackets them. The
+       band is the rounded presentation of the same two numbers (~24.3 min
+       shown as 25, ~37.0 shown inside a 40 ceiling), so it is checked
+       against the seconds it was derived from rather than against the
+       curve: asserting the curve lands inside the rounded text would pin
+       meta.py's rounding as a constraint on the estimator.
+
+    3. The curve reproduces BOTH recorded ends within 5%. It lands 0.014%
+       out at each, because the constants are that same split divided
+       through -- so this is ONE anchor expressed twice, NOT two independent
+       confirmations, and the band is the +/-5% that
+       ``test_bindcraft_runtime_curve_reproduces_its_one_measured_run``
+       uses for its single anchor rather than the looser +/-10% reserved
+       for a band covering genuinely separate points. Both ends sit far
+       above the estimator's ``max(5.0, est)`` floor, so neither can be
+       satisfied by the floor instead of the anchor.
+
+       ``runtime_alpha`` is NOT pinned here and cannot be. Both ends are the
+       SAME target (4ZQK chain A, ~115 aa), 4.2% off the 120 aa pivot, so
+       ``(115/120)**alpha`` barely moves over any plausible range. Two
+       design counts measure the design axis, not the size axis. Treat size
+       scaling as unmeasured for this tool.
+
+    4. All three constants are load-bearing, proved by mutation rather than
+       asserted. A two-term fit has an obvious failure mode a residual check
+       alone will not catch: constants that trade off against each other and
+       still pass at one point. Moving each in turn must break the fit.
+
+    The form default is checked too. ``runtime_baseline_designs`` stays at
+    100 (pinned as a value by
+    ``test_rf_runtime_baselines_are_100_designs_not_the_form_default``) and
+    the form defaults to 4, so the estimate a default submit shows IS one of
+    the two ends pinned here -- which is only true while that default is one
+    of the advertised counts.
+    """
+    import dataclasses as _dc
+    import inspect as _inspect
+    import re as _re
+
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import tools.rfdiffusion as _rfdiffusion
+    import tools.rfdiffusion.meta as _meta
+
+    rules = TOOL_RULES["rfdiffusion"]
+
+    # meta.py's runtime note is a comment, so flow it into plain text before
+    # reading numbers out of it -- the figures wrap across comment lines.
+    _src = _inspect.getsource(_meta)
+    _flowed = " ".join(
+        _re.sub(r"^\s*#\s?", "", line) for line in _src.split("\n")
+    )
+
+    def _one(pattern, what):
+        m = _re.search(pattern, _flowed)
+        assert m, (
+            f"could not read {what} out of tools/rfdiffusion/meta.py. If that "
+            f"note was reworded, fix this parse rather than deleting the "
+            f"test: the envelope's constants are derived from it and nothing "
+            f"else in the repo reads it."
+        )
+        return m
+
+    # (1) The split reproduces the recorded job.
+    _m = _one(
+        r"fixed ~(\d+) s of diffusion \+ MPNN plus ~(\d+) s per design",
+        "the fixed + per-design split",
+    )
+    fixed_s, per_design_s = int(_m.group(1)), int(_m.group(2))
+    recorded_s = int(
+        _one(r"ran (\d+)\s+GPU-seconds", "the recorded job").group(1)
+    )
+    four_s = int(
+        _one(r"four designs is ~(\d+) s", "the 4-design figure").group(1)
+    )
+    assert fixed_s + per_design_s * 8 == recorded_s, (
+        f"meta.py models the job as {fixed_s} s fixed + {per_design_s} s per "
+        f"design, which puts 8 designs at "
+        f"{fixed_s + per_design_s * 8} s against the {recorded_s} GPU-s it "
+        f"records for job 25471e07. The envelope below is derived from that "
+        f"split, so it is stale the moment the split stops fitting."
+    )
+    assert fixed_s + per_design_s * 4 == four_s, (
+        f"the same split puts 4 designs at {fixed_s + per_design_s * 4} s "
+        f"against the {four_s} s meta.py states"
+    )
+
+    # (2) The advertised band is the rounded presentation of those seconds.
+    band = _meta.preset_runtime_rows[0]["runtime"]
+    nums = [int(x) for x in _re.findall(r"\d+", band)]
+    assert len(nums) == 4, (
+        f"preset_runtime_rows[0]['runtime'] is {band!r}, which is not the "
+        f"'LO to HI min (A to B designs)' shape this check assumes"
+    )
+    lo_min, hi_min, lo_designs, hi_designs = nums
+    assert (lo_designs, hi_designs) == (4, 8), (
+        f"the form page advertises {lo_designs} to {hi_designs} designs "
+        f"while the runtime note covers 4 and 8; one of the two moved"
+    )
+    assert lo_min in (four_s // 60, -(-four_s // 60)), (
+        f"the page advertises a {lo_min} min floor while its own note puts "
+        f"4 designs at {four_s / 60.0:.2f} min"
+    )
+    assert hi_min >= -(-recorded_s // 60), (
+        f"the page advertises a {hi_min} min ceiling under the "
+        f"{recorded_s / 60.0:.2f} min its own note records for 8 designs"
+    )
+
+    # (3) The curve reproduces both ends. 115 aa is 4ZQK chain A, the target
+    #     both runs used.
+    def _resid(env, n, measured_s):
+        est = runtime_estimate_min(
+            _dc.replace(rules, size=env), target_aa=115, num_designs=n
+        )
+        return est, abs(est - measured_s / 60.0) / (measured_s / 60.0)
+
+    for n, measured_s in ((lo_designs, four_s), (hi_designs, recorded_s)):
+        est, residual = _resid(rules.size, n, measured_s)
+        assert residual <= 0.05, (
+            f"fixed={rules.size.runtime_fixed_min} "
+            f"base={rules.size.runtime_base_min} "
+            f"alpha={rules.size.runtime_alpha} "
+            f"baseline={rules.size.runtime_baseline_designs} puts the "
+            f"{n}-design run at {est:.2f} min against a recorded "
+            f"{measured_s / 60.0:.2f} ({residual:.1%} out)"
+        )
+        assert est > 5.0, (
+            f"the {n}-design estimate {est:.2f} is at or under the "
+            f"estimator's max(5.0, est) floor, so the band above would be "
+            f"satisfied by the floor rather than by the anchor"
+        )
+
+    # (4) Each constant is load-bearing. Move one, the fit must break at one
+    #     end or the other -- a two-term model that still passed both ends
+    #     after a constant moved would mean the two terms were absorbing each
+    #     other and the residuals above proved nothing.
+    for field, value in (
+        ("runtime_fixed_min", 0.0),
+        ("runtime_base_min", rules.size.runtime_base_min * 2),
+        ("runtime_baseline_designs", 4),
+    ):
+        broken = _dc.replace(rules.size, **{field: value})
+        worst = max(
+            _resid(broken, n, s)[1]
+            for n, s in ((lo_designs, four_s), (hi_designs, recorded_s))
+        )
+        assert worst > 0.05, (
+            f"setting {field}={value} still fits both recorded runs to "
+            f"{worst:.1%}, so the assertions above are not actually pinning "
+            f"it and the two terms are absorbing each other"
+        )
+
+    # The default submit lands on one of the two pinned ends.
+    _fallback = _re.search(
+        r'form\.get\("num_designs"\)\s*or\s*"(\d+)"',
+        _inspect.getsource(_rfdiffusion.validate),
+    )
+    assert _fallback, (
+        "could not find the num_designs fallback in "
+        "tools/rfdiffusion/__init__.py::validate -- if the parse changed, "
+        "fix this test rather than deleting it; the drift it guards is silent"
+    )
+    assert int(_fallback.group(1)) in (lo_designs, hi_designs), (
+        f"validate() defaults num_designs to {_fallback.group(1)}, which is "
+        f"neither of the {lo_designs}/{hi_designs} design counts this test "
+        f"pins, so a default submit now shows an estimate nothing here "
+        f"covers"
+    )
+
+
+def test_zero_fixed_term_leaves_every_other_envelope_bit_identical():
+    """The new fixed term must be an exact no-op wherever it is 0.0.
+
+    ``runtime_fixed_min`` was added for rfdiffusion alone. Folding it into
+    the estimator as ``(fixed + base * design_factor) * size_factor`` is the
+    same arithmetic but RE-ASSOCIATES the multiplication, and that form was
+    executed against this grid: it moves the last bit at 36 of the 405
+    points below, on tools this change is not supposed to touch at all.
+    ``shared/pdb_preflight_rules.py::runtime_estimate_min`` therefore adds
+    it as a separate term, where ``+ 0.0`` is an exact IEEE-754 identity.
+
+    This asserts that by recomputing the OLD expression, spelled out, and
+    demanding exact equality rather than closeness. Approximate equality
+    would pass against the re-associated form and defeat the whole check.
+    """
+    from shared.pdb_preflight_rules import (
+        SizeEnvelope,
+        TOOL_RULES,
+        runtime_estimate_min,
+    )
+
+    assert SizeEnvelope.runtime_fixed_min == 0.0, (
+        "SizeEnvelope.runtime_fixed_min no longer defaults to 0.0, so a new "
+        "envelope that does not mention it silently gets a fixed stage"
+    )
+
+    with_fixed = sorted(
+        slug for slug, r in TOOL_RULES.items() if r.size.runtime_fixed_min
+    )
+    assert with_fixed == ["rfdiffusion"], (
+        f"envelopes carrying a fixed term are now {with_fixed}. That is a "
+        f"legitimate change, but the module header and SizeEnvelope docstring "
+        f"in shared/pdb_preflight_rules.py both say rfdiffusion is the only "
+        f"one -- update them, then update this assertion."
+    )
+
+    grid = [
+        (aa, n)
+        for aa in (1, 30, 61, 115, 120, 200, 331, 500, 720)
+        for n in (1, 2, 3, 4, 8, 16, 100, 137, 1000)
+    ]
+    for slug, rules in TOOL_RULES.items():
+        if rules.size.runtime_fixed_min:
+            continue
+        for aa, n in grid:
+            size_factor = (aa / 120.0) ** rules.size.runtime_alpha
+            design_factor = n / rules.size.runtime_baseline_designs
+            was = max(
+                5.0,
+                rules.size.runtime_base_min * size_factor * design_factor,
+            )
+            now = runtime_estimate_min(rules, target_aa=aa, num_designs=n)
+            assert now == was, (
+                f"{slug} at {aa} aa x {n} designs now estimates {now!r} "
+                f"where the pre-fixed-term expression gives {was!r}. "
+                f"runtime_fixed_min is 0.0 here, so the only way this moves "
+                f"is a re-associated product."
+            )

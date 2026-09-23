@@ -12,13 +12,17 @@ Two presets:
 
 - ``standalone`` (default) — single-sequence cofold (YAML ``msa: empty``
   per chain). The right choice for designed sequences (MPNN, RFantibody,
-  BindCraft, etc.) where there is no informative MSA. ~15 s / design on
-  A100-40GB once warm.
+  BindCraft, etc.) where there is no informative MSA. ~69 s / design on
+  A100-40GB once warm, measured on 242-246 aa binders against a 107 aa
+  antigen — provenance and caveats in ``tools/boltz2/__init__.py``.
 - ``msa_server`` — Boltz fetches MSAs from the public ColabFold MMseqs2
-  endpoint via ``--use_msa_server``. ~3 min / design. Better for natural
-  / near-native sequences; for designed sequences the MSA is usually
-  dominated by the closest natural homologues and the result barely
-  differs from ``standalone``.
+  endpoint via ``--use_msa_server``. ~214 s / design aggregate (~3.6 min),
+  measured 2026-09-21 on the same three binders; the MSA fetch and the GPU
+  compute were not timed separately. Intended for natural / near-native
+  sequences. On the one head-to-head we have run it made decoy
+  discrimination WORSE on designed binders rather than merely equivalent —
+  the cognate-minus-decoy ipTM margin fell 37% — so ``standalone`` stays
+  the default. See ``docs/VALIDATION-LOG.md``.
 
 Environment variables (set by ``tools/boltz2/modal_app.py``):
 
@@ -34,6 +38,7 @@ Output shape (``/tmp/smoke_results.json``)::
       "status": "COMPLETED",
       "tier": "standalone",
       "designs_total": N,
+      "designs_folded": N,
       "designs_completed": N,
       "n_failures": 0,
       "designs": [
@@ -127,13 +132,24 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
-    """Write a FAILED result and exit 1."""
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1.
+
+    ``runtime_seconds`` is GPU time already burned.
+    gpu/modal_client.py::_interpret_pipeline_return reads this exact key on
+    the FAILED arm as the job's gpu_seconds_used, and
+    shared/jobs.py::_charge_workspace_for_completed_job skips the workspace
+    compute debit when that is missing or zero. It stays None for the fails
+    that happen before any GPU work.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
     _write_result(
         {
             "status": "FAILED",
             "error": {"bucket": bucket, "check": check, "detail": detail},
+            "runtime_seconds": runtime_seconds,
             "tier": os.environ.get("JOB_TIER", ""),
             "provider_job_id": os.environ.get("JOB_ID", ""),
         }
@@ -625,6 +641,17 @@ def main() -> None:
 
             designs_out: list[dict] = []
             n_failures = 0
+            # Folds, counted where the fold is DECIDED - the moment
+            # collect_outputs yields a PDB, one line below - and therefore
+            # before the upload, which is a separate network hop with its own
+            # failure. designs_out cannot stand in for this: its append is
+            # downstream of that hop, so a run whose every fold succeeded and
+            # whose every upload failed leaves it empty, indistinguishable from
+            # a run that folded nothing. Both shapes are not hypothetical and
+            # not distinguishable today: Gate 1 Rung A (2026-09-19) and Rung B
+            # (2026-09-21) each folded 3/3 and each returned "all 3 designs
+            # failed" - the two rows for boltz2 in docs/VALIDATION-LOG.md.
+            n_folded = 0
 
             for i, binder in enumerate(binders):
                 name = str(binder.get("name") or f"design_{i}").strip() or f"design_{i}"
@@ -656,6 +683,7 @@ def main() -> None:
                     n_failures += 1
                     logger.warning("design %s: no PDB emitted", name)
                     continue
+                n_folded += 1
 
                 pdb_text = pdb_path.read_text()
                 contacts = hotspot_contacts(
@@ -718,11 +746,60 @@ def main() -> None:
             archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)
+
+    # A run that delivered nothing is a failure, not an empty success. Until
+    # this guard, every design dying still wrote status COMPLETED with
+    # exit_code 0 and an empty designs[], so a user whose whole run died got a
+    # green job and no results. ``binders`` empty is already rejected at the
+    # _fail above, so reaching here means every design took one of the loop's
+    # failure branches. They do not agree on a cause - an empty sequence never
+    # attempts a fold, an upload failure happens after a successful one - and
+    # the detail below now splits exactly on that line, because it is the split
+    # that changes what the reader should do. n_folded is incremented where the
+    # fold is decided, so n_folded > 0 with designs_out empty means every fold
+    # worked and every upload did not: a storage problem, not a modelling one,
+    # and the structures existed in this process. Within each side the branches
+    # still disagree (an empty sequence and a boltz non-zero exit are both
+    # n_folded == 0), so neither side names a per-design cause; each branch
+    # logs its own warning.
+    #
+    # This flips the billing direction, deliberately. designs_out takes every
+    # design that folded and uploaded whatever its filter_status, so an empty
+    # list never means "folded fine, nothing passed" - that still writes
+    # COMPLETED and stays billed. Before this guard a wholly-failed run wrote
+    # COMPLETED and classified as plain "succeeded", because the zero-yield
+    # check at shared/jobs.py::classify_terminal_state reads
+    # result["candidates"] and this tool emits "designs" - so it never
+    # reached "completed_no_yield" (jobs.py::classify_terminal_state) and
+    # settled against the GPU time it burned (wallet.py::settle_hold). The
+    # "pipeline" bucket maps to "tool_error"
+    # (jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS), a refunded class
+    # (jobs.py::_REFUNDED_FAILURE_CLASSES), and is what the poll path
+    # rewrites to anyway (blueprints/jobs.py::job_status). The workspace
+    # compute debit is unaffected - that reads the runtime_seconds this _fail
+    # still carries.
+    if not designs_out:
+        if n_folded:
+            detail = (
+                f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+                f"in {runtime_seconds}s - the delivery hop failed, not the "
+                f"folds; see the run log for the per-design upload error, and "
+                f"this job's raw archive for the structures"
+            )
+        else:
+            detail = (
+                f"all {designs_total} designs failed before producing a "
+                f"structure in {runtime_seconds}s; see the run log for the "
+                f"per-design cause"
+            )
+        _fail("pipeline", "no_designs", detail, runtime_seconds=runtime_seconds)
+
     _write_result(
         {
             "status": "COMPLETED",
             "tier": tier,
             "designs_total": designs_total,
+            "designs_folded": n_folded,
             "designs_completed": len(designs_out),
             "n_failures": n_failures,
             "designs": designs_out,
@@ -740,8 +817,9 @@ def main() -> None:
         designs_total=designs_total,
     )
     logger.info(
-        "pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
-        len(designs_out), designs_total, n_failures, runtime_seconds,
+        "pipeline ok — %d/%d designs folded, %d delivered, %d failures, "
+        "runtime=%ds",
+        n_folded, designs_total, len(designs_out), n_failures, runtime_seconds,
     )
 
 

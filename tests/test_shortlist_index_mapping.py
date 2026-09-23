@@ -26,6 +26,8 @@ from flask import render_template
 
 from shared.jobs import candidate_records
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):

@@ -222,8 +222,11 @@ def test_every_candidate_in_the_shortlist_is_converted():
     Both were unpinned: `if not written:` (convert only the first) and
     `if not prefix:` (convert only the arm that passes none) each kept
     the whole file green. Two of the three production call sites pass a
-    non-empty prefix -- blueprints/lab_projects.py:641 (campaign) and
-    :995 (target); only :1233 (legacy single-job) omits it -- so a
+    non-empty prefix --
+    blueprints/lab_projects.py::_submit_campaign_shortlist (campaign)
+    and blueprints/lab_projects.py::_submit_target_shortlist (target);
+    only blueprints/lab_projects.py::_submit_job_shortlist (legacy
+    single-job) omits it -- so a
     prefix-conditioned regression would have hit the majority of real
     handoffs invisibly.
 

@@ -693,12 +693,14 @@ def test_a_failed_run_gets_no_endorsement():
         assert "Meets" not in body, body
 
 
-def test_the_gate_reads_a_list_not_merely_a_present_key():
-    """``isinstance(..., list)``, not ``is not None``.
+def test_the_gate_reads_an_array_not_merely_a_present_key():
+    """``is_candidate_array``, not ``is not None``.
 
-    A row whose ``candidates`` is a non-list (a string, a dict) alongside a real
-    ``designs[]`` would otherwise pass the shape test on the strength of the key
-    alone, and render exactly the unranked callout the gate exists to suppress.
+    A row whose ``candidates`` is not an array (a string, a dict) alongside a
+    real ``designs[]`` would otherwise pass the shape test on the strength of
+    the key alone, and render exactly the unranked callout the gate exists to
+    suppress. The predicate itself is tested in
+    tests/test_candidate_array_shape.py; what this pins is the RENDERED body.
     """
     bodies = _bodies(_sent(_job(tool="af2", preset="batch", result={
         "candidates": "not-a-list",

@@ -148,8 +148,11 @@ from jinja2 import Environment, FileSystemLoader  # noqa: E402
 
 import app as _app  # noqa: E402,F401  (populates tools.base._REGISTRY)
 from shared import metric_glossary, ranking  # noqa: E402
+from shared.jobs import display_rows
 from tools import base as tool_base  # noqa: E402
 from tools.boltzgen import meta as _bg_meta  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 _GLOBAL_IPTM_RANGE = metric_glossary.GLOSSARY["ipTM"]["good_range"]
@@ -170,6 +173,10 @@ def _app_client(monkeypatch):
 def _column_tooltip(tool_slug: str) -> str:
     """The assembled ipTM header tooltip for one tool, as the page emits it."""
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    # candidate_table.html coerces its own rows so a row that is not a
+    # Mapping cannot reach the `.get` calls in it. This env renders that
+    # macro outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     env.globals.update(
         metric_glossary=metric_glossary.GLOSSARY,
         score_legends_for=score_legends_for,
@@ -228,21 +235,55 @@ def test_the_tooltip_keeps_the_definition_and_the_citation():
     assert ".." not in tooltip and " ." not in tooltip, tooltip
 
 
-def test_a_tool_that_states_a_bar_still_gets_the_global_range():
-    """The control. boltz2 IS the calibrated cofold, so the band is true for
-    it — a fix that stripped the range from every tool would pass the test
-    above and quietly cost every other tool its answer to "what is good?"."""
+def test_a_tool_that_states_a_bar_still_answers_what_good_is():
+    """The control, repointed from the MECHANISM to the PROPERTY it protects.
+
+    It used to assert that boltz2 — the calibrated cofold, for which the band
+    IS true — still received the global ``Range:`` string, guarding the worry
+    that a fix stripping the range from every tool would pass the test above
+    and quietly cost every other tool its answer to "what is good?".
+
+    That worry is right and this still guards it. What changed is that the
+    global Range is no longer HOW boltz2 answers it. Every tooltip used to
+    state its bar twice, once in the tool's own legend and once in a string
+    keyed only on the metric name, and on ten gate legs the two spellings had
+    drifted: the legends word the bar inclusively, matching ``judge()``, while
+    the Range printed a strict comparator on that same number ("> 80",
+    "< 1.5", "> 4"). boltz2 ipTM is NOT one of those ten. Its Range reads
+    "0.65 to 0.75 depending on the tool" and states no comparator at all,
+    which is exactly what makes it a clean control: it lost the Range for the
+    other half of the reason, a bar stated twice, where the tool's own legend
+    is the better of the two — it is about boltz2 rather than about
+    ipTM-in-general.
+
+    Pinning the string was pinning one particular way of answering, which is
+    why this test read as forbidding the fix. Pinning the answer does not.
+    tests/test_column_tooltip_states_one_bar.py carries the rest: the
+    suppressed set, the eight legend-less columns that DO keep the Range, and
+    the inclusive-comparator invariant.
+    """
+    legend = SCORE_LEGENDS[BOLTZ2_IPTM]
+    good = legend.get("good")
+    assert good, "boltz2 ipTM lost its bar, so this control compares nothing"
     tooltip = _column_tooltip("boltz2")
-    assert _GLOBAL_IPTM_RANGE in tooltip, tooltip
+    assert f"{float(good):g}" in tooltip, (
+        f"boltz2's ipTM tooltip no longer states its bar {good!r} anywhere, so "
+        f"a reader is left with no answer to 'what is good?':\n\n{tooltip}"
+    )
+    assert metric_glossary.GLOSSARY["ipTM"]["definition"] in tooltip, tooltip
 
 
 BINDCRAFT_SURFACE_HYDROPHOBICITY = ("bindcraft", "surface_hydrophobicity")
+PROTEINA_BINDER_SCRMSD = ("proteina", "binder_scrmsd")
 
 
-def test_the_barless_legends_are_the_two_declared_here():
+def test_the_barless_legends_are_the_ones_declared_here():
     """Pins the blast radius of the three template conditions. If a further
     legend ever drops its bar, that tool's surfaces change too — which may be
     right, but it should be a decision, not a surprise.
+
+    (NAMED WITHOUT A COUNT. This assertion's own set is the count, and the
+    previous name said "the two" one entry before a third arrived.)
 
     THE SECOND ENTRY IS A DECISION AND HERE IS THE DECISION. bindcraft's
     surface hydrophobicity had ``good`` 10 / ``excellent`` 5 while it was
@@ -257,12 +298,24 @@ def test_the_barless_legends_are_the_two_declared_here():
     from Accepted/ only, so 0.35 could not be failed either.
     shared/score_legends.py carries the full account.
 
-    A barless legend cannot silently become a gate leg: test_derived_verdicts
-    ::test_every_gate_column_has_a_legend requires a numeric ``good`` on
-    every column in GATE_COLUMNS, and bindcraft declares none at all.
+    THE THIRD ENTRY IS A DECISION TOO. proteina's ``binder_scrmsd`` was
+    registered barless on purpose: the tool declares no GATE_COLUMNS entry, so
+    nothing judges a proteina design against a bar, and the nearest thing to
+    one (``REFOLD_CUT_A`` in tools/proteina/export_campaign.py) is one export
+    script's filter carrying no justification at all — promoting it into
+    ``good`` would be BoltzGen's mistake with a different number.
+    shared/score_legends.py carries that account, and the account of why the
+    tool's other four columns get no legend of any kind.
+
+    A barless legend cannot silently become a gate leg:
+    tests/test_derived_verdicts.py::test_every_gate_column_has_a_legend
+    requires a numeric ``good`` on every column in GATE_COLUMNS, and
+    bindcraft and proteina declare none at all.
     """
     barless = {k for k, v in SCORE_LEGENDS.items() if "good" not in v}
-    assert barless == {BOLTZGEN_IPTM, BINDCRAFT_SURFACE_HYDROPHOBICITY}, barless
+    assert barless == {
+        BOLTZGEN_IPTM, BINDCRAFT_SURFACE_HYDROPHOBICITY, PROTEINA_BINDER_SCRMSD,
+    }, barless
 
 
 def test_the_form_page_does_not_quote_the_band_to_a_boltzgen_user(_app_client):
@@ -608,7 +661,12 @@ def test_that_refold_claim_check_can_actually_fire():
         # ...and a FROZEN exemplar beside it, because the live string alone is
         # not a pin: the test above already asserts over that same value, so
         # the two moved together on every edit and this entry asserted nothing
-        # new. A review caught exactly that.
+        # new. A review caught exactly that. Its "2 &Aring;" is the wording
+        # that shipped, kept verbatim so the pin stays a pin -- it is NOT this
+        # site's bar. That is the legend's ``good`` of 1.5 for ("boltzgen",
+        # "refolding_rmsd") in shared/score_legends.py, which is the number
+        # the live sentence above now states; the 2.0 is the container's
+        # RMSD_THRESHOLD and reaches no surface a reader can check.
         "Refolding RMSD is the design against its own refold: at or under "
         "2 &Aring; it clears the RMSD leg of the pass bar. That says the "
         "binder folds as designed, not that it binds &mdash; re-fold a "

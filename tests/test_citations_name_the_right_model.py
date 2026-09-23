@@ -301,9 +301,10 @@ MODEL_LABEL_YEAR: dict[str, str] = {
 #
 # Repo-wide, not scoped to tools/<slug>/, because this pattern has appeared on
 # both sides of that boundary: shared/score_legends.py had a section header
-# pairing "BoltzGen" with "Boltz-1", and tools/boltzgen/meta.py:76 had
-# "BoltzGen (Wohlwend et al., MIT 2024)" in its user-facing About copy. Both
-# were corrected in 879b5ea. A tool-scoped scan sees only the second.
+# pairing "BoltzGen" with "Boltz-1", and
+# tools/boltzgen/meta.py::comparison_one_liner had "BoltzGen (Wohlwend et al.,
+# MIT 2024)" in its user-facing About copy. Both were corrected in 879b5ea. A
+# tool-scoped scan sees only the second.
 #
 # The second one also shows this matcher's BLIND SPOT, which is worth more
 # than the history: 3ec66b9, a pure copy pass, reflowed that sentence so the

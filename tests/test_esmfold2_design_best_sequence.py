@@ -38,6 +38,8 @@ import pytest
 from tools.esmfold2_design.modal_app import _aggregate
 from tools.esmfold2_design.run_pipeline import _pick_best
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # The two designs from job 2b917b54, binder sequences abbreviated.
 DROP_SEQ = "LLRRLLRRLLRRGGGGGGGLLRRLLRR"
 PASS_SEQ = "SEEDLTKAQNLIDEAKKLNDAQAPKG"
@@ -377,8 +379,13 @@ def test_every_stated_threshold_uses_the_classifiers_operator():
     # The behaviour the prose has to describe: a design sitting exactly on
     # the bar is admitted. If that ever changes, ">" becomes correct again
     # and this test should be the thing that says so.
+    #
+    # The scFv call passes STRICT_IPTM as well as the proxy because since
+    # 2026-09-10 that mode gates on both, so a proxy-only call now returns
+    # ``drop`` and would pin nothing about the operator. Both legs sit
+    # exactly on their bar here, which is the case the prose describes.
     assert _classify(False, STRICT_IPTM, None, None, 5.0) == "strict_pass"
-    assert _classify(True, None, None, STRICT_CDR_IPTM_PROXY, None) == (
+    assert _classify(True, STRICT_IPTM, None, STRICT_CDR_IPTM_PROXY, None) == (
         "strict_pass"
     )
 
