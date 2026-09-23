@@ -820,10 +820,10 @@ class TestBinderNamesGetTheirOwnObject:
 
 
 def _boltz_writes_its_tree(yaml_path, out_dir, msa_server):
-    """Stand-in for ``run_boltz``: the output tree boltz 2.2.1 writes for one
-    yaml, where every name is the yaml's stem. Read from boltz's main.py and
-    data/write/writer.py at tag v2.2.1, the version
-    tools/boltz2/Dockerfile.modal pins."""
+    """Stand-in for ``run_boltz``: the model and confidence files boltz 2.2.1
+    writes for one yaml under ``--output_format pdb``, at the paths it names
+    after the yaml's stem. Read from boltz's main.py and data/write/writer.py
+    at tag v2.2.1, the version tools/boltz2/Dockerfile.modal pins."""
     stem = yaml_path.stem
     pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
     pred.mkdir(parents=True)
@@ -836,8 +836,11 @@ class TestRefoldToBoltz2Folds:
     """``blueprints/jobs.py::_spawn_refold_job`` bypasses validate and names
     the binder ``shared/refold.py::CandidateSeq.fasta_header``.
 
-    Runs a Refold from the hub into ``main``: the real refold spawn, adapter
-    and ``collect_outputs``, with only boltz itself stubbed.
+    Carries a Refold from the hub into ``main``. Real: the refold spawn, the
+    boltz2 adapter's ``build_payload``, ``main``'s yaml naming and
+    ``collect_outputs``. Stubbed: storage and the Modal hop, boltz
+    (``_boltz_writes_its_tree``), and ``main``'s other I/O edges
+    (``TestZeroDesignsFailsTheJob._arrange``).
     """
 
     @pytest.mark.parametrize("pdb_key, name", [
