@@ -137,10 +137,13 @@ CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
 #   - contains '/' or NUL, the two bytes a Linux file name cannot hold;
 #   - starts with '.', which hides the model file from the glob in
 #     ``run_pipeline.py::collect_outputs``;
-#   - is longer than this many bytes. Linux caps a file name at 255 bytes, and
-#     boltz's longest, ``confidence_{name}_model_0.json``
-#     (src/boltz/data/write/writer.py), is the name plus 24, so 231 is the
-#     ceiling; 200 leaves room.
+#   - is longer than this many bytes. Linux caps a file name at 255 bytes.
+#     As ``run_pipeline.py`` calls boltz 2.2.1 (its yamls carry no templates,
+#     and ``run_boltz`` sets no ``--msa_pairing_strategy``), the longest name
+#     boltz builds from it is the MSA folder the msa_server preset gets,
+#     ``{name}_paired_tmp_pairgreedy-env`` (``compute_msa`` in
+#     src/boltz/main.py, ``run_mmseqs2`` in src/boltz/data/msa/mmseqs2.py):
+#     the name plus 26, so 229 is the ceiling and 200 leaves room.
 # Pinned by ``tests/test_boltz2_smoke.py::TestBinderNameIsAFileName``.
 BINDER_NAME_MAX_BYTES = 200
 

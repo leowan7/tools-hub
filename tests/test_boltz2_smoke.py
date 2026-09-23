@@ -617,8 +617,10 @@ _NAMES_LINUX_CAN_HOLD = [
 class TestBinderNameIsAFileName:
     """``run_pipeline.py::main`` writes each design's input to
     ``d_{i:03d}/{name}.yaml`` from the raw name; only the storage key goes
-    through ``shared/storage.py::_output_object_path``. So the adapter's
-    ``validate`` is the one place a name that cannot be a file name is stopped.
+    through ``shared/storage.py::_output_object_path``. So ``validate`` refuses
+    a name that cannot be a file name. A refold to Boltz-2
+    (``blueprints/jobs.py::_spawn_refold_job``) does not call ``validate``, so
+    it is not covered here.
     """
 
     def test_a_slash_kills_main_after_the_design_before_it_folded(
@@ -663,6 +665,13 @@ class TestBinderNameIsAFileName:
         assert err is None, err
         assert [b["name"] for b in inputs["binder_sequences"]] == [name]
 
+    def test_the_cap_leaves_room_for_the_longest_name_boltz_builds(self):
+        """boltz 2.2.1 makes the MSA folder ``{name}_paired_tmp_pairgreedy-env``
+        for the msa_server preset (``compute_msa`` in src/boltz/main.py,
+        ``run_mmseqs2`` in src/boltz/data/msa/mmseqs2.py), and Linux caps a
+        file name at 255 bytes."""
+        assert b2.BINDER_NAME_MAX_BYTES + len("_paired_tmp_pairgreedy-env") <= 255
+
     @pytest.mark.skipif(
         os.name == "nt",
         reason="the pipeline runs on Linux; Windows reads '\\' as a separator",
@@ -671,7 +680,11 @@ class TestBinderNameIsAFileName:
     def test_main_completes_on_every_name_validate_accepts(
         self, tmp_path, monkeypatch, name,
     ):
-        """The accepted names really are safe for the local path, on Linux."""
+        """``main`` writes the yaml for every accepted name and finishes, on
+        Linux. The fold and ``collect_outputs`` are stubbed, so the names boltz
+        builds from the yaml's stem are checked by
+        ``test_the_cap_leaves_room_for_the_longest_name_boltz_builds``, not here.
+        """
         result_file = TestZeroDesignsFailsTheJob()._arrange(
             tmp_path, monkeypatch, rc=0,
             binders=[{"name": name, "sequence": "EVQLVESGGG"}],
