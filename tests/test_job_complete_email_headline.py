@@ -759,7 +759,7 @@ def _recovered(*, backfilled: bool) -> dict:
     ``_candidate_from_partial`` copies off a streamed partial -- ipTM, pLDDT,
     i_pae and nothing else (shared/job_recovery.py:72-92) -- and the pdb_key is
     its ``f"designs/{basename}"``. The wrapper is
-    ``recover_stuck_job_result``'s (shared/job_recovery.py:287-291);
+    ``recover_stuck_job_result``'s (its ``return`` in shared/job_recovery.py);
     scripts/finalize_stuck_job.py:76-80 writes the identical dict.
 
     NO ``pI``, deliberately. A first draft of this fixture gave the rebuilt
@@ -789,7 +789,7 @@ def test_a_recovered_run_gets_no_email_callout():
     partials by ``.append()`` or, failing that, from a Storage file listing by
     ``enumerate`` (shared/job_recovery.py:116-146). Neither sorts. The row is
     then finalized ``succeeded`` through ``complete_job``
-    (shared/jobs.py:1071-1076), which is the call that mails this email -- so a
+    (shared/jobs.py::complete_job), which is the call that mails this email -- so a
     recovered run reaches this surface exactly as a webhook row does.
 
     THE SHAPE TEST CANNOT SEE THAT, which is the reason the inlined copy this

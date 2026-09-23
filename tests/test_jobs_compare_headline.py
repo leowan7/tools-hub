@@ -931,7 +931,7 @@ def _recovered_job(job_id: str = "cccccccc-0000-0000-0000-000000000000"):
     """A column whose result a RECOVERY wrote, in that writer's exact shape.
 
     ``recover_stuck_job_result`` returns ``{candidates, candidate_count,
-    backfilled}`` and nothing else (shared/job_recovery.py:287-291);
+    backfilled}`` and nothing else (its ``return`` in shared/job_recovery.py);
     scripts/finalize_stuck_job.py:76-80 writes the identical dict. The
     candidates are ``_candidate_from_partial``'s output, which copies only
     ipTM, pLDDT and i_pae off a streamed partial and keys the file as

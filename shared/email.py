@@ -309,7 +309,7 @@ def _top_candidate_summary(
     #
     # THIS IS THE SECOND SPELLING OF ONE RULE AND SHOULD NOT SURVIVE.
     # ``score_legends.resolve_mode(tool, result, preset)`` says this plus a
-    # guard and has since landed (shared/score_legends.py:1521). Collapsing
+    # guard and has since landed (shared/score_legends.py::resolve_mode). Collapsing
     # this line into it is a live follow-up, left out of the change that
     # collapsed the ranked-list gate below because it is NOT a no-op — see the
     # next paragraph — and so needs its own measurement.
@@ -334,7 +334,7 @@ def _top_candidate_summary(
     # shape half of it inline and could not see the flag at all, so a recovered
     # run mailed a "Top design" naming whichever partial arrived first.
     # ``test_a_recovered_run_gets_no_email_callout`` holds the flag half of that
-    # here; ``test_the_gate_reads_a_list_not_merely_a_present_key`` holds the
+    # here; ``test_the_gate_reads_an_array_not_merely_a_present_key`` holds the
     # shape half. Both in tests/test_job_complete_email_headline.py.
     if not supports_headline_claim(result, tool_slug, mode):
         return ("", "", "", "", "", "")
