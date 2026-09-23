@@ -31,27 +31,31 @@ class _InlineThread:
     Running the dispatch on the caller's thread keeps it inside the test that
     installed those fakes.
 
-    ``daemon`` is asserted rather than ignored so that swapping the thread out
-    cannot quietly drop the fire-and-forget property ``shared/webhooks.py``
-    documents in its module docstring ("fired from a background daemon
-    thread so the API response returns immediately").
+    The ``daemon`` assert catches a spawn site that stops passing
+    ``daemon=True``. It CANNOT catch the spawn being deleted -- a site that
+    called ``_bounded_dispatch`` directly would construct no thread and reach
+    no assert. What catches that is the ``inline_dispatch`` list, which stays
+    empty and fails the test.
 
-    Install it via ``_inline_dispatch_thread``, never directly.
+    Built by the ``inline_dispatch`` fixture, never directly.
     """
 
-    def __init__(self, *, target, kwargs, name, daemon):
+    def __init__(self, *, ran, target, kwargs, name, daemon):
         assert daemon is True, f"{name} must stay fire-and-forget"
+        self._ran = ran
         self._target = target
         self._kwargs = kwargs
         self.name = name
         self.daemon = daemon
 
     def start(self):
+        self._ran.append(self.name)
         self._target(**self._kwargs)
 
 
-def _inline_dispatch_thread(*args, **kwargs):
-    """Patch over ``webhooks.threading.Thread`` to inline the dispatch only.
+@pytest.fixture
+def inline_dispatch(monkeypatch):
+    """Run ``_bounded_dispatch`` on the caller's thread; return the names run.
 
     ``shared/webhooks.py`` imports ``threading`` as a plain module import, so
     patching ``Thread`` through it swaps the class for EVERY thread that
@@ -60,21 +64,35 @@ def _inline_dispatch_thread(*args, **kwargs):
     resolver with ``worker.join(timeout)`` / ``worker.is_alive()`` -- running
     that one inline would make the lookup unbounded and void the cap it
     exists for. So only ``_bounded_dispatch`` is inlined; every other thread
-    is handed to the real class -- including any built positionally, which
-    the two dispatch sites never are, and which matter because the patch
-    lands on the stdlib ``threading`` module itself and so is visible to
-    every library that spawns a thread while it is installed.
+    is handed to the real class, including any built positionally -- which
+    the two spawn sites (``shared/webhooks.py`` ``_bounded_dispatch``, both
+    keyword-only) never are, and which matters because the patch lands on the
+    stdlib ``threading`` module itself and so is visible to every library that
+    spawns a thread while it is installed.
 
-    The target is compared against the module attribute rather than the
-    original function so that a test which stubs ``_bounded_dispatch`` before
-    installing this (``test_sweep_due_deliveries_dispatches_each_row``) still
-    gets its stub inlined.
+    The target is compared against the module attribute, read at construction
+    time, rather than against the function captured when this fixture ran. A
+    test that stubs ``_bounded_dispatch`` in its own body -- which runs after
+    the fixture -- therefore gets its stub inlined too
+    (``test_sweep_due_deliveries_dispatches_each_row``).
+
+    ASSERT ON THE RETURNED LIST. It is what makes the inlining observable:
+    a name reaches it only from ``_InlineThread.start`` above. If the spawn
+    goes away, or the identity match here stops holding and a real daemon
+    thread comes back, the list stays empty and the test fails on that assert
+    instead of racing its reads against a live worker.
     """
     from shared import webhooks as wh
 
-    if args or kwargs.get("target") is not wh._bounded_dispatch:
-        return _REAL_THREAD(*args, **kwargs)
-    return _InlineThread(**kwargs)
+    ran: list[str] = []
+
+    def _factory(*args, **kwargs):
+        if args or kwargs.get("target") is not wh._bounded_dispatch:
+            return _REAL_THREAD(*args, **kwargs)
+        return _InlineThread(ran=ran, **kwargs)
+
+    monkeypatch.setattr(wh.threading, "Thread", _factory)
+    return ran
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +100,7 @@ def _inline_dispatch_thread(*args, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch):
+def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch, inline_dispatch):
     """The signed body posted to the subscriber MUST contain the same
     delivery_id that's stored in webhook_deliveries — not ``null``."""
     from shared import webhooks as webhooks_mod
@@ -111,7 +129,6 @@ def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch):
     monkeypatch.setattr(webhooks_mod, "_enqueue_delivery", _fake_enqueue)
     monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
     monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
-    monkeypatch.setattr(webhooks_mod.threading, "Thread", _inline_dispatch_thread)
 
     delivery_id = webhooks_mod.dispatch_webhook(
         campaign_id="c1",
@@ -123,6 +140,10 @@ def test_dispatch_webhook_bakes_delivery_id_into_payload(monkeypatch):
         },
         target_url="https://example.com/hook",
     )
+
+    # The dispatch really ran inline. Without this the reads below race a
+    # live daemon thread whenever inline_dispatch stops matching the spawn.
+    assert len(inline_dispatch) == 1
 
     assert delivery_id is not None
     # The id baked into the row matches the id we got back.
@@ -1129,7 +1150,7 @@ def test_dispatch_once_past_max_attempts_stamps_delivered(monkeypatch):
     assert any(u.get("delivered_at") for u in update_calls)
 
 
-def test_sweep_due_deliveries_dispatches_each_row(monkeypatch):
+def test_sweep_due_deliveries_dispatches_each_row(monkeypatch, inline_dispatch):
     """The sweep calls the claim RPC and dispatches each returned row."""
     from shared import webhooks as wh
 
@@ -1187,11 +1208,12 @@ def test_sweep_due_deliveries_dispatches_each_row(monkeypatch):
 
     monkeypatch.setattr(wh, "_bounded_dispatch", _fake_bounded)
 
-    # Run inline so the test observes the dispatches without waiting on --
-    # or leaking -- daemon threads. See _inline_dispatch_thread.
-    monkeypatch.setattr(wh.threading, "Thread", _inline_dispatch_thread)
-
     count = wh.sweep_due_deliveries(limit=50)
+
+    # The dispatch really ran inline. Without this the reads below race a
+    # live daemon thread whenever inline_dispatch stops matching the spawn.
+    assert len(inline_dispatch) == 3
+
     assert count == 3
     assert len(dispatched) == 3
     assert {d["delivery_id"] for d in dispatched} == {"d1", "d2", "d3"}
@@ -1354,7 +1376,7 @@ def test_resolve_signing_secret_no_owner_falls_back_to_env(monkeypatch):
     assert wh._resolve_signing_secret(owner_user_id=None) == "env-only"
 
 
-def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
+def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch, inline_dispatch):
     """The signed body MUST include owner_user_id (CR-01) so the
     receiver can confirm "this event is intended for my tenant"."""
     from shared import webhooks as webhooks_mod
@@ -1386,7 +1408,6 @@ def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
     monkeypatch.setattr(webhooks_mod, "_enqueue_delivery", _fake_enqueue)
     monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
     monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
-    monkeypatch.setattr(webhooks_mod.threading, "Thread", _inline_dispatch_thread)
 
     webhooks_mod.dispatch_webhook(
         campaign_id="c-cr01",
@@ -1399,6 +1420,10 @@ def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
         },
         target_url="https://example.com/hook",
     )
+
+    # The dispatch really ran inline. Without this the reads below race a
+    # live daemon thread whenever inline_dispatch stops matching the spawn.
+    assert len(inline_dispatch) == 1
 
     # owner_user_id lives in the persisted row's payload.
     assert enqueued["payload"]["owner_user_id"] == "tenant-A"
