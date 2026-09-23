@@ -20,11 +20,15 @@ Self-contained rationale: Modal deploys only the single file you pass to
 portability bugs with sibling-module imports, so the same self-contained
 pattern applies here.
 
-GPU: A100-40GB. A warm single-sequence fold is ~69 s on this SKU and the
-one-time model load is ~13 s, both measured — provenance and caveats in
-the runtime note in ``tools/boltz2/__init__.py``. The "~15 s kernel plus
-a ~30 s cold weight load" split this replaces was wrong in both terms:
-designs 2 and 3 of that run were warm and still took 68.5 s and 69.5 s.
+GPU: A100-40GB. A single-sequence design is ~69 s on this SKU and the
+first of a run ~13 s more, both measured — provenance and caveats in the
+runtime note in ``tools/boltz2/__init__.py``. The "~15 s kernel plus a
+~30 s cold weight load" split this replaces is not a per-design cost:
+``tools/boltz2/run_pipeline.py::run_boltz`` starts a fresh
+``boltz predict`` process for every design, so each one pays start-up
+and a model load, and designs 2 and 3 of that run took 68.5 s and
+69.5 s. Those are whole-process times, so they cannot test either term
+alone.
 The ``msa_server`` preset adds an MSA fetch from the public ColabFold
 MMseqs2 endpoint and measures ~214 s/design aggregate, ~3x standalone.
 """
@@ -59,9 +63,7 @@ _GPU = "A100-40GB"
 # msa_server run CANNOT finish inside this timeout, which is why that
 # preset is capped at 16 (~3424 s) rather than 50. Both are extrapolations
 # from three folds at 242-246 aa, not measured 50-binder runs, and longer
-# binders push both higher. The "~15 s/design" figure this ceiling was
-# reasoned against put the standalone run at 750 s, which is why the
-# headroom read as ample.
+# binders push both higher.
 #
 # Deliberately NOT raised here. An overrun is survivable: each design is
 # PUT to its own presigned URL as that fold completes, by
