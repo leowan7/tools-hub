@@ -48,6 +48,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def service_client_available() -> bool:
+    """True when ``get_service_client()`` can build a client from the env
+    as it stands right now.
+
+    Environment reads only -- it does NOT build a client. ``get_service_client``
+    falls back to ``get_supabase_client`` when the service-role key is absent,
+    so either key counts.
+
+    Exists so a caller that hands the insert to another thread can decide on
+    its OWN thread whether the work is worth detaching. The env read is free;
+    the construction behind it is not (a bare ``httpx.Client()`` measured
+    253-285 ms on the 2026-09-21 dev box, and it is the bulk of what
+    ``create_client`` costs), which is why only this half moves to the caller.
+
+    Agreement with ``get_service_client`` across the credential matrix is
+    enforced by ``test_predicate_agrees_with_get_service_client`` in
+    tests/test_events_thread_isolation.py.
+    """
+    if not os.environ.get("SUPABASE_URL", "").strip():
+        return False
+    return bool(
+        os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        or os.environ.get("SUPABASE_KEY", "").strip()
+        or os.environ.get("SUPABASE_ANON_KEY", "").strip()
+    )
+
+
 def get_service_client():
     """Return a Supabase client authenticated with the service-role key.
 

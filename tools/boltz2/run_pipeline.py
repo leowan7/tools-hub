@@ -38,6 +38,7 @@ Output shape (``/tmp/smoke_results.json``)::
       "status": "COMPLETED",
       "tier": "standalone",
       "designs_total": N,
+      "designs_folded": N,
       "designs_completed": N,
       "n_failures": 0,
       "designs": [
@@ -640,6 +641,17 @@ def main() -> None:
 
             designs_out: list[dict] = []
             n_failures = 0
+            # Folds, counted where the fold is DECIDED - the moment
+            # collect_outputs yields a PDB, one line below - and therefore
+            # before the upload, which is a separate network hop with its own
+            # failure. designs_out cannot stand in for this: its append is
+            # downstream of that hop, so a run whose every fold succeeded and
+            # whose every upload failed leaves it empty, indistinguishable from
+            # a run that folded nothing. Both shapes are not hypothetical and
+            # not distinguishable today: Gate 1 Rung A (2026-09-19) and Rung B
+            # (2026-09-21) each folded 3/3 and each returned "all 3 designs
+            # failed" - the two rows for boltz2 in docs/VALIDATION-LOG.md.
+            n_folded = 0
 
             for i, binder in enumerate(binders):
                 name = str(binder.get("name") or f"design_{i}").strip() or f"design_{i}"
@@ -671,6 +683,7 @@ def main() -> None:
                     n_failures += 1
                     logger.warning("design %s: no PDB emitted", name)
                     continue
+                n_folded += 1
 
                 pdb_text = pdb_path.read_text()
                 contacts = hotspot_contacts(
@@ -740,9 +753,15 @@ def main() -> None:
     # green job and no results. ``binders`` empty is already rejected at the
     # _fail above, so reaching here means every design took one of the loop's
     # failure branches. They do not agree on a cause - an empty sequence never
-    # attempts a fold, an upload failure happens after a successful one - so
-    # neither this comment nor the detail below names one; each branch logs
-    # its own warning.
+    # attempts a fold, an upload failure happens after a successful one - and
+    # the detail below now splits exactly on that line, because it is the split
+    # that changes what the reader should do. n_folded is incremented where the
+    # fold is decided, so n_folded > 0 with designs_out empty means every fold
+    # worked and every upload did not: a storage problem, not a modelling one,
+    # and the structures existed in this process. Within each side the branches
+    # still disagree (an empty sequence and a boltz non-zero exit are both
+    # n_folded == 0), so neither side names a per-design cause; each branch
+    # logs its own warning.
     #
     # This flips the billing direction, deliberately. designs_out takes every
     # design that folded and uploaded whatever its filter_status, so an empty
@@ -760,19 +779,27 @@ def main() -> None:
     # compute debit is unaffected - that reads the runtime_seconds this _fail
     # still carries.
     if not designs_out:
-        _fail(
-            "pipeline",
-            "no_designs",
-            f"all {designs_total} designs failed in {runtime_seconds}s; see "
-            f"the run log for the per-design cause",
-            runtime_seconds=runtime_seconds,
-        )
+        if n_folded:
+            detail = (
+                f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+                f"in {runtime_seconds}s - the delivery hop failed, not the "
+                f"folds; see the run log for the per-design upload error, and "
+                f"this job's raw archive for the structures"
+            )
+        else:
+            detail = (
+                f"all {designs_total} designs failed before producing a "
+                f"structure in {runtime_seconds}s; see the run log for the "
+                f"per-design cause"
+            )
+        _fail("pipeline", "no_designs", detail, runtime_seconds=runtime_seconds)
 
     _write_result(
         {
             "status": "COMPLETED",
             "tier": tier,
             "designs_total": designs_total,
+            "designs_folded": n_folded,
             "designs_completed": len(designs_out),
             "n_failures": n_failures,
             "designs": designs_out,
@@ -790,8 +817,9 @@ def main() -> None:
         designs_total=designs_total,
     )
     logger.info(
-        "pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
-        len(designs_out), designs_total, n_failures, runtime_seconds,
+        "pipeline ok — %d/%d designs folded, %d delivered, %d failures, "
+        "runtime=%ds",
+        n_folded, designs_total, len(designs_out), n_failures, runtime_seconds,
     )
 
 

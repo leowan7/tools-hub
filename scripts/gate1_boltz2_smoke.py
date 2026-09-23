@@ -91,7 +91,20 @@ THIS driver returns status FAILED with designs_completed 0 whether all three
 folds succeeded or none did -- the two outcomes are indistinguishable in the
 returned dict. Only the parked tree separates them, and it is written by
 archive_raw_outputs(str(workdir)) in `main`'s finally and therefore BEFORE
-that _fail. This docstring cites symbols, not line numbers: they resolve
+that _fail.
+
+That last point is true of cab729e and is the state both Rung A and Rung B
+ran against. It is being fixed: `main` now counts folds in n_folded, decided
+before the upload, and the no_designs detail reads "N of M designs folded but
+0 uploaded" instead of "all M designs failed". NOTHING BELOW CHANGES. The
+abort gate still reads the tar, because what made designs_completed useless
+here is unchanged -- it is 0 on every run of this driver by construction, the
+uploads being rigged to fail -- and a detail string is prose, while
+folds_in_raw() counts files the container actually wrote. The next person to
+run this against a rebuilt image should expect the new detail and still
+believe the tar.
+
+This docstring cites symbols, not line numbers: they resolve
 against tools/boltz2/ at cab729e, deployed as ranomics-boltz2-prod v13
 (checked with `modal app history ranomics-boltz2-prod`; that table records
 every deploy of this app against a dirty tree, so the image is not provably
@@ -168,8 +181,8 @@ UPLOAD_ENDPOINT = "http://127.0.0.1:1/upload"
 # `modal volume ls boltz2-weights` on 2026-09-19 listed boltz2_conf.ckpt,
 # boltz2_aff.ckpt and mols.tar, 5.7 GiB between them, all three stamped
 # 2026-05-29, plus a mols/ directory older still at 2025-02-18, and Rung A
-# wrote nothing to it. That contradicts the "~1 GB of model weights" comment
-# beside the Volume in modal_app.py, still present there at this commit. The
+# wrote nothing to it. That contradicted the "~1 GB of model weights" comment
+# then beside the Volume in modal_app.py, since corrected. The
 # same listing immediately before and after the 2026-09-21 Rung B run gave
 # the same four entries at the same timestamps and sizes, so Rung B wrote
 # nothing to it either and no weights download came out of the 900 s. That
