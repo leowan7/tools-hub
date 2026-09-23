@@ -25,7 +25,7 @@ Runtime, both tiers measured
 ----------------------------
 Job ``gate1-standalone-1789842854`` on prod ``ranomics-boltz2-prod`` v13
 (``cab729e``), A100-40GB, 2026-09-19. Three designs: 81.9 s, 68.5 s,
-69.5 s. The first carries a ~13 s one-time model load, so the marginal
+69.5 s. The first runs ~13 s longer than the others, so the marginal
 rate is ~69 s / design and a one-binder run is ~82 s of container time
 plus ~9 s of container spawn (wall 229 s against 220 s of container
 runtime). Per-design times are derived from the interval between
@@ -37,8 +37,15 @@ CONDITIONS, which are the whole sample: binders 242-246 aa against a
 107 aa antigen, single-sequence mode, ``--no_kernels --output_format
 pdb``, n=1 per design. One antigen, one binder-length band, three folds.
 The rate outside that band is not measured, so treat ~69 s as an anchor
-rather than a curve. The figure it replaces, "~15 s / design", was never
-measured at all.
+rather than a curve. Each design is its own ``boltz predict`` process
+(``tools/boltz2/run_pipeline.py::run_boltz``, called once per binder
+from ``tools/boltz2/run_pipeline.py::main``), so every per-design time
+includes process start-up and a model load. The first design's extra
+~13 s is therefore not a one-time model load, and its cause was not
+isolated. The figure it replaces, "~15 s / design", has no timing on
+record in this repo; the commit that introduced it, ``d2a1b8c``, also
+calls ~15 s "the fold kernel", which whole-process times can neither
+confirm nor refute.
 
 ``msa_server`` was measured on 2026-09-21 by Gate 1 Rung B: job
 ``gate1-msa_server-1790046491``, same image and the same three binders as
@@ -48,8 +55,8 @@ Rung A. 643 s of pipeline runtime for 3 designs, so **214 s / design
 
 That 214 s is an AGGREGATE, not a marginal rate: the split between the
 MSA-server fetch and GPU compute was not measured, and unlike Rung A no
-per-design interval was resolved, so there is no separate model-load
-term to subtract. Do not read it as a per-design marginal cost the way
+per-design interval was resolved, so there is no separate first-design
+premium to subtract. Do not read it as a per-design marginal cost the way
 ~69 s can be read.
 
 Discrimination, and why ``standalone`` stays the default
