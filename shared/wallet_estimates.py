@@ -339,10 +339,48 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "boltz2": ToolSpec(
         slug="boltz2",
         gpu_class="A100-40GB",
-        # Conservative bootstrap covering both presets: standalone ~60 s/design,
-        # msa_server ~180 s/design. Holding at the higher value over-reserves on
-        # standalone runs (released as surplus on settle) but never under-holds
-        # an MSA fetch. Historical p90 supersedes this once >=20 runs land.
+        # Conservative bootstrap covering both presets, BOTH now measured.
+        # standalone: ~69 s/design marginal, 81.9 s for a one-design run
+        # including model load (job gate1-standalone-1789842854, A100-40GB,
+        # 2026-09-19). msa_server: ~214 s/design AGGREGATE over a 3-design run
+        # (job gate1-msa_server-1790046491, A100-40GB, 2026-09-21, 643 s of
+        # pipeline runtime / 3 designs); the MSA-fetch and GPU halves were not
+        # timed separately, so that is the whole per-design cost, not a
+        # marginal one. Both runs used 242-246 aa binders against a 107 aa
+        # antigen; provenance and caveats in the runtime note in
+        # tools/boltz2/__init__.py and in docs/VALIDATION-LOG.md.
+        #
+        # 180 s NO LONGER BOUNDS THE SLOWER PRESET. It was written as a
+        # deliberate over-guess while msa_server was unmeasured; at 214 s/design
+        # the point estimate now reads ~16% LOW for that preset (180 / 214),
+        # so the quote a user sees understates it. The RESERVATION is still
+        # safe, but by the cushion rather than by this number:
+        # ``cushioned_hold_usd`` below holds ``HOLD_CUSHION_MULTIPLIER``
+        # (1.5, defined at the top of this module) times the point estimate,
+        # i.e. 270 s of headroom against a 214 s actual (26%). boltz2 sets no
+        # ``worst_case_gpu_seconds``, so that floor branch is skipped, and the
+        # ``compute_hard_cap`` clamp cannot shave the cushion away: cap and
+        # point estimate both scale linearly off ``n_designs_total``, holding
+        # hold/cap at 0.819 for every design count up to MAX_BINDERS=50.
+        # A settle reconciles against measured seconds, so an under-quote here
+        # is a display-accuracy gap, not an under-charge.
+        #
+        # DELIBERATELY ONE SPEC, NOT SPLIT PER PRESET. At designs_per_run_
+        # baseline=1 this over-reserves standalone ~2.2x (180 / 81.9) and
+        # under-quotes msa_server ~0.84x. Splitting means a
+        # ``tier_gpu_seconds`` row, and ``_historical_p90_seconds`` below
+        # excludes every preset named there from its sample
+        # (``query.not_.in_("preset", ...)``). standalone is the preset the
+        # form pre-selects — ``templates/tools/boltz2_form.html`` passes
+        # ``is_first=True`` to ``pre_checked`` for it and ``False`` for
+        # msa_server — so it will be most rows, and pinning it that way
+        # would drop the bulk of the sample, hold the remainder under
+        # MIN_HISTORICAL_RUNS, and freeze BOTH presets on hand-written
+        # numbers, each a three-fold sample from a single binder-length band.
+        # Falling through leaves historical p90 free to supersede this once
+        # >=20 runs land, which is the mechanism that actually retires both
+        # the 2.2x and the 0.84x. Revisit if standalone and msa_server ever
+        # need separate prices badly enough to give up that self-correction.
         expected_gpu_seconds=180.0,
         designs_per_run_baseline=1,
         scaling_param="n_designs_total",

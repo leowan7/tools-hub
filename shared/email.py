@@ -1,7 +1,7 @@
 """Transactional email helper for the Ranomics tools-hub.
 
 Wave 2 (iterative binder design platform). Long-running pilot jobs
-(BindCraft 45 min, PXDesign 35 min) cannot be UX'd as a tab the user
+(BindCraft 30 to 45 min, PXDesign 8 to 25 min) cannot be UX'd as a tab
 holds open — the run finishes when it finishes, and the user gets an
 email with a link to the results page.
 

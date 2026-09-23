@@ -196,7 +196,7 @@ adapter = ToolAdapter(
                 "Pick 1 to 1000 final VHH candidates. Start with a small "
                 "batch (4 designs, ~30 to 60 min) to confirm your target "
                 "and hotspots, then scale to 100+ once outputs look "
-                "real. Results emailed when run completes; A100-80GB."
+                "real. Results emailed when run completes; A100-40GB."
             ),
             requires_pdb=True,
             long_running=True,
