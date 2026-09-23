@@ -1013,6 +1013,13 @@ def _run_batch_folds(
 
     designs_out: list[dict] = []
     n_failures = 0
+    # Folds, counted where the fold is DECIDED - _fold_record returning, which
+    # it only does after reject_stub passes - and therefore before the upload,
+    # which is a separate network hop with its own failure. designs_out cannot
+    # stand in for this: its append is downstream of that hop, so a run whose
+    # every fold succeeded and whose every upload failed leaves it empty,
+    # indistinguishable from a run that folded nothing.
+    n_folded = 0
     send_heartbeat(
         webhook_url, job_id,
         stage="folding",
@@ -1048,6 +1055,7 @@ def _run_batch_folds(
             n_failures += 1
             logger.warning("design %s: fold raised — %s", name, exc)
             continue
+        n_folded += 1
 
         pdb_key = f"{name}.pdb"
         try:
@@ -1085,11 +1093,23 @@ def _run_batch_folds(
         )
 
     runtime_seconds = int(time.time() - start)
+    # Unlike boltz2 this path has no zero-design abort, so an all-uploads-failed
+    # run still writes a COMPLETED result and still bills. That is deliberately
+    # left alone here; what changes is that the counts and the log no longer
+    # blame the model for it.
+    if n_folded and not designs_out:
+        logger.error(
+            "%d of %d designs folded but 0 uploaded in %ds — the delivery hop "
+            "failed, not the folds; see the per-design upload warnings above, "
+            "and this job's raw archive for the structures",
+            n_folded, designs_total, runtime_seconds,
+        )
     _write_result(
         {
             "status": "COMPLETED",
             "tier": "batch",
             "designs_total": designs_total,
+            "designs_folded": n_folded,
             "designs_completed": len(designs_out),
             "n_failures": n_failures,
             "designs": designs_out,
@@ -1104,8 +1124,9 @@ def _run_batch_folds(
         designs_total=designs_total,
     )
     logger.info(
-        "batch pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
-        len(designs_out), designs_total, n_failures, runtime_seconds,
+        "batch pipeline ok — %d/%d designs folded, %d delivered, %d failures, "
+        "runtime=%ds",
+        n_folded, designs_total, len(designs_out), n_failures, runtime_seconds,
     )
 
 
