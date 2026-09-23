@@ -658,9 +658,9 @@ class TestBinderNameIsAFileName:
     @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
     def test_validate_still_accepts_names_linux_can_hold(self, name):
         """Positive control: the refusal must not reach past the hazard."""
-        inputs, err = b2.validate(_named_form("VHH-12", name), {})
+        inputs, err = b2.validate(_named_form(name), {})
         assert err is None, err
-        assert [b["name"] for b in inputs["binder_sequences"]] == ["VHH-12", name]
+        assert [b["name"] for b in inputs["binder_sequences"]] == [name]
 
     @pytest.mark.skipif(
         os.name == "nt",
