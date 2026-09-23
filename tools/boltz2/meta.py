@@ -28,21 +28,21 @@ from typing import Optional
 # read as ONE token with " min" appended.
 #
 # standalone: MEASURED at ~69 s/design marginal (1.15 min), and 81.9 s for a
-# one-design run because that one carries the model load. Job
+# one-design run because the first design runs ~13 s longer. Job
 # gate1-standalone-1789842854, A100-40GB, 2026-09-19, 242-246 aa binders
 # against a 107 aa antigen, n=1 per design — full provenance and caveats in
 # the runtime note in tools/boltz2/__init__.py. "~1.2" is the marginal rate;
 # the about["runtime_table"] row below carries the single-binder figure too,
-# since that cell is not limited to one token. This replaces "<1", which came
-# from a "~15 s/design" figure that was never measured and is ~4.6x off.
+# since that cell is not limited to one token. This replaces "<1", which
+# landed in 7390cc2 alongside a "~15 s/design" figure that is ~4.6x off.
 #
 # msa_server: MEASURED at 214 s/design (3.6 min) by Gate 1 Rung B, job
 # gate1-msa_server-1790046491, 2026-09-21 — same image and same three binders
 # as Rung A, 643 s of pipeline runtime for 3 designs. This replaces "~3",
 # which was a launch estimate and read ~19% fast. Unlike standalone this is an
 # AGGREGATE, not a marginal rate: no per-design interval was resolved and the
-# MSA-fetch / GPU-compute split was not measured, so there is no model-load
-# term to subtract. Same provenance note in tools/boltz2/__init__.py.
+# MSA-fetch / GPU-compute split was not measured, so there is no first-design
+# premium to subtract. Same provenance note in tools/boltz2/__init__.py.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "standalone": {"typical_minutes": "~1.2"},
     "msa_server": {"typical_minutes": "~3.6"},
@@ -157,8 +157,8 @@ about: dict = {
             "preset": "standalone",
             "typical": (
                 "~1.2 min/design measured; a single binder is ~1.5 min end "
-                "to end, carrying the one-time model load and container "
-                "spawn"
+                "to end, because the first design runs ~13 s slower and the "
+                "container takes ~9 s to start"
             ),
         },
         {
