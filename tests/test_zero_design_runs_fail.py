@@ -50,6 +50,8 @@ from tools.esmfold import run_pipeline as esm_rp
 from tools.iggm import run_pipeline as iggm_rp
 from tools.opendde import run_pipeline as odd_rp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _capture(monkeypatch, module) -> list[dict]:
     """Trap the terminal payload instead of writing /tmp/smoke_results.json."""

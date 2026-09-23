@@ -186,7 +186,10 @@ def api_runs_estimate():
     """Live budget + chunk-plan preview for the campaign create form."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
-    preset = (request.args.get("preset") or "pilot").strip() or "pilot"
+    # Lowercased to match the estimator's own normalisation
+    # (shared/wallet_estimates.py::estimated_cost_for_tool), so a cased "Validate" cannot slip
+    # past the refusal below and be priced as a campaign.
+    preset = (request.args.get("preset") or "pilot").strip().lower() or "pilot"
     try:
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
@@ -197,10 +200,9 @@ def api_runs_estimate():
         # The free pre-flight is not a paid campaign — mirror the create route.
         return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a campaign."})
     try:
-        # Thread the real variant so the estimate matches the create path (the
-        # 5 live tools default to "pilot"); today proteina is fixed-container so
-        # the figures coincide, but this stops a silent divergence if pricing
-        # ever becomes preset-dependent.
+        # Always the "pilot" default in practice: the form's fetchEstimate()
+        # sends only tool + requested_designs, never a preset
+        # (templates/runs/new.html:417-418).
         plan = cc.plan_chunks(tool, requested, preset)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)})
@@ -331,9 +333,12 @@ def compute_campaign_create():
         return _err("Unknown tool.")
     if adapter.preset_for(preset) is None:
         return _err("Unknown preset for this tool.")
-    # The free `validate` tier is a CPU-only pre-flight, not a paid campaign; it
-    # is omitted from the form and routed separately. Reject it on the paid path
-    # so a crafted request can't open a priced campaign on a config-less variant.
+    # The free `validate` tier is a pre-flight, not a paid campaign; it is
+    # omitted from the form and routed separately. Reject it on the paid path
+    # so a crafted request can't open a priced campaign on a config-less
+    # variant. Free to the CUSTOMER, not GPU-free: it does no GPU work but
+    # holds the same A100 container (tools/proteina/run_pipeline.py's "validate
+    # tier" header).
     if preset == "validate":
         return _err("The validate tier is a free pre-flight, not a campaign.")
     # IgGM affinity_maturation runs one design PER masked position PER sample, so

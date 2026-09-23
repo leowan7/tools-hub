@@ -446,16 +446,17 @@ class DesignTarget:
 
         THE BARE CASE USED TO UNION ACROSS EVERY NAMED CHAIN, and that let this
         route fund a run that could not succeed. No consumer downstream reads an
-        unprefixed hotspot as "any named chain": ``tools/base.py:108`` rewrites
-        it onto the first target chain, and proteina's ``_parse_hotspots``
-        promotes it onto ``contig_chains[0]``. proteina is what makes this
-        reachable in production rather than hypothetical — it emits
-        ``hotspot_residues`` as BARE author numbers precisely so this check
-        keeps working, while shipping the prefixed ``hotspot_spec`` to the
-        model. So on a target whose chains are numbered differently, a bare
-        number living only on the second chain passed here, was funded, and
-        then failed the container's own ``missing_hotspots`` guard with the
-        A100 already running. Judging the first chain judges what runs.
+        unprefixed hotspot as "any named chain":
+        ``tools/base.py::parse_hotspot_residues`` rewrites it onto the first
+        target chain, and proteina's ``_parse_hotspots`` promotes it onto
+        ``contig_chains[0]``. proteina is what makes this reachable in
+        production rather than hypothetical — it emits ``hotspot_residues`` as
+        BARE author numbers precisely so this check keeps working, while
+        shipping the prefixed ``hotspot_spec`` to the model. So on a target
+        whose chains are numbered differently, a bare number living only on the
+        second chain passed here, was funded, and then failed the container's
+        own ``missing_hotspots`` guard with the A100 already running. Judging
+        the first chain judges what runs.
 
         Single-chain targets are unaffected: with one named chain the union IS
         the first chain.

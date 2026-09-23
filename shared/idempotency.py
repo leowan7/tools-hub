@@ -250,42 +250,43 @@ def _claim_key(
     at all. (Not "no service-role key" -- that yields a live anon client and
     refuses; see below.) Running unguarded is safe there because every write
     that moves money takes the same client and short-circuits without it --
-    ``reserve_hold`` (shared/wallet.py:575) and ``top_up_wallet``
-    (shared/wallet.py:410) return None on a null client, and
-    ``_cas_transition`` (shared/compute_campaigns.py:1843) returns False -- so
-    an unguarded handler cannot place a hold, credit a wallet, or drive a
-    campaign. ``reserve_hold``'s own null-client check is at :577, but on this
-    path it never runs: ``wallet_preflight`` has already denied, so :575
-    returns first. Failing closed here would instead take every guarded route
-    down permanently in an environment that never had Supabase configured.
+    ``shared/wallet.py::reserve_hold`` and ``shared/wallet.py::top_up_wallet``
+    return None on a null client, and
+    ``shared/compute_campaigns.py::_cas_transition`` returns False -- so an
+    unguarded handler cannot place a hold, credit a wallet, or drive a campaign.
+    ``reserve_hold`` has its own null-client check, but on this path it never
+    runs: ``wallet_preflight`` reads the wallet through
+    ``get_or_create_wallet``, which returns None with no client, so the
+    preflight denies and ``reserve_hold`` returns from that branch first.
+    Failing closed here would instead take every guarded route down
+    permanently in an environment that never had Supabase configured.
 
     Do NOT restate that as "the wallet decorator refuses". It does not, twice
     over: only one of the ten guarded routes carries ``requires_wallet`` at all
-    (``blueprints/tools.py:1331``), and the decorator it carries is
+    (``blueprints/tools.py::tool_submit``), and the decorator it carries is
     ``shared/wallet_guard.py``'s, which on a null wallet row deliberately falls
-    THROUGH to the handler (:219-224) rather than blocking. The
-    ``requires_wallet`` that does gate on a preflight is ``shared/wallet.py:901``
-    and it is wired to no route at all. An earlier version of this paragraph
-    claimed that chain and was wrong.
+    THROUGH to the handler (its ``wallet_row is None`` arm) rather than
+    blocking. The ``requires_wallet`` that does gate on a preflight is
+    ``shared/wallet.py::requires_wallet`` and it is wired to no route at all.
+    An earlier version of this paragraph claimed that chain and was wrong.
 
     One configuration is deliberately NOT given the open answer, because it is
     the one where open is most dangerous. With ``SUPABASE_URL`` and an anon key
     set but no service-role key, ``get_service_client`` returns a live ANON
-    client (shared/credits.py:59-64) rather than None, and migration 0004
-    enables RLS on this table with no policies -- so the SELECT reads empty and
-    the INSERT is refused, and this refuses with it. The cost is that
-    ``/library-planner/plan`` and, for signed-in callers only,
+    client (shared/credits.py::get_service_client) rather than None, and
+    migration 0004 enables RLS on this table with no policies -- so the SELECT
+    reads empty and the INSERT is refused, and this refuses with it. The cost is
+    that ``/library-planner/plan`` and, for signed-in callers only,
     ``/developability/score`` -- which spend nothing -- also 503 in a
     half-configured dev environment. Signed-in only because that route is
-    deliberately anonymous (blueprints/tools.py:117-119 carries no
-    ``@login_required``) and the decorator hands an anonymous request straight
-    to the handler, so it never reaches this function without a user. The
-    alternative is
-    worse: a PRODUCTION deploy that lost its service-role key would fail open
-    on the money routes and silently double-charge every double-click, which is
-    exactly the hole this function was rewritten to close. A loud 503 naming
-    the ledger is the better half of that trade, and `credits.py` already logs
-    the missing key on the way past.
+    deliberately anonymous (blueprints/tools.py::developability_score carries no
+    ``@login_required``) and the decorator hands an anonymous request straight to
+    the handler, so it never reaches this function without a user. The
+    alternative is worse: a PRODUCTION deploy that lost its service-role key
+    would fail open on the money routes and silently double-charge every
+    double-click, which is exactly the hole this function was rewritten to close.
+    A loud 503 naming the ledger is the better half of that trade, and
+    `credits.py` already logs the missing key on the way past.
 
     ``"unavailable"`` is a live client whose query FAILED. Two very different
     faults land there and the refusal is sized for the narrower one. A fault
@@ -294,12 +295,12 @@ def _claim_key(
     spend money while we no longer know whether this exact request already ran.
     A broad fault (timeout, reset connection) breaks the same client
     everywhere, and the handler would bail downstream anyway:
-    ``get_or_create_wallet`` swallows it and returns None (shared/wallet.py:277),
-    after which ``create_job`` returns None and ``tool_submit`` stops before the
-    Modal spawn. We cannot tell the two apart from in here, so we answer for the
-    one that can cost money. Do NOT write "the wallet gate is working in that
-    case" -- for the broad fault it is not, and an earlier version of this
-    paragraph said exactly that and was wrong. Five of the ten guarded
+    ``shared/wallet.py::get_or_create_wallet`` swallows it and returns None,
+    after which ``create_job`` returns None and ``tool_submit`` stops before
+    the Modal spawn. We cannot tell the two apart from in here, so we answer
+    for the one that can cost money. Do NOT write "the wallet gate is working
+    in that case" -- for the broad fault it is not, and an earlier version of
+    this paragraph said exactly that and was wrong. Five of the ten guarded
     routes spend --
     ``compute_campaign_create``, ``compute_campaign_refold``, ``job_refold``,
     ``target_launch_submit``, ``tool_submit`` -- and for those, refusing costs
@@ -311,9 +312,10 @@ def _claim_key(
     ``developability_score``, ``library_planner_plan``) pay the refusal without
     the benefit, and ``job_cancel`` is the one that stings: a user cannot STOP
     a running job while the ledger is down. They are guarded anyway because a
-    replay of any of them costs real work (blueprints/lab_projects.py:1286-1298
-    is the enumeration), and splitting the stance per route would mean a guard
-    whose safety depends on correctly classifying every future route.
+    replay of any of them costs real work
+    (blueprints/lab_projects.py::campaigns_submit is the enumeration), and
+    splitting the stance per route would mean a guard whose safety depends on
+    correctly classifying every future route.
     """
     client = get_service_client()
     if client is None:

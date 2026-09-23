@@ -1,13 +1,14 @@
 /**
  * Stub-DOM runner for static/js/hotspot_picker.js.
  *
- * WHY THIS EXISTS. tests/test_candidate_table_js_contract.py:4 states the
- * house position: "There is no JS test harness in this repo, so nothing
- * executes that file." Every JS assertion here has therefore been a Python
- * substring search over the source, and the record of those is bad — four of
- * thirteen hooks in that file were held up by CSS rules and template comments
- * rather than by the code they claimed to pin. A substring search also cannot
- * see the one thing that matters for the picker: whether a given FORM passes
+ * WHY THIS EXISTS. This file is the only thing that executes
+ * hotspot_picker.js; the JS assertions in tests/test_hotspot_picker.py are
+ * Python substring searches over the source. That is the shape the JS half
+ * of tests/test_candidate_table_js_contract.py's module docstring (REGISTER
+ * ITEM B-3) is stuck in too, and its record is bad: four of thirteen hooks
+ * in that file were held up by CSS rules and template comments rather than
+ * by the code they claimed to pin. A substring search also cannot see the
+ * one thing that matters for the picker: whether a given FORM passes
  * `chainPrefixed`, because that lives in an object literal, not a token.
  *
  * So this runs the real picker, against the real opts object, out of the real

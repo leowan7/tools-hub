@@ -62,9 +62,9 @@
                           never the bare word "Meets".
 
                           THE SAME SENTENCE AS /jobs/compare, which is the only
-                          other caller that passes a preset
-                          (jobs_compare.html:296).
-                          components/candidate_table.html:705 calls verdict_text
+                          other caller that passes a preset (jobs_compare.html
+                          passes ``preset=col.mode``).
+                          components/candidate_table.html calls verdict_text
                           with NO preset, so on a mode-scoped tool it renders ""
                           there, and the esmfold2-design results page carries no
                           derived bar COLUMN. It is not the only other place a

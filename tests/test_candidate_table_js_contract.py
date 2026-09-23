@@ -1,12 +1,22 @@
 """The contract between static/js/candidate_table.js, the macro that renders
 its DOM, and the server that parses what it posts.
 
-REGISTER ITEM B-3. There is no JS test harness in this repo, so nothing
-executes that file. Every identifier below crosses a boundary a rename can
-break on one side only, and four such renames were confirmed to survive the
-entire suite: `.cand-starred-export`, the submit listener, the posted key
-shape, and `shortlist-hint-`. Each one shipped an empty CSV named `_starred`
-at HTTP 200 with no error anywhere.
+REGISTER ITEM B-3. Two test files DO execute that file under node, and
+neither one retires the searches below. PART 4 of
+tests/test_lab_project_confirmation.py loads the WHOLE shipped script behind
+stubs to drive `window.dropShortlistRefs`; its `document.querySelectorAll`
+returns [] and its `getElementById` returns null, so no selector resolves
+there and no hook in the table below is exercised by it. The renumber
+harness under tests/js/ runs `renumberRows`, sliced out of the script by
+tests/test_candidate_table_renumber.py, against a stub DOM, and that one does
+reach three hooks: `contains('cand-row')`, `'.cand-rank-n'` and
+`'.cand-group-row'`. Both stub the DOM rather than render the macro, so both
+see the JS side alone and a template-side rename stays invisible to either,
+and both SKIP where node is off PATH. Every identifier below crosses a
+boundary a rename can break on one side only, and four such renames were
+confirmed to survive the entire suite: `.cand-starred-export`, the submit
+listener, the posted key shape, and `shortlist-hint-`. Each one shipped an
+empty CSV named `_starred` at HTTP 200 with no error anywhere.
 
 ROUND 20. The template half of every hook was a substring search over the
 template SOURCE, and four of the thirteen hooks turned out to be held up by
@@ -30,11 +40,12 @@ starts with it. The macro renders under a bare Jinja environment, so the
 artifact this repo's house rule asks for IS available here and the source-level
 excuse only ever applied to the JS.
 
-The JS half stays a source search -- there is still no runtime -- but the
-tokens are anchored so a prefix cannot stand in for the whole: `dataset.job` is
-a prefix of `dataset.jobId`, which is the same superstring hole from the other
-side. Where a real artifact is reachable these tests use it: the ref shape is
-not string-compared, it is extracted from the JS and driven through the
+The JS half stays a source search -- the two node runs named above resolve
+no selector against a real DOM -- but the tokens are anchored so a prefix
+cannot stand in for the whole: `dataset.job` is a prefix of
+`dataset.jobId`, which is the same superstring hole from the other side.
+Where a real artifact is reachable these tests use it: the ref shape is not
+string-compared, it is extracted from the JS and driven through the
 production parser, and the empty-selection case is asserted on a live response
 in tests/test_target_export.py.
 
@@ -81,6 +92,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, ranking, score_legends
 from shared import pdb_bfactors
+from shared.jobs import display_rows
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -166,6 +178,11 @@ def _env() -> Environment:
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
+    # candidate_table.html:70 coerces its own rows, so a non-Mapping row
+    # cannot reach the `.get` calls below it. This mirror renders the
+    # macro outside create_app, so it has to carry that global too;
+    # without it every render here raises 'display_rows' is undefined.
+    env.globals["display_rows"] = display_rows
     env.globals["csrf_input"] = lambda: ""
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")
     return env
@@ -342,6 +359,19 @@ _HOOKS = [
 
     (r"'\.view3d-btn'", "button.view3d-btn", _ALL,
      _el(tag="button", cls="view3d-btn")),
+
+    # A refused .pdb download is only ever READ because initTable binds these
+    # anchors to the shared guard and writes into that surface. Rename either
+    # side and nothing throws: the selector matches no element, or `dlErr`
+    # resolves to null and the whole bind is skipped by its own gate. Either
+    # way the browser goes back to swallowing the refusal, which is the
+    # defect. Both halves of the pair below matter -- see
+    # test_init_table_binds_that_selector_to_the_guard for why neither row
+    # proves the call between them.
+    (r"'a\.cand-pdb-download'", "a.cand-pdb-download, the URL-backed "
+     "download anchor", _ALL, _el(tag="a", cls="cand-pdb-download")),
+    (r"'cand-dl-err-'", "id=cand-dl-err-<scope>, the refusal surface", _ALL,
+     _el(id_prefix="cand-dl-err-")),
     (r"'viewer-row-'", "id=viewer-row-<idx>", _ALL,
      _el(tag="tr", id_prefix="viewer-row-")),
     (r"'mol-viewer-'", "id=mol-viewer-<idx>", _ALL,
@@ -932,3 +962,131 @@ def test_the_server_parser_really_would_drop_the_sessionstorage_shape():
     from blueprints.lab_projects import _parse_candidate_refs
 
     assert _parse_candidate_refs(json.dumps([{"j": "job-abc", "i": 3}])) == []
+
+
+# ---------------------------------------------------------------------------
+# The per-design .pdb download is guarded
+# ---------------------------------------------------------------------------
+# These anchors carry `download`, so the BROWSER handles the response and every
+# refusal blueprints/jobs.py::job_candidate_pdb composes reached nobody: the
+# not-found 404 and the malformed-payload 500 are both text/plain with no
+# Content-Disposition, the missing-job branch renders 404.html, and the route is
+# @login_required, so a stale tab's click is answered with a 302 that fetch
+# FOLLOWS to a 200 login page. Chrome writes no file; Firefox saves the refusal
+# AS the .pdb.
+#
+# The guard is the one Scout already ships (static/js/scout-download.js), and
+# tests/test_scout_download_refusals.py runs it under node and owns its
+# BEHAVIOUR -- including the non-JSON refusal branch this route's text/plain
+# bodies take (its `non_json_refusal` case). Nothing here re-tests that. What is
+# asserted below is only the WIRING, which is the half that can break without
+# that file changing at all.
+
+
+@pytest.mark.parametrize("mode", _ALL)
+def test_the_macro_loads_the_download_guard(mode):
+    """Deliberately not folded into the `both scripts` test above: this one is
+    a THIRD tag and that test is named for its two.
+
+    A missing tag is silent rather than broken. initTable gates the bind on
+    `window.bindGuardedDownload`, so the anchors are simply left unguarded --
+    no throw, no console error, and every hook row above still green.
+    """
+    srcs = [a.get("src") or "" for tag, a in _DOM[mode] if tag == "script"]
+    assert any(s.endswith("js/scout-download.js") for s in srcs), srcs
+
+
+@pytest.mark.parametrize("mode", _ALL)
+def test_the_refusal_surface_is_keyed_on_the_scope_the_js_computes(mode):
+    """`id_prefix` in the hook table proves only a non-empty suffix. The JS
+    looks this element up as `'cand-dl-err-' + scope`, so a suffix that is
+    merely non-empty still resolves to null -- and a null `dlErr` skips the
+    bind entirely.
+
+    NOT the job id. `scope` is `wrapEl.dataset.scope || wrapEl.dataset.jobId`,
+    and the macro sets data-scope to the target id in target mode and the
+    campaign id in campaign mode, where the job id is still "job-1". Keying
+    the surface on the job would therefore miss on three of the four shapes
+    -- campaign and BOTH target shapes -- and pass only on the job one.
+    """
+    bars = _el(cls="cand-action-bar", attr="data-scope")(_DOM[mode])
+    assert len(bars) == 1, bars
+    scope = bars[0][1]["data-scope"]
+    ids = [a.get("id") for _t, a in _DOM[mode]
+           if (a.get("id") or "").startswith("cand-dl-err-")]
+    assert ids == ["cand-dl-err-" + scope], (ids, scope)
+
+
+@pytest.mark.parametrize("mode", _ALL)
+def test_only_the_url_backed_download_carries_the_guard_hook(mode):
+    """_rows() renders both PDB branches on purpose, and only one of them can
+    be refused.
+
+    The data: anchor carries its own bytes inline -- there is no server left to
+    say no -- so hooking it would spend a fetch to decide nothing. Asserting
+    the pair rather than just the hooked one is what makes this a claim about
+    WHICH anchor got it: a hook added to both would still satisfy a bare
+    "the class is present" check.
+    """
+    hooked = _el(tag="a", cls="cand-pdb-download")(_DOM[mode])
+    assert len(hooked) == 1, hooked
+    assert hooked[0][1].get("href", "").startswith("/api/jobs/"), hooked
+
+    downloads = [a for tag, a in _DOM[mode] if tag == "a" and "download" in a]
+    inline = [a for a in downloads if a.get("href", "").startswith("data:")]
+    assert len(inline) == 1, downloads
+    assert "cand-pdb-download" not in (inline[0].get("class") or "").split()
+
+
+def test_init_table_binds_that_selector_to_the_guard():
+    """The two hook rows prove the selector string is in the JS and the class
+    is in the DOM. DELETING THE CALL BETWEEN THEM satisfies both and restores
+    the defect, so the call is asserted here -- on the comment-stripped
+    source, where the paragraph explaining it cannot answer for it.
+
+    Searched forward FROM the selector: `window.bindGuardedDownload` also
+    appears as the gate a few lines above, and that occurrence carries no `(`.
+    """
+    sel = "'a.cand-pdb-download'"
+    assert _JS.count(sel) == 1, _JS.count(sel)
+    after = _JS[_JS.index(sel):]
+    call = re.search(r"window\.bindGuardedDownload\s*\(", after)
+    assert call is not None, "the selector is never bound to the guard"
+    assert call.start() < 300, call.start()
+
+
+def test_the_refusal_surface_is_unhidden_before_it_is_written():
+    """aria-live announces a CHANGE to a region already in the accessibility
+    tree, and the macro ships this one `hidden`. Write first and the text
+    arrives as initial content of a region that was not there, which is never
+    read out -- the refusal is then painted but silent to a screen reader.
+
+    Same ordering rule as Scout's showDownloadError
+    (tests/test_scout_download_refusals.py
+    test_the_refusal_is_announced_not_just_painted).
+    """
+    unhide = _JS.index("dlErr.hidden")
+    write = _JS.index("dlErr.textContent")
+    assert unhide < write, (unhide, write)
+
+
+def test_the_refusal_names_the_design_it_refused():
+    """One surface serves every row, and bindGuardedDownload
+    (static/js/scout-download.js) retires the previous message at CLICK
+    time, not when an answer arrives, and writes nothing at all on its
+    success path. So a refusal for row A can land AFTER row B was clicked
+    and downloaded cleanly. Nothing the guard can show names the design:
+    its three constants (GENERIC, EXPIRED, OFFLINE) are fixed strings, and
+    so are the only two bodies this route composes for it to quote --
+    "# Candidate PDB not found." and "# Malformed PDB payload." in
+    blueprints/jobs.py::job_candidate_pdb. So an unlabelled write would sit
+    under a download that just succeeded and describe the wrong design.
+
+    The anchor is in scope at the bind, and its `download` attribute is the
+    filename the user would have received, so the write carries it.
+    """
+    i = _JS.index("a.cand-pdb-download")
+    block = _JS[i:i + 800]
+    write = re.search(r"dlErr\.textContent\s*=\s*([^;]+);", block)
+    assert write, block
+    assert "getAttribute('download')" in write.group(1), write.group(1)

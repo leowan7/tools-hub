@@ -74,6 +74,8 @@ from tools.base import get as get_adapter
 #     defect these tests exist to catch, and it would have silenced all 51.
 from tools.proteina import run_pipeline as rp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # A tiny two-chain structure with the awkward cases baked in: an MSE HETATM
 # (biotite counts it as protein, an ATOM-only parser would not), a water HETATM
@@ -4655,6 +4657,7 @@ def _render_results(candidates):
     in, and a pipeline test alone never looks at the words the operator reads.
     """
     from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+    from shared.jobs import display_rows
     templates = Path(__file__).resolve().parents[1] / "templates"
     env = Environment(loader=ChoiceLoader([
         # ``caller()`` has to be referenced or Jinja refuses the {% call %}
@@ -4667,6 +4670,10 @@ def _render_results(candidates):
             "{% endmacro %}")}),
         FileSystemLoader(str(templates)),
     ]))
+    # proteina_results.html coerces its own rows, so a row that is not
+    # a Mapping cannot reach the `.get` calls below it. This env renders
+    # that partial outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     return env.get_template("tools/proteina_results.html").render(
         job=SimpleNamespace(result={"candidates": candidates}, id="j1"),
         send_target_tools=[])

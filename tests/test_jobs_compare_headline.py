@@ -60,6 +60,8 @@ from shared.score_legends import (
     verdict_text,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 DROP_NAME = "design_0"
 PASS_NAME = "design_1"
 

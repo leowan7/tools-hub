@@ -97,10 +97,10 @@ class Legend(TypedDict):
     # "the binder-to-target interface", uncaveated, for a job submitted before
     # the deploy that made that true.
     #
-    # What is real is the LENGTH: ``explanation`` is a one-line slot for 32
-    # legends, and 380 characters of era note in it would be wrong on the 31
-    # that do not need one. So the split stays and the email opts in per job —
-    # see ``email_caption``.
+    # What is real is the LENGTH: ``explanation`` is a one-line slot every
+    # legend shares, and an era note long enough to overrun that line would
+    # be wrong in it on every legend that does not need one. So the split
+    # stays and the email opts in per job — see ``email_caption``.
     caveat: NotRequired[str]
 
     # WHEN does ``caveat`` apply -- as an instant, for a caveat whose
@@ -617,8 +617,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         #
         # IT GOES IN ``caveat``, NOT IN ``explanation``, AND THE REASON IS
         # LENGTH AND SCOPE — NOT THAT THE EMAIL IS SAFE FROM IT. Written into
-        # ``explanation`` it took the string from 161 characters (the longest
-        # of the other 31 legends) to 496, shared/email.py hands ``explanation``
+        # ``explanation`` it took the string from 161 characters (as it then
+        # stood) to 496, shared/email.py hands ``explanation``
         # to the job-completion email, and every BoltzGen completion mail then
         # said "treat the order of the table as indicative" — in a message that
         # shows ONE number for ONE design and contains no table — including on
@@ -763,13 +763,14 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
     # ── ESMFold2-design (gradient design + critic re-score) ──────────
     # HYPHEN, NOT UNDERSCORE. The registered slug is "esmfold2-design"
-    # (tools/esmfold2_design/__init__.py:240) even though the package
+    # (tools/esmfold2_design/__init__.py::adapter) even though the package
     # directory is esmfold2_design, and this entry shipped keyed on the
     # directory name. Nothing raised: an unknown tool simply has no legend and
     # no bar, so the feature was inert for this tool while its own test passed
-    # over the dead key. shared/tool_meta.py:4 records the same trap costing a
-    # PILOT card that silently did not render. tests/test_derived_verdicts.py
-    # now asserts every tool key here is in tools.base._REGISTRY.
+    # over the dead key. shared/tool_meta.py's module docstring records the same
+    # trap: a PILOT card that silently did not render.
+    # tests/test_derived_verdicts.py now asserts every tool key here is in
+    # tools.base._REGISTRY.
     #
     # A GATE LEG IN MINIBINDER MODE ONLY, via MODE_GATE_COLUMNS; it was a
     # tooltip and nothing else until then. esmfold2-design still declares no
@@ -917,6 +918,117 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "which scores the interface."
         ),
     },
+
+    # ── Proteina (guided diffusion + AF2 or RF3 reward) ──────────────
+    #
+    # ONE ENTRY FOR FIVE COLUMNS, AND THE FOUR OMISSIONS ARE THE POINT.
+    # proteina DOES reach the completion mail's caption chooser --
+    # ``shared/email.py::_top_candidate_summary`` admits it because it stores a
+    # ranked ``candidates[]`` -- so with no legend at all that mail printed a
+    # bare number under a blank caption. The fix is one column, not five.
+    #
+    # THREE OF THE FIVE CARRY A DIFFERENT QUANTITY PER PRESET, and this map is
+    # keyed on (tool, column) with no preset in it. That is the wall the
+    # esmfold2-design note above records ``iPTM_proxy`` hitting before its
+    # column was split, and it states the rule this rests on: a bar may be
+    # mode-scoped, a legend may not. The way out taken there was to split
+    # the upstream column so each name carries one quantity. proteina has
+    # not done that: ``_SCORE_COLUMNS`` in tools/proteina/run_pipeline.py
+    # maps each display key onto whichever upstream column exists, and the
+    # variants write different ones:
+    #
+    #   * ``total_reward`` is recorded as ``-i_pae`` on protein_binder and as
+    #     an RF3-derived reward on ligand_binder -- inherited from the
+    #     ``_SCORE_COLUMNS`` header in tools/proteina/run_pipeline.py, not
+    #     re-derived here. What IS pinned is the consequence: the two fixtures
+    #     in tests/test_proteina_smoke.py::TestRewardParse do not even share a
+    #     SIGN -- -0.45 in ``test_parse_and_rank``, +0.87 in
+    #     ``test_ligand_columns_map`` -- and shared/result_columns.py sorts
+    #     both ``desc`` under the one key. Its SCALE is open on top of that:
+    #     the glossary entry named below illustrates the protein reading as
+    #     "-6 means an i_pAE of 6 A", while every value in the one captured
+    #     shard committed here (tools/proteina/example/result.json, 64
+    #     designs) lies between -0.96 and -0.18. A one-line slot cannot state
+    #     a scale this file cannot settle.
+    #   * ``af2_iptm`` is AF2's ``af2folding_i_ptm_log`` on protein_binder and
+    #     RF3's ``rf3folding_ipTM``, against a SMALL MOLECULE, on
+    #     ligand_binder. Its multi-chain reading is separately open -- see the
+    #     note above MULTICHAIN_IPTM_UNRELIABLE_TOOLS, which leaves proteina
+    #     out and says why.
+    #   * ``af2_plddt`` reads ``af2folding_plddt_log`` on protein_binder; its
+    #     ligand source ``rf3folding_plddt`` is marked UNVERIFIED in
+    #     ``_SCORE_COLUMNS`` itself. It is also the column whose polarity was
+    #     inverted once already -- ``_SCORE_COLUMNS`` records that it read the
+    #     AfDesign LOSS term -- and tools/proteina/meta.py's own
+    #     ``how_to_read_it`` tells the customer to read ``binder_scrmsd``
+    #     before trusting it.
+    #
+    # All three scoring presets are selectable on the form (``presets=`` in
+    # tools/proteina/__init__.py), so the split is live, not latent.
+    # ONLY ``total_reward`` HAS ANYWHERE TO FALL BACK TO, and an earlier draft
+    # of this note said all three did. shared/metric_glossary.py carries an
+    # entry for it that STATES the split, in the room a glossary has and a
+    # one-line slot does not. ``af2_iptm`` and ``af2_plddt`` are in neither
+    # map, so nothing sources a tooltip for their column heads: the head in
+    # candidate_table.html reads exactly those two. That is still right: the
+    # alternative on offer is one sentence that is false under one of the two
+    # presets.
+    #
+    # ``rf3_score`` is not preset-split -- it resolves on the RF3 variants
+    # only -- and is omitted for want of a source: what
+    # ``rf3folding_ranking_score`` aggregates has not been traced, and
+    # the repo tracks no reward CSV at all -- TestRewardParse builds its own
+    # inline and calls it synthetic -- so the only artifact naming it is
+    # hand-written.
+    #
+    # NO ``good``/``excellent`` ON THE ONE ENTRY EITHER, for the reason the
+    # Legend TypedDict gives. proteina declares no GATE_COLUMNS entry, so
+    # nothing here judges a proteina design against a bar. The nearest thing
+    # to one is ``REFOLD_CUT_A = 5.0`` in tools/proteina/export_campaign.py,
+    # and -- unlike ``SELF_COPY_FRACTION`` in that same file, which carries a
+    # measured justification -- it carries none at all; it is one export
+    # script's filter. Promoting it would be the boltzgen ipTM mistake
+    # exactly: a number from somewhere else, kept in a field named ``good``.
+    #
+    # WHAT THE ONE EXPLANATION RESTS ON. Two shipped, customer-facing sources
+    # say the same thing: export_campaign.py's "## Filters" paragraph ("AF2 is
+    # given the designed sequence alone and its prediction is compared to the
+    # designed pose") and meta.py's ``how_to_read_it`` ("the generator's
+    # backbone compared against an independent re-fold of its own sequence").
+    # The fixture then discriminates between that reading and the obvious
+    # alternative, an RMSD against the TARGET. In
+    # tools/proteina/example/result.json the designs that refold past 30 A sit
+    # at af2_iptm 0.0861 to 0.1543, against a 0.727 median for the rest --
+    # measured over that file, whose ranges are a property of one captured
+    # shard. meta.py identifies twelve of that signature as the generator
+    # handing back verbatim stretches of the target's own sequence, quoting
+    # "af2_iptm 0.086-0.098 and binder_scrmsd 32-44 A" for them. A verbatim
+    # copy refolds into the TARGET's shape, so an RMSD measured against the
+    # target would put exactly those rows near zero. They are the farthest
+    # rows in the table instead, which is what a SELF-consistency RMSD does.
+    #
+    # A LIGAND RUN IS UNAFFECTED: ``test_ligand_columns_map`` asserts the
+    # ligand header yields ``binder_scrmsd is None``, and the caption chooser
+    # skips a non-numeric score.
+    #
+    # THIS BECOMES THE MAIL'S HEADLINE NUMBER, and that is deliberate rather
+    # than incidental. The chooser takes the first scored column that HAS a
+    # legend, in stored order, and Postgres orders jsonb keys by (length,
+    # bytewise) -- which puts ``af2_iptm`` first and ``binder_scrmsd`` last.
+    # So registering this one and nothing else moves the mail off the column
+    # this file has filed as open and onto the one the tool's own page tells
+    # the customer to read first. The explanation says what the number is NOT
+    # for the same reason: standing alone under a headline, a refold distance
+    # would read as a claim about binding.
+    ("proteina", "binder_scrmsd"): {
+        "direction": "lower_is_better",
+        "explanation": (
+            "Self-consistency RMSD in angstroms: how far an AlphaFold2 "
+            "refold of the design's sequence alone lands from the backbone "
+            "the generator drew. A shape check, not evidence that it binds."
+        ),
+    },
+
     ("iggm", "epitope_contacts"): {
         "good": 3,
         "excellent": 5,
@@ -1261,11 +1373,23 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # a stopgap.
 #
 # bindcraft is included even though multi_chain_container_ready=False blocks
-# the tool-form path, because the campaign and target-launch routes may not
-# call preflight_for_tool at all (an open item in
-# docs/HANDOFF-2026-08-07-multichain-finish.md). The notice is non-blocking,
-# so a false positive costs a sentence and a false negative costs trust in a
-# number.
+# it. When this set was written that block reached the tool-form path only,
+# because POST /campaigns and POST /targets/<id>/launch funded and drove runs
+# without calling preflight_for_tool. They still do not call it, but the
+# capability half was since extracted into
+# shared/pdb_preflight.py::multi_chain_refusal and wired into both
+# (blueprints/campaigns.py::compute_campaign_create and
+# blueprints/targets.py::_collect_launch_specs, reached from
+# blueprints/targets.py::target_launch_submit), and it shares
+# shared/pdb_preflight.py::_multi_chain_block with the submit gate — so all
+# THREE of those routes refuse a two-chain bindcraft run today. Those three
+# are the ones checked; the refold paths
+# (blueprints/campaigns.py::compute_campaign_refold and
+# blueprints/jobs.py::job_refold) were not, so read this as three routes
+# closed and not as a claim about every surface.
+# Membership is kept as belt-and-braces rather than as cover for a live
+# hole: the notice is non-blocking, so a false positive costs a sentence and
+# a false negative costs trust in a number.
 #
 # PROTEINA IS DELIBERATELY ABSENT, and it is the exclusion worth arguing,
 # because proteina is the only tool that has actually run a multi-chain target
@@ -1847,13 +1971,13 @@ def _join_bar(tool: str, columns) -> str:
         _bar_reading(col, float(get_legend(tool, col)["good"]))
         for col in columns
         # Not ``is not None``: a legend can exist and state no bar, and the
-        # index above would raise on it. Two legends are like that --
-        # boltzgen's ipTM and bindcraft's surface_hydrophobicity -- and both
-        # already reached the index under their declared spelling. The case
-        # fold widens that to any casing; of the OTHER casings, ``iptm`` is
-        # the only one used anywhere as a column key. No caller reaches
-        # either: all 15 gate columns resolve to a legend carrying ``good``. A
-        # guard, not a fix for a live crash.
+        # index above would raise on it. Some legends are like that -- the set
+        # is pinned by test_the_barless_legends_are_the_ones_declared_here in
+        # tests/test_boltzgen_iptm_has_no_cofold_bar.py -- and each already
+        # reached the index under its declared spelling. The case fold widens
+        # that to any casing; of the OTHER casings, ``iptm`` is the only one
+        # used anywhere as a column key. No caller reaches any of them: every
+        # gate leg carries ``good``, per test_every_gate_column_has_a_legend.
         if "good" in (get_legend(tool, col) or {})
     ]
     if not parts:
@@ -2230,8 +2354,9 @@ def judge(
             # ``good`` is indexed unconditionally below. Deliberately BELOW
             # the two branches above rather than beside the None check: a
             # declared placeholder must still reach ``unusable``, which
-            # shared/ranking.py:431 and shared/jobs.py:223 both read to sink
-            # those rows. Same pin as above makes this unreachable too.
+            # shared/ranking.py::annotate_rows and
+            # shared/jobs.py::headline_candidate both read to sink those
+            # rows. Same pin as above makes this unreachable too.
             unmeasured.append(label)
             continue
         good = float(legend["good"])

@@ -17,6 +17,8 @@ import pytest
 
 from app import create_app
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # A real VH framework sequence, long enough to clear the 10-residue floor.
 VALID_VH = (
     "EVQLVESGGGLVQPGGSLRLSCAASGFTFSSYAMSWVRQAPGKGLEWVSAISGSGGSTYYADSVKG"

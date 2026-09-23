@@ -13,9 +13,12 @@ Typing 64 plans EIGHT shards.
 
 WHERE THE NUMBER WAS ALREADY HELD, AND WHY THAT WAS NOT ENOUGH. Three
 absolute literals predate this file:
-  * tests/test_proteina_smoke.py:649  _CHUNK_SIZE_OVERRIDE["proteina"] == 8
-  * tests/test_pdb_preflight.py:1696  rules.size.runtime_baseline_designs == 8
-  * tests/test_compute_campaigns.py   _chunk_size_for("proteina") == 8
+  * tests/test_proteina_smoke.py::TestPricingWiring.test_campaign_registries
+      _CHUNK_SIZE_OVERRIDE["proteina"] == 8
+  * tests/test_pdb_preflight.py::test_proteina_runtime_scales_per_SHARD_not_per_hundred_designs
+      rules.size.runtime_baseline_designs == 8
+  * tests/test_compute_campaigns.py
+      _chunk_size_for("proteina") == 8
 Each pins an integer, and none of them can see a SENTENCE -- which is how the
 prose drifted 8x with the suite green. This file pins the prose.
 
@@ -59,6 +62,8 @@ from shared.compute_campaigns import (
 from tools.proteina import _SHARD_DESIGNS
 from tools.proteina import meta
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -88,17 +93,18 @@ def _designs_row() -> str:
 def test_adapter_shard_width_is_the_campaign_chunk_size():
     """Two independent literals, and this is the only thing tying them.
 
-    tools/proteina/__init__.py:162-165 builds _SHARD_DESIGNS from
-    _SHARD_NSAMPLES x _SHARD_REPLICAS. shared/compute_campaigns.py:514 sets
-    _CHUNK_SIZE_OVERRIDE["proteina"] = 8 as a separate literal. Neither file
-    reads the other, so editing the generation profile moves _SHARD_DESIGNS
-    and leaves _chunk_size_for("proteina") at 8 -- measured: with
-    _SHARD_NSAMPLES raised to 8, _chunk_size_for still returns 8.
+    tools/proteina/__init__.py::_SHARD_DESIGNS is built from _SHARD_NSAMPLES
+    x _SHARD_REPLICAS. shared/compute_campaigns.py::_CHUNK_SIZE_OVERRIDE
+    sets _CHUNK_SIZE_OVERRIDE["proteina"] = 8 as a separate literal. Neither
+    file reads the other, so editing the generation profile moves
+    _SHARD_DESIGNS and leaves _chunk_size_for("proteina") at 8 -- measured:
+    with _SHARD_NSAMPLES raised to 8, _chunk_size_for still returns 8.
 
     _SHARD_DESIGNS == _SHARD_NSAMPLES * _SHARD_REPLICAS is deliberately NOT
-    asserted: __init__.py:165 defines it as exactly that product three lines
-    below its operands, so asserting it restates the definition and can fail
-    only if someone replaces the definition with a literal.
+    asserted: tools/proteina/__init__.py::_SHARD_DESIGNS is defined as exactly
+    that product, directly beneath its operands, so asserting it restates the
+    definition and can fail only if someone replaces the definition with a
+    literal.
     """
     assert _chunk_size_for("proteina") == _SHARD_DESIGNS
     # Through the override entry specifically. _chunk_size_for falls back to a
@@ -115,13 +121,13 @@ def test_num_designs_buys_shards_never_a_wider_one(requested):
     The first assertion is the load-bearing one.
 
     HONEST LIMIT on the second: plan_chunks computes total_subjobs as
-    ceil(requested / chunk_size) itself (compute_campaigns.py:654-655), and
-    once chunk_size is fixed above, the assertion restates that arithmetic --
-    brute-forced over requested = 1..4000 it never disagrees. It is kept
-    because it still catches a change to that formula, and the NON-MULTIPLES
-    (9, 65) are what make it do so: with only exact multiples of 8 in this
-    list, swapping ceil for floor inside plan_chunks stayed green on every
-    value except 1.
+    ceil(requested / chunk_size) itself (compute_campaigns.py::plan_chunks),
+    and once chunk_size is fixed above, the assertion restates that
+    arithmetic -- brute-forced over requested = 1..4000 it never disagrees.
+    It is kept because it still catches a change to that formula, and the
+    NON-MULTIPLES (9, 65) are what make it do so: with only exact multiples
+    of 8 in this list, swapping ceil for floor inside plan_chunks stayed
+    green on every value except 1.
     """
     plan = plan_chunks("proteina", requested, "protein_binder")
     assert plan.chunk_size == _SHARD_DESIGNS
@@ -158,15 +164,17 @@ def test_the_form_field_help_quotes_the_same_width():
 def test_preflight_runtime_baseline_is_the_shard_width():
     """A copy that gets DIVIDED BY, not merely quoted.
 
-    shared/pdb_preflight_rules.py:493 sets ``runtime_baseline_designs=8`` under
-    the comment ``# _SHARD_DESIGNS`` -- naming a constant that file never
-    imports. runtime_estimate_min divides by it (pdb_preflight_rules.py:563),
-    so a width change rescales every preflight estimate shown before a run.
+    shared/pdb_preflight_rules.py::_PROTEINA sets
+    ``runtime_baseline_designs=8`` under the comment ``# _SHARD_DESIGNS`` --
+    naming a constant that file never imports. runtime_estimate_min divides by
+    it (pdb_preflight_rules.py::runtime_estimate_min), so a width change
+    rescales every preflight estimate shown before a run.
 
     Its only other guard is a second absolute ``== 8``
-    (tests/test_pdb_preflight.py:1696), whose own docstring states the equality
-    in prose ("proteina's shard IS 8 designs (_SHARD_DESIGNS)") while pinning
-    nothing of the sort -- the same comment-only tie this file exists to close.
+    (tests/test_pdb_preflight.py::test_proteina_runtime_scales_per_SHARD_not_per_hundred_designs),
+    whose own docstring states the equality in prose ("proteina's shard IS 8
+    designs (_SHARD_DESIGNS)") while pinning nothing of the sort -- the same
+    comment-only tie this file exists to close.
     """
     from shared.pdb_preflight_rules import TOOL_RULES
 

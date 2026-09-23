@@ -38,6 +38,8 @@ import pytest
 from tools.esmfold2_design.modal_app import _aggregate
 from tools.esmfold2_design.run_pipeline import _pick_best
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # The two designs from job 2b917b54, binder sequences abbreviated.
 DROP_SEQ = "LLRRLLRRLLRRGGGGGGGLLRRLLRR"
 PASS_SEQ = "SEEDLTKAQNLIDEAKKLNDAQAPKG"

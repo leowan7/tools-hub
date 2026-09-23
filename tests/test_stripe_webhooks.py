@@ -33,6 +33,8 @@ from flask import Flask
 
 from webhooks import stripe as stripe_webhook
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 USER_A = "00000000-0000-0000-0000-000000000aaa"
 

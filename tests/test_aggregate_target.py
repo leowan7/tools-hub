@@ -14,8 +14,9 @@ failure modes it protects against are both invisible otherwise:
 
 * A builder method the fake does not implement raises AttributeError inside
   the read. Under the campaign aggregator's idiom
-  (shared/compute_campaigns.py:1230-1237) that becomes an empty table and a
-  GREEN suite. Here it becomes ``partial=True``, which is asserted.
+  (shared/compute_campaigns.py::aggregate_campaign_candidates, whose one
+  ``except Exception`` swallows the whole read) that becomes an empty table
+  and a GREEN suite. Here it becomes ``partial=True``, which is asserted.
 * A filter the fake records but never applies is a filter the production code
   can omit entirely without any test noticing. ``.is_("campaign_id", "null")``
   is the sharp one: ``_dispatch_chunk`` stamps ``target_id`` on every campaign
@@ -24,21 +25,21 @@ failure modes it protects against are both invisible otherwise:
 
 So the fake applies its filters, applies the column projection, and enforces
 the same max_rows clamp the real backend does. Precedent for that stance is
-tests/test_data_retention.py:168-173, which says the same thing about the same
-method. ``class _FakeQuery`` in tests/test_campaign_results.py is the weaker
-precedent: it implements only select/eq/order/range and would raise on
+tests/test_data_retention.py::_FakeTable.is_, which says the same thing about
+the same method. ``class _FakeQuery`` in tests/test_campaign_results.py is the
+weaker precedent: it implements only select/eq/order/range and would raise on
 ``.is_()``. (Cited by name, not by line: that file is under edit on this
 branch and its line numbers move.)
 
-THE SAME DOCTRINE APPLIES TO THE TWO OWNERSHIP GATES, which are not queries
-this module issues but calls it makes. Every read here runs through the
-service-role client, which bypasses RLS (shared/credits.py:51-72 against the
+THE SAME DOCTRINE APPLIES TO THE TWO OWNERSHIP GATES, which are not queries this
+module issues but calls it makes. Every read here runs through the service-role
+client, which bypasses RLS (shared/credits.py::get_service_client against the
 ``auth.uid() = user_id`` policy at 0005_tool_jobs.sql:59), so the ``user_id``
-keyword IS the boundary. A stub that swallowed ``user_id`` in ``**kw`` would
-make a cross tenant read untestable by construction, so ``_stub_campaign_lister``
-models the real gate at shared/compute_campaigns.py:1063-1065 instead, and
-foreign rows are seeded on the target so an omitted filter has something to
-leak.
+keyword IS the boundary. A stub that swallowed ``user_id`` in ``**kw`` would make
+a cross tenant read untestable by construction, so ``_stub_campaign_lister``
+models the real gate at shared/compute_campaigns.py::list_campaigns_for_target
+instead, and foreign rows are seeded on the target so an omitted filter has
+something to leak.
 
 AND THE OWNERSHIP GATE HAS THREE ANSWERS, NOT TWO. ``shared.targets.get_target``
 returns None for a target that is absent, for one that is another tenant's, AND
@@ -385,7 +386,7 @@ def _install(monkeypatch, *, rows=(), campaigns=(), targets=(("T", OWNER),),
     calls = []
 
     def _stub_get_target(target_id, *, user_id=None):
-        """Models shared/targets.py:363-386: owner scoped when user_id given.
+        """Models shared/targets.py::get_target: owner scoped when user_id given.
 
         Returns None for a target that does not exist AND for one that is not
         this user's, which is why one sentinel covers both. The real function
@@ -400,7 +401,7 @@ def _install(monkeypatch, *, rows=(), campaigns=(), targets=(("T", OWNER),),
         return _StubTarget(target_id, user_id)
 
     def _stub_campaign_lister(target_id, *, user_id=None, include_drafts=False):
-        """Models shared/compute_campaigns.py:1063-1069.
+        """Models shared/compute_campaigns.py::list_campaigns_for_target.
 
         The owner filter is applied ONLY when user_id is given, exactly as the
         real function does, so an aggregator that omits the keyword leaks every
@@ -591,7 +592,8 @@ def test_foreign_campaign_on_my_target_is_not_read(monkeypatch):
     """``user_id`` must reach ``list_campaigns_for_target``.
 
     That function applies its owner filter only when the keyword is given
-    (shared/compute_campaigns.py:1063-1065), and ``iter_succeeded_children``
+    (shared/compute_campaigns.py::list_campaigns_for_target), and
+    ``iter_succeeded_children``
     filters on campaign_id and status alone, so the campaign side's entire
     tenancy safety is inherited from this one keyword. A second tenant's
     campaign on a shared target id would otherwise deliver its designs, its
@@ -713,10 +715,11 @@ def test_empty_owned_target_is_ok_true_not_404(monkeypatch):
     """Yours and empty is ok=True with tools == [], never the 404 sentinel.
 
     ``_campaign_export`` gates on ``agg.get("tool") is None``
-    (blueprints/campaigns.py:687-688). Reused here as ``ok = bool(tools)`` that
-    idiom 404s a user who has just uploaded a target and launched nothing, or
-    whose runs have not produced a design yet. The empty state and the empty
-    export are correct answers; a 404 on your own object is not.
+    (blueprints/campaigns.py::_campaign_export). Reused here as
+    ``ok = bool(tools)`` that idiom 404s a user who has just uploaded a target
+    and launched nothing, or whose runs have not produced a design yet. The
+    empty state and the empty export are correct answers; a 404 on your own
+    object is not.
 
     Paired with test_foreign_target_is_not_readable on purpose: a hardcoded
     ``ok = True`` passes this test alone, and ``ok = bool(tools)`` passes that
@@ -759,9 +762,10 @@ def test_refold_jobs_are_not_ranked_as_designs(monkeypatch):
     """A refold is a re-measurement of a design that is already a row.
 
     ``_spawn_refold_job`` stamps the source job's ``target_id``
-    (blueprints/jobs.py:424-431) and refolds carry no campaign_id, so they land
-    squarely in the standalone population. ``candidate_records`` reads
-    ``designs[]`` (shared/jobs.py:109-112), which is exactly the shape boltz2
+    (blueprints/jobs.py::_spawn_refold_job) and refolds carry no campaign_id,
+    so they land squarely in the standalone population. ``candidate_records``
+    reads ``designs[]`` (shared/jobs.py::candidate_records), which is exactly
+    the shape boltz2
     and esmfold emit, so without the filter they merge in SILENTLY: the
     molecule is counted twice and the second copy is filed under the REFOLDER's
     tool, so one design becomes two rows attributed to two tools.
@@ -887,13 +891,13 @@ def test_each_campaign_is_read_on_its_own_query_not_one_in_list(monkeypatch):
 
     Three reasons, none of them visible in a row set assertion, which is why
     this test asserts on the queries instead. ``_MAX_CHILD_PAGES``
-    (shared/compute_campaigns.py:1137) is derived PER CAMPAIGN and is exactly
-    right applied that way; widened to an IN list it truncates at 101k rows
-    with only a logger.error. One pathological 50k child campaign would exhaust
-    a page budget shared with every campaign after it. And a single query
-    cannot carry campaign_id into a per campaign dedupe map without widening
-    ``iter_succeeded_children``'s select, so in practice it collapses to one
-    shared map and the chunk collision above.
+    (shared/compute_campaigns.py::_MAX_CHILD_PAGES) is derived PER CAMPAIGN
+    and is exactly right applied that way; widened to an IN list it truncates
+    at 101k rows with only a logger.error. One pathological 50k child
+    campaign would exhaust a page budget shared with every campaign after it.
+    And a single query cannot carry campaign_id into a per campaign dedupe
+    map without widening ``iter_succeeded_children``'s select, so in practice
+    it collapses to one shared map and the chunk collision above.
     """
     rows = [
         _job_row(
@@ -1308,11 +1312,12 @@ def test_passed_total_counts_the_deduped_campaign_side_and_the_standalone_one(
 def test_partial_is_true_when_the_standalone_read_fails(monkeypatch):
     """A failed read is disclosed, never served as an honest looking empty.
 
-    This is the idiom shared/compute_campaigns.py:1230-1237 gets wrong: a bare
-    except returning an empty envelope turns a transport failure, or a builder
-    method the fake does not model, into a complete looking table with a green
-    suite. The campaign side's rows must still arrive, or the page loses more
-    than the failure cost.
+    This is the idiom
+    shared/compute_campaigns.py::aggregate_campaign_candidates gets wrong: a
+    bare except returning an empty envelope turns a transport failure, or a
+    builder method the fake does not model, into a complete looking table with
+    a green suite. The campaign side's rows must still arrive, or the page
+    loses more than the failure cost.
     """
     rows = [
         _job_row(
@@ -1350,10 +1355,11 @@ def test_an_unreadable_owned_target_is_disclosed_not_reported_empty(
     only honest pair.
 
     THE GATE IS STUBBED TO None ON PURPOSE, and that is what makes this the
-    reachable state rather than an invented one. ``shared.targets`` binds the
-    same ``get_service_client`` object this module does
-    (shared/targets.py:30), so a process with no client has no ``get_target``
-    either: it returns None for every target, owned or not. A version of this
+    reachable state rather than an invented one. ``shared.targets`` imports
+    the same ``shared.credits.get_service_client`` object this module does, so
+    a process with no client has no ``get_target`` either: its first branch
+    returns None for every target, owned or not
+    (shared/targets.py::get_target). A version of this
     test that let the gate keep succeeding while the client was None was
     certifying a state production cannot produce, and the ORDER of the two
     resolutions, which is the actual fix, was free to be wrong.
@@ -1375,8 +1381,9 @@ def test_an_unreadable_ownership_read_is_disclosed_not_404(monkeypatch):
 
     ``shared.targets.get_target`` swallows every exception and returns the
     same None it returns for a target that is absent
-    (shared/targets.py:376-386), so a transient backend failure on that one
-    read is indistinguishable at the call site from a stranger's target id.
+    (shared/targets.py::get_target), so a transient backend failure on that
+    one read is indistinguishable at the call site from a stranger's target
+    id.
     Served as the not-found sentinel it 404s the owner of a funded target and
     every one of its exports, while ``partial=False`` asserts that nothing
     failed. This repo has had exactly that transient (the Supabase HTTP/2 hang
@@ -1437,10 +1444,11 @@ def test_partial_is_true_when_the_campaign_list_read_raises(monkeypatch):
 
     NOTE ON WHAT THIS DOES NOT COVER. ``list_campaigns_for_target`` catches its
     own paging failure and returns the runs read so far
-    (shared/compute_campaigns.py:1077-1081) with no channel to say it did, so a
-    SHORT campaign list is invisible to ``partial`` and this test cannot reach
-    that case. What it pins is the exception path, and the module docstring
-    states the limit rather than letting the flag over claim.
+    (shared/compute_campaigns.py::list_campaigns_for_target) with no channel
+    to say it did, so a SHORT campaign list is invisible to ``partial`` and
+    this test cannot reach that case. What it pins is the exception path, and
+    the module docstring states the limit rather than letting the flag over
+    claim.
     """
     rows = [
         _job_row(

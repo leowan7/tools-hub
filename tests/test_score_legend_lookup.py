@@ -67,6 +67,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from shared import metric_glossary, pdb_bfactors, ranking, refold, score_legends
+from shared.jobs import display_rows
 from shared.result_columns import columns_for, primary_metric_for
 from shared.score_legends import SCORE_LEGENDS, get_legend
 
@@ -243,6 +244,10 @@ def test_no_tool_declares_two_case_variants_of_one_column():
 
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
+    # candidate_table.html coerces its own rows so a row that is not a
+    # Mapping cannot reach the `.get` calls in it. This env renders that
+    # macro outside create_app, so it carries the global too.
+    env.globals["display_rows"] = display_rows
     env.globals["pdb_b64_on_100"] = pdb_bfactors.bfactors_on_100_b64
     env.globals["metric_glossary"] = metric_glossary.GLOSSARY
     env.globals["format_metric_value"] = metric_glossary.format_value

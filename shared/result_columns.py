@@ -28,10 +28,10 @@ _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
     "pxdesign": ["ipTM", "pLDDT", "pAE", "against_bar"],
     "rfantibody": ["ipAE", "pLDDT", "pAE", "against_bar"],
     # NO ``cluster_id`` HERE, and it is not an omission. It was listed until
-    # 2026-09-10, and the renderer prints a null as an em dash
-    # (templates/components/candidate_table.html:761 — NOT :789, which is the
-    # branch for a non-null unparseable value; that file draws the distinction
-    # at :785), so the column was a header over nothing.
+    # 2026-09-10, and templates/components/candidate_table.html prints a null
+    # as an em dash in its ``{% if raw is none %}`` branch — NOT the later
+    # ``{% if fval is none %}`` branch, which is for a non-null unparseable
+    # value — so the column was a header over nothing.
     #
     # 17,024 of 17,024 candidates carry ``"cluster_id": null`` in the
     # container's own smoke_result.json, across four length-sweep driver runs.

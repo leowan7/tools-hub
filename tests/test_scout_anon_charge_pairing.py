@@ -39,6 +39,8 @@ from scout import ratelimit
 from scout import routes as scout_routes
 from scout.flags import _CSV_COLUMNS_BASE
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TMP = Path("tmp")
 
 IP_BUCKET = "scout_analyze"

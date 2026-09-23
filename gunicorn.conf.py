@@ -80,9 +80,10 @@ workers = max(1, _int_env("WEB_CONCURRENCY", 2))
 #      auto-reload (read balance -> threshold -> 24 h count -> monthly cap ->
 #      charge a card, with no SQL guard and no Stripe idempotency key). These
 #      have already fired once under sync workers — see the incident recorded
-#      at `blueprints/campaigns.py:238-242`, created=2, funded=2. Threads make
-#      them reachable `threads` times more often. That is a sequencing fact,
-#      not an opinion: this line moves after those land, not before.
+#      at `blueprints/campaigns.py::compute_campaign_create`, created=2,
+#      funded=2. Threads make them reachable `threads` times more often. That
+#      is a sequencing fact, not an opinion: this line moves after those land,
+#      not before.
 #
 #   2. The `timeout` watchdog below is lost, permanently, fleet-wide, and NO
 #      gunicorn setting gives it back. Verified against the installed gunicorn

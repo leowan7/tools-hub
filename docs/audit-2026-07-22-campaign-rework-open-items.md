@@ -362,7 +362,7 @@ deliberately left for later.
 ### A20. The pytest suite runs against the production database
 - **severity:** high | **owner:** code + ops
 - **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` carries real `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`, so any test that imports `app` and exercises a route performs REAL reads and writes against production. `@idempotent()` routes are the worst case: they INSERT into `idempotency_keys` and then replay those cached responses into later runs. Measured on the Phase 1 target tests: 3 of 6 consecutive runs failed, different tests each time, including all three cross-tenant isolation assertions (a target owned by `u-1` came back for `u-2`). With the credentials blanked: 74 passed in 3.8s, clean 5 runs running. A suite that consults a database it does not control cannot be the gate on ownership.
-- **partial fix:** `tests/conftest.py::isolate_supabase` blanks the credentials for a test; the four Phase 1 target test files opt in via `pytestmark`. Deliberately opt-in, because making ~1500 existing tests hermetic in one move is its own change with its own blast radius.
+- **partial fix:** `tests/conftest.py::isolate_supabase` blanks the credentials for a test; the four Phase 1 target test files opt in via `pytestmark`. Deliberately opt-in, because making ~7,400 existing tests hermetic in one move is its own change with its own blast radius.
 - *Next:* make it autouse and let the env-gated suites (`test_rls.py`, `test_af2_smoke.py`, `test_platform_api_hardening.py`, `test_uniprot_lookup.py`) opt back IN explicitly. Then stop shipping usable production credentials in a file every test run loads by default.
 
 ### A21. `create_job`'s schema-gap retry had never fired (RESOLVED)

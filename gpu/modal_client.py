@@ -122,7 +122,7 @@ _T = TypeVar("_T")
 # up is a **billed GPU job with no job row tracking it**. One call, one
 # budget, per method.
 #
-# Coupling to record: ``gunicorn.conf.py:164`` floors the watchdog at 60 s
+# Coupling to record: ``gunicorn.conf.py::timeout`` floors the watchdog at 60 s
 # (`max(60, GUNICORN_TIMEOUT)`). Setting GUNICORN_TIMEOUT below 90 puts the
 # watchdog back underneath this cap and restores the old take-out-the-worker
 # behaviour. Do not lower it without lowering this too.
@@ -228,11 +228,42 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # (3600 s) so a 500-record run that hits the modal session ceiling
     # surfaces a clean timeout instead of silently truncating designs.
     ("esmfold", "batch"):          3600,
-    # Boltz-2 cofold: ``standalone`` = single-sequence (~60 s/design); cap
-    # at 1200 s covers a 10-binder run with weight-load headroom.
-    # ``msa_server`` = --use_msa_server (~3 min/design including MSA
-    # fetch); cap at 3600 s covers a 10-binder run including the
-    # public-server tail latency. Modal hard timeout is 3600 s.
+    # Boltz-2 cofold. ``standalone`` = single-sequence, MEASURED at ~69 s
+    # marginal and 81.9 s for the first design including model load.
+    # ``msa_server`` = --use_msa_server, MEASURED at ~214 s/design
+    # aggregate over a 3-design run (job gate1-msa_server-1790046491,
+    # 2026-09-21) — not the "~3 min/design" this comment used to carry,
+    # and not a marginal rate: the MSA fetch and the GPU compute were not
+    # timed separately. Provenance and caveats for both tiers in the
+    # runtime note in ``tools/boltz2/__init__.py``.
+    #
+    # Both rows are sized against "a 10-binder run", which is NOT the
+    # ceiling the product enforces: ``tools/boltz2/__init__.py::validate``
+    # allows ``MAX_BINDERS = 50`` on standalone and
+    # ``MAX_BINDERS_BY_PRESET["msa_server"] = 16`` on the slower preset, and
+    # ``tools/boltz2/meta.py`` advertises both to users. Extrapolating the
+    # measured rates, a 50-binder standalone run is ~3463 s (~2.9x this row,
+    # passing 1200 s at 18 binders), so standalone still cannot finish its
+    # own maximum inside its row. msa_server now can: its 16 extrapolate to
+    # ~3424 s, inside the 3600 s row below — which is the ceiling that cap
+    # was sized against, 50 being ~10700 s and crossing 3600 s at the 17th
+    # binder.
+    #
+    # Left at 1200/3600 anyway, because for boltz2 these rows are INERT
+    # beyond the ``cap == 0`` guard in ``submit`` below: the cap is not in
+    # the ``ToolPayload`` that ``_build_payload`` sends, so it bounds
+    # nothing on the GPU side; no non-test caller reads the
+    # ``gpu_seconds_cap`` that ``SubmitResult`` returns; and both callers
+    # of ``preset_gpu_seconds`` miss this tool — boltz2 is absent from
+    # ``shared/compute_campaigns.py::SUPPORTED_TOOLS`` (which gates
+    # ``_campaign_container_seconds``) and
+    # ``scripts/calibration/poll_results.py`` asks for preset "pilot",
+    # which has no boltz2 row. boltz2 is priced from ``TOOL_SPECS`` in
+    # ``shared/wallet_estimates.py`` instead, so the file header's
+    # "used for credit pre-authorisation" does not describe these two
+    # rows. Re-derive that before making the cap load-bearing; sizing it
+    # honestly needs a real large-batch measurement, which does not exist.
+    # Modal hard timeout is 3600 s.
     ("boltz2", "standalone"):      1200,
     ("boltz2", "msa_server"):      3600,
     # ESMFold2-design: gradient-based inversion of ESMFold2 on H100.
@@ -313,8 +344,10 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # capped at the 7200 s (2 h) container that _MAX_SESSION_S enforces, the
     # physical bound on a single shard's spend (~$12.6 marked-up at A100-80GB).
     # BOOTSTRAP until the P4/P5 canaries measure real per-shard wall-clock;
-    # historical p90 supersedes at >=20 runs. `validate` is the free CPU-only
-    # complexa-validate pre-flight gate (no GPU); its cap is nominal.
+    # historical p90 supersedes at >=20 runs. `validate` is the free
+    # complexa-validate pre-flight gate: no GPU WORK, but the same A100
+    # container (modal_app.py declares one @app.function, gpu=_GPU), so its cap
+    # is nominal for spend, not zero.
     ("proteina", "protein_binder"): 7200,
     ("proteina", "ligand_binder"):  7200,
     ("proteina", "motif_ame"):      7200,

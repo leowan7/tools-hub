@@ -207,7 +207,8 @@ def validate(
             # scaling_param is "n_seeds" (shared/wallet_estimates.py), not
             # n_designs_total. The CHARGE is a different number and scales
             # with BOTH: settle bills compute_charge_usd on measured GPU
-            # seconds (shared/jobs.py:1396 -> shared/wallet.py:731),
+            # seconds (shared/jobs.py::_charge_workspace_for_completed_job
+            # -> shared/wallet.py::compute_charge_usd),
             # clamped to the hard cap, so the two measured batch-6 runs
             # bill $13.0868 (3185 s) and $13.2841 (3233 s) against $1.8490
             # at the ~450 s batch-1 anchor -- all under the $15.00 cap at

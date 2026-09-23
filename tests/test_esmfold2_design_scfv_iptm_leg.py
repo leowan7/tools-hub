@@ -34,6 +34,8 @@ from tools.esmfold2_design.run_pipeline import (
     _pick_best,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 # Job verify242-bs6-1789054528, 2026-09-10 15:45 UTC. The log pairs these
 # explicitly ("proxy 0.618 with ipTM 0.436" and so on). The 0.396/0.400 pair
 # is the one place the pairing is ambiguous in the source text, and it does
@@ -238,10 +240,10 @@ def _read_text(path: str) -> str:
 def _table_columns(html: str) -> list[str]:
     """The candidate table's column keys, in header order.
 
-    ``data-col`` on the header cell (templates/components/candidate_table.html
-    :520) -- the key, beside the label the cell renders. The table is emitted
-    twice per page (wide and narrow), so the list is de-duplicated while
-    keeping first-seen order.
+    ``data-col`` on the header cell (the ``th[data-col]`` in
+    templates/components/candidate_table.html) -- the key, beside the label
+    the cell renders. The table is emitted twice per page (wide and narrow),
+    so the list is de-duplicated while keeping first-seen order.
     """
     seen = []
     for column in re.findall(r'data-col="([^"]+)"', html):
@@ -506,11 +508,11 @@ def test_no_lower_is_better_leg_can_be_the_quoted_column():
     ``_share_headline_metric`` prints at a fixed .3f while ``judge`` decides
     at the glossary format, so a leg declared coarser than .3f can be
     published on the far side of the bar the clause says it met. Seven leg
-    columns are coarser, and an earlier draft of the comment at
-    blueprints/jobs.py:433 treated all seven as exposed and offered "pI 5.995
-    under a 6.0 bar" as the example. It is not exposed: the gate arm takes a
-    leg only when ``_higher_is_better``, so no lower-is-better leg is ever the
-    quoted column, and pI is one.
+    columns are coarser, and an earlier draft of the comment in
+    blueprints/jobs.py::_top_score_for_share treated all seven as exposed and
+    offered "pI 5.995 under a 6.0 bar" as the example. It is not exposed: the
+    gate arm takes a leg only when ``_higher_is_better``, so no lower-is-better
+    leg is ever the quoted column, and pI is one.
 
     Driven the same way as
     ``test_the_share_chain_can_reach_exactly_three_renamed_columns`` rather
@@ -614,20 +616,20 @@ def test_the_share_card_quotes_the_cdr_proxy_by_name():
 # --- the sixth wired surface: the completion email ------------------------
 #
 # Every surface above waits to be opened. This one is PUSHED:
-# shared/jobs.py::complete_job sends it at shared/jobs.py:1349 the moment the
-# run finishes. It needed no edit of its own -- shared/email.py already asks
-# score_legends for the design and the verdict -- which is exactly why it
-# needs a test: nothing in that file mentions this tool or this mode, so the
-# coupling is invisible from either end.
+# shared/jobs.py::complete_job sends it the moment the run finishes. It needed
+# no edit of its own -- shared/email.py already asks score_legends for the
+# design and the verdict -- which is exactly why it needs a test: nothing in
+# that file mentions this tool or this mode, so the coupling is invisible
+# from either end.
 
 
 def _email_scfv_cand(name, iptm, proxy, rank, filter_status):
     """A candidate in the key order run_pipeline.py stores.
 
     The ORDER matters to this surface and to no other:
-    shared/email.py:367-370 leads with the first stored column that has a
+    shared/email.py::_top_candidate_summary leads with the first stored column that has a
     registered legend, and this change gave ``CDR_iPTM_proxy`` its first one. ipTM is written first
-    (tools/esmfold2_design/run_pipeline.py:1181), so the headline column does
+    (tools/esmfold2_design/run_pipeline.py::_run), so the headline column does
     not move -- asserted below, because the two files have no other link.
     """
     return {
@@ -709,17 +711,18 @@ def test_a_gate_leg_renders_at_the_precision_the_share_card_prints():
     """A published clause must not show a number below the bar it claims.
 
     ``score_legends.shown_value`` judges a leg at the precision the GLOSSARY
-    renders, while the share card prints ``.3f`` (blueprints/jobs.py:458).
-    A leg declared coarser than that is therefore judged on a rounded-up
-    figure and printed as the raw one. This column was ".2f" until review:
+    renders, while the share card prints ``.3f``
+    (blueprints/jobs.py::_top_score_for_share). A leg declared coarser than
+    that is therefore judged on a rounded-up figure and printed as the raw
+    one. This column was ".2f" until review:
     raw 0.4951 rounded to "0.50", cleared the 0.50 bar, and published as
     "CDR distogram proxy 0.495" -- measured 2026-09-14 by setting the entry
     back to ".2f" and driving the chain below, and recorded at
-    shared/metric_glossary.py:337.
+    shared/metric_glossary.py::_FORMAT.
 
     Both legs of this bar are ".3f", so the card prints the number it judged,
-    and templates/components/candidate_table.html:882 gives the results cell
-    the same width so the table does not contradict the verdict beside it.
+    and templates/components/candidate_table.html's ``%.3f`` branch gives
+    the cell the same width so the table does not contradict the verdict.
     The repo's other seven gate legs are coarser and predate this change;
     this test does not assert anything about them.
     """
@@ -746,8 +749,8 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
     a results cell rendered coarser than that prints one figure while the
     verdict quotes another. A raw 0.4949 showed "0.49" in the cell under a
     verdict reading "CDR distogram proxy 0.495, below 0.5" until this column
-    joined ipTM in the ``.3f`` branch at
-    templates/components/candidate_table.html:882.
+    joined ipTM in the ``%.3f`` branch of
+    templates/components/candidate_table.html.
 
     THE PAGE PRINTS THE PROXY TWICE. The best-design header above the
     sequence carries its own literal formats
@@ -780,8 +783,8 @@ def test_the_results_cell_shows_the_proxy_at_the_width_the_verdict_judged(
         "CDR distogram proxy 0.495, below 0.5"
     )
 
-    # The minibinder header keeps .2f, because its column keeps the table's
-    # .2f else-branch (templates/components/candidate_table.html:904).
+    # The minibinder header keeps .2f, because its column keeps the format
+    # chain's final ``{% else %}`` in templates/components/candidate_table.html.
     minibinder = _render(
         flask_app, is_antibody=False,
         scores={"ipTM": 0.90, "iPTM_proxy": 0.4949, "final_loss": 1.0,

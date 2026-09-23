@@ -189,7 +189,7 @@ def run_tool(payload: Any) -> dict:
     # this wrapper would read the previous job's result and
     # ``gpu.modal_client._interpret_pipeline_return()`` would mark the
     # new job succeeded with another run's output. Mirrors D3 ColabFold
-    # modal_app.py:123-128 (Codex P1 fix; AF2 was missing it).
+    # modal_app.py::run_tool (Codex P1 fix; AF2 was missing it).
     try:
         os.remove("/tmp/smoke_results.json")
     except FileNotFoundError:

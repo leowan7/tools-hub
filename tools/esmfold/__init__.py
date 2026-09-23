@@ -25,6 +25,7 @@ from shared.sequence_parsing import (
     find_non_canonical_residues,
     parse_fasta_or_lines,
 )
+from shared.storage import _output_object_path
 from tools.base import Preset, ToolAdapter, register
 
 
@@ -177,6 +178,14 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
             f"(received {len(records)})."
         )
 
+    # run_pipeline.py::_run_batch_folds uploads each fold under
+    # f"{name}.pdb", and the upload-URL endpoint (webhooks/uploads.py) mints
+    # each key's URL for the storage path
+    # shared/storage.py::_output_object_path gives it. That function
+    # normalises the key, so "binder 1", "_binder_1" and "binder_1" land on
+    # one object as surely as two "VHH-12"s do. Pinned by
+    # tests/test_fold_duplicate_record_names.py.
+    saved_as: dict[str, str] = {}
     for r in records:
         name = r["name"]
         seq = r["sequence"]
@@ -198,6 +207,21 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
             return None, (
                 f"Record {name!r} contains non-canonical residues: {bad}"
             )
+        fname = _output_object_path("", "", f"{name}.pdb").rsplit("/", 1)[-1]
+        if fname in saved_as:
+            other = saved_as[fname]
+            if other == name:
+                return None, (
+                    f"Two records are named {name!r}. Each result is saved "
+                    f"under a file named after its record, so only one of the "
+                    f"two could be kept. Rename one."
+                )
+            return None, (
+                f"Records {other!r} and {name!r} would both be saved as "
+                f"{fname!r}, so only one of the two results could be kept. "
+                f"Rename one."
+            )
+        saved_as[fname] = name
 
     return (
         {

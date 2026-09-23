@@ -159,13 +159,14 @@ def reconstruct(job) -> list[dict]:  # noqa: ANN001 — ToolJob, avoid import cy
 
     Existence is tested against ONE paginated listing instead of a per-design
     ``output_exists`` round trip. ``_partial_candidates`` runs to 1000
-    (``webhooks/modal.py:597``) and this is now reached from inside the status
-    request (``blueprints/jobs.py::job_status``), where a Storage call per
-    design would hold the worker past gunicorn's 120 s watchdog
-    (``gunicorn.conf.py:164``). Names are compared after ``_safe_filename``,
-    which is both what ``output_exists`` matched on (``shared/storage.py:464``)
-    and what wrote the object in the first place (``_output_object_path``,
-    ``shared/storage.py:383``).
+    (``webhooks/modal.py::_hb_merge_inputs``) and this is now reached from
+    inside the status request (``blueprints/jobs.py::job_status``), where a
+    Storage call per design would hold the worker past gunicorn's 120 s
+    watchdog (``gunicorn.conf.py::timeout``). Names are compared after
+    ``_safe_filename``, which is both what ``output_exists`` matched on
+    (``shared/storage.py::output_exists``) and what wrote the object in the
+    first place (``_output_object_path``,
+    ``shared/storage.py::_output_object_path``).
     """
     from shared.storage import _safe_filename  # noqa: PLC0415
 
@@ -311,7 +312,7 @@ def recover_stuck_job_result(
         # maps to "unknown" regardless -- so the probe buys nothing and costs a
         # second 90 s _bounded_modal_call inside one request. Two stacked hops
         # is 180 s, past the 120 s gunicorn watchdog that kills the worker and
-        # every other request on it (gunicorn.conf.py:164,
+        # every other request on it (gunicorn.conf.py::timeout,
         # tests/test_modal_call_deadline.py::
         # test_it_is_below_the_gunicorn_worker_watchdog). Recovery then rests
         # on the heartbeat + Storage evidence below, which is the only thing

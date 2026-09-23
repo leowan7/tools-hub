@@ -1465,16 +1465,16 @@ def _check_hotspots(
 
     WHY FIRST-CHAIN AND NOT THE UNION. This used to accept a bare number that
     survived on ANY named chain, and that disagreed with the only attribution
-    that can actually reach a GPU. ``tools/base.py:108`` (and proteina's own
-    ``_parse_hotspots``) rewrite a bare ``520`` on target ``"A,B"`` as
-    ``"A520"`` before the payload is built — they have no structure to consult
-    at ``validate()`` time, so first-chain is the only rule they CAN apply, and
-    it is the documented pipeline contract. Judging the typed token more
-    permissively than the shipped one is how a target whose chains carry
-    different numbering (a Fab H/L, any heterocomplex) passed every gate: with
-    chain A at 1..40 and chain B at 500..539, bare ``520`` range-checked green
-    against the union, shipped as ``"A520"``, and died in the container. The
-    gate has to judge the token the run will send.
+    that can actually reach a GPU. ``tools/base.py::parse_hotspot_residues``
+    (and proteina's own ``_parse_hotspots``) rewrite a bare ``520`` on target
+    ``"A,B"`` as ``"A520"`` before the payload is built — they have no
+    structure to consult at ``validate()`` time, so first-chain is the only
+    rule they CAN apply, and it is the documented pipeline contract. Judging
+    the typed token more permissively than the shipped one is how a target
+    whose chains carry different numbering (a Fab H/L, any heterocomplex)
+    passed every gate: with chain A at 1..40 and chain B at 500..539, bare
+    ``520`` range-checked green against the union, shipped as ``"A520"``, and
+    died in the container. The gate has to judge the token the run will send.
 
     Behaviour-preserving on a single named chain, where the union IS the first
     chain's residue set — which is every job submitted before the multi-chain

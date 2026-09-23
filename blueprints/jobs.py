@@ -207,7 +207,7 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
         #
         # AND THERE IS NO FALLBACK TO candidate_metric, because one stood here
         # and could not fire: every column appears in its own
-        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py:1964-1970 iterates
+        # ``_COLUMN_ALIASES`` entry (shared/score_legends.py::raw_metric iterates
         # ``_COLUMN_ALIASES.get(column, (column,))``, and a sweep of the whole
         # map found no column missing from its own tuple), so raw_metric
         # returning None means candidate_metric reads the same two places for
@@ -220,7 +220,7 @@ def _share_headline_metric(tool: str, preset, record) -> tuple[str, float] | Non
             return None
         # AN INT STAYS AN INT. ``plddt_on_100`` hands back the ORIGINAL object
         # rather than its own float copy precisely so callers can format the
-        # two differently (shared/metric_glossary.py:405-411 names this
+        # two differently (shared/metric_glossary.py::plddt_on_100 names this
         # caller's og:title as the reason), and a blanket ``float()`` here
         # undid that one line later: a stored int 88 printed "pLDDT 88.000"
         # where the results page prints "88". Coerce only what is not already
@@ -358,7 +358,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # decide how strongly to word the claim, under a comment asserting that a
     # non-"meets" pick means no bar applied. It does not.
     # ``headline_candidate`` returns the first record not shown to fall short
-    # and does not re-rank (shared/jobs.py:196), so a REJECTED record 0
+    # and does not re-rank (shared/jobs.py::headline_candidate), so a REJECTED record 0
     # followed by an UNMEASURED record 1 yields "unjudged" with the bar very
     # much applied. Probed on pxdesign: rank0 ipTM 0.99 rejected on pLDDT,
     # rank1 ipTM 0.80 unmeasured, and it quoted ``ipTM 0.800`` -- a figure
@@ -736,7 +736,7 @@ def job_status(job_id: str):
             # the same error and reach the same "unknown" verdict -- while
             # spending a SECOND bounded 90 s call in this request. Two stacked
             # hops is 180 s, past gunicorn's 120 s worker watchdog
-            # (gunicorn.conf.py:164). Pinned by
+            # (gunicorn.conf.py::timeout). Pinned by
             # tests/test_modal_function_timeout.py.
             timeout_stuck_job(job.id, probe_modal=False)
             job = get_job(job_id, user_id=ctx.user_id)
@@ -1164,7 +1164,7 @@ def _share_title(tool_label: str, top_score) -> str:  # noqa: ANN001
     a ranking. `_top_score_for_share` feeds this from `headline_candidate`,
     whose contract is "the first record that is neither shown to fall short
     NOR built on a declared placeholder, in the order the pipeline stored
-    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py:196).
+    them" and which states "THIS DOES NOT RE-RANK" (shared/jobs.py::headline_candidate).
     This line read "Top score {top_score}." until #266 landed that change on
     main (359f417) -- defensible while the value was `candidates[0]` off a ranking
     container, false once the pick became bar-first: on job 2b917b54 the
@@ -1361,7 +1361,17 @@ def job_candidate_pdb(job_id: str, filename: str):
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-        cand_basename = posixpath.basename(cand.get("pdb_key") or "")
+        # job.result is stored as the container sent it
+        # (webhooks/modal.py::_handle_result, blueprints/jobs.py::job_status),
+        # and the one pass over candidates before persisting,
+        # shared/jobs.py::_slim_result_for_persist, type-checks pdb_key
+        # instead of coercing it -- so a non-str value arrives here intact
+        # and posixpath.basename raises TypeError on it. This loop returns
+        # only on a match, so such a row 500s the designs listed after it,
+        # not just its own (tests/test_candidate_pdb.py::TestPdbKeyNotAString).
+        # The falsy branch is unchanged: str(0) would be a truthy "0".
+        raw_key = cand.get("pdb_key")
+        cand_basename = posixpath.basename(str(raw_key) if raw_key else "")
         if cand_basename != target_basename:
             continue
         encoded = cand.get("pdb_content_b64")

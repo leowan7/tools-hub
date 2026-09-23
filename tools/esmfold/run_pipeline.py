@@ -1023,6 +1023,13 @@ def _run_batch_folds(
 
     designs_out: list[dict] = []
     n_failures = 0
+    # Folds, counted where the fold is DECIDED - _fold_record returning, which
+    # it only does after reject_stub passes - and therefore before the upload,
+    # which is a separate network hop with its own failure. designs_out cannot
+    # stand in for this: its append is downstream of that hop, so a run whose
+    # every fold succeeded and whose every upload failed leaves it empty,
+    # indistinguishable from a run that folded nothing.
+    n_folded = 0
     send_heartbeat(
         webhook_url, job_id,
         stage="folding",
@@ -1058,6 +1065,7 @@ def _run_batch_folds(
             n_failures += 1
             logger.warning("design %s: fold raised — %s", name, exc)
             continue
+        n_folded += 1
 
         pdb_key = f"{name}.pdb"
         try:
@@ -1096,11 +1104,22 @@ def _run_batch_folds(
 
     runtime_seconds = int(time.time() - start)
     if not designs_out:
+        if n_folded:
+            detail = (
+                f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+                f"— the delivery hop failed, not the folds; see the per-design "
+                f"upload warnings in the run log, and this job's raw archive "
+                f"for the structures"
+            )
+        else:
+            detail = (
+                f"none of {designs_total} designs folded ({n_failures} "
+                f"failures) — nothing to deliver."
+            )
         _fail(
             "no_yield",
             "no_designs",
-            f"all {designs_total} designs failed to fold or upload "
-            f"({n_failures} failures) — nothing to deliver.",
+            detail,
             runtime_seconds=runtime_seconds,
         )
     _write_result(
@@ -1108,6 +1127,7 @@ def _run_batch_folds(
             "status": "COMPLETED",
             "tier": "batch",
             "designs_total": designs_total,
+            "designs_folded": n_folded,
             "designs_completed": len(designs_out),
             "n_failures": n_failures,
             "designs": designs_out,
@@ -1122,8 +1142,9 @@ def _run_batch_folds(
         designs_total=designs_total,
     )
     logger.info(
-        "batch pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
-        len(designs_out), designs_total, n_failures, runtime_seconds,
+        "batch pipeline ok — %d/%d designs folded, %d delivered, %d failures, "
+        "runtime=%ds",
+        n_folded, designs_total, len(designs_out), n_failures, runtime_seconds,
     )
 
 

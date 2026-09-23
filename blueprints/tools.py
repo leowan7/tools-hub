@@ -213,7 +213,7 @@ def library_planner():
     There is nothing to gate: planning is pure arithmetic over the posted
     form with no GPU, no wallet charge, no job row and no storage write.
     The trust boundary is the input validation in library_planner_plan
-    below and in plan_library (tools/library_planner/planner.py:141).
+    below and in plan_library (tools/library_planner/planner.py::plan_library).
     """
     return render_template(
         "library_planner_form.html",
@@ -240,7 +240,7 @@ def library_planner_plan():
 
     @idempotent() is retained for signed-in callers; it hands an
     anonymous request straight to the handler because load_user_context
-    returns None without a session (shared/idempotency.py:671-674).
+    returns None without a session (shared/idempotency.py::idempotent).
     """
     from tools.library_planner import plan_library  # noqa: PLC0415
 
@@ -939,7 +939,7 @@ def _example_context(adapter, meta) -> dict | None:
     payload would render a description of results above an empty
     results panel, and a payload with no narration is an unlabelled
     table of numbers — either is worse than the tool simply not having
-    an example yet, which is the state of six of the fourteen.
+    an example yet.
     """
     example = getattr(meta, "EXAMPLE", None)
     if not example:
@@ -1411,7 +1411,7 @@ def tool_preflight(tool: str):
     # verdict and its wording change with an unrelated field.
     #
     # proteina REPLACES target_chain with the contig's chains
-    # (tools/proteina/__init__.py:495-497) rather than adding to them, and its
+    # (tools/proteina/__init__.py::validate) rather than adding to them, and its
     # form tells the user to leave target_chain at "A" and name the chains in
     # the contig. Reading target_chain alone called "C73" a hotspot on an
     # untargeted chain for the exact input the template prints as its example;
@@ -1430,14 +1430,15 @@ def tool_preflight(tool: str):
 
     hotspots: list = []
     if raw_hotspots:
-        # Tokenize the way the adapters do — tools/base.py:99 and proteina's
-        # _parse_hotspots both fold separators into whitespace and split on
-        # it. Splitting on commas alone made "A54 B56" one unparseable token,
-        # so the panel saw zero hotspots, said "This tool needs at least one
-        # hotspot residue", and disabled Run for a field the gate accepts.
-        # That direction is the one the rule above forbids, and 8644c74 is
-        # what created it: before that commit the gate refused the same input,
-        # so panel and gate agreed by both being wrong.
+        # Tokenize the way the adapters do —
+        # tools/base.py::parse_hotspot_residues and proteina's _parse_hotspots
+        # both fold separators into whitespace and split on it. Splitting on
+        # commas alone made "A54 B56" one unparseable token, so the panel saw
+        # zero hotspots, said "This tool needs at least one hotspot residue",
+        # and disabled Run for a field the gate accepts. That direction is the
+        # one the rule above forbids, and 8644c74 is what created it: before
+        # that commit the gate refused the same input, so panel and gate
+        # agreed by both being wrong.
         for _tok in raw_hotspots.replace(";", ",").replace(",", " ").split():
             _cid, _resnum = split_hotspot(_tok, _chains)
             if _resnum is None:

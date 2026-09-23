@@ -30,6 +30,8 @@ from scout import ratelimit
 from scout.flags import _CSV_COLUMNS_BASE
 from scout.jobs import count_job_dirs, create_job_dir, read_owner
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 TMP = Path("tmp")
 
 # The scoring pipeline needs freesasa, which is a C extension this repo does
@@ -596,7 +598,10 @@ class TestStillGated:
         "path",
         [
             "/scout/feasibility",
-            "/scout/feasibility/download/" + str(uuid.uuid4()),
+            # A fixed literal rather than str(uuid.uuid4()): pytest renders a
+            # string argvalue into this case's node ID, so a fresh value here
+            # would give the test a different node ID on every collection.
+            "/scout/feasibility/download/00000000-0000-0000-0000-000000000001",
         ],
     )
     def test_feasibility_get_requires_login(self, client, path):

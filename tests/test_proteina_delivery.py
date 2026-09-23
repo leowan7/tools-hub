@@ -34,6 +34,8 @@ import pytest
 
 from tools.proteina import run_pipeline as rp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
                        pdb_body=b"ATOM  fake\nEND\n", inline_env=None,

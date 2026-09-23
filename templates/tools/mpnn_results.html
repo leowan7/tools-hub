@@ -8,7 +8,11 @@
    clone link + handoff footer are rendered inline instead. #}
 
 {% set output     = job.result or {} %}
-{% set sequences  = output.get('sequences', []) %}
+{# Same coercion, same reason, one key over: a row that is not a
+   Mapping raises on the `seq.get('score')` below. mpnn is the only
+   tool that skips results_shell entirely (see above), so it is the
+   only one the two shared sinks do not reach. #}
+{% set sequences  = display_rows(output.get('sequences')) %}
 {% set clone_url  = url_for('tools.tool_form', tool='mpnn', clone_from=job.id) %}
 
 <div class="panel" style="margin-top:1rem;">

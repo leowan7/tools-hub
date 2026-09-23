@@ -56,6 +56,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # THE VALUES AS JOB 2b917b54 ACTUALLY STORES THEM, unrounded, matching
 # tests/test_jobs_compare_headline.py. Rounded stand-ins let a display-precision
@@ -406,13 +408,14 @@ class TestShareCard:
 
         The test above abstains on the ``designs`` SHAPE. This one carries
         ``candidates`` -- the shape that test admits -- and must still abstain,
-        because no container ranked it. ``recover_stuck_job_result`` rebuilds
-        ``candidates`` for ANY tool, with no tool branch above it
-        (shared/job_recovery.py:286-291), filling it from the streamed partials
-        by ``.append()`` or else from a Storage file listing by ``enumerate``,
-        neither of which sorts (shared/job_recovery.py:126-146). The row is
-        then stored ``succeeded`` (shared/jobs.py:1055), so it reaches this
-        route exactly as a webhook row would.
+        because no container ranked it.
+        ``shared/job_recovery.py::recover_stuck_job_result`` rebuilds
+        ``candidates`` for ANY tool, with no tool branch above it, filling it
+        (via ``shared/job_recovery.py::reconstruct``) from the streamed
+        partials by ``.append()`` or else from a Storage file listing by
+        ``enumerate``, neither of which sorts. The row is then stored
+        ``succeeded`` by ``shared/jobs.py::timeout_stuck_job``, so it reaches
+        this route exactly as a webhook row would.
 
         The fixture's FIRST record is the worse of the two, which is the whole
         point: stream order is arrival order, not rank.
@@ -839,7 +842,7 @@ class TestTheHeadlineMetricChain:
         ``plddt_on_100`` hands back the ORIGINAL object for a value already on
         0-100 rather than its own ``float()`` copy, and names THIS route's
         og:title as the reason it bothers
-        (shared/metric_glossary.py:405-411). A blanket ``float()`` in
+        (shared/metric_glossary.py::plddt_on_100). A blanket ``float()`` in
         ``_reading`` undid that one line later, so a stored int 88 read
         "88.000" on the share card while the results page read "88" -- two
         surfaces disagreeing about a number neither of them computed.
@@ -930,7 +933,7 @@ class TestTheBarDecidesWhetherThereIsAClause:
         The first repair branched on the pick's verdict, under a comment
         asserting that a non-meets pick means no bar applied. It does not.
         ``headline_candidate`` returns the first record not shown to fall
-        short and does not re-rank (shared/jobs.py:196), so a REJECTED record
+        short and does not re-rank (shared/jobs.py::headline_candidate), so a REJECTED record
         0 followed by an UNMEASURED record 1 yields "unjudged" with the bar
         very much applied -- and the card then quoted record 1's number while
         a higher-ranked design sat dropped above it.
