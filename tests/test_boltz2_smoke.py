@@ -623,16 +623,35 @@ _NAMES_LINUX_CAN_HOLD = [
 
 
 class TestBinderNameIsAFileName:
-    """``run_pipeline.py::main`` writes each design's input to
-    ``d_{i:03d}/{name}.yaml`` from the raw name; only the storage key goes
-    through ``shared/storage.py::_output_object_path``. So the adapter's
-    ``validate`` is the one place a name that cannot be a file name is stopped.
+    """A binder's name reaches the filesystem, and ``validate`` bounds it.
+
+    It used to reach the LOCAL path: ``main`` wrote each design's input to
+    ``d_{i:03d}/{name}.yaml`` from the raw name, so a '/' raised
+    FileNotFoundError mid-run. Chunked folding replaced that stem with
+    ``run_pipeline.py::_record_id``, an index, so the name no longer reaches
+    boltz at all — the first test below is what pins that, and it is the
+    inverse of the one it replaced.
+
+    What the name still reaches is the storage key ``{name}_complex.pdb``,
+    where ``shared/storage.py::_output_object_path`` basenames it and runs
+    ``secure_filename``. That silently renames; it does not truncate. So
+    ``validate``'s byte cap is a real bound and its other two rules refuse a
+    rename — the reasoning is in ``tools/boltz2/__init__.py`` at
+    ``BINDER_NAME_MAX_BYTES``.
     """
 
-    def test_a_slash_kills_main_after_the_design_before_it_folded(
+    def test_a_slash_no_longer_reaches_the_local_path(
         self, tmp_path, monkeypatch,
     ):
-        """Why validate has to refuse it: ``main`` does not survive it."""
+        """The crash this class was written for is gone by construction.
+
+        Inverse of ``test_a_slash_kills_main_after_the_design_before_it_folded``
+        (#338), which asserted the FileNotFoundError. Record ids come from the
+        index now, so the run completes and both designs upload. That matters
+        beyond tidiness: ``blueprints/jobs.py::_spawn_refold_job`` builds
+        ``binder_sequences`` from an upstream candidate's header and bypasses
+        ``validate``, so this path has to be safe without it.
+        """
         result_file = TestZeroDesignsFailsTheJob()._arrange(
             tmp_path, monkeypatch, rc=0,
             binders=[
@@ -643,12 +662,10 @@ class TestBinderNameIsAFileName:
         uploads = []
         monkeypatch.setattr(rp, "upload_pdb", lambda url, data: uploads.append(url))
 
-        with pytest.raises(FileNotFoundError):
-            rp.main()
+        rp.main()
 
-        assert len(uploads) == 1, "the design before the bad name should have folded"
-        assert not result_file.exists(), (
-            "the raise escapes main before any results file is written")
+        assert len(uploads) == 2, "the design with '/' in its name folded too"
+        assert json.loads(result_file.read_text())["status"] == "COMPLETED"
 
     @pytest.mark.parametrize("name, cause", [
         ("4D5/trastuzumab", "'/'"),
@@ -679,7 +696,12 @@ class TestBinderNameIsAFileName:
     def test_main_completes_on_every_name_validate_accepts(
         self, tmp_path, monkeypatch, name,
     ):
-        """The accepted names really are safe for the local path, on Linux."""
+        """Positive control on ``main``: an accepted name completes a run.
+
+        It no longer proves anything about the local path — the name does not
+        reach it — but it still catches a refusal-shaped bug landing anywhere
+        downstream of ``validate``.
+        """
         result_file = TestZeroDesignsFailsTheJob()._arrange(
             tmp_path, monkeypatch, rc=0,
             binders=[{"name": name, "sequence": "EVQLVESGGG"}],
@@ -693,14 +715,20 @@ class TestBinderNameIsAFileName:
     def test_collect_outputs_cannot_see_a_design_named_with_a_leading_dot(
         self, tmp_path, stem, found,
     ):
-        """Why a leading ``.`` is refused although its file writes fine.
+        """``collect_outputs`` is blind to a dot-named record, by ``glob``.
 
         boltz 2.2.1 names what it writes after the input file's stem: the stem
         becomes the record id (src/boltz/data/parse/yaml.py and schema.py), and
         the model lands at ``boltz_results_{stem}/predictions/{id}/
         {id}_model_0.pdb`` (src/boltz/main.py, src/boltz/data/write/writer.py).
-        ``glob`` skips dot-names, so ``main`` would log that design as "no PDB
+        ``glob`` skips dot-names, so such a design WOULD be logged as "no PDB
         emitted" after its fold had run.
+
+        A binder name can no longer produce that stem — ``_record_id`` gives
+        every record ``d_{i:03d}`` — so this is the hazard the leading-dot
+        refusal was written for (#338) rather than one that is still live. It
+        stays because the blindness is real: it is what a stem taken from user
+        text would cost, and the pin against taking one again.
         """
         out_dir = tmp_path / "out"
         pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem

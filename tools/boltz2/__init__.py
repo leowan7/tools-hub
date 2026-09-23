@@ -196,18 +196,42 @@ MAX_BINDERS = 50
 MAX_BINDERS_BY_PRESET = {"msa_server": 16}
 ANTIGEN_CHAIN_MAX = 4
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
-# A binder's name becomes a file name. ``run_pipeline.py::main`` writes each
-# design's input to ``d_{i:03d}/{name}.yaml`` from the raw name (only the
-# storage key is normalised, by ``shared/storage.py::_output_object_path``),
-# and boltz 2.2.1 names its outputs after that file's stem. So ``validate``
-# refuses a name that
-#   - contains '/' or NUL, the two bytes a Linux file name cannot hold;
-#   - starts with '.', which hides the model file from the glob in
-#     ``run_pipeline.py::collect_outputs``;
-#   - is longer than this many bytes. Linux caps a file name at 255 bytes, and
-#     boltz's longest, ``confidence_{name}_model_0.json``
-#     (src/boltz/data/write/writer.py), is the name plus 24, so 231 is the
-#     ceiling; 200 leaves room.
+# A binder's name becomes a file name, and ``validate`` refuses a name that
+# cannot safely be one: it contains '/' or NUL, it starts with '.', or it is
+# longer than this many bytes.
+#
+# WHICH file name has changed since these rules were written (#338). They were
+# the fix for a crash: ``main`` wrote each design's input to
+# ``d_{i:03d}/{name}.yaml`` from the raw name, so a '/' pointed into a folder
+# that did not exist and raised FileNotFoundError after earlier designs had
+# already folded and uploaded. Chunked folding took the name out of that path
+# — ``main`` now writes ``run_pipeline.py::_record_id(i).yaml``, an index — so
+# the name no longer reaches boltz, boltz's output names, or
+# ``collect_outputs``'s glob, and that crash is gone by construction rather
+# than by this check.
+#
+# What the name still becomes is the storage key ``{name}_complex.pdb``, via
+# ``shared/storage.py::_output_object_path``, which keeps only the basename
+# and runs Werkzeug's ``secure_filename`` over it. That handles the first two
+# rules and not the third: '4D5/trastuzumab' is stored as 'trastuzumab',
+# '.hidden' as 'hidden', and a 201-byte name is stored at 201 bytes, because
+# ``secure_filename`` does not truncate. So the byte cap is the only thing
+# bounding the key, and the other two rules refuse a rename rather than
+# prevent a break.
+#
+# They are worth keeping as a refusal, at submit time, because the rename is
+# silent: the user gets back an object named after something they did not
+# type. What the cap does NOT do is cover every path — ``blueprints/jobs.py::
+# _spawn_refold_job`` builds ``binder_sequences`` from an upstream candidate's
+# header and bypasses ``validate`` by design, so a name arriving that way is
+# normalised but not bounded. The collision two names can normalise into is
+# refused separately, a few lines into ``validate`` (#333).
+#
+# These rules are narrower than "anything the sanitiser would change", and
+# deliberately: 'anti-HER2 scFv' is accepted here and still stored as
+# 'anti-HER2_scFv'. 200 is a conservative bound, not a derived ceiling. The
+# 231 that Linux's 255-byte file-name cap once implied was a bound on boltz's
+# ``confidence_{name}_model_0.json``, which no longer carries the name.
 # Pinned by ``tests/test_boltz2_smoke.py::TestBinderNameIsAFileName``.
 BINDER_NAME_MAX_BYTES = 200
 
