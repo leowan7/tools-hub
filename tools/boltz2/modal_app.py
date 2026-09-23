@@ -118,10 +118,24 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
-# Boltz-2 fetches ~1 GB of model weights on first run. The Volume keeps
-# them across cold starts so only the very first prod fold pays the
-# download cost. Reused with the scratch app's Volume name so anything
-# already cached there is hot for prod too.
+# Boltz-2's model cache, ~7.4 GiB. boltz 2.2.1's ``download_boltz2`` fetches
+# ~5.7 GiB (boltz2_conf.ckpt 2.1 GiB, boltz2_aff.ckpt 1.9 GiB, mols.tar
+# 1.7 GiB) and unpacks mols.tar into mols/, another 1.7 GiB in 45,227 files
+# that the top-level listing shows as a 311.9 KiB dir. Checked 2026-09-23
+# with ``modal volume ls boltz2-weights`` (add ``mols`` to size the dir).
+# Scratch apps this repo does not track also mount this Volume, so re-list
+# before trusting these figures.
+#
+# The cache has been populated since 2026-05-29 (the three files' dates), so as
+# of 2026-09-23 prod cold starts download none of it. ``download_boltz2`` skips
+# each step whose output is already in its cache dir, and that dir is this
+# Volume: ``tools/boltz2/run_pipeline.py::run_boltz`` passes no ``--cache`` and
+# nothing in this repo or the base image sets ``$BOLTZ_CACHE``, so boltz's
+# ``get_cache_path`` falls back to ``~/.boltz``. That is ``/root/.boltz``, as
+# neither ``tools/boltz2/Dockerfile.modal`` nor its base image sets USER or
+# ``$HOME``, and ``run_tool`` mounts this Volume there. If the Volume is ever
+# emptied, the next cold start fetches the ~5.7 GiB and unpacks mols/ again:
+# untimed, and not in the ``_MAX_SESSION_S`` arithmetic above.
 weights = modal.Volume.from_name("boltz2-weights", create_if_missing=True)
 
 # Raw run artefacts, keyed by job id. Deterministic naming means nothing new has
