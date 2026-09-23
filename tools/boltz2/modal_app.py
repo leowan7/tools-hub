@@ -121,8 +121,8 @@ def _merged_environment(payload: dict) -> dict[str, str]:
 # 1.7 GiB) and unpacks mols.tar into mols/, another 1.7 GiB in 45,227 files
 # that the top-level listing shows as a 311.9 KiB dir. Checked 2026-09-23
 # with ``modal volume ls boltz2-weights`` (add ``mols`` to size the dir).
-# scratch/boltz_modal/app.py, a scratch app outside this repo, mounts the
-# same Volume, so re-list before trusting these figures.
+# Scratch apps this repo does not track also mount this Volume, so re-list
+# before trusting these figures.
 #
 # The cache has been populated since 2026-05-29 (the three files' dates), so as
 # of 2026-09-23 prod cold starts download none of it. ``download_boltz2`` skips
