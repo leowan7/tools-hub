@@ -29,6 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared.storage import _output_object_path
 from tools import boltz2 as b2
 from tools.boltz2 import run_pipeline as rp
 from tools.opendde import run_pipeline as opendde_rp
@@ -714,3 +715,100 @@ class TestPresetBinderCap:
             "cap of %d leaves room for another design inside %d s"
             % (cap, ceiling)
         )
+
+
+# ---------------------------------------------------------------------------
+# 6 - validate(): two binders may not share one storage object
+# ---------------------------------------------------------------------------
+
+
+_SEQ_A = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+_SEQ_B = "EVQLLESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical, not _SEQ_A
+
+
+def _fasta_form(fasta):
+    return {"preset": "standalone", "target_chain": "A", "binder_sequences": fasta}
+
+
+class TestBinderNamesGetTheirOwnObject:
+    """``main`` keys each design's upload on the binder's name alone.
+
+    Each test runs ``run_pipeline.main`` and records the ``pdb_key``s it asks
+    ``request_upload_urls`` for. The upload-URL endpoint (webhooks/uploads.py)
+    mints each key's URL for the storage path
+    ``shared/storage.py::_output_object_path`` gives it, so two designs whose
+    keys map to one path leave one object for two structures.
+    """
+
+    @staticmethod
+    def _requested_keys(tmp_path, monkeypatch, binders):
+        """Run ``main`` over ``binders``; return the upload keys it requested."""
+        TestZeroDesignsFailsTheJob()._arrange(tmp_path, monkeypatch, rc=0)
+        payload = json.loads(os.environ["JOB_PAYLOAD"])
+        payload["job_spec"]["binder_sequences"] = binders
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        requested = []
+
+        def _record(endpoint, token, keys):
+            requested.extend(keys)
+            return {k: "https://example.invalid/put" for k in keys}
+
+        monkeypatch.setattr(rp, "request_upload_urls", _record)
+        rp.main()
+        return requested
+
+    def test_duplicate_headers_reach_the_pipeline_as_one_pdb_key(
+        self, tmp_path, monkeypatch,
+    ):
+        fasta = f">VHH-12\n{_SEQ_A}\n>VHH-12\n{_SEQ_B}\n"
+        # validate returns the parser's records as "binder_sequences" and
+        # build_payload forwards that list (tools/boltz2/__init__.py), so these
+        # are what main would be given had validate accepted.
+        binders, _ = b2._parse_binder_text(fasta)
+
+        keys = self._requested_keys(tmp_path, monkeypatch, binders)
+
+        assert keys == ["VHH-12_complex.pdb", "VHH-12_complex.pdb"], keys
+        inputs, err = b2.validate(_fasta_form(fasta), {})
+        assert inputs is None, (
+            f"validate accepted two binders that main uploads under one "
+            f"pdb_key, {keys!r}")
+        assert "'VHH-12'" in err and "Rename one" in err, err
+
+    def test_names_that_differ_only_in_punctuation_share_an_object(
+        self, tmp_path, monkeypatch,
+    ):
+        """The keys differ as strings; the storage path does not."""
+        fasta = f">binder 1\n{_SEQ_A}\n>binder_1\n{_SEQ_B}\n"
+        binders, _ = b2._parse_binder_text(fasta)
+
+        keys = self._requested_keys(tmp_path, monkeypatch, binders)
+
+        assert len(set(keys)) == 2, keys
+        paths = {_output_object_path("u", "j", k) for k in keys}
+        assert paths == {"u/j/designs/binder_1_complex.pdb"}, paths
+        inputs, err = b2.validate(_fasta_form(fasta), {})
+        assert inputs is None, (
+            f"validate accepted two binders whose keys {keys!r} land on one "
+            f"storage object, {paths!r}")
+        for part in ("'binder 1'", "'binder_1'", "'binder_1_complex.pdb'"):
+            assert part in err, err
+
+    def test_distinct_names_are_accepted_and_get_two_objects(
+        self, tmp_path, monkeypatch,
+    ):
+        """Positive control: the refusal must not fire on ordinary names.
+
+        Feeds validate's output through build_payload into main.
+        """
+        inputs, err = b2.validate(
+            _fasta_form(f">VHH-12\n{_SEQ_A}\n>VHH-13\n{_SEQ_B}\n"), {},
+        )
+        assert err is None, err
+
+        keys = self._requested_keys(
+            tmp_path, monkeypatch,
+            b2.build_payload(inputs, "")["binder_sequences"],
+        )
+
+        assert len({_output_object_path("u", "j", k) for k in keys}) == 2, keys

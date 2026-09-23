@@ -80,6 +80,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from shared.storage import _output_object_path
 from tools.base import Preset, ToolAdapter, register
 
 
@@ -238,6 +239,13 @@ def validate(
             )
         return None, msg
 
+    # run_pipeline.py::main uploads each design under f"{name}_complex.pdb",
+    # and the upload-URL endpoint (webhooks/uploads.py) mints each key's URL
+    # for the storage path shared/storage.py::_output_object_path gives it.
+    # That function normalises the key, so "binder 1" and "binder_1" land on
+    # one object as surely as two "VHH-12"s do. Pinned by
+    # tests/test_boltz2_smoke.py::TestBinderNamesGetTheirOwnObject.
+    saved_as: dict[str, str] = {}
     for b in binders:
         name = b["name"]
         seq = b["sequence"]
@@ -255,6 +263,21 @@ def validate(
                 f"Binder {name!r} contains non-canonical residues: "
                 f"{sorted(non_canonical)}"
             )
+        fname = _output_object_path("", "", f"{name}_complex.pdb").rsplit("/", 1)[-1]
+        if fname in saved_as:
+            other = saved_as[fname]
+            if other == name:
+                return None, (
+                    f"Two binders are named {name!r}. Each result is saved "
+                    f"under its binder's name, so only one of the two could "
+                    f"be kept. Rename one."
+                )
+            return None, (
+                f"Binders {other!r} and {name!r} would both be saved as "
+                f"{fname!r}, so only one of the two results could be kept. "
+                f"Rename one."
+            )
+        saved_as[fname] = name
 
     return (
         {
