@@ -432,11 +432,15 @@ class TestZeroDesignsFailsTheJob:
     a guard that fired unconditionally would also pass the failure case.
     """
 
-    def _arrange(self, tmp_path, monkeypatch, *, rc, n_binders=2):
+    def _arrange(self, tmp_path, monkeypatch, *, rc, n_binders=2,
+                 upload_exc=None):
         """Stub every I/O edge of ``main`` and return the result-file path.
 
         ``rc`` is what ``run_boltz`` returns for every design: non-zero folds
-        nothing, zero folds all of them.
+        nothing, zero folds all of them. ``upload_exc``, when given, is raised
+        by ``upload_pdb`` for every design - ``rc=0`` plus ``upload_exc`` is
+        the shape Gate 1 Rung A and Rung B actually ran in, where every fold
+        succeeded and the rigged endpoint refused every PUT.
         """
         result_file = tmp_path / "smoke_results.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
@@ -470,7 +474,11 @@ class TestZeroDesignsFailsTheJob:
             "request_upload_urls",
             lambda endpoint, token, keys: {k: "https://example.invalid/put" for k in keys},
         )
-        monkeypatch.setattr(rp, "upload_pdb", lambda url, data: None)
+        def _upload(url, data):
+            if upload_exc is not None:
+                raise upload_exc
+
+        monkeypatch.setattr(rp, "upload_pdb", _upload)
 
         payload = {
             "tier": "standalone",
@@ -522,6 +530,63 @@ class TestZeroDesignsFailsTheJob:
         result = json.loads(result_file.read_text())
         assert result["status"] == "COMPLETED"
         assert result["designs_completed"] == 2
+        assert result["designs_folded"] == 2, (
+            "the healthy run must report folds too, or the count that "
+            "separates the two failure shapes only exists on the failure path")
+
+    def test_folded_but_unuploaded_is_not_reported_as_a_fold_failure(
+        self, tmp_path, monkeypatch,
+    ):
+        """The whole point: an upload-only failure must not say the folds died.
+
+        Every design folds, every PUT raises. Before this, the detail read
+        "all 2 designs failed" - the verdict Gate 1 Rung A and Rung B both
+        returned with 3 good folds on disk (docs/VALIDATION-LOG.md). The
+        billing side is deliberately unchanged and is asserted below, because
+        the value of this detail is that it does not cost a refund to get.
+        """
+        result_file = self._arrange(
+            tmp_path, monkeypatch, rc=0,
+            upload_exc=RuntimeError("upload failed: HTTP 503"),
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            rp.main()
+
+        assert excinfo.value.code == 1
+        result = json.loads(result_file.read_text())
+        detail = result["error"]["detail"]
+        assert "2 of 2 designs folded but 0 uploaded" in detail, (
+            f"detail must separate the hops; got {detail!r}")
+        assert "all 2 designs failed" not in detail, (
+            f"the false claim this test exists to kill is back: {detail!r}")
+
+        # Unchanged on purpose - see the comment above the guard in
+        # run_pipeline.py. An empty designs_out still writes a refunded
+        # failure carrying runtime_seconds.
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "pipeline"
+        assert result["error"]["check"] == "no_designs"
+        assert isinstance(result.get("runtime_seconds"), int)
+
+    def test_a_run_that_folded_nothing_still_says_so(
+        self, tmp_path, monkeypatch,
+    ):
+        """Negative control, and it is what makes the test above mean anything.
+
+        A detail that named the upload hop unconditionally would pass that
+        assertion while lying about this run, where no design ever folded.
+        """
+        result_file = self._arrange(tmp_path, monkeypatch, rc=1)
+
+        with pytest.raises(SystemExit):
+            rp.main()
+
+        detail = json.loads(result_file.read_text())["error"]["detail"]
+        assert "all 2 designs failed before producing a structure" in detail, (
+            f"got {detail!r}")
+        assert "uploaded" not in detail, (
+            f"no upload was ever attempted on this run: {detail!r}")
 # ---------------------------------------------------------------------------
 # 5 - the image ships no cuequivariance, so the kernel path must stay off
 # ---------------------------------------------------------------------------

@@ -91,7 +91,20 @@ THIS driver returns status FAILED with designs_completed 0 whether all three
 folds succeeded or none did -- the two outcomes are indistinguishable in the
 returned dict. Only the parked tree separates them, and it is written by
 archive_raw_outputs(str(workdir)) in `main`'s finally and therefore BEFORE
-that _fail. This docstring cites symbols, not line numbers: they resolve
+that _fail.
+
+That last point is true of cab729e and is the state both Rung A and Rung B
+ran against. It is being fixed: `main` now counts folds in n_folded, decided
+before the upload, and the no_designs detail reads "N of M designs folded but
+0 uploaded" instead of "all M designs failed". NOTHING BELOW CHANGES. The
+abort gate still reads the tar, because what made designs_completed useless
+here is unchanged -- it is 0 on every run of this driver by construction, the
+uploads being rigged to fail -- and a detail string is prose, while
+folds_in_raw() counts files the container actually wrote. The next person to
+run this against a rebuilt image should expect the new detail and still
+believe the tar.
+
+This docstring cites symbols, not line numbers: they resolve
 against tools/boltz2/ at cab729e, deployed as ranomics-boltz2-prod v13
 (checked with `modal app history ranomics-boltz2-prod`; that table records
 every deploy of this app against a dirty tree, so the image is not provably
