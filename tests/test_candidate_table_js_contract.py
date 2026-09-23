@@ -1,12 +1,22 @@
 """The contract between static/js/candidate_table.js, the macro that renders
 its DOM, and the server that parses what it posts.
 
-REGISTER ITEM B-3. There is no JS test harness in this repo, so nothing
-executes that file. Every identifier below crosses a boundary a rename can
-break on one side only, and four such renames were confirmed to survive the
-entire suite: `.cand-starred-export`, the submit listener, the posted key
-shape, and `shortlist-hint-`. Each one shipped an empty CSV named `_starred`
-at HTTP 200 with no error anywhere.
+REGISTER ITEM B-3. Two test files DO execute that file under node, and
+neither one retires the searches below. PART 4 of
+tests/test_lab_project_confirmation.py loads the WHOLE shipped script behind
+stubs to drive `window.dropShortlistRefs`; its `document.querySelectorAll`
+returns [] and its `getElementById` returns null, so no selector resolves
+there and no hook in the table below is exercised by it. The renumber
+harness under tests/js/ runs `renumberRows`, sliced out of the script by
+tests/test_candidate_table_renumber.py, against a stub DOM, and that one does
+reach three hooks: `contains('cand-row')`, `'.cand-rank-n'` and
+`'.cand-group-row'`. Both stub the DOM rather than render the macro, so both
+see the JS side alone and a template-side rename stays invisible to either,
+and both SKIP where node is off PATH. Every identifier below crosses a
+boundary a rename can break on one side only, and four such renames were
+confirmed to survive the entire suite: `.cand-starred-export`, the submit
+listener, the posted key shape, and `shortlist-hint-`. Each one shipped an
+empty CSV named `_starred` at HTTP 200 with no error anywhere.
 
 ROUND 20. The template half of every hook was a substring search over the
 template SOURCE, and four of the thirteen hooks turned out to be held up by
@@ -30,11 +40,12 @@ starts with it. The macro renders under a bare Jinja environment, so the
 artifact this repo's house rule asks for IS available here and the source-level
 excuse only ever applied to the JS.
 
-The JS half stays a source search -- there is still no runtime -- but the
-tokens are anchored so a prefix cannot stand in for the whole: `dataset.job` is
-a prefix of `dataset.jobId`, which is the same superstring hole from the other
-side. Where a real artifact is reachable these tests use it: the ref shape is
-not string-compared, it is extracted from the JS and driven through the
+The JS half stays a source search -- the two node runs named above resolve
+no selector against a real DOM -- but the tokens are anchored so a prefix
+cannot stand in for the whole: `dataset.job` is a prefix of
+`dataset.jobId`, which is the same superstring hole from the other side.
+Where a real artifact is reachable these tests use it: the ref shape is not
+string-compared, it is extracted from the JS and driven through the
 production parser, and the empty-selection case is asserted on a live response
 in tests/test_target_export.py.
 
