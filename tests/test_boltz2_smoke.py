@@ -454,11 +454,19 @@ class TestZeroDesignsFailsTheJob:
         monkeypatch.setattr(rp, "send_heartbeat", lambda *a, **k: None)
         monkeypatch.setattr(rp, "run_boltz", lambda *a, **k: rc)
 
-        # Only reached when run_boltz succeeds.
+        # ``main`` decides each design on whether its output exists, not on
+        # ``rc``, so the stub has to keep the two consistent: the ABI break
+        # this class is about is a boltz that exits non-zero having written
+        # nothing. A stub handing back a structure for a process that died
+        # would test a shape production cannot produce.
         predicted = tmp_path / "pred.pdb"
         predicted.write_text("ATOM\n")
         monkeypatch.setattr(
-            rp, "collect_outputs", lambda out_dir: (predicted, {"iptm": 0.8}),
+            rp,
+            "collect_outputs",
+            lambda out_dir, record_id=None: (
+                (None, {}) if rc else (predicted, {"iptm": 0.8})
+            ),
         )
         monkeypatch.setattr(
             rp,

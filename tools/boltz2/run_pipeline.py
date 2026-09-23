@@ -14,7 +14,9 @@ Two presets:
   per chain). The right choice for designed sequences (MPNN, RFantibody,
   BindCraft, etc.) where there is no informative MSA. ~69 s / design on
   A100-40GB once warm, measured on 242-246 aa binders against a 107 aa
-  antigen — provenance and caveats in ``tools/boltz2/__init__.py``.
+  antigen — but measured one design per process, and ``main`` below now
+  folds ``FOLD_CHUNK`` of them per process, so read it as a ceiling.
+  Provenance and caveats in ``tools/boltz2/__init__.py``.
 - ``msa_server`` — Boltz fetches MSAs from the public ColabFold MMseqs2
   endpoint via ``--use_msa_server``. ~214 s / design aggregate (~3.6 min),
   measured 2026-09-21 on the same three binders; the MSA fetch and the GPU
@@ -97,6 +99,25 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 HOTSPOT_CUTOFF_ANGSTROM = 5.0
 BOLTZ_BIN = os.environ.get("BOLTZ_BIN", "boltz")
+
+# Designs folded per ``boltz predict`` process. Boltz folds a directory of
+# input YAMLs in one process and one model load, so a chunk pays the ~60-70 s
+# of start-up + checkpoint load once instead of once per design — measured on
+# A100-40GB, provenance and the list of what was NOT measured in the batching
+# note in ``tools/boltz2/__init__.py``.
+#
+# Ten rather than the whole run, on three counts. Heartbeats: a candidate
+# reaches the status page only after its chunk's process exits, so the chunk
+# is the page's refresh interval — ten designs is ~4 min, the whole 50 would
+# be ~16 min of apparent silence. Blast radius: an error that ends
+# ``boltz predict`` ends it for every record still queued in that process, so
+# the chunk is also the unit of loss. Diminishing returns: the fixed cost is
+# paid per chunk, so 50 designs in chunks of 10 pay it 5 times against once
+# for a single batch — on the measured figures that is ~90% of the available
+# saving for a fifth of the exposure.
+#
+# msa_server does NOT batch, and is folded one design per process below.
+FOLD_CHUNK = 10
 
 # Acceptance bar for the strict_pass classification (mirrors the
 # verification gate in the plan).
@@ -403,13 +424,43 @@ def make_yaml_msa_server(binder_seq: str, antigen_seq: str) -> str:
     )
 
 
-def run_boltz(yaml_path: Path, out_dir: Path, msa_server: bool) -> int:
-    """Run one ``boltz predict``. stdout/stderr live-stream to Modal logs."""
+def _record_id(index: int) -> str:
+    """The name Boltz gives one design's outputs, derived from its position.
+
+    Used as the input YAML's stem, which Boltz echoes into every output file
+    for that record. Deliberately NOT the binder's name: a name is user text,
+    two names can normalise to one filename, and a name carrying a path
+    separator would not stay inside the chunk's input directory. ``validate``
+    in ``tools/boltz2/__init__.py`` refuses colliding names before a job is
+    created, but this pipeline also runs from a direct ``modal run``, which
+    reaches none of it.
+
+    Fixed width, so no id is a prefix of another and ``collect_outputs``'s
+    ``<id>_model_*`` glob cannot match a neighbouring record's files.
+    """
+    return f"d_{index:03d}"
+
+
+def run_boltz(data_path: Path, out_dir: Path, msa_server: bool) -> int:
+    """Run one ``boltz predict`` over ``data_path``. stdout/stderr live-stream
+    to Modal logs.
+
+    ``data_path`` is a DIRECTORY of input YAMLs (boltz's ``predict`` expands a
+    directory into one record per file and folds them all in one process, one
+    model load) or a single YAML file. ``main`` below passes a directory; the
+    file form is what ``tests/test_boltz2_smoke.py::TestKernelsStayOff`` calls.
+
+    The return code covers the whole process, so with more than one record in
+    ``data_path`` it is not a per-design verdict — a record that finished
+    before the process died has its files on disk either way. ``main`` below
+    therefore decides each design on whether ``collect_outputs`` found that
+    design's files, and treats this value as a log line.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         BOLTZ_BIN,
         "predict",
-        str(yaml_path),
+        str(data_path),
         "--out_dir", str(out_dir),
         "--no_kernels",
         "--output_format", "pdb",
@@ -424,10 +475,30 @@ def run_boltz(yaml_path: Path, out_dir: Path, msa_server: bool) -> int:
     return result.returncode
 
 
-def collect_outputs(out_dir: Path) -> tuple[Path | None, dict]:
-    """Glob the Boltz output directory for the predicted PDB + confidence JSON."""
-    pdb_files = sorted(glob.glob(f"{out_dir}/**/*.pdb", recursive=True))
-    conf_files = sorted(glob.glob(f"{out_dir}/**/confidence*.json", recursive=True))
+def collect_outputs(
+    out_dir: Path, record_id: str | None = None
+) -> tuple[Path | None, dict]:
+    """Glob the Boltz output directory for a predicted PDB + confidence JSON.
+
+    ``record_id`` scopes the glob to ONE record and is required whenever
+    ``out_dir`` can hold more than one. Boltz names a record after its input
+    YAML's stem and writes ``<id>_model_<n>.pdb`` and
+    ``confidence_<id>_model_<n>.json``, so a whole-tree ``[0]`` returns
+    whichever record sorts first — which under batching would hand every
+    design in the chunk the same structure and the same scores. ``main``
+    below always passes an id; the unscoped form is the single-record
+    behaviour that predates batching.
+
+    Ids are ``main``'s fixed-width ``d_000`` form, so no id is a prefix of
+    another and ``<id>_model_`` cannot match a neighbour's files. Pinned by
+    ``tests/test_boltz2_batched_folds.py::TestEachDesignGetsItsOwnStructure``.
+    """
+    pdb_pat = f"{record_id}_model_*.pdb" if record_id else "*.pdb"
+    conf_pat = (
+        f"confidence_{record_id}_model_*.json" if record_id else "confidence*.json"
+    )
+    pdb_files = sorted(glob.glob(f"{out_dir}/**/{pdb_pat}", recursive=True))
+    conf_files = sorted(glob.glob(f"{out_dir}/**/{conf_pat}", recursive=True))
     pdb_path = Path(pdb_files[0]) if pdb_files else None
     conf: dict = {}
     if conf_files:
@@ -642,7 +713,7 @@ def main() -> None:
             designs_out: list[dict] = []
             n_failures = 0
             # Folds, counted where the fold is DECIDED - the moment
-            # collect_outputs yields a PDB, one line below - and therefore
+            # collect_outputs yields a PDB for that design - and therefore
             # before the upload, which is a separate network hop with its own
             # failure. designs_out cannot stand in for this: its append is
             # downstream of that hop, so a run whose every fold succeeded and
@@ -653,6 +724,11 @@ def main() -> None:
             # failed" - the two rows for boltz2 in docs/VALIDATION-LOG.md.
             n_folded = 0
 
+            # Stage every design before folding any, so the chunk loop below
+            # works on a list whose indices are already final. ``rank`` and the
+            # record id both stay the design's position in the SUBMITTED list,
+            # not its position after empty sequences are dropped.
+            staged: list[tuple[int, str, str]] = []
             for i, binder in enumerate(binders):
                 name = str(binder.get("name") or f"design_{i}").strip() or f"design_{i}"
                 sequence = (binder.get("sequence") or "").strip().upper()
@@ -660,83 +736,162 @@ def main() -> None:
                     n_failures += 1
                     logger.warning("design %d (%s): empty sequence — skipping", i, name)
                     continue
+                staged.append((i, name, sequence))
 
-                design_start = time.time()
-                design_workdir = workdir / f"d_{i:03d}"
-                design_workdir.mkdir(parents=True, exist_ok=True)
-                yaml_path = design_workdir / f"{name}.yaml"
-                yaml_path.write_text(yaml_factory(sequence, antigen_seq))
-                out_dir = design_workdir / "out"
+            # msa_server folds one design per process. Boltz fetches every
+            # record's MSA up front when given a batch, which changes the
+            # shape of the MSA-server hop this preset depends on; the saving
+            # would be small anyway, since the ~214 s/design measured for this
+            # preset is dominated by that fetch rather than by the model load
+            # batching removes.
+            chunk_size = 1 if msa_server else FOLD_CHUNK
+
+            for c0 in range(0, len(staged), chunk_size):
+                chunk = staged[c0:c0 + chunk_size]
+                chunk_dir = workdir / f"b_{c0 // chunk_size:03d}"
+                in_dir, out_dir = chunk_dir / "in", chunk_dir / "out"
+                in_dir.mkdir(parents=True, exist_ok=True)
+                for idx, _name, sequence in chunk:
+                    (in_dir / f"{_record_id(idx)}.yaml").write_text(
+                        yaml_factory(sequence, antigen_seq)
+                    )
 
                 logger.info(
-                    "=== folding %d/%d %s (binder=%d aa, antigen=%d aa, msa=%s) ===",
-                    i + 1, designs_total, name, len(sequence), antigen_length, msa_server,
+                    "=== folding %d design(s) %s (antigen=%d aa, msa=%s) ===",
+                    len(chunk),
+                    ", ".join(f"{_record_id(i)}={n}" for i, n, _ in chunk),
+                    antigen_length, msa_server,
                 )
-                rc = run_boltz(yaml_path, out_dir, msa_server=msa_server)
-                if rc != 0:
-                    n_failures += 1
-                    logger.warning("design %s: boltz exited %d", name, rc)
-                    continue
-
-                pdb_path, conf = collect_outputs(out_dir)
-                if pdb_path is None:
-                    n_failures += 1
-                    logger.warning("design %s: no PDB emitted", name)
-                    continue
-                n_folded += 1
-
-                pdb_text = pdb_path.read_text()
-                contacts = hotspot_contacts(
-                    pdb_text, hotspots, antigen_len=antigen_length,
-                )
-
-                iptm = _num(conf.get("iptm") or conf.get("complex_iptm"))
-                ptm = _num(conf.get("ptm") or conf.get("complex_ptm"))
-                plddt = _num(conf.get("complex_plddt") or conf.get("plddt"))
-                iplddt = _num(conf.get("complex_iplddt"))
-                filter_status = classify(iptm, plddt, contacts["n_contacted"])
-
-                pdb_key = f"{name}_complex.pdb"
-                try:
-                    urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                    upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
-                except Exception as exc:
-                    n_failures += 1
-                    logger.warning(
-                        "design %s: upload failed (%s) — skipping", name, exc,
-                    )
-                    continue
-
-                design_entry = {
-                    "rank": i,
-                    "name": name,
-                    "pdb_key": pdb_key,
-                    "iptm": iptm,
-                    "ptm": ptm,
-                    "complex_plddt": plddt,
-                    "complex_iplddt": iplddt,
-                    "n_hotspot_contacts": contacts["n_contacted"],
-                    "n_hotspots": contacts["n_hotspots"],
-                    "contacted_residues": contacts["contacted"],
-                    "antigen_chain": contacts["antigen_chain"],
-                    "filter_status": filter_status,
-                    "runtime_seconds": int(time.time() - design_start),
-                }
-                designs_out.append(design_entry)
-
+                # Keeps the status page moving while a chunk is in the GPU:
+                # nothing else is sent between here and the chunk's first
+                # delivered candidate, which is minutes away.
+                #
+                # Counts POSITION in the submitted list, matching the
+                # per-design heartbeat below, which sends ``i + 1``. Sending
+                # ``len(designs_out)`` here instead would count deliveries,
+                # and a run with a failure would then send a SMALLER number
+                # than the heartbeat before it — ``templates/job_detail.html``
+                # renders this straight into a live "done / total", so it
+                # would count backwards on screen mid-run. Every ``folding``
+                # heartbeat therefore reports a position, and the sequence is
+                # non-decreasing; pinned by
+                # ``tests/test_boltz2_batched_folds.py::TestProgressNeverCountsBackwards``.
+                # (The closing ``complete`` heartbeat reports the delivered
+                # count instead, which is a different question and predates
+                # chunking.)
                 send_heartbeat(
                     webhook_url, job_id,
                     stage="folding",
-                    designs_completed=i + 1,
+                    designs_completed=chunk[0][0],
                     designs_total=designs_total,
-                    new_candidate=design_entry,
                 )
-                logger.info(
-                    "  -> %s iptm=%s plddt=%s contacts=%d/%d %s",
-                    name, iptm, plddt,
-                    contacts["n_contacted"], contacts["n_hotspots"],
-                    filter_status,
-                )
+                chunk_start = time.time()
+                rc = run_boltz(in_dir, out_dir, msa_server=msa_server)
+                chunk_seconds = time.time() - chunk_start
+                if rc != 0:
+                    # Not fatal for the chunk's other designs — see run_boltz.
+                    logger.warning(
+                        "%s: boltz exited %d after %.0fs",
+                        chunk_dir.name, rc, chunk_seconds,
+                    )
+
+                for i, name, sequence in chunk:
+                    pdb_path, conf = collect_outputs(out_dir, _record_id(i))
+                    # Shared cost, split evenly: the designs in a chunk are
+                    # folded by one process and are not timed individually.
+                    design_seconds = chunk_seconds / len(chunk)
+
+                    if pdb_path is None and len(chunk) > 1:
+                        # A missing record says the chunk's process stopped
+                        # early or skipped this one; it does not say this
+                        # design cannot fold. Re-fold it by itself — the
+                        # single-record call this pipeline made for every
+                        # design before batching — so one bad design costs a
+                        # retry rather than its nine neighbours' results. A
+                        # chunk that produced nothing therefore costs one
+                        # batch plus the per-design runs it already cost
+                        # before batching.
+                        logger.warning(
+                            "design %s: no output from %s — re-folding alone",
+                            name, chunk_dir.name,
+                        )
+                        solo_in = workdir / f"{_record_id(i)}_solo" / "in"
+                        solo_in.mkdir(parents=True, exist_ok=True)
+                        (solo_in / f"{_record_id(i)}.yaml").write_text(
+                            yaml_factory(sequence, antigen_seq)
+                        )
+                        solo_start = time.time()
+                        solo_rc = run_boltz(
+                            solo_in, solo_in.parent / "out", msa_server=msa_server
+                        )
+                        design_seconds = time.time() - solo_start
+                        if solo_rc != 0:
+                            logger.warning(
+                                "design %s: boltz exited %d on the retry too",
+                                name, solo_rc,
+                            )
+                        pdb_path, conf = collect_outputs(
+                            solo_in.parent / "out", _record_id(i)
+                        )
+
+                    if pdb_path is None:
+                        n_failures += 1
+                        logger.warning("design %s: no PDB emitted", name)
+                        continue
+                    n_folded += 1
+
+                    pdb_text = pdb_path.read_text()
+                    contacts = hotspot_contacts(
+                        pdb_text, hotspots, antigen_len=antigen_length,
+                    )
+
+                    iptm = _num(conf.get("iptm") or conf.get("complex_iptm"))
+                    ptm = _num(conf.get("ptm") or conf.get("complex_ptm"))
+                    plddt = _num(conf.get("complex_plddt") or conf.get("plddt"))
+                    iplddt = _num(conf.get("complex_iplddt"))
+                    filter_status = classify(iptm, plddt, contacts["n_contacted"])
+
+                    pdb_key = f"{name}_complex.pdb"
+                    try:
+                        urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+                        upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
+                    except Exception as exc:
+                        n_failures += 1
+                        logger.warning(
+                            "design %s: upload failed (%s) — skipping", name, exc,
+                        )
+                        continue
+
+                    design_entry = {
+                        "rank": i,
+                        "name": name,
+                        "pdb_key": pdb_key,
+                        "iptm": iptm,
+                        "ptm": ptm,
+                        "complex_plddt": plddt,
+                        "complex_iplddt": iplddt,
+                        "n_hotspot_contacts": contacts["n_contacted"],
+                        "n_hotspots": contacts["n_hotspots"],
+                        "contacted_residues": contacts["contacted"],
+                        "antigen_chain": contacts["antigen_chain"],
+                        "filter_status": filter_status,
+                        "runtime_seconds": int(design_seconds),
+                    }
+                    designs_out.append(design_entry)
+
+                    send_heartbeat(
+                        webhook_url, job_id,
+                        stage="folding",
+                        designs_completed=i + 1,
+                        designs_total=designs_total,
+                        new_candidate=design_entry,
+                    )
+                    logger.info(
+                        "  -> %s iptm=%s plddt=%s contacts=%d/%d %s",
+                        name, iptm, plddt,
+                        contacts["n_contacted"], contacts["n_hotspots"],
+                        filter_status,
+                    )
 
         finally:
             # Ship the COMPLETE tree home BEFORE TemporaryDirectory deletes it.
