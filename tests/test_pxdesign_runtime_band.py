@@ -232,10 +232,12 @@ def test_no_surface_attributes_an_endpoint_to_a_design_count():
     by_count = {d: m for d, m in _measurements().values()}
     assert by_count[5] < by_count[2], by_count
 
-    # "twelve times" bans the rate sentence this change deleted from the
-    # form panel and the "Number of designs" explanation ("twelve times
-    # the designs costs under three times the ..."), which the other
-    # three phrases do not reach.
+    # "twelve times" bans a rate claim the other three phrases do not
+    # reach: "twelve times the designs costs under three times the
+    # wait". No shipped surface ever carried it -- it was written into an
+    # early draft of this change and dropped before merge, and it is
+    # absent from origin/main at every revision. This entry is therefore
+    # preventive, not the record of a deletion.
     banned = ("at two designs", "at twenty-five", "fixed setup",
               "twelve times")
     live = [pxdesign.__doc__, pxdesign.adapter.blurb,
