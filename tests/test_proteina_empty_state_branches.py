@@ -13,16 +13,19 @@ Both sentences are false on a SUCCEEDED free ``validate`` run, observed live
 1. ``validate`` designs nothing. ``run_pipeline.run_validate`` checks three
    things - the ``proteinfoundation`` package imports, every variant config
    file is present, and at least one ``*.ckpt`` is on the weights Volume -
-   then writes ``"candidates": []`` and exits (run_pipeline.py:3886-3936).
+   then writes ``"candidates": []`` and exits (run_pipeline.py::run_validate).
    There were never candidates for a reward filter to cull, so "returned no
    candidates that cleared the reward filters" reports a failed search to an
    operator whose run passed.
 
 2. A validate job cannot be in a campaign. The only writer of
-   ``tool_jobs.campaign_id`` is ``shared/compute_campaigns.py:2020-2033``,
+   ``tool_jobs.campaign_id`` is
+   ``shared/compute_campaigns.py::_dispatch_chunk``,
    which takes its preset from a campaign, and both routes that create a
-   campaign refuse this preset first (``blueprints/campaigns.py:337``,
-   ``blueprints/targets.py:243``). Nothing UPDATEs ``campaign_id`` later. So
+   campaign refuse this preset first
+   (``blueprints/campaigns.py::compute_campaign_create``,
+   ``blueprints/targets.py::_collect_launch_specs``). Nothing UPDATEs
+   ``campaign_id`` later. So
    there is no campaign page to check and no sibling shard to pool with.
 
 3. The campaign sentence is also wrong for a STANDALONE paid run. proteina is
@@ -82,11 +85,14 @@ _FILTER_CLAIM = "cleared the reward filters"
 
 # Parameter advice the standalone arm may not give. Each is refused or
 # ignored on at least one run shape that reaches that arm: a curated run
-# rejects hotspots and contigs (tools/proteina/__init__.py:666) and
-# ligand_binder / motif_ame can never be custom (:151, :607); binder_length is
-# consumed only under target_source == "custom" (run_pipeline.py:4245, inside
-# the :4234 gate); and a shard is pinned at 8 designs (__init__.py:162), so
-# raising the count makes it a campaign instead.
+# rejects hotspots and contigs, and ligand_binder / motif_ame can never be
+# custom -- both refusals live in tools/proteina/__init__.py::validate, the
+# second gated on tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS;
+# binder_length reaches the model
+# only under target_source == "custom" (passed inside that branch of
+# tools/proteina/run_pipeline.py::_run_shard); and a shard is pinned at 8
+# designs (tools/proteina/__init__.py::_SHARD_DESIGNS), so raising the count
+# makes it a campaign instead.
 _PARAMETER_ADVICE = ("binder length", "hotspot", "more designs")
 
 
@@ -137,10 +143,10 @@ class _PanelParagraphs(HTMLParser):
 @pytest.fixture
 def app(monkeypatch):
     # FLAG_TOOL_PROTEINA does NOT gate this partial, despite the obvious
-    # reading: tools/base.get() is a bare registry lookup (tools/base.py:188)
+    # reading: tools/base.get() is a bare registry lookup (tools/base.py::get)
     # with no flag check, and the page renders identically without it -- the
     # flag gates campaign create/estimate (FLAG_GATED_CAMPAIGN_TOOLS) and the
-    # send_target_tools loop (blueprints/jobs.py:303). It is set so the
+    # send_target_tools loop (blueprints/jobs.py::job_detail). It is set so the
     # fixture matches how the tool is configured in production, not because
     # anything here needs it.
     monkeypatch.setenv("FLAG_TOOL_PROTEINA", "on")
@@ -156,10 +162,11 @@ def _result(preset: str) -> dict:
     """The zero-candidate payload the container actually writes.
 
     Two writers, two shapes, and the difference matters to the tests below:
-    ``run_validate`` (run_pipeline.py:3920-3935) reports ``designs_total: 0``
-    plus ``validate_ok``, because it designed nothing; the paid no-survivors
-    branch (:4342-4353) reports the real generated count and an
-    ``output_census``, because it designed and then filtered everything out.
+    ``run_validate`` (run_pipeline.py::run_validate) reports
+    ``designs_total: 0`` plus ``validate_ok``, because it designed nothing;
+    the paid no-survivors branch in ``run_pipeline.py::_run_shard`` reports
+    the real generated count and an ``output_census``, because it designed
+    and then filtered everything out.
 
     Neither emits ``gpu_seconds`` -- both write ``runtime_seconds``. An
     earlier fixture put ``gpu_seconds`` in here, which no writer produces and
@@ -207,9 +214,10 @@ def _job(preset: str, campaign_id: str | None):
 def _render(app, preset: str, campaign_id: str | None = None) -> list[str]:
     """GET /jobs/<id> for one job shape; return its panel paragraphs.
 
-    ``get_job`` is patched where ``blueprints.jobs`` bound it (module-level,
-    blueprints/jobs.py:41). The succeeded branch additionally resolves user
-    metadata through a function-local ``from shared.jobs import ...`` at :318,
+    ``get_job`` is patched where ``blueprints.jobs`` bound it (its
+    module-level ``from shared.jobs import`` block). The succeeded branch
+    additionally resolves user metadata through a function-local
+    ``from shared.jobs import ...`` inside ``blueprints/jobs.py::job_detail``,
     so that one must be patched on the source module -- patching
     ``blueprints.jobs.resolve_user_email_and_meta`` would raise AttributeError.
     """
@@ -277,17 +285,20 @@ def test_the_validate_copy_does_not_claim_the_target(app):
     """``run_validate`` never inspects the target.
 
     The adapter's own preset description says the tier "checks your target +
-    config load" (tools/proteina/__init__.py:848-849), and the target half of
-    that is not what the container does: the validate branch returns at
-    run_pipeline.py:4030, and the sole route to ``download_target`` (:2864) is
-    the ``prepare_custom_target`` call at :4239. Repeating the adapter's
-    phrasing would have replaced one false sentence with another.
+    config load" (the ``slug="validate"`` entry of
+    tools/proteina/__init__.py::adapter), and the target half of that is not
+    what the container does: the validate branch of
+    tools/proteina/run_pipeline.py::_run_shard returns straight after calling
+    ``run_validate``, and the only call to ``download_target`` in that file
+    sits inside ``prepare_custom_target``, which ``_run_shard`` reaches only
+    on its custom-target branch. Repeating the adapter's phrasing would have
+    replaced one false sentence with another.
 
     The copy says "nothing here inspects the target itself" rather than
     "before any target is staged": the HUB does upload an attached file even
-    for a validate run (__init__.py:607 exempts validate from the
-    custom-target gate), so a staging claim could be read as "my upload never
-    left my machine", which is false.
+    for a validate run (tools/proteina/__init__.py::validate exempts validate
+    from the custom-target gate), so a staging claim could be read as "my
+    upload never left my machine", which is false.
     """
     body = _text(app, "validate")
     assert "not your target" in body, (

@@ -26,6 +26,8 @@ import pytest
 from shared import jobs as jobs_mod
 from shared.jobs import ToolJob
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Fakes (re-used and extended from test_jobs_phase4)

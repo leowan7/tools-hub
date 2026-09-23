@@ -1118,13 +1118,14 @@ def test_hotspot_error_reads_a_bare_residue_against_the_first_named_chain():
 
     This used to assert the union — "a residue in the second chain is in range"
     — and that was wrong in the direction that spends money. Nothing downstream
-    reads an unprefixed hotspot as "any named chain": tools/base.py:108 rewrites
-    it onto the first target chain and proteina promotes it onto
-    contig_chains[0]. So 320 here is SENT as "A320", against a chain that stops
-    at 210; this route funded the campaign and the container refused it with the
-    GPU already running. proteina is what makes that reachable rather than
-    hypothetical — it emits hotspot_residues as bare author numbers on purpose,
-    so every proteina multi-chain launch arrives here unprefixed.
+    reads an unprefixed hotspot as "any named chain":
+    tools/base.py::parse_hotspot_residues rewrites it onto the first target
+    chain and proteina promotes it onto contig_chains[0]. So 320 here is SENT as
+    "A320", against a chain that stops at 210; this route funded the campaign
+    and the container refused it with the GPU already running. proteina is what
+    makes that reachable rather than hypothetical — it emits hotspot_residues as
+    bare author numbers on purpose, so every proteina multi-chain launch arrives
+    here unprefixed.
     """
     summary = {
         "chains": [

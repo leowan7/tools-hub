@@ -70,12 +70,13 @@ _THREE_TO_ONE = {
 # zero differences. That zero is not self-certifying: re-running with the fix
 # removed puts it at 104. Sequons feed score_glycan_proximity and glycan_risk
 # carries 0.15 of the composite (scout/feasibility.py), and a fabricated
-# sequon also fabricates the user-facing warning gated at feasibility.py:165.
-# Sampling every residue CB on the 90 affected chains as a stand-in for an
-# epitope centroid, the composite moved at 8086 of 26898 of them, by a median
-# of 0.052 and by the full 0.15 at worst. Read that median as "over centroids
-# that moved", not per chain, and the CB population as a proxy for the real
-# patch centroids of scout/pipeline.py.
+# sequon also fabricates the user-facing warning gated at
+# feasibility.py::_identify_risk_factors. Sampling every residue CB on the 90
+# affected chains as a stand-in for an epitope centroid, the composite moved
+# at 8086 of 26898 of them, by a median of 0.052 and by the full 0.15 at
+# worst. Read that median as "over centroids that moved", not per chain, and
+# the CB population as a proxy for the real patch centroids of
+# scout/pipeline.py.
 #
 # Note what that 5.8% is NOT. The nine-chain SeMet corpus behind the
 # scoring.py fix shows ZERO difference here, and the null is uninformative: it

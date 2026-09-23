@@ -182,8 +182,8 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # is_real, test_the_token_the_gate_judges_is_the_token_the_payload_ships and
 # test_hotspot_residues_stays_bare_ints_on_a_single_chain_run, all in
 # tests/test_proteina_hotspot_chain_semantics.py. The direct-call refusal below:
-# TestJobSpecAliases::test_bare_ints_on_a_MULTI_chain_target_are_refused in
-# tests/test_proteina_delivery.py.
+# tests/test_proteina_delivery.py::test_bare_ints_on_a_MULTI_chain_target_are_refused,
+# a method of TestJobSpecAliases.
 #
 # The two are EXCLUSIVE, and that is a deliberate correction rather than an
 # accident of the gate. Inlining alongside an upload would put a second copy of
@@ -324,8 +324,8 @@ _SCORE_COLUMNS: dict[str, tuple[str, ...]] = {
     # BACKWARDS. It read "cross-shard diversity is assigned at the hub, not in
     # the per-shard CSV", which describes a hub step that was never written:
     # shared.compute_campaigns.aggregate_campaign_candidates pools every shard's
-    # candidates and SORTS them (passed, missing, primary metric) at
-    # compute_campaigns.py:1483-1495, with no clustering and no diversity step.
+    # candidates and SORTS them (passed, missing, primary metric) in its
+    # ``_sort_key``, with no clustering and no diversity step.
     # (Scoped to proteina design clustering. The repo DOES do MPNN sequence
     # diversification — shared/resample.py, which raises sampling_temp from
     # 0.1 to 0.5 to spread sequences over one fold — so "no diversity anywhere
@@ -3345,10 +3345,11 @@ def prepare_custom_target(
 # arithmetic on an allocator policy. See shared/pdb_preflight_rules.py
 # ::_PROTEINA, which states this the same way.
 #
-# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py:584
-# and tools/colabfold/run_pipeline.py:301, "keeps preflight from preallocating
-# most of the VRAM". proteina set none of them, and ``run_streaming`` passed no
-# ``env=`` at all, so the design subprocess inherited the bare JAX default.
+# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py
+# ::_preflight_jax_gpu and tools/colabfold/run_pipeline.py
+# ::_preflight_jax_gpu, "keeps preflight from preallocating most of the VRAM".
+# proteina set none of them, and ``run_streaming`` passed no ``env=`` at all,
+# so the design subprocess inherited the bare JAX default.
 #
 # DELIBERATE DIVERGENCE from those two: they also set TF_FORCE_UNIFIED_MEMORY=1
 # and this does not. Unified memory lets an oversized job spill to host RAM and
@@ -3873,8 +3874,16 @@ def archive_raw_outputs(out_dir: Path, dest: str | None = None) -> None:
 # validate tier (wallet-free staging gate — NOT a CPU-only container)
 # ===========================================================================
 # "free, CPU dry-run" is what this header used to say, and half of it was
-# false in the direction that costs money. WALLET-free is true: tools-hub does
-# not bill the validate preset. CPU-only is not: modal_app.py declares exactly
+# false in the direction that costs money. WALLET-free is true only as of the
+# tier row this comment now cites: before it, tools-hub priced this preset at
+# the 7200 s session ceiling, and a submit would have held $15 (traced through
+# the estimator and the gate, and reproduced in-process by emptying the tier
+# map -- not observed on a real validate run). What makes it free is
+# ``tier_gpu_seconds={"validate": 0}`` on the proteina ToolSpec in
+# shared/wallet_estimates.py, which zeroes the estimate; shared/wallet_guard.py
+# then skips the HOLD (not the preflight, so a frozen wallet is still refused),
+# and with no hold nothing settles.
+# CPU-only is not: modal_app.py declares exactly
 # one @app.function and it is unconditionally `gpu="A100-80GB"`, so this tier
 # runs on an A100 container for its whole lifetime and Modal bills wall-clock
 # rather than utilisation. Skipping GPU *work* is not the same as not

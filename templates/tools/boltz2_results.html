@@ -25,7 +25,7 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output             = job.result or {} %}
-{% set raw_designs        = output.get('designs', []) %}
+{% set raw_designs        = display_rows(output.get('designs')) %}
 {% set hotspots_requested = output.get('hotspots_requested', []) %}
 {% set antigen_length     = output.get('antigen_length') %}
 {% set tier               = output.get('tier') %}
@@ -73,7 +73,7 @@
 {# Stable sort by ipTM desc, falling back to ranks already assigned by
    the pipeline. Python's sorted() is stable, so designs with equal ipTM
    keep their submission order. #}
-{% set candidates = candidates | sort(attribute='scores.ipTM', reverse=True) %}
+{% set candidates = candidates | sort_by_number('scores.ipTM', reverse=True) %}
 
 {% set columns = ['ipTM', 'pTM', 'pLDDT', 'n_hotspot_contacts', 'against_bar'] %}
 

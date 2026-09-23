@@ -30,6 +30,8 @@ import pytest
 from tools import esmfold as esm_mod
 from tools.base import get as get_adapter
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Test 1 - adapter registration

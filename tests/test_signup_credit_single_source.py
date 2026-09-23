@@ -24,6 +24,8 @@ import pytest
 from app import create_app
 from shared.wallet import SIGNUP_CREDIT_USD
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO_ROOT / "templates"
 

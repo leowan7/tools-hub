@@ -32,7 +32,7 @@ PARAM_KEYS = ("label", "goal", "you_need", "params", "next_step")
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     """Every registered adapter, flagged on, rendered anonymously."""
     import os
 

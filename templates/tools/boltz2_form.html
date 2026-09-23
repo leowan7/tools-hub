@@ -103,8 +103,9 @@
                 <span class="preset-title">Single-sequence (default, fast)</span>
                 <span class="preset-desc">
                   Folds from the sequences alone, with no search for
-                  related natural sequences. Under a minute per design, and
-                  the right choice for anything you designed on this site
+                  related natural sequences. Just over a minute per design
+                  on the runs we have timed, and the right choice for
+                  anything you designed on this site
                   &mdash; a designed binder has no natural relatives to find,
                   so the search would come back empty anyway.
                 </span>
@@ -117,10 +118,14 @@
                 <span class="preset-title">With MSA (slower, natural sequences)</span>
                 <span class="preset-desc">
                   Searches public databases for sequences related to yours
-                  and folds with that extra evidence. About 3 min per design.
-                  Worth it for natural or near-natural sequences, which do
-                  have relatives; on a designed binder the answer usually
-                  comes out the same as the fast option above.
+                  and folds with that extra evidence. About 3.6 min per
+                  design on the runs we have timed, so roughly three times
+                  the wait. Meant for natural or near-natural sequences,
+                  which do have relatives. On the one head-to-head we have
+                  run &mdash; three designed antibody binders &mdash; it did
+                  a WORSE job of telling the real binder apart from decoys
+                  than the fast option above, so reach for it only if your
+                  sequence genuinely has natural relatives.
                 </span>
               </span>
             </label>
@@ -160,7 +165,10 @@
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
             One sequence per line, or FASTA with <code>&gt;name</code>
             headers. Each sequence folds independently against the antigen.
-            20 to 400&nbsp;aa per binder, up to 50 binders per run.
+            20 to 400&nbsp;aa per binder, and up to 50 binders per run on
+            the single-sequence preset. With MSA the limit is 16: at about
+            3.6&nbsp;min per design, a larger batch would run past the
+            60-minute run ceiling and the tail would be cut off.
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

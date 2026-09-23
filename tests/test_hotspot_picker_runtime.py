@@ -4,15 +4,16 @@
 ``initHotspotPicker``. That cannot see whether a form passes ``chainPrefixed``,
 because the flag lives inside an object literal — and ``chainPrefixed`` is the
 whole difference between a picker that works on a multi-chain target and one
-that is inert on it. Nothing in ``tests/`` mentions ``chainPrefixed`` today.
+that is inert on it. Before this file nothing exercised the flag;
+``test_harness_reports_the_flag_each_form_actually_passes`` below is what
+now pins the per-form split.
 
 So this renders each tool form through its real Flask route, pulls the inline
 ``<script>`` the page actually ships, and executes it against the real
 ``static/js/hotspot_picker.js`` in a stubbed DOM (``tests/js/``). Assertions are
 on emitted behaviour, not on source text.
 
-Three bugs are pinned, all of them from
-``docs/HANDOFF-2026-08-07-multichain-finish.md`` item 1a:
+Three bugs are pinned:
 
 * on a multi-chain target the picker is INERT — ``_chains()`` returns the
   literal ``["A,B"]``, the NGL selection ``:A,B`` matches nothing and the chain
@@ -84,7 +85,7 @@ needs_node = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def flask_app():
+def flask_app(isolate_supabase_module):
     os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
     from app import create_app
 
@@ -425,11 +426,11 @@ def test_single_chain_typed_bare_ints_are_preserved_across_a_click(
 # The seam: what the picker EMITS must be what the server PARSES
 # ---------------------------------------------------------------------------
 #
-# tests/test_multichain_targets.py:234-237 records why this matters: every
-# earlier test checked one side of a seam — the adapter emits "A,B" (true) and
-# the shared parsers accept "A B" (also true) — and nothing asserted that the
-# emitted form is an accepted form. The picker is the same shape of seam, one
-# layer further out: it writes the string the browser posts.
+# tests/test_multichain_targets.py's "The seam" note records why this matters:
+# every earlier test checked one side of a seam — the adapter emits "A,B" (true)
+# and the shared parsers accept "A B" (also true) — and nothing asserted that
+# the emitted form is an accepted form. The picker is the same shape of seam,
+# one layer further out: it writes the string the browser posts.
 
 @needs_node
 @pytest.mark.parametrize("slug", CHAIN_PREFIXED_FORMS)

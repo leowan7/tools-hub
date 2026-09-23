@@ -169,7 +169,7 @@ def _resolve_preset(tool: str, form) -> str:  # noqa: ANN001
     That is not defensive dressing: the launch form renders no preset control
     for those tools at all, and bindcraft's validator has no internal default
     -- it reads ``(form.get("preset") or "").strip()`` and rejects anything
-    that is not exactly "pilot" (``tools/bindcraft/__init__.py:25-27``).
+    that is not exactly "pilot" (``tools/bindcraft/__init__.py::validate``).
     Deriving it here is what makes bindcraft launchable from this screen, and
     it closes the same hole for any future adapter that omits a default. The
     single-tool create route had the same gap and returned 400 on every
@@ -718,8 +718,8 @@ def target_detail(target_id):
 
 # The ZIP pulls every PDB's bytes into the web process, so it stays capped
 # while CSV and FASTA do not. Mirrors _CAMPAIGN_ZIP_EXPORT_LIMIT
-# (blueprints/campaigns.py:659); a target pools MORE tools than a campaign, so
-# if anything the bound matters more here.
+# (blueprints/campaigns.py::_CAMPAIGN_ZIP_EXPORT_LIMIT); a target pools MORE
+# tools than a campaign, so if anything the bound matters more here.
 _TARGET_ZIP_EXPORT_LIMIT = 300
 
 
@@ -933,6 +933,13 @@ def _target_export(target_id: str, fmt: str):
             },
         )
     if fmt == "fasta":
+        # NO SCALAR tool/preset, deliberately: these rows are merged across
+        # every run on the target, so any single pair would be wrong for every
+        # row that came from a different tool or mode -- and a target with two
+        # tools on it is the ordinary case this page exists for. Each row
+        # carries its own ``_source_tool`` / ``_source_preset`` (the latter
+        # holding the run's MODE for a moded tool) and
+        # ``shared.exports._bar_scope`` reads them per record.
         body = candidates_to_fasta(candidates)
         if not body:
             # "No sequences found" is a claim about the target. Under `partial`

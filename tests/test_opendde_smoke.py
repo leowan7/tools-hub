@@ -41,6 +41,8 @@ from tools import opendde as odde
 from tools.base import get as get_adapter
 from tools.opendde import run_pipeline as rp
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
 

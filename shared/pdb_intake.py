@@ -266,7 +266,7 @@ def preflight_target_segments(source) -> Optional[list]:
     The raw string is parsed by the ADAPTER'S OWN parser via a lazy import, not
     by a second copy living here. A duplicate regex would drift, and the half
     that drifts is whichever one is not the money gate. ``shared`` already
-    reaches into ``tools`` this way (compute_campaigns.py:1616).
+    reaches into ``tools`` this way (compute_campaigns.py::_ensure_adapters).
 
     Returns None when nothing was declared, which the size envelope reads as
     the whole-chain default — the conservative direction, since counting whole

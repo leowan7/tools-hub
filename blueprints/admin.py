@@ -655,6 +655,7 @@ def admin_campaign_save_results(campaign_id: str):
         get_campaign,
         set_campaign_results,
     )
+    from shared.jobs import is_candidate_array  # noqa: PLC0415
     from shared.storage import StorageError, upload_campaign_result  # noqa: PLC0415
 
     email = session.get("user_email", "")
@@ -702,7 +703,13 @@ def admin_campaign_save_results(campaign_id: str):
             )
         if isinstance(parsed.get("rounds"), list):
             envelope["rounds"] = parsed["rounds"]
-        if isinstance(parsed.get("sequences"), list):
+        # ``is_candidate_array`` is the one shape answer for a per-record
+        # array, so this reader routes through it too. INERT HERE, and named
+        # as such rather than sold as a fix: ``parsed`` comes from
+        # ``_json.loads`` two blocks up, and JSON has no tuple, so the widened
+        # shape can never arrive on this path. ``rounds`` above is
+        # deliberately left alone -- a YDS round is not a per-record array.
+        if is_candidate_array(parsed.get("sequences")):
             envelope["sequences"] = parsed["sequences"]
         if isinstance(parsed.get("downloads"), dict):
             envelope["downloads"] = parsed["downloads"]

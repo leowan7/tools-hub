@@ -28,7 +28,7 @@
 
 {% set output            = job.result or {} %}
 {% set preset            = output.get('tier') or output.get('preset') %}
-{% set raw_designs       = output.get('designs', []) %}
+{% set raw_designs       = display_rows(output.get('designs')) %}
 {% set tier              = output.get('tier') %}
 {% set runtime_seconds   = output.get('runtime_seconds') %}
 {% set sample            = output.get('sample') %}
@@ -59,7 +59,7 @@
       },
   }) %}
 {% endfor %}
-{% set candidates = candidates | sort(attribute='rank') %}
+{% set candidates = candidates | sort_by_number('rank') %}
 
 {# Only show confidence columns that OpenDDE actually populated this run. #}
 {% set columns = ['ranking_score']

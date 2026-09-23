@@ -27,6 +27,14 @@
    are actually given beats threading a second one through thirteen
    callers. tests/test_worked_examples.py re-derives this rather than
    trusting it. #}
+{# EVERY caller's rows land here, so this is where they are made safe.
+   Five tools pass result['candidates'] straight through and the rest
+   reshape it first; a row that is not a dict 500s the page at the first
+   `.get` either way. display_rows coerces such a row to {} -- same
+   length, same order, so `_source_index` and the shortlist's lab handoff
+   still line up -- and the header above still counts it, because it is
+   still rendered. #}
+{% set candidates = display_rows(candidates) %}
 {% set is_example = (job_id == 'example') %}
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">

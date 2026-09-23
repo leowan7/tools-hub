@@ -97,10 +97,10 @@ class Legend(TypedDict):
     # "the binder-to-target interface", uncaveated, for a job submitted before
     # the deploy that made that true.
     #
-    # What is real is the LENGTH: ``explanation`` is a one-line slot for 32
-    # legends, and 380 characters of era note in it would be wrong on the 31
-    # that do not need one. So the split stays and the email opts in per job —
-    # see ``email_caption``.
+    # What is real is the LENGTH: ``explanation`` is a one-line slot every
+    # legend shares, and an era note long enough to overrun that line would
+    # be wrong in it on every legend that does not need one. So the split
+    # stays and the email opts in per job — see ``email_caption``.
     caveat: NotRequired[str]
 
     # WHEN does ``caveat`` apply -- as an instant, for a caveat whose
@@ -617,8 +617,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         #
         # IT GOES IN ``caveat``, NOT IN ``explanation``, AND THE REASON IS
         # LENGTH AND SCOPE — NOT THAT THE EMAIL IS SAFE FROM IT. Written into
-        # ``explanation`` it took the string from 161 characters (the longest
-        # of the other 31 legends) to 496, shared/email.py hands ``explanation``
+        # ``explanation`` it took the string from 161 characters (as it then
+        # stood) to 496, shared/email.py hands ``explanation``
         # to the job-completion email, and every BoltzGen completion mail then
         # said "treat the order of the table as indicative" — in a message that
         # shows ONE number for ONE design and contains no table — including on
@@ -763,13 +763,14 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
     # ── ESMFold2-design (gradient design + critic re-score) ──────────
     # HYPHEN, NOT UNDERSCORE. The registered slug is "esmfold2-design"
-    # (tools/esmfold2_design/__init__.py:240) even though the package
+    # (tools/esmfold2_design/__init__.py::adapter) even though the package
     # directory is esmfold2_design, and this entry shipped keyed on the
     # directory name. Nothing raised: an unknown tool simply has no legend and
     # no bar, so the feature was inert for this tool while its own test passed
-    # over the dead key. shared/tool_meta.py:4 records the same trap costing a
-    # PILOT card that silently did not render. tests/test_derived_verdicts.py
-    # now asserts every tool key here is in tools.base._REGISTRY.
+    # over the dead key. shared/tool_meta.py's module docstring records the same
+    # trap: a PILOT card that silently did not render.
+    # tests/test_derived_verdicts.py now asserts every tool key here is in
+    # tools.base._REGISTRY.
     #
     # A GATE LEG IN MINIBINDER MODE ONLY, via MODE_GATE_COLUMNS; it was a
     # tooltip and nothing else until then. esmfold2-design still declares no
@@ -867,52 +868,166 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "insoluble, non-specific scaffold."
         ),
     },
-    # THERE IS DELIBERATELY NO ("esmfold2-design", "iPTM_proxy") ENTRY, AND AN
-    # scFv GATE LEG WAS REMOVED WITH IT. Both were added by the change that
-    # introduced MODE_GATE_COLUMNS and both were wrong, for a reason worth
-    # keeping so the next author does not re-add them.
+    # ("esmfold2-design", "CDR_iPTM_proxy") IS THE scFv HALF OF THAT BAR, and
+    # it exists because the COLUMN was split, not because this map learned
+    # about modes. An ("esmfold2-design", "iPTM_proxy") entry and an scFv gate
+    # leg were added here once, removed in review, and are now back under a
+    # different column name; the reason for each step is worth keeping,
+    # because the wrong half of it is the tempting one to repeat.
     #
-    # THE BAR CAN BE MODE-SCOPED; A LEGEND CANNOT. MODE_GATE_COLUMNS is keyed
-    # on (tool, mode), but SCORE_LEGENDS is keyed on (tool, column) and
-    # ``score_legends_for(tool)`` hands the whole set out with no mode in
-    # sight. Two surfaces read it that way:
+    # WHY THE OLD COLUMN COULD NOT CARRY A LEGEND. Until 2026-09-14 the
+    # pipeline emitted both proxies under one key, ``iPTM_proxy``: the
+    # CDR-restricted one on scFv runs and the all-pairs one on minibinder
+    # runs. This map is keyed on (tool, column) with no mode in it, and
+    # ``score_legends_for(tool)`` hands the whole set out mode-blind to two
+    # readers -- components/candidate_table.html, which renders ``legend_text``
+    # as that column's tooltip, and shared/email.py::_top_candidate_summary,
+    # which picks the first scored column that HAS a legend. So one
+    # explanation string had to be true of two different quantities. It could
+    # not be; the column therefore carried no legend; and a gate leg with no
+    # legend is answered ``unmeasured`` by :func:`judge` (its ``legend is
+    # None`` branch). A bar may be mode-scoped. A legend may not.
     #
-    #   * components/candidate_table.html renders ``legend_text`` as the
-    #     column's tooltip on the tool's OWN results page, which lists
-    #     iPTM_proxy in BOTH modes.
-    #   * shared/email.py::_top_candidate_summary picks the first scored
-    #     column that HAS a legend, so adding one put this column one numeric
-    #     reading away from being the completion mail's whole caption. It
-    #     never actually fired -- that chooser also requires a number, and the
-    #     proxy was blank in every production run -- so this half is a hazard
-    #     that was closed, not a bug that shipped. The results-page tooltip
-    #     below IS the one that shipped.
+    # WHAT CHANGED IS THE PAYLOAD, NOT THIS FILE'S KEYING.
+    # tools/esmfold2_design/run_pipeline.py picks the KEY by mode
+    # (``"CDR_iPTM_proxy" if is_antibody else "iPTM_proxy"``), so each name
+    # holds exactly one quantity on every row that has it and the sentence
+    # below is about the CDR quantity alone. It is displayed only where that
+    # quantity is: templates/tools/esmfold2_design_results.html lists this
+    # column in its antibody branch only, and on a minibinder run the key is
+    # absent from ``scores`` entirely, which is also what keeps it out of
+    # _top_candidate_summary's chooser on those runs.
     #
-    # A legend saying "CDR distogram proxy from the scFv critic, 0.50 or more
-    # is the strict-pass bar" is therefore displayed on minibinder runs, where
-    # the column holds ``distogram_iptm_proxy`` -- a DIFFERENT quantity -- and
-    # where _classify gates on iptm and pI only, never on this. Two false
-    # sentences, to a customer, on the page the change cited as its sibling.
-    # No wording fixes that: one string cannot be true of two quantities.
+    # THE BAR IS THE PIPELINE'S OWN STRICT_CDR_IPTM_PROXY, mirrored into
+    # tests/test_derived_verdicts.py::CONTAINER_GATES the same way every other
+    # leg is -- which closes the gap the note above MODE_GATE_COLUMNS used to
+    # record as a gap. NO ``excellent`` BAND: the 8-seed PD-L1 calibration
+    # sweep in run_pipeline.py's module TODO has not run, so there is no
+    # second band to state. ``good`` invents nothing either -- it is the
+    # number _classify has gated antibody designs on since the mode existed.
+    ("esmfold2-design", "CDR_iPTM_proxy"): {
+        "good": 0.50,
+        "direction": "higher_is_better",
+        # "0.50 OR MORE", not "above 0.50": _classify gates on ``>=`` and
+        # judge() is inclusive at exactly the bar. Same slip #241 fixed
+        # elsewhere; written correctly here the first time.
+        "explanation": (
+            "Distogram ipTM proxy over CDR-to-target pairs from the ESMFold2 "
+            "critic: how sure the model is about where it puts the CDRs. "
+            "0.50 or more is the antibody bar. Not a second reading of ipTM, "
+            "which scores the interface."
+        ),
+    },
+
+    # ── Proteina (guided diffusion + AF2 or RF3 reward) ──────────────
     #
-    # THE LEGEND ARGUMENT ABOVE IS THE WHOLE REASON, and it is enough on its
-    # own. An earlier draft of this note propped it up with two further claims
-    # that are false, recorded here so they are not resurrected:
+    # ONE ENTRY FOR FIVE COLUMNS, AND THE FOUR OMISSIONS ARE THE POINT.
+    # proteina DOES reach the completion mail's caption chooser --
+    # ``shared/email.py::_top_candidate_summary`` admits it because it stores a
+    # ranked ``candidates[]`` -- so with no legend at all that mail printed a
+    # bare number under a blank caption. The fix is one column, not five.
     #
-    #   * "the proxy is informative only, never calibrated". That is the
-    #     results page's copy about the MINIBINDER proxy. run_pipeline's
-    #     _classify gates the scFv branch on cdr_distogram_iptm_proxy at
-    #     STRICT_CDR_IPTM_PROXY, so the tool does judge an antibody on it.
-    #   * "blank through all 13 production drops -- the scaling-critic rows it
-    #     was read from are gone". The 13 drops are #243's own figure and are
-    #     historical: since #242 the proxy is sourced off the hero critic, and
-    #     a stock scFv run DOES populate it.
+    # THREE OF THE FIVE CARRY A DIFFERENT QUANTITY PER PRESET, and this map is
+    # keyed on (tool, column) with no preset in it. That is the wall the
+    # esmfold2-design note above records ``iPTM_proxy`` hitting before its
+    # column was split, and it states the rule this rests on: a bar may be
+    # mode-scoped, a legend may not. The way out taken there was to split
+    # the upstream column so each name carries one quantity. proteina has
+    # not done that: ``_SCORE_COLUMNS`` in tools/proteina/run_pipeline.py
+    # maps each display key onto whichever upstream column exists, and the
+    # variants write different ones:
     #
-    # So the leg was not free to remove for want of data; it was removed
-    # because SCORE_LEGENDS cannot express a per-mode meaning and the legend
-    # is what the customer reads. scFv runs have NO bar here, which is what
-    # they had before. Restoring the leg means giving the mode a column whose
-    # meaning does not change with it, or teaching the legend map about modes.
+    #   * ``total_reward`` is recorded as ``-i_pae`` on protein_binder and as
+    #     an RF3-derived reward on ligand_binder -- inherited from the
+    #     ``_SCORE_COLUMNS`` header in tools/proteina/run_pipeline.py, not
+    #     re-derived here. What IS pinned is the consequence: the two fixtures
+    #     in tests/test_proteina_smoke.py::TestRewardParse do not even share a
+    #     SIGN -- -0.45 in ``test_parse_and_rank``, +0.87 in
+    #     ``test_ligand_columns_map`` -- and shared/result_columns.py sorts
+    #     both ``desc`` under the one key. Its SCALE is open on top of that:
+    #     the glossary entry named below illustrates the protein reading as
+    #     "-6 means an i_pAE of 6 A", while every value in the one captured
+    #     shard committed here (tools/proteina/example/result.json, 64
+    #     designs) lies between -0.96 and -0.18. A one-line slot cannot state
+    #     a scale this file cannot settle.
+    #   * ``af2_iptm`` is AF2's ``af2folding_i_ptm_log`` on protein_binder and
+    #     RF3's ``rf3folding_ipTM``, against a SMALL MOLECULE, on
+    #     ligand_binder. Its multi-chain reading is separately open -- see the
+    #     note above MULTICHAIN_IPTM_UNRELIABLE_TOOLS, which leaves proteina
+    #     out and says why.
+    #   * ``af2_plddt`` reads ``af2folding_plddt_log`` on protein_binder; its
+    #     ligand source ``rf3folding_plddt`` is marked UNVERIFIED in
+    #     ``_SCORE_COLUMNS`` itself. It is also the column whose polarity was
+    #     inverted once already -- ``_SCORE_COLUMNS`` records that it read the
+    #     AfDesign LOSS term -- and tools/proteina/meta.py's own
+    #     ``how_to_read_it`` tells the customer to read ``binder_scrmsd``
+    #     before trusting it.
+    #
+    # All three scoring presets are selectable on the form (``presets=`` in
+    # tools/proteina/__init__.py), so the split is live, not latent.
+    # ONLY ``total_reward`` HAS ANYWHERE TO FALL BACK TO, and an earlier draft
+    # of this note said all three did. shared/metric_glossary.py carries an
+    # entry for it that STATES the split, in the room a glossary has and a
+    # one-line slot does not. ``af2_iptm`` and ``af2_plddt`` are in neither
+    # map, so nothing sources a tooltip for their column heads: the head in
+    # candidate_table.html reads exactly those two. That is still right: the
+    # alternative on offer is one sentence that is false under one of the two
+    # presets.
+    #
+    # ``rf3_score`` is not preset-split -- it resolves on the RF3 variants
+    # only -- and is omitted for want of a source: what
+    # ``rf3folding_ranking_score`` aggregates has not been traced, and
+    # the repo tracks no reward CSV at all -- TestRewardParse builds its own
+    # inline and calls it synthetic -- so the only artifact naming it is
+    # hand-written.
+    #
+    # NO ``good``/``excellent`` ON THE ONE ENTRY EITHER, for the reason the
+    # Legend TypedDict gives. proteina declares no GATE_COLUMNS entry, so
+    # nothing here judges a proteina design against a bar. The nearest thing
+    # to one is ``REFOLD_CUT_A = 5.0`` in tools/proteina/export_campaign.py,
+    # and -- unlike ``SELF_COPY_FRACTION`` in that same file, which carries a
+    # measured justification -- it carries none at all; it is one export
+    # script's filter. Promoting it would be the boltzgen ipTM mistake
+    # exactly: a number from somewhere else, kept in a field named ``good``.
+    #
+    # WHAT THE ONE EXPLANATION RESTS ON. Two shipped, customer-facing sources
+    # say the same thing: export_campaign.py's "## Filters" paragraph ("AF2 is
+    # given the designed sequence alone and its prediction is compared to the
+    # designed pose") and meta.py's ``how_to_read_it`` ("the generator's
+    # backbone compared against an independent re-fold of its own sequence").
+    # The fixture then discriminates between that reading and the obvious
+    # alternative, an RMSD against the TARGET. In
+    # tools/proteina/example/result.json the designs that refold past 30 A sit
+    # at af2_iptm 0.0861 to 0.1543, against a 0.727 median for the rest --
+    # measured over that file, whose ranges are a property of one captured
+    # shard. meta.py identifies twelve of that signature as the generator
+    # handing back verbatim stretches of the target's own sequence, quoting
+    # "af2_iptm 0.086-0.098 and binder_scrmsd 32-44 A" for them. A verbatim
+    # copy refolds into the TARGET's shape, so an RMSD measured against the
+    # target would put exactly those rows near zero. They are the farthest
+    # rows in the table instead, which is what a SELF-consistency RMSD does.
+    #
+    # A LIGAND RUN IS UNAFFECTED: ``test_ligand_columns_map`` asserts the
+    # ligand header yields ``binder_scrmsd is None``, and the caption chooser
+    # skips a non-numeric score.
+    #
+    # THIS BECOMES THE MAIL'S HEADLINE NUMBER, and that is deliberate rather
+    # than incidental. The chooser takes the first scored column that HAS a
+    # legend, in stored order, and Postgres orders jsonb keys by (length,
+    # bytewise) -- which puts ``af2_iptm`` first and ``binder_scrmsd`` last.
+    # So registering this one and nothing else moves the mail off the column
+    # this file has filed as open and onto the one the tool's own page tells
+    # the customer to read first. The explanation says what the number is NOT
+    # for the same reason: standing alone under a headline, a refold distance
+    # would read as a claim about binding.
+    ("proteina", "binder_scrmsd"): {
+        "direction": "lower_is_better",
+        "explanation": (
+            "Self-consistency RMSD in angstroms: how far an AlphaFold2 "
+            "refold of the design's sequence alone lands from the backbone "
+            "the generator drew. A shape check, not evidence that it binds."
+        ),
+    },
 
     ("iggm", "epitope_contacts"): {
         "good": 3,
@@ -1258,11 +1373,23 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # a stopgap.
 #
 # bindcraft is included even though multi_chain_container_ready=False blocks
-# the tool-form path, because the campaign and target-launch routes may not
-# call preflight_for_tool at all (an open item in
-# docs/HANDOFF-2026-08-07-multichain-finish.md). The notice is non-blocking,
-# so a false positive costs a sentence and a false negative costs trust in a
-# number.
+# it. When this set was written that block reached the tool-form path only,
+# because POST /campaigns and POST /targets/<id>/launch funded and drove runs
+# without calling preflight_for_tool. They still do not call it, but the
+# capability half was since extracted into
+# shared/pdb_preflight.py::multi_chain_refusal and wired into both
+# (blueprints/campaigns.py::compute_campaign_create and
+# blueprints/targets.py::_collect_launch_specs, reached from
+# blueprints/targets.py::target_launch_submit), and it shares
+# shared/pdb_preflight.py::_multi_chain_block with the submit gate — so all
+# THREE of those routes refuse a two-chain bindcraft run today. Those three
+# are the ones checked; the refold paths
+# (blueprints/campaigns.py::compute_campaign_refold and
+# blueprints/jobs.py::job_refold) were not, so read this as three routes
+# closed and not as a claim about every surface.
+# Membership is kept as belt-and-braces rather than as cover for a live
+# hole: the notice is non-blocking, so a false positive costs a sentence and
+# a false negative costs trust in a number.
 #
 # PROTEINA IS DELIBERATELY ABSENT, and it is the exclusion worth arguing,
 # because proteina is the only tool that has actually run a multi-chain target
@@ -1408,13 +1535,13 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
     # esmfold2-design is ABSENT, and that is a decision rather than the
     # oversight it looks like. Its bar is genuinely mode-dependent: the
     # pipeline's own classifier judges an scFv on the CDR distogram proxy
-    # alone, and a minibinder on ipTM AND pI < 6, since an undisplayable
+    # AND ipTM, and a minibinder on ipTM AND pI < 6, since an undisplayable
     # scaffold is a drop however well it folds. Neither can join a uniform
     # conjunction. pI is null by construction in scFv mode, so a pI leg leaves
-    # every antibody design permanently unjudged; the proxy column holds a
-    # DIFFERENT quantity in each mode and has a defensible bar in only one; and
-    # picking between them from whichever columns happen to be populated is
-    # defect 3 wearing a new name.
+    # every antibody design permanently unjudged; the CDR proxy is absent by
+    # construction on a minibinder run and would leave every minibinder design
+    # unjudged in the same way; and picking between them from whichever columns
+    # happen to be populated is defect 3 wearing a new name.
     #
     # An ipTM-only bar was tried and is worse than nothing here. This tool's
     # worked example exists to teach that its HIGHEST-ipTM design (0.956) was
@@ -1439,11 +1566,17 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 
 
 # The bar for a tool whose gate is a property of the RUN's mode, not of the
-# tool. ``{tool: {mode: gate columns}}``, and it is consulted only when a
-# caller supplies the mode -- ``gate_columns(tool)`` with no preset returns
-# empty for a tool keyed here, which is what keeps ``tool_has_bar`` and every
-# unmoded consumer (the campaign counts, the target ranking table,
-# shared/ranking) reading exactly what they read before this map existed.
+# tool. ``{tool: {mode: gate columns}}``, consulted only when a caller
+# supplies the mode -- ``gate_columns(tool)`` with no preset returns empty for
+# a tool keyed here, so a caller with no run in hand still reads no bar.
+#
+# THE CONSUMERS THIS COMMENT ONCE LISTED AS UNCHANGED NOW SUPPLY A MODE. It
+# read "which is what keeps ``tool_has_bar`` and every unmoded consumer (the
+# campaign counts, the target ranking table, shared/ranking) reading exactly
+# what they read before this map existed". True when written, false now: the
+# counts and the ranking table resolve the run's mode through
+# :func:`resolve_mode` and pass it. ``tool_has_bar(tool)`` with no argument is
+# still False, which is the property that sentence was really about.
 #
 # WHY NOT JUST PUT IT IN GATE_COLUMNS. Each of the three objections in the
 # note above is an objection to a UNIFORM conjunction and none of them is an
@@ -1452,29 +1585,66 @@ GATE_COLUMNS: dict[str, tuple[str, ...]] = {
 #   * pI is null by construction on an scFv run, so as a tool-wide leg it
 #     leaves every antibody design permanently unjudged. Here it is a
 #     minibinder leg and an scFv design is never measured against it.
-#   * iPTM_proxy holds a different quantity in each mode and has a defensible
-#     bar in only one. It is not a leg here AT ALL, for a stronger reason
-#     found in review: a mode-scoped BAR cannot carry a mode-scoped LEGEND,
-#     and the legend is what reaches the customer. See SCORE_LEGENDS.
+#   * The proxy held a different quantity in each mode and had a defensible
+#     bar in only one, so as a tool-wide leg it could carry no legend. That is
+#     a fact about the COLUMN and it was fixed there: run_pipeline now names
+#     the two proxies apart, and the scFv one is a leg below. As a tool-wide
+#     leg it would still be wrong -- it is absent by construction on a
+#     minibinder run. See SCORE_LEGENDS.
 #   * Picking between them from whichever columns happen to be populated is
 #     the original defect wearing a new name. Nothing here reads a populated
 #     column: the mode comes from ``result_mode``, off ``is_antibody``.
 #
-# The legs are the pipeline's own _classify, whose STRICT_IPTM and STRICT_PI
-# are checked against these legends by tests/test_derived_verdicts.py the same
-# way every GATE_COLUMNS leg is. STRICT_CDR_IPTM_PROXY is NOT mirrored here --
-# nothing gates on that column any more, so nothing holds it to the pipeline.
-# ORDER IS THE BAR'S READING ORDER, and pI leads deliberately: it is a hard
-# gate in the pipeline, checked before the iPTM bands, so a shortfall sentence
-# that names it first says what the pipeline decided first.
+# The legs are the pipeline's own _classify, and STRICT_IPTM, STRICT_PI and
+# STRICT_CDR_IPTM_PROXY are each checked against these legends by
+# tests/test_derived_verdicts.py the same way every GATE_COLUMNS leg is. The
+# CDR constant was NOT mirrored there while the scFv mode had no entry here,
+# which this note recorded as a gap in the drift guard; the entry below closes
+# it.
+# ORDER IS THE BAR'S READING ORDER. pI leads the minibinder gate because it is
+# a hard gate in the pipeline, checked before the iPTM bands, and the CDR proxy
+# leads the scFv one for the same reason -- so a shortfall sentence names what
+# the pipeline decided first.
 MODE_GATE_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
     "esmfold2-design": {
         "minibinder": ("pI", "ipTM"),
-        # NO "scfv" ENTRY. An iPTM_proxy leg was here and was removed; see the
-        # block where its legend would be, in SCORE_LEGENDS above, for why a
-        # mode-scoped BAR cannot carry a mode-scoped LEGEND and why gating on
-        # that column bought nothing. A mode absent here resolves to no bar,
-        # which is the same answer the tool gave before this map existed.
+        # "scfv" IS THE WHOLE CONJUNCTION _classify APPLIES TO AN ANTIBODY,
+        # in its reading order: the CDR proxy is the antibody-side
+        # precondition and run_pipeline._classify checks it first, a design
+        # failing it being a drop at any ipTM.
+        #
+        # AN scFv ENTRY WAS REFUSED TWICE BEFORE AND BOTH REFUSALS WERE OF
+        # SOMETHING ELSE. The first was an ``iPTM_proxy`` leg, withdrawn
+        # because that column held a different quantity in each mode and could
+        # therefore carry no legend. The second was ``("ipTM",)`` alone,
+        # refused because a SUBSET of the gate can only err permissively --
+        # print "meets" on a design the pipeline drops for a low proxy -- and
+        # this is the panel that offers a sequence for synthesis. Neither
+        # objection reaches this entry. The column split (see the
+        # CDR_iPTM_proxy legend in SCORE_LEGENDS above) gives the CDR quantity
+        # a name that means one thing and so a legend that can be true
+        # wherever it renders, and with that leg present this is the full
+        # conjunction rather than a subset of it.
+        #
+        # WHAT MADE "NO ENTRY" STOP BEING THE CONSERVATIVE ANSWER. While the
+        # leg was withdrawn, a mode with no entry cost one surface: this
+        # tool's own results page, which derives the tier itself. #266 then
+        # wired ``resolve_mode`` into the others -- the share card
+        # (blueprints/jobs.py::_top_score_for_share), /jobs/compare, the FASTA
+        # export, the campaign and target counts
+        # (shared/jobs.py::count_candidates_meeting_bar) and the target
+        # ranking table (shared/target_results.py). For a mode with no entry
+        # ``tool_has_bar`` is False there, and that function's no-bar branch
+        # returns ``len(records)`` -- EVERY delivered design counted a keeper.
+        # No entry became strictly more permissive than the ipTM-only entry
+        # that was refused for being permissive, on a public share card.
+        #
+        # AS CALIBRATED AS THE PIPELINE IS AND NO MORE. Both numbers are
+        # _classify's own; the 8-seed PD-L1 sweep named in run_pipeline.py's
+        # module TODO still has not run. This entry does not settle what the
+        # proxy bar should be. It stops six surfaces answering, with no bar, a
+        # question the pipeline already answers.
+        "scfv": ("CDR_iPTM_proxy", "ipTM"),
     },
 }
 
@@ -1510,6 +1680,40 @@ def result_mode(result: object) -> Optional[str]:
     if not isinstance(flag, bool):
         return None
     return "scfv" if flag else "minibinder"
+
+
+def resolve_mode(
+    tool: str, result: object, preset: Optional[str] = None
+) -> Optional[str]:
+    """The mode to judge one RUN under: the RESULT first, the preset second.
+
+    THE ORDER IS THE WHOLE POINT and it is written down once, here, because
+    every consumer needs it and reversing it is silent. A job's stored preset
+    can be a default string while the result records what the run actually
+    did, so ``result_mode`` leads and ``preset`` is the fallback -- the same
+    order ``templates/tools/esmfold2_design_results.html`` resolves
+    ``is_antibody`` in (``output.get('is_antibody', preset == 'scfv')``).
+    ``blueprints/jobs.py::jobs_compare`` wrote it inline first; this is that
+    expression with one guard added.
+
+    THE GUARD: for a tool NOT in :data:`MODE_GATE_COLUMNS` this returns
+    ``preset`` untouched and never reads the result at all. ``result_mode`` is
+    tool-blind by design -- it reads an ``is_antibody`` key off any dict it is
+    handed -- and one consumer uses the answer as a COHORT KEY
+    (``shared.target_results._candidate_rows`` stamps it as
+    ``_source_preset``, which ``shared.ranking.cohort_key_for`` reads). A tool
+    that starts writing that key for its own reasons would split its own
+    percentile denominator in half with nothing raising. Only esmfold2-design
+    writes ``is_antibody`` today; the guard is what keeps that a fact about
+    the present rather than a dependency.
+
+    Passing the answer to a tool keyed in ``GATE_COLUMNS`` changes nothing
+    either way -- ``gate_columns`` ignores ``preset`` for those -- so callers
+    do not branch on the tool before calling this.
+    """
+    if (tool or "") not in MODE_GATE_COLUMNS:
+        return preset
+    return result_mode(result) or preset
 
 
 # Values that are a placeholder rather than a measurement, per (tool, column).
@@ -1594,12 +1798,45 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     # evaporates on one of the two shapes its own tool writes is worse than no
     # leg. One quantity, two spellings, same as ipAE below.
     #
-    # THE PROXY IS NOT ALIASED HERE AND MUST NOT BE. Its ``designs[]``
-    # spellings are ``cdr_distogram_iptm_proxy`` and ``distogram_iptm_proxy``,
-    # which are two DIFFERENT quantities chosen by the run's mode; an alias
-    # list is mode-blind, so it would let a minibinder reading answer an scFv
-    # bar. That column no longer gates anything anyway -- see SCORE_LEGENDS.
+    # ``iPTM_proxy`` IS NOT ALIASED AND MUST NOT BE. It is the MINIBINDER
+    # proxy's column, and its ``designs[]`` spelling
+    # (``distogram_iptm_proxy``) is one quantity while the scFv column's
+    # (``cdr_distogram_iptm_proxy``) is another. Listing both under one key is
+    # what the 2026-09-14 column split undid; re-adding it here would put it
+    # back where nothing can see the mode.
     "pI": ("pI", "isoelectric_point"),
+    # THE THIRD SPELLING BELOW IS A LEGACY ONE AND IT IS MODE-BLIND, so this
+    # entry is safe only while nothing asks for ``CDR_iPTM_proxy`` on a
+    # minibinder row. The first two spellings are unambiguous -- both name the
+    # CDR quantity on every shape that stores it, the ``candidates[]`` view
+    # and the ``designs[]`` rows. ``iPTM_proxy`` is not: on a run from before
+    # the column split (and from the deployed GPU image until it is rebuilt)
+    # an scFv row carries its CDR proxy under that name, while a minibinder
+    # row carries the all-pairs proxy under it. Reached only under the scFv
+    # bar, it resolves the CDR quantity; reached under a minibinder one it
+    # would answer with a different measurement.
+    #
+    # WHAT KEEPS IT CONTAINED, and it is a convention rather than a mechanism:
+    # ``CDR_iPTM_proxy`` is asked for only in scFv contexts.
+    # MODE_GATE_COLUMNS lists it under "scfv" alone, so :func:`judge` resolves
+    # it only when the run's mode is scFv, and
+    # templates/tools/esmfold2_design_results.html lists it in its antibody
+    # branch alone, which is the only column list ``raw_metric`` sees it
+    # through. It is deliberately NOT in jobs_compare.html's
+    # ``priority_keys``, whose shared-metric rule asks only whether every job
+    # has a NUMBER and would place an scFv row beside a minibinder one.
+    # tests/test_esmfold2_design_scfv_iptm_leg.py pins those three.
+    #
+    # WITHOUT THE LEGACY SPELLING the leg evaporates on every scFv run already
+    # delivered -- its ``candidates[]`` rows hold neither of the first two
+    # names -- so ``judge`` answers ``unjudged`` and
+    # shared/jobs.count_candidates_meeting_bar counts those designs as not
+    # meeting the bar, taking every past scFv run's keeper total to zero. That
+    # is the same failure the ``isoelectric_point`` spelling above exists to
+    # prevent, on the other one of this tool's two shapes.
+    "CDR_iPTM_proxy": (
+        "CDR_iPTM_proxy", "cdr_distogram_iptm_proxy", "iPTM_proxy",
+    ),
 }
 
 
@@ -1664,7 +1901,7 @@ def _fmt(value: float) -> str:
 _UNIT_PARENTHETICALS = ("\u00c5", "A", "kcal/mol", "%")
 
 
-def _label_and_unit(column: str) -> tuple[str, str]:
+def label_and_unit(column: str) -> tuple[str, str]:
     """Split a glossary label into its name and its trailing unit.
 
     The glossary labels a column for a TABLE HEADER, where a unit belongs in a
@@ -1713,7 +1950,7 @@ def _reading(column: str, value: float) -> str:
     printed "0.75" and the cell read "ipTM 0.75, below 0.75" -- a sentence
     that refutes itself and leaves a reader nothing to check.
     """
-    label, unit = _label_and_unit(column)
+    label, unit = label_and_unit(column)
     return f"{label} {_metric_glossary.format_value(column, value)}{unit}"
 
 
@@ -1724,7 +1961,7 @@ def _bar_reading(column: str, good: float) -> str:
     bar is an exact chosen number and 1.5 is how it was chosen. Rendering it
     "1.50" would dress a decision up as a measurement.
     """
-    label, unit = _label_and_unit(column)
+    label, unit = label_and_unit(column)
     return f"{label} {_fmt(good)}{unit}"
 
 
@@ -1734,13 +1971,13 @@ def _join_bar(tool: str, columns) -> str:
         _bar_reading(col, float(get_legend(tool, col)["good"]))
         for col in columns
         # Not ``is not None``: a legend can exist and state no bar, and the
-        # index above would raise on it. Two legends are like that --
-        # boltzgen's ipTM and bindcraft's surface_hydrophobicity -- and both
-        # already reached the index under their declared spelling. The case
-        # fold widens that to any casing; of the OTHER casings, ``iptm`` is
-        # the only one used anywhere as a column key. No caller reaches
-        # either: all 15 gate columns resolve to a legend carrying ``good``. A
-        # guard, not a fix for a live crash.
+        # index above would raise on it. Some legends are like that -- the set
+        # is pinned by test_the_barless_legends_are_the_ones_declared_here in
+        # tests/test_boltzgen_iptm_has_no_cofold_bar.py -- and each already
+        # reached the index under its declared spelling. The case fold widens
+        # that to any casing; of the OTHER casings, ``iptm`` is the only one
+        # used anywhere as a column key. No caller reaches any of them: every
+        # gate leg carries ``good``, per test_every_gate_column_has_a_legend.
         if "good" in (get_legend(tool, col) or {})
     ]
     if not parts:
@@ -1779,10 +2016,22 @@ def tool_has_bar(tool: str, preset: Optional[str] = None) -> bool:
     any row carried a ``filter_status``, which made it depend on which
     container version ran and on whether job recovery had rebuilt the row.
 
-    A moded tool answers False without a ``preset`` and True with one. Callers
-    that count designs across a whole campaign deliberately do not pass one:
-    "N of M meet the bar" over a mixed cohort would be summing two different
-    bars.
+    A moded tool answers False without a ``preset`` and True with one.
+
+    THE COUNTERS DO PASS ONE NOW, and this docstring used to say the opposite
+    -- "callers that count designs across a whole campaign deliberately do not
+    pass one: 'N of M meet the bar' over a mixed cohort would be summing two
+    different bars". The objection was to resolving ONE mode for a whole
+    cohort, which nothing does. ``shared.jobs.count_candidates_meeting_bar``
+    resolves the mode PER RUN, from that run's own result
+    (:func:`resolve_mode`), so a cohort total is a sum of per-run counts each
+    taken against its own run's bar. That is what ``passed_total`` already is
+    across TOOLS: a target carrying a boltzgen campaign and a pxdesign one
+    already sums designs judged on pLDDT-and-refolding-RMSD with designs
+    judged on ipTM-and-pLDDT, into one number. A mixed-mode esmfold2-design
+    cohort is therefore not a new kind of mixing. What stays true is the
+    sentence above it: a caller that cannot name a run still gets False and
+    still reads no bar.
     """
     return bool(gate_columns(tool, preset))
 
@@ -2085,7 +2334,7 @@ def judge(
         # The bare name. A unit on a column nobody measured is noise: "Not
         # measured: Refolding RMSD" is the fact, and "(A)" adds nothing when
         # there is no number for it to qualify.
-        label, _unit = _label_and_unit(col)
+        label, _unit = label_and_unit(col)
         legend = get_legend(tool, col)
         if legend is None:
             # A gate column with no legend has no bar to be compared against.
@@ -2105,8 +2354,9 @@ def judge(
             # ``good`` is indexed unconditionally below. Deliberately BELOW
             # the two branches above rather than beside the None check: a
             # declared placeholder must still reach ``unusable``, which
-            # shared/ranking.py:431 and shared/jobs.py:223 both read to sink
-            # those rows. Same pin as above makes this unreachable too.
+            # shared/ranking.py::annotate_rows and
+            # shared/jobs.py::headline_candidate both read to sink those
+            # rows. Same pin as above makes this unreachable too.
             unmeasured.append(label)
             continue
         good = float(legend["good"])
@@ -2120,7 +2370,7 @@ def judge(
         meets = seen <= good if lower_is_better else seen >= good
         if not meets:
             side = "above" if lower_is_better else "below"
-            _, unit = _label_and_unit(col)
+            _, unit = label_and_unit(col)
             shortfalls.append(
                 f"{_reading(col, value)}, {side} {_fmt(good)}{unit}"
             )

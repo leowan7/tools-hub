@@ -15,8 +15,11 @@ So the table is ordered on a RELATIVE statistic instead: where a design sits
 inside its own comparable population. That is the only quantity that means
 the same thing for an ipTM row and an ipAE row.
 
-This module owns that statistic and nothing else. It performs no I/O itself:
-every function here is a pure transform over dicts the caller already loaded.
+This module owns that statistic. Not everything here is statistics: the
+``ordinal`` helpers and ``sort_by_number`` are presentation, kept beside the
+ranking because what they format or order is the ranking itself. It performs
+no I/O itself: every function here is a pure transform over dicts the caller
+already loaded.
 It does import ``shared.jobs`` and ``shared.result_columns``, and
 ``shared.jobs`` imports ``get_service_client`` at module level, so this
 module is not free of a transitive database import. What it never does is
@@ -148,14 +151,23 @@ def cohort_key_for(row: Mapping[str, Any]) -> tuple[str, Optional[str]]:
 
     NOT the tool alone. proteina's ``total_reward`` is ``-i_pAE`` under the
     protein_binder preset and an RF3 composite under ligand_binder
-    (tools/proteina/run_pipeline.py:116-117), so percentile ranking two
-    proteina runs at different presets against each other would compare two
-    different quantities that happen to share a column name.
+    (tools/proteina/run_pipeline.py::_SCORE_COLUMNS), so percentile ranking
+    two proteina runs at different presets against each other would compare
+    two different quantities that happen to share a column name.
 
     A blank preset normalizes to absent, so ``""`` and ``None`` are ONE
     population and not two half sized ones. Both mean "this row carries no
     preset", and splitting them would halve the denominator and overstate
     every percentile on both sides of the split.
+
+    IT ALSO SELECTS THE BAR, and for a moded tool ``_source_preset`` holds the
+    RUN'S MODE rather than its stored preset -- see
+    ``shared.target_results._candidate_rows``, which resolves and stamps it.
+    ``annotate_rows`` hands this key straight to ``tool_has_bar`` and
+    ``judge``, so the same partition that decides which designs are
+    percentile-comparable decides which bar they are held to. The two answers
+    have to come from one key or a cohort could be scored against a bar its
+    own members did not all run under.
 
     CONTRACT FOR THE AGGREGATION LAYER. For a tool whose preset is forced
     server side, (tool, preset) is meant to collapse to (tool), but it only
@@ -329,12 +341,24 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     PASS REGIME, two levels::
 
-        has_bar   = tool_has_bar(tool)                   # per TOOL
-        passed(c) = judge(tool, c).verdict != "below"     # per RECORD
-                    and not judge(tool, c).unusable       # (see below)
+        has_bar   = tool_has_bar(tool, preset)            # per COHORT
+        passed(c) = judge(tool, c, preset).verdict != "below"   # per RECORD
+                    and not judge(tool, c, preset).unusable     # (see below)
 
     The TOOL decides whether a bar applies at all; the RECORD is then sunk
     only on evidence that it fell short. Both halves are load bearing.
+
+    ``preset`` IS THE COHORT'S OWN, AND FOR A MODED TOOL IT IS THE RUN'S MODE.
+    It refines nothing except a tool in
+    ``shared.score_legends.MODE_GATE_COLUMNS``, whose bar is a property of the
+    run rather than of the tool; ``gate_columns`` ignores it for every tool
+    keyed in ``GATE_COLUMNS``, so handing a cohort's preset to boltzgen or
+    pxdesign cannot shrink or move their bars. Passing nothing was not neutral:
+    esmfold2-design read no bar at all here, so every one of its designs was
+    permanently ``_passed`` and the pI 11.95 reject sorted level with the
+    design that clears the bar. The mode arrives as the cohort key because
+    ``shared.target_results._candidate_rows`` stamps it into
+    ``_source_preset``; see the note there for why that is the right home.
 
     Tool scope for the REGIME, and this is the half that used to be guessed.
     It was ``any(record_has_filter_signal(c) for c in cohort_rows)`` -- read
@@ -397,7 +421,7 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     for (tool, preset), members in cohorts.items():
         metric_key, direction = primary_metric_for(tool)
-        has_bar = tool_has_bar(tool)
+        has_bar = tool_has_bar(tool, preset)
         values: dict[int, float] = {}
         for i in members:
             value = resolve_metric(annotated[i], tool, metric_key)
@@ -416,7 +440,7 @@ def annotate_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             row["_tool_has_bar"] = has_bar
             row["_metric_key"] = metric_key
             row["_metric_direction"] = direction
-            verdict = judge(tool, row)
+            verdict = judge(tool, row, preset=preset)
             # ABSENT AND BROKEN SORT DIFFERENTLY, and they must. An absent
             # metric is the ordinary shape of a job rebuilt from mid-run
             # records and keeps its place -- that is the rule this module is
@@ -834,3 +858,62 @@ def rank_candidates(
         "limit": limit,
         "sort_mode": effective_mode,
     }
+
+
+# ---------------------------------------------------------------------------
+# Template sort key
+# ---------------------------------------------------------------------------
+
+def sort_by_number(
+    rows: Iterable[Mapping[str, Any]],
+    attribute: str,
+    reverse: bool = False,
+) -> list[Mapping[str, Any]]:
+    """``sort(attribute=)`` for a column that is allowed to be null.
+
+    Presentation, like ``ordinal_suffix``: it ranks nothing, it only orders
+    rows a template already built. Registered as the ``sort_by_number`` Jinja
+    filter in ``app.create_app`` and called by
+    the per-tool results partials that order candidate rows
+    (``grep -rn "sort_by_number" templates/``).
+
+    WHY IT EXISTS. Jinja's own ``sort(attribute=)`` compares the raw values, so
+    one null beside one number raises ``TypeError``, and because
+    ``templates/job_detail.html`` includes the results partial through a bare
+    ``{% include tool_results_partial %}`` that exception 500s the whole
+    results page. Only a MIXED column raises: Jinja's key is a list and list
+    comparison short-circuits on ``==``, so an all-null column sorts fine and a
+    fixture that nulls every row passes against the unfixed template. Both
+    cases are pinned in tests/test_results_sort_nullable.py.
+
+    ``attribute`` is a dotted path read with ``Mapping.get`` at each step
+    ("scores.ipTM", "rank"). These partials build plain dicts, so there is no
+    attribute-access fallback: a non-Mapping partway down the path reads as
+    unmeasured rather than as an object to getattr.
+
+    A row whose key is not a finite real number -- null, absent, a string, a
+    bool, NaN, inf, or an int too large to be a float -- sorts LAST in BOTH
+    directions. That is why descending negates the value instead of passing
+    ``reverse=`` to ``sorted``: ``reverse=True`` over a (missing, value) tuple
+    would lift the unmeasured rows to the top. Ties keep input order either
+    way, which is what boltz2_results.html's "designs with equal ipTM keep
+    their submission order" relies on.
+    """
+    def key(row: Mapping[str, Any]) -> tuple[int, float]:
+        value: Any = row
+        for part in attribute.split("."):
+            value = value.get(part) if isinstance(value, Mapping) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return (1, 0.0)
+        try:
+            number = float(value)
+        except OverflowError:
+            # A JSON int wider than a float. Unmeasured beats raising: this
+            # function exists so that the results page cannot 500 on its
+            # own sort key.
+            return (1, 0.0)
+        if not math.isfinite(number):
+            return (1, 0.0)
+        return (0, -number if reverse else number)
+
+    return sorted(rows, key=key)

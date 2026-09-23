@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -98,6 +99,53 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
 # cannot slip in beside it.
 
 
+def is_candidate_array(value: object) -> bool:
+    """True iff ``value`` is a per-candidate array -- the ONE shape answer.
+
+    ``result["candidates"]``, ``result["designs"]`` and ``result["sequences"]``
+    used to be shape-checked by every reader separately, in this module, in
+    shared/email.py and in blueprints/admin.py. Spelling the test once per
+    reader let them disagree, and the disagreements were SILENT: a shape one
+    reader accepted and another rejected cost a wrong count, a wrong headline
+    noun or a wrong persisted blob rather than an error. Every reader that
+    LOOKS ONE OF THOSE KEYS UP AND ANSWERS ITS SHAPE now calls this, so the
+    next shape question is answered here rather than once more. That is
+    narrower than "every reader": a function that CONSUMES the array without
+    ever asking what shape it is -- iterating it, counting it, indexing it --
+    never answered the question, and several do exactly that and are left
+    alone. ``test_no_reader_spells_its_own_shape_gate`` in
+    tests/test_candidate_array_shape.py derives the answering set from the
+    source and fails on a raw ``isinstance`` gate over one of those keys.
+
+    A READER OUTSIDE THAT SET, deliberately: ``shared/exports.py``'s
+    ``_dict_candidates`` is handed the array rather than looking it up, and
+    keeps its own ``(list, tuple)`` line. Its docstring gives the reason, and
+    names this module: importing from here pulls Supabase in through the
+    ``shared.credits`` import above, which that module stays free of. So the
+    two agree by test rather than by shared code:
+    tests/test_malformed_candidate_row_render.py::
+    test_the_export_and_render_accessors_agree_by_value asserts
+    ``_dict_candidates(x) == display_rows(x)`` for a list AND a tuple, which
+    fails if either side's shape answer moves without the other.
+
+    A ``tuple`` counts: Jinja iterates one, so the templates rendered rows the
+    ``list``-only readers did not count -- see :func:`display_rows` for the
+    divergence that widening removed. Nothing else counts. The array is
+    indexed BY POSITION downstream (``shared/storage.py`` stages the starred
+    design out of :func:`candidate_records` with the index the user posted),
+    which a ``set`` has no stable order to answer and a generator would let
+    the first reader consume; ``str`` and ``bytes`` are sequences that would
+    iterate into characters.
+
+    SHAPE ONLY, deliberately. Which key to read, whether the result is
+    normalised first, and what an EMPTY array means stay with each caller,
+    because those are the points where the readers differ ON PURPOSE --
+    :func:`candidate_count` records why an empty array must short-circuit the
+    key search rather than fall through to the other key.
+    """
+    return isinstance(value, (list, tuple))
+
+
 def candidate_records(result: Optional[dict]) -> list:
     """Return a job result's per-candidate list, tolerant of the tool's shape.
 
@@ -114,16 +162,21 @@ def candidate_records(result: Optional[dict]) -> list:
 
     ``candidates`` is preferred when both are present (esmfold2_design emits
     both). The result is normalized for the legacy wrapped shape first, so a
-    ``result.output.candidates`` row is read the same as a flat one. Returns
-    ``[]`` for any other shape.
+    ``result.output.candidates`` row is read the same as a flat one. A tuple
+    is read like a list and copied, so the return is always a ``list`` and
+    every row keeps its position. Returns ``[]`` for any other shape.
     """
     result = _normalize_result_shape(result)
     if not isinstance(result, dict):
         return []
     for key in ("candidates", "designs"):
         recs = result.get(key)
-        if isinstance(recs, list):
-            return recs
+        if is_candidate_array(recs):
+            # Not a shape test: the shape question was answered above. An
+            # already-list array is returned BY REFERENCE, as it always has
+            # been, and anything else the predicate accepts is copied so the
+            # return type is a list either way.
+            return recs if isinstance(recs, list) else list(recs)
     return []
 
 
@@ -149,9 +202,71 @@ def candidate_count(result: Optional[dict]) -> Optional[int]:
         return None
     for key in ("candidates", "designs"):
         recs = result.get(key)
-        if isinstance(recs, list):
+        if is_candidate_array(recs):
             return len(recs)
     return None
+
+
+def display_rows(rows) -> list:
+    """The RENDER-layer read of a candidate list: same length, same order,
+    every row a Mapping.
+
+    :func:`candidate_records` deliberately does NOT do this, and must not.
+    Its list is indexed BY POSITION downstream: ``shared/target_results.py``
+    and ``shared/compute_campaigns.py`` stamp each row's ``_source_index``
+    from ``enumerate`` over the raw list -- skipping non-Mapping rows but
+    still counting them -- and the three ``candidate_records(job.result)``
+    call sites in ``blueprints/lab_projects.py`` index straight into it
+    through ``shared/storage.py::stage_campaign_candidates`` to stage the
+    starred design for the wet lab. Dropping a malformed row there would
+    renumber every row after it and ship the lab a DIFFERENT design from
+    the one the user starred.
+
+    So this coerces instead of filtering. A non-Mapping row becomes ``{}``,
+    which renders as a row of em dashes and leaves every later row on its own
+    index. Counts are therefore unchanged -- the malformed row is still shown
+    and still counted, which is what keeps the page, the completion email and
+    ``_source_index`` describing one list.
+
+    A tuple is read like a list -- here and in every other reader of this
+    array: :func:`is_candidate_array` answers that for the readers that route
+    through it, and ``shared/exports.py``'s ``_dict_candidates``, which keeps
+    its own line instead, is held level with them by test. So the page, the
+    completion email and the exports agree on how many rows a tuple holds.
+    Narrowing this to ``list`` alone would render the zero-candidate empty
+    state over rows that are all perfectly good: a silent wrong answer, and
+    worse than the crash it replaces, because the page still returns 200 and
+    nothing reports it.
+    Widening it here alone would have preserved a divergence rather than
+    created one: before this change the partials iterated the raw value, so
+    a tuple already rendered rows the email did not count and the download
+    did not contain. Routing them all through one reader is what made that
+    fixable in one place. Both are pinned by
+    tests/test_malformed_candidate_row_render.py::
+    test_a_tuple_of_good_rows_is_not_blanked and by
+    tests/test_malformed_candidate_row_render.py::
+    test_a_tuple_container_is_counted_the_same_everywhere. Anything that is
+    not a row sequence -- a dict, a scalar, ``None`` -- still returns ``[]``.
+
+    The other readers of the same array were ``list``-only when this one was
+    widened, which is the divergence :func:`is_candidate_array` closed. They
+    are not listed here, because a list inside a docstring cannot notice the
+    next reader: tests/test_candidate_array_shape.py derives the set from the
+    source instead, and fails on a reader that looks one of the keys up and
+    still spells its own ``isinstance`` gate. A reader HANDED the array is
+    outside that sweep however it gates -- this function is one, and so is
+    ``shared/exports.py``'s ``_dict_candidates``, which unlike this one keeps
+    its own gate for the import reason :func:`is_candidate_array` records,
+    along with the test that holds the two level. The sweep cannot enumerate
+    that class, so this is not a claim that those are the only two.
+
+    Hardening, not a report of a live failure: no in-repo producer writes a
+    non-dict row. The render layer was simply the only reader with no guard,
+    while the aggregators above it already had one.
+    """
+    if not is_candidate_array(rows):
+        return []
+    return [r if isinstance(r, Mapping) else {} for r in rows]
 
 
 def headline_candidate(
@@ -239,7 +354,90 @@ def headline_candidate(
     return measured_fallback or fallback
 
 
-def candidate_meets_bar(tool: str, cand: object) -> bool:
+def supports_headline_claim(
+    result: Optional[dict], tool: str, preset: Optional[str] = None
+) -> bool:
+    """Whether "the top design of this run" means anything for this result.
+
+    THE TEST IS THE SHAPE PLUS ONE FLAG: does the result carry a ``candidates``
+    array that a container actually built? That is the canonical binder-design
+    shape and the container ORDERS
+    it -- see :func:`headline_candidate`, which exists precisely because
+    ``candidates[0]`` is "whatever the container ranked first". A ``designs``
+    array carries no ordering guarantee at all: for af2 / colabfold / esmfold
+    at the ``batch`` tier, and for boltz2, it is one record per INDEPENDENTLY
+    SUBMITTED sequence in submission order (``designs_out`` is built by
+    ``.append()`` and never sorted -- tools/af2/run_pipeline.py::_run_batch,
+    tools/boltz2/run_pipeline.py::main, the latter stamping ``"rank": i``
+    straight off the enumeration index). Its head is whichever sequence the
+    customer pasted first, and nothing about it is "top".
+
+    A BAR IS NOT A SUBSTITUTE FOR AN ORDER, and a two-armed version of this
+    function that also returned True whenever ``tool_has_bar`` held was
+    written, probed, and retracted before it shipped.
+    :func:`headline_candidate` DOES NOT RE-RANK -- it returns the FIRST record
+    not shown to fall short, in stored order -- so on an unranked list a bar
+    only narrows WHICH arbitrary record gets crowned. Probed on this tool: an
+    esmfold2-design ``designs`` list of d0 (ipTM 0.80, pI 5.0) and d1 (ipTM
+    0.95, pI 5.0), both clearing the bar, crowns d0 while 0.95 sits in the
+    same run. The first probe of the bar arm missed this only because its
+    fixture had a single clearing design. THAT LAST CLAUSE IS WRONG and a
+    reviewer disproved it by building the variant: with one clearing design
+    the shipped assertion still fails under the bar arm. Two clearing designs
+    is the better DEMONSTRATION -- it shows why a bar cannot order an
+    unordered list -- not the only fixture that detects it.
+
+    What the shape test costs and what it keeps, checked per shape:
+    esmfold2-design writes ``candidates``
+    (tools/esmfold2_design/modal_app.py::_aggregate) so modern rows still
+    qualify and the pI 11.95 reject is still filtered; its LEGACY
+    ``designs``-only rows abstain, which is exactly what
+    ``result["candidates"]`` returned for them before any of this; bindcraft
+    declares no gate columns yet ships a ranked ``candidates`` array, and
+    still qualifies on the shape alone.
+
+    THE READ IS WHAT NEEDS THE GATE, NOT THE BAR. Applying a bar to a read
+    that already existed is safe; WIDENING a read is what puts a surface in
+    front of shapes it was never written for. This function exists because
+    ``_top_score_for_share`` moved from ``result["candidates"]`` to
+    :func:`candidate_records` and inherited the ``designs`` shapes along with
+    the fix.
+
+    A RECOVERED ROW CARRIES THE CANONICAL SHAPE WITHOUT THE ORDER BEHIND IT,
+    which the shape test alone cannot see.
+    ``shared/job_recovery.py::recover_stuck_job_result`` writes ``candidates``
+    for ANY tool, with no tool branch above it, and
+    ``shared/job_recovery.py::reconstruct`` fills that list from the streamed
+    ``inputs._partial_candidates`` by ``.append()`` or, failing that, from a
+    Storage file listing by ``enumerate`` -- neither is a ranking and neither
+    sorts. The row is then stored ``succeeded`` by
+    ``shared/jobs.py::timeout_stuck_job``, so it reaches every reader a
+    webhook row would. Hence the recovery writer's own ``backfilled`` flag is read
+    here; ``test_a_recovered_run_gets_no_score_at_all`` holds it.
+
+    This is WIDER than the shape test it guards, deliberately: it abstains for
+    esmfold2-design too, whose native ``candidates`` array IS ranked. A
+    recovered one is not, and the flag cannot tell which tool it came from.
+
+    ``tool`` and ``preset`` are accepted and deliberately unused: every caller
+    already has them, and an answer drawn from the result alone is a decision
+    this docstring records rather than a signature that forecloses it.
+
+    The key is tested in ``candidate_records``' own order over the same
+    normalized result, so the two can never disagree about which array they
+    are describing -- the same contract :func:`candidate_count` keeps.
+    """
+    normalized = _normalize_result_shape(result)
+    if not isinstance(normalized, dict) or not is_candidate_array(
+        normalized.get("candidates")
+    ):
+        return False
+    return not normalized.get("backfilled")
+
+
+def candidate_meets_bar(
+    tool: str, cand: object, preset: Optional[str] = None
+) -> bool:
     """True iff ``cand``'s measurements meet every leg of ``tool``'s bar.
 
     Evidence of meeting the bar, which is not the same as absence of evidence
@@ -257,11 +455,19 @@ def candidate_meets_bar(tool: str, cand: object) -> bool:
 
     ``tool`` leads the signature because it decides which bar applies at all;
     a record carries no opinion about that any more.
+
+    ``preset`` is the RUN's mode for a tool in
+    ``score_legends.MODE_GATE_COLUMNS`` and inert for every other tool. A
+    record does not carry one -- a mode is a property of the run, not of the
+    design -- so the caller resolves it once per result and hands it down;
+    :func:`count_candidates_meeting_bar` is the caller that does.
     """
-    return score_legends.judge(tool, cand).verdict == "meets"
+    return score_legends.judge(tool, cand, preset=preset).verdict == "meets"
 
 
-def count_candidates_meeting_bar(result: Optional[dict], tool: str) -> int:
+def count_candidates_meeting_bar(
+    result: Optional[dict], tool: str, preset: Optional[str] = None
+) -> int:
     """How many of a job's designs meet ``tool``'s bar. Shape-tolerant across
     the ``candidates[]`` / ``designs[]`` split.
 
@@ -282,13 +488,43 @@ def count_candidates_meeting_bar(result: Optional[dict], tool: str) -> int:
 
     Keeps the campaign total equal to the sum of what each child's own job
     page shows.
+
+    A MODED TOOL'S REGIME IS RESOLVED FROM THIS RESULT, not from the cohort
+    the result is being summed into. ``result`` IS one run, and a mode is a
+    property of a run, so ``score_legends.resolve_mode`` can answer here even
+    though ``tool_has_bar(tool)`` alone cannot. ``preset`` is only the
+    fallback for a result that does not record its own mode; pass the job's or
+    the campaign's stored preset.
+
+    So a total over several runs is a sum of per-run counts, each taken
+    against its own run's bar. That is what this number already was across
+    TOOLS: a target's ``passed_total`` already adds designs judged on
+    boltzgen's bar to designs judged on pxdesign's. Those two share an
+    identical pLDDT leg and otherwise gate on different columns -- a
+    refolding RMSD against an ipTM -- so the sum is already over unlike
+    conjunctions.
+    Mixing two MODES of one tool is the same operation, not a new one. What it
+    is NOT is a single bar resolved for a whole cohort, which is the thing
+    ``tool_has_bar``'s docstring refused and still refuses.
+
+    THIS RE-LABELS DELIVERED WORK on esmfold2-design. Before, the tool
+    declared no bar and every delivered record counted; a minibinder run now
+    counts only designs meeting pI and ipTM, so real job 2b917b54 reports 1
+    where it used to report 2. AND IT RE-LABELS scfv WORK TOO as of
+    2026-09-14: that mode gained an entry in ``MODE_GATE_COLUMNS``, so an scFv
+    run counts only designs meeting the CDR distogram proxy and ipTM where
+    every delivered design used to count. Runs stored before the column split
+    are reached through the legacy spelling in
+    ``score_legends._COLUMN_ALIASES``; without it their designs would all read
+    ``unjudged`` and the count would be zero.
     """
     records = candidate_records(result)
     if not records:
         return 0
-    if not score_legends.tool_has_bar(tool):
+    mode = score_legends.resolve_mode(tool, result, preset)
+    if not score_legends.tool_has_bar(tool, mode):
         return len(records)
-    return sum(1 for c in records if candidate_meets_bar(tool, c))
+    return sum(1 for c in records if candidate_meets_bar(tool, c, mode))
 
 
 @dataclass(frozen=True)
@@ -406,13 +642,23 @@ _REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
 # Error buckets that map to specific failure classes. Anything not in
 # this table on a 'failed' row defaults to 'unclassified' (refund).
 _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
-    # Real production bucket strings (verified by grepping the repo):
-    "pipeline":                "tool_error",          # docker run_pipeline crashed (app.py:4652)
-    "storage":                 "infra_crash",         # Supabase Storage upload failed (app.py:4353)
-    "modal-submit":            "infra_crash",         # Modal SDK submit raised before GPU pod started (app.py:4423, 4916)
+    # Buckets this repo classifies; the emitter is cited per entry.
+    "pipeline":                "tool_error",          # docker run_pipeline crashed (blueprints/jobs.py::job_status)
+    "storage":                 "infra_crash",         # Supabase Storage upload failed (blueprints/tools.py::tool_submit)
+    # Modal SDK submit raised before the GPU pod started. Three emitters:
+    # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
+    # shared/compute_campaigns.py::_dispatch_chunk.
+    "modal-submit":            "infra_crash",
     "preflight":               "preflight_miss",      # docker-side preflight check failed (ATOMIC-TOOLS.md)
-    "cancelled":               "user_cancelled",      # belt-and-suspenders; status="cancelled" path normally catches first (jobs.py:360)
-    "overrun_safety_kill":     "safety_kill",         # server-side overrun kill (jobs.py:843)
+    # Belt-and-suspenders. classify_terminal_state below answers a
+    # status="cancelled" row from its own arm without ever reading a bucket,
+    # and mark_cancelled is the only writer of this bucket, so reaching this
+    # entry needs a `failed` row that carries it.
+    "cancelled":               "user_cancelled",
+    # Nothing in this repo writes this bucket. It is historical: migration
+    # 0029_tool_jobs_failure_class.sql backfilled rows that already carried
+    # it, and this entry keeps any such row classifying the same way.
+    "overrun_safety_kill":     "safety_kill",
     # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",
@@ -446,7 +692,7 @@ def classify_terminal_state(
         candidates = None
         if isinstance(result, dict):
             candidates = result.get("candidates")
-        if isinstance(candidates, list) and len(candidates) == 0:
+        if is_candidate_array(candidates) and len(candidates) == 0:
             return "completed_no_yield"
         return "succeeded"
 
@@ -901,19 +1147,21 @@ def mark_timeout(
     )
 
 
-def timeout_stuck_job(job_id: str) -> str:
+def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     """Recover a stuck job if its work survived, else CAS-timeout it.
 
-    Called by the stuck-job sweeper. Before discarding a marooned job as a
-    timeout, we check whether the work actually completed but its terminal
-    webhook was lost (app restart mid-deploy, transient 5xx, Supabase
-    HTTP/2 read-hang). ``recover_stuck_job_result`` inspects Modal (inline
-    ``FunctionCall.get``) and tool-outputs Storage; when it finds a real
-    result we finalize the job as ``succeeded`` through the SAME
-    ``complete_job`` terminal/settle path the webhook uses, so billing
-    settles against actual GPU consumed instead of full-refunding a run
-    that really executed. Only when nothing is recoverable do we time the
-    job out (full refund) as before.
+    Called by the stuck-job sweeper, and by the inline status poll when Modal
+    reports a container timeout (blueprints/jobs.py::job_status) -- that caller
+    passes ``probe_modal=False`` because it has already polled Modal this
+    request. Before discarding a marooned job as a timeout, we check whether
+    the work actually completed but its terminal webhook was lost (app restart
+    mid-deploy, transient 5xx, Supabase HTTP/2 read-hang).
+    ``recover_stuck_job_result`` inspects Modal (inline ``FunctionCall.get``)
+    and tool-outputs Storage; when it finds a real result we finalize the job
+    as ``succeeded`` through the SAME ``complete_job`` terminal/settle path the
+    webhook uses, so billing settles against actual GPU consumed instead of
+    full-refunding a run that really executed. Only when nothing is recoverable
+    do we time the job out (full refund) as before.
 
     Returns one of:
 
@@ -938,7 +1186,7 @@ def timeout_stuck_job(job_id: str) -> str:
     from shared.job_recovery import recover_stuck_job_result  # noqa: PLC0415
 
     try:
-        recovered = recover_stuck_job_result(job)
+        recovered = recover_stuck_job_result(job, probe_modal=probe_modal)
     except Exception:
         logger.warning(
             "timeout_stuck_job: recovery probe raised for job %s; "
@@ -1105,11 +1353,17 @@ def _slim_result_for_persist(result: Optional[dict]) -> Optional[dict]:
     only one): smoke/mini_pilot tiers carry a bare-filename ``pdb_key`` with no
     upload, and any design whose upload failed is listed in ``failed_uploads``.
     Returns a shallow copy; the input is never mutated.
+
+    A tuple candidates array is slimmed like a list -- :func:`is_candidate_array`
+    is the shape gate -- and comes back as a ``list``, same length and same
+    order, because ``slimmed`` is built by ``.append``. That is the shape the
+    row would have had anyway: this value is about to be JSON-serialised into
+    ``tool_jobs.result``, which has no tuple.
     """
     if not isinstance(result, dict):
         return result
     candidates = result.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
+    if not is_candidate_array(candidates) or not candidates:
         return result
 
     import posixpath  # noqa: PLC0415

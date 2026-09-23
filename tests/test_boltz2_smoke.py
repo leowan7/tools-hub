@@ -1,8 +1,9 @@
 """Offline unit tests for the Boltz-2 cofold atomic tool.
 
-Currently covers ``run_pipeline.archive_raw_outputs`` only — the raw-output
-capture that runs from a ``finally`` on every exit path. This file is the home
-for further boltz2 offline tests; it is named for the ``test_<tool>_smoke.py``
+Covers ``run_pipeline.archive_raw_outputs`` — the raw-output capture that runs
+from a ``finally`` on every exit path — plus the zero-design and ``--no_kernels``
+contracts, and the adapter's preset-aware binder cap. This file is the home for
+further boltz2 offline tests; it is named for the ``test_<tool>_smoke.py``
 convention the other tools follow, not because the coverage is broad yet.
 
 It also carries the set's cross-tool tests. boltz2, opendde and proteina each
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import logging
 import os
 import tarfile
@@ -27,6 +29,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared.storage import _output_object_path
+from tools import boltz2 as b2
 from tools.boltz2 import run_pipeline as rp
 from tools.opendde import run_pipeline as opendde_rp
 from tools.proteina import run_pipeline as proteina_rp
@@ -410,3 +414,517 @@ class TestRawArchiveResolutionPlacement:
             f"{tool}: the dest resolution reads RAW_ARCHIVE_PATH before the try, "
             "so a missing constant is a NameError escaping a function called "
             "from a finally instead of a logged warning")
+
+
+# ---------------------------------------------------------------------------
+# 4 — a run that folds nothing FAILS the job, it does not COMPLETE empty
+# ---------------------------------------------------------------------------
+
+
+class TestZeroDesignsFailsTheJob:
+    """``main`` must not report COMPLETED when every design died.
+
+    The torch/torchvision ABI break made every ``boltz predict`` exit non-zero.
+    The pipeline logged a warning per design, dropped it, and still wrote
+    COMPLETED with an empty ``designs[]`` — so the wrapper returned exit_code 0
+    and the user saw a green job carrying no results.
+
+    Two tests, and the second is the one that makes the first mean something:
+    a guard that fired unconditionally would also pass the failure case.
+    """
+
+    def _arrange(self, tmp_path, monkeypatch, *, rc, n_binders=2,
+                 upload_exc=None, binders=None):
+        """Stub every I/O edge of ``main`` and return the result-file path.
+
+        ``rc`` is what ``run_boltz`` returns for every design: non-zero folds
+        nothing, zero folds all of them. ``upload_exc``, when given, is raised
+        by ``upload_pdb`` for every design - ``rc=0`` plus ``upload_exc`` is
+        the shape Gate 1 Rung A and Rung B actually ran in, where every fold
+        succeeded and the rigged endpoint refused every PUT. ``binders``, when
+        given, replaces the ``n_binders`` generated ones.
+        """
+        result_file = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+
+        antigen = tmp_path / "antigen.pdb"
+        antigen.write_text("ATOM\n")
+        monkeypatch.setattr(rp, "download_antigen_pdb", lambda url, dest: antigen)
+        monkeypatch.setattr(rp, "chain_seq", lambda path, chain="A": "GGGGSGGGGS")
+        monkeypatch.setattr(rp, "archive_raw_outputs", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "send_heartbeat", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "run_boltz", lambda *a, **k: rc)
+
+        # Only reached when run_boltz succeeds.
+        predicted = tmp_path / "pred.pdb"
+        predicted.write_text("ATOM\n")
+        monkeypatch.setattr(
+            rp, "collect_outputs", lambda out_dir: (predicted, {"iptm": 0.8}),
+        )
+        monkeypatch.setattr(
+            rp,
+            "hotspot_contacts",
+            lambda *a, **k: {
+                "n_contacted": 0,
+                "n_hotspots": 0,
+                "contacted": [],
+                "antigen_chain": "A",
+            },
+        )
+        monkeypatch.setattr(
+            rp,
+            "request_upload_urls",
+            lambda endpoint, token, keys: {k: "https://example.invalid/put" for k in keys},
+        )
+        def _upload(url, data):
+            if upload_exc is not None:
+                raise upload_exc
+
+        monkeypatch.setattr(rp, "upload_pdb", _upload)
+
+        payload = {
+            "tier": "standalone",
+            "job_token": "tok",
+            "upload_urls_endpoint": "https://example.invalid/upload-urls",
+            "input_presigned_url": "https://example.invalid/antigen.pdb",
+            "job_spec": {
+                "antigen_chain": "A",
+                "hotspot_residues": [],
+                "binder_sequences": binders or [
+                    {"name": f"d{i}", "sequence": "EVQLVESGGG"}
+                    for i in range(n_binders)
+                ],
+            },
+        }
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        monkeypatch.setenv("JOB_TIER", "standalone")
+        monkeypatch.setenv("JOB_ID", "job-zero-designs")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        return result_file
+
+    def test_every_design_failing_is_a_failed_job(self, tmp_path, monkeypatch):
+        result_file = self._arrange(tmp_path, monkeypatch, rc=1)
+
+        with pytest.raises(SystemExit) as excinfo:
+            rp.main()
+
+        assert excinfo.value.code == 1, (
+            "a run that folded zero designs must exit non-zero — the wrapper "
+            "reports run_pipeline's returncode as the job's exit_code")
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "FAILED", (
+            f"expected FAILED, got {result['status']!r} — a zero-design run "
+            "reported as COMPLETED is the silent failure this guards")
+        assert result["error"]["check"] == "no_designs"
+        assert isinstance(result.get("runtime_seconds"), int), (
+            "a failed run must still report the GPU time it burned: "
+            "gpu/modal_client.py::_interpret_pipeline_return reads "
+            "runtime_seconds off the FAILED arm as gpu_seconds_used, and "
+            "shared/jobs.py::_charge_workspace_for_completed_job skips the "
+            "workspace compute debit when it is missing")
+
+    def test_a_folded_design_still_completes(self, tmp_path, monkeypatch):
+        """Positive control: the guard must not fire when designs survive."""
+        result_file = self._arrange(tmp_path, monkeypatch, rc=0)
+
+        rp.main()
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "COMPLETED"
+        assert result["designs_completed"] == 2
+        assert result["designs_folded"] == 2, (
+            "the healthy run must report folds too, or the count that "
+            "separates the two failure shapes only exists on the failure path")
+
+    def test_folded_but_unuploaded_is_not_reported_as_a_fold_failure(
+        self, tmp_path, monkeypatch,
+    ):
+        """The whole point: an upload-only failure must not say the folds died.
+
+        Every design folds, every PUT raises. Before this, the detail read
+        "all 2 designs failed" - the verdict Gate 1 Rung A and Rung B both
+        returned with 3 good folds on disk (docs/VALIDATION-LOG.md). The
+        billing side is deliberately unchanged and is asserted below, because
+        the value of this detail is that it does not cost a refund to get.
+        """
+        result_file = self._arrange(
+            tmp_path, monkeypatch, rc=0,
+            upload_exc=RuntimeError("upload failed: HTTP 503"),
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            rp.main()
+
+        assert excinfo.value.code == 1
+        result = json.loads(result_file.read_text())
+        detail = result["error"]["detail"]
+        assert "2 of 2 designs folded but 0 uploaded" in detail, (
+            f"detail must separate the hops; got {detail!r}")
+        assert "all 2 designs failed" not in detail, (
+            f"the false claim this test exists to kill is back: {detail!r}")
+
+        # Unchanged on purpose - see the comment above the guard in
+        # run_pipeline.py. An empty designs_out still writes a refunded
+        # failure carrying runtime_seconds.
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "pipeline"
+        assert result["error"]["check"] == "no_designs"
+        assert isinstance(result.get("runtime_seconds"), int)
+
+    def test_a_run_that_folded_nothing_still_says_so(
+        self, tmp_path, monkeypatch,
+    ):
+        """Negative control, and it is what makes the test above mean anything.
+
+        A detail that named the upload hop unconditionally would pass that
+        assertion while lying about this run, where no design ever folded.
+        """
+        result_file = self._arrange(tmp_path, monkeypatch, rc=1)
+
+        with pytest.raises(SystemExit):
+            rp.main()
+
+        detail = json.loads(result_file.read_text())["error"]["detail"]
+        assert "all 2 designs failed before producing a structure" in detail, (
+            f"got {detail!r}")
+        assert "uploaded" not in detail, (
+            f"no upload was ever attempted on this run: {detail!r}")
+
+
+# ---------------------------------------------------------------------------
+# 4b - a binder's name is a file name, so validate refuses what cannot be one
+# ---------------------------------------------------------------------------
+
+
+def _named_form(*names):
+    seq = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+    return {
+        "preset": "standalone",
+        "target_chain": "A",
+        "binder_sequences": "".join(f">{n}\n{seq}\n" for n in names),
+    }
+
+
+_NAMES_LINUX_CAN_HOLD = [
+    "VHH-12",
+    "anti-HER2 scFv",
+    "4D5\\trastuzumab",
+    "4D5..v2",
+    "x" * 200,
+]
+
+
+class TestBinderNameIsAFileName:
+    """``run_pipeline.py::main`` writes each design's input to
+    ``d_{i:03d}/{name}.yaml`` from the raw name; only the storage key goes
+    through ``shared/storage.py::_output_object_path``. So the adapter's
+    ``validate`` is the one place a name that cannot be a file name is stopped.
+    """
+
+    def test_a_slash_kills_main_after_the_design_before_it_folded(
+        self, tmp_path, monkeypatch,
+    ):
+        """Why validate has to refuse it: ``main`` does not survive it."""
+        result_file = TestZeroDesignsFailsTheJob()._arrange(
+            tmp_path, monkeypatch, rc=0,
+            binders=[
+                {"name": "VHH-12", "sequence": "EVQLVESGGG"},
+                {"name": "4D5/trastuzumab", "sequence": "EVQLVESGGG"},
+            ],
+        )
+        uploads = []
+        monkeypatch.setattr(rp, "upload_pdb", lambda url, data: uploads.append(url))
+
+        with pytest.raises(FileNotFoundError):
+            rp.main()
+
+        assert len(uploads) == 1, "the design before the bad name should have folded"
+        assert not result_file.exists(), (
+            "the raise escapes main before any results file is written")
+
+    @pytest.mark.parametrize("name, cause", [
+        ("4D5/trastuzumab", "'/'"),
+        (".hidden", "start with '.'"),
+        ("..", "start with '.'"),
+        ("a\0b", "NUL"),
+        ("x" * 201, "201 bytes"),
+        ("é" * 101, "202 bytes"),  # 202 bytes in UTF-8
+    ])
+    def test_validate_refuses_a_name_that_cannot_be_a_file_name(self, name, cause):
+        inputs, err = b2.validate(_named_form("VHH-12", name), {})
+        assert inputs is None, f"validate accepted {name!r}"
+        assert repr(name) in err, f"the refusal must name the binder: {err!r}"
+        assert cause in err, f"the refusal must name the cause: {err!r}"
+
+    @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
+    def test_validate_still_accepts_names_linux_can_hold(self, name):
+        """Positive control: the refusal must not reach past the hazard."""
+        inputs, err = b2.validate(_named_form(name), {})
+        assert err is None, err
+        assert [b["name"] for b in inputs["binder_sequences"]] == [name]
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="the pipeline runs on Linux; Windows reads '\\' as a separator",
+    )
+    @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
+    def test_main_completes_on_every_name_validate_accepts(
+        self, tmp_path, monkeypatch, name,
+    ):
+        """The accepted names really are safe for the local path, on Linux."""
+        result_file = TestZeroDesignsFailsTheJob()._arrange(
+            tmp_path, monkeypatch, rc=0,
+            binders=[{"name": name, "sequence": "EVQLVESGGG"}],
+        )
+
+        rp.main()
+
+        assert json.loads(result_file.read_text())["status"] == "COMPLETED"
+
+    @pytest.mark.parametrize("stem, found", [(".hidden", False), ("hidden", True)])
+    def test_collect_outputs_cannot_see_a_design_named_with_a_leading_dot(
+        self, tmp_path, stem, found,
+    ):
+        """Why a leading ``.`` is refused although its file writes fine.
+
+        boltz 2.2.1 names what it writes after the input file's stem: the stem
+        becomes the record id (src/boltz/data/parse/yaml.py and schema.py), and
+        the model lands at ``boltz_results_{stem}/predictions/{id}/
+        {id}_model_0.pdb`` (src/boltz/main.py, src/boltz/data/write/writer.py).
+        ``glob`` skips dot-names, so ``main`` would log that design as "no PDB
+        emitted" after its fold had run.
+        """
+        out_dir = tmp_path / "out"
+        pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
+        pred.mkdir(parents=True)
+        (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
+
+        pdb_path, _ = rp.collect_outputs(out_dir)
+
+        assert (pdb_path is not None) is found
+
+
+# ---------------------------------------------------------------------------
+# 5 - the image ships no cuequivariance, so the kernel path must stay off
+# ---------------------------------------------------------------------------
+
+
+class TestKernelsStayOff:
+    """``run_boltz`` must keep passing ``--no_kernels``.
+
+    tools/boltz2/Dockerfile.modal installs plain ``boltz``, not ``boltz[cuda]``,
+    so cuequivariance is absent from the image. boltz imports it only inside
+    ``kernel_triangular_mult`` / ``kernel_triangular_attn``, which run on the
+    kernel path, so dropping this flag would fold nothing and the first sign
+    would be a production failure. This test is what makes that Dockerfile
+    comment a checked claim rather than an assertion.
+    """
+
+    def test_run_boltz_disables_kernels(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(rp.subprocess, "run", fake_run)
+        rp.run_boltz(tmp_path / "in.yaml", tmp_path / "out", msa_server=False)
+
+        assert "--no_kernels" in captured["cmd"], (
+            "the boltz2 image installs plain boltz, so cuequivariance is not "
+            "present; without --no_kernels the kernel path imports it and every "
+            "fold dies")
+
+
+# ---------------------------------------------------------------------------
+# 5 — validate(): the binder cap is preset-aware
+# ---------------------------------------------------------------------------
+
+
+# Gate 1 Rung B, job gate1-msa_server-1790046491: 643 s of pipeline runtime for
+# 3 designs. An AGGREGATE per-design figure over three 242-246 aa binders, not
+# a marginal rate and not a measured 50-binder run — provenance and caveats in
+# the runtime note in tools/boltz2/__init__.py.
+MSA_SERVER_S_PER_DESIGN = 214.0
+
+_MODAL_APP_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "tools", "boltz2", "modal_app.py",
+)
+
+
+def _modal_app_constant(name):
+    """Read a module-level constant out of modal_app.py without importing it.
+
+    Importing that module constructs a ``modal.App`` and resolves an Image from
+    the Dockerfile, neither of which belongs in an offline test.
+    """
+    with open(_MODAL_APP_SRC, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(name + " is not a module-level assignment in "
+                         + _MODAL_APP_SRC)
+
+
+def _form(preset, n_binders):
+    seq = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+    return {
+        "preset": preset,
+        "target_chain": "A",
+        "binder_sequences": "\n".join([seq] * n_binders),
+    }
+
+
+class TestPresetBinderCap:
+    """``msa_server`` folds ~3x slower than ``standalone`` against one shared
+    Modal timeout, so the two presets cannot share one binder ceiling.
+
+    Without a preset-aware cap a user could submit 50 binders on msa_server,
+    be billed for the full hour the run takes, and receive only the designs
+    that finished before the timeout — the rest lost with no warning anywhere
+    in the form, the validator or the estimate.
+    """
+
+    def test_standalone_still_takes_the_full_batch(self):
+        inputs, err = b2.validate(_form("standalone", b2.MAX_BINDERS), {})
+        assert err is None, err
+        assert len(inputs["binder_sequences"]) == b2.MAX_BINDERS
+
+    def test_msa_server_takes_its_own_ceiling(self):
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        inputs, err = b2.validate(_form("msa_server", cap), {})
+        assert err is None, err
+        assert len(inputs["binder_sequences"]) == cap
+
+    def test_msa_server_refuses_one_over(self):
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        inputs, err = b2.validate(_form("msa_server", cap + 1), {})
+        assert inputs is None
+        assert str(cap) in err and str(cap + 1) in err
+        # The refusal has to be actionable, or it just moves the surprise.
+        assert "single-sequence" in err, err
+
+    def test_the_batch_standalone_takes_is_refused_on_msa_server(self):
+        inputs, err = b2.validate(_form("msa_server", b2.MAX_BINDERS), {})
+        assert inputs is None, (
+            "50 binders on msa_server extrapolate to ~10700 s against a "
+            "3600 s timeout; accepting the batch is the silent truncation"
+        )
+
+    def test_the_cap_is_the_largest_batch_that_fits_the_timeout(self):
+        """Pins the derivation, because 3600 lives in another file.
+
+        Moving ``_MAX_SESSION_S`` or the measured rate without re-deriving the
+        cap goes red here rather than silently re-opening the truncation.
+        """
+        ceiling = _modal_app_constant("_MAX_SESSION_S")
+        cap = b2.MAX_BINDERS_BY_PRESET["msa_server"]
+        assert cap * MSA_SERVER_S_PER_DESIGN <= ceiling, (
+            "cap of %d extrapolates to %.0f s, past the %d s timeout"
+            % (cap, cap * MSA_SERVER_S_PER_DESIGN, ceiling)
+        )
+        assert (cap + 1) * MSA_SERVER_S_PER_DESIGN > ceiling, (
+            "cap of %d leaves room for another design inside %d s"
+            % (cap, ceiling)
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6 - validate(): two binders may not share one storage object
+# ---------------------------------------------------------------------------
+
+
+_SEQ_A = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+_SEQ_B = "EVQLLESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical, not _SEQ_A
+
+
+def _fasta_form(fasta):
+    return {"preset": "standalone", "target_chain": "A", "binder_sequences": fasta}
+
+
+class TestBinderNamesGetTheirOwnObject:
+    """``main`` keys each design's upload on the binder's name alone.
+
+    Each test runs ``run_pipeline.main`` and records the ``pdb_key``s it asks
+    ``request_upload_urls`` for. The upload-URL endpoint (webhooks/uploads.py)
+    mints each key's URL for the storage path
+    ``shared/storage.py::_output_object_path`` gives it, so two designs whose
+    keys map to one path leave one object for two structures.
+    """
+
+    @staticmethod
+    def _requested_keys(tmp_path, monkeypatch, binders):
+        """Run ``main`` over ``binders``; return the upload keys it requested."""
+        TestZeroDesignsFailsTheJob()._arrange(tmp_path, monkeypatch, rc=0)
+        payload = json.loads(os.environ["JOB_PAYLOAD"])
+        payload["job_spec"]["binder_sequences"] = binders
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        requested = []
+
+        def _record(endpoint, token, keys):
+            requested.extend(keys)
+            return {k: "https://example.invalid/put" for k in keys}
+
+        monkeypatch.setattr(rp, "request_upload_urls", _record)
+        rp.main()
+        return requested
+
+    def test_duplicate_headers_reach_the_pipeline_as_one_pdb_key(
+        self, tmp_path, monkeypatch,
+    ):
+        fasta = f">VHH-12\n{_SEQ_A}\n>VHH-12\n{_SEQ_B}\n"
+        # validate returns the parser's records as "binder_sequences" and
+        # build_payload forwards that list (tools/boltz2/__init__.py), so these
+        # are what main would be given had validate accepted.
+        binders, _ = b2._parse_binder_text(fasta)
+
+        keys = self._requested_keys(tmp_path, monkeypatch, binders)
+
+        assert keys == ["VHH-12_complex.pdb", "VHH-12_complex.pdb"], keys
+        inputs, err = b2.validate(_fasta_form(fasta), {})
+        assert inputs is None, (
+            f"validate accepted two binders that main uploads under one "
+            f"pdb_key, {keys!r}")
+        assert "'VHH-12'" in err and "Rename one" in err, err
+
+    def test_names_that_differ_only_in_punctuation_share_an_object(
+        self, tmp_path, monkeypatch,
+    ):
+        """The keys differ as strings; the storage path does not."""
+        fasta = f">binder 1\n{_SEQ_A}\n>binder_1\n{_SEQ_B}\n"
+        binders, _ = b2._parse_binder_text(fasta)
+
+        keys = self._requested_keys(tmp_path, monkeypatch, binders)
+
+        assert len(set(keys)) == 2, keys
+        paths = {_output_object_path("u", "j", k) for k in keys}
+        assert paths == {"u/j/designs/binder_1_complex.pdb"}, paths
+        inputs, err = b2.validate(_fasta_form(fasta), {})
+        assert inputs is None, (
+            f"validate accepted two binders whose keys {keys!r} land on one "
+            f"storage object, {paths!r}")
+        for part in ("'binder 1'", "'binder_1'", "'binder_1_complex.pdb'"):
+            assert part in err, err
+
+    def test_distinct_names_are_accepted_and_get_two_objects(
+        self, tmp_path, monkeypatch,
+    ):
+        """Positive control: the refusal must not fire on ordinary names.
+
+        Feeds validate's output through build_payload into main.
+        """
+        inputs, err = b2.validate(
+            _fasta_form(f">VHH-12\n{_SEQ_A}\n>VHH-13\n{_SEQ_B}\n"), {},
+        )
+        assert err is None, err
+
+        keys = self._requested_keys(
+            tmp_path, monkeypatch,
+            b2.build_payload(inputs, "")["binder_sequences"],
+        )
+
+        assert len({_output_object_path("u", "j", k) for k in keys}) == 2, keys

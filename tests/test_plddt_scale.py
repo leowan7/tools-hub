@@ -94,7 +94,7 @@ def _stub_job(tool: str, scores: dict):
 
 
 @pytest.fixture(scope="module")
-def tools_app():
+def tools_app(isolate_supabase_module):
     import app as app_module
     from shared.feature_flags import flag_name
     from tools import base as tool_base
@@ -456,10 +456,11 @@ def test_every_plddt_key_the_exporter_can_meet_is_registered():
 
     assert scalar_keys, "no example payload carries a scalar pLDDT"
 
-    # ...and example payloads are the WRONG source on their own. Six
-    # tools ship no example, and more importantly the CSV's root keys are
-    # not written by a tool at all -- webhooks/modal.py persists a fixed
-    # dict for every composite pipeline. Deriving from it covers all
+    # ...and example payloads are the WRONG source on their own: the
+    # glob above reaches only what a tool captured, and more importantly
+    # the CSV's root keys are not written by a tool at all --
+    # webhooks/modal.py persists a fixed dict for every composite
+    # pipeline. Deriving from it covers all
     # fourteen. This is what catches ``plddt``, which no example payload
     # carries as a scalar root key and which is not a display column
     # either, so both earlier guards were blind to it.
@@ -524,7 +525,7 @@ class TestShareCardClaimsOnlyWhatItEarned:
         from blueprints.jobs import _share_title
         title = _share_title("BoltzGen", "0.91")
         assert "I designed a binder with BoltzGen" in title
-        assert "Top score 0.91" in title
+        assert "One design at 0.91" in title
 
 
 class TestTheOtherSurfaces:
@@ -595,9 +596,16 @@ class TestTheOtherSurfaces:
     def test_the_public_share_card_uses_the_shared_scale(self):
         from blueprints.jobs import _top_score_for_share
 
-        assert _top_score_for_share(
-            _stub_job("esmfold", {"pLDDT": 0.39})
-        ) == "pLDDT 39.000"
+        # THE CONTRACT CHANGED, THE RULE DID NOT. This helper used to return a
+        # bare metric string and now returns the whole og:title clause, because
+        # whether "top" may be claimed unqualified depends on the verdict and
+        # only this helper knows it. What is pinned here is unchanged: the card
+        # renders pLDDT on the 0-100 scale, so 0.39 reads 39.000 and never
+        # "0.390" beside a page showing 39.
+        clause = _top_score_for_share(_stub_job("esmfold", {"pLDDT": 0.39}))
+        assert clause is not None, "the card stopped naming a score at all"
+        assert clause.endswith("pLDDT 39.000"), clause
+        assert "0.390" not in clause, clause
 
 
 class TestEveryKnownDisplaySiteStillCallsTheRule:

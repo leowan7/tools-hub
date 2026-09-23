@@ -44,12 +44,30 @@ GLOSSARY: dict[str, dict] = {
         "citation": "Evans et al., bioRxiv 2021 (AlphaFold-Multimer)",
     },
     "pLDDT": {
+        # THE BANDS ARE THE CITED PAPER'S, and they were not: this read
+        # "> 80 very high confidence; 60-80 acceptable" until 2026-09-17.
+        # Jumper et al. put "very high" at 90 and up, "confident" at
+        # 70-90, "low" at 50-70, so 80 was a tier too generous and the
+        # 60-80 band straddled the 70 edge, mixing two of them. All nine
+        # per-tool pLDDT legends in shared/score_legends.py draw their
+        # top tier at 90, where the paper draws it; the old string drew
+        # it at 80, which every one of them calls only "confidently
+        # folded".
+        #
+        # This string is not decoration. It renders on ONE live column --
+        # opendde's pLDDT, the only displayed pLDDT column with no
+        # per-tool legend, where components/candidate_table.html makes it
+        # the reader's only answer to "what is good?". The other pLDDT
+        # columns either carry a legend (suppressed since #277) or are
+        # keyed mean_pLDDT / af2_plddt, which this dict has no entry for.
+        # Both the band and that exposure are pinned by
+        # tests/test_column_tooltip_states_one_bar.py.
         "label": "pLDDT",
         "definition": (
             "Predicted Local Distance Difference Test. Per-residue confidence "
             "in the modelled structure on a 0–100 scale."
         ),
-        "good_range": "> 80 very high confidence; 60–80 acceptable",
+        "good_range": "90 or more very high confidence; 70–90 confident; 50–70 low",
         "citation": "Jumper et al., Nature 2021 (AlphaFold2)",
     },
     "pAE": {
@@ -225,19 +243,43 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "higher is better; more epitope engagement",
         "citation": "",
     },
+    # esmfold2-design's scFv gate leg (score_legends.MODE_GATE_COLUMNS).
+    # ADDED BECAUSE THE LEG NEEDS A NAME A SENTENCE CAN HOLD: without an
+    # entry here score_legends.label_and_unit falls back to the raw key, and
+    # a shortfall reads "CDR_iPTM_proxy 0.42, below 0.5" on the panel that
+    # offers a sequence for synthesis.
+    #
+    # NOT AN ipTM, despite the name, and the definition says so because this
+    # entry is stacked into the same tooltip as the per-tool legend
+    # (components/candidate_table.html). It is a pair-ENTROPY statistic over
+    # the distogram, restricted to CDR-to-target pairs
+    # (tools/esmfold2_design/run_pipeline.py::_classify cites upstream's
+    # "Algorithm 15 Distogram ipTM Proxy"), so a reader who applies the ipTM
+    # scale they know from every other tool here is applying the wrong one.
+    "CDR_iPTM_proxy": {
+        "label": "CDR distogram proxy",
+        "definition": (
+            "How certain the ESMFold2 critic is about where it places an "
+            "antibody's CDRs against the target: the pair entropy of the "
+            "distogram over CDR-to-target pairs, on a 0-1 scale. A "
+            "confidence in the CDR placement, not in the interface itself."
+        ),
+        "good_range": "0.50 or more (esmfold2-design scFv runs)",
+        "citation": "",
+    },
     # Proteina's declared primary metric (shared/result_columns.py). Added for
     # the combined target table, whose Score cell prints the primary metric's
     # LABEL beside its value, so a metric with no glossary entry would render
     # its raw key.
     #
     # The definition names both variants deliberately. This is NOT one quantity:
-    # tools/proteina/run_pipeline.py:116-117, verified there against the P-2 and
-    # P-3 canary reward CSVs, records that the protein_binder reward comes from
-    # the AF2 refold and equals -i_pAE, while the ligand_binder reward comes
-    # from the RF3 fold. Describing it as a single score would be wrong, and it
-    # is why shared/ranking.py keys its cohorts on (tool, preset) rather than on
-    # tool alone: two proteina runs at different presets must never be ranked
-    # against each other.
+    # tools/proteina/run_pipeline.py::_SCORE_COLUMNS, verified there against the
+    # P-2 and P-3 canary reward CSVs, records that the protein_binder reward
+    # comes from the AF2 refold and equals -i_pAE, while the ligand_binder
+    # reward comes from the RF3 fold. Describing it as a single score would be
+    # wrong, and it is why shared/ranking.py keys its cohorts on (tool, preset)
+    # rather than on tool alone: two proteina runs at different presets must
+    # never be ranked against each other.
     # ADDED BECAUSE A TEMPLATE WAS STATING A THRESHOLD THIS FILE DID NOT HOLD.
     # components/about_panel.html renders a general "what good looks like"
     # legend on all 14 tool pages, and its recovery entry read "well
@@ -303,13 +345,37 @@ _FORMAT: dict[str, str] = {
     # without this the verdict beside a cell reading "5.67" asserted
     # "pI 5.669".
     #
-    # An "iPTM_proxy" entry sat here too and is gone. That column gates
-    # nothing, carries no legend, and reaches neither reader of this map:
-    # format_metric_value renders only the MULTI-tool table, which has no
-    # esmfold2-design entry in shared/result_columns, and shown_value is only
-    # called for gate legs. A format for a key nothing formats is dead weight
-    # with a justification attached, which is worse than no entry.
+    # STILL NO "iPTM_proxy" ENTRY. That column is the MINIBINDER proxy and it
+    # gates nothing, carries no legend, and reaches neither reader of this
+    # map: format_metric_value renders only the MULTI-tool table, which has
+    # no esmfold2-design entry in shared/result_columns, and shown_value is
+    # only called for gate legs. A format for a key nothing formats is dead
+    # weight with a justification attached, which is worse than no entry.
     "pI": ".2f",
+    # esmfold2-design's scFv gate leg, at ipTM's three decimals rather than
+    # the two a 0-1 confidence would otherwise take here.
+    #
+    # THIS STRING IS WHAT JUDGES THE LEG, not just what prints it:
+    # score_legends.shown_value (shared/score_legends.py::shown_value) rounds the
+    # reading to this format before comparing it to the bar, and _reading
+    # (shared/score_legends.py::_reading) writes the verdict sentence at it. So
+    # the format sets the width of the window where judge() says "meets" and
+    # run_pipeline._classify (raw ">= 0.50",
+    # tools/esmfold2_design/run_pipeline.py::_classify) says "drop".
+    #
+    # At ".2f" that window ran from just above 0.4950 to 0.50, and the share
+    # card prints the raw value at three decimals unconditionally
+    # (blueprints/jobs.py::_top_score_for_share), so a design inside it
+    # published the clause "CDR distogram proxy 0.495" under wording
+    # asserting it cleared 0.50. Measured by setting this entry to ".2f" and
+    # driving blueprints.jobs._top_score_for_share: raw 0.4951 published that
+    # clause, raw 0.4950 published nothing. At ".3f" the window starts at
+    # 0.4996 (0.4995 is judged below) and the card prints "0.500" -- the
+    # number it judged. templates/components/candidate_table.html lists this
+    # column with ipTM in its ``%.3f`` branch for the same reason, so the
+    # cell, the verdict beside it and the card all show three decimals.
+    # test_a_gate_leg_renders_at_the_precision_the_share_card_prints pins it.
+    "CDR_iPTM_proxy": ".3f",
 }
 
 
