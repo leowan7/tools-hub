@@ -932,10 +932,10 @@ def _recovered_job(job_id: str = "cccccccc-0000-0000-0000-000000000000"):
 
     ``recover_stuck_job_result`` returns ``{candidates, candidate_count,
     backfilled}`` and nothing else (its ``return`` in shared/job_recovery.py);
-    scripts/finalize_stuck_job.py:76-80 writes the identical dict. The
+    scripts/finalize_stuck_job.py::main writes the identical dict. The
     candidates are ``_candidate_from_partial``'s output, which copies only
     ipTM, pLDDT and i_pae off a streamed partial and keys the file as
-    ``f"designs/{basename}"`` (shared/job_recovery.py:72-92). So there is no
+    ``f"designs/{basename}"`` (shared/job_recovery.py::_candidate_from_partial). So there is no
     ``is_antibody``, no ``filter_status`` and no ``pI`` here -- the base
     ``_job`` fixture's result carries all three and would not be this shape.
 
