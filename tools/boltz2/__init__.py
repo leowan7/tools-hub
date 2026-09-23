@@ -129,6 +129,20 @@ MAX_BINDERS = 50
 MAX_BINDERS_BY_PRESET = {"msa_server": 16}
 ANTIGEN_CHAIN_MAX = 4
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
+# A binder's name becomes a file name. ``run_pipeline.py::main`` writes each
+# design's input to ``d_{i:03d}/{name}.yaml`` from the raw name (only the
+# storage key is normalised, by ``shared/storage.py::_output_object_path``),
+# and boltz 2.2.1 names its outputs after that file's stem. So ``validate``
+# refuses a name that
+#   - contains '/' or NUL, the two bytes a Linux file name cannot hold;
+#   - starts with '.', which hides the model file from the glob in
+#     ``run_pipeline.py::collect_outputs``;
+#   - is longer than this many bytes. Linux caps a file name at 255 bytes, and
+#     boltz's longest, ``confidence_{name}_model_0.json``
+#     (src/boltz/data/write/writer.py), is the name plus 24, so 231 is the
+#     ceiling; 200 leaves room.
+# Pinned by ``tests/test_boltz2_smoke.py::TestBinderNameIsAFileName``.
+BINDER_NAME_MAX_BYTES = 200
 
 
 def _parse_hotspots(raw: str) -> tuple[Optional[list[int]], Optional[str]]:
@@ -256,6 +270,18 @@ def validate(
     for b in binders:
         name = b["name"]
         seq = b["sequence"]
+        # See BINDER_NAME_MAX_BYTES for why each of these is refused.
+        if "/" in name or "\0" in name or name.startswith("."):
+            return None, (
+                f"Binder {name!r}: a binder's name becomes a file name, so it "
+                f"cannot contain '/' or start with '.'. Rename it."
+            )
+        if len(name.encode("utf-8")) > BINDER_NAME_MAX_BYTES:
+            return None, (
+                f"Binder {name!r}: the name is "
+                f"{len(name.encode('utf-8'))} bytes — max "
+                f"{BINDER_NAME_MAX_BYTES}. Shorten it."
+            )
         if len(seq) < BINDER_LEN_MIN:
             return None, (
                 f"Binder {name!r} is {len(seq)} aa — min {BINDER_LEN_MIN}."

@@ -434,14 +434,15 @@ class TestZeroDesignsFailsTheJob:
     """
 
     def _arrange(self, tmp_path, monkeypatch, *, rc, n_binders=2,
-                 upload_exc=None):
+                 upload_exc=None, binders=None):
         """Stub every I/O edge of ``main`` and return the result-file path.
 
         ``rc`` is what ``run_boltz`` returns for every design: non-zero folds
         nothing, zero folds all of them. ``upload_exc``, when given, is raised
         by ``upload_pdb`` for every design - ``rc=0`` plus ``upload_exc`` is
         the shape Gate 1 Rung A and Rung B actually ran in, where every fold
-        succeeded and the rigged endpoint refused every PUT.
+        succeeded and the rigged endpoint refused every PUT. ``binders``, when
+        given, replaces the ``n_binders`` generated ones.
         """
         result_file = tmp_path / "smoke_results.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
@@ -489,7 +490,7 @@ class TestZeroDesignsFailsTheJob:
             "job_spec": {
                 "antigen_chain": "A",
                 "hotspot_residues": [],
-                "binder_sequences": [
+                "binder_sequences": binders or [
                     {"name": f"d{i}", "sequence": "EVQLVESGGG"}
                     for i in range(n_binders)
                 ],
@@ -588,6 +589,120 @@ class TestZeroDesignsFailsTheJob:
             f"got {detail!r}")
         assert "uploaded" not in detail, (
             f"no upload was ever attempted on this run: {detail!r}")
+
+
+# ---------------------------------------------------------------------------
+# 4b - a binder's name is a file name, so validate refuses what cannot be one
+# ---------------------------------------------------------------------------
+
+
+def _named_form(*names):
+    seq = "QVQLVESGGGLVQPGGSLRLSCAAS"  # 25 aa, all canonical
+    return {
+        "preset": "standalone",
+        "target_chain": "A",
+        "binder_sequences": "".join(f">{n}\n{seq}\n" for n in names),
+    }
+
+
+_NAMES_LINUX_CAN_HOLD = [
+    "VHH-12",
+    "anti-HER2 scFv",
+    "4D5\\trastuzumab",
+    "4D5..v2",
+    "x" * 200,
+]
+
+
+class TestBinderNameIsAFileName:
+    """``run_pipeline.py::main`` writes each design's input to
+    ``d_{i:03d}/{name}.yaml`` from the raw name; only the storage key goes
+    through ``shared/storage.py::_output_object_path``. So the adapter's
+    ``validate`` is the one place a name that cannot be a file name is stopped.
+    """
+
+    def test_a_slash_kills_main_after_the_design_before_it_folded(
+        self, tmp_path, monkeypatch,
+    ):
+        """Why validate has to refuse it: ``main`` does not survive it."""
+        result_file = TestZeroDesignsFailsTheJob()._arrange(
+            tmp_path, monkeypatch, rc=0,
+            binders=[
+                {"name": "VHH-12", "sequence": "EVQLVESGGG"},
+                {"name": "4D5/trastuzumab", "sequence": "EVQLVESGGG"},
+            ],
+        )
+        uploads = []
+        monkeypatch.setattr(rp, "upload_pdb", lambda url, data: uploads.append(url))
+
+        with pytest.raises(FileNotFoundError):
+            rp.main()
+
+        assert len(uploads) == 1, "the design before the bad name should have folded"
+        assert not result_file.exists(), (
+            "the raise escapes main before any results file is written")
+
+    @pytest.mark.parametrize("name", [
+        "4D5/trastuzumab",
+        ".hidden",
+        "..",
+        "a\0b",
+        "x" * 201,
+        "é" * 101,  # 202 bytes in UTF-8
+    ])
+    def test_validate_refuses_a_name_that_cannot_be_a_file_name(self, name):
+        inputs, err = b2.validate(_named_form("VHH-12", name), {})
+        assert inputs is None, f"validate accepted {name!r}"
+        assert repr(name) in err, f"the refusal must name the binder: {err!r}"
+
+    @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
+    def test_validate_still_accepts_names_linux_can_hold(self, name):
+        """Positive control: the refusal must not reach past the hazard."""
+        inputs, err = b2.validate(_named_form("VHH-12", name), {})
+        assert err is None, err
+        assert [b["name"] for b in inputs["binder_sequences"]] == ["VHH-12", name]
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="the pipeline runs on Linux; Windows reads '\\' as a separator",
+    )
+    @pytest.mark.parametrize("name", _NAMES_LINUX_CAN_HOLD)
+    def test_main_completes_on_every_name_validate_accepts(
+        self, tmp_path, monkeypatch, name,
+    ):
+        """The accepted names really are safe for the local path, on Linux."""
+        result_file = TestZeroDesignsFailsTheJob()._arrange(
+            tmp_path, monkeypatch, rc=0,
+            binders=[{"name": name, "sequence": "EVQLVESGGG"}],
+        )
+
+        rp.main()
+
+        assert json.loads(result_file.read_text())["status"] == "COMPLETED"
+
+    @pytest.mark.parametrize("stem, found", [(".hidden", False), ("hidden", True)])
+    def test_collect_outputs_cannot_see_a_design_named_with_a_leading_dot(
+        self, tmp_path, stem, found,
+    ):
+        """Why a leading ``.`` is refused although its file writes fine.
+
+        boltz 2.2.1 names what it writes after the input file's stem: the stem
+        becomes the record id (src/boltz/data/parse/yaml.py and schema.py), and
+        the model lands at ``boltz_results_{stem}/predictions/{id}/
+        {id}_model_0.pdb`` (src/boltz/main.py, src/boltz/data/write/writer.py).
+        ``glob`` skips dot-names, so ``main`` would log that design as "no PDB
+        emitted" after its fold had run.
+        """
+        out_dir = tmp_path / "out"
+        pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
+        pred.mkdir(parents=True)
+        (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
+
+        pdb_path, _ = rp.collect_outputs(out_dir)
+
+        assert (pdb_path is not None) is found
+
+
 # ---------------------------------------------------------------------------
 # 5 - the image ships no cuequivariance, so the kernel path must stay off
 # ---------------------------------------------------------------------------
