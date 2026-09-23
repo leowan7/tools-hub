@@ -738,12 +738,14 @@ def main() -> None:
                     continue
                 staged.append((i, name, sequence))
 
-            # msa_server folds one design per process. Boltz fetches every
-            # record's MSA up front when given a batch, which changes the
-            # shape of the MSA-server hop this preset depends on; the saving
-            # would be small anyway, since the ~214 s/design measured for this
-            # preset is dominated by that fetch rather than by the model load
-            # batching removes.
+            # msa_server folds one design per process, unmeasured and
+            # deliberately so: the ~214 s/design measured for this preset is
+            # dominated by the MSA-server fetch rather than by the model load
+            # batching removes, so the saving would be small. Whether boltz
+            # also reshapes that hop by fetching a batch's MSAs up front is a
+            # claim about boltz's own source, which is not vendored here or
+            # installed in the repo venv — a reason to measure this preset
+            # before batching it, not a reason it cannot be batched.
             chunk_size = 1 if msa_server else FOLD_CHUNK
 
             for c0 in range(0, len(staged), chunk_size):
@@ -801,7 +803,7 @@ def main() -> None:
                     # folded by one process and are not timed individually.
                     design_seconds = chunk_seconds / len(chunk)
 
-                    if pdb_path is None and len(chunk) > 1:
+                    if pdb_path is None and not msa_server:
                         # A missing record says the chunk's process stopped
                         # early or skipped this one; it does not say this
                         # design cannot fold. Re-fold it by itself — the
@@ -811,6 +813,18 @@ def main() -> None:
                         # chunk that produced nothing therefore costs one
                         # batch plus the per-design runs it already cost
                         # before batching.
+                        #
+                        # Gated on the preset rather than on ``len(chunk) >
+                        # 1``. The two differ only for the last chunk of a run
+                        # whose design count is not a multiple of FOLD_CHUNK:
+                        # 11 designs leave design 10 alone in ``b_001``, and
+                        # gating on the chunk would deny it the retry the same
+                        # fault buys design 5 — a design kept or lost on ``11 %
+                        # FOLD_CHUNK``. msa_server is excluded instead, where
+                        # the retry is a second ~214 s MSA fetch rather than a
+                        # ~14-23 s re-fold. Both pinned by
+                        # ``tests/test_boltz2_batched_folds.py::TestAMissingRecordIsRetriedAlone``
+                        # and ``::TestMsaServerIsNotBatched``.
                         logger.warning(
                             "design %s: no output from %s — re-folding alone",
                             name, chunk_dir.name,

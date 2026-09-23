@@ -229,9 +229,11 @@ CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
 #
 # These rules are narrower than "anything the sanitiser would change", and
 # deliberately: 'anti-HER2 scFv' is accepted here and still stored as
-# 'anti-HER2_scFv'. 200 is a conservative bound, not a derived ceiling. The
-# 231 that Linux's 255-byte file-name cap once implied was a bound on boltz's
-# ``confidence_{name}_model_0.json``, which no longer carries the name.
+# 'anti-HER2_scFv'. 200 is a conservative bound, not a derived ceiling. It was
+# once sized against the longest file name boltz derives from a record's id,
+# back when that id was the binder name — a derivation #338 got wrong and #339
+# corrects. On this branch the id is an index, so no boltz file name carries
+# the name at all, and the storage key above is the only thing left to bound.
 # Pinned by ``tests/test_boltz2_smoke.py::TestBinderNameIsAFileName``.
 BINDER_NAME_MAX_BYTES = 200
 

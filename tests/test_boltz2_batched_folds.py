@@ -242,10 +242,12 @@ class TestFoldsRunInChunks:
 
 
 class TestMsaServerIsNotBatched:
-    """Boltz fetches every record's MSA up front when handed a batch.
+    """This preset keeps one design per process.
 
-    The preset's cost is dominated by that fetch rather than by the model
-    load batching removes, so it keeps one design per process.
+    Its ~214 s/design is dominated by the MSA-server fetch rather than by the
+    model load batching removes, so the saving would be small — and it has
+    not been measured. What these two tests pin is the decision, not the
+    reason for it: the chunking must not reach this preset by accident.
     """
 
     def test_one_process_per_design(self, run_pipeline):
@@ -257,6 +259,22 @@ class TestMsaServerIsNotBatched:
             f"process; it must stay one"
         )
         assert result["designs_completed"] == 3
+
+    def test_a_dropped_record_is_not_retried(self, run_pipeline):
+        """And the solo retry stays off here, which is the other half.
+
+        The retry exists to undo what batching can cost a design. This preset
+        is not batched, so a dropped record had no neighbour to lose, and a
+        retry would buy a second ~214 s MSA fetch for one design.
+        """
+        fake = FakeBoltz(skip={"d_001"}, skip_once=True)
+        result, _ = run_pipeline(fake, n=3, tier="msa_server")
+
+        assert [len(c) for c in fake.calls] == [1, 1, 1], (
+            f"msa_server re-folded a dropped record: {fake.calls}"
+        )
+        assert result["designs_completed"] == 2
+        assert result["n_failures"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +295,24 @@ class TestAMissingRecordIsRetriedAlone:
             f"boltz's second call was {fake.calls[1]}"
         )
         assert uploaded["binder5_complex.pdb"] == "ATOM  structure of d_005\n"
+
+    def test_a_trailing_chunk_of_one_is_retried_too(self, run_pipeline):
+        """11 designs leave design 10 alone in ``b_001``; it still retries.
+
+        The retry used to be gated on ``len(chunk) > 1``, which decided this
+        on ``11 % FOLD_CHUNK``: one transient fault recovered design 5 and
+        dropped design 10, with nothing in the log to say why.
+        """
+        fake = FakeBoltz(skip={"d_010"}, skip_once=True)
+        result, uploaded = run_pipeline(fake, n=11)
+
+        assert result["designs_completed"] == 11
+        assert result["n_failures"] == 0
+        assert fake.calls[-1] == ["d_010"], (
+            f"expected a solo retry for the run's trailing design; boltz's "
+            f"last call was {fake.calls[-1]}"
+        )
+        assert uploaded["binder10_complex.pdb"] == "ATOM  structure of d_010\n"
 
     def test_a_record_that_never_folds_costs_only_itself(self, run_pipeline):
         """Negative control: the retry must not paper over a real failure.
