@@ -2,7 +2,7 @@
 
 ``run_pipeline.main`` folds ``FOLD_CHUNK`` designs per ``boltz predict``
 process rather than one, so the start-up and checkpoint load are paid once a
-chunk. Four things have to hold for that to be safe, and each has its own
+chunk. Six things have to hold for that to be safe, and each has its own
 class below:
 
 - every design reads ITS OWN record's structure and scores out of the shared
@@ -10,7 +10,9 @@ class below:
 - the chunking actually happens, or the change is inert,
 - ``msa_server`` is not batched,
 - a record the batch did not produce is re-folded alone, and its neighbours
-  are delivered either way.
+  are delivered either way,
+- the live progress number never counts backwards,
+- a binder name never becomes a boltz path, whatever it is called.
 
 The fake ``boltz predict`` here writes the real output layout — one directory
 per record, files named after the record — and the real ``collect_outputs``
@@ -77,7 +79,13 @@ def run_pipeline(tmp_path, monkeypatch):
     """
     beats: list[dict] = []
 
-    def _run(fake: FakeBoltz, n: int = 12, tier: str = "standalone"):
+    def _run(
+        fake: FakeBoltz,
+        n: int = 12,
+        tier: str = "standalone",
+        names: list[str] | None = None,
+    ):
+        binders = names if names is not None else [f"binder{i}" for i in range(n)]
         result_file = tmp_path / "smoke_results.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
 
@@ -121,8 +129,7 @@ def run_pipeline(tmp_path, monkeypatch):
                 "antigen_chain": "A",
                 "hotspot_residues": [],
                 "binder_sequences": [
-                    {"name": f"binder{i}", "sequence": "EVQLVESGGG"}
-                    for i in range(n)
+                    {"name": name, "sequence": "EVQLVESGGG"} for name in binders
                 ],
             },
         }
@@ -360,3 +367,58 @@ class TestProgressNeverCountsBackwards:
         # A failed design must not stall it either: the run still walks the
         # whole submitted list.
         assert progress[-1] == 12
+
+
+# ---------------------------------------------------------------------------
+# 6 — a binder name that ends in .pdb
+# ---------------------------------------------------------------------------
+
+
+class TestABinderNamedLikeAFileDoesNotBecomeOne:
+    """Boltz names its whole output tree after the input yaml's stem.
+
+    While that stem was the binder name, a binder called ``mydesign.pdb``
+    made boltz create DIRECTORIES called ``mydesign.pdb``. Those match
+    ``collect_outputs``'s ``**/*.pdb`` glob, sort ahead of the real model
+    file, and end ``main`` from a ``read_text()`` outside any try — a crash
+    AFTER the fold rather than before it. It is reachable by a plain
+    submission: the hub's own FASTA export writes headers of that shape and
+    ``_parse_binder_text`` takes a header as a name, while #338's rules
+    refuse '/', NUL, a leading '.' and over 200 bytes but not a '.pdb'
+    ending.
+
+    Chunked folding writes ``d_000.yaml``, so the stem is an index and no
+    boltz path carries the name at all. The second test is the falsifier:
+    read the pre-batching way, the same tree still hands back a directory.
+    """
+
+    def test_the_name_does_not_reach_the_record_id(self, run_pipeline):
+        fake = FakeBoltz()
+        result, uploaded = run_pipeline(fake, names=["mydesign.pdb", "VHH-12"])
+
+        assert fake.calls == [["d_000", "d_001"]], (
+            f"boltz was handed record ids {fake.calls}; a binder name must "
+            f"not be one of them"
+        )
+        assert result["designs_completed"] == 2
+        assert result["n_failures"] == 0
+        # The name does still reach the storage key. That is a rename, not a
+        # crash — see ``tools/boltz2/__init__.py``'s BINDER_NAME_MAX_BYTES
+        # block, and PR #340, which fixes the refold half of it hub-side.
+        assert "mydesign.pdb_complex.pdb" in uploaded
+
+    def test_the_pre_batching_glob_still_picks_a_directory(self, tmp_path):
+        out_dir = tmp_path / "out"
+        # The tree boltz wrote back when the stem was the binder name.
+        pred = (
+            out_dir / "boltz_results_mydesign.pdb" / "predictions" / "mydesign.pdb"
+        )
+        pred.mkdir(parents=True)
+        (pred / "mydesign.pdb_model_0.pdb").write_text("ATOM  real model\n")
+
+        pdb_path, _ = rp.collect_outputs(out_dir)
+
+        assert pdb_path is not None and pdb_path.is_dir(), (
+            f"collect_outputs returned {pdb_path!r}; if the unscoped glob no "
+            f"longer picks a directory then the test above proves nothing"
+        )
