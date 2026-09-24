@@ -482,6 +482,17 @@
           </tr>
         </tbody>
       </table>
+      {# Each "Start with" cell names a starting point, not the whole
+         list: five tools in this catalog design a mini-protein binder
+         against a target structure, and this row names two of them.
+         The chooser on /tools puts two more questions and then shows
+         every tool that qualifies, built from the same catalog this
+         table reads (shared/tool_chooser.py). #}
+      <p class="section-lede">
+        Usually more than one tool fits a row.
+        <a href="{{ url_for('tools.tools_comparison') }}#chooser">Answer two
+        questions</a> to see every one that does.
+      </p>
     </section>
   {% endif %}
 
