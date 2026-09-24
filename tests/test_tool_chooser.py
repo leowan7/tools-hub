@@ -377,9 +377,82 @@ def test_every_answer_reaches_at_least_one_tool():
             "target-sequence", shape=shape, chemistry="plain",
         ), f"no tool answers shape={shape}"
     for chem, _label in tool_chooser.CHEMISTRY_CHOICES:
-        assert tool_chooser.recommend(
+        picks = tool_chooser.recommend(
             "target-structure", shape="unsure", chemistry=chem,
-        ), f"no tool answers chemistry={chem}"
+        )
+        if chem == "small-molecule":
+            # Deliberately empty: no tool in this catalog designs against
+            # the visitor's OWN small molecule. proteina's ligand_binder
+            # is the only candidate and it refuses a staged target --
+            # see test_the_ligand_preset_refuses_the_visitors_own_molecule.
+            # The template renders the "no tool covers that" copy.
+            assert picks == [], (
+                "small-molecule must stay empty until a tool can take a "
+                f"custom ligand; got {[p['slug'] for p in picks]}"
+            )
+            continue
+        assert picks, f"no tool answers chemistry={chem}"
+
+
+def test_the_ligand_preset_refuses_the_visitors_own_molecule():
+    """Why the small-molecule answer is empty, driven on the real adapter.
+
+    If proteina ever accepts a custom ligand target, this fails and the
+    chemistry can be claimed in ``_FACTS`` again.
+    """
+    proteina = _adapters()["proteina"]
+    _spec, err = proteina.validate(
+        {
+            "preset": "ligand_binder",
+            "_has_custom_target": "1",
+            "target_input": "A1-150",
+        },
+        {},
+    )
+    assert err is not None and "cannot design against your own target" in err
+    assert "small-molecule" not in tool_chooser._FACTS["proteina"].chemistries
+
+
+def test_a_curated_default_target_tool_tells_you_to_attach_the_file():
+    """A no-upload submit must not look free of prerequisites.
+
+    proteina accepts a submit with no file and silently designs against a
+    bundled benchmark target, so its card has to say to attach one. Driven
+    on the real adapter: if a future version refuses the empty submit, the
+    warning is no longer needed and this fails.
+    """
+    proteina = _adapters()["proteina"]
+    spec, err = proteina.validate({"preset": "protein_binder"}, {})
+    assert err is None, "proteina no longer accepts a submit with no upload"
+    assert spec.get("target_source") == "curated"
+    assert spec.get("task_name"), "no default target, so nothing to warn about"
+
+    line = tool_chooser.prerequisite_line("proteina")
+    assert "must attach it" in line
+    assert "benchmark target" in line
+
+
+def test_the_multi_chain_filter_consults_every_tool_preflight_gates():
+    """The filter must key on TOOL_RULES, not on needs_structure.
+
+    proteina is the case that separates them: requires_pdb is False on it
+    and every preset, so needs_structure is False, yet it has TOOL_RULES
+    and does reach ``_multi_chain_block``. Keyed on needs_structure the
+    question was skipped for it entirely.
+    """
+    assert tool_chooser.needs_structure("proteina") is False
+    assert "proteina" in TOOL_RULES
+
+    offered = {
+        p["slug"]
+        for p in tool_chooser.recommend(
+            "target-structure", shape="unsure", chemistry="multi-chain",
+        )
+    }
+    for slug in offered & set(TOOL_RULES):
+        assert tool_chooser.supports_multi_chain(slug), (
+            f"{slug} is offered for a two-chain site but preflight refuses one"
+        )
 
 
 def test_worked_example_flag_matches_the_files_on_disk():
@@ -594,7 +667,9 @@ def test_multi_chain_does_not_drop_a_tool_that_takes_no_upload():
     """_multi_chain_block only runs on a STAGED target.
 
     esmfold2-design needs no PDB, so nothing refuses it for a two-chain
-    target; dropping it emptied the only scFv answer in the catalog.
+    target; dropping it emptied the scFv answer for a visitor with only a
+    sequence. boltzgen also designs scFvs, but only from a structure, so
+    it is not a substitute in that bucket.
     """
     assert not tool_chooser.needs_structure("esmfold2-design")
     assert "esmfold2-design" not in TOOL_RULES
@@ -631,11 +706,14 @@ def test_proteina_is_not_offered_to_a_visitor_with_no_structure():
 
     ``tools/proteina/__init__.py`` module docstring: a curated task is
     "a repo-bundled benchmark task whose target is baked into the
-    config". requires_pdb is False on every preset, so
-    ``prerequisite_line`` has no clause to warn them with — the only
-    honest fix is to leave it out of the sequence-only bucket.
+    config". Aiming it at the visitor's own target is the
+    ``target_source == "custom"`` path, which is a .pdb/.cif upload — so
+    a visitor holding only a sequence cannot use it on their target at
+    all, whatever its card says.
     """
-    assert tool_chooser.prerequisite_line("proteina") == ""
+    # The card does warn, but the warning names a file this visitor does
+    # not have; being told to upload what you lack is not an answer.
+    assert "must attach it" in tool_chooser.prerequisite_line("proteina")
     seq = {
         p["slug"]
         for p in tool_chooser.recommend("target-sequence", shape="mini-protein")

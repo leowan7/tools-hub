@@ -145,17 +145,28 @@ _FACTS: dict[str, _Facts] = {
     # — tools/proteina/meta.py, about["when_to_use"][2].
     #
     # NOT in the target-sequence bucket. proteina does run with no upload,
-    # but only against "a curated benchmark task whose target is baked into
-    # the config" (tools/proteina/__init__.py module docstring); aiming it at
+    # but only against "a repo-bundled benchmark task whose target is baked
+    # into the config" (tools/proteina/__init__.py module docstring); aiming at
     # the visitor's OWN target is the target_source == "custom" path, which
     # is a .pdb/.cif upload (tools/proteina/meta.py, about["prerequisites"]).
     # A sequence-only visitor recommended proteina would arrive at the form
     # and find their target unreachable, and requires_pdb is False on every
     # preset so prerequisite_line() has nothing to warn them with.
+    #
+    # "small-molecule" is NOT claimed here, though
+    # tools/proteina/meta.py, about["when_to_use"][2] says "Your target is
+    # a small molecule rather than a protein". That is the ligand_binder
+    # preset, and tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS holds
+    # {"protein_binder"} only -- validate refuses a ligand run against a
+    # staged target with "The ligand_binder variant cannot design against
+    # your own target". It designs against a bundled benchmark ligand, not
+    # the visitor's molecule, so the chooser must not answer "my target is
+    # a small molecule" with it. Pinned by
+    # test_the_ligand_preset_refuses_the_visitors_own_molecule.
     "proteina": _Facts(
         haves=frozenset({"target-structure"}),
         shapes=frozenset({"mini-protein"}),
-        chemistries=frozenset({"small-molecule"}),
+        chemistries=frozenset(),
     ),
     # "No PDB required. The gradient loop is sequence-only."
     # — tools/esmfold2_design/meta.py, about["prerequisites"]. Two presets: a
@@ -312,7 +323,15 @@ def has_example(slug: str) -> bool:
     # test_has_example_agrees_with_the_renderer_for_every_tool.
     from blueprints.tools import _example_result
 
-    return _example_result(slug) is not None
+    if _example_result(slug) is None:
+        return False
+    # The macro has a third gate: `{% if ex and adapter.results_partial %}`
+    # (templates/components/worked_example.html). Every adapter sets
+    # results_partial today, so this changes no answer now -- but a tool
+    # that shipped an example before a results partial would otherwise be
+    # advertised with a link to an anchor the macro never rendered.
+    adapter = _adapter_by_slug().get(slug)
+    return bool(adapter is not None and getattr(adapter, "results_partial", None))
 
 
 # A tool with no TOOL_RULES entry is never reached by the preflight
@@ -340,6 +359,24 @@ _ADAPTER_RESIDUE_REFUSALS: dict[str, str] = {
 # which drives all three adapters' real validate.
 _ADAPTER_MULTI_CHAIN_REFUSALS: frozenset[str] = frozenset({"esmfold"})
 
+# Tools that accept a submit with NO upload by falling back to a bundled
+# benchmark target. requires_pdb is False on them, so needs_structure is
+# False and prerequisite_line would otherwise say nothing -- which, on a
+# card offered under "A structure of my target", reads as "no upload
+# needed" and bills a GPU run against someone else's target.
+# ``tools/proteina/__init__.py::validate`` returns target_source "curated"
+# with a default task_name when no custom target is staged, and
+# ``blueprints/tools.py::tool_submit`` only demands a PDB once
+# target_source is already "custom". Pinned by
+# test_a_curated_default_target_tool_tells_you_to_attach_the_file.
+_CURATED_DEFAULT_TARGETS: dict[str, str] = {
+    "proteina": (
+        "You will need a structure of your target (.pdb or .cif), and you "
+        "must attach it: submitted with no file, this tool designs against "
+        "a bundled benchmark target instead of yours."
+    ),
+}
+
 
 def prerequisite_line(slug: str) -> str:
     """One plain sentence naming what the customer must bring.
@@ -348,6 +385,8 @@ def prerequisite_line(slug: str) -> str:
     adapter-level refusals above, so it cannot state a requirement the
     submit gate does not enforce, nor omit one it does.
     """
+    if slug in _CURATED_DEFAULT_TARGETS:
+        return _CURATED_DEFAULT_TARGETS[slug]
     parts: list[str] = []
     if needs_structure(slug):
         # The structure a backbone-only tool wants is the customer's own
@@ -437,12 +476,21 @@ def recommend(
             # Multi-chain is a preflight concept: _multi_chain_block runs
             # on a STAGED target. A tool that takes no upload never reaches
             # it, so its absence from TOOL_RULES is not a refusal and must
-            # not drop it — esmfold2-design is the catalog's only scFv
-            # designer and needs no PDB (requires_pdb False on the adapter
-            # and both presets), so excluding it emptied that answer.
+            # not drop it — esmfold2-design is the only scFv designer in
+            # the target-sequence bucket (boltzgen also designs scFvs, but
+            # only from a target structure) and needs no PDB (requires_pdb
+            # False on the adapter and both presets), so excluding it
+            # emptied that answer.
+            # Keyed on TOOL_RULES membership, not needs_structure: those
+            # are different questions, and proteina is the tool that shows
+            # it -- requires_pdb is False on it (so needs_structure is
+            # False) yet it HAS rules and does reach _multi_chain_block.
+            # Reading needs_structure here would skip the question for it
+            # entirely and only happen to be right while both its flags
+            # stay True.
             if (
                 chemistry == "multi-chain"
-                and needs_structure(slug)
+                and slug in TOOL_RULES
                 and not supports_multi_chain(slug)
             ):
                 continue
