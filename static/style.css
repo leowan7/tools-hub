@@ -2218,3 +2218,225 @@ select.form-control { cursor: pointer; }
 .site-footer-social a:hover {
   color: var(--accent-text);
 }
+
+/* =========================================================================
+   Left rail — persistent product navigation for the signed-in app.
+
+   Rendered from base.html (templates/_sidebar.html) as a flex sibling of
+   <main>, so <main> keeps its own centring and max-width and no page
+   template needed editing. Signed-out pages never render the rail, so
+   .app-shell degrades to a one-child row and the marketing layout is
+   byte-for-byte what it was.
+
+   Collapsed state is a `data-rail="collapsed"` attribute on <html>, set
+   before first paint in base.html and toggled in static/js/rail.js.
+   ========================================================================= */
+
+.app-shell {
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-width: 0;
+}
+.app-shell > main { min-width: 0; }
+
+.rail-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.rail {
+  flex: 0 0 240px;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  /* 53px clears the sticky 52px navbar plus its 1px bottom rule. */
+  position: sticky;
+  top: 53px;
+  align-self: flex-start;
+  max-height: calc(100vh - 53px);
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 0.85rem 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rail-head-title {
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.rail-collapse,
+.rail-drawer-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.rail-collapse:hover,
+.rail-drawer-toggle:hover {
+  border-color: var(--accent);
+  color: var(--warm-white);
+}
+.rail-collapse:focus-visible,
+.rail-drawer-toggle:focus-visible,
+.rail-link:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* Chevron for collapse, hamburger for the mobile drawer — drawn in CSS so
+   the rail adds no image request and no icon dependency. */
+.rail-collapse-glyph {
+  width: 7px;
+  height: 7px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  margin-left: 2px;
+}
+.rail-drawer-glyph,
+.rail-drawer-glyph::before,
+.rail-drawer-glyph::after {
+  display: block;
+  width: 13px;
+  height: 1.5px;
+  background: currentColor;
+}
+.rail-drawer-glyph { position: relative; }
+.rail-drawer-glyph::before,
+.rail-drawer-glyph::after {
+  content: '';
+  position: absolute;
+  left: 0;
+}
+.rail-drawer-glyph::before { top: -4px; }
+.rail-drawer-glyph::after  { top: 4px; }
+
+.rail-scroll {
+  overflow-y: auto;
+  padding: 0.6rem 0.5rem 1rem;
+}
+
+.rail-group + .rail-group { margin-top: 0.75rem; }
+.rail-group-title {
+  display: block;
+  padding: 0 0.35rem 0.25rem;
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.rail-list { list-style: none; margin: 0; padding: 0; }
+
+.rail-link {
+  display: block;
+  padding: 0.28rem 0.35rem;
+  border-radius: var(--radius-sm);
+  border-left: 2px solid transparent;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+.rail-link:hover {
+  background: var(--bg-hover);
+  color: var(--warm-white);
+}
+.rail-link-active {
+  background: var(--accent-glow);
+  border-left-color: var(--accent);
+  color: var(--accent-text);
+}
+
+/* --- Collapsed (desktop) ------------------------------------------------
+   Narrow strip keeping only the expand control, so the affordance that
+   brings the rail back is still on screen and still in the tab order. */
+:root[data-rail="collapsed"] .rail {
+  flex-basis: 40px;
+  width: 40px;
+}
+:root[data-rail="collapsed"] .rail-scroll,
+:root[data-rail="collapsed"] .rail-head-title { display: none; }
+:root[data-rail="collapsed"] .rail-head {
+  justify-content: center;
+  padding: 0.7rem 0.3rem;
+  border-bottom: none;
+}
+:root[data-rail="collapsed"] .rail-collapse-glyph {
+  transform: rotate(-135deg);
+  margin-left: -2px;
+}
+
+/* --- Drawer (below the tablet breakpoint) -------------------------------
+   Off-canvas so the page keeps the full viewport width and never scrolls
+   sideways; the backdrop is what dismisses it. */
+.rail-drawer-toggle { display: none; }
+.rail-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  .rail-drawer-toggle { display: inline-flex; }
+
+  .rail,
+  :root[data-rail="collapsed"] .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 200;
+    width: min(260px, 82vw);
+    flex-basis: auto;
+    max-height: none;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+  }
+  /* The collapsed-desktop rules must not leak into the drawer. */
+  :root[data-rail="collapsed"] .rail-scroll { display: block; }
+  :root[data-rail="collapsed"] .rail-head-title { display: block; }
+  :root[data-rail="collapsed"] .rail-head {
+    justify-content: space-between;
+    padding: 0.7rem 0.85rem 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  :root[data-rail-drawer="open"] .rail { transform: translateX(0); }
+
+  .rail-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 199;
+    background: rgba(8, 16, 27, 0.72);
+  }
+  :root[data-rail-drawer="open"] .rail-backdrop:not([hidden]) { display: block; }
+  :root[data-rail-drawer="open"],
+  :root[data-rail-drawer="open"] body { overflow: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail { transition: none; }
+}
