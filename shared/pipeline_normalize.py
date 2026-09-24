@@ -445,33 +445,52 @@ def normalize_for_pipeline(
     # their numbering BEFORE they pay — and the run does the renumbering
     # in-container, where nothing the user sees can reach.
     #
-    # The residues walked are the ones ``_PipelineSelect.accept_residue`` will
-    # accept, NOT the ones the filter loop above chose to keep: that test keys
-    # on ``(chain_id, resnum)`` with the insertion code stripped, so a residue
-    # that failed a filter is still written whenever a same-resSeq
-    # insertion-code sibling survived, and the renumber pass below then counts
-    # it and shifts every later residue. Preview has to predict what the run
-    # does, not what it ought to do. Then: file order, 1..N, last write wins
-    # for two residues sharing a resSeq. Equality with the written map is
-    # asserted in tests/test_input_remap_visible.py
+    # The residues walked are the ones the writer's own ``_PipelineSelect``
+    # will emit, NOT the ones the filter loop above chose to keep: that
+    # selector's residue test keys on ``(chain_id, resnum)`` with the
+    # insertion code stripped, so a residue that failed a filter is still
+    # written whenever a same-resSeq sibling survived, and the renumber pass
+    # below then counts it and shifts every later residue. Preview has to
+    # predict what the run does, not what it ought to do, so it runs the
+    # selector rather than a paraphrase of it. Then: file order, 1..N, last
+    # write wins for two residues sharing a resSeq. Equality with the written
+    # map is asserted in tests/test_input_remap_visible.py
     # ::test_preview_renumber_map_equals_the_written_map, whose
-    # ``icode-sibling-resurrects-a-dropped-residue`` case is exactly this.
+    # ``icode-sibling-resurrects-a-dropped-residue`` and
+    # ``resurrected-residue-loses-every-atom`` cases are the two ways the
+    # paraphrase went wrong.
     if output_path is None:
         if renumber_residues:
+            preview_selector = _PipelineSelect(
+                keep_chains=keep_chains,
+                keep_residues=keep_residues,
+                keep_atoms=keep_atoms,
+                keep_hydrogens=keep_hydrogens,
+                first_model_id=target_model_id,
+            )
             for model in structure:
-                if model.get_id() != target_model_id:
+                if not preview_selector.accept_model(model):
                     continue
                 for chain in model:
-                    cid = chain.get_id()
-                    if cid not in keep_chains:
+                    if not preview_selector.accept_chain(chain):
                         continue
+                    cid = chain.get_id()
                     idx = 0
                     for residue in chain:
-                        _, resnum, _ = residue.get_id()
-                        if (cid, resnum) not in keep_residues:
+                        if not preview_selector.accept_residue(residue):
+                            continue
+                        # accept_residue is necessary but not sufficient:
+                        # accept_atom drops any atom whose altloc disagrees
+                        # with the one chosen for that (resnum, icode, name),
+                        # and a residue that loses every atom is written as no
+                        # lines at all, so the re-parse below never sees it.
+                        if not any(
+                            preview_selector.accept_atom(a)
+                            for a in residue.get_unpacked_list()
+                        ):
                             continue
                         idx += 1
-                        renumber_map[(cid, resnum)] = idx
+                        renumber_map[(cid, residue.get_id()[1])] = idx
         report.renumber_map = renumber_map
         return report
 

@@ -107,6 +107,46 @@ _ICODE_RESURRECT = _pdb({"A": (
 )})
 
 
+def _pdb_zero_atom_resurrection() -> bytes:
+    """A resurrected residue that ends up written as no lines at all.
+
+    Residue 102 is altloc'd A/B on every backbone atom, B at the higher
+    occupancy, so the writer's chosen altloc for each of its atom names is B.
+    A water shares chain, resSeq AND insertion code with it, so the water's
+    single blank-altloc atom hits that same chosen-altloc lookup and loses it.
+    The water is dropped by the water filter, but the writer's residue test
+    strips the hetflag, so it is accepted as a residue and rejected atom by
+    atom -- written as nothing, and therefore absent from the renumbered file.
+    A preview that stops at the residue test counts it anyway.
+    """
+    lines = ["HEADER    SYNTHETIC\n"]
+    serial = 0
+    for i, rn in enumerate(range(100, 105)):
+        xb = float(i * 4.0)
+        alts = [("A", 0.4), ("B", 0.6)] if rn == 102 else [(" ", 1.0)]
+        for nm, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 3.0)]:
+            for alt, occ in alts:
+                serial += 1
+                lines.append(
+                    f"ATOM  {serial:5d}  {nm:<3s}{alt:1s}ALA "
+                    f"A{rn:4d}    "
+                    f"{xb + off:8.3f}{1.0:8.3f}{1.0:8.3f}"
+                    f"{occ:6.2f}{10.0:6.2f}          {nm[0]:>2s}\n"
+                )
+    serial += 1
+    lines.append(
+        f"HETATM{serial:5d}  O   HOH "
+        f"A{102:4d}    "
+        f"{99.0:8.3f}{99.0:8.3f}{99.0:8.3f}"
+        f"{1.0:6.2f}{10.0:6.2f}           O\n"
+    )
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+_ZERO_ATOM_RESURRECT = _pdb_zero_atom_resurrection()
+
+
 # ---------------------------------------------------------------------------
 # 1. The preview map has to BE the map the run will apply
 # ---------------------------------------------------------------------------
@@ -135,6 +175,10 @@ def _preview_and_written(pdb_bytes: bytes, chain: str) -> tuple[dict, dict]:
     pytest.param(
         _ICODE_RESURRECT, "A",
         id="icode-sibling-resurrects-a-dropped-residue",
+    ),
+    pytest.param(
+        _ZERO_ATOM_RESURRECT, "A",
+        id="resurrected-residue-loses-every-atom",
     ),
 ])
 def test_preview_renumber_map_equals_the_written_map(pdb_bytes, chain):
@@ -177,6 +221,25 @@ def test_a_dropped_residue_its_icode_sibling_revives_still_takes_a_number():
     # 100..140 is 41 residues, then the revived 141 at 42 and 141A at 43.
     assert preview[("A", 142)] == 44
     assert written[("A", 142)] == 44
+
+
+def test_a_resurrected_residue_with_no_surviving_atom_takes_no_number():
+    """Guards the zero-atom row from becoming vacuous.
+
+    The water shares resSeq 102 with an altloc'd polymer residue and comes
+    last in the file, so a preview that counted it would hand ``("A", 102)``
+    the LAST index instead of the second. Asserting the value, not just
+    equality, is what fails if the fixture stops reproducing the case.
+    """
+    text = _ZERO_ATOM_RESURRECT.decode()
+    assert "HOH A 102" in text, "fixture no longer shares a resSeq with the water"
+    assert "BALA A 102" in text, "fixture residue 102 is no longer altloc'd"
+    preview, written = _preview_and_written(_ZERO_ATOM_RESURRECT, "A")
+    # Five polymer residues, 100..104, and the water counted as none of them:
+    # 102 is the third, not the sixth a residue-test-only walk would give it.
+    assert len(written) == 5
+    assert preview[("A", 102)] == 3
+    assert written[("A", 102)] == 3
 
 
 # ---------------------------------------------------------------------------
