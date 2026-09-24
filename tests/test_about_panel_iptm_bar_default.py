@@ -614,7 +614,7 @@ def test_the_pointer_is_only_made_where_the_guide_states_a_number(
     # 14; a pattern loose enough to match something every summary says
     # fills it and the loop would flag none. (An over-running SLICE is a
     # different failure and lands on neither bound -- see the assert in
-    # _results_summary.) Re-measured 2026-09-12 by reading all 14
+    # _results_summary.) Re-measured 2026-09-24 by reading all 14
     # ``about["output_summary"]`` values: 7 state a bar, 7 do not.
     assert states, (
         "no guide states an ipTM bar; either STATED_BAR stopped matching "
