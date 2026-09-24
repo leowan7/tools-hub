@@ -1531,6 +1531,7 @@ def tool_preflight(tool: str):
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
         binder_max_aa=binder_max_aa, num_designs=num_designs,
+        offer_alphafold=request.form.get("no_alphafold") != "1",
         # Sizes the region the user typed, so the panel and the submit-time
         # gate below judge the same run. Without it the panel would size the
         # whole upload and refuse targets that submit then accepts.

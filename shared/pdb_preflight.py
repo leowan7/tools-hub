@@ -489,6 +489,7 @@ def preflight_for_tool(
     binder_max_aa: Optional[int] = None,
     num_designs: Optional[int] = None,
     target_segments: Optional[list] = None,
+    offer_alphafold: bool = True,
 ) -> PreflightVerdict:
     """Top-level entry. Returns a PreflightVerdict for the named binder tool.
 
@@ -518,6 +519,10 @@ def preflight_for_tool(
 
     On any unexpected error (parser blow-up, etc.) returns a NEEDS_FIX
     verdict with the underlying message — never raises.
+
+    ``offer_alphafold=False`` builds no AlphaFold suggestion, so neither the
+    swap button nor the prose that points at it appears. /prep passes it: it
+    has no submit that reads the swap's reuse token.
     """
     if tool_slug == "boltz2":
         # Dedicated evaluator: sequence-position hotspots, optional
@@ -541,7 +546,9 @@ def preflight_for_tool(
 
     rules = TOOL_RULES[tool_slug]
     preview = _PREVIEW_FN[tool_slug]
-    af_suggestion = _maybe_alphafold(pdb_bytes, target_chain)
+    af_suggestion = (
+        _maybe_alphafold(pdb_bytes, target_chain) if offer_alphafold else None
+    )
     target_chain = (target_chain or "").strip()
 
     # ---- multi-chain: model capability AND container capability -------------

@@ -333,21 +333,32 @@ def test_tools_page_links_target_prep(anon):
 
 # --- AlphaFold swap ------------------------------------------------------
 
-def test_prep_panel_opts_out_of_the_alphafold_swap(client):
+def _gapped_with_dbref() -> bytes:
+    """Chain A 1-40 with 12-15 missing, mapped to a UniProt by DBREF."""
+    body = _pdb({"A": 40}).decode().splitlines()
+    kept = [ln for ln in body
+            if not (ln.startswith("ATOM") and 12 <= int(ln[22:26]) <= 15)]
+    dbref = "DBREF  1ABC A    1    40  UNP    P01234   TEST_HUMAN       1     40"
+    return ("\n".join([dbref] + kept) + "\n").encode()
+
+
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_prep_panel_opts_out_of_the_alphafold_swap(client, opt_out):
     """The swap empties the file input and parks the model in
-    reuse_pdb_token, which /prep never reads: trim and handoff would then
-    refuse with "Load a target first". Source check, like
-    test_input_remap_visible.py's, because the repo has no runner for
-    preflight.js."""
-    import pathlib
-
-    from tests.test_candidate_table_js_contract import _lex
-
+    reuse_pdb_token, which /prep never reads, so trim and handoff would then
+    refuse with "Load a target first". /prep's panel sends no_alphafold=1;
+    the verdict must then carry neither the button nor prose pointing at it.
+    """
     html = client.get("/prep").get_data(as_text=True)
     assert 'data-no-alphafold="1"' in html
-    src = (pathlib.Path(__file__).resolve().parents[1]
-           / "static" / "js" / "preflight.js").read_text(encoding="utf-8")
-    js, _ = _lex(src)
-    assert "if (panel.dataset.noAlphafold) v = Object.assign({}, v, { alphafold: null });" in js
-    assert "reuse_pdb_token" not in (pathlib.Path(__file__).resolve().parents[1]
-                                     / "blueprints" / "prep.py").read_text(encoding="utf-8")
+    form = {"target_chain": "A", "hotspot_residues": "10"}
+    if opt_out:
+        form["no_alphafold"] = "1"
+    r = _post(client, "/tools/rfantibody/preflight", pdb=_gapped_with_dbref(), **form)
+    v = r.get_json()
+    assert v["kind"] == "needs_fix", v
+    if opt_out:
+        assert v["alphafold"] is None
+        assert "below" not in (v.get("suggested_fix") or "")
+    else:
+        assert v["alphafold"]["accession"] == "P01234"
