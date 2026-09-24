@@ -33,6 +33,18 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='wallet.css') }}">
   {% block head_extra %}{% endblock %}
 
+  {% if session.get('user_email') %}
+    {# Applied before first paint so a collapsed rail never flashes open.
+       The matching persistence and toggling live in static/js/rail.js. #}
+    <script>
+      try {
+        if (localStorage.getItem('rail_collapsed') === '1') {
+          document.documentElement.setAttribute('data-rail', 'collapsed');
+        }
+      } catch (e) { /* localStorage disabled — rail stays expanded */ }
+    </script>
+  {% endif %}
+
   {# Analytics — gated on env-injected keys so dev/staging don't pollute prod props. #}
   {% if posthog_key %}
     <script>
@@ -226,17 +238,26 @@
       </script>
     {% endif %}
 
-    <main>
-      <div class="app-container">
-        {% block content %}{% endblock %}
-      </div>
-    </main>
+    {# The rail and <main> are siblings in a flex row so <main> keeps its
+       own centring and every existing page keeps its measure. Signed-out
+       pages render <main> alone, exactly as before. #}
+    <div class="app-shell">
+      {% if session.get('user_email') %}
+        {% include "_sidebar.html" %}
+      {% endif %}
+      <main>
+        <div class="app-container">
+          {% block content %}{% endblock %}
+        </div>
+      </main>
+    </div>
 
     {% include "_footer.html" %}
   {% endblock %}
   <script src="{{ url_for('static', filename='js/track.js') }}" defer></script>
   {% if session.get('user_email') %}
     <script src="{{ url_for('static', filename='js/wallet-nav.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/rail.js') }}" defer></script>
   {% endif %}
 </body>
 </html>

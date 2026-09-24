@@ -8,7 +8,8 @@ own ``meta.py`` alongside this one.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
                          ``typical_minutes`` is a human-readable range (e.g.
                          ``"15-60"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
@@ -28,7 +29,7 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15 to 60"},
+    "pilot": {"typical_minutes": "15 to 60", "minutes": (15, 60)},
 }
 
 # THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE, and the publisher

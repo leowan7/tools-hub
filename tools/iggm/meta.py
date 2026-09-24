@@ -12,11 +12,11 @@ from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # Advisory only; refit from the canary I-* runs before flag-on.
-    "complex_prediction": {"typical_minutes": "~2"},
-    "cdr_design": {"typical_minutes": "~3"},
-    "fr_design": {"typical_minutes": "~3"},
+    "complex_prediction": {"typical_minutes": "~2", "minutes": (2, 2)},
+    "cdr_design": {"typical_minutes": "~3", "minutes": (3, 3)},
+    "fr_design": {"typical_minutes": "~3", "minutes": (3, 3)},
     "affinity_maturation": {"typical_minutes": "scales with samples x masked positions"},
-    "inverse_design": {"typical_minutes": "~2"},
+    "inverse_design": {"typical_minutes": "~2", "minutes": (2, 2)},
 }
 
 paper_citation: str = "Wang et al., ICLR 2025"

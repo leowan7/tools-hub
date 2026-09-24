@@ -7,7 +7,8 @@ Parallel to ``tools/bindcraft/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation    — short inline citation.
     paper_url         — bioRxiv / Science permalink.
     github_url        — upstream ProteinMPNN repository.
@@ -29,7 +30,7 @@ _SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "1"},
+    "standalone": {"typical_minutes": "1", "minutes": (1, 1)},
 }
 
 paper_citation: str = "Dauparas et al., Science 2022"
