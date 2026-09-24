@@ -1103,23 +1103,21 @@ def _run_batch_folds(
         )
 
     runtime_seconds = int(time.time() - start)
+    if not designs_out and n_folded:
+        _fail(
+            "storage",
+            "no_designs",
+            f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+            f"— the delivery hop failed, not the folds; see the per-design "
+            f"upload warnings in the run log, and this job's raw archive "
+            f"for the structures",
+        )
     if not designs_out:
-        if n_folded:
-            detail = (
-                f"{n_folded} of {designs_total} designs folded but 0 uploaded "
-                f"— the delivery hop failed, not the folds; see the per-design "
-                f"upload warnings in the run log, and this job's raw archive "
-                f"for the structures"
-            )
-        else:
-            detail = (
-                f"none of {designs_total} designs folded ({n_failures} "
-                f"failures) — nothing to deliver."
-            )
         _fail(
             "no_yield",
             "no_designs",
-            detail,
+            f"none of {designs_total} designs folded ({n_failures} "
+            f"failures) — nothing to deliver.",
             runtime_seconds=runtime_seconds,
         )
     _write_result(

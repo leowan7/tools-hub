@@ -644,7 +644,11 @@ _REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
 _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     # Buckets this repo classifies; the emitter is cited per entry.
     "pipeline":                "tool_error",          # docker run_pipeline crashed (blueprints/jobs.py::job_status)
-    "storage":                 "infra_crash",         # Supabase Storage upload failed (blueprints/tools.py::tool_submit)
+    # Supabase Storage upload failed. Emitters: blueprints/tools.py::tool_submit
+    # (the input), and the all-uploads-failed guard in main() of
+    # tools/iggm/run_pipeline.py and tools/opendde/run_pipeline.py and in
+    # _run_batch_folds of tools/esmfold/run_pipeline.py (the outputs).
+    "storage":                 "infra_crash",
     # Modal SDK submit raised before the GPU pod started. Three emitters:
     # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
     # shared/compute_campaigns.py::_dispatch_chunk.
@@ -659,7 +663,7 @@ _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     # 0029_tool_jobs_failure_class.sql backfilled rows that already carried
     # it, and this entry keeps any such row classifying the same way.
     "overrun_safety_kill":     "safety_kill",
-    "no_yield":                "completed_no_yield",  # GPU ran as ordered, every design died (esmfold/opendde/iggm run_pipeline.py)
+    "no_yield":                "completed_no_yield",  # no design folded (tools/esmfold/run_pipeline.py::_run_batch_folds)
     # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",

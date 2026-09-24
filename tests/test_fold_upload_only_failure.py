@@ -8,9 +8,10 @@ turns that into a FAILED "all N designs failed", pinned by
 ``tests/test_boltz2_smoke.py::TestZeroDesignsFailsTheJob`` -- af2 and
 colabfold complete green with zero designs on that run when the fold step
 exits 0, so what is pinned for them is the count and the message rather than
-the exit status. esmfold fails a zero-design run with bucket ``no_yield``
+the exit status. esmfold fails a zero-design run, with bucket ``storage`` when
+something folded and ``no_yield`` when nothing did
 (``tests/test_zero_design_runs_fail.py``); what is pinned for it here is that
-the failure detail names the upload hop only when something folded.
+the failure names the upload hop only when something folded.
 
 The negative controls (nothing folded) are what make the rest mean anything: a
 count or a message that named the upload hop unconditionally would satisfy the
@@ -259,7 +260,8 @@ class TestEsmfoldBatch:
 
         result = json.loads(result_file.read_text())
         assert result["status"] == "FAILED"
-        assert result["error"]["bucket"] == "no_yield"
+        assert result["error"]["bucket"] == "storage"
+        assert "runtime_seconds" not in result, result
         detail = result["error"]["detail"]
         assert "2 of 2 designs folded but 0 uploaded" in detail, detail
 
