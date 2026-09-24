@@ -9,7 +9,7 @@ turns that into a FAILED "all N designs failed", pinned by
 colabfold complete green with zero designs on that run when the fold step
 exits 0, so what is pinned for them is the count and the message rather than
 the exit status. esmfold fails a zero-design run, with bucket ``storage`` when
-something folded and ``no_yield`` when nothing did
+something folded and ``pipeline`` when nothing did, both refunded
 (``tests/test_zero_design_runs_fail.py``); what is pinned for it here is that
 the failure names the upload hop only when something folded.
 
@@ -17,9 +17,9 @@ The negative controls (nothing folded) are what make the rest mean anything: a
 count or a message that named the upload hop unconditionally would satisfy the
 positive assertions while lying about a run where no structure ever existed.
 
-Billing is deliberately unchanged by the fix under test, so every case below
-also asserts ``status`` and, on a COMPLETED result, ``designs_completed`` and
-``n_failures``.
+Every case below also asserts ``status`` and, on a COMPLETED result,
+``designs_completed`` and ``n_failures``; on a FAILED result it asserts the
+bucket, which decides the refund.
 """
 
 from __future__ import annotations
@@ -275,7 +275,8 @@ class TestEsmfoldBatch:
 
         result = json.loads(result_file.read_text())
         assert result["status"] == "FAILED"
-        assert result["error"]["bucket"] == "no_yield"
+        assert result["error"]["bucket"] == "pipeline"
+        assert "runtime_seconds" not in result, result
         detail = result["error"]["detail"]
         assert "none of 2 designs folded (2 failures)" in detail, detail
         assert "folded but 0 uploaded" not in detail, detail

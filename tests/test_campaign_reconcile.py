@@ -218,9 +218,10 @@ def test_inline_failed_child_is_terminalised(recon_env):
 
 
 def test_inline_failed_billed_bucket_is_settled_billed(recon_env):
-    """The billed counterpart of the refund above: a child that fails under
-    ``no_yield`` settles as billed ``completed_no_yield``, carrying its GPU
-    seconds."""
+    """The billed counterpart of the refund above: a child that fails under a
+    billed bucket settles billed, carrying its GPU seconds. No campaign tool
+    emits one today; ``overrun_safety_kill`` is the historical entry in
+    ``shared/jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS``."""
     from gpu.modal_client import _interpret_pipeline_return
     from shared.jobs import classify_terminal_state, is_billed_failure_class
 
@@ -235,9 +236,9 @@ def test_inline_failed_billed_bucket_is_settled_billed(recon_env):
             "status": "FAILED",
             "runtime_seconds": 412,
             "error": {
-                "bucket": "no_yield",
-                "check": "no_designs",
-                "detail": "none of 4 designs folded (4 failures).",
+                "bucket": "overrun_safety_kill",
+                "check": "runtime",
+                "detail": "run exceeded its safety ceiling.",
             },
         },
         "provider_job_id": "b",
@@ -247,10 +248,10 @@ def test_inline_failed_billed_bucket_is_settled_billed(recon_env):
     assert cc.reconcile_campaign_children("camp-1") == 1
     call = state["complete"][0]
     assert call["terminal_status"] == "failed"
-    assert call["error"]["bucket"] == "no_yield"
+    assert call["error"]["bucket"] == "overrun_safety_kill"
     assert call["gpu_seconds_used"] == 412
     klass = classify_terminal_state(status="failed", error=call["error"])
-    assert klass == "completed_no_yield"
+    assert klass == "safety_kill"
     assert is_billed_failure_class(klass)
 
 

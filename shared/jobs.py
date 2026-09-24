@@ -663,7 +663,6 @@ _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     # 0029_tool_jobs_failure_class.sql backfilled rows that already carried
     # it, and this entry keeps any such row classifying the same way.
     "overrun_safety_kill":     "safety_kill",
-    "no_yield":                "completed_no_yield",  # no design folded (tools/esmfold/run_pipeline.py::_run_batch_folds)
     # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",
