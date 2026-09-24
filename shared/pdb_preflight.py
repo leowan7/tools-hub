@@ -1204,8 +1204,8 @@ def _input_remap(
         1..N per chain and rewrite hotspots through the same map, so a user's
         ``A241`` reaches the model as a different number. Read off the
         container that bills, not inferred: llm-proteinDesigner's
-        ``docker/boltzgen/run_pipeline.py:1149`` looks each typed hotspot up in
-        ``renumber_map``, and :176 records the smoke target's own conversions
+        ``docker/boltzgen/run_pipeline.py:1150`` looks each typed hotspot up in
+        ``renumber_map``, and :178 records the smoke target's own conversions
         (author 54 -> 37, 56 -> 39, 115 -> 98, 123 -> 106).
       - bare-vs-prefixed hotspot attribution. ``_check_hotspots`` and
         ``tools/base.py::parse_hotspot_residues`` both promote a bare number

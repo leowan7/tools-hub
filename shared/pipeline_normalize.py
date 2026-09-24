@@ -302,11 +302,6 @@ def normalize_for_pipeline(
     dropped_per_chain: dict = {}
     kept_per_chain: dict = {}
     renumber_map: dict = {}
-    # Surviving residues per chain, in file order — the order the renumber
-    # pass below walks. Preview mode (output_path=None) derives the map from
-    # this instead of from a written file; tests/test_input_remap_visible.py
-    # ::test_preview_renumber_map_equals_the_written_map compares the two.
-    kept_order: dict = {}
     total_altloc_collapsed = 0
 
     # ``target_chain`` may name SEVERAL chains, separated by whitespace
@@ -387,7 +382,6 @@ def normalize_for_pipeline(
                     continue
 
             keep_residues[(chain_id, resnum)] = True
-            kept_order.setdefault(chain_id, []).append(resnum)
             for aname, alt in per_atom_altloc.items():
                 keep_atoms[(chain_id, resnum, icode, aname)] = alt
             total_altloc_collapsed += collapsed_here
@@ -446,19 +440,38 @@ def normalize_for_pipeline(
     # records collapsed, MSE remapped, etc.) — skip the file write, which
     # only helps callers that will hand the cleaned PDB to a downstream tool.
     #
-    # The renumber map is filled here from ``kept_order`` rather than left
-    # empty, because the preflight panel's whole job is to tell the user what
-    # the run will do to their numbering BEFORE they pay — and the run does
-    # the renumbering in-container, where nothing the user sees can reach.
-    # Same walk as the pass below: surviving residues per chain, file order,
-    # 1..N, last write wins for two residues sharing a resSeq (insertion
-    # codes). Equality with the written map is asserted in
-    # tests/test_input_remap_visible.py.
+    # The renumber map is filled here rather than left empty, because the
+    # preflight panel's whole job is to tell the user what the run will do to
+    # their numbering BEFORE they pay — and the run does the renumbering
+    # in-container, where nothing the user sees can reach.
+    #
+    # The residues walked are the ones ``_PipelineSelect.accept_residue`` will
+    # accept, NOT the ones the filter loop above chose to keep: that test keys
+    # on ``(chain_id, resnum)`` with the insertion code stripped, so a residue
+    # that failed a filter is still written whenever a same-resSeq
+    # insertion-code sibling survived, and the renumber pass below then counts
+    # it and shifts every later residue. Preview has to predict what the run
+    # does, not what it ought to do. Then: file order, 1..N, last write wins
+    # for two residues sharing a resSeq. Equality with the written map is
+    # asserted in tests/test_input_remap_visible.py
+    # ::test_preview_renumber_map_equals_the_written_map, whose
+    # ``icode-sibling-resurrects-a-dropped-residue`` case is exactly this.
     if output_path is None:
         if renumber_residues:
-            for cid in report.chains_kept:
-                for idx, orig in enumerate(kept_order.get(cid, []), start=1):
-                    renumber_map[(cid, orig)] = idx
+            for model in structure:
+                if model.get_id() != target_model_id:
+                    continue
+                for chain in model:
+                    cid = chain.get_id()
+                    if cid not in keep_chains:
+                        continue
+                    idx = 0
+                    for residue in chain:
+                        _, resnum, _ = residue.get_id()
+                        if (cid, resnum) not in keep_residues:
+                            continue
+                        idx += 1
+                        renumber_map[(cid, resnum)] = idx
         report.renumber_map = renumber_map
         return report
 

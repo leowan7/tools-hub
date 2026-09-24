@@ -48,18 +48,25 @@ from shared.pipeline_normalize import normalize_for_boltzgen
 def _pdb(chains: dict) -> bytes:
     """Backbone-complete ALA residues per chain.
 
-    ``chains`` maps a chain id to a list of residue ids, each either an int or
-    an ``(int, icode)`` pair. The insertion-code form is what makes two
-    residues share a resSeq, the case where the renumber map's last-write-wins
-    behaviour is observable at all.
+    ``chains`` maps a chain id to a list of residue ids, each either an int, an
+    ``(int, icode)`` pair, or an ``(int, icode, atom_names)`` triple. The
+    insertion-code form is what makes two residues share a resSeq, the case
+    where the renumber map's last-write-wins behaviour is observable at all.
+    The triple form writes a partial backbone, which is how a residue gets
+    dropped by ``drop_zero_backbone``.
     """
     lines = ["HEADER    SYNTHETIC\n"]
     serial = 0
     for chain_id, resids in chains.items():
         for i, rid in enumerate(resids):
-            rn, icode = rid if isinstance(rid, tuple) else (rid, " ")
+            if not isinstance(rid, tuple):
+                rid = (rid, " ")
+            rn, icode = rid[0], rid[1]
+            names = rid[2] if len(rid) > 2 else ("N", "CA", "C", "O")
             xb = float(i * 4.0)
             for nm, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 3.0)]:
+                if nm not in names:
+                    continue
                 serial += 1
                 elem = nm[0].rjust(2)
                 lines.append(
@@ -84,6 +91,19 @@ _TWO_CHAIN = _pdb({"A": _A, "B": _B})
 # one it holds is a real behavioural detail, not a formality.
 _ICODE = _pdb({"A": (
     list(range(100, 141)) + [(140, "A")] + list(range(141, 250))
+)})
+
+# The case that decides whether the preview may be quoted to a user at all.
+# Residue 141 has no O, so the filter loop drops it -- but the writer's
+# selector keys on (chain, resnum) with the insertion code stripped, and 141A
+# survives, so 141 is written anyway and the renumber pass counts it. A
+# preview built from the filter loop's own decisions is one short, and every
+# residue after 141 is then quoted one lower than the run will use.
+_ICODE_RESURRECT = _pdb({"A": (
+    list(range(100, 141))
+    + [(141, " ", ("N", "CA", "C"))]
+    + [(141, "A")]
+    + list(range(142, 250))
 )})
 
 
@@ -112,16 +132,21 @@ def _preview_and_written(pdb_bytes: bytes, chain: str) -> tuple[dict, dict]:
 @pytest.mark.parametrize("pdb_bytes,chain", [
     pytest.param(_TWO_CHAIN, "A B", id="two-chains-non-1-start"),
     pytest.param(_ICODE, "A", id="insertion-code"),
+    pytest.param(
+        _ICODE_RESURRECT, "A",
+        id="icode-sibling-resurrects-a-dropped-residue",
+    ),
 ])
 def test_preview_renumber_map_equals_the_written_map(pdb_bytes, chain):
     """The panel prints the PREVIEW map; the container applies the WRITTEN one.
 
     If they can differ, the form is free to promise a number the run will not
-    use — which is worse than saying nothing. The insertion-code row is the
-    case that forced the preview to walk an ordered list rather than the
-    ``keep_residues`` dict: keyed on ``(chain, resnum)`` that dict holds ONE
-    entry for 140 and 140A, so deriving the map from it yields first-wins
-    where the writing pass yields last-wins.
+    use — which is worse than saying nothing. Both insertion-code rows are
+    cases where a plausible preview gets it wrong: the first because
+    ``keep_residues`` is keyed on ``(chain, resnum)`` and so holds ONE entry
+    for 140 and 140A (deriving the map from it yields first-wins where the
+    writing pass yields last-wins), the second because that same stripped key
+    lets a residue the filters dropped be written anyway.
     """
     preview, written = _preview_and_written(pdb_bytes, chain)
     assert written, "the written pass produced no map; fixture is not renumbered"
@@ -139,6 +164,19 @@ def test_the_insertion_code_pair_is_the_reason_the_two_could_differ():
     # shorter than the chain, and 140 resolves to the LATER of the pair.
     assert len(preview) == 150
     assert preview[("A", 140)] == 42  # 100..139 is 40, then 140, then 140A
+
+
+def test_a_dropped_residue_its_icode_sibling_revives_still_takes_a_number():
+    """Guards the resurrect row from becoming vacuous the same way.
+
+    The fixture drops 141 (no O) and keeps 141A. If the preview counted only
+    the residues the filter loop chose, 142 would be quoted as 43 while the
+    run makes it 44, and every residue after it would be off by one too.
+    """
+    preview, written = _preview_and_written(_ICODE_RESURRECT, "A")
+    # 100..140 is 41 residues, then the revived 141 at 42 and 141A at 43.
+    assert preview[("A", 142)] == 44
+    assert written[("A", 142)] == 44
 
 
 # ---------------------------------------------------------------------------
