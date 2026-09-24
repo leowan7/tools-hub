@@ -439,10 +439,18 @@ def _list_or_tuple_isinstance_gates(node) -> int:
 def test_every_reader_routes_through_the_one_predicate(module, func):
     by_name = dict(_top_level_functions(_REPO / module))
     assert func in by_name, f"{module}::{func} is gone -- update _READERS"
-    assert _calls_named(by_name[func], "is_candidate_array"), (
-        f"{module}::{func} reads a per-candidate array without calling "
-        "is_candidate_array"
+    # A reader may reach the predicate through a pinned reader that calls it:
+    # _top_candidate_summary answers its shape question with
+    # supports_headline_claim, which is itself in _READERS above.
+    via = _ROUTES_VIA.get((module, func), "is_candidate_array")
+    assert _calls_named(by_name[func], via), (
+        f"{module}::{func} reads a per-candidate array without calling {via}"
     )
+
+
+_ROUTES_VIA = {
+    ("shared/email.py", "_top_candidate_summary"): "supports_headline_claim",
+}
 
 
 def _reads_an_array_key(node) -> bool:
