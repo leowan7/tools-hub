@@ -127,7 +127,15 @@ about: dict = {
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
         "Chain ID of the target.",
-        "At least one hotspot residue.",
+        # Stated as optional because nothing refuses a run without one:
+        # shared/pdb_preflight_rules.py sets hotspots_required=False for
+        # boltzgen, and tools/boltzgen/__init__.py accepts an empty
+        # hotspot list as "no hotspot constraint". It read "At least one
+        # hotspot residue", which is the only line in this file stricter
+        # than its own gate; tests/test_tool_chooser.py::
+        # test_hotspot_clause_matches_what_preflight_refuses pins the
+        # two together for every gated tool.
+        "Optionally, hotspot residues to aim the binder at.",
     ],
     "inputs": [
         {

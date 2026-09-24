@@ -222,6 +222,35 @@
       color: var(--text-secondary);
     }
     .comparison-footer a { color: var(--accent); }
+    /* --- "Which of these is for me?" ------------------------------- */
+    .chooser {
+      border: 1px solid var(--border, rgba(255,255,255,.14));
+      border-radius: 10px;
+      padding: 1.5rem;
+      margin: 2.5rem 0;
+    }
+    .chooser-q { margin: 0 0 .75rem; font-weight: 600; }
+    .chooser-opts {
+      display: grid;
+      gap: .45rem;
+      margin: 0 0 1.25rem;
+      padding: 0;
+      border: 0;
+    }
+    .chooser-opts label { display: flex; gap: .55rem; align-items: baseline; cursor: pointer; }
+    .chooser-step { margin-bottom: 1.5rem; }
+    .chooser-picks { display: grid; gap: .9rem; margin-top: 1.25rem; }
+    .chooser-pick {
+      display: block;
+      border: 1px solid var(--border, rgba(255,255,255,.14));
+      border-radius: 8px;
+      padding: .9rem 1rem;
+      text-decoration: none;
+    }
+    .chooser-pick-name { font-weight: 600; }
+    .chooser-pick-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .4rem; font-size: .85rem; opacity: .75; }
+    .chooser-note { font-size: .9rem; opacity: .8; }
+
   </style>
 {% endblock %}
 
@@ -239,6 +268,107 @@
       is worth validating.
     </p>
   </div>
+
+  {# ─── Which of these is for me? ──────────────────────── #}
+  {# A plain GET form. No JavaScript, so the answer is also a shareable
+     URL. Every option label and every recommendation below is supplied
+     by shared/tool_chooser.py; nothing about a tool is typed here. #}
+  <section class="chooser" id="chooser">
+    <h2>Which of these is for me?</h2>
+    <p class="chooser-note">
+      Answer one or two questions and we will show every tool that fits.
+      More than one usually will &mdash; they are alternatives, not a ranking.
+    </p>
+
+    <form method="get" action="{{ url_for('tools.tools_comparison') }}#chooser">
+      <fieldset class="chooser-step">
+        <legend class="chooser-q">What do you have right now?</legend>
+        <div class="chooser-opts">
+          {% for value, label in have_choices %}
+            <label>
+              <input type="radio" name="have" value="{{ value }}"
+                     {% if chooser_have == value %}checked{% endif %}>
+              <span>{{ label }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      {% if chooser_asks_shape %}
+        <fieldset class="chooser-step">
+          <legend class="chooser-q">What shape of binder do you want back?</legend>
+          <div class="chooser-opts">
+            {% for value, label in shape_choices %}
+              <label>
+                <input type="radio" name="shape" value="{{ value }}"
+                       {% if chooser_shape == value %}checked{% endif %}>
+                <span>{{ label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+
+        <fieldset class="chooser-step">
+          <legend class="chooser-q">What is on your target? (optional)</legend>
+          <div class="chooser-opts">
+            {% for value, label in chemistry_choices %}
+              <label>
+                <input type="radio" name="chemistry" value="{{ value }}"
+                       {% if chooser_chemistry == value %}checked{% endif %}>
+                <span>{{ label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+      {% endif %}
+
+      <button type="submit" class="btn-primary">
+        {% if chooser_asks_shape and not chooser_shape %}Next question{% else %}Show me the tools{% endif %}
+      </button>
+    </form>
+
+    {% macro pick_card(pick) %}
+      <a class="chooser-pick" href="{{ pick.route }}{% if pick.has_example %}#worked-example{% endif %}">
+        <span class="chooser-pick-name">{{ pick.name }}</span>
+        <p>{{ pick.reason }}</p>
+        <div class="chooser-pick-meta">
+          {% if pick.runtime_band and pick.runtime_band != '—' %}
+            <span>Runtime {{ pick.runtime_band }}</span>
+          {% endif %}
+          {% if pick.prerequisite %}<span>{{ pick.prerequisite }}</span>{% endif %}
+          {% if pick.has_example %}<span>See a worked example</span>{% endif %}
+        </div>
+      </a>
+    {% endmacro %}
+
+    {% if chooser_picks is not none %}
+      {% if chooser_picks %}
+        <div class="chooser-picks">
+          <p class="chooser-note">
+            {{ chooser_picks|length }} tool{{ '' if chooser_picks|length == 1 else 's' }} fit{{ 's' if chooser_picks|length == 1 else '' }}.
+            {% if chooser_picks|length > 1 %}Any of them will do the job &mdash; they take the same inputs and differ in how they search.{% endif %}
+          </p>
+          {% for pick in chooser_picks %}{{ pick_card(pick) }}{% endfor %}
+        </div>
+      {% elif not chooser_prep %}
+        <p class="chooser-note">
+          No tool in the catalog covers that combination. Try
+          &ldquo;I don&rsquo;t know yet&rdquo; for the shape, or browse the
+          full list below.
+        </p>
+      {% endif %}
+
+      {% if chooser_prep %}
+        <div class="chooser-picks">
+          <p class="chooser-note">
+            {% if chooser_picks %}Or get a structure first{% else %}Start by getting a structure{% endif %} &mdash; these predict one from
+            your sequence, which is what the tools above need.
+          </p>
+          {% for pick in chooser_prep %}{{ pick_card(pick) }}{% endfor %}
+        </div>
+      {% endif %}
+    {% endif %}
+  </section>
 
   {# ─── The iteration loop ─────────────────────────────────────────── #}
   {# Step 2 names how many tools design binders. DERIVED from ``grouped``,
