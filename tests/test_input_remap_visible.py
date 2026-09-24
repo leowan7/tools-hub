@@ -379,6 +379,24 @@ def test_boltz2_names_the_residue_a_typed_position_lands_on(client):
     assert "1-150" in " ".join(body["remap"]["notes"])
 
 
+def test_boltz2_says_so_in_one_line_when_the_two_scales_coincide(client):
+    """A chain numbered from 1 is the common case and every row would read
+    "you typed 12 -> A12". Measured on static/example/1HEW.pdb, which is
+    numbered 1..129: three such rows, and a panel of them is what teaches
+    people to skip the block on the files where it does differ. One line
+    instead, and no per-hotspot rows at all.
+    """
+    body = _preflight(
+        client, "boltz2", _pdb({"A": list(range(1, 151))}),
+        target_chain="A", hotspot_residues="12 40",
+    )
+    assert body["ok"] is True, body.get("reason")
+    assert body["remap"]["hotspots"] == []
+    (note,) = body["remap"]["notes"]
+    assert "the two are the same" in note
+    assert "12, 40" in note
+
+
 # ---------------------------------------------------------------------------
 # 3. The panel actually prints it — both panels
 # ---------------------------------------------------------------------------

@@ -432,13 +432,17 @@ def _preflight_boltz2(
     # A boltz2 hotspot is a 1-based position into the antigen chain's CA
     # order, NOT an author residue number, so "241" reaches the model as
     # whatever residue sits 241st. Name the residue each typed position
-    # actually lands on, and say so even when the numbers coincide, because
-    # "your 241 IS residue 241" is the reassurance a user who typed an author
-    # number needs — and the two coincide only on a chain starting at 1 with
-    # no gaps.
+    # actually lands on — but only where that differs from what was typed.
+    # A chain numbered from 1 with no gaps is the common case and every line
+    # there reads "you typed 12 -> A12", which is how a panel teaches people
+    # to skip it on the files where it does differ. Those get one line saying
+    # the two scales coincide, which is still the reassurance a user who typed
+    # an author number came for.
     remap = InputRemap()
     author = ordered.get(antigen_chain, [])
     for n in surviving:
+        if author[n - 1] == n:
+            continue
         remap.hotspots.append({
             "typed": str(n),
             "means": f"{antigen_chain}{author[n - 1]}",
@@ -452,6 +456,14 @@ def _preflight_boltz2(
             f"Chain {antigen_chain} starts at residue {author[0]} in your "
             f"file, so its positions (1-{len(author)}) and its residue "
             f"numbers ({author[0]}-{author[-1]}) are different scales."
+        )
+    elif surviving and not remap.hotspots:
+        remap.notes.append(
+            f"Boltz-2 reads a hotspot as a position counted from 1 along "
+            f"chain {antigen_chain}, not as a residue number. On this file "
+            f"the two are the same, so "
+            f"{', '.join(str(n) for n in surviving)} reach the model as the "
+            f"residues you numbered."
         )
     return _verdict(
         VerdictKind.READY,
