@@ -20,11 +20,18 @@ Self-contained rationale: Modal deploys only the single file you pass to
 portability bugs with sibling-module imports, so the same self-contained
 pattern applies here.
 
-GPU: A100-40GB. A warm single-sequence fold is ~69 s on this SKU and the
-one-time model load is ~13 s, both measured — provenance and caveats in
-the runtime note in ``tools/boltz2/__init__.py``. The "~15 s kernel plus
-a ~30 s cold weight load" split this replaces was wrong in both terms:
-designs 2 and 3 of that run were warm and still took 68.5 s and 69.5 s.
+GPU: A100-40GB. A single-sequence design measured ~69 s on this SKU, and
+the first of a run ~13 s more — provenance and caveats in the runtime
+note in ``tools/boltz2/__init__.py``. The "~15 s kernel plus a ~30 s cold
+weight load" split those figures replace is not a per-design cost: that
+run gave every design its own ``boltz predict`` process, so each one paid
+start-up and a model load, and designs 2 and 3 took 68.5 s and 69.5 s.
+Those are whole-process times, so they cannot test either term alone.
+``standalone`` no longer folds that way — ``run_pipeline.py::main``
+chunks designs into one process each ``FOLD_CHUNK``, which pays the
+~60-70 s of start-up once a chunk instead of once a design. So ~69 s is
+now a ceiling, and the rate under chunking has not been measured in
+prod; see the batching note in ``tools/boltz2/__init__.py``.
 The ``msa_server`` preset adds an MSA fetch from the public ColabFold
 MMseqs2 endpoint and measures ~214 s/design aggregate, ~3x standalone.
 """
@@ -51,26 +58,34 @@ _GPU = "A100-40GB"
 # ``MAX_BINDERS_BY_PRESET["msa_server"] = 16``, sized against THIS constant.
 # ``tools/boltz2/meta.py`` advertises that pair to users.
 #
-# EXTRAPOLATING the measured rates, the two presets land on opposite sides
-# of this ceiling. standalone (81.9 s first design including model load,
-# ~69 s marginal): 81.9 + 49 * 69 = ~3463 s, ~4% UNDER. msa_server
+# EXTRAPOLATING the PER-DESIGN rates, the two presets landed on opposite
+# sides of this ceiling. standalone (81.9 s first design including model
+# load, ~69 s marginal): 81.9 + 49 * 69 = ~3463 s, ~4% UNDER. msa_server
 # (~214 s/design aggregate, measured 2026-09-21): 50 * 214 = ~10700 s,
 # ~3x OVER — it crosses 3600 s at the 17th binder, so a 50-binder
 # msa_server run CANNOT finish inside this timeout, which is why that
 # preset is capped at 16 (~3424 s) rather than 50. Both are extrapolations
 # from three folds at 242-246 aa, not measured 50-binder runs, and longer
-# binders push both higher. The "~15 s/design" figure this ceiling was
-# reasoned against put the standalone run at 750 s, which is why the
-# headroom read as ample.
+# binders push both higher.
+#
+# CHUNKING HAS SINCE HAPPENED, on standalone only, so that preset's ~4% is
+# historical: ``run_pipeline.py``'s ``FOLD_CHUNK`` pays start-up once per
+# chunk, which extrapolates 50 standalone binders to ~1000-1525 s and ~58-72%
+# under this ceiling. That is an extrapolation from 3- and 5-record probes,
+# not a 50-binder run — see the batching note in ``tools/boltz2/__init__.py``
+# for what was and was not measured. msa_server is NOT chunked, so its ~3x
+# overrun and the cap of 16 stand exactly as above.
 #
 # Deliberately NOT raised here. An overrun is survivable: each design is
-# PUT to its own presigned URL as that fold completes, by
+# PUT to its own presigned URL as it is collected, by
 # ``tools/boltz2/run_pipeline.py::upload_pdb`` called from inside the
-# per-binder loop in ``tools/boltz2/run_pipeline.py::main``, so a timeout
-# loses the tail of the batch rather than the run. The msa_server cap
-# refuses only the batch sizes the arithmetic above says overrun; raising
-# this ceiling, lifting that cap back to 50, or chunking still all belong
-# with a real large-batch measurement, which does not exist yet.
+# per-design loop in ``tools/boltz2/run_pipeline.py::main``, so a timeout
+# loses the tail of the batch rather than the run. On standalone that tail
+# now rounds up to a chunk, since a design is collected only after its
+# chunk's process exits — a smaller absolute risk on a run that is ~3x
+# shorter, but a coarser one. Raising this ceiling or lifting the
+# msa_server cap back to 50 still both belong with a real large-batch
+# measurement, which does not exist yet.
 _MAX_SESSION_S = 3600
 _PYTHON = "python3"
 # Where ``run_pipeline.py`` tars its complete work tree at teardown, and where
@@ -116,10 +131,24 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
-# Boltz-2 fetches ~1 GB of model weights on first run. The Volume keeps
-# them across cold starts so only the very first prod fold pays the
-# download cost. Reused with the scratch app's Volume name so anything
-# already cached there is hot for prod too.
+# Boltz-2's model cache, ~7.4 GiB. boltz 2.2.1's ``download_boltz2`` fetches
+# ~5.7 GiB (boltz2_conf.ckpt 2.1 GiB, boltz2_aff.ckpt 1.9 GiB, mols.tar
+# 1.7 GiB) and unpacks mols.tar into mols/, another 1.7 GiB in 45,227 files
+# that the top-level listing shows as a 311.9 KiB dir. Checked 2026-09-23
+# with ``modal volume ls boltz2-weights`` (add ``mols`` to size the dir).
+# Scratch apps this repo does not track also mount this Volume, so re-list
+# before trusting these figures.
+#
+# The cache has been populated since 2026-05-29 (the three files' dates), so as
+# of 2026-09-23 prod cold starts download none of it. ``download_boltz2`` skips
+# each step whose output is already in its cache dir, and that dir is this
+# Volume: ``tools/boltz2/run_pipeline.py::run_boltz`` passes no ``--cache`` and
+# nothing in this repo or the base image sets ``$BOLTZ_CACHE``, so boltz's
+# ``get_cache_path`` falls back to ``~/.boltz``. That is ``/root/.boltz``, as
+# neither ``tools/boltz2/Dockerfile.modal`` nor its base image sets USER or
+# ``$HOME``, and ``run_tool`` mounts this Volume there. If the Volume is ever
+# emptied, the next cold start fetches the ~5.7 GiB and unpacks mols/ again:
+# untimed, and not in the ``_MAX_SESSION_S`` arithmetic above.
 weights = modal.Volume.from_name("boltz2-weights", create_if_missing=True)
 
 # Raw run artefacts, keyed by job id. Deterministic naming means nothing new has

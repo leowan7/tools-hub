@@ -181,8 +181,8 @@ UPLOAD_ENDPOINT = "http://127.0.0.1:1/upload"
 # `modal volume ls boltz2-weights` on 2026-09-19 listed boltz2_conf.ckpt,
 # boltz2_aff.ckpt and mols.tar, 5.7 GiB between them, all three stamped
 # 2026-05-29, plus a mols/ directory older still at 2025-02-18, and Rung A
-# wrote nothing to it. That contradicts the "~1 GB of model weights" comment
-# beside the Volume in modal_app.py, still present there at this commit. The
+# wrote nothing to it. That contradicted the "~1 GB of model weights" comment
+# then beside the Volume in modal_app.py, since corrected. The
 # same listing immediately before and after the 2026-09-21 Rung B run gave
 # the same four entries at the same timestamps and sizes, so Rung B wrote
 # nothing to it either and no weights download came out of the 900 s. That

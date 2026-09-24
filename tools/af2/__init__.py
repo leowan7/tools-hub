@@ -16,6 +16,7 @@ D2 exposes a single ``standalone`` tier: caller-supplied FASTA, default
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Optional
 
 from shared.sequence_parsing import (
@@ -23,6 +24,7 @@ from shared.sequence_parsing import (
     find_non_canonical_residues,
     parse_fasta_or_lines,
 )
+from shared.storage import _output_object_path
 from tools.base import Preset, ToolAdapter, register
 
 
@@ -264,6 +266,14 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
             "fold for final validation."
         )
 
+    # run_pipeline.py::_run_batch uploads each fold under the key built below,
+    # and the upload-URL endpoint (webhooks/uploads.py) mints each key's URL
+    # for the storage path shared/storage.py::_output_object_path gives it.
+    # That function normalises the key again, so "binder 1", "_binder_1" and
+    # "binder_1" land on one object as surely as two "VHH-12"s do, and so do
+    # names that differ only after character 60. Pinned by
+    # tests/test_fold_duplicate_record_names.py.
+    saved_as: dict[str, str] = {}
     for r in records:
         name = r["name"]
         seq = r["sequence"]
@@ -289,6 +299,22 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
                     f"Record {name!r} chain {ci + 1} contains non-canonical "
                     f"residues: {bad}"
                 )
+        key = f"{re.sub(r'[^A-Za-z0-9_-]+', '_', name)[:60] or 'fold'}.pdb"
+        fname = _output_object_path("", "", key).rsplit("/", 1)[-1]
+        if fname in saved_as:
+            other = saved_as[fname]
+            if other == name:
+                return None, (
+                    f"Two records are named {name!r}. Each result is saved "
+                    f"under a file named after its record, so only one of the "
+                    f"two could be kept. Rename one."
+                )
+            return None, (
+                f"Records {other!r} and {name!r} would both be saved as "
+                f"{fname!r}, so only one of the two results could be kept. "
+                f"Rename one."
+            )
+        saved_as[fname] = name
 
     num_recycles = _parse_int(form.get("num_recycles"), 3)
     if num_recycles < RECYCLES_MIN or num_recycles > RECYCLES_MAX:
