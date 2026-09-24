@@ -12,7 +12,9 @@ Two presets at launch:
 
 - ``standalone`` — single-sequence cofold (YAML ``msa: empty`` per chain).
   Default. ~69 s / design on A100-40GB, MEASURED — see the runtime note
-  below. The right choice for designed binder sequences (MPNN,
+  below, and the batching note after it for why that figure is now a
+  ceiling rather than the rate. The right choice for designed binder
+  sequences (MPNN,
   RFantibody, BindCraft, BoltzGen, RFdiffusion, PXDesign outputs) where
   no informative MSA exists.
 - ``msa_server`` — Boltz fetches MSAs from the public ColabFold MMseqs2
@@ -37,12 +39,14 @@ CONDITIONS, which are the whole sample: binders 242-246 aa against a
 107 aa antigen, single-sequence mode, ``--no_kernels --output_format
 pdb``, n=1 per design. One antigen, one binder-length band, three folds.
 The rate outside that band is not measured, so treat ~69 s as an anchor
-rather than a curve. Each design is its own ``boltz predict`` process
-(``tools/boltz2/run_pipeline.py::run_boltz``, called once per binder
-from ``tools/boltz2/run_pipeline.py::main``), so every per-design time
-includes process start-up and a model load. The first design's extra
-~13 s is therefore not a one-time model load, and its cause was not
-isolated. The figure it replaces, "~15 s / design", has no timing on
+rather than a curve. Every design in that run was its own ``boltz
+predict`` process, so each per-design time above includes process
+start-up and a model load. The first design's extra ~13 s is therefore
+not a one-time model load, and its cause was not isolated. That is no
+longer how ``tools/boltz2/run_pipeline.py::main`` folds — see the
+batching note below — so ~69 s is the rate this run was measured at, not
+the rate a ``standalone`` run costs now. The figure it replaces,
+"~15 s / design", has no timing on
 record in this repo; the commit that introduced it, ``d2a1b8c``, also
 calls ~15 s "the fold kernel", which whole-process times can neither
 confirm nor refute.
@@ -58,6 +62,59 @@ MSA-server fetch and GPU compute was not measured, and unlike Rung A no
 per-design interval was resolved, so there is no separate first-design
 premium to subtract. Do not read it as a per-design marginal cost the way
 ~69 s can be read.
+
+Batching: folds are chunked, and ~69 s is now a ceiling
+--------------------------------------------------------
+``tools/boltz2/run_pipeline.py::main`` folds ``FOLD_CHUNK`` designs per
+``boltz predict`` process on ``standalone``. Boltz expands a directory of
+input YAMLs into one record each and folds them in one process, so the
+start-up and checkpoint load are paid once a chunk rather than once a
+design. ``msa_server`` is exempt and still folds one design per process;
+the constant's own comment carries why ten and not the whole run.
+
+MEASURED by two throwaway Modal probes on A100-SXM4-40GB, 2026-09-23,
+$0.20 of GPU in total, on Rung A's inputs and Rung A's flags. One process
+folding 3 records took 112.4 s, against ~219.9 s for the same 3 folded
+one per process; a second folding 5 records took 161.4 s. Subtracting
+each run's folds from its total puts the FIXED cost — imports, model
+build, checkpoint load, CUDA init, teardown, exit — at 60.3 s and 69.8 s,
+paid once per process, and each record's own fold at 14.1-23.5 s, the
+longest being the first fold in each process. The build-and-load term
+alone moved 33.3 -> 41.3 s between the two, so read ~60-70 s as a band
+rather than a constant.
+
+EXTRAPOLATING that band, 50 standalone designs in chunks of 10 are
+~1000-1525 s (5 x 60-70 s, plus 50 x 14-23.5 s) against ~3450 s at the
+per-design rate: 58-72% of headroom under ``modal_app.py``'s 3600 s
+``_MAX_SESSION_S`` instead of ~4%, and ~$0.71-1.09 instead of ~$2.46.
+
+NOT measured, which is why nothing downstream has been re-anchored:
+
+- No batched fold has run through prod, the web flow, the wrapper, an
+  upload or the wallet. Both probes were standalone ``modal run`` apps,
+  and the first rebuilt the image on a cache miss instead of pulling
+  prod's, so neither ran on a byte-identical image.
+- The largest batch ever run is 5 records, not 10 and not 50. Memory
+  behaviour at chunk size, OOM skips and longer binders are unobserved.
+- ``msa_server`` batching was never tried, which is the other half of why
+  that preset is left alone.
+
+So ``MAX_BINDERS``, ``MAX_BINDERS_BY_PRESET``, ``tools/boltz2/meta.py``
+and the boltz2 rows in ``shared/wallet_estimates.py`` all still carry the
+per-design ~69 s and ~214 s. Quoting a projection there would under-hold
+the wallet against a cost nobody has watched, and the error runs the safe
+way round: the hold is a cushioned estimate and the charge is billed on
+actual GPU seconds, so an over-quote is released rather than kept. They
+move when a prod run measures the chunked rate.
+
+Batching does NOT pin the fold. Five byte-identical copies of one input,
+folded in one process, spanned ipTM 0.263-0.830 and re-docked the binder
+(21 pairwise CA RMSDs, median 16.3 A), and against a criterion fixed
+before the run one copy landed 2.05 A from the pose the per-design path
+produced. The variation is per fold, not per process — no ``--seed`` is
+passed anywhere in this package, so the diffusion sampler is unseeded.
+Full write-up in the 2026-09-23 rows of docs/VALIDATION-LOG.md under
+"## Boltz-2".
 
 Discrimination, and why ``standalone`` stays the default
 --------------------------------------------------------
@@ -108,6 +165,13 @@ MAX_BINDERS = 50
 # ~10700 s, ~3x over, crossing 3600 s at the 17th. Hence 16, which extrapolates
 # to 16 * 214 = ~3424 s, ~5% of headroom.
 #
+# Chunked folding has since cut the standalone side of that to ~1000-1525 s
+# (batching note in this file's docstring), so ~4% is the headroom 50
+# standalone binders had BEFORE batching and is no longer what 50 is pressed
+# against. The msa_server arithmetic is untouched, because that preset is not
+# batched: 16 still rests on 214 s/design. Neither cap moves until a prod run
+# measures a chunked rate.
+#
 # Both totals are EXTRAPOLATIONS from three folds at 242-246 aa, not measured
 # 50-binder runs, and a longer binder folds slower. So 16 refuses the batch
 # sizes the arithmetic says cannot finish; it does not certify that 16 always
@@ -118,32 +182,58 @@ MAX_BINDERS = 50
 # Capped here rather than by raising ``_MAX_SESSION_S``, on cost as much as on
 # evidence: that constant lives in ``modal_app.py``, which the deploy trigger
 # in ``.github/workflows/deploy-modal.yml`` does NOT exclude (this file and
-# ``meta.py`` it does), and sizing it honestly needs the large-batch
-# measurement that still does not exist. An overrun stays survivable either
-# way, which is why this is a product cap and not a data-loss fix: each design
-# is PUT to its own presigned URL as it completes, from inside the per-binder
-# loop in ``run_pipeline.py::main``, so a timeout costs the tail, not the run.
+# ``meta.py`` it does), and sizing it honestly needs a 50-record measurement
+# that still does not exist. An overrun stays survivable either way, which is
+# why this is a product cap and not a data-loss fix: each design is PUT to its
+# own presigned URL as it is collected, from inside the per-design loop in
+# ``run_pipeline.py::main``, so a timeout costs the tail, not the run. On
+# standalone that tail now rounds up to a chunk: a design is collected only
+# after its chunk's ``boltz predict`` exits, so a timeout mid-chunk loses
+# every design in it rather than one.
 #
 # Enforced in ``validate`` below and pinned by
 # ``tests/test_boltz2_smoke.py::TestPresetBinderCap``.
 MAX_BINDERS_BY_PRESET = {"msa_server": 16}
 ANTIGEN_CHAIN_MAX = 4
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
-# A binder's name becomes a file name. ``run_pipeline.py::main`` writes each
-# design's input to ``d_{i:03d}/{name}.yaml`` from the raw name (only the
-# storage key is normalised, by ``shared/storage.py::_output_object_path``),
-# and boltz 2.2.1 names its outputs after that file's stem. So ``validate``
-# refuses a name that
-#   - contains '/' or NUL, the two bytes a Linux file name cannot hold;
-#   - starts with '.', which hides the model file from the glob in
-#     ``run_pipeline.py::collect_outputs``;
-#   - is longer than this many bytes. Linux caps a file name at 255 bytes.
-#     As ``run_pipeline.py`` calls boltz 2.2.1 (its yamls carry no templates,
-#     and ``run_boltz`` sets no ``--msa_pairing_strategy``), the longest name
-#     boltz builds from it is the MSA folder the msa_server preset gets,
-#     ``{name}_paired_tmp_pairgreedy-env`` (``compute_msa`` in
-#     src/boltz/main.py, ``run_mmseqs2`` in src/boltz/data/msa/mmseqs2.py):
-#     the name plus 26, so 229 is the ceiling and 200 leaves room.
+# A binder's name becomes a file name, and ``validate`` refuses a name that
+# cannot safely be one: it contains '/' or NUL, it starts with '.', or it is
+# longer than this many bytes.
+#
+# WHICH file name has changed since these rules were written (#338). They were
+# the fix for a crash: ``main`` wrote each design's input to
+# ``d_{i:03d}/{name}.yaml`` from the raw name, so a '/' pointed into a folder
+# that did not exist and raised FileNotFoundError after earlier designs had
+# already folded and uploaded. Chunked folding took the name out of that path
+# — ``main`` now writes ``run_pipeline.py::_record_id(i).yaml``, an index — so
+# the name no longer reaches boltz, boltz's output names, or
+# ``collect_outputs``'s glob, and that crash is gone by construction rather
+# than by this check.
+#
+# What the name still becomes is the storage key ``{name}_complex.pdb``, via
+# ``shared/storage.py::_output_object_path``, which keeps only the basename
+# and runs Werkzeug's ``secure_filename`` over it. That handles the first two
+# rules and not the third: '4D5/trastuzumab' is stored as 'trastuzumab',
+# '.hidden' as 'hidden', and a 201-byte name is stored at 201 bytes, because
+# ``secure_filename`` does not truncate. So the byte cap is the only thing
+# bounding the key, and the other two rules refuse a rename rather than
+# prevent a break.
+#
+# They are worth keeping as a refusal, at submit time, because the rename is
+# silent: the user gets back an object named after something they did not
+# type. What the cap does NOT do is cover every path — ``blueprints/jobs.py::
+# _spawn_refold_job`` builds ``binder_sequences`` from an upstream candidate's
+# header and bypasses ``validate`` by design, so a name arriving that way is
+# normalised but not bounded. The collision two names can normalise into is
+# refused separately, a few lines into ``validate`` (#333).
+#
+# These rules are narrower than "anything the sanitiser would change", and
+# deliberately: 'anti-HER2 scFv' is accepted here and still stored as
+# 'anti-HER2_scFv'. 200 is a conservative bound, not a derived ceiling. It was
+# once sized against the longest file name boltz derives from a record's id,
+# back when that id was the binder name — a derivation #338 got wrong and #339
+# corrects. On this branch the id is an index, so no boltz file name carries
+# the name at all, and the storage key above is the only thing left to bound.
 # Pinned by ``tests/test_boltz2_smoke.py::TestBinderNameIsAFileName``.
 BINDER_NAME_MAX_BYTES = 200
 

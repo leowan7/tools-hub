@@ -455,11 +455,19 @@ class TestZeroDesignsFailsTheJob:
         monkeypatch.setattr(rp, "send_heartbeat", lambda *a, **k: None)
         monkeypatch.setattr(rp, "run_boltz", lambda *a, **k: rc)
 
-        # Only reached when run_boltz succeeds.
+        # ``main`` decides each design on whether its output exists, not on
+        # ``rc``, so the stub has to keep the two consistent: the ABI break
+        # this class is about is a boltz that exits non-zero having written
+        # nothing. A stub handing back a structure for a process that died
+        # would test a shape production cannot produce.
         predicted = tmp_path / "pred.pdb"
         predicted.write_text("ATOM\n")
         monkeypatch.setattr(
-            rp, "collect_outputs", lambda out_dir: (predicted, {"iptm": 0.8}),
+            rp,
+            "collect_outputs",
+            lambda out_dir, record_id=None: (
+                (None, {}) if rc else (predicted, {"iptm": 0.8})
+            ),
         )
         monkeypatch.setattr(
             rp,
@@ -615,18 +623,35 @@ _NAMES_LINUX_CAN_HOLD = [
 
 
 class TestBinderNameIsAFileName:
-    """``run_pipeline.py::main`` writes each design's input to
-    ``d_{i:03d}/{name}.yaml`` from the raw name; only the storage key goes
-    through ``shared/storage.py::_output_object_path``. So ``validate`` refuses
-    a name that cannot be a file name. A refold to Boltz-2
-    (``blueprints/jobs.py::_spawn_refold_job``) does not call ``validate``, so
-    it is not covered here.
+    """A binder's name reaches the filesystem, and ``validate`` bounds it.
+
+    It used to reach the LOCAL path: ``main`` wrote each design's input to
+    ``d_{i:03d}/{name}.yaml`` from the raw name, so a '/' raised
+    FileNotFoundError mid-run. Chunked folding replaced that stem with
+    ``run_pipeline.py::_record_id``, an index, so the name no longer reaches
+    boltz at all — the first test below is what pins that, and it is the
+    inverse of the one it replaced.
+
+    What the name still reaches is the storage key ``{name}_complex.pdb``,
+    where ``shared/storage.py::_output_object_path`` basenames it and runs
+    ``secure_filename``. That silently renames; it does not truncate. So
+    ``validate``'s byte cap is a real bound and its other two rules refuse a
+    rename — the reasoning is in ``tools/boltz2/__init__.py`` at
+    ``BINDER_NAME_MAX_BYTES``.
     """
 
-    def test_a_slash_kills_main_after_the_design_before_it_folded(
+    def test_a_slash_no_longer_reaches_the_local_path(
         self, tmp_path, monkeypatch,
     ):
-        """Why validate has to refuse it: ``main`` does not survive it."""
+        """The crash this class was written for is gone by construction.
+
+        Inverse of ``test_a_slash_kills_main_after_the_design_before_it_folded``
+        (#338), which asserted the FileNotFoundError. Record ids come from the
+        index now, so the run completes and both designs upload. That matters
+        beyond tidiness: ``blueprints/jobs.py::_spawn_refold_job`` builds
+        ``binder_sequences`` from an upstream candidate's header and bypasses
+        ``validate``, so this path has to be safe without it.
+        """
         result_file = TestZeroDesignsFailsTheJob()._arrange(
             tmp_path, monkeypatch, rc=0,
             binders=[
@@ -637,12 +662,10 @@ class TestBinderNameIsAFileName:
         uploads = []
         monkeypatch.setattr(rp, "upload_pdb", lambda url, data: uploads.append(url))
 
-        with pytest.raises(FileNotFoundError):
-            rp.main()
+        rp.main()
 
-        assert len(uploads) == 1, "the design before the bad name should have folded"
-        assert not result_file.exists(), (
-            "the raise escapes main before any results file is written")
+        assert len(uploads) == 2, "the design with '/' in its name folded too"
+        assert json.loads(result_file.read_text())["status"] == "COMPLETED"
 
     @pytest.mark.parametrize("name, cause", [
         ("4D5/trastuzumab", "'/'"),
@@ -665,13 +688,6 @@ class TestBinderNameIsAFileName:
         assert err is None, err
         assert [b["name"] for b in inputs["binder_sequences"]] == [name]
 
-    def test_the_cap_leaves_room_for_the_longest_name_boltz_builds(self):
-        """boltz 2.2.1 makes the MSA folder ``{name}_paired_tmp_pairgreedy-env``
-        for the msa_server preset (``compute_msa`` in src/boltz/main.py,
-        ``run_mmseqs2`` in src/boltz/data/msa/mmseqs2.py), and Linux caps a
-        file name at 255 bytes."""
-        assert b2.BINDER_NAME_MAX_BYTES + len("_paired_tmp_pairgreedy-env") <= 255
-
     @pytest.mark.skipif(
         os.name == "nt",
         reason="the pipeline runs on Linux; Windows reads '\\' as a separator",
@@ -680,10 +696,11 @@ class TestBinderNameIsAFileName:
     def test_main_completes_on_every_name_validate_accepts(
         self, tmp_path, monkeypatch, name,
     ):
-        """``main`` writes the yaml for every accepted name and finishes, on
-        Linux. The fold and ``collect_outputs`` are stubbed, so the names boltz
-        builds from the yaml's stem are checked by
-        ``test_the_cap_leaves_room_for_the_longest_name_boltz_builds``, not here.
+        """Positive control on ``main``: an accepted name completes a run.
+
+        It no longer proves anything about the local path — the name does not
+        reach it — but it still catches a refusal-shaped bug landing anywhere
+        downstream of ``validate``.
         """
         result_file = TestZeroDesignsFailsTheJob()._arrange(
             tmp_path, monkeypatch, rc=0,
@@ -698,14 +715,20 @@ class TestBinderNameIsAFileName:
     def test_collect_outputs_cannot_see_a_design_named_with_a_leading_dot(
         self, tmp_path, stem, found,
     ):
-        """Why a leading ``.`` is refused although its file writes fine.
+        """``collect_outputs`` is blind to a dot-named record, by ``glob``.
 
         boltz 2.2.1 names what it writes after the input file's stem: the stem
         becomes the record id (src/boltz/data/parse/yaml.py and schema.py), and
         the model lands at ``boltz_results_{stem}/predictions/{id}/
         {id}_model_0.pdb`` (src/boltz/main.py, src/boltz/data/write/writer.py).
-        ``glob`` skips dot-names, so ``main`` would log that design as "no PDB
+        ``glob`` skips dot-names, so such a design WOULD be logged as "no PDB
         emitted" after its fold had run.
+
+        A binder name can no longer produce that stem — ``_record_id`` gives
+        every record ``d_{i:03d}`` — so this is the hazard the leading-dot
+        refusal was written for (#338) rather than one that is still live. It
+        stays because the blindness is real: it is what a stem taken from user
+        text would cost, and the pin against taking one again.
         """
         out_dir = tmp_path / "out"
         pred = out_dir / f"boltz_results_{stem}" / "predictions" / stem
@@ -941,3 +964,149 @@ class TestBinderNamesGetTheirOwnObject:
         )
 
         assert len({_output_object_path("u", "j", k) for k in keys}) == 2, keys
+
+
+# ---------------------------------------------------------------------------
+# 7 - a Refold skips validate, so its binder name must fold as it stands
+# ---------------------------------------------------------------------------
+
+
+def _boltz_writes_its_tree(data_path, out_dir, msa_server):
+    """Stand-in for ``run_boltz``: the model and confidence files boltz 2.2.1
+    writes under ``--output_format pdb``, at the paths it names after each
+    input's stem. boltz's main.py names the results folder after the data
+    argument's stem, data/parse/yaml.py and data/parse/schema.py make an
+    input's stem the record id, and data/write/writer.py names the model's
+    folder and files after the record id. Read at tag v2.2.1, the version
+    tools/boltz2/Dockerfile.modal pins.
+
+    ``data_path`` is one yaml or a DIRECTORY of them —
+    ``run_pipeline.run_boltz`` passes a directory, one chunk of designs to a
+    process. A directory yields a SINGLE results folder named after it, one
+    ``predictions/<record>`` inside it per input. That is the layout the
+    2026-09-23 A100 probes captured off the container (PR #341: three records,
+    then five, each run's records all under one
+    ``boltz_results_in/predictions/``).
+
+    It refuses the two inputs real boltz refuses, so that a pipeline which
+    stopped writing a usable yaml cannot pass on this stand-in's goodwill:
+
+    * a path that does not exist — boltz declares its data argument
+      ``click.Path(exists=True)`` (main.py:818) and exits non-zero;
+    * a suffix outside .yaml/.yml/.fa/.fas/.fasta — ``process_input``
+      (main.py:548-561) raises "Unable to parse filetype", the caller skips
+      the record, and boltz exits 0 having written no model. Applied per
+      input, so a directory holding nothing parseable also writes no model.
+    """
+    if not data_path.exists():
+        return 2  # click's usage-error exit code
+    inputs = sorted(data_path.iterdir()) if data_path.is_dir() else [data_path]
+    results = out_dir / f"boltz_results_{data_path.stem}"
+    for src in inputs:
+        if src.suffix.lower() not in (".yaml", ".yml", ".fa", ".fas", ".fasta"):
+            continue  # parsed nothing, wrote nothing — "no PDB emitted" for it
+        stem = src.stem
+        pred = results / "predictions" / stem
+        pred.mkdir(parents=True)
+        (pred / f"{stem}_model_0.pdb").write_text("ATOM\n")
+        (pred / f"confidence_{stem}_model_0.json").write_text(
+            json.dumps({"iptm": 0.8})
+        )
+    return 0
+
+
+class TestTheBoltzStandInMatchesBoltz:
+    """``_boltz_writes_its_tree`` is the only boltz the class below runs, so a
+    pipeline that stopped writing a usable yaml would pass on the stand-in's
+    goodwill unless it keeps refusing what the real tool refuses — and the
+    refold test would pass vacuously if the stand-in wrote nothing at all.
+    Pins the three behaviours its docstring claims.
+    """
+
+    def test_a_directory_folds_every_record_into_one_results_folder(self, tmp_path):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for record_id in ("d_000", "d_001"):
+            (in_dir / f"{record_id}.yaml").write_text("sequences: []\n")
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(in_dir, out, msa_server=False) == 0
+
+        predictions = out / "boltz_results_in" / "predictions"
+        assert sorted(p.name for p in predictions.iterdir()) == ["d_000", "d_001"]
+        assert (predictions / "d_001" / "d_001_model_0.pdb").exists()
+        assert (predictions / "d_001" / "confidence_d_001_model_0.json").exists()
+
+    def test_a_path_that_does_not_exist_is_a_usage_error(self, tmp_path):
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(tmp_path / "gone.yaml", out, False) == 2
+        assert not out.exists()
+
+    def test_an_unparseable_suffix_writes_no_model(self, tmp_path):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "d_000.pdb").write_text("ATOM\n")
+        out = tmp_path / "out"
+
+        assert _boltz_writes_its_tree(in_dir, out, False) == 0
+        assert not out.exists()
+
+
+class TestRefoldToBoltz2Folds:
+    """``blueprints/jobs.py::_spawn_refold_job`` bypasses validate and names
+    the binder ``shared/refold.py::CandidateSeq.fasta_header``.
+
+    Carries a Refold from the hub into ``main``. Real: the refold spawn, the
+    boltz2 adapter's ``build_payload``, ``main``'s yaml naming and
+    ``collect_outputs``. Stubbed: the job row, storage, the Modal hop and its
+    callback URLs, boltz (``_boltz_writes_its_tree``), and ``main``'s other
+    I/O edges (``TestZeroDesignsFailsTheJob._arrange``).
+    """
+
+    @pytest.mark.parametrize("pdb_key, name", [
+        ("designs/design_001.pdb", "rank1_design_001"),
+        ("designs/design_002.cif", "rank1_design_002"),
+    ])
+    def test_a_refold_of_a_stored_design_completes(
+        self, tmp_path, monkeypatch, pdb_key, name,
+    ):
+        import blueprints.jobs as J
+        from shared.refold import candidate_seq_from_record
+
+        seq = candidate_seq_from_record(
+            {"rank": 1, "pdb_key": pdb_key, "sequence": _SEQ_A}, 0)
+        src = SimpleNamespace(
+            id="src-job-1", tool="rfdiffusion", target_id=None,
+            inputs={"target_chain": "A", "_pdb_storage_path": "u/src/target.pdb"},
+        )
+        submitted = {}
+        monkeypatch.setattr(J, "presigned_input_url",
+                            lambda path, expires_seconds=None: "https://signed")
+        monkeypatch.setattr(J, "create_job",
+                            lambda **k: SimpleNamespace(id="new-job", job_token="tok"))
+        monkeypatch.setattr(J, "url_for", lambda *a, **k: "http://hook")
+        monkeypatch.setattr(J, "current_app", SimpleNamespace(
+            modal_client=SimpleNamespace(submit=lambda *a, **k: submitted.update(k))))
+
+        assert J._spawn_refold_job(
+            SimpleNamespace(user_id="u"), b2.adapter, "boltz2", seq, src, "label",
+        ) == "new-job"
+
+        real_collect_outputs = rp.collect_outputs
+        result_file = TestZeroDesignsFailsTheJob()._arrange(tmp_path, monkeypatch, rc=0)
+        monkeypatch.setattr(rp, "collect_outputs", real_collect_outputs)
+        monkeypatch.setattr(rp, "run_boltz", _boltz_writes_its_tree)
+        payload = json.loads(os.environ["JOB_PAYLOAD"])
+        # gpu/modal_client.py::ModalClient._build_payload ships the submitted
+        # inputs as job_spec, which tools/boltz2/modal_app.py::_build_run_env
+        # puts in JOB_PAYLOAD.
+        payload["job_spec"] = submitted["inputs"]
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+
+        rp.main()
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "COMPLETED", result
+        assert result["designs_completed"] == 1, result
+        assert result["designs"][0]["name"] == name, result["designs"][0]
