@@ -15,8 +15,8 @@ from typing import Optional
 # (dominated by a ~1.5 min fixed CUDA/kernel init); more samples/seeds add ~15 s
 # each. Kept conservative (overestimate) for larger inputs.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "general": {"typical_minutes": "~2 to 8"},
-    "abag": {"typical_minutes": "~2 to 8"},
+    "general": {"typical_minutes": "~2 to 8", "minutes": (2, 8)},
+    "abag": {"typical_minutes": "~2 to 8", "minutes": (2, 8)},
 }
 
 paper_citation: str = "Aureka AI Research, OpenDDE-Preview, arXiv 2026"

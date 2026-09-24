@@ -7,7 +7,8 @@ contract.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
                          ``typical_minutes`` is a human-readable range
                          (e.g. ``"15-60"``).
     paper_citation    — short inline citation.
@@ -24,7 +25,7 @@ from __future__ import annotations
 from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15 to 60"},
+    "pilot": {"typical_minutes": "15 to 60", "minutes": (15, 60)},
 }
 
 paper_citation: str = "Stark et al., bioRxiv 2025"

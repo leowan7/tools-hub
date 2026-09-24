@@ -189,6 +189,21 @@
           Hotspots ${v.hotspots.surviving.join(", ")} — all preserved
         </div>`;
       }
+      // Mirrors the same block in templates/components/preflight_panel.html.
+      // Server-side it is null whenever nothing about the numbering changes.
+      if (v.remap) {
+        html += `<div class="preflight-remap">Numbering in this run:<ul>`;
+        for (const note of v.remap.notes || []) {
+          html += `<li>${escapeHtml(note)}</li>`;
+        }
+        for (const h of v.remap.hotspots || []) {
+          html += `<li>You typed <code>${escapeHtml(h.typed)}</code> →
+            <code>${escapeHtml(h.means)}</code>${
+              h.why ? ` (${escapeHtml(h.why)})` : ""
+            }.</li>`;
+        }
+        html += `</ul></div>`;
+      }
       if (v.cleanup_items && v.cleanup_items.length) {
         html += `<div class="preflight-cleanup">Cleanup applied:<ul>`;
         for (const item of v.cleanup_items) {

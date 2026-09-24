@@ -7,12 +7,14 @@ contract. Parallel to ``tools/rfantibody/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
                          ``typical_minutes`` is a bare human-readable range
-                         (e.g. ``"30 to 45"``); both consumers append " min"
-                         themselves (shared/tools_catalog.py::_build_tools_catalog,
-                         blueprints/tools.py::_preset_runtime_text), so it
-                         carries no unit and no parenthetical.
+                         (e.g. ``"30 to 45"``);
+                         shared/tool_meta.py::preset_runtime_text appends
+                         " min", so it carries no unit and no parenthetical.
+                         ``minutes`` holds the same range as numbers, for
+                         shared/tool_meta.py::runtime_band.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink for the BindCraft paper.
     github_url        — upstream repository.
@@ -35,7 +37,7 @@ from typing import Optional
 # tools/bindcraft/__init__.py::adapter). Larger counts take proportionally
 # longer.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "30 to 45"},
+    "pilot": {"typical_minutes": "30 to 45", "minutes": (30, 45)},
 }
 
 # THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE: Nature 646, 483-492,

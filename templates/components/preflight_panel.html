@@ -23,7 +23,7 @@
      verdict       — dict with keys: kind, ok, target_chain, cleanup_items,
                      residues_kept_on_target_chain, hotspots, reason,
                      suggested_fix, alphafold, nearest_clean_residues,
-                     source_label.
+                     source_label, remap.
                      None or empty → render the empty placeholder. #}
 
 {% macro preflight_panel(verdict=None, tool_slug=None, summary=False) %}
@@ -91,6 +91,25 @@
         {% endif %}
         {% if verdict.gap_analysis and verdict.gap_analysis.warn_message %}
           <p class="preflight-warn">{{ verdict.gap_analysis.warn_message }}</p>
+        {% endif %}
+        {# Numbering this run changes between the upload and what the model
+           sees. Absent (or None) on every verdict where nothing changes, and
+           on jobs submitted before this block existed. #}
+        {% if verdict.remap %}
+          <div class="preflight-remap">
+            Numbering in this run:
+            <ul>
+              {% for note in verdict.remap.notes %}
+                <li>{{ note }}</li>
+              {% endfor %}
+              {% for h in verdict.remap.hotspots %}
+                <li>
+                  You typed <code>{{ h.typed }}</code> →
+                  <code>{{ h.means }}</code>{% if h.why %} ({{ h.why }}){% endif %}.
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
         {% endif %}
         {% if verdict.cleanup_items %}
           <div class="preflight-cleanup">
@@ -279,6 +298,14 @@
     color: #374151;
   }
   .preflight-cleanup ul {
+    margin: 0.25rem 0 0 1.25rem;
+    padding: 0;
+  }
+  .preflight-remap {
+    margin-top: 0.5rem;
+    color: #374151;
+  }
+  .preflight-remap ul {
     margin: 0.25rem 0 0 1.25rem;
     padding: 0;
   }

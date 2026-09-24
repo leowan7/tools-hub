@@ -624,70 +624,25 @@ def _missing_note(missing, written_count: int) -> str:
 
 
 def zip_unresolved_message(missing) -> str:
-    """Body for the refusal a ZIP route returns when nothing PROMISED resolved.
+    """Body for the refusal a ZIP route returns when nothing promised resolved.
 
-    Shared by the job, campaign and target routes so one wording covers the
-    three buttons that reach this failure.
+    Called by the job, campaign and target ZIP routes (``blueprints/jobs.py``,
+    ``blueprints/campaigns.py``, ``blueprints/targets.py``).
 
-    ASSERTS NO CAUSE, deliberately. That is the rule, and it is narrower than
-    "names no mechanism", which this docstring used to claim and the body
-    does not obey: the copy says "storage may have been briefly unreachable",
-    which names a subsystem.
+    The copy offers a possible cause ("storage may have been briefly
+    unreachable") and asserts none. Three arms reach it: a corrupt inline
+    ``pdb_content_b64``, which fails with no fetch attempted; a ``pdb_key``
+    whose object is gone; and Storage being briefly unreachable.
+    ``shared/storage.py::download_output`` raises ``StorageError`` for any
+    download failure, so the last two are indistinguishable here. The retry
+    advice therefore says a retry is worth trying without predicting what a
+    second failure means.
 
-    The line is between STATING a cause and OFFERING one. "Storage returned
-    none of them" tells a customer what happened; this code cannot know it,
-    because a corrupt inline ``pdb_content_b64`` reaches the refusal with no
-    fetch attempted (executed: zero ``fetch_bytes`` calls on that arm). "May
-    have been briefly unreachable" tells them why one more attempt is worth
-    making, which is true on every arm -- two of the three fail
-    deterministically, and retrying costs a click.
-
-    Recording this because the token is loaded: an earlier guard on this
-    string blacklisted ``"storage "`` outright. That blacklist was replaced
-    for being INCOMPLETE (review walked a fourth invented cause past it), not
-    because the word became forbidden -- and draft one, the one rejected for
-    blaming Storage, was rejected for its flat assertion, not for the hedged
-    clause it also contained.
-
-    Draft one blamed Storage ("storage returned none of them"), which this
-    code cannot know: a corrupt inline ``pdb_content_b64`` reaches the refusal
-    without a fetch being attempted. Draft two replaced that with a retention
-    explanation ("structure files are deleted 30 days after a run"), false in
-    its MECHANISM. In THIS REPOSITORY the age sweep is
-    ``cron.purge_old_storage.purge_old_storage``, whose only non-test caller
-    is the ``flask storage:purge-old`` CLI in ``app.py`` (dry-run unless
-    ``--apply``); the module also exports ``purge_user_objects``, called by the
-    same CLI module for erasure requests, which is not on a clock either. The
-    Procfile schedules no purge, and none of the three scheduled workflows
-    invokes one. Scoped to the repository on purpose: Railway crons
-    are configured in a dashboard, outside this tree, so no file here can
-    settle what a deployment runs -- which is itself the reason customer copy
-    should not assert the mechanism.
-
-    Two invented causes is the argument for asserting none.
-
-    The retry advice SAYS NOTHING ABOUT WHAT A SECOND FAILURE MEANS. Earlier
-    versions promised an unconditional retry, then forbade one ("if it fails
-    the same way again, further retries will not help"), which review
-    falsified by execution -- 409, 409, then 200 with the complete archive
-    once a Storage outage ended. (This paragraph carried a draft NUMBER for
-    two rounds. Two reviewers could neither confirm nor falsify it, because
-    nothing here defines whether a reword starts a new draft; it is dropped
-    rather than corrected a third time. What each version SAID is the part
-    worth keeping, and it is verifiable from the log.)
-
-    Three arms reach this message and only two are deterministic: a corrupt
-    inline ``pdb_content_b64`` is fixed in ``job.result`` and re-reads
-    identically forever, and so does a key naming an object that is gone. The
-    third is Storage being briefly unreachable, and
-    ``shared/storage.py::download_output`` wraps ANY failure from the download
-    into ``StorageError``, so a 503, a network blip and a genuinely absent
-    object are indistinguishable here. Nothing in this process can tell the
-    customer which one they have, so the copy stops at "may".
-
-    ``len(missing) == 1`` takes a different opening: "None of the 1 structure
-    files" is what a count interpolated into a fixed plural produces, and a
-    single-candidate job is a perfectly ordinary run.
+    One missing file takes a singular opening; the rest of the body is
+    count-neutral. The exact text is pinned by
+    ``test_the_refusal_copy_is_pinned_word_for_word`` and
+    ``test_a_single_missing_structure_reads_as_one`` in
+    tests/test_export_zip_unresolved.py.
     """
     count = len(missing)
     opening = (

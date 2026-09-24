@@ -201,7 +201,7 @@ class TestResultTone:
         # "structures", not "PDBs". boltzgen writes .cif for most rows and
         # reaches this same line; reverting the word was caught by nothing
         # until this assertion.
-        assert "downloadable structures" in summary
+        assert summary.endswith("and a downloadable structure.")
         assert "downloadable PDBs" not in summary
 
     def test_an_unreadable_payload_asserts_nothing_about_it(self):

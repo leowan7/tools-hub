@@ -30,6 +30,7 @@ from flask import (
 
 from scout.handoff import VALID_HANDOFF_TOOLS
 from shared import resample as _resample
+from shared import tool_chooser
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.feature_flags import tool_enabled
@@ -78,7 +79,7 @@ from shared.tools_catalog import (
     group_catalog,
 )
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
-from shared.tool_meta import meta_for
+from shared.tool_meta import meta_for, preset_runtime_text, runtime_band
 from shared.wallet_estimates import estimated_cost_for_tool
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
@@ -692,47 +693,9 @@ def _related_tool_cards(slug: str) -> list[dict]:
         })
     return out
 
-def _preset_runtime_text(meta, preset_slug: str) -> str | None:
-    """The typical runtime for ONE preset, or None.
-
-    Two sources because two generations of metadata are live:
-    ``PRESET_RUNTIME[slug]["typical_minutes"]`` (a bare number or
-    range, so the unit is appended here) and the older
-    ``preset_runtime_rows`` (already carries "min"). rfdiffusion and
-    pxdesign still only have the legacy rows, so a lookup that reads
-    PRESET_RUNTIME alone reports nothing for the two most-used design
-    tools.
-    """
-    if meta is None:
-        return None
-    entry = (getattr(meta, "PRESET_RUNTIME", None) or {}).get(preset_slug) or {}
-    if entry.get("typical_minutes"):
-        return f"{entry['typical_minutes']} min"
-    for row in getattr(meta, "preset_runtime_rows", None) or ():
-        if row.get("slug") == preset_slug and row.get("runtime"):
-            return row["runtime"]
-    return None
-
-
 def _runtime_band_for_adapter(adapter, meta) -> str:
-    """Compute the same runtime band string used on the homepage cards.
-
-    Mirrors the inline logic in :func:`_build_tools_catalog` so the
-    preview page reports the same band as the homepage. Falls back
-    to '—' when the adapter has no PRESET_RUNTIME entries.
-    """
-    if meta is None:
-        return "—"
-    runtimes: list[str] = []
-    for preset in adapter.presets:
-        rt = _preset_runtime_text(meta, preset.slug)
-        if rt and rt not in runtimes:
-            runtimes.append(rt)
-    if len(runtimes) >= 2:
-        return f"{runtimes[0]} to {runtimes[-1]}"
-    if len(runtimes) == 1:
-        return runtimes[0]
-    return "—"
+    """The runtime band for ``adapter``; see shared.tool_meta.runtime_band."""
+    return runtime_band(meta, [p.slug for p in adapter.presets])
 
 
 def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
@@ -898,7 +861,7 @@ def _pilot_context(adapter, meta) -> dict | None:
         pilot,
         params=params,
         cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
-        runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
+        runtime=preset_runtime_text(meta, str(params.get("preset") or "")),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
         # Rendered by components/pilot_card.html as the "this tool asks
         # for these, and here is where to get them" line. Both flags are
@@ -2489,10 +2452,56 @@ def tools_comparison():
             "tools.tools_comparison", _external=True
         )},
     ]
+
+    # --- "Which of these is for me?" -----------------------------------
+    # Answers arrive as query params from a plain GET form, so the
+    # chooser works with JavaScript off and a filled-in answer is a
+    # shareable URL. Unknown values are dropped rather than echoed: the
+    # only thing reaching the template is a value from the tuples in
+    # shared.tool_chooser.
+    def _pick(param, choices):
+        value = request.args.get(param, "")
+        return value if value in {k for k, _ in choices} else None
+
+    chooser_have = _pick("have", tool_chooser.HAVE_CHOICES)
+    chooser_shape = _pick("shape", tool_chooser.SHAPE_CHOICES)
+    chooser_chemistry = _pick("chemistry", tool_chooser.CHEMISTRY_CHOICES)
+    chooser_asks_shape = chooser_have in tool_chooser.DESIGN_HAVES
+
+    # Hold the answer back until the follow-up questions have been put,
+    # otherwise a visitor who wants a nanobody sees every design tool in
+    # shared/tool_chooser.py::_FACTS that takes a target structure, and
+    # never learns the question that narrows them.
+    chooser_picks = None
+    chooser_prep = []
+    if chooser_have and (not chooser_asks_shape or chooser_shape):
+        answer = tool_chooser.recommend(
+            chooser_have, shape=chooser_shape, chemistry=chooser_chemistry,
+        )
+        # A sequence-only visitor is offered the folding tools in the
+        # same breath as the designers, and listing ESMFold under "I
+        # want an scFv" reads as a claim that it designs one. Split
+        # them: the folding tools answer a different question, which is
+        # how to reach the structure the other tools need.
+        if chooser_asks_shape:
+            chooser_picks = [p for p in answer if p["is_designer"]]
+            chooser_prep = [p for p in answer if not p["is_designer"]]
+        else:
+            chooser_picks = answer
+
     return render_template(
         "tools/comparison.html",
         tools=catalog,
         grouped=grouped,
         authenticated=bool(session.get("user_email")),
         breadcrumbs=breadcrumbs,
+        have_choices=tool_chooser.HAVE_CHOICES,
+        shape_choices=tool_chooser.SHAPE_CHOICES,
+        chemistry_choices=tool_chooser.CHEMISTRY_CHOICES,
+        chooser_have=chooser_have,
+        chooser_shape=chooser_shape,
+        chooser_chemistry=chooser_chemistry,
+        chooser_asks_shape=chooser_asks_shape,
+        chooser_picks=chooser_picks,
+        chooser_prep=chooser_prep,
     )

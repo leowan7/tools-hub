@@ -792,17 +792,15 @@ def test_a_recovered_run_gets_no_email_callout():
     (shared/jobs.py::complete_job), which is the call that mails this email -- so a
     recovered run reaches this surface exactly as a webhook row does.
 
-    THE SHAPE TEST CANNOT SEE THAT, which is the reason the inlined copy this
-    module used to exercise was worth collapsing rather than merely
-    de-duplicating. Measured on this fixture before the collapse, the mail read
-    "Top design: ipTM 0.800 (designs/d_first.pdb)" -- the FIRST partial to
-    arrive -- while an ipTM of 0.99 sat unmentioned in the same run, and the
-    two bodies were BYTE-IDENTICAL with and without the flag.
+    The shape test cannot see that, so the email reads the ``backfilled``
+    flag through ``supports_headline_claim`` (shared/jobs.py) and sends no
+    "Top design" callout for a recovered run. The fixture puts an ipTM of 0.80
+    first and 0.99 second, so an ungated callout would name the arrival-order
+    first design, not the best one.
 
-    That byte-identity is why the second half of this test exists: the same
-    result minus the flag must still render the callout, or these assertions
-    would pass for a shape reason and say nothing about
-    ``supports_headline_claim``'s ``backfilled`` arm.
+    The second half renders the same result without the flag and asserts the
+    callout IS present, so the first half cannot pass for a shape reason and
+    the flag is shown to be the discriminator.
     """
     bodies = _bodies(_sent(_job(result=_recovered(backfilled=True))))
     for part, body in bodies.items():

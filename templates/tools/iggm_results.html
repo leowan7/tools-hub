@@ -121,12 +121,39 @@
       <span class="panel-title">Epitope contacts (top {{ contact_rows | length }} designs)</span>
     </div>
     <div class="panel-body" style="overflow-x: auto;">
+      {% if epitope_pdb | length == epitope_positions | length %}
+        <p class="subtitle" style="margin:0 0 0.6rem 0;">
+          Columns are the epitope residues you asked for, by the number in your
+          PDB. IgGM counts positions along chain
+          {{ antigen_chain or 'the antigen' }} from 1, so
+          {{ antigen_chain or '' }}{{ epitope_pdb[0] }} is position
+          {{ epitope_positions[0] }} inside the run.
+        </p>
+      {% endif %}
       <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
         <thead>
           <tr style="text-align:left; color:var(--text-tertiary); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;">
             <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Design</th>
+            {# IgGM converts each epitope residue number you typed into a
+               1-based position along the antigen chain (tools/iggm/
+               run_pipeline.py::convert_epitope), and that conversion was
+               invisible: the header printed the converted position only, so a
+               user who typed 241 saw a column called 118. Both forms are in
+               the result, in the same order (convert_epitope appends one
+               position per requested residue), so label the column with the
+               number the user typed and keep the position underneath. The
+               length guard is what makes the index alignment safe to assume
+               for a result written by any older build. #}
+            {% set aligned = epitope_pdb | length == epitope_positions | length %}
             {% for pos in epitope_positions %}
-              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center; font-family:var(--font-mono);">{{ pos }}</th>
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center; font-family:var(--font-mono);">
+                {% if aligned %}
+                  {{ antigen_chain or '' }}{{ epitope_pdb[loop.index0] }}
+                  <div style="color:var(--text-tertiary); font-weight:400; text-transform:none; letter-spacing:0;">pos {{ pos }}</div>
+                {% else %}
+                  {{ pos }}
+                {% endif %}
+              </th>
             {% endfor %}
             <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:right;">Hits</th>
           </tr>
