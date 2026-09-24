@@ -1,13 +1,14 @@
 """Tests for ``reconcile_campaign_children`` — the poll-based terminaliser that
-settles a completed atomic-pattern campaign sub-job (proteina / iggm) whose
+settles a finished atomic-pattern campaign sub-job (proteina / iggm) whose
 Modal FunctionCall returned inline but posted no terminal webhook.
 
-The critical invariant is SUCCESS-ONLY promotion: a ``succeeded`` poll (inline
-``smoke_result.status == COMPLETED``, emitted only by atomic tools) is
-terminalised through ``complete_job``; a ``failed`` poll is LEFT ALONE, because
-a composite pilot (bindcraft / boltzgen / pxdesign / rfantibody) whose webhook
-was merely delayed also reads as ``failed`` and must never be billed as a
-failure from a poll. No live Modal / Supabase — the three seams are faked.
+The critical invariant is INLINE-PAYLOAD-ONLY settlement: a ``succeeded`` poll
+(inline ``smoke_result.status == COMPLETED``) and a ``failed`` poll carrying
+``error_bucket`` (inline ``smoke_result.status == FAILED``) are terminalised
+through ``complete_job``; any other ``failed`` poll is LEFT ALONE, because a
+composite pilot (bindcraft / boltzgen / pxdesign / rfantibody) whose webhook
+was merely delayed also reads as ``failed`` and must never be failed from a
+poll. No live Modal / Supabase — the three seams are faked.
 """
 
 from __future__ import annotations
@@ -83,6 +84,7 @@ def recon_env(monkeypatch):
             "job_id": job_id,
             "terminal_status": terminal_status,
             "result": result,
+            "error": error,
             "gpu_seconds_used": gpu_seconds_used,
         })
         return None
@@ -129,9 +131,10 @@ def test_succeeded_child_is_terminalised(recon_env):
 
 
 def test_failed_poll_is_left_alone(recon_env):
-    """A ``failed`` poll must NOT be terminalised here — a composite pilot with
-    a delayed webhook reads as failed even on success. Left to the webhook /
-    stuck-job recovery, which distinguishes clean-exit from a real crash."""
+    """A ``failed`` poll without ``error_bucket`` must NOT be terminalised here
+    — a composite pilot with a delayed webhook reads as failed even on success.
+    Left to the webhook / stuck-job recovery, which distinguishes clean-exit
+    from a real crash."""
     state, install = recon_env
     rows = [{
         "id": "job-B", "status": "running", "modal_function_call_id": "fc-B",
@@ -148,6 +151,70 @@ def test_failed_poll_is_left_alone(recon_env):
     assert n == 0
     assert state["complete"] == []
     assert state["running"] == []
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_composite_pilot_failed_return_is_left_alone(recon_env, exit_code):
+    """The same guard driven through the real ``_interpret_pipeline_return``:
+    a webhook-path return (no inline ``smoke_result``) reads ``failed`` with no
+    ``error_bucket``, whether the pipeline exited clean or not."""
+    from gpu.modal_client import _interpret_pipeline_return
+
+    state, install = recon_env
+    rows = [{
+        "id": "job-P", "status": "running", "modal_function_call_id": "fc-P",
+        "campaign_id": "camp-1",
+    }]
+    poll = _interpret_pipeline_return({
+        "exit_code": exit_code,
+        "smoke_result": None,
+        "provider_job_id": "p",
+        "webhook_outcome": {"delivered": False, "detail": "lost"},
+    })
+    assert poll["status"] == "failed"
+    install(rows, {"fc-P": poll})
+
+    assert cc.reconcile_campaign_children("camp-1") == 0
+    assert state["complete"] == []
+
+
+def test_inline_failed_child_is_terminalised(recon_env):
+    """An atomic child that wrote its own FAILED smoke_result (here IgGM's
+    all-uploads-failed guard) is settled now, under its own bucket, instead of
+    waiting for the 6-hour stuck-job sweeper."""
+    from gpu.modal_client import _interpret_pipeline_return
+    from shared.jobs import classify_terminal_state, is_billed_failure_class
+
+    state, install = recon_env
+    rows = [{
+        "id": "job-F", "status": "running", "modal_function_call_id": "fc-F",
+        "campaign_id": "camp-1",
+    }]
+    poll = _interpret_pipeline_return({
+        "exit_code": 1,
+        "smoke_result": {
+            "status": "FAILED",
+            "error": {
+                "bucket": "storage",
+                "check": "no_designs",
+                "detail": "all 4 designs failed to upload — nothing to deliver.",
+            },
+        },
+        "provider_job_id": "f",
+    })
+    install(rows, {"fc-F": poll})
+
+    assert cc.reconcile_campaign_children("camp-1") == 1
+    assert len(state["complete"]) == 1
+    call = state["complete"][0]
+    assert call["job_id"] == "job-F"
+    assert call["terminal_status"] == "failed"
+    assert call["error"]["bucket"] == "storage"
+    assert "failed to upload" in call["error"]["detail"]
+    assert call["gpu_seconds_used"] is None
+    klass = classify_terminal_state(status="failed", error=call["error"])
+    assert klass == "infra_crash"
+    assert not is_billed_failure_class(klass)
 
 
 def test_error_poll_is_left_alone(recon_env):
