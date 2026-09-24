@@ -81,3 +81,11 @@ def test_unusable_minutes_fall_back_to_one_presets_own_text(minutes):
         "b": {"typical_minutes": "1 to 3", "minutes": minutes},
     })
     assert runtime_band(meta, ["a", "b"]) == "~9 to 15 min"
+
+
+def test_a_preset_with_no_runtime_entry_earns_the_caveat():
+    meta = types.SimpleNamespace(PRESET_RUNTIME={
+        "standalone": {"typical_minutes": "5 to 10", "minutes": (5, 10)},
+    })
+    assert runtime_band(meta, ["standalone", "batch"]) == "5 to 10 min (some presets vary)"
+    assert runtime_band(meta, ["standalone"]) == "5 to 10 min"
