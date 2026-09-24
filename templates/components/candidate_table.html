@@ -56,7 +56,7 @@
   load-bearing rather than documentation, and it omitted ``ordinal`` in the
   same change that introduced the call.
 #}
-{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=(), per_tool={}) %}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=(), per_tool={}, ranked=true) %}
 {# ``scope`` is the shortlist storage key + element-id suffix: the target id in
    target mode (pooled across tools), the campaign id in campaign mode (merged
    across sub-jobs of one tool), else the job id. ``export_base`` routes exports
@@ -684,7 +684,14 @@
            loop.first is the alphabetically-first tool's best design and the
            badge, its tooltip and the highlight rail all asserted it was the
            target's best. bindcraft would outrank rfdiffusion by spelling. #}
-        {% set is_top = (cand.get('_rank_position') == 1) if pooled else loop.first %}
+        {# ...EXCEPT when the caller passes ranked=false. A result rebuilt by
+           shared/job_recovery.recover_stuck_job_result replays streamed
+           partials in ARRIVAL order and sorts nothing, so loop.first there is
+           whichever design finished first. The badge and its "Top-ranked
+           design in this run" tooltip would then assert a ranking that was
+           never computed. No badge is the true statement about such a list;
+           tests/test_recovered_job_rendering.py pins both directions. #}
+        {% set is_top = (cand.get('_rank_position') == 1) if pooled else (loop.first and ranked) %}
         <tr class="cand-row{% if is_top %} cand-row-top{% endif %}" data-idx="{{ idx }}">
           <td>
             {# This column is the row's POSITION IN THIS TABLE, and it FOLLOWS

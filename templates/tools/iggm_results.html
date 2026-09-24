@@ -9,6 +9,11 @@
 
 {% set output            = job.result or {} %}
 {% set raw_designs       = display_rows(output.get('designs')) %}
+{# A run rebuilt by shared/job_recovery.recover_stuck_job_result stores its designs
+   under `candidates`, not this tool's native `designs` -- reading `designs` alone
+   rendered such a run as having produced nothing. Those rows are already candidate-
+   shaped, and `candidates` first is the order shared/jobs.candidate_records reads. #}
+{% set recovered         = display_rows(output.get('candidates')) %}
 {% set run_task          = output.get('run_task') %}
 {% set tier              = output.get('tier') %}
 {% set antigen_chain     = output.get('antigen_chain') %}
@@ -17,8 +22,8 @@
 {% set epitope_pdb       = output.get('epitope_pdb_resnums', []) %}
 {% set artifact_keys     = output.get('artifact_keys', []) %}
 {% set runtime_seconds   = output.get('runtime_seconds') %}
-{% set designs_total     = output.get('designs_total') or (raw_designs | length) %}
-{% set designs_completed = output.get('designs_completed') or (raw_designs | length) %}
+{% set designs_total     = output.get('designs_total') or (recovered_total(job, recovered) if recovered else (raw_designs | length)) %}
+{% set designs_completed = output.get('designs_completed') or ((recovered or raw_designs) | length) %}
 {% set clone_url         = url_for('tools.tool_form', tool='iggm', clone_from=job.id) %}
 
 {% set candidates = [] %}
@@ -38,7 +43,9 @@
 {% endfor %}
 
 {% set candidates = candidates | sort_by_number('scores.epitope_contacts', reverse=True) %}
+{% set candidates = recovered or candidates %}
 {% set columns = ['epitope_contacts'] %}
+{% if recovered %}{% set columns = recovered_columns(recovered) %}{% endif %}
 
 {# Top summary panel. #}
 <div class="panel" style="margin-top:1rem;">
@@ -95,7 +102,8 @@
     clone_url=clone_url,
     tier=tier,
     gpu_seconds=runtime_seconds,
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   <p class="subtitle">
     IgGM returned no designs. Double-check the antibody FASTA (>H required),
     the antigen chain ID, and the masking (design modes need at least one X),

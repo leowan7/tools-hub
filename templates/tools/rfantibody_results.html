@@ -18,7 +18,8 @@
     clone_url=clone_url,
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   <p class="subtitle">
     No candidates returned. This can happen when the scoring filter rejects
     every design — try a longer preset.

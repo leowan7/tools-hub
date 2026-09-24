@@ -528,7 +528,8 @@
     clone_url=clone_url,
     tier=tier,
     gpu_seconds=runtime_seconds,
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   <p class="subtitle">
     ESMFold2 design returned no designs. The most common cause is a
     target sequence that fails ESMFold2 single-chain folding (very short,

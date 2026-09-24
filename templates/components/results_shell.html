@@ -7,7 +7,7 @@
 
 {% macro results_panel(candidates, columns, tool_slug, job_id,
                        clone_url="", tier="", gpu_seconds=None,
-                       send_target_tools=None, campaign_id="") %}
+                       send_target_tools=None, campaign_id="", ranked=true) %}
 {# ``job_id`` is the literal string "example" only when
    components/worked_example.html is replaying a canned payload on a
    public /tools/<slug> page. Every control keyed on it — the refold
@@ -136,7 +136,8 @@
           </p>
         </div>
       {% endif %}
-      {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url, campaign_id) }}
+      {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url, campaign_id,
+                         ranked=ranked) }}
 
       {# C3 — Second-opinion fold. Spawn N orthogonal ColabFold /
          ESMFold jobs and route the user to /jobs/compare. Rendered

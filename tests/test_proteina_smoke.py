@@ -4665,7 +4665,7 @@ def _render_results(candidates):
         DictLoader({"components/results_shell.html": (
             "{% macro results_panel(candidates, columns, tool_slug, job_id,"
             " clone_url='', tier='', gpu_seconds=None,"
-            " send_target_tools=None, campaign_id='') %}"
+            " send_target_tools=None, campaign_id='', ranked=true) %}"
             "PANEL{% if not candidates %}{{ caller() }}{% endif %}"
             "{% endmacro %}")}),
         FileSystemLoader(str(templates)),
