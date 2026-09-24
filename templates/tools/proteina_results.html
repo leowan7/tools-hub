@@ -87,7 +87,8 @@
     clone_url='',
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   {# THREE ZERO-CANDIDATE CASES, and the campaign wording is true for only
      one of them. It was unconditional until 2026-09-11, so a SUCCEEDED free
      `validate` dry-run — which designs nothing by construction — told the

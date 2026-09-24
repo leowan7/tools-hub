@@ -269,6 +269,41 @@ def display_rows(rows) -> list:
     return [r if isinstance(r, Mapping) else {} for r in rows]
 
 
+def recovered_total(job, rows) -> int:
+    """How many designs a recovered run set out to make.
+
+    A result from ``shared/job_recovery.py`` carries no ``designs_total``, and
+    ``reconstruct`` there skips any design whose structure is missing from
+    Storage, so the rebuilt list's length can undercount the run. The total is
+    read from ``job.inputs._progress``, the snapshot ``_completion_signal``
+    there reads; with none usable, the rebuilt list's length.
+    tests/test_recovered_job_rendering.py::
+    test_a_lossy_recovery_shows_the_run_total holds it.
+    """
+    try:
+        total = int(job.inputs["_progress"]["designs_total"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        total = 0
+    return max(total, len(display_rows(rows)))
+
+
+def recovered_columns(rows) -> list:
+    """The score columns a list rebuilt by ``shared/job_recovery.py`` can fill.
+
+    ``_candidate_from_partial`` there writes only ``ipTM``, ``pLDDT`` and
+    ``i_pae``, so a results partial's own column list (``mean_pLDDT``,
+    ``epitope_contacts``, ``ranking_score``...) renders a recovered row as dashes.
+    Kept in that order, and only where some row carries the key.
+    tests/test_recovered_job_rendering.py::
+    test_a_recovered_run_shows_the_scores_it_kept holds it.
+    """
+    present = {
+        k for r in display_rows(rows)
+        if isinstance(r.get("scores"), Mapping) for k in r["scores"]
+    }
+    return [c for c in ("ipTM", "pLDDT", "i_pae") if c in present]
+
+
 def headline_candidate(
     records, tool: str, preset: Optional[str] = None
 ) -> tuple[Optional[dict], "score_legends.Judgement"]:

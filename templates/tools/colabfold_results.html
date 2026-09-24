@@ -16,6 +16,11 @@
 
 {% set output         = job.result or {} %}
 {% set raw_designs    = display_rows(output.get('designs')) %}
+{# A run rebuilt by shared/job_recovery.recover_stuck_job_result stores its designs
+   under `candidates`, not this tool's native `designs` -- reading `designs` alone
+   rendered such a run as having produced nothing. Those rows are already candidate-
+   shaped, and `candidates` first is the order shared/jobs.candidate_records reads. #}
+{% set recovered      = display_rows(output.get('candidates')) %}
 {% set plddt          = output.get('plddt_per_residue', []) %}
 {% set mean_plddt     = output.get('mean_plddt') %}
 {% set iptm           = output.get('iptm') %}
@@ -37,9 +42,9 @@
 {% set is_example = (job.id == 'example') %}
 
 {# ----- Batch path ----- #}
-{% if raw_designs %}
-  {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
-  {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
+{% if raw_designs or recovered %}
+  {% set designs_total      = output.get('designs_total') or (recovered_total(job, recovered) if recovered else (raw_designs | length)) %}
+  {% set designs_completed  = output.get('designs_completed') or ((recovered or raw_designs) | length) %}
   {% set n_failures         = output.get('n_failures') or 0 %}
 
   {% set candidates = [] %}
@@ -59,7 +64,9 @@
     }) %}
   {% endfor %}
   {% set candidates = candidates | sort_by_number('scores.mean_pLDDT', reverse=True) %}
+  {% set candidates = recovered or candidates %}
   {% set columns = ['mean_pLDDT', 'ipTM', 'pTM', 'AA', 'chains'] %}
+  {% if recovered %}{% set columns = recovered_columns(recovered) %}{% endif %}
 
   <div class="panel" style="margin-top:1rem;">
     <div class="panel-header">
@@ -99,7 +106,8 @@
       clone_url=clone_url,
       tier='batch',
       gpu_seconds=runtime,
-      send_target_tools=send_target_tools) %}
+      send_target_tools=send_target_tools,
+      ranked=(not output.get('backfilled'))) %}
     <p class="subtitle">
       ColabFold returned no completed designs. Confirm every input
       record is ≤600 aa total with canonical residues; multimer records

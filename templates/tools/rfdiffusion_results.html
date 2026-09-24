@@ -23,7 +23,8 @@
     clone_url=clone_url,
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;">
     <p class="subtitle" style="margin:0;">
       <strong>Zero candidates returned.</strong>

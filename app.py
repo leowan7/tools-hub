@@ -96,6 +96,8 @@ from shared.jobs import (
     complete_job,
     create_job,
     display_rows,
+    recovered_columns,
+    recovered_total,
     get_job,
     list_campaign_labels_for_user,
     list_jobs_for_user,
@@ -500,6 +502,8 @@ def create_app() -> Flask:
     # tests/test_malformed_candidate_row_render.py::
     # test_a_null_metric_beside_a_number_cannot_500_the_sort.
     flask_app.jinja_env.globals["display_rows"] = display_rows
+    flask_app.jinja_env.globals["recovered_columns"] = recovered_columns
+    flask_app.jinja_env.globals["recovered_total"] = recovered_total
     # Exposed so the target page can tell a PAUSED run from a still-running one
     # without a second copy of the status set in markup. It must stay
     # CAMPAIGN_TERMINAL_STATUSES and never CAMPAIGN_STATUSES: the two disagree

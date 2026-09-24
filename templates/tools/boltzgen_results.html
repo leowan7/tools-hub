@@ -17,7 +17,8 @@
     clone_url=clone_url,
     tier=output.get('tier'),
     gpu_seconds=output.get('gpu_seconds'),
-    send_target_tools=send_target_tools) %}
+    send_target_tools=send_target_tools,
+    ranked=(not output.get('backfilled'))) %}
   <p class="subtitle">
     BoltzGen returned no candidates. This can happen when the filters
     reject every design — try a longer preset.
