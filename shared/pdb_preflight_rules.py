@@ -676,6 +676,14 @@ _BOLTZGEN = ToolRules(
         soft_warn_target_aa=360,
         hard_cap_combined_aa=700,
         runtime_base_min=600.0,      # BoltzGen sampling ~5-10 min/design × 100
+        # Not checked against a run. tools/boltzgen/__init__.py::build_payload
+        # pins num_designs=200, and runtime_estimate_min(_BOLTZGEN, 115, 200)
+        # returns 1150 min. The one recorded pilot at that pool
+        # (docs/VALIDATION-LOG.md, boltzgen 2026-05-28, 4ZQK chain A = 115 aa)
+        # ran ~82 min. It does not render today:
+        # shared/pdb_preflight.py::_check_size_envelope estimates only when
+        # num_designs is passed, and the boltzgen form sends none.
+        # Recalibrate from a recorded run before passing one.
         runtime_alpha=1.0,
         cap_basis="literature",      # AF3-class headroom
     ),
