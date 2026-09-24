@@ -217,6 +217,43 @@ def test_inline_failed_child_is_terminalised(recon_env):
     assert not is_billed_failure_class(klass)
 
 
+def test_inline_failed_billed_bucket_is_settled_billed(recon_env):
+    """The billed counterpart of the refund above: a child that fails under
+    ``no_yield`` settles as billed ``completed_no_yield``, carrying its GPU
+    seconds."""
+    from gpu.modal_client import _interpret_pipeline_return
+    from shared.jobs import classify_terminal_state, is_billed_failure_class
+
+    state, install = recon_env
+    rows = [{
+        "id": "job-B", "status": "running", "modal_function_call_id": "fc-B",
+        "campaign_id": "camp-1",
+    }]
+    poll = _interpret_pipeline_return({
+        "exit_code": 1,
+        "smoke_result": {
+            "status": "FAILED",
+            "runtime_seconds": 412,
+            "error": {
+                "bucket": "no_yield",
+                "check": "no_designs",
+                "detail": "none of 4 designs folded (4 failures).",
+            },
+        },
+        "provider_job_id": "b",
+    })
+    install(rows, {"fc-B": poll})
+
+    assert cc.reconcile_campaign_children("camp-1") == 1
+    call = state["complete"][0]
+    assert call["terminal_status"] == "failed"
+    assert call["error"]["bucket"] == "no_yield"
+    assert call["gpu_seconds_used"] == 412
+    klass = classify_terminal_state(status="failed", error=call["error"])
+    assert klass == "completed_no_yield"
+    assert is_billed_failure_class(klass)
+
+
 def test_error_poll_is_left_alone(recon_env):
     state, install = recon_env
     rows = [{
