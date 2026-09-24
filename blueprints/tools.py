@@ -2507,8 +2507,9 @@ def tools_comparison():
     chooser_asks_shape = chooser_have in tool_chooser.DESIGN_HAVES
 
     # Hold the answer back until the follow-up questions have been put,
-    # otherwise a visitor who wants a nanobody sees all eight design
-    # tools once and never learns the question that narrows them.
+    # otherwise a visitor who wants a nanobody sees every design tool in
+    # shared/tool_chooser.py::_FACTS that takes a target structure, and
+    # never learns the question that narrows them.
     chooser_picks = None
     chooser_prep = []
     if chooser_have and (not chooser_asks_shape or chooser_shape):

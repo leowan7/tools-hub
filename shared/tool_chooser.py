@@ -19,9 +19,9 @@ Derived, never typed — these are the claims a customer acts on, so they
 read the enforcer rather than restating it:
 
 * ``needs_hotspots`` reads ``TOOL_RULES[slug].hotspots_required``, the
-  flag ``shared/pdb_preflight.py:664`` branches on to refuse a submit.
+  flag ``shared/pdb_preflight.py::preflight_for_tool`` branches on to refuse a submit.
 * ``needs_structure`` reads ``adapter.requires_pdb`` and each
-  ``Preset.requires_pdb``, the flags ``blueprints/tools.py:1719`` reads
+  ``Preset.requires_pdb``, the flags ``blueprints/tools.py::tool_submit`` reads
   to gate a submit before ``create_job``.
 * Multi-chain eligibility reads
   ``TOOL_RULES[slug].multi_chain_container_ready``, the flag
@@ -235,11 +235,11 @@ def _adapter_by_slug() -> dict:
 def needs_structure(slug: str) -> bool:
     """True when a paid run of this tool cannot start without an upload.
 
-    Reads the same two flags ``blueprints/tools.py:1719`` reads to gate
+    Reads the same two flags ``blueprints/tools.py::tool_submit`` reads to gate
     the submit: the adapter flag, or any preset's. proteina is False on
     both because its target is optional — a curated benchmark task is a
-    complete run — and the custom-target case is gated separately at
-    ``blueprints/tools.py:1727``.
+    complete run — and the custom-target case is gated separately in
+    that same view, by its ``target_source == "custom"`` branch.
     """
     adapter = _adapter_by_slug().get(slug)
     if adapter is None:
@@ -255,7 +255,7 @@ def needs_hotspots(slug: str) -> bool:
     """True when preflight refuses a submit that names no hotspot.
 
     Reads ``TOOL_RULES[slug].hotspots_required`` — the flag
-    ``shared/pdb_preflight.py:664`` branches on. A tool with no entry in
+    ``shared/pdb_preflight.py::preflight_for_tool`` branches on. A tool with no entry in
     TOOL_RULES is not gated by that path at all, so it is False here.
     """
     rules = TOOL_RULES.get(slug)
@@ -293,17 +293,34 @@ def has_example(slug: str) -> bool:
     return path.is_file()
 
 
+# A tool with no TOOL_RULES entry is never reached by the preflight
+# hotspot gate, so ``needs_hotspots`` is False for it — but an adapter's
+# own ``validate`` can still refuse a residue-less submit, and a
+# prerequisite line that omits that refusal is looser than the gate.
+# iggm is the one such tool: ``tools/iggm/__init__.py::validate`` returns
+# "Epitope residues are required." when the epitope field is empty.
+# Pinned by tests/test_tool_chooser.py, which drives that validate both
+# ways, and by test_every_adapter_residue_refusal_slug_lacks_tool_rules,
+# which fails if a slug here ever gains a TOOL_RULES entry instead.
+_ADAPTER_RESIDUE_REFUSALS: dict[str, str] = {
+    "iggm": "the antigen residues that form the epitope",
+}
+
+
 def prerequisite_line(slug: str) -> str:
     """One plain sentence naming what the customer must bring.
 
-    Composed from ``needs_structure`` and ``needs_hotspots``, so it
-    cannot state a requirement the submit gate does not enforce.
+    Composed from ``needs_structure`` and ``needs_hotspots`` plus the
+    adapter-level refusals above, so it cannot state a requirement the
+    submit gate does not enforce, nor omit one it does.
     """
     parts: list[str] = []
     if needs_structure(slug):
         parts.append("a structure of your target (.pdb or .cif)")
     if needs_hotspots(slug):
         parts.append("at least one residue on it for the binder to touch")
+    if slug in _ADAPTER_RESIDUE_REFUSALS:
+        parts.append(_ADAPTER_RESIDUE_REFUSALS[slug])
     if not parts:
         return ""
     return "You will need " + " and ".join(parts) + "."
@@ -333,6 +350,12 @@ def recommend(
             continue
 
         is_designer = bool(facts.shapes)
+        # The folding tools are offered as a "get a structure first" step,
+        # and they fold protein sequences. A visitor who has just said
+        # their target is a small molecule has nothing for them to fold,
+        # so the step is not an answer to that question.
+        if not is_designer and chemistry == "small-molecule":
+            continue
         if have in DESIGN_HAVES and is_designer:
             if shape and shape != "unsure" and shape not in facts.shapes:
                 continue

@@ -125,7 +125,7 @@ def test_no_hotspot_clause_for_tools_outside_the_gate():
 
 @pytest.mark.parametrize("slug", sorted(tool_chooser._FACTS))
 def test_structure_clause_matches_the_submit_gate(slug):
-    """Agree with ``blueprints/tools.py:1719``, which reads BOTH flags.
+    """Agree with ``blueprints/tools.py::tool_submit``, which reads BOTH flags.
 
     That gate is per-SELECTED-preset (``preset.requires_pdb or
     adapter.requires_pdb``) while the chooser speaks before a preset is
@@ -226,7 +226,7 @@ def test_a_disabled_tool_is_never_recommended(monkeypatch):
     """The flag gate is inherited from ``_build_tools_catalog``.
 
     ``shared.feature_flags.tool_enabled`` is fail-closed on a missing
-    env var (shared/feature_flags.py:41-44), so clearing the flag must
+    env var (shared/feature_flags.py::tool_enabled), so clearing the flag must
     remove the tool from every answer.
     """
     from shared.feature_flags import flag_name
@@ -350,3 +350,117 @@ class TestChooserRendering:
         body = self._get("?have=backbone")
         assert tool_chooser.has_example("mpnn")
         assert "#worked-example" in body
+
+    def test_a_no_match_answer_still_says_nothing_matched(self):
+        """The prep step is not an answer to the question that was asked.
+
+        ``?have=target-sequence&shape=nanobody`` matches no designer, but
+        the folding tools still qualify as a prep step; the note must not
+        be suppressed by their presence, and must not point at a list of
+        tools "above" that is not there.
+        """
+        body = self._get("?have=target-sequence&shape=nanobody")
+        assert "No tool in the catalog covers that combination" in body
+        assert "which is what the tools above need" not in body
+
+    def test_a_matching_answer_does_not_say_nothing_matched(self):
+        body = self._get("?have=target-structure&shape=nanobody")
+        assert "No tool in the catalog covers that combination" not in body
+
+
+# ---------------------------------------------------------------------
+# Adapter-level residue refusals
+#
+# The preflight hotspot gate only reaches tools with a TOOL_RULES entry.
+# iggm has none, so ``needs_hotspots("iggm")`` is False and the
+# prerequisite line would have named only the structure — while
+# ``tools/iggm/__init__.py::validate`` refuses a residue-less submit
+# outright. These drive that validate in both directions.
+# ---------------------------------------------------------------------
+
+# 128 aa each: inside the 80-400 aa window ``_parse_antibody_fasta``
+# enforces, so validate reaches the epitope check, which is last.
+_IGGM_H = "QVQLVESGGGLVQPGG" * 8
+_IGGM_L = "DIQMTQSPSSLSASVG" * 8
+
+
+def _iggm_form(epitope: str) -> dict:
+    return {
+        "preset": "complex_prediction",
+        "fasta": "\n".join([">H", _IGGM_H, ">L", _IGGM_L, ""]),
+        "target_chain": "A",
+        "epitope": epitope,
+    }
+
+
+def _iggm_adapter():
+    adapter = {a.slug: a for a in tool_base.all_adapters()}.get("iggm")
+    assert adapter is not None, "iggm is not in the adapter registry"
+    return adapter
+
+
+def test_iggm_validate_refuses_a_submit_with_no_epitope():
+    """The refusal the prerequisite line has to mention actually happens."""
+    adapter = _iggm_adapter()
+    spec, err = adapter.validate(_iggm_form(""), {})
+    assert spec is None
+    assert "epitope" in (err or "").lower()
+
+    ok_spec, ok_err = adapter.validate(_iggm_form("45 46 47"), {})
+    assert ok_err is None, f"the same form with an epitope was refused: {ok_err}"
+    assert ok_spec is not None
+
+
+def test_iggm_prerequisite_line_names_the_residues_the_adapter_demands():
+    """Looser than the gate is the failure this whole module exists to stop."""
+    adapter = _iggm_adapter()
+    _spec, err = adapter.validate(_iggm_form(""), {})
+    assert err is not None
+
+    line = tool_chooser.prerequisite_line("iggm")
+    assert "residue" in line.lower(), line
+    assert "epitope" in line.lower(), line
+
+
+def test_every_adapter_residue_refusal_slug_lacks_tool_rules():
+    """Two mechanisms, never both — or the sentence states it twice.
+
+    ``prerequisite_line`` appends the adapter clause unconditionally, so
+    a slug that gained a TOOL_RULES entry with hotspots_required=True
+    would produce "at least one residue ... and the antigen residues ...".
+    """
+    for slug in tool_chooser._ADAPTER_RESIDUE_REFUSALS:
+        assert slug not in TOOL_RULES or not TOOL_RULES[slug].hotspots_required, (
+            f"{slug} is now gated by preflight too; drop its entry from "
+            "_ADAPTER_RESIDUE_REFUSALS or the prerequisite line doubles up"
+        )
+
+
+def test_every_adapter_residue_refusal_slug_is_a_real_tool():
+    slugs = {a.slug for a in tool_base.all_adapters()}
+    assert set(tool_chooser._ADAPTER_RESIDUE_REFUSALS) <= slugs
+
+
+def test_a_small_molecule_target_is_not_offered_the_folding_tools():
+    """Nothing to fold: a small molecule has no protein sequence.
+
+    Guards the branch in ``recommend`` that drops non-designers for this
+    answer. The vacuity check is the companion assertion: the same query
+    with a protein target does return them.
+    """
+    folders = {"af2", "colabfold", "esmfold"}
+    small = {
+        p["slug"]
+        for p in tool_chooser.recommend(
+            "target-sequence", shape="unsure", chemistry="small-molecule"
+        )
+    }
+    assert not (small & folders), sorted(small & folders)
+
+    plain = {
+        p["slug"]
+        for p in tool_chooser.recommend(
+            "target-sequence", shape="unsure", chemistry="plain"
+        )
+    }
+    assert folders <= plain, sorted(folders - plain)

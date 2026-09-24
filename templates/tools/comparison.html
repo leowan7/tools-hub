@@ -350,7 +350,7 @@
           </p>
           {% for pick in chooser_picks %}{{ pick_card(pick) }}{% endfor %}
         </div>
-      {% elif not chooser_prep %}
+      {% else %}
         <p class="chooser-note">
           No tool in the catalog covers that combination. Try
           &ldquo;I don&rsquo;t know yet&rdquo; for the shape, or browse the
@@ -361,8 +361,13 @@
       {% if chooser_prep %}
         <div class="chooser-picks">
           <p class="chooser-note">
-            {% if chooser_picks %}Or get a structure first{% else %}Start by getting a structure{% endif %} &mdash; these predict one from
-            your sequence, which is what the tools above need.
+            {# "the tools above" is only true when a design tool matched;
+               with no match there is no list above to point at. #}
+            {% if chooser_picks %}Or get a structure first &mdash; these predict one
+            from your sequence, which is what the tools above need.
+            {% else %}You can still get a structure &mdash; these predict one from
+            your sequence, and a structure opens the design tools that the
+            catalog below lists as needing one.{% endif %}
           </p>
           {% for pick in chooser_prep %}{{ pick_card(pick) }}{% endfor %}
         </div>

@@ -975,18 +975,8 @@ class TestHotspotDeflection:
         client = flask_app.test_client()
         pilots = _pilots(slugs)
         carded = {s for s in slugs if pilots[s] and self._carded(client, s)}
-        # boltzgen left this set when its prerequisites bullet changed
-        # from "At least one hotspot residue" to "Optionally, hotspot
-        # residues to aim the binder at". It was the one tool whose
-        # stated prerequisite was stricter than every enforcer of it:
-        # its adapter validate() returns no error for an empty hotspot
-        # field (tools/boltzgen/__init__.py, which documents an empty
-        # list as "no hotspot constraint"), and its preflight rule sets
-        # hotspots_required=False (shared/pdb_preflight_rules.py). The
-        # other four each refuse the empty field in validate(), which is
-        # what the sibling test above asserts.
         assert carded == {
-            "bindcraft", "pxdesign", "rfantibody", "rfdiffusion",
+            "bindcraft", "boltzgen", "pxdesign", "rfantibody", "rfdiffusion",
         }, sorted(carded)
         for slug in slugs:
             expected = self._states_hotspot_prerequisite(slug) \
