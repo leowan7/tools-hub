@@ -102,11 +102,12 @@ example_output_id: str | None = None
 # "runtime_table" entry in the about-panel below, and the FAQ answer above.
 # tools/boltzgen/meta.py carries the same warning because that page once
 # quoted three different runtimes for one run.
-preset_runtime_rows: tuple[dict[str, str], ...] = (
+preset_runtime_rows: tuple[dict[str, object], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
         "runtime": "25 to 40 min (4 to 8 designs)",
+        "minutes": (25, 40),
         "target": "Your uploaded target",
     },
 )

@@ -7,7 +7,8 @@ Parallel to ``tools/mpnn/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink.
     github_url        — upstream ColabFold repository (which bundles AF2).
@@ -31,7 +32,7 @@ _SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
     # dominates for short sequences; fold time scales with length.
-    "standalone": {"typical_minutes": "5 to 10"},
+    "standalone": {"typical_minutes": "5 to 10", "minutes": (5, 10)},
 }
 
 paper_citation: str = "Jumper et al., Nature 2021 (AF2); Mirdita et al., Nature Methods 2022 (ColabFold)"

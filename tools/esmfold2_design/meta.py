@@ -7,7 +7,8 @@ Parallel to ``tools/boltz2/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation       — short inline citation.
     paper_url            — paper PDF / preprint URL.
     github_url           — upstream repo.
@@ -49,8 +50,8 @@ from typing import Optional
 # behind it. The previous "~10"/"~12" came from the falsified "one fixed-length
 # pass" premise that also mis-sized the container ceiling.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "minibinder": {"typical_minutes": "~25 to 30"},
-    "scfv": {"typical_minutes": "~25 to 30"},
+    "minibinder": {"typical_minutes": "~25 to 30", "minutes": (25, 30)},
+    "scfv": {"typical_minutes": "~25 to 30", "minutes": (25, 30)},
 }
 
 # Candido, S. is sequence="first" in Crossref and the leading author on

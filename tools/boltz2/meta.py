@@ -7,7 +7,8 @@ Parallel to ``tools/mpnn/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation       — short inline citation.
     paper_url            — bioRxiv permalink.
     github_url           — upstream Boltz repository.
@@ -21,11 +22,10 @@ from __future__ import annotations
 from typing import Optional
 
 
-# Typical wall-clock per preset. Rendered as f"{typical_minutes} min" by
-# blueprints/tools.py::_preset_runtime_text and by the inline copy of that
-# logic in shared/tools_catalog.py::_build_tools_catalog, which also joins
-# the presets into a "<fastest> to <slowest>" band — so each value has to
-# read as ONE token with " min" appended.
+# Typical wall-clock per preset. ``typical_minutes`` is rendered as
+# f"{typical_minutes} min" by shared/tool_meta.py::preset_runtime_text;
+# the tool's runtime band is built from ``minutes`` by
+# shared/tool_meta.py::runtime_band.
 #
 # standalone: MEASURED at ~69 s/design marginal (1.15 min), and 81.9 s for a
 # one-design run because the first design runs ~13 s longer. Job
@@ -44,8 +44,8 @@ from typing import Optional
 # MSA-fetch / GPU-compute split was not measured, so there is no first-design
 # premium to subtract. Same provenance note in tools/boltz2/__init__.py.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "~1.2"},
-    "msa_server": {"typical_minutes": "~3.6"},
+    "standalone": {"typical_minutes": "~1.2", "minutes": (1.2, 1.2)},
+    "msa_server": {"typical_minutes": "~3.6", "minutes": (3.6, 3.6)},
 }
 
 paper_citation: str = "Passaro et al., bioRxiv 2025"
