@@ -109,7 +109,7 @@ def _row(html, jid):
 def test_a_running_job_shows_elapsed_time_reserved_spend_and_real_progress(client):
     job = _job("run-1", "running", hold="10",
                progress={"designs_completed": 3, "designs_total": 8},
-               started=_iso(NOW - timedelta(minutes=5, seconds=3)))
+               started=_iso(datetime.now(timezone.utc) - timedelta(minutes=5, seconds=3)))
     row = _row(_render(client, [job], [_tx(10, "-12.50")]), "run-1")
     assert re.search(r">\s*5m 0[3-9]s\s*<", row)
     assert "$12.50" in row and "reserved" in row
