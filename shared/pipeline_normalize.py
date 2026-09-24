@@ -459,6 +459,16 @@ def normalize_for_pipeline(
     # ``icode-sibling-resurrects-a-dropped-residue`` and
     # ``resurrected-residue-loses-every-atom`` cases are the two ways the
     # paraphrase went wrong.
+    #
+    # KNOWN GAP, pre-dating this preview and not closed by it: ``convert_modres``
+    # above clears the hetflag in place, so a MODRES-mapped HETATM at a resSeq
+    # a polymer residue in the same chain already uses ends up a blank-altloc
+    # duplicate. Both are written, and the re-parse below then drops one on a
+    # PERMISSIVE ``PDBConstructionException``, which no selector predicate can
+    # foresee. Measured on a five-residue chain plus ``HETATM MSE A 102``:
+    # preview says 102 -> 6, the written file says 3. The atom loss in the
+    # write path is the half worth fixing; that is a change to what the
+    # container is handed, so it is not in this package.
     if output_path is None:
         if renumber_residues:
             preview_selector = _PipelineSelect(
