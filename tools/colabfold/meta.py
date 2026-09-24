@@ -89,16 +89,19 @@ about: dict = {
         {"preset": "standalone", "typical": "1 to 2 min"},
     ],
     # Same bar as af2 and from the same place: shared/score_legends.py
-    # ("colabfold", "iptm") sets good 0.6 and excellent 0.75, and the
-    # wording follows that legend's own ``explanation``. This summary did
-    # not mention ipTM at all, while the form's "What good looks like"
-    # panel and this tool's guide both ended their ipTM entry pointing
-    # here for colabfold's own number.
+    # ("colabfold", "iptm") sets good 0.6 and excellent 0.75. Stated
+    # INCLUSIVELY, which that legend's own ``explanation`` ("Above 0.6")
+    # is not -- see the note in tools/af2/meta.py for what enforces the
+    # inclusive reading. This summary did not mention ipTM at all, while
+    # the form's "What good looks like" panel and this tool's guide each
+    # ended a sentence in their ipTM entry pointing here for colabfold's
+    # own number. run_pipeline.py:793 emits "iptm" on a multimer only,
+    # which is what the qualifier below is for.
     # tests/test_about_panel_iptm_bar_default.py fails if it goes missing.
     "output_summary": (
         "Predicted PDB with per-residue pLDDT and PAE, plus pTM and "
-        "ipTM on a multimer, where ipTM above 0.6 is a plausible "
-        "interface and above 0.75 is strong. On a run of your own the "
+        "ipTM on a multimer. An ipTM of 0.6 or more is a plausible "
+        "interface and 0.75 or more is strong. On a run of your own the "
         "structure downloads from the results page. The PAE matrix "
         "downloads only from a standalone run &mdash; a batch returns "
         "no PAE file."

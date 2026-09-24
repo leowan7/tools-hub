@@ -46,13 +46,31 @@ THE GUIDE PAGE IS NOW PINNED HERE TOO, and it was not when the tests
 above this point were written. Declaring a bar and PRINTING one are
 different facts about a tool, and the pointer promises the second while
 the template can only consult the first. af2, bindcraft and colabfold
-declare 0.6, 0.75 and 0.6, and their guides printed no figure at all --
-bindcraft's nearest thing was "above the BindCraft default thresholds"
-in its inputs list -- so both surfaces of all three sent a reader to
-look up a number that was not there. The ``output_summary`` in each of
-their meta.py now states it, and
+declare 0.6, 0.75 and 0.6, and no guide of the three printed a bar of
+its own -- each prints other figures, and the shared band sits in the
+ipTM entry itself, but bindcraft's nearest thing to its OWN bar was
+"above the BindCraft default thresholds" in its inputs list, which names
+no number. So both surfaces of all three sent a reader to look up a
+figure that was not there. The ``output_summary`` in each of their
+meta.py now states it, and
 test_the_pointer_is_only_made_where_the_guide_states_a_number reads the
 number back off the RENDERED page rather than off the constant.
+
+THE FIGURES COME FROM THE LEGEND, THE PHRASING DOES NOT. Each summary
+takes its ``good`` and ``excellent`` from that tool's legend in
+shared/score_legends.py, but states them INCLUSIVELY ("0.75 or more")
+where the legend's own ``explanation`` says "Above 0.75". The bar is
+inclusive: shared/score_legends.py::judge gates on ``seen >= good``,
+shared/metric_glossary.py publishes that to readers ("a value exactly ON
+a bar counts as meeting it") and tests/test_derived_verdicts.py pins it
+in test_a_value_exactly_on_the_bar_meets_it. score_legends.py has ruled
+on this wording once already, in the comment above its
+("esmfold2-design", "ipTM") entry: "0.75 OR MORE", not "above 0.75". It
+matters most on bindcraft, whose own worked example carries ipTM 0.75
+exactly and narrates it as sitting ON the bar rather than above it --
+with "above" in the summary that page contradicted itself within one
+scroll. The legend ``explanation`` strings still say "Above"; correcting
+them changes the results-table tooltips and is not this file's business.
 
 THREE FURTHER LIMITS. Every check reads the ipTM ``<dd>`` only, so a
 pointer placed elsewhere on the page is invisible to it; the clause is
@@ -81,15 +99,15 @@ from shared.score_legends import SCORE_LEGENDS, get_legend
 # all, and af2, colabfold, esmfold and opendde stop short of it. _entries
 # memoises on the module-scoped app, so its 28 renders happen once for the
 # module:
-# 10 live SELECTs total, not 10 on each of the five call sites.
+# 10 live SELECTs total, not 10 on each of the call sites.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: ANY pointer wording. Used where PRESENCE is the question: a tool that
 #: declares no bar must not be sent looking for one in either surface's
 #: words. Not redundant with POINTER below: a bare "states its one"
-#: fragment on a legend-less guide page passes all seven tests if the
-#: defect test matches only that surface's full clause, and fails on
-#: ANY_POINTER.
+#: fragment on a legend-less guide page passes every other test in this
+#: file if the defect test matches only that surface's full clause, and
+#: fails on ANY_POINTER.
 ANY_POINTER = re.compile(r"states\s+(?:its\s+one|this\s+tool'?s)", re.I)
 
 #: The clause each surface SHOULD carry. Used where PLACEMENT is the
@@ -126,8 +144,8 @@ def _iptm_legend(slug: str) -> dict | None:
 
     Spelling-agnostic, and deliberately NOT ``get_legend``: the
     expectation this file checks against must not be computed by the code
-    under test. Delegating here would make the five PAGE tests agree
-    with a lookup that stopped folding case and pass vacuously; the two
+    under test. Delegating here would make every PAGE test in this file
+    agree with a lookup that stopped folding case and pass vacuously; the two
     that compare it against a case-sensitive expectation rather than
     against rendered text -- the group check and the lookup test -- would
     still fail.
@@ -144,7 +162,7 @@ def _visible(fragment: str) -> str:
     # The patterns above are phrases, so a clause typed with a smart quote
     # falls out of ANY_POINTER's reach and the defect test stops seeing
     # it. Measured: with only U+2019 folded, each of the other five here
-    # still slipped a phantom pointer past all seven tests. This is not
+    # still slipped a phantom pointer past every test here. This is not
     # every lookalike Unicode has -- a fullwidth or Armenian apostrophe,
     # or a combining accent, still would -- it is the set a keyboard or an
     # editor's smart quotes actually produce.
@@ -182,36 +200,64 @@ def _iptm_entry(body: str, slug: str, path: str) -> str:
     return named[0]
 
 
-#: The two headings that bracket the guide's results summary -- the
+#: The two literals that bracket the guide's results summary -- the
 #: paragraph tool_guide.html:149 renders from ``about.output_summary``,
 #: and the one thing the guide-surface pointer names ("this guide's own
-#: results summary above"). Slicing between them is what makes the check
-#: read the PAGE; asking tools/<slug>/meta.py for the same string would
-#: pass whether or not the guide renders it.
+#: results summary above"). SUMMARY_OPENS is the section's ``<h2>``
+#: (tool_guide.html:145); SUMMARY_CLOSES is the ``<p>`` that introduces
+#: the shared glossary below it (:152), not a heading. Slicing between
+#: them is what makes the check read the PAGE; asking
+#: tools/<slug>/meta.py for the same string would pass whether or not the
+#: guide renders it.
 SUMMARY_OPENS = "How to read the results"
 SUMMARY_CLOSES = "Where a tool reports them, the scores mean:"
 
-#: A per-tool bar as a guide that states one actually writes it: an ipTM
-#: token, then a comparison, then a figure. ``&ge;`` and ``&gt;`` reach
-#: this unescaped by _visible.
+#: A per-tool bar as a guide that states one actually writes it: the ipTM
+#: token, then the figure, in one of the two shapes the 14 summaries use
+#: -- an operator ("ipTM &ge; 0.75") or the inclusive English form ("an
+#: ipTM of 0.75 or more"). ``&ge;`` and ``&gt;`` reach this unescaped by
+#: _visible.
 #:
-#: SHAPE, not agreement -- the figure is captured and thrown away. An
-#: equality check against ``good`` would be a different (and stricter)
-#: test than the pointer's promise, and pxdesign's guide already fails it
-#: at 0.70 against a declared 0.75.
+#: THE FIGURE MUST BELONG TO ipTM. Only whitespace and one of "of", "is"
+#: or "at" may stand between the token and the figure. That is every gap
+#: the seven stating summaries actually have -- read across all 14
+#: ``about["output_summary"]`` values, the gap is whitespace alone or
+#: " of ". A wider window lets a NEIGHBOURING metric's bar stand in for
+#: this one: under the ``[^.;]{0,40}`` window this pattern used to carry,
+#: "binders with ipTM, pLDDT above 80" matched. Executed: that string
+#: matches the old pattern and not this one, and standing as bindcraft's
+#: whole summary -- its own ipTM sentence deleted, a pLDDT bar left
+#: beside the token -- it fails this test, where the old pattern would
+#: have reported bindcraft as stating a bar.
 #:
-#: ``\biptm\b`` on purpose: the leading boundary keeps
+#: SHAPE, not agreement -- no figure is captured and none is compared to
+#: ``good``. An equality check would be a different and stricter test
+#: than the pointer's promise, and pxdesign's guide already fails it at
+#: 0.70 against a declared 0.75. "ipTM of 0.95 or more" satisfies this.
+#:
+#: ``\biptm\b``: EITHER boundary alone keeps
 #: ``cdr_distogram_iptm_proxy >= 0.5`` in esmfold2-design's summary from
-#: standing in for a bar on the ipTM column, and ``[^.;]`` stops the
-#: window at a sentence end so a bare "above" with no figure after it
-#: cannot borrow a number from the next sentence.
+#: standing in for a bar on the ipTM column -- ``_`` is a word character,
+#: so neither side is a boundary. Both are kept because either could be
+#: edited away.
+#:
+#: The cost of a tight pattern is that it dictates phrasing: "0.75 or
+#: better" is accepted but ".7" with no leading zero, "0.75 or more"
+#: reached through a parenthetical, and a figure written before the token
+#: all read as stating nothing. Those fail LOUDLY, which is the safe
+#: direction -- a false pass lets the defect back in silently.
+#:
 #: U+2265 via chr() rather than typed or escaped into the pattern: every
-#: other byte in this file is ASCII, and an editor that renders the
-#: literal and one that renders the escape look the same in a diff.
+#: other byte in this file is ASCII.
 GE = chr(0x2265)
+#: Whitespace, optionally around one connective word. Deliberately admits
+#: nothing that could carry another metric's name.
+_NEAR = r"(?:\s+(?:of|is|at))?\s*"
 STATED_BAR = re.compile(
-    r"\biptm\b[^.;]{0,40}?(?:>=|" + GE + r"|>|at least|above|over)\s*"
-    r"(\d+(?:\.\d+)?)",
+    r"\biptm\b" + _NEAR + r"(?:"
+    r"(?:>=|" + GE + r"|>|at least|above|over)\s*\d+(?:\.\d+)?"
+    r"|\d+(?:\.\d+)?\s+or\s+(?:more|better|higher)"
+    r")",
     re.I,
 )
 
@@ -231,9 +277,17 @@ def _results_summary(body: str, path: str) -> str:
         "summary is not between them any more"
     )
     text = _visible(body[start:end])
-    # The glossary below the summary states the general band for every
-    # tool. A slice that reached it would report all 14 guides as stating
-    # a bar and make the assertion vacuous in the direction that matters.
+    # A slice that ran past SUMMARY_CLOSES would be reading the shared
+    # glossary instead of this tool's summary, so `states` would stop
+    # meaning what the offenders loop below takes it to mean. It would
+    # not, on today's copy, flip any tool INTO `states`: ran STATED_BAR
+    # over the glossary region reconstructed from tool_guide.html with
+    # all three branches concatenated, and it matches nothing -- the band
+    # ("0.65 to 0.75 depending on the tool") carries no comparison token
+    # and no ipTM token sits within reach of one. So this fires on a
+    # moved anchor, not
+    # on a wrong verdict -- which is why the two bounds below are the
+    # ones that guard the verdict itself.
     assert DEFINITION not in text, (
         f"{path}: the slice reached past the summary into the shared "
         f"glossary: {text}"
@@ -274,7 +328,7 @@ def _entries(all_tools_app) -> dict[tuple[str, str], str]:
     # The second is a literal 2 rather than len(SURFACES) -- which would
     # read its own length back and never fail -- and catches one dropped
     # together with its pattern, which would otherwise halve every
-    # assertion that reads _entries, five of the seven tests.
+    # assertion in every test that reads _entries.
     assert set(POINTER) == set(SURFACES), (
         "POINTER is keyed by surface; a surface with no pattern would go "
         f"unchecked: {sorted(set(SURFACES) ^ set(POINTER))}"
@@ -291,14 +345,19 @@ def test_the_two_groups_are_both_populated(all_tools_app):
     """Non-vacuity. The two groups are complements by construction, so
     the thing worth asserting is that neither is EMPTY.
 
-    Two of the six tests below filter the 28 pages on the same predicate
+    Exactly two tests below filter the 28 pages on the same predicate
     these groups use -- the defect test takes the tools without ``good``,
     the pointer test those with it -- so an empty group would make its
-    test pass by having nothing to check. The other four cannot be
-    emptied that way: two branch on the narrower "legend present but
-    carrying no ``good``" (boltzgen alone) and assert on every page either
-    way, test_the_pointer_pattern_matches_something uses neither, and
-    test_the_legend_lookup_folds_case_at_the_source takes no fixture.
+    test pass by having nothing to check. No other test here can be
+    emptied that way: test_only_a_legend_without_a_bar_drops_the_general_band
+    and test_the_no_shared_scale_wording_stays_with_the_tool_it_describes
+    branch on the narrower "legend present but carrying no ``good``"
+    (boltzgen alone) and assert on every page either way,
+    test_the_pointer_pattern_matches_something uses neither,
+    test_the_legend_lookup_folds_case_at_the_source takes no fixture, and
+    test_the_pointer_is_only_made_where_the_guide_states_a_number splits
+    the tools on their RENDERED summary rather than on these groups --
+    and carries its own two non-vacuity bounds for that split.
 
     The groups derive from SCORE_LEGENDS, which no template can affect;
     but building `with_bar` needs a case-folding read, and an exact-case
@@ -499,21 +558,31 @@ def test_the_pointer_is_only_made_where_the_guide_states_a_number(
 ):
     """The pointer's promise, checked against the page it names.
 
-    Every test above turns on whether the tool DECLARES a bar in
-    shared/score_legends.py, because that is all the template can see.
-    The sentence promises something else: that the guide prints one. The
-    two sets were not the same. af2, bindcraft and colabfold declared
-    0.6, 0.75 and 0.6 and printed no figure anywhere in their guide, so
-    the reader who followed the pointer from either surface arrived at a
-    page that did not answer it -- six of the 28.
+    Every test above that consults a legend at all turns on whether the
+    tool DECLARES a bar in shared/score_legends.py, because that is all
+    the template can see; test_the_pointer_pattern_matches_something is
+    the exception, reading rendered text only. The sentence promises
+    something else: that the guide PRINTS one. The two sets were not the
+    same. af2, bindcraft and colabfold declared 0.6, 0.75 and 0.6 and
+    their guides printed no ipTM bar of their own anywhere -- they print
+    plenty of other figures, runtimes and input ranges among them, and
+    the shared 0.65-to-0.75 band sits in the same entry as the pointer,
+    but none of those is the tool's own bar. So the reader who followed
+    the pointer from either surface arrived at a page that did not answer
+    it -- six of the 28.
 
     Read off the rendered summary rather than tools/<slug>/meta.py: the
     promise is about what the guide SHOWS, and a meta-module read would
     hold even if tool_guide.html stopped rendering the field.
 
-    The direction is one-way here. A guide may state a bar with no
-    pointer beside it without failing this; that is the other error, and
-    test_a_tool_that_declares_a_bar_still_gets_the_pointer owns it.
+    The direction is one-way here: a guide may state a bar with no
+    pointer beside it and pass. NO TEST IN THIS FILE OWNS THAT CASE.
+    test_a_tool_that_declares_a_bar_still_gets_the_pointer is the nearest
+    and is not it -- it keys on whether the tool DECLARES a bar, so it
+    covers a declaring tool that loses its pointer, not a legend-less
+    tool whose summary prints a figure. That tool is required by
+    test_no_tool_is_pointed_at_a_pass_bar_it_does_not_declare to carry no
+    pointer, which is the honest page; the stray figure goes unremarked.
     """
     flask_app, slugs = all_tools_app
     client = flask_app.test_client()
@@ -528,8 +597,11 @@ def test_the_pointer_is_only_made_where_the_guide_states_a_number(
     # Both bounds, because either one alone leaves a broken reader
     # looking like a clean result. An extractor returning "" for every
     # guide empties `states` and the offenders loop would then flag all
-    # 14; one that over-captured the glossary fills it and the loop would
-    # flag none. On 2026-09-11: 7 state one, 7 do not.
+    # 14; a pattern loose enough to match something every summary says
+    # fills it and the loop would flag none. (An over-running SLICE is a
+    # different failure and lands on neither bound -- see the assert in
+    # _results_summary.) Re-measured 2026-09-12 by reading all 14
+    # ``about["output_summary"]`` values: 7 state a bar, 7 do not.
     assert states, (
         "no guide states an ipTM bar; either STATED_BAR stopped matching "
         f"or the summaries came back empty: {summaries}"
