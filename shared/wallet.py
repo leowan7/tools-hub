@@ -1102,6 +1102,61 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
     return decorator
 
 
+def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[dict]]:
+    """What the ledger has taken for each hold: ``{hold_id: {"usd", "settled"}}``.
+
+    ``usd`` is minus the sum of ``amount_usd`` over the hold and every row
+    whose ``parent_tx_id`` is that hold, the same group net the wallet page
+    annotates (``blueprints/wallet.py::_build_tx_lineage_annotations``). ``settled`` is
+    whether any such child row exists; without one, ``usd`` is the amount
+    still reserved. A hold whose rows carry an unreadable amount maps to
+    ``None``; a hold the ledger returned no row for is absent. A failed
+    lookup returns ``{}``.
+    """
+    ids = [str(h) for h in hold_ids if h]
+    client = get_service_client()
+    if client is None or not ids:
+        return {}
+    try:
+        rows = []
+        for column in ("id", "parent_tx_id"):
+            resp = (
+                client.table("wallet_transactions")
+                .select("id,parent_tx_id,amount_usd")
+                .eq("user_id", user_id)
+                .in_(column, ids)
+                .execute()
+            )
+            rows.extend(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning("job_spend_by_hold lookup failed for %s", user_id, exc_info=True)
+        return {}
+    out: dict[str, Optional[dict]] = {}
+    seen: set = set()
+    for r in rows:
+        if not isinstance(r, Mapping) or r.get("id") in seen:
+            continue
+        seen.add(r.get("id"))
+        parent = r.get("parent_tx_id")
+        key = str(parent) if parent is not None else str(r.get("id"))
+        if key not in ids:
+            continue
+        if key in out and out[key] is None:
+            continue
+        try:
+            amount = Decimal(str(r.get("amount_usd")))
+        except (ArithmeticError, ValueError, TypeError):
+            amount = None
+        if amount is None or not amount.is_finite():
+            out[key] = None
+            continue
+        entry = out.setdefault(key, {"usd": Decimal("0"), "settled": False})
+        entry["usd"] -= amount
+        if parent is not None:
+            entry["settled"] = True
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
