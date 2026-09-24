@@ -135,13 +135,26 @@ about: dict = {
     "runtime_table": [
         {"preset": "standalone", "typical": "5 to 10 min"},
     ],
+    # The ipTM figures are af2's own bar: shared/score_legends.py
+    # ("af2", "iptm") sets good 0.6 and excellent 0.75. Stated
+    # INCLUSIVELY, which that legend's own ``explanation`` ("Above 0.6")
+    # is not: judge gates on ``seen >= good`` (shared/score_legends.py::judge),
+    # shared/metric_glossary.py tells readers a value exactly on a bar
+    # counts as meeting it, and score_legends.py made the same
+    # correction once already, in its ("esmfold2-design", "ipTM") entry.
+    # The ipTM entry on the form's "What good looks like" panel and the
+    # one in this tool's guide each end a SENTENCE by sending the reader
+    # here for the number -- a multi-chain caveat follows it
+    # (about_panel.html:275, tool_guide.html:211) -- so a summary stating
+    # none makes that pointer a dead end;
+    # tests/test_about_panel_iptm_bar_default.py fails if it goes missing.
     "output_summary": (
         "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
-        "or ipTM (for multimers). An interface with ipTM &ge; 0.6 is "
-        "plausible and one with ipTM &ge; 0.75 is strong. On a run of "
-        "your own the structures "
-        "download from the results page. The PAE matrix downloads only "
-        "from a standalone run &mdash; a batch returns no PAE file."
+        "(or ipTM on a multimer). An ipTM of 0.6 or more is a plausible "
+        "interface and 0.75 or more is strong. On a run of your own the "
+        "structures download from the results page. The PAE matrix "
+        "downloads only from a standalone run &mdash; a batch returns "
+        "no PAE file."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

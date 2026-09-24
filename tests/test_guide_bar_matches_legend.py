@@ -56,6 +56,18 @@ discovering later:
     three and 10 only once tools/boltzgen/meta.py moved the comparator next
     to the metric. So the repair was to the sentence. Relaxing adjacency is
     the one thing _CMP's comment below rejects.
+  * The inclusive-English form -- "an ipTM of 0.6 or more is a plausible
+    interface and 0.75 or more is strong" -- needs a SECOND pattern, because
+    _CMP cannot reach either figure: "of" is not a comparator, and the
+    second number names no metric at all. What discriminates there is the
+    trailing "or more" rather than adjacency -- "over 5 designs" is
+    ambiguous English, "0.75 or more" is not -- so that pattern is allowed
+    to run to the end of the sentence naming the metric, and no further.
+    Measured across all 14 summaries it adds six thresholds, all on af2,
+    bindcraft and colabfold, and no sentence in the repo states an inclusive
+    figure while naming two of its tool's metrics. Only the
+    higher-is-better spellings are here; a lower-is-better inclusive form
+    ("2 angstroms or less") is not written today and would need its own.
   * A tool with no legend for a metric is not judged here. A tool is allowed
     to have no bar.
   * ``good`` OR ``excellent`` is accepted, because a summary may legitimately
@@ -77,7 +89,7 @@ import re
 import pytest
 
 import app as _app_module  # noqa: F401  (import populates the adapter registry)
-from shared.score_legends import SCORE_LEGENDS, get_legend
+from shared.score_legends import SCORE_LEGENDS
 from shared.tool_meta import meta_for
 from tools import base as tool_base
 
@@ -99,6 +111,19 @@ _CMP = (
     r"|no more than|above|below|under|over)"
 )
 _NUM = r"(\d+(?:\.\d+)?)"
+
+#: The inclusive-English threshold, matched anywhere in the sentence that
+#: names the metric. The trailing words carry the discrimination that
+#: adjacency carries for _CMP above, so this one does not need to sit next to
+#: the metric token -- which is the only way to reach the second figure in
+#: "An ipTM of 0.6 or more is a plausible interface and 0.75 or more is
+#: strong", where "0.75" names no metric of its own.
+_INCLUSIVE = _NUM + r"\s+or\s+(?:more|better|higher)"
+
+#: Sentence split for that pattern's bound. Prose here ends sentences with a
+#: period and a space; a summary that did not would widen the bound to the
+#: whole string, which the cross-metric measurement in the docstring covers.
+_SENTENCE = r"(?<=\.)\s+"
 
 #: U+2265 / U+2264, built with ``chr`` so this file stays pure ASCII and no
 #: escape in it can be flattened by an editor into something that still parses.
@@ -166,6 +191,11 @@ def _stated_thresholds(slug: str) -> list[tuple[str, str, float]]:
             pattern = r"\b" + token + r"\b\s*" + _CMP + r"\s*" + _NUM
             for match in re.finditer(pattern, text, re.I):
                 found.append((key, metric, float(match.group(1))))
+            for sentence in re.split(_SENTENCE, text):
+                if not re.search(r"\b" + token + r"\b", sentence, re.I):
+                    continue
+                for match in re.finditer(_INCLUSIVE, sentence, re.I):
+                    found.append((key, metric, float(match.group(1))))
     return found
 
 
@@ -223,33 +253,6 @@ def test_stated_threshold_is_a_number_its_own_legend_publishes(slug):
     assert not wrong, (
         f"{slug}: the guide states a bar the legend that judges its results "
         f"does not publish:\n  " + "\n  ".join(wrong)
-    )
-
-
-def test_every_tool_pointed_at_its_ipTM_bar_states_one():
-    """The pointer's promise, held against the prose it points at.
-
-    Both surfaces take the ``elif _ipl`` branch, which sends the reader to
-    this tool's results summary for its own ipTM bar, whenever
-    ``score_legend_for(slug, "ipTM")`` (``get_legend``) returns a legend
-    carrying ``good`` (templates/help/tool_guide.html,
-    templates/components/about_panel.html). Every such tool's About prose
-    must therefore state an ipTM threshold.
-    """
-    pointed = {
-        slug for slug in _SLUGS
-        if "good" in (get_legend(slug, "ipTM") or {})
-    }
-    stating = {
-        slug
-        for slug in _SLUGS
-        for _key, metric, _value in _stated_thresholds(slug)
-        if metric.lower() == "iptm"
-    }
-    assert pointed, "no tool declares an ipTM bar; the check is vacuous"
-    assert pointed <= stating, (
-        "these tools' pages point at a results summary for their ipTM "
-        f"bar, but it states none: {sorted(pointed - stating)}"
     )
 
 
