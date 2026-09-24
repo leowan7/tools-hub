@@ -218,11 +218,15 @@ SUMMARY_CLOSES = "Where a tool reports them, the scores mean:"
 #: ipTM of 0.75 or more"). ``&ge;`` and ``&gt;`` reach this unescaped by
 #: _visible.
 #:
-#: THE FIGURE MUST BELONG TO ipTM. Only whitespace and one of "of", "is"
-#: or "at" may stand between the token and the figure. That is every gap
-#: the seven stating summaries actually have -- read across all 14
-#: ``about["output_summary"]`` values, the gap is whitespace alone or
-#: " of ". A wider window lets a NEIGHBOURING metric's bar stand in for
+#: THE FIGURE MUST BELONG TO ipTM. Only whitespace and at most one
+#: connective word may stand between the ipTM token and the COMPARISON
+#: -- or, in the operator-less branch, the figure itself. That covers
+#: every stating summary: measured across all 14
+#: ``about["output_summary"]`` values, the four operator forms (boltz2,
+#: esmfold2-design, pxdesign, rfdiffusion) put a single space ahead of
+#: their ``&gt;`` or ``&ge;``, and the three inclusive ones (af2,
+#: bindcraft, colabfold) read " of " straight to the figure.
+#: A wider window lets a NEIGHBOURING metric's bar stand in for
 #: this one: under the ``[^.;]{0,40}`` window this pattern used to carry,
 #: "binders with ipTM, pLDDT above 80" matched. Executed: that string
 #: matches the old pattern and not this one, and standing as bindcraft's
@@ -232,8 +236,8 @@ SUMMARY_CLOSES = "Where a tool reports them, the scores mean:"
 #:
 #: SHAPE, not agreement -- no figure is captured and none is compared to
 #: ``good``. An equality check would be a different and stricter test
-#: than the pointer's promise, and pxdesign's guide already fails it at
-#: 0.70 against a declared 0.75. "ipTM of 0.95 or more" satisfies this.
+#: than the pointer's promise -- tests/test_guide_bar_matches_legend.py
+#: is where that half lives. "ipTM of 0.95 or more" satisfies this.
 #:
 #: ``\biptm\b``: EITHER boundary alone keeps
 #: ``cdr_distogram_iptm_proxy >= 0.5`` in esmfold2-design's summary from
@@ -241,23 +245,33 @@ SUMMARY_CLOSES = "Where a tool reports them, the scores mean:"
 #: so neither side is a boundary. Both are kept because either could be
 #: edited away.
 #:
-#: The cost of a tight pattern is that it dictates phrasing: "0.75 or
-#: better" is accepted but ".7" with no leading zero, "0.75 or more"
-#: reached through a parenthetical, and a figure written before the token
-#: all read as stating nothing. Those fail LOUDLY, which is the safe
-#: direction -- a false pass lets the defect back in silently.
+#: The cost of a tight pattern is that it dictates phrasing. Executed
+#: misses: "ipTM greater than 0.75", "ipTM of 0.75 and above", "ipTM
+#: must be above 0.6", "ipTM, above 0.75" (comma -- deliberately, since
+#: admitting one reopens the pLDDT hole above), "ipTM (multimer only)
+#: above 0.6", "ipTM of 75% or more", and "0.75 or more on ipTM" with
+#: the figure first. All fail LOUDLY, which is the safe direction -- a
+#: false pass lets the defect back in silently.
 #:
 #: U+2265 via chr() rather than typed or escaped into the pattern: every
 #: other byte in this file is ASCII.
 GE = chr(0x2265)
 #: Whitespace, optionally around one connective word. Deliberately admits
 #: nothing that could carry another metric's name.
-_NEAR = r"(?:\s+(?:of|is|at))?\s*"
+_NEAR = r"(?:\s+(?:of|is|at|score|value))?\s*"
+#: The figure must be FRACTIONAL. ipTM runs 0 to 1, so every bar these
+#: guides state is written with a decimal point -- read off all 14
+#: summaries: 0.6, 0.65, 0.7, 0.75. A bare integer next to the
+#: token is a COUNT, and the "or more" branch below carries no operator
+#: to tell the two apart: while this was ``\d+(?:\.\d+)?``, "ipTM of 3 or
+#: more designs" and "ipTM at least 1 in 5" both read as stated bars.
+#: Executed both ways. Requiring the point also accepts a bare ".7".
+_BAR = r"\d*\.\d+"
 STATED_BAR = re.compile(
     r"\biptm\b" + _NEAR + r"(?:"
-    r"(?:>=|" + GE + r"|>|at least|above|over)\s*\d+(?:\.\d+)?"
-    r"|\d+(?:\.\d+)?\s+or\s+(?:more|better|higher)"
-    r")",
+    + r"(?:>=|" + GE + r"|>|at or above|at least|above|over)\s*" + _BAR
+    + r"|" + _BAR + r"\s+or\s+(?:more|better|higher)"
+    + r")",
     re.I,
 )
 
