@@ -86,16 +86,24 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1.
+
+    ``runtime_seconds`` is GPU time already burned; see ``_fail`` in
+    tools/esmfold/run_pipeline.py for how it reaches the Workspace cap.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
-    _write_result(
-        {
-            "status": "FAILED",
-            "error": {"bucket": bucket, "check": check, "detail": detail},
-            "tier": os.environ.get("JOB_TIER", ""),
-            "provider_job_id": os.environ.get("JOB_ID", ""),
-        }
-    )
+    payload = {
+        "status": "FAILED",
+        "error": {"bucket": bucket, "check": check, "detail": detail},
+        "tier": os.environ.get("JOB_TIER", ""),
+        "provider_job_id": os.environ.get("JOB_ID", ""),
+    }
+    if runtime_seconds is not None:
+        payload["runtime_seconds"] = runtime_seconds
+    _write_result(payload)
     sys.exit(1)
 
 
@@ -557,7 +565,10 @@ def main() -> None:
 
             design_pdbs = collect_design_pdbs(out_dir)
             if not design_pdbs:
-                _fail("run", "output", "IgGM produced no PDB outputs")
+                _fail(
+                    "run", "output", "IgGM produced no PDB outputs",
+                    runtime_seconds=int(time.time() - start),
+                )
 
             # ---- upload designs + compute epitope-contact QC per design ----
             designs_out: list[dict] = []
@@ -616,6 +627,7 @@ def main() -> None:
                     "no_designs",
                     f"all {len(design_pdbs)} designs failed to upload — "
                     "nothing to deliver.",
+                    runtime_seconds=runtime_seconds,
                 )
             _write_result(
                 {

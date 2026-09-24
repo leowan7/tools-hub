@@ -160,11 +160,28 @@ about: dict = {
     "runtime_table": [
         {"preset": "pilot", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
     ],
+    # shared/score_legends.py ("bindcraft", "ipTM") sets good 0.75 and
+    # excellent 0.85. Stated INCLUSIVELY, which that legend's own
+    # ``explanation`` ("Above 0.75") is not, and on THIS page that is not
+    # a nicety: EXAMPLE below carries ipTM 0.75 exactly
+    # (example/result.json:13) and its ``how_to_read_it`` reads both
+    # designs as sitting ON the bar rather than above it, so "above 0.75"
+    # had one paragraph of this page disqualifying what another one
+    # counts. judge gates on ``seen >= good`` (shared/score_legends.py::judge).
+    # The nearest this guide had to bindcraft's OWN bar was "above the
+    # BindCraft default thresholds" in the inputs list above, which names
+    # no figure -- while the form's "What good looks like" panel and this
+    # tool's guide each ended a sentence in their ipTM entry pointing
+    # here for one. NOT a claim about what the upstream filter keeps:
+    # BindCraft's own default_filters.json is in the sibling container
+    # repo and nothing here states its Average_i_pTM value.
+    # tests/test_about_panel_iptm_bar_default.py fails if it goes missing.
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
-        "and PDBs downloadable from a run of your own. Hand off promising "
-        "designs to the Ranomics "
-        "yeast display CRO for in vitro validation."
+        "and PDBs downloadable from a run of your own. An ipTM of 0.75 "
+        "or more is a credible binder and 0.85 or more is a strong "
+        "candidate. Hand off promising designs to the Ranomics yeast "
+        "display CRO for in vitro validation."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

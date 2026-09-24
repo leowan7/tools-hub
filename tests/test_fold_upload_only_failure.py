@@ -261,7 +261,7 @@ class TestEsmfoldBatch:
         result = json.loads(result_file.read_text())
         assert result["status"] == "FAILED"
         assert result["error"]["bucket"] == "storage"
-        assert "runtime_seconds" not in result, result
+        assert isinstance(result.get("runtime_seconds"), int), result
         detail = result["error"]["detail"]
         assert "2 of 2 designs folded but 0 uploaded" in detail, detail
 
@@ -276,7 +276,7 @@ class TestEsmfoldBatch:
         result = json.loads(result_file.read_text())
         assert result["status"] == "FAILED"
         assert result["error"]["bucket"] == "pipeline"
-        assert "runtime_seconds" not in result, result
+        assert isinstance(result.get("runtime_seconds"), int), result
         detail = result["error"]["detail"]
         assert "none of 2 designs folded (2 failures)" in detail, detail
         assert "folded but 0 uploaded" not in detail, detail
