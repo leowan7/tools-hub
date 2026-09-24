@@ -251,6 +251,14 @@ def test_every_answer_reaches_at_least_one_tool():
         assert tool_chooser.recommend(have, shape="unsure", chemistry="plain"), (
             f"no tool answers have={have}"
         )
+    # Every chemistry too, not just "plain": the radios share one GET form,
+    # so a chemistry answer from a previous submit arrives with whatever
+    # `have` is picked next, including the buckets that never ask it.
+    for have, _label in tool_chooser.HAVE_CHOICES:
+        for chem, _clabel in tool_chooser.CHEMISTRY_CHOICES:
+            assert tool_chooser.recommend(have, shape="unsure", chemistry=chem) or (
+                have in tool_chooser.DESIGN_HAVES
+            ), f"no tool answers have={have} with a stale chemistry={chem}"
     for shape, _label in tool_chooser.SHAPE_CHOICES:
         assert tool_chooser.recommend(
             "target-structure", shape=shape, chemistry="plain",
@@ -439,6 +447,95 @@ def test_every_adapter_residue_refusal_slug_lacks_tool_rules():
 def test_every_adapter_residue_refusal_slug_is_a_real_tool():
     slugs = {a.slug for a in tool_base.all_adapters()}
     assert set(tool_chooser._ADAPTER_RESIDUE_REFUSALS) <= slugs
+
+
+def test_a_stale_chemistry_answer_does_not_empty_a_bucket_that_never_asked():
+    """Question 3 is only PUT in the two design buckets.
+
+    The have/shape/chemistry radios share one GET form, so switching
+    question 1 to a single-answer bucket resubmits the old chemistry.
+    Every tool in those buckets is a non-designer, so a chemistry filter
+    that is not scoped to DESIGN_HAVES wipes the answer out entirely.
+    """
+    singles = [
+        have
+        for have, _label in tool_chooser.HAVE_CHOICES
+        if have not in tool_chooser.DESIGN_HAVES
+    ]
+    assert singles, "HAVE_CHOICES has no non-design bucket to test"
+    for have in singles:
+        baseline = {p["slug"] for p in tool_chooser.recommend(have)}
+        assert baseline, f"have={have} answers nothing even with no chemistry"
+        for chem, _clabel in tool_chooser.CHEMISTRY_CHOICES:
+            stale = {
+                p["slug"]
+                for p in tool_chooser.recommend(
+                    have, shape="mini-protein", chemistry=chem
+                )
+            }
+            assert stale == baseline, (
+                f"have={have} lost {sorted(baseline - stale)} to a stale "
+                f"chemistry={chem} that this bucket never asked for"
+            )
+
+
+def test_multi_chain_does_not_drop_a_tool_that_takes_no_upload():
+    """_multi_chain_block only runs on a STAGED target.
+
+    esmfold2-design needs no PDB, so nothing refuses it for a two-chain
+    target; dropping it emptied the only scFv answer in the catalog.
+    """
+    assert not tool_chooser.needs_structure("esmfold2-design")
+    assert "esmfold2-design" not in TOOL_RULES
+
+    picks = {
+        p["slug"]
+        for p in tool_chooser.recommend(
+            "target-sequence", shape="scfv", chemistry="multi-chain"
+        )
+    }
+    assert "esmfold2-design" in picks, sorted(picks)
+
+    # Vacuity: the filter still bites a tool that DOES take an upload.
+    structured = {
+        p["slug"]
+        for p in tool_chooser.recommend(
+            "target-structure", shape="unsure", chemistry="multi-chain"
+        )
+    }
+    assert "rfantibody" not in structured, sorted(structured)
+
+
+def test_supports_multi_chain_reads_both_flags_the_gate_ands():
+    """_multi_chain_block ANDs supported AND container_ready."""
+    for slug, rules in TOOL_RULES.items():
+        expected = bool(
+            rules.multi_chain_supported and rules.multi_chain_container_ready
+        )
+        assert tool_chooser.supports_multi_chain(slug) is expected, slug
+
+
+def test_proteina_is_not_offered_to_a_visitor_with_no_structure():
+    """Its no-upload path runs a benchmark target, not the visitor's.
+
+    ``tools/proteina/__init__.py`` module docstring: a curated task is
+    "a repo-bundled benchmark task whose target is baked into the
+    config". requires_pdb is False on every preset, so
+    ``prerequisite_line`` has no clause to warn them with — the only
+    honest fix is to leave it out of the sequence-only bucket.
+    """
+    assert tool_chooser.prerequisite_line("proteina") == ""
+    seq = {
+        p["slug"]
+        for p in tool_chooser.recommend("target-sequence", shape="mini-protein")
+    }
+    assert "proteina" not in seq, sorted(seq)
+
+    struct = {
+        p["slug"]
+        for p in tool_chooser.recommend("target-structure", shape="mini-protein")
+    }
+    assert "proteina" in struct, sorted(struct)
 
 
 def test_a_small_molecule_target_is_not_offered_the_folding_tools():

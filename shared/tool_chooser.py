@@ -139,13 +139,18 @@ _FACTS: dict[str, _Facts] = {
         chemistries=frozenset(),
     ),
     # "Your target is a small molecule rather than a protein"
-    # — tools/proteina/meta.py, about["when_to_use"][2]. Its protein_binder preset
-    # takes either your own structure or a curated benchmark task
-    # ("your own structure ... or a curated benchmark task for any
-    # variant" — tools/proteina/meta.py, about["prerequisites"]), so it serves the
-    # no-structure bucket too.
+    # — tools/proteina/meta.py, about["when_to_use"][2].
+    #
+    # NOT in the target-sequence bucket. proteina does run with no upload,
+    # but only against "a curated benchmark task whose target is baked into
+    # the config" (tools/proteina/__init__.py module docstring); aiming it at
+    # the visitor's OWN target is the target_source == "custom" path, which
+    # is a .pdb/.cif upload (tools/proteina/meta.py, about["prerequisites"]).
+    # A sequence-only visitor recommended proteina would arrive at the form
+    # and find their target unreachable, and requires_pdb is False on every
+    # preset so prerequisite_line() has nothing to warn them with.
     "proteina": _Facts(
-        haves=frozenset({"target-structure", "target-sequence"}),
+        haves=frozenset({"target-structure"}),
         shapes=frozenset({"mini-protein"}),
         chemistries=frozenset({"small-molecule"}),
     ),
@@ -265,13 +270,23 @@ def needs_hotspots(slug: str) -> bool:
 def supports_multi_chain(slug: str) -> bool:
     """True when preflight lets a multi-chain target through.
 
-    Reads ``TOOL_RULES[slug].multi_chain_container_ready``, the flag
-    ``shared/pdb_preflight.py::_multi_chain_block`` refuses on. A tool
-    absent from TOOL_RULES gets no multi-chain recommendation from the
-    chooser: nothing here has established that its container handles one.
+    Reads BOTH flags ``shared/pdb_preflight.py::_multi_chain_block``
+    ANDs — it returns None (lets the target through) only when
+    ``multi_chain_supported and multi_chain_container_ready``. Reading
+    ``container_ready`` alone would recommend a tool whose container is
+    ready before its model is, and preflight would then refuse it.
+
+    A tool absent from TOOL_RULES gets no multi-chain recommendation
+    from the chooser: nothing here has established it handles one. Its
+    callers scope this to tools that take an upload at all — a tool that
+    never stages a PDB never reaches ``_multi_chain_block``.
     """
     rules = TOOL_RULES.get(slug)
-    return bool(rules is not None and rules.multi_chain_container_ready)
+    return bool(
+        rules is not None
+        and rules.multi_chain_supported
+        and rules.multi_chain_container_ready
+    )
 
 
 def has_example(slug: str) -> bool:
@@ -350,11 +365,21 @@ def recommend(
             continue
 
         is_designer = bool(facts.shapes)
-        # The folding tools are offered as a "get a structure first" step,
-        # and they fold protein sequences. A visitor who has just said
-        # their target is a small molecule has nothing for them to fold,
-        # so the step is not an answer to that question.
-        if not is_designer and chemistry == "small-molecule":
+        # Every chemistry filter below is scoped to `have in DESIGN_HAVES`,
+        # because the chemistry question is only PUT in those two buckets
+        # (blueprints/tools.py::tools_comparison sets chooser_asks_shape from
+        # DESIGN_HAVES, and the template renders question 3 behind it). The
+        # radios all live in one GET form, so a stale chemistry answer can
+        # still arrive with a have that never asked for it; unscoped, it
+        # emptied every single-answer bucket, whose tools are all
+        # non-designers. Pinned by test_a_stale_chemistry_answer_does_not_
+        # empty_a_bucket_that_never_asked.
+        if have in DESIGN_HAVES and not is_designer and (
+            chemistry == "small-molecule"
+        ):
+            # The folding tools are offered as a "get a structure first"
+            # step, and they fold protein sequences. A visitor who has just
+            # said their target is a small molecule has nothing to fold.
             continue
         if have in DESIGN_HAVES and is_designer:
             if shape and shape != "unsure" and shape not in facts.shapes:
@@ -366,7 +391,17 @@ def recommend(
                 and "small-molecule" not in facts.chemistries
             ):
                 continue
-            if chemistry == "multi-chain" and not supports_multi_chain(slug):
+            # Multi-chain is a preflight concept: _multi_chain_block runs
+            # on a STAGED target. A tool that takes no upload never reaches
+            # it, so its absence from TOOL_RULES is not a refusal and must
+            # not drop it — esmfold2-design is the catalog's only scFv
+            # designer and needs no PDB (requires_pdb False on the adapter
+            # and both presets), so excluding it emptied that answer.
+            if (
+                chemistry == "multi-chain"
+                and needs_structure(slug)
+                and not supports_multi_chain(slug)
+            ):
                 continue
 
         reason = entry.get("comparison_one_liner")
