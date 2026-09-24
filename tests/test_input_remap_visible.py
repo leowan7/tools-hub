@@ -380,11 +380,12 @@ def test_boltz2_names_the_residue_a_typed_position_lands_on(client):
 
 
 def test_boltz2_says_so_in_one_line_when_the_two_scales_coincide(client):
-    """A chain numbered from 1 is the common case and every row would read
-    "you typed 12 -> A12". Measured on static/example/1HEW.pdb, which is
-    numbered 1..129: three such rows, and a panel of them is what teaches
-    people to skip the block on the files where it does differ. One line
-    instead, and no per-hotspot rows at all.
+    """A chain numbered from 1 with no gaps is the common case — one such file
+    is static/example/1HEW.pdb, numbered 1..129 — and there every row would
+    read "you typed 12 -> A12", which is how a panel of rows teaches people to
+    skip the block on the files where it does differ. One line instead, and no
+    per-hotspot rows at all. The rows-are-emitted case is the sibling test
+    test_boltz2_names_the_residue_a_position_lands_on.
     """
     body = _preflight(
         client, "boltz2", _pdb({"A": list(range(1, 151))}),
@@ -395,6 +396,25 @@ def test_boltz2_says_so_in_one_line_when_the_two_scales_coincide(client):
     (note,) = body["remap"]["notes"]
     assert "the two are the same" in note
     assert "12, 40" in note
+
+
+def test_boltz2_still_names_every_position_when_the_chain_has_a_gap(client):
+    """A chain starting at 1 with a missing stretch coincides only up to the
+    gap. Positions before it are identity, so a per-hotspot suppression would
+    drop every row and print "the two are the same" on a file where position
+    51 is really residue 60 — pre-reassuring a user who then picks a hotspot
+    past the gap. Rows for all of them, and no coincidence note.
+    """
+    pdb = _pdb({"A": list(range(1, 51)) + list(range(60, 160))})
+    body = _preflight(
+        client, "boltz2", pdb, target_chain="A", hotspot_residues="12 70",
+    )
+    assert body["ok"] is True, body.get("reason")
+    rows = {h["typed"]: h["means"] for h in body["remap"]["hotspots"]}
+    assert rows == {"12": "A12", "70": "A79"}
+    (note,) = body["remap"]["notes"]
+    assert "different scales" in note
+    assert "the two are the same" not in note
 
 
 # ---------------------------------------------------------------------------

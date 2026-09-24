@@ -433,38 +433,46 @@ def _preflight_boltz2(
     # order, NOT an author residue number, so "241" reaches the model as
     # whatever residue sits 241st. Name the residue each typed position
     # actually lands on — but only where that differs from what was typed.
-    # A chain numbered from 1 with no gaps is the common case and every line
-    # there reads "you typed 12 -> A12", which is how a panel teaches people
-    # to skip it on the files where it does differ. Those get one line saying
-    # the two scales coincide, which is still the reassurance a user who typed
-    # an author number came for.
+    # A chain numbered 1..N with nothing missing is the common case and every
+    # line there reads "you typed 12 -> A12", which is how a panel teaches
+    # people to skip it on the files where it does differ. Those get one line
+    # saying the two scales coincide instead, which is still the reassurance a
+    # user who typed an author number came for. That test is whole-chain, not
+    # per-hotspot: a chain that starts at 1 but has a gap coincides only up to
+    # the gap, so suppressing rows hotspot-by-hotspot would print the
+    # reassurance on a file whose later positions really do shift. Enforced by
+    # tests/test_input_remap_visible.py
+    # ::test_boltz2_still_names_every_position_when_the_chain_has_a_gap.
     remap = InputRemap()
     author = ordered.get(antigen_chain, [])
-    for n in surviving:
-        if author[n - 1] == n:
-            continue
-        remap.hotspots.append({
-            "typed": str(n),
-            "means": f"{antigen_chain}{author[n - 1]}",
-            "why": (
-                f"Boltz-2 hotspots are positions counted from 1 along chain "
-                f"{antigen_chain}, not residue numbers from your file"
-            ),
-        })
-    if author and author[0] != 1:
-        remap.notes.append(
-            f"Chain {antigen_chain} starts at residue {author[0]} in your "
-            f"file, so its positions (1-{len(author)}) and its residue "
-            f"numbers ({author[0]}-{author[-1]}) are different scales."
-        )
-    elif surviving and not remap.hotspots:
-        remap.notes.append(
-            f"Boltz-2 reads a hotspot as a position counted from 1 along "
-            f"chain {antigen_chain}, not as a residue number. On this file "
-            f"the two are the same, so "
-            f"{', '.join(str(n) for n in surviving)} reach the model as the "
-            f"residues you numbered."
-        )
+    coincides = author == list(range(1, len(author) + 1))
+    if coincides:
+        if surviving:
+            remap.notes.append(
+                f"Boltz-2 reads a hotspot as a position counted from 1 along "
+                f"chain {antigen_chain}, not as a residue number. On this "
+                f"file the two are the same, so "
+                f"{', '.join(str(n) for n in surviving)} reach the model as "
+                f"the residues you numbered."
+            )
+    else:
+        for n in surviving:
+            remap.hotspots.append({
+                "typed": str(n),
+                "means": f"{antigen_chain}{author[n - 1]}",
+                "why": (
+                    f"Boltz-2 hotspots are positions counted from 1 along "
+                    f"chain {antigen_chain}, not residue numbers from your "
+                    f"file"
+                ),
+            })
+        if author:
+            remap.notes.append(
+                f"Chain {antigen_chain} is numbered {author[0]}-{author[-1]} "
+                f"in your file but has {len(author)} residues, so its "
+                f"positions (1-{len(author)}) and its residue numbers are "
+                f"different scales."
+            )
     return _verdict(
         VerdictKind.READY,
         hotspot_status={"surviving": surviving, "dropped": []},
