@@ -201,19 +201,34 @@ seo_faq: list[dict] = [
         "a": (
             "Yes. Ranomics Tools runs Proteina-Complexa as a fund-and-drain "
             "campaign of independent search shards on dedicated A100-80GB "
-            "GPUs. Pick a protein or small-molecule target, choose how many "
-            "designs you want, and shards fan out automatically. You only pay "
+            "GPUs. Upload your protein target (or pick a curated benchmark "
+            "task), choose how many designs you want, and shards fan out "
+            "automatically. You only pay "
             "for compute that runs, and the campaign pauses if your balance "
             "runs low."
         ),
     },
     {
-        "q": "Can Proteina-Complexa design binders against a small molecule?",
+        # NOT A CUSTOM LIGAND. This answered "Yes. The ligand-binder variant
+        # takes a small-molecule target as an SDF and designs de novo binders
+        # scored by the RoseTTAFold3 reward." The hub cannot run that.
+        # ``tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS`` is
+        # {"protein_binder"}, and ``validate`` (same file, the
+        # ``preset not in _CUSTOM_TARGET_PRESETS`` branch) refuses any
+        # ligand_binder run carrying a staged target, so the variant only ever
+        # designs against a benchmark ligand bundled with the upstream repo --
+        # it resolves its target from ``ligand_targets_dict``, a registry
+        # ``complexa target add`` cannot write (see the module docstring in
+        # ``__init__.py``). Pinned by
+        # tests/test_proteina_no_custom_ligand_promise.py.
+        "q": "Can Proteina-Complexa design binders against my own small molecule?",
         "a": (
-            "Yes. The ligand-binder variant takes a small-molecule target as "
-            "an SDF and designs de novo binders scored by the RoseTTAFold3 "
-            "reward. The protein-binder variant targets a protein PDB and is "
-            "scored by AlphaFold2 confidence."
+            "No. The only target you can supply is a protein structure "
+            "(<code>.pdb</code>/<code>.cif</code>), on the protein-binder "
+            "variant, scored by AlphaFold2 confidence. The ligand-binder and "
+            "motif variants design against benchmark tasks bundled with the "
+            "model rather than anything you upload, so a molecule of your own "
+            "is refused before any GPU runs."
         ),
     },
     {
@@ -234,7 +249,7 @@ seo_faq: list[dict] = [
             "Every candidate is re-folded and scored against your target as "
             "it is generated, and which model does that scoring follows the "
             "target: a protein target is scored by an AlphaFold2 refold, a "
-            "small-molecule or motif target by RoseTTAFold3, with a physics "
+            "benchmark ligand or motif task by RoseTTAFold3, with a physics "
             "force field added where it applies. Each shard keeps what "
             "scores well, and the hub then ranks across every shard at once, "
             "so one pooled table shows the best-scoring designs from the "
@@ -254,9 +269,14 @@ seo_faq: list[dict] = [
 # says the same, and ``about["output_summary"]`` below — which renders
 # one scroll away on the same page — already said the true version.
 # Say which model scores which target, or say nothing.
+# NO SMALL MOLECULE IN THIS SENTENCE. It offered "or a small molecule rather
+# than a protein" as a target you bring. Only ``protein_binder`` accepts a
+# target of yours (``_CUSTOM_TARGET_PRESETS`` in ``__init__.py``), and this
+# string feeds the homepage card and /tools, which is where a small-molecule
+# visitor would be recruited to a form that refuses them.
 comparison_one_liner: str = (
-    "You have a hard target — a recessed pocket, a site spanning "
-    "two chains, or a small molecule rather than a protein — and "
+    "You have a hard protein target — a recessed pocket, or a site "
+    "spanning two chains — and "
     "you want to throw as much search at it as your balance allows. "
     "Every candidate is re-folded and scored against your target as "
     "it is generated, and the run fans out across as many GPUs as "
@@ -270,14 +290,13 @@ example_output_id: Optional[str] = None
 about: dict = {
     "what_it_is": (
         "Designs binders for the targets the standard tools find hard: "
-        "a recessed pocket, a site spanning two chains, a small "
-        "molecule instead of a protein, an enzyme active site. Rather "
+        "a recessed pocket, or a site spanning two chains. Rather "
         "than generating candidates and hoping, it searches — it "
         "generates, re-folds every candidate and scores how well it "
         "grips your target, keeps what scores well and generates "
         "again from there. Which model does that scoring follows the "
         "target: a protein target is scored by an AlphaFold2 refold, "
-        "a small-molecule or motif target by RoseTTAFold3, with a "
+        "a benchmark ligand or motif task by RoseTTAFold3, with a "
         "physics force field added where it applies. "
         "The run splits into independent shards "
         "across as many GPUs as your balance funds — each shard is a "
@@ -294,9 +313,13 @@ about: dict = {
             "The site you care about spans more than one chain of your "
             "target."
         ),
-        (
-            "Your target is a small molecule rather than a protein."
-        ),
+        # A SMALL-MOLECULE BULLET WAS DELETED HERE 2026-09-24. It read "Your
+        # target is a small molecule rather than a protein" and offered that
+        # as a reason to pick this tool. It is not one: ``_CUSTOM_TARGET_
+        # PRESETS`` in ``__init__.py`` is {"protein_binder"}, so a visitor who
+        # arrived on that bullet would upload a molecule and be refused by
+        # ``validate``. The ligand variant runs a bundled benchmark ligand.
+        # Do not restore it without a custom-ligand path in the adapter.
         (
             "You would rather pay for a search that filters as it goes than "
             "for raw generation you have to filter afterwards."
@@ -329,8 +352,9 @@ about: dict = {
         {
             "name": "Design variant",
             "explanation": (
-                "<code>protein_binder</code> for a protein target (AF2 reward), "
-                "<code>ligand_binder</code> for a small-molecule SDF target "
+                "<code>protein_binder</code> for a protein target (AF2 reward) "
+                "and the only variant that can take a target of yours, "
+                "<code>ligand_binder</code> for a bundled benchmark ligand task "
                 "(RF3 reward), <code>motif_ame</code> for motif scaffolding / "
                 "enzyme active sites, or <code>validate</code> for a free "
                 "config check before spending GPU."

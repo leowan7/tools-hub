@@ -485,10 +485,14 @@ _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
         # opened on the same verb — the stutter the rest of the rewrite
         # removed. Same content, declarative frame — and NOT "The one to
         # reach for", which is already how esmfold's lede opens.
-        "Built for the targets the standard design tools stall on — a "
-        "recessed pocket, a site spanning two chains, or a small molecule "
-        "rather than a protein: every candidate the search generates is "
-        "re-folded against your target before the search builds on it"
+        # AND NOT "or a small molecule rather than a protein". That clause
+        # recruited visitors this form refuses: tools/proteina/__init__.py
+        # ::_CUSTOM_TARGET_PRESETS is {"protein_binder"}, so a molecule of
+        # your own has no path through validate().
+        "Built for the protein targets the standard design tools stall on — a "
+        "recessed pocket, or a site spanning two chains: every candidate the "
+        "search generates is re-folded against your target before the search "
+        "builds on it"
     ),
 }
 

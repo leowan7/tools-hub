@@ -67,10 +67,10 @@
           <label for="preset">Design variant</label>
           <select id="preset" name="preset" disabled>
             <option value="protein_binder" {% if pre_fill.get('preset')=='protein_binder' %}selected{% endif %}>Protein binder (vs a protein target)</option>
-            <option value="ligand_binder" {% if pre_fill.get('preset')=='ligand_binder' %}selected{% endif %}>Ligand binder (vs a small molecule)</option>
+            <option value="ligand_binder" {% if pre_fill.get('preset')=='ligand_binder' %}selected{% endif %}>Ligand binder (vs a bundled benchmark ligand)</option>
             <option value="motif_ame" {% if pre_fill.get('preset')=='motif_ame' %}selected{% endif %}>Motif scaffolding / enzyme (AME)</option>
           </select>
-          <div class="hint">Which Proteina-Complexa model variant to run.</div>
+          <div class="hint">Which Proteina-Complexa model variant to run. Only the protein binder designs against a target you supply; the ligand and motif variants run benchmark tasks bundled with the model.</div>
         </div>
         <div class="runs-field" id="proteina-task-field" style="display:none;">
           <label for="task_name">Target task</label>
@@ -148,7 +148,12 @@
         <div class="runs-field" id="target-sdf-field" style="display:none;">
           <label for="target_sdf">Target molecule (.sdf)</label>
           <input type="file" id="target_sdf" name="target_sdf" accept=".sdf,.mol" disabled>
-          <div class="hint">Small-molecule target. Optional for curated ligand tasks.</div>
+          <!-- This input cannot produce a run: tools/proteina/__init__.py
+               ::_CUSTOM_TARGET_PRESETS is {"protein_binder"}, so validate()
+               refuses any ligand_binder post carrying a staged target. Leave
+               the field blank; the hint says so rather than the field being
+               silently removed mid-session. -->
+          <div class="hint">Leave this blank — the ligand variant designs against a benchmark ligand bundled with the model, and an uploaded molecule is refused.</div>
         </div>
         <div class="runs-row">
           <div class="runs-field">

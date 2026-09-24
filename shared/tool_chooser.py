@@ -141,8 +141,9 @@ _FACTS: dict[str, _Facts] = {
         shapes=frozenset({"nanobody"}),
         chemistries=frozenset(),
     ),
-    # "Your target is a small molecule rather than a protein"
-    # — tools/proteina/meta.py, about["when_to_use"][2].
+    # "You want to aim a binder at one specific patch, including a recessed
+    # or partly shielded one, by naming residues on it."
+    # — tools/proteina/meta.py, about["when_to_use"][0].
     #
     # NOT in the target-sequence bucket. proteina does run with no upload,
     # but only against "a repo-bundled benchmark task whose target is baked
@@ -153,10 +154,11 @@ _FACTS: dict[str, _Facts] = {
     # and find their target unreachable, and requires_pdb is False on every
     # preset so prerequisite_line() has nothing to warn them with.
     #
-    # "small-molecule" is NOT claimed here, though
-    # tools/proteina/meta.py, about["when_to_use"][2] says "Your target is
-    # a small molecule rather than a protein". That is the ligand_binder
-    # preset, and tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS holds
+    # "small-molecule" is NOT claimed here. proteina's copy used to offer
+    # "Your target is a small molecule rather than a protein" as a reason to
+    # pick it (about["when_to_use"], deleted 2026-09-24 — see the note left in
+    # its place). That was the ligand_binder preset, and
+    # tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS holds
     # {"protein_binder"} only -- validate refuses a ligand run against a
     # staged target with "The ligand_binder variant cannot design against
     # your own target". It designs against a bundled benchmark ligand, not
