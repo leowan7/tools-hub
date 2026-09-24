@@ -56,6 +56,18 @@ discovering later:
     three and 10 only once tools/boltzgen/meta.py moved the comparator next
     to the metric. So the repair was to the sentence. Relaxing adjacency is
     the one thing _CMP's comment below rejects.
+  * The inclusive-English form -- "an ipTM of 0.6 or more is a plausible
+    interface and 0.75 or more is strong" -- needs a SECOND pattern, because
+    _CMP cannot reach either figure: "of" is not a comparator, and the
+    second number names no metric at all. What discriminates there is the
+    trailing "or more" rather than adjacency -- "over 5 designs" is
+    ambiguous English, "0.75 or more" is not -- so that pattern is allowed
+    to run to the end of the sentence naming the metric, and no further.
+    Measured across all 14 summaries it adds six thresholds, all on af2,
+    bindcraft and colabfold, and no sentence in the repo states an inclusive
+    figure while naming two of its tool's metrics. Only the
+    higher-is-better spellings are here; a lower-is-better inclusive form
+    ("2 angstroms or less") is not written today and would need its own.
   * A tool with no legend for a metric is not judged here. A tool is allowed
     to have no bar.
   * ``good`` OR ``excellent`` is accepted, because a summary may legitimately
@@ -100,6 +112,19 @@ _CMP = (
 )
 _NUM = r"(\d+(?:\.\d+)?)"
 
+#: The inclusive-English threshold, matched anywhere in the sentence that
+#: names the metric. The trailing words carry the discrimination that
+#: adjacency carries for _CMP above, so this one does not need to sit next to
+#: the metric token -- which is the only way to reach the second figure in
+#: "An ipTM of 0.6 or more is a plausible interface and 0.75 or more is
+#: strong", where "0.75" names no metric of its own.
+_INCLUSIVE = _NUM + r"\s+or\s+(?:more|better|higher)"
+
+#: Sentence split for that pattern's bound. Prose here ends sentences with a
+#: period and a space; a summary that did not would widen the bound to the
+#: whole string, which the cross-metric measurement in the docstring covers.
+_SENTENCE = r"(?<=\.)\s+"
+
 #: U+2265 / U+2264, built with ``chr`` so this file stays pure ASCII and no
 #: escape in it can be flattened by an editor into something that still parses.
 _GE, _LE = chr(0x2265), chr(0x2264)
@@ -112,10 +137,13 @@ _SLUGS = sorted(a.slug for a in tool_base.all_adapters())
 #: that silently leaves this set means the guard stopped covering it, which is
 #: how a threshold test comes to pin nothing at all.
 _EXPECTED_COVERAGE = {
+    ("af2", "iptm"),
+    ("bindcraft", "ipTM"),
     ("boltz2", "ipTM"),
     ("boltz2", "n_hotspot_contacts"),
     ("boltzgen", "pLDDT"),
     ("boltzgen", "refolding_rmsd"),
+    ("colabfold", "iptm"),
     ("esmfold2-design", "ipTM"),
     ("esmfold2-design", "pI"),
     ("pxdesign", "ipTM"),
@@ -163,6 +191,11 @@ def _stated_thresholds(slug: str) -> list[tuple[str, str, float]]:
             pattern = r"\b" + token + r"\b\s*" + _CMP + r"\s*" + _NUM
             for match in re.finditer(pattern, text, re.I):
                 found.append((key, metric, float(match.group(1))))
+            for sentence in re.split(_SENTENCE, text):
+                if not re.search(r"\b" + token + r"\b", sentence, re.I):
+                    continue
+                for match in re.finditer(_INCLUSIVE, sentence, re.I):
+                    found.append((key, metric, float(match.group(1))))
     return found
 
 

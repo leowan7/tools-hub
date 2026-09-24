@@ -400,7 +400,8 @@ def test_clicking_a_typed_hotspot_removes_it_rather_than_duplicating(
     slug, scripts
 ):
     """Toggle semantics survive the prefix: a bare token already in the field
-    matches a click on the default chain (hotspot_picker.js:334-338)."""
+    matches a click on the default chain (the token loop in
+    ``HotspotPicker.prototype._toggleResidue``, static/js/hotspot_picker.js)."""
     out = _drive(
         scripts[slug], chain="A", hotspots="54",
         clicks=[{"resno": 54, "chain": "A"}],
