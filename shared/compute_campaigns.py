@@ -2536,20 +2536,22 @@ def reconcile_campaign_children(campaign_id: str, *, max_poll: int = 64) -> int:
     atomic-pattern child that nobody is individually watching hangs in
     ``running`` (its wallet hold stranded) until the 6-hour stuck-job sweeper.
     This closes that gap: it polls each in-flight child's FunctionCall
-    (non-blocking) and, on POSITIVE inline-success evidence, routes it through
-    the same idempotent ``complete_job`` settle + drive path the per-job status
-    poll uses.
+    (non-blocking) and, on POSITIVE inline evidence, routes it through the same
+    idempotent ``complete_job`` settle + drive path the per-job status poll
+    uses.
 
-    SUCCESS-ONLY, by design. A ``succeeded`` poll requires an inline
-    ``smoke_result.status == "COMPLETED"``, which only the atomic tools emit.
-    The composite pilots (bindcraft / boltzgen / pxdesign / rfantibody) take the
-    webhook path and carry no inline payload, so ``poll`` reads ``failed`` for
-    them even when the work succeeded (see ``_interpret_pipeline_return`` and
-    ``shared.job_recovery``). We therefore NEVER fail a child from a poll here —
-    ``failed`` / ``error`` / ``running`` polls are left untouched for the
-    terminal webhook and the careful stuck-job recovery sweeper. The only state
-    this writes is ``succeeded`` (plus a cosmetic pending→running when the
-    FunctionCall is live but the first heartbeat was lost).
+    INLINE-PAYLOAD-ONLY, by design. A ``succeeded`` poll requires an inline
+    ``smoke_result.status == "COMPLETED"``; a ``failed`` poll is settled only
+    when it carries ``error_bucket``, which ``_interpret_pipeline_return`` sets
+    only from an inline ``smoke_result.status == "FAILED"``. The composite
+    pilots (bindcraft / boltzgen / pxdesign / rfantibody) take the webhook path
+    and carry no inline payload, so ``poll`` reads ``failed`` for them even when
+    the work succeeded (see ``_interpret_pipeline_return`` and
+    ``shared.job_recovery``), with no ``error_bucket``. Those ``failed`` polls,
+    and every ``error`` / ``running`` poll, are left untouched for the terminal
+    webhook and the careful stuck-job recovery sweeper. The only states this
+    writes are ``succeeded`` and ``failed`` (plus a cosmetic pending→running
+    when the FunctionCall is live but the first heartbeat was lost).
 
     Best-effort: every fault is swallowed so a poll error can never break the
     caller (a status read or the cron tick). Returns the number of children
@@ -2614,6 +2616,28 @@ def reconcile_campaign_children(campaign_id: str, *, max_poll: int = 64) -> int:
                     "reconcile_campaign_children: complete_job raised for %s",
                     r.get("id"), exc_info=True,
                 )
+        elif status == "failed" and poll.get("error_bucket"):
+            # The pipeline's own inline FAILED smoke_result: only that arm of
+            # gpu/modal_client.py::_interpret_pipeline_return sets
+            # error_bucket, and a composite pilot's lost webhook carries no
+            # smoke_result, so it cannot reach this branch. Settled exactly as
+            # blueprints/jobs.py::job_status settles a single job's failed poll.
+            try:
+                complete_job(
+                    str(r["id"]),
+                    terminal_status="failed",
+                    error={
+                        "bucket": poll["error_bucket"],
+                        "detail": poll.get("error") or "",
+                    },
+                    gpu_seconds_used=poll.get("gpu_seconds_used"),
+                )
+                reconciled += 1
+            except Exception:
+                logger.warning(
+                    "reconcile_campaign_children: complete_job raised for %s",
+                    r.get("id"), exc_info=True,
+                )
         elif status == "running" and r.get("status") == "pending":
             # FunctionCall is live but the row never advanced past pending
             # (first heartbeat lost). Anchor started_at so the stuck-job
@@ -2625,9 +2649,10 @@ def reconcile_campaign_children(campaign_id: str, *, max_poll: int = 64) -> int:
                     "reconcile_campaign_children: mark_running raised for %s",
                     r.get("id"), exc_info=True,
                 )
-        # failed / error: DO NOT terminalise here — a composite pilot's lost
-        # webhook reads as ``failed`` even on success. Leave it to the terminal
-        # webhook and the careful stuck-job recovery sweeper.
+        # Any other failed poll, and every error poll: DO NOT terminalise here
+        # — a composite pilot's lost webhook reads as ``failed`` even on
+        # success. Leave it to the terminal webhook and the careful stuck-job
+        # recovery sweeper.
     return reconciled
 
 
