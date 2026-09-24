@@ -33,7 +33,8 @@ def search_entries(query: str, rows: int = 10) -> Optional[list[dict]]:
     }
     try:
         resp = requests.post(RCSB_SEARCH_URL, json=body, timeout=15)
-        # RCSB answers 204 with no body when nothing matches.
+        # This endpoint answers 204 with no body when nothing matches (measured
+        # live on a different query: the 204 branch in scout/epitope_db.py).
         if resp.status_code == 204:
             return []
         resp.raise_for_status()

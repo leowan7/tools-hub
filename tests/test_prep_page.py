@@ -329,3 +329,25 @@ def test_rail_links_target_prep(app):
 
 def test_tools_page_links_target_prep(anon):
     assert 'href="/prep"' in anon.get("/tools").get_data(as_text=True)
+
+
+# --- AlphaFold swap ------------------------------------------------------
+
+def test_prep_panel_opts_out_of_the_alphafold_swap(client):
+    """The swap empties the file input and parks the model in
+    reuse_pdb_token, which /prep never reads: trim and handoff would then
+    refuse with "Load a target first". Source check, like
+    test_input_remap_visible.py's, because the repo has no runner for
+    preflight.js."""
+    import pathlib
+
+    from tests.test_candidate_table_js_contract import _lex
+
+    html = client.get("/prep").get_data(as_text=True)
+    assert 'data-no-alphafold="1"' in html
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "static" / "js" / "preflight.js").read_text(encoding="utf-8")
+    js, _ = _lex(src)
+    assert "if (panel.dataset.noAlphafold) v = Object.assign({}, v, { alphafold: null });" in js
+    assert "reuse_pdb_token" not in (pathlib.Path(__file__).resolve().parents[1]
+                                     / "blueprints" / "prep.py").read_text(encoding="utf-8")

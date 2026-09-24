@@ -109,6 +109,9 @@
   }
 
   function renderVerdict(v) {
+    // /prep has no submit that reads reuse_pdb_token, so the swap would
+    // only empty its file input.
+    if (panel.dataset.noAlphafold) v = Object.assign({}, v, { alphafold: null });
     panel.className =
       "preflight-panel preflight-panel--" + (v.kind || "");
     panel.setAttribute("data-kind", v.kind || "");
