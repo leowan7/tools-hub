@@ -309,10 +309,8 @@ def _top_candidate_summary(
     #
     # THIS IS THE SECOND SPELLING OF ONE RULE AND SHOULD NOT SURVIVE.
     # ``score_legends.resolve_mode(tool, result, preset)`` says this plus a
-    # guard and has since landed (shared/score_legends.py::resolve_mode). Collapsing
-    # this line into it is a live follow-up, left out of the change that
-    # collapsed the ranked-list gate below because it is NOT a no-op — see the
-    # next paragraph — and so needs its own measurement.
+    # guard (shared/score_legends.py::resolve_mode). Switching this line to it
+    # is not a no-op — see the next paragraph — so it is left as a follow-up.
     #
     # The two are NOT identical and the difference is why theirs is the one to
     # keep: resolve_mode is guarded on MODE_GATE_COLUMNS, so for a tool with no
@@ -327,15 +325,13 @@ def _top_candidate_summary(
     mode = score_legends.result_mode(result) or getattr(job, "preset", None)
 
     # A "TOP DESIGN" CLAIM NEEDS SOMETHING THAT RANKED THE LIST.
-    # :func:`shared.jobs.supports_headline_claim` is that rule, in one place,
-    # and its docstring carries the evidence for both of its arms: the
-    # ``designs[]`` shapes that are submission order rather than a ranking, and
-    # the recovery writer's ``backfilled`` flag. This block used to spell the
-    # shape half of it inline and could not see the flag at all, so a recovered
-    # run mailed a "Top design" naming whichever partial arrived first.
-    # ``test_a_recovered_run_gets_no_email_callout`` holds the flag half of that
-    # here; ``test_the_gate_reads_an_array_not_merely_a_present_key`` holds the
-    # shape half. Both in tests/test_job_complete_email_headline.py.
+    # :func:`shared.jobs.supports_headline_claim` is that rule: it refuses a
+    # result whose ``candidates`` is not a per-candidate array (the
+    # ``designs[]`` shapes are submission order, not a ranking) and a result
+    # the recovery writer flagged ``backfilled``. No callout is sent for
+    # either. ``test_a_recovered_run_gets_no_email_callout`` holds the flag
+    # arm here; ``test_the_gate_reads_an_array_not_merely_a_present_key``
+    # holds the shape arm. Both in tests/test_job_complete_email_headline.py.
     if not supports_headline_claim(result, tool_slug, mode):
         return ("", "", "", "", "", "")
 
@@ -1773,16 +1769,17 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         and (c.get("pdb_key") or c.get("pdb_content_b64"))
     )
 
+    # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
+    noun = (
+        "a downloadable structure" if n_structures == 1
+        else "downloadable structures"
+    )
+
     if n_structures == n:
-        # "structures", not "PDBs": boltzgen writes .cif for most rows (#252).
-        return f"{label} and downloadable structures."
+        return f"{label} and {noun}."
 
     if n_structures:
         # n stays in the sentence because it is what the run produced.
-        noun = (
-            "a downloadable structure" if n_structures == 1
-            else "downloadable structures"
-        )
         return f"{label}; {n_structures} with {noun}."
 
     return f"{label} — see the job page."

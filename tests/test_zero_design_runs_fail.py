@@ -311,6 +311,27 @@ def test_iggm_with_zero_uploaded_designs_fails_refunded(monkeypatch):
     _assert_failed(written, "infra_crash")
 
 
+def test_iggm_uploads_no_artifacts_when_every_design_upload_failed(monkeypatch):
+    written = _iggm_main(monkeypatch, upload_ok=True)
+    requested: list[str] = []
+
+    def _urls(ep, tok, keys):
+        requested.extend(keys)
+        if any(k.endswith(".pdb") for k in keys):
+            raise RuntimeError("presign endpoint refused")
+        return {k: "https://up" for k in keys}
+
+    monkeypatch.setattr(iggm_rp, "request_upload_urls", _urls)
+    monkeypatch.setattr(
+        iggm_rp, "collect_artifacts",
+        lambda out_dir: [out_dir / "designs.fasta"],
+    )
+    with pytest.raises(SystemExit):
+        iggm_rp.main()
+    _assert_failed(written, "infra_crash")
+    assert not [k for k in requested if k.startswith("artifacts/")], requested
+
+
 def test_iggm_with_no_design_pdbs_fails_refunded(monkeypatch):
     written = _iggm_main(monkeypatch, upload_ok=True, produced=False)
     with pytest.raises(SystemExit):

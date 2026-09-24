@@ -485,7 +485,7 @@ def test_an_inline_only_row_keeps_the_promise():
     """
     bodies = _mail({"candidates": [_inline_row(0)]})
     for part, body in bodies.items():
-        assert "1 candidate returned with real scores and downloadable structures." in body, (
+        assert "1 candidate returned with real scores and a downloadable structure." in body, (
             part, body,
         )
 
