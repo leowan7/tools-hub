@@ -78,7 +78,7 @@ from shared.tools_catalog import (
     group_catalog,
 )
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
-from shared.tool_meta import meta_for
+from shared.tool_meta import meta_for, preset_runtime_text, runtime_band
 from shared.wallet_estimates import estimated_cost_for_tool
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
@@ -692,47 +692,9 @@ def _related_tool_cards(slug: str) -> list[dict]:
         })
     return out
 
-def _preset_runtime_text(meta, preset_slug: str) -> str | None:
-    """The typical runtime for ONE preset, or None.
-
-    Two sources because two generations of metadata are live:
-    ``PRESET_RUNTIME[slug]["typical_minutes"]`` (a bare number or
-    range, so the unit is appended here) and the older
-    ``preset_runtime_rows`` (already carries "min"). rfdiffusion and
-    pxdesign still only have the legacy rows, so a lookup that reads
-    PRESET_RUNTIME alone reports nothing for the two most-used design
-    tools.
-    """
-    if meta is None:
-        return None
-    entry = (getattr(meta, "PRESET_RUNTIME", None) or {}).get(preset_slug) or {}
-    if entry.get("typical_minutes"):
-        return f"{entry['typical_minutes']} min"
-    for row in getattr(meta, "preset_runtime_rows", None) or ():
-        if row.get("slug") == preset_slug and row.get("runtime"):
-            return row["runtime"]
-    return None
-
-
 def _runtime_band_for_adapter(adapter, meta) -> str:
-    """Compute the same runtime band string used on the homepage cards.
-
-    Mirrors the inline logic in :func:`_build_tools_catalog` so the
-    preview page reports the same band as the homepage. Falls back
-    to '—' when the adapter has no PRESET_RUNTIME entries.
-    """
-    if meta is None:
-        return "—"
-    runtimes: list[str] = []
-    for preset in adapter.presets:
-        rt = _preset_runtime_text(meta, preset.slug)
-        if rt and rt not in runtimes:
-            runtimes.append(rt)
-    if len(runtimes) >= 2:
-        return f"{runtimes[0]} to {runtimes[-1]}"
-    if len(runtimes) == 1:
-        return runtimes[0]
-    return "—"
+    """The runtime band for ``adapter``; see shared.tool_meta.runtime_band."""
+    return runtime_band(meta, [p.slug for p in adapter.presets])
 
 
 def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
@@ -898,7 +860,7 @@ def _pilot_context(adapter, meta) -> dict | None:
         pilot,
         params=params,
         cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
-        runtime=_preset_runtime_text(meta, str(params.get("preset") or "")),
+        runtime=preset_runtime_text(meta, str(params.get("preset") or "")),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
         # Rendered by components/pilot_card.html as the "this tool asks
         # for these, and here is where to get them" line. Both flags are

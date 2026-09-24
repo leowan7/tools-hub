@@ -7,7 +7,8 @@ Parallel to ``tools/mpnn/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation    — short inline citation.
     paper_url         — Nature Methods / bioRxiv permalink.
     github_url        — upstream ColabFold repository.
@@ -22,7 +23,7 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "1 to 2"},
+    "standalone": {"typical_minutes": "1 to 2", "minutes": (1, 2)},
 }
 
 paper_citation: str = "Mirdita et al., Nature Methods 2022"

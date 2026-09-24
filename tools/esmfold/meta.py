@@ -7,7 +7,8 @@ Parallel to ``tools/colabfold/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    - {preset_slug: {"typical_minutes": str}}.
+    PRESET_RUNTIME    - {preset_slug: {"typical_minutes": str,
+                         "minutes": (low, high)}}.
     paper_citation    - short inline citation.
     paper_url         - Science / bioRxiv permalink.
     github_url        - upstream ESM repository.
@@ -22,7 +23,7 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "0.5 to 1"},
+    "standalone": {"typical_minutes": "0.5 to 1", "minutes": (0.5, 1)},
 }
 
 paper_citation: str = "Lin et al., Science 2023"

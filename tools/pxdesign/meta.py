@@ -98,11 +98,12 @@ example_output_id: str | None = None
 # tests/test_pxdesign_runtime_band.py holds every surface that carries the
 # band -- here, in tools/pxdesign/__init__.py and in
 # templates/tools/pxdesign_form.html -- against the measurements above.
-preset_runtime_rows: tuple[dict[str, str], ...] = (
+preset_runtime_rows: tuple[dict[str, object], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
         "runtime": "8 to 25 min",
+        "minutes": (8, 25),
         "target": "Your uploaded target",
     },
 )

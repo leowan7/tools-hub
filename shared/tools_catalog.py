@@ -8,7 +8,7 @@ different blueprints, so the catalog lives in a shared leaf both can import.
 from flask import url_for
 
 from shared.feature_flags import tool_enabled
-from shared.tool_meta import meta_for
+from shared.tool_meta import meta_for, runtime_band as runtime_band_for
 from tools import base as tool_base
 
 # Static taglines for the hardcoded (non-adapter) tools. These two tools
@@ -167,33 +167,7 @@ def _build_tools_catalog() -> list[dict]:
         # runtime band on the homepage catalog. Fifth and last call site.
         meta = meta_for(adapter.slug)
 
-        # Build the runtime band from whatever presets the adapter exposes
-        # (smoke + mini_pilot tiers were removed 2026-05-29; atomic tools
-        # now have a single standalone preset, composites have pilot
-        # only). Show the fastest preset's runtime through the slowest
-        # as a band.
-        runtime_band = "—"
-        if meta is not None:
-            runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
-            legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-            legacy_by_slug = {
-                r.get("slug"): r.get("runtime")
-                for r in legacy_rows
-                if r.get("slug") and r.get("runtime")
-            }
-            runtimes: list[str] = []
-            for preset in adapter.presets:
-                entry = runtime_map.get(preset.slug) or {}
-                if entry.get("typical_minutes"):
-                    rt = f"{entry['typical_minutes']} min"
-                else:
-                    rt = legacy_by_slug.get(preset.slug)
-                if rt and rt not in runtimes:
-                    runtimes.append(rt)
-            if len(runtimes) >= 2:
-                runtime_band = f"{runtimes[0]} to {runtimes[-1]}"
-            elif len(runtimes) == 1:
-                runtime_band = runtimes[0]
+        runtime_band = runtime_band_for(meta, [p.slug for p in adapter.presets])
 
         display_name = adapter.label.split("—")[0].strip() or adapter.label
         try:

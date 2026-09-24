@@ -94,10 +94,10 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # borrowed from a DIFFERENT scoring path, and there is no reason to think
     # RF3 scoring is as fast as AF2 scoring. Treat 9 as "cannot plausibly be
     # quicker than the fastest thing we timed", not as a measurement.
-    "protein_binder": {"typical_minutes": "~9 to 15"},
+    "protein_binder": {"typical_minutes": "~9 to 15", "minutes": (9, 15)},
     "ligand_binder": {"typical_minutes": "9 to 120 (not yet measured)"},
     "motif_ame": {"typical_minutes": "9 to 120 (not yet measured)"},
-    "validate": {"typical_minutes": "1 to 3"},
+    "validate": {"typical_minutes": "1 to 3", "minutes": (1, 3)},
 }
 
 # THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This field
