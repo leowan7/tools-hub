@@ -2343,7 +2343,9 @@ select.form-control { cursor: pointer; }
 
 .rail-group + .rail-group { margin-top: 0.75rem; }
 .rail-group-title {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0 0.35rem 0.25rem;
   font-size: 0.52rem;
   font-weight: 600;
@@ -2352,6 +2354,16 @@ select.form-control { cursor: pointer; }
   color: var(--text-tertiary);
   line-height: 1.5;
 }
+.rail-group-glyph {
+  display: inline-flex;
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+  color: var(--accent-text);
+  opacity: 0.85;
+}
+.rail-group-glyph svg { width: 100%; height: 100%; display: block; }
+.rail-group-glyph:empty { display: none; }
 .rail-list { list-style: none; margin: 0; padding: 0; }
 
 .rail-link {

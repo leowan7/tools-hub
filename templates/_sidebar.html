@@ -31,7 +31,14 @@
   <div class="rail-scroll">
     {% for group in _groups %}
       <div class="rail-group">
-        <span class="rail-group-title">{{ group.title }}</span>
+        {# Same per-band glyph the homepage catalog uses, via the same
+           Jinja global. "Overview" and "Manage" are not catalog bands, so
+           inline_category_glyph returns empty for them and the :empty rule
+           collapses the span. #}
+        <span class="rail-group-title">
+          <span class="rail-group-glyph" aria-hidden="true">{{ inline_category_glyph(group.title) }}</span>
+          {{ group.title }}
+        </span>
         <ul class="rail-list">
           {% for item in group['items'] %}
             <li>
