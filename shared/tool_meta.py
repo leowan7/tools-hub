@@ -73,10 +73,11 @@ def runtime_band(meta, preset_slugs) -> str:
 
     The band runs from the lowest ``low`` to the highest ``high``, with a
     leading "~" when any contributing preset's text does. A preset with
-    runtime text but no usable ``minutes`` is left out and the band says
-    "(some presets vary)". When no preset has usable ``minutes``, the band
-    is the first preset's own text, never a join of several.
+    no usable ``minutes`` (or no runtime entry at all) is left out and the
+    band says "(some presets vary)". When no preset has usable ``minutes``,
+    the band is the first preset's own text, never a join of several.
     """
+    preset_slugs = list(preset_slugs)
     entries = [e for e in (_runtime_entry(meta, s) for s in preset_slugs) if e]
     if not entries:
         return "—"
@@ -88,6 +89,6 @@ def runtime_band(meta, preset_slugs) -> str:
     band = f"{low:g} min" if low == high else f"{low:g} to {high:g} min"
     if any(text.lstrip().startswith("~") for text, _ in numeric):
         band = "~" + band
-    if len(numeric) < len(entries):
+    if len(numeric) < len(preset_slugs):
         band += " (some presets vary)"
     return band
