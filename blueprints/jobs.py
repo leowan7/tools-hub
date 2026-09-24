@@ -492,7 +492,7 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
     pending or running job whose heartbeat ``inputs._progress`` carries a
     positive ``designs_total``.
     """
-    from shared.compute_campaigns import display_cost_usd  # noqa: PLC0415
+    from shared.compute_campaigns import display_cost_usd, display_ledger_usd  # noqa: PLC0415
     from shared.jobs import _REFUNDED_FAILURE_CLASSES  # noqa: PLC0415
     from shared.wallet import job_spend_by_hold  # noqa: PLC0415
 
@@ -518,7 +518,15 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         spend_text = spend_note = None
         ledger = spend.get(_hold_id(job)) if _hold_id(job) else None
         if ledger is not None:
-            spend_text = "$" + display_cost_usd(max(ledger["usd"], 0))
+            usd = max(ledger["usd"], 0)
+            # Settled: the exact figure the wallet page prints for this hold
+            # (templates/wallet/transactions.html, display_ledger_usd). Reserved,
+            # or a settled figure finer than 4dp that display_ledger_usd refuses:
+            # round up, as a hold is shown everywhere else.
+            try:
+                spend_text = "$" + (display_ledger_usd(usd) if ledger["settled"] else display_cost_usd(usd))
+            except ValueError:
+                spend_text = "$" + display_cost_usd(usd)
             if not ledger["settled"]:
                 spend_note = "reserved"
             elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
