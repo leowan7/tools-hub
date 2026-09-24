@@ -610,6 +610,13 @@ def main() -> None:
             # that kill would flip a real success into a lost job. Writing it here — the
             # last statement of the try body — guarantees result delivery precedes capture.
             runtime_seconds = int(time.time() - start)
+            if not designs_out:
+                _fail(
+                    "storage",
+                    "no_designs",
+                    f"all {len(design_pdbs)} designs failed to upload — "
+                    "nothing to deliver.",
+                )
             _write_result(
                 {
                     "status": "COMPLETED",

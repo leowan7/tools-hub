@@ -1093,16 +1093,21 @@ def _run_batch_folds(
         )
 
     runtime_seconds = int(time.time() - start)
-    # Unlike boltz2 this path has no zero-design abort, so an all-uploads-failed
-    # run still writes a COMPLETED result and still bills. That is deliberately
-    # left alone here; what changes is that the counts and the log no longer
-    # blame the model for it.
-    if n_folded and not designs_out:
-        logger.error(
-            "%d of %d designs folded but 0 uploaded in %ds — the delivery hop "
-            "failed, not the folds; see the per-design upload warnings above, "
-            "and this job's raw archive for the structures",
-            n_folded, designs_total, runtime_seconds,
+    if not designs_out and n_folded:
+        _fail(
+            "storage",
+            "no_designs",
+            f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+            f"— the delivery hop failed, not the folds; see the per-design "
+            f"upload warnings in the run log, and this job's raw archive "
+            f"for the structures",
+        )
+    if not designs_out:
+        _fail(
+            "pipeline",
+            "no_designs",
+            f"none of {designs_total} designs folded ({n_failures} "
+            f"failures) — nothing to deliver.",
         )
     _write_result(
         {

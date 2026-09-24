@@ -546,6 +546,13 @@ def main() -> None:
             archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)
+    if not designs_out:
+        _fail(
+            "storage",
+            "no_designs",
+            f"all {len(structures)} predicted structures failed to upload "
+            f"({n_failures} failures) — nothing to deliver.",
+        )
     _write_result(
         {
             "status": "COMPLETED",
