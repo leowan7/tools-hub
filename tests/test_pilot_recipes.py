@@ -816,12 +816,19 @@ class TestHotspotDeflection:
       ``validate()`` happens to tolerate an empty field and run
       unsteered.
 
-    So: **what the tool asks for** now comes from the tool's own stated
-    prerequisites (``blueprints.tools._needs_hotspots``), and **whether
-    Scout can hand the residues back** from
-    ``scout.handoff.VALID_HANDOFF_TOOLS``. These tests lock both, lock
-    the three surfaces that have to agree about the handoff set, and lock
-    the probe itself against going blind.
+    A third cut derived "asks for hotspots" from the tool's own
+    ``about["prerequisites"]`` bullets, matching "hotspot" without the
+    word "option". That made a copy edit silently move a user-facing
+    claim, and it carded boltzgen as REQUIRING hotspots on the strength
+    of a bullet nothing enforced.
+
+    So: **whether the tool requires hotspots** now comes from the gate
+    itself (``shared.tool_chooser.needs_hotspots`` ->
+    ``TOOL_RULES[slug].hotspots_required``), and **whether Scout can hand
+    the residues back** from ``scout.handoff.VALID_HANDOFF_TOOLS``. The
+    card is raised for either. These tests lock both, lock the three
+    surfaces that have to agree about the handoff set, and lock the probe
+    itself against going blind.
     """
 
     # This form has to reach the END of all fourteen validate() chains,
@@ -882,13 +889,16 @@ class TestHotspotDeflection:
         return "<strong>Hotspot residues</strong>" in cls._card(client, slug)
 
     @staticmethod
-    def _states_hotspot_prerequisite(slug: str) -> bool:
-        """Read the tool's own about bullets, independently of the app."""
-        about = getattr(meta_for(slug), "about", None) or {}
-        return any(
-            "hotspot" in str(b).lower() and "option" not in str(b).lower()
-            for b in (about.get("prerequisites") or ())
-        )
+    def _preflight_requires_hotspots(slug: str) -> bool:
+        """Read the preflight gate directly, not through the app."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+
+        rules = TOOL_RULES.get(slug)
+        return bool(rules is not None and rules.hotspots_required)
+
+    @classmethod
+    def _says_required(cls, client, slug: str) -> bool:
+        return "will not start without at least one" in cls._card(client, slug)
 
     def test_the_probe_reaches_every_adapters_hotspot_check(self, tools_app):
         """The M8b lock: a blind probe is a guard that certifies false.
@@ -959,18 +969,20 @@ class TestHotspotDeflection:
             f"blueprints.tools._needs_hotspots reads."
         )
 
-    def test_the_card_set_is_the_tools_own_stated_prerequisites(
+    def test_the_card_set_is_required_or_handoff_and_nothing_else(
         self, tools_app
     ):
         """The card set, pinned, and pinned to the reason it has members.
 
-        The literal is the drift alarm: editing a ``prerequisites``
-        bullet silently adds or drops a user-facing card, and that is a
-        copy change someone should have to confirm. The loop asserts the
-        set really is derived from those bullets and not from anything
-        else — the bug this replaced came from deriving it from
-        ``validate()`` strictness, which disagrees with them on boltzgen.
+        The literal is the drift alarm: a card appearing or disappearing
+        is a user-facing copy change someone should have to confirm. The
+        loop asserts the set really is "preflight requires hotspots OR
+        Scout can hand them back" and not anything else — the bug this
+        replaced derived it from ``about["prerequisites"]`` wording, which
+        put boltzgen in the required set on a bullet nothing enforced.
         """
+        from scout.handoff import VALID_HANDOFF_TOOLS
+
         flask_app, slugs = tools_app
         client = flask_app.test_client()
         pilots = _pilots(slugs)
@@ -979,13 +991,79 @@ class TestHotspotDeflection:
             "bindcraft", "boltzgen", "pxdesign", "rfantibody", "rfdiffusion",
         }, sorted(carded)
         for slug in slugs:
-            expected = self._states_hotspot_prerequisite(slug) \
-                and bool(pilots[slug])
-            assert (slug in carded) is expected, (
-                f"{slug}: card={slug in carded}, but prerequisites require a "
-                f"hotspot={self._states_hotspot_prerequisite(slug)} and "
-                f"PILOT={bool(pilots[slug])}"
+            expected = bool(pilots[slug]) and (
+                self._preflight_requires_hotspots(slug)
+                or slug in VALID_HANDOFF_TOOLS
             )
+            assert (slug in carded) is expected, (
+                f"{slug}: card={slug in carded}, but preflight requires a "
+                f"hotspot={self._preflight_requires_hotspots(slug)}, handoff="
+                f"{slug in VALID_HANDOFF_TOOLS} and PILOT={bool(pilots[slug])}"
+            )
+
+    def test_boltzgen_keeps_its_scout_handoff_however_its_bullets_read(
+        self, tools_app
+    ):
+        """The regression this change exists to prevent.
+
+        boltzgen's prerequisite bullet now says hotspots are OPTIONAL,
+        which is what its gate and its ``validate()`` do. The Scout
+        deflection must survive that rewording — it did not when the card
+        was keyed on the bullet text. Driven through the rendered card, so
+        it fails whichever of the three layers drops it.
+        """
+        from scout.handoff import VALID_HANDOFF_TOOLS
+
+        flask_app, _slugs = tools_app
+        client = flask_app.test_client()
+        assert "boltzgen" in VALID_HANDOFF_TOOLS
+        card = self._card(client, "boltzgen")
+        assert "<strong>Hotspot residues</strong>" in card
+        assert "Epitope Scout" in card and 'href="/scout' in card
+        assert "residues back into this form" in card
+        # And the bullet it no longer depends on really does say optional.
+        about = getattr(meta_for("boltzgen"), "about", None) or {}
+        bullets = [
+            b for b in (about.get("prerequisites") or ())
+            if "hotspot" in str(b).lower()
+        ]
+        assert bullets and all(
+            "option" in str(b).lower() for b in bullets
+        ), bullets
+
+    def test_no_card_calls_hotspots_required_unless_preflight_does(
+        self, tools_app
+    ):
+        """The false-promise direction, read off the rendered sentence.
+
+        "will not start without at least one" is a refusal claim, and the
+        only thing that refuses is
+        ``shared/pdb_preflight.py::preflight_for_tool`` on
+        ``TOOL_RULES[slug].hotspots_required``. A tool carded for the
+        handoff alone must get the other branch of the sentence.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        pilots = _pilots(slugs)
+        carded = sorted(s for s in slugs
+                        if pilots[s] and self._carded(client, s))
+        assert carded
+        overclaims = [
+            s for s in carded
+            if self._says_required(client, s)
+            and not self._preflight_requires_hotspots(s)
+        ]
+        assert not overclaims, (
+            f"{overclaims}: the pilot card says the tool will not start "
+            f"without a hotspot residue, but its preflight rules set "
+            f"hotspots_required=False, so a hotspot-free submit runs and "
+            f"bills"
+        )
+        # Vacuity: the phrase is reachable, so the check is not blind.
+        required = [s for s in carded if self._preflight_requires_hotspots(s)]
+        assert required
+        for slug in required:
+            assert self._says_required(client, slug), slug
 
     def test_every_such_card_points_at_epitope_scout(self, tools_app):
         flask_app, slugs = tools_app
