@@ -90,6 +90,32 @@ class CleanupSummary:
 
 
 @dataclass
+class InputRemap:
+    """Numbering the run changes between the upload and what the model sees.
+
+    ``notes`` are plain-language lines about the structure as a whole (e.g. a
+    chain renumbered 1..N). ``hotspots`` pairs each residue reference the user
+    typed with what that reference resolves to:
+    ``{"typed": "241", "means": "A118", "why": "..."}``. The direction of the
+    translation differs per tool — a renumbering tool turns the user's author
+    number into a new index, while boltz2 turns the user's 1-based sequence
+    position back into an author number — so ``means`` is worded by the caller
+    and the panel prints it without interpreting it.
+
+    Empty for a tool that preserves the upload's numbering and takes
+    chain-qualified hotspots — there is nothing to disclose in that case.
+    Populated only from facts derivable from the upload itself, so the panel
+    can print it before the user pays.
+    """
+    notes: list = field(default_factory=list)
+    hotspots: list = field(default_factory=list)
+
+    @property
+    def any(self) -> bool:
+        return bool(self.notes or self.hotspots)
+
+
+@dataclass
 class AlphaFoldSuggestion:
     """One-click "use the AlphaFold model instead" offer."""
     uniprot_accession: str
@@ -177,6 +203,7 @@ class PreflightVerdict:
     nearest_clean_residues: list = field(default_factory=list)
     gap_analysis: Optional[GapAnalysis] = None
     size_envelope: Optional[SizeEnvelopeStatus] = None
+    remap: Optional[InputRemap] = None
 
     @property
     def ok(self) -> bool:
@@ -239,14 +266,15 @@ BOLTZ2_COMPLEX_HARD_CAP_AA = 1800
 BOLTZ2_GPU = "A100-40GB"
 
 
-def _ca_residue_counts(pdb_bytes: bytes) -> dict:
-    """Per-chain count of residues bearing a CA atom (ATOM records only).
+def _ca_resnums_ordered(pdb_bytes: bytes) -> dict:
+    """Per-chain author residue numbers bearing a CA atom, in file order.
 
     Mirrors run_pipeline.chain_seq exactly (ATOM ... CA lines, unique
-    resnum per chain), so each count equals the antigen length boltz2
-    folds and indexes its 1-based hotspot positions into.
+    resnum per chain, first occurrence wins), so position ``i`` of a chain's
+    list is the residue boltz2's 1-based hotspot position ``i + 1`` lands on.
     """
     seen: dict = {}
+    order: dict = {}
     for raw in pdb_bytes.split(b"\n"):
         if not raw.startswith(b"ATOM"):
             continue
@@ -263,8 +291,16 @@ def _ca_residue_counts(pdb_bytes: bytes) -> dict:
             resnum = int(line[22:26])
         except ValueError:
             continue
-        seen.setdefault(chain, set()).add(resnum)
-    return {c: len(s) for c, s in seen.items()}
+        if resnum in seen.setdefault(chain, set()):
+            continue
+        seen[chain].add(resnum)
+        order.setdefault(chain, []).append(resnum)
+    return order
+
+
+def _ca_residue_counts(pdb_bytes: bytes) -> dict:
+    """Per-chain count of residues bearing a CA atom (ATOM records only)."""
+    return {c: len(v) for c, v in _ca_resnums_ordered(pdb_bytes).items()}
 
 
 def _preflight_boltz2(
@@ -279,7 +315,8 @@ def _preflight_boltz2(
     back to the antigen alone.
     """
     antigen_chain = (target_chain or "A").strip() or "A"
-    counts = _ca_residue_counts(pdb_bytes)
+    ordered = _ca_resnums_ordered(pdb_bytes)
+    counts = {c: len(v) for c, v in ordered.items()}
 
     def _verdict(kind: VerdictKind, **kw) -> PreflightVerdict:
         base = dict(
@@ -392,9 +429,54 @@ def _preflight_boltz2(
             ),
         )
 
+    # A boltz2 hotspot is a 1-based position into the antigen chain's CA
+    # order, NOT an author residue number, so "241" reaches the model as
+    # whatever residue sits 241st. Name the residue each typed position
+    # actually lands on — but only where that differs from what was typed.
+    # A chain numbered 1..N with nothing missing is the common case and every
+    # line there reads "you typed 12 -> A12", which is how a panel teaches
+    # people to skip it on the files where it does differ. Those get one line
+    # saying the two scales coincide instead, which is still the reassurance a
+    # user who typed an author number came for. That test is whole-chain, not
+    # per-hotspot: a chain that starts at 1 but has a gap coincides only up to
+    # the gap, so suppressing rows hotspot-by-hotspot would print the
+    # reassurance on a file whose later positions really do shift. Enforced by
+    # tests/test_input_remap_visible.py
+    # ::test_boltz2_still_names_every_position_when_the_chain_has_a_gap.
+    remap = InputRemap()
+    author = ordered.get(antigen_chain, [])
+    coincides = author == list(range(1, len(author) + 1))
+    if coincides:
+        if surviving:
+            remap.notes.append(
+                f"Boltz-2 reads a hotspot as a position counted from 1 along "
+                f"chain {antigen_chain}, not as a residue number. On this "
+                f"file the two are the same, so "
+                f"{', '.join(str(n) for n in surviving)} reach the model as "
+                f"the residues you numbered."
+            )
+    else:
+        for n in surviving:
+            remap.hotspots.append({
+                "typed": str(n),
+                "means": f"{antigen_chain}{author[n - 1]}",
+                "why": (
+                    f"Boltz-2 hotspots are positions counted from 1 along "
+                    f"chain {antigen_chain}, not residue numbers from your "
+                    f"file"
+                ),
+            })
+        if author:
+            remap.notes.append(
+                f"Chain {antigen_chain} is numbered {author[0]}-{author[-1]} "
+                f"in your file but has {len(author)} residues, so its "
+                f"positions (1-{len(author)}) and its residue numbers are "
+                f"different scales."
+            )
     return _verdict(
         VerdictKind.READY,
         hotspot_status={"surviving": surviving, "dropped": []},
+        remap=remap,
     )
 
 
@@ -904,6 +986,10 @@ def preflight_for_tool(
         alphafold=af_suggestion if surfaced_af else None,
         gap_analysis=gap_analysis,
         size_envelope=size_envelope,
+        remap=_input_remap(
+            report, tool_slug=tool_slug, chain_ids=chain_ids,
+            hotspots=surviving,
+        ),
     )
 
 
@@ -1119,6 +1205,76 @@ def _maybe_alphafold(pdb_bytes: bytes, target_chain: str) -> Optional[AlphaFoldS
             return None
         rec = next(iter(m.values()))
     return AlphaFoldSuggestion(uniprot_accession=rec.uniprot_accession)
+
+
+def _input_remap(
+    report: PipelineNormalizationReport,
+    *,
+    tool_slug: str,
+    chain_ids: list,
+    hotspots: list,
+) -> InputRemap:
+    """Name the numbering changes between the upload and what the model sees.
+
+    Two sources, both silent before this function existed:
+
+      - ``report.renumber_map`` — non-empty only for the presets that pass
+        ``renumber_residues=True`` (``normalize_for_boltzgen``,
+        ``normalize_for_pxdesign``). Those two containers renumber the target
+        1..N per chain and rewrite hotspots through the same map, so a user's
+        ``A241`` reaches the model as a different number. Read off the
+        container that bills, not inferred: llm-proteinDesigner's
+        ``docker/boltzgen/run_pipeline.py:1150`` looks each typed hotspot up in
+        ``renumber_map``, and :178 records the smoke target's own conversions
+        (author 54 -> 37, 56 -> 39, 115 -> 98, 123 -> 106).
+      - bare-vs-prefixed hotspot attribution. ``_check_hotspots`` and
+        ``tools/base.py::parse_hotspot_residues`` both promote a bare number
+        onto the FIRST named chain; on a multi-chain target that picks one
+        protomer out of several without saying so.
+    """
+    remap = InputRemap()
+    rmap = dict(report.renumber_map or {})
+    for cid in sorted({c for c, _ in rmap}):
+        # (new_index, original_number) per residue on this chain, so the
+        # endpoints below are read off the map rather than assumed contiguous.
+        pairs = sorted(
+            (new, orig) for (c, orig), new in rmap.items() if c == cid
+        )
+        first_new, first_orig = pairs[0]
+        last_new, last_orig = pairs[-1]
+        remap.notes.append(
+            f"Chain {cid} is renumbered from 1 before {tool_slug} sees it: "
+            f"your {cid}{first_orig} becomes residue {first_new} and your "
+            f"{cid}{last_orig} becomes residue {last_new} "
+            f"({len(pairs)} residues)."
+        )
+
+    first_chain = chain_ids[0] if chain_ids else None
+    for h in hotspots:
+        cid, num = split_hotspot(h, chain_ids)
+        if num is None:
+            continue
+        assumed = cid is None and first_chain is not None and len(chain_ids) > 1
+        effective_chain = cid if cid is not None else first_chain
+        new = rmap.get((effective_chain, num))
+        if new is None and not assumed:
+            # Nothing changed about this token worth a line.
+            continue
+        why: list = []
+        if assumed:
+            why.append(
+                f"a hotspot typed without a chain letter is read as chain "
+                f"{first_chain}, the first of the chains you named "
+                f"({', '.join(chain_ids)})"
+            )
+        if new is not None:
+            why.append("renumbered with the rest of the chain")
+        remap.hotspots.append({
+            "typed": str(h),
+            "means": f"{effective_chain}{num if new is None else new}",
+            "why": "; ".join(why),
+        })
+    return remap
 
 
 def _summarize_cleanup(report: PipelineNormalizationReport) -> CleanupSummary:

@@ -157,6 +157,12 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "size_basis": verdict.size_envelope.size_basis,
             "selection_label": verdict.size_envelope.selection_label,
         }
+    remap_block = None
+    if verdict.remap is not None and verdict.remap.any:
+        remap_block = {
+            "notes": list(verdict.remap.notes),
+            "hotspots": [dict(h) for h in verdict.remap.hotspots],
+        }
     return {
         "kind": verdict.kind.value,
         "ok": verdict.ok,
@@ -176,6 +182,9 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
         "nearest_clean_residues": list(verdict.nearest_clean_residues),
         "gap_analysis": gap_block,
         "size_envelope": size_block,
+        # None when nothing about the numbering changes, so both the template
+        # and preflight.js can gate the whole block on its presence.
+        "remap": remap_block,
     }
 
 

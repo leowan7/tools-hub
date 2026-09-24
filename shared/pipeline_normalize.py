@@ -437,12 +437,70 @@ def normalize_for_pipeline(
         )
 
     # Dry-run preview: caller only wants the report (chains kept, altloc
-    # records collapsed, MSE remapped, etc.) — skip the file write and
-    # any renumber pass, which both produce side effects only useful to
-    # callers that will actually hand the cleaned PDB to a downstream
-    # tool. The renumber map is still computed below for symmetry; it's
-    # cheap and the report's contract is to expose it.
+    # records collapsed, MSE remapped, etc.) — skip the file write, which
+    # only helps callers that will hand the cleaned PDB to a downstream tool.
+    #
+    # The renumber map is filled here rather than left empty, because the
+    # preflight panel's whole job is to tell the user what the run will do to
+    # their numbering BEFORE they pay — and the run does the renumbering
+    # in-container, where nothing the user sees can reach.
+    #
+    # The residues walked are the ones the writer's own ``_PipelineSelect``
+    # will emit, NOT the ones the filter loop above chose to keep: that
+    # selector's residue test keys on ``(chain_id, resnum)`` with the
+    # insertion code stripped, so a residue that failed a filter is still
+    # written whenever a same-resSeq sibling survived, and the renumber pass
+    # below then counts it and shifts every later residue. Preview has to
+    # predict what the run does, not what it ought to do, so it runs the
+    # selector rather than a paraphrase of it. Then: file order, 1..N, last
+    # write wins for two residues sharing a resSeq. Equality with the written
+    # map is asserted in tests/test_input_remap_visible.py
+    # ::test_preview_renumber_map_equals_the_written_map, whose
+    # ``icode-sibling-resurrects-a-dropped-residue`` and
+    # ``resurrected-residue-loses-every-atom`` cases are the two ways the
+    # paraphrase went wrong.
+    #
+    # KNOWN GAP, pre-dating this preview and not closed by it: ``convert_modres``
+    # above clears the hetflag in place, so a MODRES-mapped HETATM at a resSeq
+    # a polymer residue in the same chain already uses ends up a blank-altloc
+    # duplicate. Both are written, and the re-parse below then drops one on a
+    # PERMISSIVE ``PDBConstructionException``, which no selector predicate can
+    # foresee. Measured on a five-residue chain plus ``HETATM MSE A 102``:
+    # preview says 102 -> 6, the written file says 3. The atom loss in the
+    # write path is the half worth fixing; that is a change to what the
+    # container is handed, so it is not in this package.
     if output_path is None:
+        if renumber_residues:
+            preview_selector = _PipelineSelect(
+                keep_chains=keep_chains,
+                keep_residues=keep_residues,
+                keep_atoms=keep_atoms,
+                keep_hydrogens=keep_hydrogens,
+                first_model_id=target_model_id,
+            )
+            for model in structure:
+                if not preview_selector.accept_model(model):
+                    continue
+                for chain in model:
+                    if not preview_selector.accept_chain(chain):
+                        continue
+                    cid = chain.get_id()
+                    idx = 0
+                    for residue in chain:
+                        if not preview_selector.accept_residue(residue):
+                            continue
+                        # accept_residue is necessary but not sufficient:
+                        # accept_atom drops any atom whose altloc disagrees
+                        # with the one chosen for that (resnum, icode, name),
+                        # and a residue that loses every atom is written as no
+                        # lines at all, so the re-parse below never sees it.
+                        if not any(
+                            preview_selector.accept_atom(a)
+                            for a in residue.get_unpacked_list()
+                        ):
+                            continue
+                        idx += 1
+                        renumber_map[(cid, residue.get_id()[1])] = idx
         report.renumber_map = renumber_map
         return report
 
