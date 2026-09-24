@@ -23,9 +23,10 @@ read the enforcer rather than restating it:
 * ``needs_structure`` reads ``adapter.requires_pdb`` and each
   ``Preset.requires_pdb``, the flags ``blueprints/tools.py::tool_submit`` reads
   to gate a submit before ``create_job``.
-* Multi-chain eligibility reads
-  ``TOOL_RULES[slug].multi_chain_container_ready``, the flag
-  ``shared/pdb_preflight.py::_multi_chain_block`` refuses a run on.
+* Multi-chain eligibility ANDs ``TOOL_RULES[slug].multi_chain_supported``
+  with ``TOOL_RULES[slug].multi_chain_container_ready``, the two flags
+  ``shared/pdb_preflight.py::_multi_chain_block`` ANDs before it lets a
+  two-chain target through.
 
 ``tests/test_tool_chooser.py`` asserts each of those three against the
 enforcing code path, so the chooser and the gate cannot drift apart.
@@ -37,7 +38,6 @@ already drops flag-disabled adapters via ``shared.feature_flags``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from shared.pdb_preflight_rules import TOOL_RULES
 from shared.tool_meta import meta_for
@@ -304,11 +304,15 @@ def has_example(slug: str) -> bool:
     meta = meta_for(slug)
     if meta is None or not getattr(meta, "EXAMPLE", None):
         return False
-    path = (
-        Path(__file__).resolve().parent.parent
-        / "tools" / slug.replace("-", "_") / "example" / "result.json"
-    )
-    return path.is_file()
+    # Reuses the renderer's own reader rather than testing for the file:
+    # _example_result returns None on unparseable JSON too, so a truncated
+    # result.json now withholds the link instead of pointing at an anchor
+    # the macro did not render. Imported here, not at module scope,
+    # because blueprints/tools.py imports this module. Pinned by
+    # test_has_example_agrees_with_the_renderer_for_every_tool.
+    from blueprints.tools import _example_result
+
+    return _example_result(slug) is not None
 
 
 # A tool with no TOOL_RULES entry is never reached by the preflight

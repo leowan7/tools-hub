@@ -19,6 +19,7 @@ import app  # noqa: F401  — populates tools.base._REGISTRY
 from shared import tool_chooser
 from shared.pdb_preflight import VerdictKind, preflight_for_tool
 from shared.pdb_preflight_rules import TOOL_RULES
+from shared.tool_meta import meta_for
 from shared.pdb_preflight import _multi_chain_block
 from tools import base as tool_base
 
@@ -230,6 +231,44 @@ def test_only_esmfold_refuses_a_two_chain_fasta():
             f"two-chain FASTA but _ADAPTER_MULTI_CHAIN_REFUSALS says "
             f"{'refuses' if expected else 'accepts'}"
         )
+
+
+def test_has_example_agrees_with_the_renderer_for_every_tool():
+    """The link is offered exactly when the section actually renders.
+
+    ``has_example`` used to test only that ``example/result.json`` exists,
+    while ``_example_context`` also has to parse it -- so an unparseable
+    file would have advertised "See a worked example" and linked to an
+    anchor the macro never rendered.
+    """
+    from blueprints.tools import _example_context
+
+    checked = 0
+    for adapter in tool_base.all_adapters():
+        meta = meta_for(adapter.slug)
+        if meta is None:
+            continue
+        checked += 1
+        assert tool_chooser.has_example(adapter.slug) is (
+            _example_context(adapter, meta) is not None
+        ), f"{adapter.slug}: chooser and renderer disagree about the example"
+    assert checked >= 14, f"only {checked} tools carried metadata"
+
+
+def test_a_damaged_example_withholds_the_link(monkeypatch):
+    """Proof by mutation: unparseable JSON must drop the link.
+
+    Pins the parse itself, which a file-exists check would pass.
+    """
+    import blueprints.tools as bt
+
+    slug = next(
+        s for s in tool_chooser._FACTS if tool_chooser.has_example(s)
+    )
+    monkeypatch.setattr(
+        bt, "_example_result", lambda s: None if s == slug else {"ok": 1}
+    )
+    assert tool_chooser.has_example(slug) is False
 
 
 def test_every_adapter_multi_chain_refusal_slug_is_a_real_tool():
