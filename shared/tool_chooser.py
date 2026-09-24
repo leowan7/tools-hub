@@ -69,7 +69,10 @@ SHAPE_CHOICES: tuple[tuple[str, str], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# Question 3 — what is on the target, asked only for structure-led design.
+# Question 3 — what is on the target, asked for the same design buckets as
+# question 2: the template gates both fieldsets on the one `chooser_asks_shape`
+# flag (templates/tools/comparison.html), which blueprints/tools.py sets from
+# DESIGN_HAVES.
 # ---------------------------------------------------------------------------
 CHEMISTRY_CHOICES: tuple[tuple[str, str], ...] = (
     ("plain", "An ordinary protein surface"),
@@ -321,6 +324,18 @@ _ADAPTER_RESIDUE_REFUSALS: dict[str, str] = {
     "iggm": "the antigen residues that form the epitope",
 }
 
+# Tools whose own validate refuses a two-chain input, which no preflight
+# rule records. supports_multi_chain reads TOOL_RULES, and the folding
+# tools offered as a "get a structure first" step are absent from it --
+# their multi-chain answer lives in the adapter instead:
+# ``tools/esmfold/__init__.py::validate`` returns "ESMFold v1 is
+# monomer-only but FASTA has {n} records." for a second record, and the
+# same refusal for a ':' chain separator. AlphaFold2 and ColabFold accept
+# two records. Pinned by
+# tests/test_tool_chooser.py::test_only_esmfold_refuses_a_two_chain_fasta,
+# which drives all three adapters' real validate.
+_ADAPTER_MULTI_CHAIN_REFUSALS: frozenset[str] = frozenset({"esmfold"})
+
 
 def prerequisite_line(slug: str) -> str:
     """One plain sentence naming what the customer must bring.
@@ -331,7 +346,18 @@ def prerequisite_line(slug: str) -> str:
     """
     parts: list[str] = []
     if needs_structure(slug):
-        parts.append("a structure of your target (.pdb or .cif)")
+        # The structure a backbone-only tool wants is the customer's own
+        # backbone, not a target: mpnn's answer 1 is "A backbone -- a 3D
+        # shape with no sequence chosen for it yet" and it serves no other
+        # bucket. Pinned by
+        # test_a_backbone_tool_does_not_call_the_structure_a_target.
+        facts = _FACTS.get(slug)
+        noun = (
+            "your backbone"
+            if facts is not None and facts.haves == frozenset({"backbone"})
+            else "your target"
+        )
+        parts.append(f"a structure of {noun} (.pdb or .cif)")
     if needs_hotspots(slug):
         parts.append("at least one residue on it for the binder to touch")
     if slug in _ADAPTER_RESIDUE_REFUSALS:
@@ -365,6 +391,19 @@ def recommend(
             continue
 
         is_designer = bool(facts.shapes)
+        # An adapter that refuses a two-chain input is dropped whichever
+        # branch below would have offered it. The designer branch asks
+        # supports_multi_chain, which reads TOOL_RULES; the prep tools are
+        # absent from TOOL_RULES and take no upload, so needs_structure is
+        # False for them and that question never reaches them. Without this
+        # line ESMFold was listed as a prep step for a site spanning two
+        # chains, which its own validate refuses.
+        if (
+            have in DESIGN_HAVES
+            and chemistry == "multi-chain"
+            and slug in _ADAPTER_MULTI_CHAIN_REFUSALS
+        ):
+            continue
         # Every chemistry filter below is scoped to `have in DESIGN_HAVES`,
         # because the chemistry question is only PUT in those two buckets
         # (blueprints/tools.py::tools_comparison sets chooser_asks_shape from

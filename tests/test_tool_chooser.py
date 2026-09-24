@@ -167,13 +167,26 @@ def test_multi_chain_support_matches_the_block(slug):
     assert tool_chooser.supports_multi_chain(slug) is not blocked
 
 
-def test_multi_chain_answer_offers_only_tools_that_accept_two_chains():
-    """End to end: nothing in that answer is refused a two-chain target."""
+@pytest.mark.parametrize("have", sorted(tool_chooser.DESIGN_HAVES))
+def test_multi_chain_answer_offers_only_tools_that_accept_two_chains(have):
+    """End to end: nothing in that answer refuses a two-chain input.
+
+    Both design buckets are asked, not just ``target-structure``: the
+    ``target-sequence`` bucket is the one that carries the folding tools
+    as a "get a structure first" step, and preflight never sees those --
+    they take no upload, so their refusal lives in the adapter.
+    """
     picks = tool_chooser.recommend(
-        "target-structure", shape="unsure", chemistry="multi-chain",
+        have, shape="unsure", chemistry="multi-chain",
     )
-    assert picks, "the multi-chain answer must not be empty"
+    assert picks, f"the multi-chain answer must not be empty for {have}"
     for pick in picks:
+        assert pick["slug"] not in tool_chooser._ADAPTER_MULTI_CHAIN_REFUSALS, (
+            f"{pick['slug']} is offered for a site spanning two chains but "
+            "its own validate refuses a two-chain input"
+        )
+        if not tool_chooser.needs_structure(pick["slug"]):
+            continue
         verdict = preflight_for_tool(
             pick["slug"], TWO_CHAIN, target_chain="A,B", hotspots=["A10", "B10"],
         )
@@ -181,6 +194,65 @@ def test_multi_chain_answer_offers_only_tools_that_accept_two_chains():
             f"{pick['slug']} is offered for a multi-chain site but preflight "
             f"refuses one: {verdict.reason}"
         )
+
+
+# The form field each folding adapter reads its FASTA from. They differ:
+# af2 reads "fasta" (tools/af2/__init__.py::validate), esmfold and
+# colabfold read "fasta_text". A single generic probe cannot derive this,
+# which is why _ADAPTER_MULTI_CHAIN_REFUSALS is typed and pinned here.
+_FOLDER_FASTA_FIELD = {
+    "af2": "fasta",
+    "colabfold": "fasta_text",
+    "esmfold": "fasta_text",
+}
+_FOLD_SEQ = "MKTAYIAKQRQISFVKSHFSRQ" * 2
+
+
+def test_only_esmfold_refuses_a_two_chain_fasta():
+    """Drive the real validate of all three folding adapters.
+
+    Fails if ESMFold ever accepts a multimer (the set is then stale) or
+    if AlphaFold2 / ColabFold ever start refusing one (the set is then
+    incomplete), so the two cannot drift apart silently.
+    """
+    adapters = {a.slug: a for a in tool_base.all_adapters()}
+    one = f">a\n{_FOLD_SEQ}\n"
+    two = f">a\n{_FOLD_SEQ}\n>b\n{_FOLD_SEQ}\n"
+    for slug, field in _FOLDER_FASTA_FIELD.items():
+        assert adapters[slug].validate({field: one}, {})[1] is None, (
+            f"{slug} refused a single-chain FASTA, so the two-chain result "
+            "below would prove nothing"
+        )
+        refused = adapters[slug].validate({field: two}, {})[1] is not None
+        expected = slug in tool_chooser._ADAPTER_MULTI_CHAIN_REFUSALS
+        assert refused is expected, (
+            f"{slug}: validate {'refuses' if refused else 'accepts'} a "
+            f"two-chain FASTA but _ADAPTER_MULTI_CHAIN_REFUSALS says "
+            f"{'refuses' if expected else 'accepts'}"
+        )
+
+
+def test_every_adapter_multi_chain_refusal_slug_is_a_real_tool():
+    slugs = {a.slug for a in tool_base.all_adapters()}
+    assert tool_chooser._ADAPTER_MULTI_CHAIN_REFUSALS <= slugs
+
+
+def test_a_backbone_tool_does_not_call_the_structure_a_target():
+    """mpnn's upload is the customer's own backbone, not a target.
+
+    The other structure-taking tools must keep saying "your target", so
+    this cannot pass by renaming the noun everywhere.
+    """
+    assert "your backbone" in tool_chooser.prerequisite_line("mpnn")
+    assert "your target" not in tool_chooser.prerequisite_line("mpnn")
+    others = [
+        s
+        for s in tool_chooser._FACTS
+        if s != "mpnn" and tool_chooser.needs_structure(s)
+    ]
+    assert others, "no other structure-taking tool left to contrast with"
+    for slug in others:
+        assert "your target" in tool_chooser.prerequisite_line(slug)
 
 
 def test_multi_chain_answer_excludes_the_tools_that_are_refused():
