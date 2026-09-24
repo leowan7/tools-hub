@@ -2406,11 +2406,17 @@ select.form-control { cursor: pointer; }
 
 /* --- Drawer (below the tablet breakpoint) -------------------------------
    Off-canvas so the page keeps the full viewport width and never scrolls
-   sideways; the backdrop is what dismisses it. */
+   sideways; the backdrop is what dismisses it.
+
+   760px, matching the pair of queries at 2112/2137, not the 900px the
+   tool-form grid uses: 900 turned every laptop-narrow window and every
+   side-by-side pane into drawer-only, which is the one width where a
+   permanent rail earns its keep. At 760 the rail leaves 500px of measure,
+   and it collapses to a 40px sliver if that is still too tight. */
 .rail-drawer-toggle { display: none; }
 .rail-backdrop { display: none; }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .rail-drawer-toggle { display: inline-flex; }
 
   .rail,
