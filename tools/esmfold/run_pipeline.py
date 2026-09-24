@@ -115,17 +115,28 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
-    """Write a FAILED result and exit 1. Matches the Kendrew shape."""
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1. Matches the Kendrew shape.
+
+    ``runtime_seconds`` is GPU time already burned.
+    gpu/modal_client.py::_interpret_pipeline_return reads it off the FAILED
+    arm as gpu_seconds_used, which
+    shared/jobs.py::_charge_workspace_for_completed_job debits from the
+    Workspace cap whatever the failure class. Leave it None for fails before
+    any GPU work.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
-    _write_result(
-        {
-            "status": "FAILED",
-            "error": {"bucket": bucket, "check": check, "detail": detail},
-            "tier": os.environ.get("JOB_TIER", ""),
-            "provider_job_id": os.environ.get("JOB_ID", ""),
-        }
-    )
+    payload = {
+        "status": "FAILED",
+        "error": {"bucket": bucket, "check": check, "detail": detail},
+        "tier": os.environ.get("JOB_TIER", ""),
+        "provider_job_id": os.environ.get("JOB_ID", ""),
+    }
+    if runtime_seconds is not None:
+        payload["runtime_seconds"] = runtime_seconds
+    _write_result(payload)
     sys.exit(1)
 
 
@@ -1107,6 +1118,7 @@ def _run_batch_folds(
             f"— the delivery hop failed, not the folds; see the per-design "
             f"upload warnings in the run log, and this job's raw archive "
             f"for the structures",
+            runtime_seconds=runtime_seconds,
         )
     if not designs_out:
         _fail(
@@ -1114,6 +1126,7 @@ def _run_batch_folds(
             "no_designs",
             f"none of {designs_total} designs folded ({n_failures} "
             f"failures) — nothing to deliver.",
+            runtime_seconds=runtime_seconds,
         )
     _write_result(
         {

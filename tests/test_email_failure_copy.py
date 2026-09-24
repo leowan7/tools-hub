@@ -115,6 +115,23 @@ class TestFailureSummaryMentionsNoCharge:
         assert "wallet was not charged" not in summary
         assert "did not complete" in summary
 
+    @pytest.mark.parametrize("failure_class", ["infra_crash", "tool_error"])
+    def test_refunded_class_with_gpu_time_says_wallet_not_charged(
+        self, failure_class
+    ):
+        """A refunded zero-design run now reports its GPU time for the
+        Workspace cap; the wallet hold is still released, so the mail must
+        still say so."""
+        summary = email_mod._result_summary(
+            _job(
+                inputs={"_wallet": {"hold_tx_id": "tx-hold-stub"}},
+                gpu_seconds_used=420,
+                failure_class=failure_class,
+            ),
+            tone="failed",
+        )
+        assert "wallet was not charged" in summary
+
     def test_no_wallet_hold_skips_no_charge_claim(self):
         """Free smoke tier (no wallet hold) is gated out of the no-charge
         reassurance since no charge was ever possible."""
