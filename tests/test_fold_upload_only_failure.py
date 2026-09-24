@@ -5,17 +5,21 @@ uploaded, so ``designs_out`` was the sole record that anything folded: a run
 where every fold succeeded and every PUT failed left it empty, which is
 indistinguishable from a run that folded nothing. Unlike boltz2 -- whose guard
 turns that into a FAILED "all N designs failed", pinned by
-``tests/test_boltz2_smoke.py::TestZeroDesignsFailsTheJob`` -- these three
-complete green with zero designs on that run, so what is pinned here is the
-count and the message rather than the exit status.
+``tests/test_boltz2_smoke.py::TestZeroDesignsFailsTheJob`` -- af2 and
+colabfold complete green with zero designs on that run when the fold step
+exits 0, so what is pinned for them is the count and the message rather than
+the exit status. esmfold fails a zero-design run, with bucket ``storage`` when
+something folded and ``pipeline`` when nothing did, both refunded
+(``tests/test_zero_design_runs_fail.py``); what is pinned for it here is that
+the failure names the upload hop only when something folded.
 
 The negative controls (nothing folded) are what make the rest mean anything: a
 count or a message that named the upload hop unconditionally would satisfy the
 positive assertions while lying about a run where no structure ever existed.
 
-Billing is deliberately unchanged by the fix under test, so every case below
-also asserts ``status``, ``designs_completed`` and ``n_failures`` -- the three
-fields a Supabase-side refund decision reads.
+Every case below also asserts ``status`` and, on a COMPLETED result,
+``designs_completed`` and ``n_failures``; on a FAILED result it asserts the
+bucket, which decides the refund.
 """
 
 from __future__ import annotations
@@ -249,28 +253,33 @@ class TestEsmfoldBatch:
     ):
         result_file = _arrange_esmfold(tmp_path, monkeypatch, upload_exc=_UPLOAD_DIED)
 
-        esmfold_rp._run_batch_folds(
-            dict(_PAYLOAD), list(_RECORDS), time.time(), tmp_path
-        )
+        with pytest.raises(SystemExit):
+            esmfold_rp._run_batch_folds(
+                dict(_PAYLOAD), list(_RECORDS), time.time(), tmp_path
+            )
 
         result = json.loads(result_file.read_text())
-        assert result["designs_folded"] == 2
-        assert result["designs_completed"] == 0
-        assert result["status"] == "COMPLETED"
-        assert result["n_failures"] == 2
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "storage"
+        assert "runtime_seconds" not in result, result
+        detail = result["error"]["detail"]
+        assert "2 of 2 designs folded but 0 uploaded" in detail, detail
 
     def test_a_run_that_folded_nothing_still_says_so(self, tmp_path, monkeypatch):
         result_file = _arrange_esmfold(tmp_path, monkeypatch, folds=False)
 
-        esmfold_rp._run_batch_folds(
-            dict(_PAYLOAD), list(_RECORDS), time.time(), tmp_path
-        )
+        with pytest.raises(SystemExit):
+            esmfold_rp._run_batch_folds(
+                dict(_PAYLOAD), list(_RECORDS), time.time(), tmp_path
+            )
 
         result = json.loads(result_file.read_text())
-        assert result["designs_folded"] == 0
-        assert result["designs_completed"] == 0
-        assert result["status"] == "COMPLETED"
-        assert result["n_failures"] == 2
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "pipeline"
+        assert "runtime_seconds" not in result, result
+        detail = result["error"]["detail"]
+        assert "none of 2 designs folded (2 failures)" in detail, detail
+        assert "folded but 0 uploaded" not in detail, detail
 
     def test_a_healthy_run_reports_both_counts(self, tmp_path, monkeypatch):
         result_file = _arrange_esmfold(tmp_path, monkeypatch)

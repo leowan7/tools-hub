@@ -679,7 +679,11 @@ _REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
 _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     # Buckets this repo classifies; the emitter is cited per entry.
     "pipeline":                "tool_error",          # docker run_pipeline crashed (blueprints/jobs.py::job_status)
-    "storage":                 "infra_crash",         # Supabase Storage upload failed (blueprints/tools.py::tool_submit)
+    # Supabase Storage upload failed. Emitters: blueprints/tools.py::tool_submit
+    # (the input), and the all-uploads-failed guard in main() of
+    # tools/iggm/run_pipeline.py and tools/opendde/run_pipeline.py and in
+    # _run_batch_folds of tools/esmfold/run_pipeline.py (the outputs).
+    "storage":                 "infra_crash",
     # Modal SDK submit raised before the GPU pod started. Three emitters:
     # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
     # shared/compute_campaigns.py::_dispatch_chunk.
