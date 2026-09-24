@@ -302,6 +302,11 @@ def normalize_for_pipeline(
     dropped_per_chain: dict = {}
     kept_per_chain: dict = {}
     renumber_map: dict = {}
+    # Surviving residues per chain, in file order — the order the renumber
+    # pass below walks. Preview mode (output_path=None) derives the map from
+    # this instead of from a written file; tests/test_input_remap_visible.py
+    # ::test_preview_renumber_map_equals_the_written_map compares the two.
+    kept_order: dict = {}
     total_altloc_collapsed = 0
 
     # ``target_chain`` may name SEVERAL chains, separated by whitespace
@@ -382,6 +387,7 @@ def normalize_for_pipeline(
                     continue
 
             keep_residues[(chain_id, resnum)] = True
+            kept_order.setdefault(chain_id, []).append(resnum)
             for aname, alt in per_atom_altloc.items():
                 keep_atoms[(chain_id, resnum, icode, aname)] = alt
             total_altloc_collapsed += collapsed_here
@@ -437,12 +443,22 @@ def normalize_for_pipeline(
         )
 
     # Dry-run preview: caller only wants the report (chains kept, altloc
-    # records collapsed, MSE remapped, etc.) — skip the file write and
-    # any renumber pass, which both produce side effects only useful to
-    # callers that will actually hand the cleaned PDB to a downstream
-    # tool. The renumber map is still computed below for symmetry; it's
-    # cheap and the report's contract is to expose it.
+    # records collapsed, MSE remapped, etc.) — skip the file write, which
+    # only helps callers that will hand the cleaned PDB to a downstream tool.
+    #
+    # The renumber map is filled here from ``kept_order`` rather than left
+    # empty, because the preflight panel's whole job is to tell the user what
+    # the run will do to their numbering BEFORE they pay — and the run does
+    # the renumbering in-container, where nothing the user sees can reach.
+    # Same walk as the pass below: surviving residues per chain, file order,
+    # 1..N, last write wins for two residues sharing a resSeq (insertion
+    # codes). Equality with the written map is asserted in
+    # tests/test_input_remap_visible.py.
     if output_path is None:
+        if renumber_residues:
+            for cid in report.chains_kept:
+                for idx, orig in enumerate(kept_order.get(cid, []), start=1):
+                    renumber_map[(cid, orig)] = idx
         report.renumber_map = renumber_map
         return report
 
