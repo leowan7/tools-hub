@@ -135,11 +135,21 @@ about: dict = {
     "runtime_table": [
         {"preset": "standalone", "typical": "5 to 10 min"},
     ],
+    # The ipTM figures are af2's own bar: shared/score_legends.py
+    # ("af2", "iptm") sets good 0.6 and excellent 0.75, and the wording
+    # follows that legend's own ``explanation``. The ipTM entry on the
+    # form's "What good looks like" panel and the one in this tool's
+    # guide both end by sending the reader here for the number, so a
+    # summary stating none makes that pointer a dead end;
+    # tests/test_about_panel_iptm_bar_default.py fails if it goes missing.
     "output_summary": (
         "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
-        "or ipTM (for multimers). On a run of your own the structures "
-        "download from the results page. The PAE matrix downloads only "
-        "from a standalone run &mdash; a batch returns no PAE file."
+        "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
+        "or ipTM (for multimers). On a multimer, ipTM above 0.6 is a "
+        "plausible interface and above 0.75 is strong. On a run of your "
+        "own the structures download from the results page. The PAE "
+        "matrix downloads only from a standalone run &mdash; a batch "
+        "returns no PAE file."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

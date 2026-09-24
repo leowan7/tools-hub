@@ -37,17 +37,29 @@ af2 and colabfold is false.
 
 WHAT THIS FILE DOES NOT PIN. "Declares one" here means an ipTM legend in
 shared/score_legends.py carrying ``good`` -- the machine-readable bar,
-which is what the template consults. It is NOT a check that the tool's
-guide PAGE prints that number, nor that the two agree where both exist;
-tests/test_guide_bar_matches_legend.py pins that half, and pxdesign's
-guide stated ipTM >= 0.70 against a declared 0.75 until it landed. Two
-further limits: every check reads the ipTM ``<dd>`` only, so a pointer
-placed elsewhere on the page is invisible to it, and the clause is
-matched by phrase, so a reworded one is too. The sets differ: on
-2026-09-10 only boltz2, esmfold2-design, pxdesign and rfdiffusion state
-an ipTM bar in their guide's visible text, so the pointer still overshoots
-for af2, bindcraft and colabfold. Reconciling the guide text with the
-legend is a separate change; this file pins the defect that was reported.
+which is what the template consults. Whether the two AGREE where both
+exist is a separate file's job: tests/test_guide_bar_matches_legend.py
+pins that half, and pxdesign's guide stated ipTM >= 0.70 against a
+declared 0.75 until it landed.
+
+THE GUIDE PAGE IS NOW PINNED HERE TOO, and it was not when the tests
+above this point were written. Declaring a bar and PRINTING one are
+different facts about a tool, and the pointer promises the second while
+the template can only consult the first. af2, bindcraft and colabfold
+declare 0.6, 0.75 and 0.6, and their guides printed no figure at all --
+bindcraft's nearest thing was "above the BindCraft default thresholds"
+in its inputs list -- so both surfaces of all three sent a reader to
+look up a number that was not there. The ``output_summary`` in each of
+their meta.py now states it, and
+test_the_pointer_is_only_made_where_the_guide_states_a_number reads the
+number back off the RENDERED page rather than off the constant.
+
+THREE FURTHER LIMITS. Every check reads the ipTM ``<dd>`` only, so a
+pointer placed elsewhere on the page is invisible to it; the clause is
+matched by phrase, so a reworded one is too; and a printed bar is
+matched by SHAPE -- an ipTM token, a comparison, a figure -- so a bar
+given in words alone does not count as one, which is the call that makes
+bindcraft's old wording a miss.
 """
 from __future__ import annotations
 
@@ -168,6 +180,65 @@ def _iptm_entry(body: str, slug: str, path: str) -> str:
         f"assertions need exactly the one this PR changed: {named}"
     )
     return named[0]
+
+
+#: The two headings that bracket the guide's results summary -- the
+#: paragraph tool_guide.html:149 renders from ``about.output_summary``,
+#: and the one thing the guide-surface pointer names ("this guide's own
+#: results summary above"). Slicing between them is what makes the check
+#: read the PAGE; asking tools/<slug>/meta.py for the same string would
+#: pass whether or not the guide renders it.
+SUMMARY_OPENS = "How to read the results"
+SUMMARY_CLOSES = "Where a tool reports them, the scores mean:"
+
+#: A per-tool bar as a guide that states one actually writes it: an ipTM
+#: token, then a comparison, then a figure. ``&ge;`` and ``&gt;`` reach
+#: this unescaped by _visible.
+#:
+#: SHAPE, not agreement -- the figure is captured and thrown away. An
+#: equality check against ``good`` would be a different (and stricter)
+#: test than the pointer's promise, and pxdesign's guide already fails it
+#: at 0.70 against a declared 0.75.
+#:
+#: ``\biptm\b`` on purpose: the leading boundary keeps
+#: ``cdr_distogram_iptm_proxy >= 0.5`` in esmfold2-design's summary from
+#: standing in for a bar on the ipTM column, and ``[^.;]`` stops the
+#: window at a sentence end so a bare "above" with no figure after it
+#: cannot borrow a number from the next sentence.
+#: U+2265 via chr() rather than typed or escaped into the pattern: every
+#: other byte in this file is ASCII, and an editor that renders the
+#: literal and one that renders the escape look the same in a diff.
+GE = chr(0x2265)
+STATED_BAR = re.compile(
+    r"\biptm\b[^.;]{0,40}?(?:>=|" + GE + r"|>|at least|above|over)\s*"
+    r"(\d+(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _results_summary(body: str, path: str) -> str:
+    """The visible text of one guide's results summary."""
+    for anchor in (SUMMARY_OPENS, SUMMARY_CLOSES):
+        assert body.count(anchor) == 1, (
+            f"{path} carries {body.count(anchor)} copies of {anchor!r}; the "
+            "slice below takes the first of each and would read the wrong "
+            "span of the page"
+        )
+    start = body.index(SUMMARY_OPENS) + len(SUMMARY_OPENS)
+    end = body.index(SUMMARY_CLOSES)
+    assert start < end, (
+        f"{path}: {SUMMARY_CLOSES!r} precedes {SUMMARY_OPENS!r}, so the "
+        "summary is not between them any more"
+    )
+    text = _visible(body[start:end])
+    # The glossary below the summary states the general band for every
+    # tool. A slice that reached it would report all 14 guides as stating
+    # a bar and make the assertion vacuous in the direction that matters.
+    assert DEFINITION not in text, (
+        f"{path}: the slice reached past the summary into the shared "
+        f"glossary: {text}"
+    )
+    return text
 
 
 #: Both surfaces that render the per-tool clause. help/faq.html states the
@@ -421,3 +492,60 @@ def test_the_legend_lookup_folds_case_at_the_source():
     assert get_legend("af2", "complex_pLDDT") is None
     assert get_legend("af2", "no_such_column") is None
     assert get_legend("", "ipTM") is None
+
+
+def test_the_pointer_is_only_made_where_the_guide_states_a_number(
+    all_tools_app,
+):
+    """The pointer's promise, checked against the page it names.
+
+    Every test above turns on whether the tool DECLARES a bar in
+    shared/score_legends.py, because that is all the template can see.
+    The sentence promises something else: that the guide prints one. The
+    two sets were not the same. af2, bindcraft and colabfold declared
+    0.6, 0.75 and 0.6 and printed no figure anywhere in their guide, so
+    the reader who followed the pointer from either surface arrived at a
+    page that did not answer it -- six of the 28.
+
+    Read off the rendered summary rather than tools/<slug>/meta.py: the
+    promise is about what the guide SHOWS, and a meta-module read would
+    hold even if tool_guide.html stopped rendering the field.
+
+    The direction is one-way here. A guide may state a bar with no
+    pointer beside it without failing this; that is the other error, and
+    test_a_tool_that_declares_a_bar_still_gets_the_pointer owns it.
+    """
+    flask_app, slugs = all_tools_app
+    client = flask_app.test_client()
+    summaries = {}
+    for slug in slugs:
+        path = f"/help/tools/{slug}"
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+        summaries[slug] = _results_summary(resp.get_data(as_text=True), path)
+
+    states = {s for s, text in summaries.items() if STATED_BAR.search(text)}
+    # Both bounds, because either one alone leaves a broken reader
+    # looking like a clean result. An extractor returning "" for every
+    # guide empties `states` and the offenders loop would then flag all
+    # 14; one that over-captured the glossary fills it and the loop would
+    # flag none. On 2026-09-11: 7 state one, 7 do not.
+    assert states, (
+        "no guide states an ipTM bar; either STATED_BAR stopped matching "
+        f"or the summaries came back empty: {summaries}"
+    )
+    assert set(slugs) - states, (
+        "every guide reads as stating an ipTM bar, including the tools "
+        "with no ipTM legend at all -- STATED_BAR is matching something "
+        f"the page says about every tool: {sorted(states)}"
+    )
+
+    offenders = {}
+    for (slug, surface), text in _entries(all_tools_app).items():
+        if ANY_POINTER.search(text) and slug not in states:
+            offenders[surface.format(slug=slug)] = summaries[slug]
+    assert not offenders, (
+        "these pages send the reader to the tool's guide for its own ipTM "
+        "pass bar, but that guide's results summary states no figure "
+        f"(summary shown): {offenders}"
+    )

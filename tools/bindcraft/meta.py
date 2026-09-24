@@ -160,11 +160,20 @@ about: dict = {
     "runtime_table": [
         {"preset": "pilot", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
     ],
+    # shared/score_legends.py ("bindcraft", "ipTM") sets good 0.75 and
+    # excellent 0.85; the wording follows that legend's own
+    # ``explanation``, and WORKED_EXAMPLE below reads its two designs
+    # against the same 0.75. The nearest the guide had was "above the
+    # BindCraft default thresholds" in the inputs list above, which names
+    # no figure -- while the form's "What good looks like" panel and this
+    # tool's guide both ended their ipTM entry pointing here for one.
+    # tests/test_about_panel_iptm_bar_default.py fails if it goes missing.
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
-        "and PDBs downloadable from a run of your own. Hand off promising "
-        "designs to the Ranomics "
-        "yeast display CRO for in vitro validation."
+        "and PDBs downloadable from a run of your own. ipTM above 0.75 "
+        "is a credible binder and above 0.85 is a strong candidate. "
+        "Hand off promising designs to the Ranomics yeast display CRO "
+        "for in vitro validation."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
