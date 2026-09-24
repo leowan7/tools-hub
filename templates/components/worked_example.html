@@ -37,7 +37,14 @@ Usage:
 
 {% macro worked_example(adapter, ex) %}
   {% if ex and adapter.results_partial %}
-    <aside class="panel about-panel">
+    {# id is the deep-link target for the tool chooser on /tools, which
+       links to <tool route>#worked-example. shared/tool_chooser.py only
+       appends that fragment when has_example() is true, which requires
+       the same halves _example_context does AND the results_partial this
+       macro gates on, so the fragment is only emitted for a page where
+       this macro renders. Pinned by
+       tests/test_tool_chooser.py::test_has_example_agrees_with_the_renderer_for_every_tool. #}
+    <aside class="panel about-panel" id="worked-example">
       <div class="panel-header">
         <span class="panel-title">A run we actually did</span>
       </div>
