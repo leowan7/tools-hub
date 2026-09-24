@@ -5,9 +5,10 @@ and ``validate`` refuses any other preset that arrives with a staged target, so
 ``ligand_binder`` only ever designs against a benchmark ligand bundled with the
 upstream repo. The ``seo_faq`` entry shipped saying the opposite — "the
 ligand-binder variant takes a small-molecule target as an SDF and designs de
-novo binders scored by the RoseTTAFold3 reward" — and that answer renders twice
-on /tools/proteina, as visible FAQ copy and inside the page's FAQPage JSON-LD,
-so it was rich-result eligible. Four other surfaces carried the same promise
+novo binders scored by the RoseTTAFold3 reward" — and that answer renders
+twice: as visible copy (templates/components/about_panel.html:353) and inside
+the page's FAQPage JSON-LD (blueprints/tools.py:988-1004), so it was
+rich-result eligible. Four other surfaces carried the same promise
 (the adapter blurb, the signed-out hero lede, ``comparison_one_liner`` and a
 ``when_to_use`` bullet).
 
@@ -24,28 +25,51 @@ added in one place.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.test_proteina_promises_no_clustering import _prose_sources
 
+_REPO = Path(__file__).resolve().parents[1]
 
-# A promise is a supply verb and a molecule noun in the SAME string. Either
-# alone is fine: "bundled benchmark ligand" has the noun and no verb, "Upload a
-# protein target" has the verb and no noun.
-_SUPPLY = re.compile(
-    r"\b(upload(?:ed|s|ing)?|supplied|supply|bring|takes?|your own"
-    r"|you provide|your target is)\b",
+# ONE PATTERN, NOT A VERB/NOUN PAIR. The first version of this guard required a
+# supply verb AND a molecule noun in the same string, with the verb list fitted
+# to the three sentences being retired. Review drove it on plausible future
+# copy and it missed every one: "Upload your own molecule", "The ligand variant
+# accepts your SDF", "Attach a .mol file", "Design against any small molecule
+# you like". A verb list is open-ended and a fitted one only proves it matches
+# its own training set.
+#
+# So the noun carries the check on its own. Naming a small molecule, an SDF or
+# a .mol file at all is the offence, because this product has no path for one:
+# _CUSTOM_TARGET_PRESETS is {"protein_binder"}. ``ligand`` alone is NOT in here
+# -- it is the honest word for what the bundled benchmark tasks hold and for
+# the RF3 reward, and scanning it would flag every scoring sentence. ``your
+# ligand``/``your molecule`` is, because possession is the promise.
+#
+# ``.mol`` is live vocabulary, not hypothetical: templates/runs/new.html:150
+# is ``accept=".sdf,.mol"``.
+_PROMISE = re.compile(
+    r"small[-\s]molecule|\bSDF\b|\.mol\b|\byour (?:own )?(?:ligand|molecule)\b",
     re.I,
 )
-_MOLECULE = re.compile(r"\bsmall[-\s]molecule\b|\bSDF\b|\bligand\b", re.I)
 
 # Strings that pair the two while REFUSING, not promising. Each is here because
 # saying "you cannot upload a molecule" needs both halves of the pattern.
+# Strings that NAME a small molecule while refusing one, or that name the
+# .sdf field itself. Each needs a reason, because the pattern above is the
+# whole check -- an unexplained entry here is a hole.
 _ALLOWED = {
+    # The FAQ question. It has to contain the phrase a visitor would search
+    # for; the answer two lines below it is "No".
+    "Can Proteina-Complexa design binders against my own small molecule?",
+    # The FAQ answer, the ligand preset description, and the .sdf field label
+    # on the campaign form -- all three say the molecule is the model's, not
+    # yours, or name a field whose hint says to leave it blank.
     (
         "No. The only target you can supply is a protein structure "
-        "(<code>.pdb</code>/<code>.cif</code>), on the protein-binder "
+        "(.pdb or .cif), on the protein-binder "
         "variant, scored by AlphaFold2 confidence. The ligand-binder and "
         "motif variants design against benchmark tasks bundled with the "
         "model rather than anything you upload, so a molecule of your own "
@@ -59,48 +83,61 @@ _ALLOWED = {
         "resolves from a separate upstream registry, so this variant "
         "is limited to the curated ligand tasks."
     ),
-    (
-        "<code>protein_binder</code> for a protein target (AF2 reward) "
-        "and the only variant that can take a target of yours, "
-        "<code>ligand_binder</code> for a bundled benchmark ligand task "
-        "(RF3 reward), <code>motif_ame</code> for motif scaffolding / "
-        "enzyme active sites, or <code>validate</code> for a free "
-        "config check before spending GPU."
-    ),
-    (
-        "Your own structure, or a curated benchmark task whose target "
-        "is baked in &mdash; the two are mutually exclusive. Uploading "
-        "your own is available on the protein-binder variant; the "
-        "ligand and motif variants run curated tasks (their tasks "
-        "resolve from separate upstream registries)."
-    ),
-    (
-        "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
-        "RF3 score for ligand / motif, force-field energy where applicable), "
-        "a self-consistency re-fold RMSD, and downloadable structures. The "
-        "ligand and motif variants score on RF3 only."
-    ),
-    "RoseTTAFold3 via RosettaCommons foundry (BSD) — ligand + motif reward.",
-    # The pilot card's variant note. Names the upload and the ligand variant
-    # in one breath precisely to say they are different variants.
-    (
-        "The only variant that designs against a structure you upload; the "
-        "others run curated ligand and motif benchmarks. It also settles the "
-        "<code>rf3_score</code> column below, which is empty on every row: "
-        "RF3 is a second scoring stack those other variants need, a protein "
-        "binder run does not, and it is not free. That is a consequence of "
-        "this choice rather than a switch of its own &mdash; there is no RF3 "
-        "control on the form."
-    ),
+    # templates/runs/new.html: the file input's own label. Its hint, one node
+    # later, says to leave it blank and why.
+    "Target molecule (.sdf)",
 }
 
 
 def _offenders(strings):
-    """The one predicate. The real check and the control both call it."""
-    return [
-        s for s in strings
-        if _SUPPLY.search(s) and _MOLECULE.search(s) and s not in _ALLOWED
+    """The one predicate. Every check and both controls call it."""
+    return [s for s in strings if _PROMISE.search(s) and s not in _ALLOWED]
+
+
+def _template_text(path):
+    """Visible text nodes from a Jinja template.
+
+    ``>text<`` runs with no tag or Jinja delimiter inside, which is what an
+    ``<option>`` label and a ``<div class="hint">`` are. Crude on purpose: it
+    only has to reach the strings a user reads, and a false positive lands in
+    _ALLOWED with its reason.
+    """
+    src = (_REPO / path).read_text(encoding="utf-8")
+    return [t.strip() for t in re.findall(r">([^<>{}]{8,}?)<", src)]
+
+
+def _all_surfaces():
+    """The three Python prose sources, plus the two this commit had to fix
+    that the Python walk cannot see.
+
+    The option label at templates/runs/new.html read "Ligand binder (vs a
+    small molecule)" and the .sdf hint read "Small-molecule target. Optional
+    for curated ligand tasks." Neither lives in meta, the adapter or the hero
+    lede, so the walk _prose_sources does would have stayed green with the
+    promise fully intact on the campaign form -- which is how it survived
+    there until 2026-09-24.
+    """
+    from blueprints.targets import _REFUSED_PRESETS
+
+    sources = dict(_prose_sources())
+    sources["templates/runs/new.html"] = _template_text("templates/runs/new.html")
+    sources["targets / _REFUSED_PRESETS"] = [
+        msg for (tool, _preset), msg in _REFUSED_PRESETS.items()
+        if tool == "proteina"
     ]
+    return sources
+
+
+def test_every_allowlisted_string_is_still_a_live_surface():
+    """No dead entries. An allowlist entry that no longer matches any surface
+    is a pre-authorised hole: paste that sentence back anywhere and the check
+    above waves it through."""
+    live = {s for group in _all_surfaces().values() for s in group}
+    orphaned = sorted(_ALLOWED - live)
+    assert not orphaned, (
+        f"these _ALLOWED entries match no current surface: {orphaned}. "
+        "Delete them, or re-point them at the copy that replaced them."
+    )
 
 
 def test_the_enforcing_set_still_excludes_ligand_binder():
@@ -119,7 +156,8 @@ def test_the_enforcing_set_still_excludes_ligand_binder():
 
 def test_no_proteina_prose_source_promises_a_custom_small_molecule():
     found = {}
-    for name, strings in _prose_sources().items():
+    for name, strings in _all_surfaces().items():
+        assert strings, f"surface {name!r} came back empty — it asserts nothing"
         bad = _offenders(strings)
         if bad:
             found[name] = bad
@@ -136,13 +174,26 @@ def test_no_proteina_prose_source_promises_a_custom_small_molecule():
 @pytest.mark.parametrize(
     "injected",
     [
+        # The three sentences this commit retired.
         "The ligand-binder variant takes a small-molecule target as an SDF.",
         "Upload your own ligand and the search designs against it.",
         "Your target is a small molecule rather than a protein.",
+        # Rephrasings the first version of this guard MISSED. Review produced
+        # them by driving _offenders directly; each one is the same promise in
+        # wording the fitted verb list did not hold.
+        "Upload your own molecule and the search designs against it.",
+        "The ligand variant accepts your SDF.",
+        "Attach a .mol file and the ligand variant designs against it.",
+        "Design against any small molecule you like.",
+        "Give us your ligand and we design against it.",
+        "Ligand binder (vs a small molecule)",
+        "Small-molecule target. Optional for curated ligand tasks.",
+        "the ligand variant needs a small-molecule SDF, and this target is a "
+        "protein structure.",
     ],
 )
 def test_the_scan_bites(injected):
-    """Control: the retired sentences, and the shape of them, are caught."""
+    """Control: the retired sentences, and rephrasings of them, are caught."""
     assert _offenders([injected]) == [injected]
 
 
@@ -154,4 +205,11 @@ def test_the_scan_passes_the_honest_versions():
         "gripped, and set how many designs to fund.",
         "the ligand and motif variants run benchmark tasks bundled with the "
         "model",
+        # ``ligand`` on its own must stay invisible to the scan, or every
+        # scoring sentence would have to be allowlisted and the allowlist
+        # would stop meaning anything.
+        "a benchmark ligand or motif task is scored by RoseTTAFold3",
+        "RF3 score for ligand / motif, force-field energy where applicable",
+        # Possession without a molecule noun is not this defect.
+        "scores how well it grips your target",
     ]) == []

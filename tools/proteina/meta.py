@@ -221,10 +221,18 @@ seo_faq: list[dict] = [
         # ``complexa target add`` cannot write (see the module docstring in
         # ``__init__.py``). Pinned by
         # tests/test_proteina_no_custom_ligand_promise.py.
+        #
+        # NO MARKUP IN THIS ANSWER, unlike about["prerequisites"] and
+        # about["inputs"] a few lines below, which do carry <code> tags. The
+        # panel prints an FAQ answer as {{ item.a }}
+        # (templates/components/about_panel.html:353), which Jinja autoescapes,
+        # and blueprints/tools.py:999 copies the same raw string into the
+        # FAQPage JSON-LD answer text. A tag here renders as literal angle
+        # brackets on the page and ships as markup in the structured data.
         "q": "Can Proteina-Complexa design binders against my own small molecule?",
         "a": (
             "No. The only target you can supply is a protein structure "
-            "(<code>.pdb</code>/<code>.cif</code>), on the protein-binder "
+            "(.pdb or .cif), on the protein-binder "
             "variant, scored by AlphaFold2 confidence. The ligand-binder and "
             "motif variants design against benchmark tasks bundled with the "
             "model rather than anything you upload, so a molecule of your own "
