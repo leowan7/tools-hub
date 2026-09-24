@@ -385,7 +385,7 @@ def test_boltz2_says_so_in_one_line_when_the_two_scales_coincide(client):
     read "you typed 12 -> A12", which is how a panel of rows teaches people to
     skip the block on the files where it does differ. One line instead, and no
     per-hotspot rows at all. The rows-are-emitted case is the sibling test
-    test_boltz2_names_the_residue_a_position_lands_on.
+    test_boltz2_names_the_residue_a_typed_position_lands_on.
     """
     body = _preflight(
         client, "boltz2", _pdb({"A": list(range(1, 151))}),
