@@ -137,7 +137,9 @@ about: dict = {
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
-        "or ipTM (for multimers). On a run of your own the structures "
+        "or ipTM (for multimers). An interface with ipTM &ge; 0.6 is "
+        "plausible and one with ipTM &ge; 0.75 is strong. On a run of "
+        "your own the structures "
         "download from the results page. The PAE matrix downloads only "
         "from a standalone run &mdash; a batch returns no PAE file."
     ),

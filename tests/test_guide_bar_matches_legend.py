@@ -77,7 +77,7 @@ import re
 import pytest
 
 import app as _app_module  # noqa: F401  (import populates the adapter registry)
-from shared.score_legends import SCORE_LEGENDS
+from shared.score_legends import SCORE_LEGENDS, get_legend
 from shared.tool_meta import meta_for
 from tools import base as tool_base
 
@@ -112,10 +112,13 @@ _SLUGS = sorted(a.slug for a in tool_base.all_adapters())
 #: that silently leaves this set means the guard stopped covering it, which is
 #: how a threshold test comes to pin nothing at all.
 _EXPECTED_COVERAGE = {
+    ("af2", "iptm"),
+    ("bindcraft", "ipTM"),
     ("boltz2", "ipTM"),
     ("boltz2", "n_hotspot_contacts"),
     ("boltzgen", "pLDDT"),
     ("boltzgen", "refolding_rmsd"),
+    ("colabfold", "iptm"),
     ("esmfold2-design", "ipTM"),
     ("esmfold2-design", "pI"),
     ("pxdesign", "ipTM"),
@@ -220,6 +223,33 @@ def test_stated_threshold_is_a_number_its_own_legend_publishes(slug):
     assert not wrong, (
         f"{slug}: the guide states a bar the legend that judges its results "
         f"does not publish:\n  " + "\n  ".join(wrong)
+    )
+
+
+def test_every_tool_pointed_at_its_ipTM_bar_states_one():
+    """The pointer's promise, held against the prose it points at.
+
+    Both surfaces take the ``elif _ipl`` branch, which sends the reader to
+    this tool's results summary for its own ipTM bar, whenever
+    ``score_legend_for(slug, "ipTM")`` (``get_legend``) returns a legend
+    carrying ``good`` (templates/help/tool_guide.html,
+    templates/components/about_panel.html). Every such tool's About prose
+    must therefore state an ipTM threshold.
+    """
+    pointed = {
+        slug for slug in _SLUGS
+        if "good" in (get_legend(slug, "ipTM") or {})
+    }
+    stating = {
+        slug
+        for slug in _SLUGS
+        for _key, metric, _value in _stated_thresholds(slug)
+        if metric.lower() == "iptm"
+    }
+    assert pointed, "no tool declares an ipTM bar; the check is vacuous"
+    assert pointed <= stating, (
+        "these tools' pages point at a results summary for their ipTM "
+        f"bar, but it states none: {sorted(pointed - stating)}"
     )
 
 

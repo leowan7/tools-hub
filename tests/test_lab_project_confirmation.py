@@ -61,8 +61,8 @@ tests/test_candidate_table_js_contract.py, and it reuses that file's
 comment-stripper rather than growing a second one: a plain search would let the
 header comment answer for a definition that had been renamed away.
 
-AND THE JS HALF IS EXECUTED, which is new. `.github/workflows` installs no node
-and this repo carries no JS test runner, but a hosted runner image can still put
+AND THE JS HALF IS EXECUTED under `node`, as the harnesses in tests/js/ are.
+`.github/workflows` installs no node, but a hosted runner image can still put
 one on PATH, so whether PART 4 runs on the machine that gates merges is NOT
 established either way -- an earlier version of this paragraph inferred that it
 does not. PART 4 runs `node` where it finds it and SKIPS where it does not, and

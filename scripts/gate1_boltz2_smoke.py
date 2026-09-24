@@ -25,7 +25,10 @@ cd45_decoy 0.801, IL4_decoy 0.675, TIGIT_cognate 0.948: the cognate holds
 so the cognate-to-best-decoy margin collapses 0.234 -> 0.147 and the two
 decoys swap rank. Not a thin-MSA artifact -- ~17.5-18.5k UniRef and ~2.4-2.8k
 paired sequences per design, against a Rung A archive carrying no MSA files at
-all. Keep standalone as the default: cheaper AND better separation. Full
+all. Keep standalone as the default: cheaper. The margin and rank figures are
+single draws, and seven folds of one identical decoy input spanned ipTM
+0.263-0.830 (the 2026-09-24 decoy correction in docs/VALIDATION-LOG.md), so
+they do not separate the tiers. Full
 write-up, including the framework-homology hypothesis for WHY, is in
 docs/VALIDATION-LOG.md under "## Boltz-2".
 

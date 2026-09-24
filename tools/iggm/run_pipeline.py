@@ -590,6 +590,16 @@ def main() -> None:
                     new_candidate=entry,
                 )
 
+            # Before the artifact uploads, so a run that delivers no design
+            # uploads no artifacts to Storage for a failed job.
+            if not designs_out:
+                _fail(
+                    "storage",
+                    "no_designs",
+                    f"all {len(design_pdbs)} designs failed to upload — "
+                    "nothing to deliver.",
+                )
+
             # ---- upload non-PDB artifacts (FASTA / CSV / plots) ----
             artifact_keys: list[str] = []
             for art in collect_artifacts(out_dir):
@@ -610,13 +620,6 @@ def main() -> None:
             # that kill would flip a real success into a lost job. Writing it here — the
             # last statement of the try body — guarantees result delivery precedes capture.
             runtime_seconds = int(time.time() - start)
-            if not designs_out:
-                _fail(
-                    "storage",
-                    "no_designs",
-                    f"all {len(design_pdbs)} designs failed to upload — "
-                    "nothing to deliver.",
-                )
             _write_result(
                 {
                     "status": "COMPLETED",

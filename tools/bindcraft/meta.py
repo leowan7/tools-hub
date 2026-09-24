@@ -162,7 +162,9 @@ about: dict = {
     ],
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
-        "and PDBs downloadable from a run of your own. Hand off promising "
+        "and PDBs downloadable from a run of your own. A design with ipTM "
+        "&ge; 0.75 is a credible binder and one with ipTM &ge; 0.85 is a "
+        "strong candidate. Hand off promising "
         "designs to the Ranomics "
         "yeast display CRO for in vitro validation."
     ),

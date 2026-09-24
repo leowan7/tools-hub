@@ -89,7 +89,9 @@ about: dict = {
         {"preset": "standalone", "typical": "1 to 2 min"},
     ],
     "output_summary": (
-        "Predicted PDB with per-residue pLDDT and PAE. On a run of your "
+        "Predicted PDB with per-residue pLDDT, PAE and pTM, plus ipTM "
+        "on a multimer. An interface with ipTM &ge; 0.6 is plausible and "
+        "one with ipTM &ge; 0.75 is strong. On a run of your "
         "own the structure downloads from the results page. The PAE "
         "matrix downloads only from a standalone run &mdash; a batch "
         "returns no PAE file."

@@ -1058,13 +1058,19 @@ def _run_batch_folds(
         n_folded += 1
 
         pdb_key = f"{name}.pdb"
+        # This try also covers the strict UTF-8 decode, which reject_stub's
+        # errors="ignore" decode does not exercise. A decode failure is counted
+        # like an upload failure, so a run where every folded design fails here
+        # is reported under the "storage" bucket below.
         try:
             pdb_text = base64.b64decode(folded["pdb_b64"]).decode("utf-8")
             urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
             upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
         except Exception as exc:
             n_failures += 1
-            logger.warning("design %s: upload failed (%s)", name, exc)
+            logger.warning(
+                "design %s: decode or upload failed (%s)", name, exc
+            )
             continue
 
         design_entry = {
