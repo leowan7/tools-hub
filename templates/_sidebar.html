@@ -1,0 +1,55 @@
+{# Persistent left rail for the signed-in app.
+
+   Included once from base.html, so the 58 templates that extend base
+   inherit it without editing any of them. Signed-out pages do not
+   render it (see base.html): the public marketing surface is a set of
+   pages, not an app shell, and the rail would push the landing hero off
+   its own centre line.
+
+   Tool groups come from shared/sidebar_nav.py, which reuses the
+   catalog's intent bands rather than restating them.
+
+   Consumes:
+     sidebar_groups()      - [{title, items:[{label, href}]}]
+     sidebar_active_href() - the ONE href to mark current
+#}
+{% set _groups = sidebar_groups() %}
+{% set _active = sidebar_active_href(_groups, request.path) %}
+<nav class="rail" id="app-rail" aria-label="Product navigation">
+  <div class="rail-head">
+    <span class="rail-head-title">Navigate</span>
+    <button type="button"
+            class="rail-collapse"
+            id="rail-collapse"
+            aria-controls="app-rail"
+            aria-expanded="true">
+      <span class="rail-collapse-glyph" aria-hidden="true"></span>
+      <span class="rail-sr">Collapse navigation</span>
+    </button>
+  </div>
+
+  <div class="rail-scroll">
+    {% for group in _groups %}
+      <div class="rail-group">
+        {# Same per-band glyph the homepage catalog uses, via the same
+           Jinja global. "Overview" and "Manage" are not catalog bands, so
+           inline_category_glyph returns empty for them and the :empty rule
+           collapses the span. #}
+        <span class="rail-group-title">
+          <span class="rail-group-glyph" aria-hidden="true">{{ inline_category_glyph(group.title) }}</span>
+          {{ group.title }}
+        </span>
+        <ul class="rail-list">
+          {% for item in group['items'] %}
+            <li>
+              <a href="{{ item.href }}"
+                 class="rail-link{% if item.href == _active %} rail-link-active{% endif %}"
+                 {% if item.href == _active %}aria-current="page"{% endif %}>{{ item.label }}</a>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endfor %}
+  </div>
+</nav>
+<div class="rail-backdrop" id="rail-backdrop" hidden></div>

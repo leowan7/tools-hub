@@ -83,6 +83,7 @@ from shared.pdb_intake import (
     _verify_reuse_pdb_bytes,
 )
 from shared.tools_catalog import _build_tools_catalog, _short_name_for_label
+from shared.sidebar_nav import sidebar_active_href, sidebar_groups
 from shared.wallet_guard import requires_wallet
 from shared.wallet_estimates import (
     compute_hard_cap,
@@ -618,6 +619,13 @@ def create_app() -> Flask:
         return f"{SIGNUP_CREDIT_USD:.0f}"
 
     flask_app.jinja_env.globals["signup_credit"] = _signup_credit
+
+    # Left-rail groups. Jinja globals rather than a context processor
+    # because templates/_sidebar.html is the only caller and it renders
+    # for signed-in users only -- a signed-out marketing page must not
+    # pay for the catalog walk on every request.
+    flask_app.jinja_env.globals["sidebar_groups"] = sidebar_groups
+    flask_app.jinja_env.globals["sidebar_active_href"] = sidebar_active_href
 
     # ``display_cost_usd(x)`` is the ONE 2dp rendering of a campaign cost, and
     # it rounds UP in Decimal. Exposed to templates because a page that formats
