@@ -1230,7 +1230,11 @@ def tool_form(tool: str):
             )
             pre_fill["preset"] = "pilot"
             pdb_source = {
-                "label": f"Target PDB from Epitope Scout ({ho.pdb_filename})",
+                "label": (
+                    f"Target PDB from Epitope Scout ({ho.pdb_filename})"
+                    if ho.scout_job_id
+                    else f"Target PDB from target prep ({ho.pdb_filename})"
+                ),
                 "filename": ho.pdb_filename,
                 "token": f"handoff:{ho.id}",
             }

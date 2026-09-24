@@ -389,7 +389,9 @@
   function postPreflight(formData) {
     showLoading();
     const mine = ++preflightSeq;
-    return fetch(`/tools/${encodeURIComponent(toolSlug)}/preflight`, {
+    // Read per request: /prep switches data-tool with its tool picker.
+    const slug = panel.dataset.tool || toolSlug;
+    return fetch(`/tools/${encodeURIComponent(slug)}/preflight`, {
       method: "POST",
       body: formData,
       credentials: "same-origin",
