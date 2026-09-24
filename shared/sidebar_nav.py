@@ -27,11 +27,6 @@ def _link(endpoint: str, label: str, **values) -> dict | None:
 
 def sidebar_groups() -> list[dict]:
     """Return ``[{title, items:[{label, href}]}]`` for the left rail."""
-    from shared.tools_catalog import (  # noqa: PLC0415 — avoid import cycle
-        _build_tools_catalog,
-        group_catalog,
-    )
-
     groups: list[dict] = []
 
     home = [
@@ -43,7 +38,22 @@ def sidebar_groups() -> list[dict]:
     if home:
         groups.append({"title": "Overview", "items": home})
 
-    for band, members in group_catalog(_build_tools_catalog()):
+    # The catalog walk imports every tool's meta module, and this rail
+    # renders on all 58 signed-in templates rather than just the homepage
+    # and /tools. One adapter raising anything shared.tool_meta does not
+    # catch would otherwise 500 every page; losing the tool bands and
+    # keeping Overview and Manage is the better failure.
+    try:
+        from shared.tools_catalog import (  # noqa: PLC0415 — import cycle
+            _build_tools_catalog,
+            group_catalog,
+        )
+
+        bands = group_catalog(_build_tools_catalog())
+    except Exception:  # noqa: BLE001 — a broken adapter must not 500 the app
+        bands = []
+
+    for band, members in bands:
         items = [
             {"label": t["name"], "href": t["route"]}
             for t in members
@@ -82,14 +92,22 @@ def sidebar_active_href(groups: list[dict], path: str) -> str:
     Longest match wins because the rail's hrefs nest: ``/account/api-keys``
     sits under ``/account``, so a plain "does this href cover the path"
     test lights up two rows on the API keys page.
+
+    Returns the href VERBATIM, not the trailing-slash-stripped form used
+    for matching. ``_sidebar.html`` marks the row whose ``item.href``
+    equals this, and a blueprint registered with ``route("/")`` under a
+    prefix builds ``/scout/`` -- which would never equal ``/scout``.
     """
     if not path:
         return ""
     path = path.rstrip("/") or "/"
     best = ""
+    best_key = ""
     for group in groups:
         for item in group["items"]:
-            href = (item.get("href") or "").rstrip("/") or "/"
-            if _covers(href, path) and len(href) > len(best):
-                best = href
+            raw = item.get("href") or ""
+            href = raw.rstrip("/") or "/"
+            if _covers(href, path) and len(href) > len(best_key):
+                best_key = href
+                best = raw
     return best

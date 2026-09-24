@@ -83,6 +83,29 @@ def test_tool_headings_are_the_catalog_bands(app):
     assert tool_titles == sorted(tool_titles, key=CATEGORY_ORDER.index)
 
 
+def test_every_real_row_can_be_marked_current(app):
+    """Every row's own href must come back verbatim from its own page.
+
+    ``_sidebar.html`` marks the row whose ``item.href`` EQUALS the return
+    value, so a row can only ever light up if the two spellings match.
+    Epitope Scout builds ``/scout/`` (``scout_bp`` has ``url_prefix`` plus
+    ``route("/")``), which a trailing-slash-stripped return value never
+    equalled -- the hand-written groups above cannot catch that, because
+    the taxonomy they fake has no such href in it.
+    """
+    with app.test_request_context("/"):
+        groups = sidebar_groups()
+
+        misses = [
+            item["href"]
+            for group in groups
+            for item in group["items"]
+            if sidebar_active_href(groups, item["href"]) != item["href"]
+        ]
+
+    assert not misses, f"rows that can never be marked current: {misses}"
+
+
 def test_every_row_has_a_usable_href(app):
     with app.test_request_context("/"):
         groups = sidebar_groups()

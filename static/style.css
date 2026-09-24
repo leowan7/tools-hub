@@ -2224,9 +2224,9 @@ select.form-control { cursor: pointer; }
 
    Rendered from base.html (templates/_sidebar.html) as a flex sibling of
    <main>, so <main> keeps its own centring and max-width and no page
-   template needed editing. Signed-out pages never render the rail, so
-   .app-shell degrades to a one-child row and the marketing layout is
-   byte-for-byte what it was.
+   template needed editing. Signed-out pages never render the rail (the
+   include in base.html is inside the session guard), so .app-shell is a
+   one-child flex row there and <main> keeps the only flex:1.
 
    Collapsed state is a `data-rail="collapsed"` attribute on <html>, set
    before first paint in base.html and toggled in static/js/rail.js.
@@ -2412,7 +2412,13 @@ select.form-control { cursor: pointer; }
     flex-basis: auto;
     max-height: none;
     transform: translateX(-100%);
-    transition: transform 0.18s ease-out;
+    /* visibility, not transform alone. A rail slid off-screen is still in
+       the tab order and still read by a screen reader, so a closed drawer
+       put every rail link between the header and the page content.
+       Deferring the visibility change until the slide-out finishes keeps
+       the closing animation visible. */
+    visibility: hidden;
+    transition: transform 0.18s ease-out, visibility 0s linear 0.18s;
   }
   /* The collapsed-desktop rules must not leak into the drawer. */
   :root[data-rail="collapsed"] .rail-scroll { display: block; }
@@ -2423,7 +2429,11 @@ select.form-control { cursor: pointer; }
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  :root[data-rail-drawer="open"] .rail { transform: translateX(0); }
+  :root[data-rail-drawer="open"] .rail {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.18s ease-out, visibility 0s;
+  }
 
   .rail-backdrop {
     display: none;
