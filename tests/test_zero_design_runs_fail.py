@@ -1,13 +1,13 @@
 """A GPU run that delivers zero designs must FAIL, not COMPLETE green.
 
-Three pipelines used to write ``"status": "COMPLETED"`` with ``designs: []``
+Five pipelines (esmfold, opendde, iggm, af2, colabfold) used to write ``"status": "COMPLETED"`` with ``designs: []``
 when every single design failed to fold or upload, so the user saw a green job
 with no results. Each now guards the terminal write with ``_fail``, and every
 guard is refunded:
 
 * Designs were produced but none uploaded: bucket ``"storage"``, which maps
   to ``infra_crash``.
-* esmfold folded no design at all: bucket ``"pipeline"``, which maps to
+* esmfold, af2 or colabfold folded no design at all: bucket ``"pipeline"``, which maps to
   ``tool_error``, the bucket boltz2's zero-design guard uses
   (``main`` in ``tools/boltz2/run_pipeline.py``).
 * IgGM and OpenDDE produced no structure at all: ``main`` in each fails the
@@ -16,6 +16,9 @@ guard is refunded:
 
 Every class above is in ``_REFUNDED_FAILURE_CLASSES`` (``shared/jobs.py``),
 whose wallet hold ``_settle_wallet_hold_for_completed_job`` releases in full.
+
+The af2 and colabfold positive controls, one of two designs uploaded, are in
+``tests/test_fold_upload_only_failure.py``.
 
 Every uploads-failed case here is a PAIR — the zero-design run must FAIL, and
 a run with one surviving design must still COMPLETE. Without the positive
@@ -37,7 +40,7 @@ guard's payload through both halves.
 than restating it, so a guard that moved to another bucket fails here.
 
 That classifier is only reachable because the poll path carries the bucket.
-All three tools return their terminal payload inline as ``smoke_result``
+All five tools return their terminal payload inline as ``smoke_result``
 (``tools/<tool>/modal_app.py``) and POST no terminal webhook, so a single
 job's poll, ``/jobs/<id>/status.json`` (``blueprints/jobs.py::job_status``),
 is what terminalises it — and that route used to rebuild the error dict with a literal
@@ -53,10 +56,18 @@ from __future__ import annotations
 import base64
 import itertools
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from tests.test_fold_upload_only_failure import (
+    _PAYLOAD,
+    _RECORDS,
+    _arrange_consolidated,
+)
+from tools.af2 import run_pipeline as af2_rp
+from tools.colabfold import run_pipeline as cf_rp
 from tools.esmfold import run_pipeline as esm_rp
 from tools.iggm import run_pipeline as iggm_rp
 from tools.opendde import run_pipeline as odd_rp
@@ -360,6 +371,16 @@ def test_fail_omits_runtime_seconds_when_no_gpu_time_was_burned(monkeypatch):
 
 def _zero_design_payload(case: str, monkeypatch, tmp_path) -> dict:
     """Run the tool's own guard and hand back the terminal payload it wrote."""
+    if case.startswith(("af2", "colabfold")):
+        rp = af2_rp if case.startswith("af2") else cf_rp
+        result_file = _arrange_consolidated(
+            rp, tmp_path, monkeypatch,
+            upload_exc=RuntimeError("upload failed: HTTP 503"),
+            folds=case.endswith("-upload"),
+        )
+        with pytest.raises(SystemExit):
+            rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time() - 60)
+        return json.loads(result_file.read_text())
     if case.startswith("esmfold"):
         written, payload, records = _esmfold_batch(
             monkeypatch,
@@ -437,6 +458,10 @@ _CASES = [
     ("opendde-empty", "unclassified"),
     ("iggm", "infra_crash"),
     ("iggm-empty", "unclassified"),
+    ("af2-nofold", "tool_error"),
+    ("af2-upload", "infra_crash"),
+    ("colabfold-nofold", "tool_error"),
+    ("colabfold-upload", "infra_crash"),
 ]
 
 

@@ -681,8 +681,9 @@ _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
     "pipeline":                "tool_error",          # docker run_pipeline crashed (blueprints/jobs.py::job_status)
     # Supabase Storage upload failed. Emitters: blueprints/tools.py::tool_submit
     # (the input), and the all-uploads-failed guard in main() of
-    # tools/iggm/run_pipeline.py and tools/opendde/run_pipeline.py and in
-    # _run_batch_folds of tools/esmfold/run_pipeline.py (the outputs).
+    # tools/iggm/run_pipeline.py and tools/opendde/run_pipeline.py, in
+    # _run_batch_folds of tools/esmfold/run_pipeline.py, and in _run_batch of
+    # tools/af2/run_pipeline.py and tools/colabfold/run_pipeline.py (the outputs).
     "storage":                 "infra_crash",
     # Modal SDK submit raised before the GPU pod started. Three emitters:
     # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
