@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% from "components/preflight_panel.html" import preflight_styles %}
 
-{% block title %}Target prep — Ranomics Tools{% endblock %}
+{% block title %}Protein Target Prep for Binder Design | Ranomics Tools{% endblock %}
 {% block description %}Free protein target preparation: load a structure from the PDB or your own file, check it, trim it to the chains and residues you need, pick hotspots in 3D, and send it to a binder design tool.{% endblock %}
+{% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Target prep", self.description()) }}{% endblock %}
 
 {% block content %}
   <style>
