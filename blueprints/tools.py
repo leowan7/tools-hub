@@ -1551,7 +1551,7 @@ def tool_preflight(tool: str):
     return (_verdict_to_json(verdict, source_label), 200)
 
 
-def _run_validate(adapter):
+def _run_validate(adapter, overrides=None):
     """Run ``adapter.validate`` on the posted form. Shared by submit and validate."""
     # Declare whether this run has a structure of its own, the same way both
     # campaign routes do. Assigned OVER the form dict so it cannot be forged by
@@ -1563,6 +1563,7 @@ def _run_validate(adapter):
     form["_has_custom_target"] = (
         "1" if ((upload is not None and upload.filename) or reuse) else ""
     )
+    form.update(overrides or {})
     return adapter.validate(form, request.files)
 
 
@@ -1624,15 +1625,26 @@ def tool_validate(tool: str):
     adapter, err = _require_tool(tool)
     if err:
         return ({"ok": False, "error": "Unknown tool"}, 404)
-    inputs, error_msg = _run_validate(adapter)
+    overrides = None
+    # _campaign is set by static/js/check_settings.js when the page is in campaign
+    # mode; this mirrors blueprints/campaigns.py step 1-2 (plan, then validate at 1 design).
+    campaign = request.form.get("_campaign") == "1"
+    if campaign:
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        try:
+            plan = cc.plan_chunks(tool, request.form.get("requested_designs"),
+                                  request.form.get("preset") or "pilot")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        overrides = {plan.design_param_key: "1"}
+    inputs, error_msg = _run_validate(adapter, overrides)
     if inputs is None:
         return {"ok": False, "error": error_msg}
     preset = adapter.preset_for(inputs["preset"])
     if preset is None:
         return {"ok": False, "error": "Unknown preset."}
-    # _campaign is set by static/js/check_settings.js when the page is in campaign mode.
-    refusal = _single_container_refusal(tool, inputs)
-    if refusal is not None and request.form.get("_campaign") != "1":
+    refusal = None if campaign else _single_container_refusal(tool, inputs)
+    if refusal is not None:
         return {"ok": False, "error": refusal[0]}
     if _needs_pdb(adapter, preset, inputs) and not _has_pdb_source():
         return {"ok": False, "error": "Upload a target PDB file."}

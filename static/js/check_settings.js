@@ -11,10 +11,10 @@
       out.className = "check-settings-result";
       out.textContent = "Checking…";
       var body = new FormData(form);
-      // The route only checks that a file was chosen (blueprints/tools.py::_has_pdb_source).
-      Array.prototype.forEach.call(form.querySelectorAll("input[type=file]"), function (el) {
-        if (el.files && el.files.length) body.set(el.name, new Blob([]), el.files[0].name);
-      });
+      // The route only checks that a structure was chosen (blueprints/tools.py::_has_pdb_source);
+      // other files (af2's fasta_file) are read by the adapter and are sent whole.
+      var pdb = form.querySelector("input[type=file][name=target_pdb]");
+      if (pdb && pdb.files && pdb.files.length) body.set(pdb.name, new Blob([]), pdb.files[0].name);
       // _campaign_reroute.html repoints the form at campaigns when it goes over the ceiling.
       if ((form.getAttribute("action") || "").indexOf("/tools/" + slug + "/submit") === -1) {
         body.set("_campaign", "1");

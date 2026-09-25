@@ -104,8 +104,19 @@ class TestValidateIsFree:
         assert verdict["ok"] is False and "campaign" in verdict["error"], verdict
         # In campaign mode the page submits to campaigns, which has no such ceiling.
         verdict = _validate(client, "rfdiffusion",
-                            {**_RFDIFFUSION_FORM, "num_designs": over, "_campaign": "1"})
+                            {**_RFDIFFUSION_FORM, "requested_designs": over, "_campaign": "1"})
         assert verdict == {"ok": False, "error": "Upload a target PDB file."}, verdict
+
+    def test_campaign_mode_checks_the_count_like_the_campaign_route(self, all_tools_app, paid_path_spies):
+        """Past the adapter's own 1000 cap, which blueprints/campaigns.py sidesteps too."""
+        client = all_tools_app[0].test_client()
+        _login(client)
+        verdict = _validate(client, "rfdiffusion",
+                            {**_RFDIFFUSION_FORM, "requested_designs": "2000", "_campaign": "1"})
+        assert verdict == {"ok": False, "error": "Upload a target PDB file."}, verdict
+        verdict = _validate(client, "rfdiffusion",
+                            {**_RFDIFFUSION_FORM, "requested_designs": "0", "_campaign": "1"})
+        assert verdict == {"ok": False, "error": "Number of designs must be at least 1."}, verdict
 
 
 class TestCheckButton:
