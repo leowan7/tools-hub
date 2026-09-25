@@ -298,11 +298,6 @@ def _ca_resnums_ordered(pdb_bytes: bytes) -> dict:
     return order
 
 
-def _ca_residue_counts(pdb_bytes: bytes) -> dict:
-    """Per-chain count of residues bearing a CA atom (ATOM records only)."""
-    return {c: len(v) for c, v in _ca_resnums_ordered(pdb_bytes).items()}
-
-
 def _preflight_boltz2(
     pdb_bytes: bytes, *, target_chain: str, hotspots: list,
     binder_max_aa: Optional[int] = None,
