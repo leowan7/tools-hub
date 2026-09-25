@@ -1632,7 +1632,7 @@ def tool_validate(tool: str):
     if campaign:
         from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
         from shared import compute_campaigns as cc  # noqa: PLC0415
-        campaign_preset = request.form.get("preset") or "pilot"
+        campaign_preset = (request.form.get("preset") or "pilot").strip() or "pilot"
         refusal = campaign_preset_refusal(tool, campaign_preset)
         if refusal:
             return {"ok": False, "error": refusal}

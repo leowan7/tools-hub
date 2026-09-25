@@ -122,7 +122,7 @@ class TestValidateIsFree:
     def test_campaign_mode_refuses_what_the_campaign_route_refuses(self, all_tools_app, paid_path_spies):
         client = all_tools_app[0].test_client()
         _login(client)
-        verdict = _validate(client, "proteina", {"preset": "validate", "num_designs": "10",
+        verdict = _validate(client, "proteina", {"preset": " validate ", "num_designs": "10",
                                                  "requested_designs": "10", "_campaign": "1"})
         assert verdict == {"ok": False,
                            "error": "The validate tier is a free pre-flight, not a campaign."}, verdict
