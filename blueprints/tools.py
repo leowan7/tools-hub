@@ -1627,13 +1627,17 @@ def tool_validate(tool: str):
         return ({"ok": False, "error": "Unknown tool"}, 404)
     overrides = None
     # _campaign is set by static/js/check_settings.js when the page is in campaign
-    # mode; this mirrors blueprints/campaigns.py step 1-2 (plan, then validate at 1 design).
+    # mode; this mirrors blueprints/campaigns.py steps 0-2 (preset refusal, plan, validate at 1 design).
     campaign = request.form.get("_campaign") == "1"
     if campaign:
+        from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
         from shared import compute_campaigns as cc  # noqa: PLC0415
+        campaign_preset = request.form.get("preset") or "pilot"
+        refusal = campaign_preset_refusal(tool, campaign_preset)
+        if refusal:
+            return {"ok": False, "error": refusal}
         try:
-            plan = cc.plan_chunks(tool, request.form.get("requested_designs"),
-                                  request.form.get("preset") or "pilot")
+            plan = cc.plan_chunks(tool, request.form.get("requested_designs"), campaign_preset)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         overrides = {plan.design_param_key: "1"}

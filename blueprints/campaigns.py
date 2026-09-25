@@ -233,6 +233,23 @@ def api_runs_estimate():
         "needs_verification": cc.CAMPAIGN_KYC_ENABLED and (plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD),
     })
 
+
+def campaign_preset_refusal(tool: str, preset: str):
+    """The message refusing ``preset`` as a campaign, else None. Also used by tools.tool_validate."""
+    if preset == "validate":
+        return "The validate tier is a free pre-flight, not a campaign."
+    # IgGM affinity_maturation runs one design PER masked position PER sample, so
+    # the delivered count != the per-chunk num_samples the driver injects, which
+    # breaks the campaign's delivered-count==chunk-size invariant (holds, progress
+    # counts, and finalize all assume equality). Keep it on the atomic tier only.
+    if tool == "iggm" and preset == "affinity_maturation":
+        return (
+            "Affinity maturation is not available as a campaign (its design "
+            "count expands per masked position). Use the single-run IgGM form."
+        )
+    return None
+
+
 @campaigns_bp.route("/campaigns", methods=["POST"])
 @login_required
 @idempotent()
@@ -339,17 +356,9 @@ def compute_campaign_create():
     # variant. Free to the CUSTOMER, not GPU-free: it does no GPU work but
     # holds the same A100 container (tools/proteina/run_pipeline.py's "validate
     # tier" header).
-    if preset == "validate":
-        return _err("The validate tier is a free pre-flight, not a campaign.")
-    # IgGM affinity_maturation runs one design PER masked position PER sample, so
-    # the delivered count != the per-chunk num_samples the driver injects, which
-    # breaks the campaign's delivered-count==chunk-size invariant (holds, progress
-    # counts, and finalize all assume equality). Keep it on the atomic tier only.
-    if tool == "iggm" and preset == "affinity_maturation":
-        return _err(
-            "Affinity maturation is not available as a campaign (its design "
-            "count expands per masked position). Use the single-run IgGM form."
-        )
+    refusal = campaign_preset_refusal(tool, preset)
+    if refusal:
+        return _err(refusal)
 
     # 1. Plan (validates tool + count + sub-job cap).
     try:
