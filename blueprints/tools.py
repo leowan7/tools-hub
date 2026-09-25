@@ -918,9 +918,18 @@ def _example_teaser(example: dict) -> str:
     WITHOUT ``|safe`` and an ``&mdash;`` still reaches the page as one
     character instead of six. Splitting plain text also means the cut
     cannot land inside a tag.
+
+    Every field is read with ``.get``, matching the rest of
+    ``_example_context``, which fails soft when the payload is missing
+    rather than raising. This runs inside the tool-page render, so a
+    ``KeyError`` here would 500 the form for both auth states, not just
+    blank the rail panel.
+    ``tests/test_worked_examples.py
+    ::TestTheTeaserComesFromTheExample::test_a_targetless_example_does_not_500``
+    renders a tool whose ``EXAMPLE`` has no ``target``.
     """
     lead, sentence_end, _rest = (
-        Markup(example["target"]).striptags().partition(". ")
+        Markup(example.get("target") or "").striptags().partition(". ")
     )
     if sentence_end:
         lead += "."
@@ -932,7 +941,7 @@ def _example_teaser(example: dict) -> str:
         )
         if figure
     )
-    return f"{lead} {figures}." if figures else lead
+    return f"{lead} {figures}.".lstrip() if figures else lead
 
 
 def _example_context(adapter, meta) -> dict | None:

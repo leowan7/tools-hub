@@ -3345,3 +3345,36 @@ class TestTheTeaserComesFromTheExample:
             "EXAMPLE is None and the panel still rendered — the assertion "
             "above would then be testing the wrong absence"
         )
+
+    def test_a_targetless_example_does_not_500(self, tools_app):
+        """An EXAMPLE missing ``target`` degrades, it does not take the page.
+
+        Nothing requires the key: no schema guard here, and the three gates
+        in shared/tool_chooser.has_example are EXAMPLE being truthy,
+        result.json parsing, and adapter.results_partial — none of them
+        looks inside the dict. Before blueprints/tools._example_teaser
+        existed the panel read it as ``ex.target|safe`` and jinja's default
+        Undefined rendered an empty paragraph, so a hard subscript in the
+        teaser would have turned that into a 500 on the form itself.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        slug = "bindcraft"
+
+        meta = meta_for(slug)
+        original = meta.EXAMPLE
+        meta.EXAMPLE = {
+            key: value for key, value in original.items() if key != "target"
+        }
+        try:
+            response = client.get(f"/tools/{slug}")
+        finally:
+            meta.EXAMPLE = original
+        assert response.status_code == 200, (
+            f"EXAMPLE without 'target' returned {response.status_code}"
+        )
+        page = response.get_data(as_text=True)
+        assert "Example run" in page, (
+            "the teaser vanished rather than degrading — then this test "
+            "would pass without exercising _example_teaser at all"
+        )
