@@ -3,6 +3,7 @@
 {% block title %}Binder Developability Scout — Flag antibody developability liabilities | Ranomics Tools{% endblock %}
 
 {% block description %}Free tool to flag chemical stability and biophysical liabilities in antibody or binder sequences before you move to the wet lab. Aggregation, hydrophobicity, charge, and PTM hot-spots scored in seconds.{% endblock %}
+{% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Binder Developability Scout", self.description()) }}{% endblock %}
 
 {% block content %}
 

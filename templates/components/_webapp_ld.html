@@ -1,0 +1,13 @@
+{% macro webapp_ld(name, description) %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": name,
+  "url": request.url_root.rstrip('/') + request.path,
+  "applicationCategory": "ScientificApplication",
+  "operatingSystem": "Any (web-based)",
+  "description": description | string | trim
+} | tojson }}
+</script>
+{% endmacro %}
