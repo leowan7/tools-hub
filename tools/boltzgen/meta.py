@@ -128,7 +128,15 @@ about: dict = {
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
         "Chain ID of the target.",
-        "At least one hotspot residue.",
+        # Optional, and said so here because nothing enforces it:
+        # ``shared/pdb_preflight_rules.py::_BOLTZGEN`` sets
+        # hotspots_required=False, so preflight does not refuse a submit
+        # naming none, and ``tools/boltzgen/__init__.py::validate`` accepts
+        # an empty field and sends ``hotspot_residues: []`` on. This bullet
+        # used to state it as a requirement.
+        "Optionally, hotspot residues &mdash; target-chain residues the "
+        "binder should contact. Leave the field empty and the run starts "
+        "with no hotspot constraint.",
     ],
     "inputs": [
         {

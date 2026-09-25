@@ -380,26 +380,19 @@ def test_every_answer_reaches_at_least_one_tool():
         picks = tool_chooser.recommend(
             "target-structure", shape="unsure", chemistry=chem,
         )
-        if chem == "small-molecule":
-            # Deliberately empty: no tool in this catalog designs against
-            # the visitor's OWN small molecule. proteina's ligand_binder
-            # is the only candidate and it refuses a staged target --
-            # see test_the_ligand_preset_refuses_the_visitors_own_molecule.
-            # The template renders the "no tool covers that" copy.
-            assert picks == [], (
-                "small-molecule must stay empty until a tool can take a "
-                f"custom ligand; got {[p['slug'] for p in picks]}"
-            )
-            continue
         assert picks, f"no tool answers chemistry={chem}"
 
 
-def test_the_ligand_preset_refuses_the_visitors_own_molecule():
-    """Why the small-molecule answer is empty, driven on the real adapter.
+def test_the_chooser_asks_no_small_molecule_question():
+    """The option was removed (Leo, 2026-09-24: "we don't do any small
+    molecules"), and the reason it could never be answered is driven on the
+    real adapter: proteina's ligand variant refuses the visitor's own target.
 
-    If proteina ever accepts a custom ligand target, this fails and the
-    chemistry can be claimed in ``_FACTS`` again.
+    If proteina ever accepts a custom ligand target, the refusal assertion
+    fails and the question can be put back.
     """
+    assert "small-molecule" not in dict(tool_chooser.CHEMISTRY_CHOICES)
+
     proteina = _adapters()["proteina"]
     _spec, err = proteina.validate(
         {
@@ -410,7 +403,9 @@ def test_the_ligand_preset_refuses_the_visitors_own_molecule():
         {},
     )
     assert err is not None and "cannot design against your own target" in err
-    assert "small-molecule" not in tool_chooser._FACTS["proteina"].chemistries
+    assert not any(
+        "small-molecule" in f.chemistries for f in tool_chooser._FACTS.values()
+    )
 
 
 def test_a_curated_default_target_tool_tells_you_to_attach_the_file():
@@ -725,28 +720,3 @@ def test_proteina_is_not_offered_to_a_visitor_with_no_structure():
         for p in tool_chooser.recommend("target-structure", shape="mini-protein")
     }
     assert "proteina" in struct, sorted(struct)
-
-
-def test_a_small_molecule_target_is_not_offered_the_folding_tools():
-    """Nothing to fold: a small molecule has no protein sequence.
-
-    Guards the branch in ``recommend`` that drops non-designers for this
-    answer. The vacuity check is the companion assertion: the same query
-    with a protein target does return them.
-    """
-    folders = {"af2", "colabfold", "esmfold"}
-    small = {
-        p["slug"]
-        for p in tool_chooser.recommend(
-            "target-sequence", shape="unsure", chemistry="small-molecule"
-        )
-    }
-    assert not (small & folders), sorted(small & folders)
-
-    plain = {
-        p["slug"]
-        for p in tool_chooser.recommend(
-            "target-sequence", shape="unsure", chemistry="plain"
-        )
-    }
-    assert folders <= plain, sorted(folders - plain)
