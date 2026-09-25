@@ -3,6 +3,7 @@
 {% block title %}Yeast Display Library Planner — Scope campaigns before synthesis | Ranomics Tools{% endblock %}
 
 {% block description %}Free tool to scope a yeast surface display campaign before committing to DNA synthesis. Calculate library diversity, sorting depth, and NGS read requirements for affinity maturation and binder discovery.{% endblock %}
+{% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Yeast Display Library Planner", self.description()) }}{% endblock %}
 
 {% block content %}
 
