@@ -1630,8 +1630,9 @@ def tool_validate(tool: str):
     preset = adapter.preset_for(inputs["preset"])
     if preset is None:
         return {"ok": False, "error": "Unknown preset."}
+    # _campaign is set by static/js/check_settings.js when the page is in campaign mode.
     refusal = _single_container_refusal(tool, inputs)
-    if refusal is not None:
+    if refusal is not None and request.form.get("_campaign") != "1":
         return {"ok": False, "error": refusal[0]}
     if _needs_pdb(adapter, preset, inputs) and not _has_pdb_source():
         return {"ok": False, "error": "Upload a target PDB file."}

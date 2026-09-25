@@ -48,5 +48,12 @@
     if (section) section.open = true;
   }, true);
   renderAll();
-  window.addEventListener("load", renderAll);
+  window.addEventListener("load", function () {
+    renderAll();
+    // A refused over-ceiling submit re-renders with this notice shown (_campaign_reroute.html).
+    document.querySelectorAll(".campaign-reroute-notice:not([hidden])").forEach(function (n) {
+      var section = n.closest("details.form-section");
+      if (section) section.open = true;
+    });
+  });
 })();

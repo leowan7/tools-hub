@@ -102,6 +102,10 @@ class TestValidateIsFree:
         over = str(single_container_ceiling("rfdiffusion") + 1)
         verdict = _validate(client, "rfdiffusion", {**_RFDIFFUSION_FORM, "num_designs": over})
         assert verdict["ok"] is False and "campaign" in verdict["error"], verdict
+        # In campaign mode the page submits to campaigns, which has no such ceiling.
+        verdict = _validate(client, "rfdiffusion",
+                            {**_RFDIFFUSION_FORM, "num_designs": over, "_campaign": "1"})
+        assert verdict == {"ok": False, "error": "Upload a target PDB file."}, verdict
 
 
 class TestCheckButton:
