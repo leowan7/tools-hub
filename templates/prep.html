@@ -1,27 +1,13 @@
 {% extends "base.html" %}
 {% from "components/preflight_panel.html" import preflight_styles %}
+{% from "components/tool_form_layout.html" import tool_form_layout %}
+{% from "components/form_section.html" import form_section %}
 
 {% block title %}Protein Target Prep for Binder Design | Ranomics Tools{% endblock %}
 {% block description %}Free protein target preparation: load a structure from the PDB or your own file, check it, trim it to the chains and residues you need, pick hotspots in 3D, and send it to a binder design tool.{% endblock %}
 {% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Target prep", self.description()) }}{% endblock %}
 
 {% block content %}
-  <style>
-    .prep-step { margin-bottom: 1.5rem; }
-    .prep-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem; }
-    .prep-row input[type=text], .prep-row select {
-      background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border);
-      border-radius: var(--radius-md); padding: 0.5rem 0.7rem; font-family: var(--font-body); font-size: 0.9rem;
-    }
-    .prep-hint { color: var(--text-secondary); font-size: 0.85rem; max-width: 62ch; margin: 0 0 0.75rem; }
-    .prep-results { list-style: none; padding: 0; margin: 0 0 0.75rem; }
-    .prep-results button { background: none; border: 0; color: var(--text-primary); cursor: pointer; text-align: left; padding: 0.25rem 0; font-family: var(--font-body); }
-    .prep-results button:hover { color: var(--accent-text, #2B9E7E); }
-    .prep-error { color: #f87171; font-size: 0.88rem; min-height: 1.2em; }
-    .hotspot-viewer { width: 100%; height: 360px; background: var(--bg-deep); position: relative; display: none; }
-    .hotspot-viewer-empty { padding: 1.5rem 1rem; text-align: center; color: var(--text-tertiary); font-size: 0.82rem; }
-    .hotspot-viewer-error { padding: 1rem; color: #f87171; font-size: 0.85rem; }
-  </style>
   {{ preflight_styles() }}
 
   <div class="hero">
@@ -37,83 +23,120 @@
 
   {% if not viewer_is_signed_in() %}
     <div class="panel"><div class="panel-body">
-      <p class="prep-hint">Target prep is free with an account.</p>
+      <p class="field-helper">Target prep is free with an account.</p>
       {% include "components/_signin_cta.html" %}
     </div></div>
   {% else %}
-  <form id="prep-form" class="panel" onsubmit="return false">
-    <div class="panel-body">
-      <section class="prep-step">
-        <h2>1. Load a target</h2>
-        <div class="prep-row">
-          <input type="text" id="prep-pdb-id" maxlength="4" placeholder="PDB ID, e.g. 1BRS" aria-label="PDB ID">
-          <button type="button" class="btn-secondary" id="prep-load-id">Load</button>
-        </div>
-        <div class="prep-row">
-          <input type="text" id="prep-query" maxlength="200" placeholder="Search RCSB, e.g. PD-L1" aria-label="Search RCSB">
-          <button type="button" class="btn-secondary" id="prep-search">Search</button>
-        </div>
-        <ul class="prep-results" id="prep-results"></ul>
-        <div class="prep-row">
-          <label for="target_pdb" class="label">Or upload</label>
-          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif">
-        </div>
-        <div class="prep-hint" id="prep-loaded"></div>
-      </section>
-
-      <section class="prep-step">
-        <h2>2. Choose chains, range and hotspots</h2>
-        <div class="prep-row">
-          <label for="prep-tool" class="label">Check against</label>
-          <select name="tool" id="prep-tool">
-            {% for a in tools %}<option value="{{ a.slug }}">{{ a.label }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="prep-row">
-          <label for="target_chain" class="label">Chains to keep</label>
-          <input type="text" name="target_chain" id="target_chain" value="A" placeholder="A or A B">
-        </div>
-        <div class="prep-row">
-          <label for="target_input" class="label">Residue range (optional)</label>
-          <input type="text" name="target_input" id="target_input" placeholder="A1-120,B5-80">
-        </div>
-        <p class="prep-hint">A range replaces the chain list: only the chains it names are kept.</p>
-        <div class="prep-row">
-          <label for="hotspot_residues" class="label">Hotspots</label>
-          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="A45,A73">
-        </div>
-        <p class="prep-hint">
-          Click residues in the viewer to add or remove them. Each hotspot
-          carries its chain letter, so A45 and B45 are different residues.
-        </p>
-        <div class="hotspot-picker">
-          <div class="prep-row">
-            <label><input type="checkbox" id="hotspot-surface-toggle"> Surface</label>
-            <button type="button" class="btn-secondary" id="hotspot-clear-btn">Clear hotspots</button>
+  {% call tool_form_layout() %}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Target inputs</span>
+      </div>
+      <div class="panel-body">
+        <form id="prep-form" onsubmit="return false">
+          {% call form_section("Load a target", "{target_pdb}", open=true) %}
+          <div class="field-group">
+            <label for="prep-pdb-id" class="field-label">PDB ID</label>
+            <div class="prep-row">
+              <input type="text" id="prep-pdb-id" class="field-input" maxlength="4" placeholder="e.g. 1BRS">
+              <button type="button" class="btn-secondary" id="prep-load-id">Load</button>
+            </div>
           </div>
-          <div id="hotspot-empty" class="hotspot-viewer-empty">Load a target to see it here.</div>
-          <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
-        </div>
-        <div id="preflight-panel" class="preflight-panel"
-             data-tool="{{ tools[0].slug if tools else '' }}" data-kind="" data-ok="1" data-no-alphafold="1"></div>
-      </section>
+          <div class="field-group">
+            <label for="prep-query" class="field-label">Search RCSB</label>
+            <div class="prep-row">
+              <input type="text" id="prep-query" class="field-input" maxlength="200" placeholder="e.g. PD-L1">
+              <button type="button" class="btn-secondary" id="prep-search">Search</button>
+            </div>
+            <ul class="prep-results" id="prep-results"></ul>
+          </div>
+          <div class="field-group">
+            <label for="target_pdb" class="field-label">Or upload a file</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   class="field-input" style="max-width: 520px;">
+            <div class="field-helper" id="prep-loaded"></div>
+          </div>
+          {% endcall %}
 
-      <section class="prep-step">
-        <h2>3. Download or send</h2>
-        <div class="prep-row">
-          <button type="button" class="btn-secondary" id="prep-trim">Download trimmed PDB</button>
-          {% if tools %}
-            <button type="button" class="btn-primary" id="prep-handoff">Send to the selected tool</button>
-          {% endif %}
-        </div>
-        <p class="prep-hint">
-          Sending opens the tool's form with this trimmed target, chains and
-          hotspots filled in. Nothing runs until you submit that form.
-        </p>
+          {% call form_section("Chains, range and hotspots", "chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
+          <div class="field-group">
+            <label for="prep-tool" class="field-label">Check against</label>
+            <select name="tool" id="prep-tool" class="field-input" style="max-width: 320px;">
+              {% for a in tools %}<option value="{{ a.slug }}">{{ a.label }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="target_chain" class="field-label">Chains to keep</label>
+            <input type="text" name="target_chain" id="target_chain" value="A" placeholder="A or A B"
+                   class="field-input" style="max-width: 160px;">
+          </div>
+          <div class="field-group">
+            <label for="target_input" class="field-label">Residue range (optional)</label>
+            <input type="text" name="target_input" id="target_input" placeholder="A1-120,B5-80"
+                   class="field-input" style="max-width: 320px;">
+            <div class="field-helper">A range replaces the chain list: only the chains it names are kept.</div>
+          </div>
+          <div class="field-group">
+            <label for="hotspot_residues" class="field-label">Hotspots</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="A45,A73"
+                   class="field-input" style="max-width: 320px;">
+            <div class="field-helper">
+              Click residues in the viewer to add or remove them. Each hotspot
+              carries its chain letter, so <code>A45</code> and <code>B45</code>
+              are different residues.
+            </div>
+          </div>
+          <div class="hotspot-picker">
+            <div class="hotspot-picker-header">
+              <span class="label">3D residue picker</span>
+              <div class="hotspot-picker-controls">
+                <label><input type="checkbox" id="hotspot-surface-toggle"> Surface</label>
+                <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+              </div>
+            </div>
+            <div id="hotspot-empty" class="hotspot-viewer-empty">Load a target to see it here.</div>
+            <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+          </div>
+          <div id="preflight-panel" class="preflight-panel"
+               data-tool="{{ tools[0].slug if tools else '' }}" data-kind="" data-ok="1" data-no-alphafold="1"></div>
+          {% endcall %}
+
+          {% call form_section("Download or send", "", open=true) %}
+          <div class="field-group">
+            <button type="button" class="btn-secondary" id="prep-trim">Download trimmed PDB</button>
+            {% if tools %}
+              <button type="button" class="btn-primary" id="prep-handoff">Send to the selected tool</button>
+            {% endif %}
+            <div class="field-helper" style="margin-top: 0.75rem;">
+              Sending opens the tool's form with this trimmed target, chains and
+              hotspots filled in. Nothing runs until you submit that form.
+            </div>
+          </div>
+          {% endcall %}
+        </form>
         <div class="prep-error" id="prep-error" role="alert"></div>
-      </section>
+      </div>
     </div>
-  </form>
+
+    <aside class="panel about-panel" aria-labelledby="about-prep-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-prep-title">About target prep</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it does</h3>
+        <ul>
+          <li>Loads a target from the PDB, an RCSB search, or your own file.</li>
+          <li>Checks it the way the tool you pick will.</li>
+          <li>Trims it to the chains and residues you keep.</li>
+          <li>Lets you pick hotspots in 3D.</li>
+        </ul>
+        <h3>Cost</h3>
+        <p>Free. Nothing on this page spends wallet funds or starts a GPU.</p>
+        <h3>Next</h3>
+        <p>Download the trimmed PDB, or send it to a design tool's form. Nothing runs until you submit that form.</p>
+      </div>
+    </aside>
+  {% endcall %}
 
   <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
