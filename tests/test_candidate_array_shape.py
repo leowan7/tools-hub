@@ -193,6 +193,12 @@ class TestJobsReaders:
             "bindcraft",
         ) is False
 
+    def test_the_backfilled_flag_survives_the_legacy_unwrap(self):
+        assert supports_headline_claim(
+            {"output": {"candidates": [{"pdb_key": "a.pdb"}]}, "backfilled": True},
+            "bindcraft",
+        ) is False
+
     def test_zero_yield_is_detected_through_a_tuple(self):
         # narrowed: "succeeded", so a zero-yield run bills as a normal one
         # and never reaches the yield-rate monitor.
