@@ -50,8 +50,17 @@ _REPO = Path(__file__).resolve().parents[1]
 #
 # ``.mol`` is live vocabulary, not hypothetical: templates/runs/new.html:150
 # is ``accept=".sdf,.mol"``.
+_NOUN = r"(?:ligand|molecule|compound)"
 _PROMISE = re.compile(
-    r"small[-\s]molecule|\bSDF\b|\.mol\b|\byour (?:own )?(?:ligand|molecule)\b",
+    # Named at all: this product has no path for one.
+    r"small[-\s]molecule|\bSDF\b|\.mol\b|\bcompound\b"
+    # Or the noun near a second person, in EITHER order. Round 1 keyed on
+    # possession written BEFORE the noun ("your molecule") and review beat
+    # it with "a molecule you provide", "a ligand you supply", "any molecule
+    # you like". This is not another verb list: it is any "you"/"your"
+    # within 40 characters of the noun, on either side of it.
+    r"|" + _NOUN + r"[^.]{0,40}?\byou(?:r|rs)?\b"
+    r"|\byou(?:r|rs)?\b[^.]{0,40}?" + _NOUN,
     re.I,
 )
 
@@ -86,6 +95,46 @@ _ALLOWED = {
     # templates/runs/new.html: the file input's own label. Its hint, one node
     # later, says to leave it blank and why.
     "Target molecule (.sdf)",
+    # templates/runs/new.html, the variant hint -- reached only once the
+    # scanner stopped dropping nodes with Jinja in them, and only because
+    # the widened pattern reads "a target you supply; the ligand and motif"
+    # as a second person near the noun. The sentence draws the opposite
+    # line: it names the ligand variant as one that does NOT take a target
+    # of yours. No lexical rule separates a promise from its negation,
+    # which is what this allowlist is for, and the liveness test below
+    # fails if the sentence is ever edited away.
+    (
+        "Which Proteina-Complexa model variant to run. Only the protein "
+        "binder designs against a target you supply; the ligand and motif "
+        "variants run benchmark tasks bundled with the model."
+    ),
+    # Two sentences from this same change, reached because the widened
+    # pattern reads a second person near the noun. Both draw the contrast
+    # the change exists to draw -- custom target on one variant, bundled
+    # task on the others -- and a contrast sentence cannot avoid putting
+    # the two next to each other. THIS IS THE CEILING OF A LEXICAL GUARD:
+    # it cannot separate a promise from its negation, so every honest
+    # contrast sentence has to sit here verbatim. That fails CLOSED --
+    # edit one of these and it flags again, forcing a fresh look -- which
+    # a 'skip it if the sentence also says benchmark' heuristic would not.
+    (
+        "<code>protein_binder</code> for a protein target (AF2 "
+        "reward) and the only variant that can take a target of "
+        "yours, <code>ligand_binder</code> for a bundled benchmark "
+        "ligand task (RF3 reward), <code>motif_ame</code> for motif "
+        "scaffolding / enzyme active sites, or <code>validate</code> "
+        "for a free config check before spending GPU."
+    ),
+    (
+        "The only variant that designs against a structure you "
+        "upload; the others run curated ligand and motif benchmarks. "
+        "It also settles the <code>rf3_score</code> column below, "
+        "which is empty on every row: RF3 is a second scoring stack "
+        "those other variants need, a protein binder run does not, "
+        "and it is not free. That is a consequence of this choice "
+        "rather than a switch of its own &mdash; there is no RF3 "
+        "control on the form."
+    ),
 }
 
 
@@ -103,7 +152,16 @@ def _template_text(path):
     _ALLOWED with its reason.
     """
     src = (_REPO / path).read_text(encoding="utf-8")
-    return [t.strip() for t in re.findall(r">([^<>{}]{8,}?)<", src)]
+    # Script and style bodies go first. They are not visible text, and they
+    # carry identifiers like ``target-sdf-field`` that trip the pattern.
+    src = re.sub(r"<(script|style)\b.*?</\1>", "", src, flags=re.S | re.I)
+    # Then Jinja, DROPPED rather than treated as a node boundary. Round 1
+    # excluded {} in the character class instead, which silently discarded
+    # every node with a ``{{ }}`` in the middle of it -- and this template is
+    # dense with them, so its coverage was whichever hints happened to have
+    # no interpolation that day. ``{# #}`` comments go too: unread.
+    src = re.sub(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", "", src, flags=re.S)
+    return [t.strip() for t in re.findall(r">([^<>]{8,}?)<", src)]
 
 
 def _all_surfaces():
@@ -186,6 +244,13 @@ def test_no_proteina_prose_source_promises_a_custom_small_molecule():
         "Attach a .mol file and the ligand variant designs against it.",
         "Design against any small molecule you like.",
         "Give us your ligand and we design against it.",
+        # Round 2 of review beat the noun-only pattern four more ways:
+        # possession written after the noun, and "compound", which the
+        # noun group did not hold at all.
+        "Design against a molecule you provide.",
+        "The ligand variant designs against a ligand you supply.",
+        "Bring your own compound and the search designs against it.",
+        "Point the ligand variant at any molecule you like.",
         "Ligand binder (vs a small molecule)",
         "Small-molecule target. Optional for curated ligand tasks.",
         "the ligand variant needs a small-molecule SDF, and this target is a "
