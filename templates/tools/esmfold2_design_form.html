@@ -250,6 +250,7 @@
              @login_required. #}
           {% if viewer_is_signed_in() %}
             <button type="submit" class="btn-primary">Submit design run</button>
+            {% include "components/_check_settings.html" %}
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}

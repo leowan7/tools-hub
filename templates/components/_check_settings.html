@@ -1,0 +1,7 @@
+{# Free "Check my settings" beside a signed-in Submit button. Include it
+   only inside the viewer_is_signed_in() branch: POST /tools/<slug>/validate
+   is @login_required (blueprints/tools.py::tool_validate), and
+   tests/test_tool_validate.py pins that anonymous pages do not render it. #}
+<button type="button" class="btn-secondary" data-check-settings>Check my settings (free)</button>
+<div class="check-settings-result" role="status" aria-live="polite" data-check-settings-result></div>
+<script src="{{ url_for('static', filename='js/check_settings.js') }}" defer></script>

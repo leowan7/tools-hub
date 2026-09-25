@@ -2498,3 +2498,50 @@ select.form-control { cursor: pointer; }
 .jobs-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .jobs-spend-note { display: block; color: var(--text-tertiary); font-family: var(--font-body); font-size: 0.78rem; }
 .jobs-progress { width: 5rem; height: 0.5rem; accent-color: var(--accent); vertical-align: middle; }
+
+/* --------------------------------------------------------------------------
+   Tool forms: collapsible sections (components/form_section.html) and the
+   free "Check my settings" result (components/_check_settings.html)
+   -------------------------------------------------------------------------- */
+.form-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 1.25rem;
+}
+.form-section > summary {
+  cursor: pointer;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+.form-section > summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.form-section-title {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-primary);
+}
+.form-section-summary {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.form-section[open] .form-section-summary { display: none; }
+.form-section-body { padding: 0.25rem 1rem 0.5rem; }
+
+.check-settings-result:empty { display: none; }
+.check-settings-result {
+  margin-top: 0.75rem;
+  max-width: 58ch;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.check-settings-result.is-ok { color: var(--success); }
+.check-settings-result.is-error { color: var(--error); }

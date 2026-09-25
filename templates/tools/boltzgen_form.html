@@ -4,6 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+{% from "components/form_section.html" import form_section %}
 
 {% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
@@ -176,6 +177,7 @@
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <input type="hidden" name="preset" value="pilot">
 
+          {% call form_section("Design", "{protocol}, {binder_length_min} to {binder_length_max} residues") %}
           <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
             <div style="flex: 1; min-width: 150px;">
               <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length min</label>
@@ -230,6 +232,7 @@
             antibody 110 to 200, peptide 10 to 30 residues (10 is the
             shortest this tool accepts).
           </div>
+          {% endcall %}
 
           <div id="pilot-fields">
             <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
@@ -245,6 +248,7 @@
               </p>
             </div>
 
+            {% call form_section("Target", "{target_pdb}, chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
             {# Required (server-render) when no staged source. Toggled by
@@ -297,6 +301,7 @@
               </div>
               <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
             </div>
+            {% endcall %}
 
             <label for="budget" class="label" style="display:block; margin-bottom: 0.4rem;">Budget (final candidates)</label>
             <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "4") }} min="1" max="50"
@@ -349,6 +354,7 @@
                     {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
               Submit run
             </button>
+            {% include "components/_check_settings.html" %}
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}
