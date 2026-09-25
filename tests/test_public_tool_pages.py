@@ -91,7 +91,7 @@ class TestSubmitGateStillHolds:
     """Opening the GET must not open the POST."""
 
     @pytest.mark.parametrize("slug", PUBLIC_TOOLS)
-    @pytest.mark.parametrize("action", ["submit", "preflight"])
+    @pytest.mark.parametrize("action", ["submit", "preflight", "validate"])
     def test_anonymous_post_never_reaches_the_handler(
         self, client, slug, action,
     ):
@@ -132,6 +132,10 @@ class TestSubmitGateStillHolds:
         view = app.view_functions["tools.tool_preflight"]
         assert getattr(view, "__wrapped__", None) is not None, (
             "tools.tool_preflight lost its decorator stack"
+        )
+        view = app.view_functions["tools.tool_validate"]
+        assert getattr(view, "__wrapped__", None) is not None, (
+            "tools.tool_validate lost its decorator stack"
         )
 
 

@@ -1,0 +1,20 @@
+{# A collapsible tool-form section whose <summary> states its current values.
+
+   ``summary`` is a template filled by static/js/form_sections.js from the
+   form's own fields: {name} is the field's value, and {name#noun} is a count
+   ("3 hotspots"). Usage:
+
+    {% from "components/form_section.html" import form_section %}
+    {% call form_section("Target", "{target_pdb}, chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
+      ...fields...
+    {% endcall %}
+#}
+{% macro form_section(title, summary, open=false) -%}
+<details class="form-section" data-summary="{{ summary }}"{% if open %} open{% endif %}>
+  <summary><span class="form-section-title">{{ title }}</span> <span class="form-section-summary"></span></summary>
+  <div class="form-section-body">
+    {{ caller() }}
+  </div>
+</details>
+<script src="{{ url_for('static', filename='js/form_sections.js') }}" defer></script>
+{%- endmacro %}

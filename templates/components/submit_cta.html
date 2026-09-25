@@ -29,6 +29,7 @@ Usage:
   {% set _auth = viewer_is_signed_in() if authenticated is none else authenticated %}
   {% if _auth %}
     <button type="submit" class="btn-primary submit-cta" data-submit-cta>{{ label }}</button>
+    {% include "components/_check_settings.html" %}
   {% else %}
     {# Same words as the 13 forms that hand-roll their submit button. #}
     {% include "components/_signin_cta.html" %}
