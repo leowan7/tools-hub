@@ -2545,3 +2545,16 @@ select.form-control { cursor: pointer; }
 }
 .check-settings-result.is-ok { color: var(--success); }
 .check-settings-result.is-error { color: var(--error); }
+
+/* --------------------------------------------------------------------------
+   Target prep (templates/prep.html)
+   -------------------------------------------------------------------------- */
+.prep-row { display: flex; gap: 0.5rem; align-items: flex-start; max-width: 520px; }
+.prep-row .field-input { flex: 1; min-width: 0; }
+.prep-results { list-style: none; padding: 0; margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary); }
+.prep-results button {
+  background: none; border: 0; color: var(--text-primary); cursor: pointer;
+  text-align: left; padding: 0.25rem 0; font: inherit;
+}
+.prep-results button:hover { color: var(--accent-text); }
+.prep-error { color: var(--error); font-size: 0.85rem; min-height: 1.2em; margin-top: 0.75rem; }
