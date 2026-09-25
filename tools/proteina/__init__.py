@@ -802,8 +802,12 @@ adapter = ToolAdapter(
     # checks", which is false — see the note on ``comparison_one_liner``
     # in meta.py and Dockerfile.modal:229-231. The scoring model follows
     # the target; no variant runs all three.
+    # NOT "a protein or small-molecule target". Only ``protein_binder``
+    # accepts a target of yours (``_CUSTOM_TARGET_PRESETS`` above); ``validate``
+    # refuses a staged target on every other variant, so the upload half of
+    # that promise was never reachable for a molecule.
     blurb=(
-        "Upload a protein or small-molecule target, name the chain and "
+        "Upload a protein target, name the chain and "
         "the residues you want gripped, and set how many designs to "
         "fund. The run fans out across GPUs and stops when your wallet "
         "does."
@@ -822,12 +826,14 @@ adapter = ToolAdapter(
         ),
         Preset(
             slug="ligand_binder",
-            label="Ligand binder (de novo, vs a small molecule)",
+            label="Ligand binder (de novo, vs a bundled benchmark ligand)",
             description=(
-                "Design de novo binders against a small-molecule target "
-                "supplied as an SDF. Scored by the RoseTTAFold3 reward "
-                "(the force field does not support protein-ligand complexes). "
-                "Pick a curated ligand task or upload your own SDF."
+                "Design de novo binders against one of the small-molecule "
+                "targets bundled with the model. Scored by the RoseTTAFold3 "
+                "reward (the force field does not support protein-ligand "
+                "complexes). Your own molecule cannot be used: the task "
+                "resolves from a separate upstream registry, so this variant "
+                "is limited to the curated ligand tasks."
             ),
             requires_pdb=False,
             long_running=True,
@@ -837,8 +843,9 @@ adapter = ToolAdapter(
             label="Motif scaffolding / enzyme (AME)",
             description=(
                 "Scaffold a functional motif or enzyme active site. Scored by "
-                "the RoseTTAFold3 reward. Pick a curated AME task or upload "
-                "your own motif."
+                "the RoseTTAFold3 reward. Limited to the curated AME tasks — "
+                "their records key on a motif atom spec the hub cannot emit, "
+                "so your own motif cannot be registered."
             ),
             requires_pdb=False,
             long_running=True,

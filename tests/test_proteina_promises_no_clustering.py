@@ -342,14 +342,16 @@ _SECTION_ANCHORS = {
     "meta / about.output_summary": "Ranked designs with reward scores",
     "meta / seo_faq": "How are Proteina-Complexa designs scored and ranked?",
     "meta / reward_attributions": "AlphaFold2 parameters",
-    "meta / comparison_one_liner": "You have a hard target",
+    "meta / comparison_one_liner": "You have a hard protein target",
     "meta / EXAMPLE": "A two-chain human secreted protein",
-    "adapter / blurb": "Upload a protein or small-molecule target",
+    # Re-pointed 2026-09-24: the blurb said "Upload a protein or
+    # small-molecule target" until the small-molecule promise was removed.
+    "adapter / blurb": "name the chain and the residues you want gripped",
     # The LEDE is element [1] — the paragraph the signed-out hero renders.
     # This anchor was "hard-target binder design tool" until review pointed out
     # that lives in element [0], the short noun phrase, so deleting the lede
     # left this check green: the one source it names, it did not pin.
-    "seo_phrases / lede": "Built for the targets the standard design tools",
+    "seo_phrases / lede": "the standard design tools stall on",
     "seo_phrases / noun phrase": "hard-target binder design tool",
 }
 

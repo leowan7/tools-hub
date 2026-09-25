@@ -140,9 +140,16 @@ _FACTS: dict[str, _Facts] = {
         shapes=frozenset({"nanobody"}),
         chemistries=frozenset(),
     ),
-    # "You have a hard target — a recessed pocket, a site spanning two
-    # chains ... and you want to throw as much search at it as your
-    # balance allows" — tools/proteina/meta.py::comparison_one_liner.
+    # "You want to aim a binder at one specific patch, including a recessed
+    # or partly shielded one, by naming residues on it."
+    # — tools/proteina/meta.py, about["when_to_use"][0].
+    #
+    # #353 pointed this at comparison_one_liner instead, quoting "You have a
+    # hard target". That quote is stale as of this branch: the one-liner now
+    # reads "You have a hard PROTEIN target", because its old opener recruited
+    # visitors whose target is a molecule and validate() refuses them. The
+    # when_to_use[0] citation above is verbatim; both say the same thing about
+    # why proteina sits in the target-structure bucket.
     #
     # NOT in the target-sequence bucket. proteina does run with no upload,
     # but only against "a repo-bundled benchmark task whose target is baked
@@ -159,7 +166,10 @@ _FACTS: dict[str, _Facts] = {
     # ``tools/proteina/__init__.py::validate`` refuses a ligand_binder run
     # against a staged target -- ``_CUSTOM_TARGET_PRESETS`` in that module
     # holds {"protein_binder"} only -- so it designs against a bundled
-    # benchmark ligand, never the visitor's molecule.
+    # benchmark ligand, never the visitor's molecule. That refusal is pinned
+    # by tests/test_proteina_no_custom_ligand_promise.py::
+    # test_the_enforcing_set_still_excludes_ligand_binder, which calls
+    # validate() rather than only reading the set.
     "proteina": _Facts(
         haves=frozenset({"target-structure"}),
         shapes=frozenset({"mini-protein"}),

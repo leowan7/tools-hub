@@ -124,9 +124,16 @@ _REFUSED_PRESETS = {
         "design per masked position, so the delivered count stops matching "
         "the chunk size). Use the single-run IgGM form."
     ),
+    # NOT "the ligand variant needs a small-molecule SDF, and this target is
+    # a protein structure", which is what this said. That names the target's
+    # FORMAT as the blocker and so reads as "send an SDF instead" -- a second
+    # refusal away, from tools/proteina/__init__.py::validate, because
+    # _CUSTOM_TARGET_PRESETS is {"protein_binder"} and no target of the user's
+    # reaches this variant in any format. Same shape as the motif entry below.
     ("proteina", "ligand_binder"): (
-        "the ligand variant needs a small-molecule SDF, and this target is a "
-        "protein structure."
+        "the ligand variant can only design against a benchmark ligand "
+        "bundled with the model, not a target of your own. Pick the protein "
+        "binder variant instead."
     ),
     # Every run on this route designs against the STORED target, and upstream
     # resolves an AME task from configs/design_tasks/ame_dict_v2.yaml (a
