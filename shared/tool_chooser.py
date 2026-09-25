@@ -8,8 +8,8 @@ on your target.
 WHAT IS TYPED HERE AND WHAT IS DERIVED
 --------------------------------------
 Typed: ``_FACTS`` — which HAVE bucket and which binder shapes each tool
-serves, plus the two target-chemistry capabilities (glycans, a
-small-molecule target) that only appear in prose. Each entry cites the
+serves, plus the one target-chemistry capability (glycans) that only
+appears in prose. Each entry cites the
 ``about["when_to_use"]`` or ``comparison_one_liner`` line it came from.
 This is a single table in one module, the same shape as the existing
 ``shared.tools_catalog._TOOL_CATEGORIES``; no per-tool metadata field
@@ -77,7 +77,6 @@ SHAPE_CHOICES: tuple[tuple[str, str], ...] = (
 CHEMISTRY_CHOICES: tuple[tuple[str, str], ...] = (
     ("plain", "An ordinary protein surface"),
     ("glycan", "It carries sugars or modified residues"),
-    ("small-molecule", "My target is a small molecule, not a protein"),
     ("multi-chain", "The patch I care about spans more than one chain"),
 )
 
@@ -141,8 +140,9 @@ _FACTS: dict[str, _Facts] = {
         shapes=frozenset({"nanobody"}),
         chemistries=frozenset(),
     ),
-    # "Your target is a small molecule rather than a protein"
-    # — tools/proteina/meta.py, about["when_to_use"][2].
+    # "You have a hard target — a recessed pocket, a site spanning two
+    # chains ... and you want to throw as much search at it as your
+    # balance allows" — tools/proteina/meta.py::comparison_one_liner.
     #
     # NOT in the target-sequence bucket. proteina does run with no upload,
     # but only against "a repo-bundled benchmark task whose target is baked
@@ -153,16 +153,13 @@ _FACTS: dict[str, _Facts] = {
     # and find their target unreachable, and requires_pdb is False on every
     # preset so prerequisite_line() has nothing to warn them with.
     #
-    # "small-molecule" is NOT claimed here, though
-    # tools/proteina/meta.py, about["when_to_use"][2] says "Your target is
-    # a small molecule rather than a protein". That is the ligand_binder
-    # preset, and tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS holds
-    # {"protein_binder"} only -- validate refuses a ligand run against a
-    # staged target with "The ligand_binder variant cannot design against
-    # your own target". It designs against a bundled benchmark ligand, not
-    # the visitor's molecule, so the chooser must not answer "my target is
-    # a small molecule" with it. Pinned by
-    # test_the_ligand_preset_refuses_the_visitors_own_molecule.
+    # A small-molecule target is NOT offered as an answer here at all:
+    # the chooser dropped that option (2026-09-24, Leo: "we don't do any
+    # small molecules"). proteina was the only near-candidate and
+    # ``tools/proteina/__init__.py::validate`` refuses a ligand_binder run
+    # against a staged target -- ``_CUSTOM_TARGET_PRESETS`` in that module
+    # holds {"protein_binder"} only -- so it designs against a bundled
+    # benchmark ligand, never the visitor's molecule.
     "proteina": _Facts(
         haves=frozenset({"target-structure"}),
         shapes=frozenset({"mini-protein"}),
@@ -456,22 +453,10 @@ def recommend(
         # emptied every single-answer bucket, whose tools are all
         # non-designers. Pinned by test_a_stale_chemistry_answer_does_not_
         # empty_a_bucket_that_never_asked.
-        if have in DESIGN_HAVES and not is_designer and (
-            chemistry == "small-molecule"
-        ):
-            # The folding tools are offered as a "get a structure first"
-            # step, and they fold protein sequences. A visitor who has just
-            # said their target is a small molecule has nothing to fold.
-            continue
         if have in DESIGN_HAVES and is_designer:
             if shape and shape != "unsure" and shape not in facts.shapes:
                 continue
             if chemistry == "glycan" and "glycan" not in facts.chemistries:
-                continue
-            if (
-                chemistry == "small-molecule"
-                and "small-molecule" not in facts.chemistries
-            ):
                 continue
             # Multi-chain is a preflight concept: _multi_chain_block runs
             # on a STAGED target. A tool that takes no upload never reaches

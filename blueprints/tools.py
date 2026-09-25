@@ -805,34 +805,25 @@ def _as_form_text(value) -> str:
 # THE CARD HAS TWO SEPARABLE JOBS and they need two different predicates.
 # Conflating them shipped both a false promise and a missing one:
 #
-#   (a) "this tool asks for hotspots"  -> _needs_hotspots, below.
+#   (a) "this tool requires hotspots" -> shared.tool_chooser.needs_hotspots,
+#       which reads TOOL_RULES[slug].hotspots_required — the flag
+#       shared/pdb_preflight.py::preflight_for_tool branches on to refuse a
+#       submit.
 #   (b) "and Scout can hand them back" -> scout.handoff.VALID_HANDOFF_TOOLS.
 #
-# The first cut of this derived (a) from which adapters' ``validate()``
-# refuses an empty hotspot field. That is the wrong property for copy a
-# user reads: it put rfdiffusion in — which refuses, but is NOT a Scout
-# handoff target, so the card promised a round trip that dead-ends — and
-# left boltzgen out, which IS a handoff target and whose own about panel
-# asks for a hotspot residue, purely because its validate() happens to
-# tolerate an empty field and run unsteered.
+# Two earlier cuts of (a) both got it wrong from a proxy. The first read
+# which adapters' ``validate()`` refuses an empty hotspot field: that put
+# rfdiffusion in — which refuses, but is NOT a Scout handoff target, so the
+# card promised a round trip that dead-ends. The second read the tool's own
+# ``about["prerequisites"]`` bullets, matching "hotspot" without "option":
+# that made a copy edit silently change a user-facing claim, and it put
+# boltzgen in the REQUIRED set purely because its bullet was worded as a
+# requirement while nothing enforced one.
 #
-# So (a) now reads the tool's OWN STATED PREREQUISITES — the same
-# ``about["prerequisites"]`` bullets rendered on the page right below the
-# card. Derived, not a hand-maintained list, and it agrees by
-# construction with what the user is being told two panels down.
-def _needs_hotspots(meta) -> bool:
-    """Does this tool's about panel ask the user for a hotspot residue?
-
-    ``"Optional: a list of antigen hotspot residues"`` (boltz2) and
-    ``"Optionally, hotspot residues to aim the binder"`` (proteina) are
-    not a requirement and must not raise a card — hence the ``option``
-    exclusion, which covers both spellings.
-    """
-    about = getattr(meta, "about", None) or {}
-    return any(
-        "hotspot" in str(item).lower() and "option" not in str(item).lower()
-        for item in (about.get("prerequisites") or ())
-    )
+# So (a) now reads the gate itself, and the card is raised for a tool that
+# either requires hotspots OR can receive them from Scout — boltzgen is the
+# second kind, and its Scout link no longer depends on how its bullet is
+# phrased.
 
 
 def _pilot_context(adapter, meta) -> dict | None:
@@ -868,8 +859,18 @@ def _pilot_context(adapter, meta) -> dict | None:
         # derived, so one macro edit reaches every tool and neither can be
         # hand-edited into disagreeing with the surface it describes.
         hotspot_help_url=(
-            url_for("scout.index") if _needs_hotspots(meta) else None
+            url_for("scout.index")
+            if (
+                tool_chooser.needs_hotspots(adapter.slug)
+                or adapter.slug in VALID_HANDOFF_TOOLS
+            )
+            else None
         ),
+        # Whether the gate REFUSES a submit that names none, not whether
+        # the tool can use one. boltzgen is offered the deflection because
+        # Scout can hand residues back to it, and runs unsteered without
+        # them, so its paragraph must not say it needs one.
+        hotspot_required=tool_chooser.needs_hotspots(adapter.slug),
         # Only these tools can actually receive the residues back. Scout's
         # picker offers exactly this set; on anything else the user has to
         # copy the numbers across by hand, and the copy says so.
