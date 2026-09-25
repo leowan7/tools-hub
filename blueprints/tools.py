@@ -1231,7 +1231,11 @@ def tool_form(tool: str):
             )
             pre_fill["preset"] = "pilot"
             pdb_source = {
-                "label": f"Target PDB from Epitope Scout ({ho.pdb_filename})",
+                "label": (
+                    f"Target PDB from Epitope Scout ({ho.pdb_filename})"
+                    if ho.scout_job_id
+                    else f"Target PDB from target prep ({ho.pdb_filename})"
+                ),
                 "filename": ho.pdb_filename,
                 "token": f"handoff:{ho.id}",
             }
@@ -1528,6 +1532,7 @@ def tool_preflight(tool: str):
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
         binder_max_aa=binder_max_aa, num_designs=num_designs,
+        offer_alphafold=request.form.get("no_alphafold") != "1",
         # Sizes the region the user typed, so the panel and the submit-time
         # gate below judge the same run. Without it the panel would size the
         # whole upload and refuse targets that submit then accepts.
