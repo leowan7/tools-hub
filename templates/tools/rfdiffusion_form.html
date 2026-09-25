@@ -5,6 +5,7 @@
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 {% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
+{% from "components/form_section.html" import form_section %}
 
 {% block title %}{{ page_title or (adapter.label ~ " -- Ranomics Tools") }}{% endblock %}
 
@@ -200,6 +201,7 @@
           <input type="hidden" name="preset" value="pilot">
 
           <div id="pilot-fields">
+            {% call form_section("Target", "{target_pdb}, chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
             {# Required (server-render) when no staged source. Toggled by
@@ -251,7 +253,9 @@
               </div>
               <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
             </div>
+            {% endcall %}
 
+            {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues") %}
             <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
             {# pre_value, not a bare value=: rfdiffusion stores this
                NESTED as binder_length={min,max}, so a name lookup found
@@ -301,6 +305,7 @@
               longer wall-clock and are billed by actual GPU consumed;
               cancellation does not refund time already used.
             </div>
+            {% endcall %}
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
@@ -333,6 +338,7 @@
                     {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
               Submit run
             </button>
+            {% include "components/_check_settings.html" %}
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}

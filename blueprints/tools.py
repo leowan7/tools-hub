@@ -1554,6 +1554,111 @@ def tool_preflight(tool: str):
     )
     return (_verdict_to_json(verdict, source_label), 200)
 
+
+def _run_validate(adapter, overrides=None):
+    """Run ``adapter.validate`` on the posted form. Shared by submit and validate."""
+    # Declare whether this run has a structure of its own, the same way both
+    # campaign routes do. Assigned OVER the form dict so it cannot be forged by
+    # posting the field directly. An adapter that ignores the key (every one but
+    # proteina) is unaffected.
+    form = dict(request.form.items())
+    reuse = (request.form.get("reuse_pdb_token") or "").strip()
+    upload = request.files.get("target_pdb") or request.files.get("target_sdf")
+    form["_has_custom_target"] = (
+        "1" if ((upload is not None and upload.filename) or reuse) else ""
+    )
+    form.update(overrides or {})
+    return adapter.validate(form, request.files)
+
+
+def _single_container_refusal(tool: str, inputs: dict):
+    """Return ``(message, ceiling)`` when the design count needs a campaign, else None."""
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    if tool not in cc.SUPPORTED_TOOLS:
+        return None
+    requested_n = inputs.get("num_designs")
+    ceiling = cc.single_container_ceiling(tool)
+    if not (isinstance(requested_n, int) and requested_n > ceiling):
+        return None
+    return (
+        f"{requested_n} designs is more than one GPU container "
+        f"runs for {tool} (max {ceiling} per single job). "
+        f"Large requests run as a campaign: open /campaigns/new "
+        f"to fan this out across GPUs with no per-job ceiling.",
+        ceiling,
+    )
+
+
+def _needs_pdb(adapter, preset, inputs: dict) -> bool:
+    # Per-preset PDB requirement: paid presets need an upload, smoke
+    # and preview do not. Falls back to the adapter-level flag for
+    # tools that require a PDB on every paid run (e.g. BindCraft).
+    # An adapter whose target is OPTIONAL (proteina: curated benchmark task OR
+    # your own structure) reports requires_pdb=False on every preset, so the
+    # gate never fires for it — but a run that declared a custom target
+    # and has no file is exactly as doomed as a missing mandatory upload, and
+    # for the same reason: it would create a job row, dispatch a container, and
+    # be refused there. Fold it into the same pre-create_job gate.
+    return (
+        bool(getattr(preset, "requires_pdb", False))
+        or adapter.requires_pdb
+        or inputs.get("target_source") == "custom"
+    )
+
+
+def _has_pdb_source() -> bool:
+    uploaded = request.files.get("target_pdb")
+    reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
+    return bool(
+        (uploaded is not None and uploaded.filename)
+        or reuse_token.startswith(
+            ("job:", "handoff:", "resample:", "alphafold:", "target:")
+        )
+    )
+
+
+@tools_bp.route("/tools/<tool>/validate", methods=["POST"])
+@login_required
+def tool_validate(tool: str):
+    """Free "Check my settings": tool_submit's validate, preset, ceiling and missing-PDB checks, as JSON.
+
+    The uploaded structure is not inspected here; ``tool_preflight`` does that.
+    No @idempotent and no @requires_wallet; tests/test_tool_validate.py pins
+    that a call creates no job and places no hold.
+    """
+    adapter, err = _require_tool(tool)
+    if err:
+        return ({"ok": False, "error": "Unknown tool"}, 404)
+    overrides = None
+    # _campaign is set by static/js/check_settings.js when the page is in campaign
+    # mode; this mirrors blueprints/campaigns.py steps 0-2 (preset refusal, plan, validate at 1 design).
+    campaign = request.form.get("_campaign") == "1"
+    if campaign:
+        from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        campaign_preset = (request.form.get("preset") or "pilot").strip() or "pilot"
+        refusal = campaign_preset_refusal(tool, campaign_preset)
+        if refusal:
+            return {"ok": False, "error": refusal}
+        try:
+            plan = cc.plan_chunks(tool, request.form.get("requested_designs"), campaign_preset)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        overrides = {plan.design_param_key: "1"}
+    inputs, error_msg = _run_validate(adapter, overrides)
+    if inputs is None:
+        return {"ok": False, "error": error_msg}
+    preset = adapter.preset_for(inputs["preset"])
+    if preset is None:
+        return {"ok": False, "error": "Unknown preset."}
+    refusal = None if campaign else _single_container_refusal(tool, inputs)
+    if refusal is not None:
+        return {"ok": False, "error": refusal[0]}
+    if _needs_pdb(adapter, preset, inputs) and not _has_pdb_source():
+        return {"ok": False, "error": "Upload a target PDB file."}
+    return {"ok": True, "error": None}
+
+
 @tools_bp.route("/tools/<tool>/submit", methods=["POST"])
 @login_required
 @idempotent()
@@ -1595,20 +1700,7 @@ def tool_submit(tool: str):
             "target_pdb_id": ws_target_form,
         }
 
-    # Declare whether this run has a structure of its own, the same way both
-    # campaign routes do. Assigned OVER the form dict so it cannot be forged by
-    # posting the field directly. An adapter that ignores the key (every one but
-    # proteina) is unaffected.
-    _form_for_validate = dict(request.form.items())
-    _atomic_reuse = (request.form.get("reuse_pdb_token") or "").strip()
-    _atomic_upload = request.files.get("target_pdb") or request.files.get("target_sdf")
-    _form_for_validate["_has_custom_target"] = (
-        "1" if (
-            (_atomic_upload is not None and _atomic_upload.filename)
-            or _atomic_reuse
-        ) else ""
-    )
-    inputs, error_msg = adapter.validate(_form_for_validate, request.files)
+    inputs, error_msg = _run_validate(adapter)
     if inputs is None:
         return render_template(
             adapter.form_template,
@@ -1637,26 +1729,17 @@ def tool_submit(tool: str):
     # create_job) leaves g.wallet_hold_consumed False, so requires_wallet
     # auto-releases the hold — no money-path change. boltzgen has no
     # num_designs key (its budget maxes at one chunk), so it is skipped.
-    from shared import compute_campaigns as cc  # noqa: PLC0415
-    if tool in cc.SUPPORTED_TOOLS:
-        requested_n = inputs.get("num_designs")
-        ceiling = cc.single_container_ceiling(tool)
-        if isinstance(requested_n, int) and requested_n > ceiling:
-            return render_template(
-                adapter.form_template,
-                adapter=adapter,
-                error=(
-                    f"{requested_n} designs is more than one GPU container "
-                    f"runs for {tool} (max {ceiling} per single job). "
-                    f"Large requests run as a campaign: open /campaigns/new "
-                    f"to fan this out across GPUs with no per-job ceiling. "
-                    f"Your wallet was not charged."
-                ),
-                pre_fill=inputs,
-                pdb_source=None,
-                workspace_ctx=workspace_ctx,
-                single_container_ceiling=ceiling,
-            )
+    refusal = _single_container_refusal(tool, inputs)
+    if refusal is not None:
+        return render_template(
+            adapter.form_template,
+            adapter=adapter,
+            error=f"{refusal[0]} Your wallet was not charged.",
+            pre_fill=inputs,
+            pdb_source=None,
+            workspace_ctx=workspace_ctx,
+            single_container_ceiling=refusal[1],
+        )
 
     # Workspace gate (when context present). Rejects expired,
     # refunded, or cap-exhausted workspaces BEFORE the job row is
@@ -1686,18 +1769,7 @@ def tool_submit(tool: str):
         # active workspace exists for this user+target.
         workspace_ctx["workspace_id"] = preflight.workspace.id
 
-    # Per-preset PDB requirement: paid presets need an upload, smoke
-    # and preview do not. Falls back to the adapter-level flag for
-    # tools that require a PDB on every paid run (e.g. BindCraft).
-    needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
-    # An adapter whose target is OPTIONAL (proteina: curated benchmark task OR
-    # your own structure) reports requires_pdb=False on every preset, so the
-    # gate below never fires for it — but a run that declared a custom target
-    # and has no file is exactly as doomed as a missing mandatory upload, and
-    # for the same reason: it would create a job row, dispatch a container, and
-    # be refused there. Fold it into the same pre-create_job gate.
-    if inputs.get("target_source") == "custom":
-        needs_pdb = True
+    needs_pdb = _needs_pdb(adapter, preset, inputs)
     uploaded = request.files.get("target_pdb")
     reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
 
@@ -1707,14 +1779,7 @@ def tool_submit(tool: str):
     # spend ledger entry. Production incident 2026-04-30: a pxdesign
     # pilot submit with no file attached created job d2d421ad which
     # showed PENDING for 2.5 hours until manually cancelled.
-    if needs_pdb and not (
-        (uploaded is not None and uploaded.filename)
-        or reuse_token.startswith("job:")
-        or reuse_token.startswith("handoff:")
-        or reuse_token.startswith("resample:")
-        or reuse_token.startswith("alphafold:")
-        or reuse_token.startswith("target:")
-    ):
+    if needs_pdb and not _has_pdb_source():
         return render_template(
             adapter.form_template,
             adapter=adapter,

@@ -188,6 +188,7 @@
                     {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
               Submit run
             </button>
+            {% include "components/_check_settings.html" %}
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}

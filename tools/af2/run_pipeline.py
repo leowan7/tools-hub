@@ -167,17 +167,28 @@ def upload_pdb(url: str, pdb_bytes: bytes) -> None:
         )
 
 
-def _fail(bucket: str, check: str, detail: str) -> None:
-    """Write a FAILED result and exit 1. Matches the Kendrew + MPNN shape."""
+def _fail(
+    bucket: str, check: str, detail: str, runtime_seconds: int | None = None
+) -> None:
+    """Write a FAILED result and exit 1. Matches the Kendrew + MPNN shape.
+
+    ``runtime_seconds`` is GPU time already burned.
+    gpu/modal_client.py::_interpret_pipeline_return reads it off the FAILED
+    arm as gpu_seconds_used, which
+    shared/jobs.py::_charge_workspace_for_completed_job debits from the
+    Workspace cap whatever the failure class. Leave it None for fails before
+    any GPU work.
+    """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
-    _write_result(
-        {
-            "status": "FAILED",
-            "error": {"bucket": bucket, "check": check, "detail": detail},
-            "tier": os.environ.get("JOB_TIER", ""),
-            "provider_job_id": os.environ.get("JOB_ID", ""),
-        }
-    )
+    payload = {
+        "status": "FAILED",
+        "error": {"bucket": bucket, "check": check, "detail": detail},
+        "tier": os.environ.get("JOB_TIER", ""),
+        "provider_job_id": os.environ.get("JOB_ID", ""),
+    }
+    if runtime_seconds is not None:
+        payload["runtime_seconds"] = runtime_seconds
+    _write_result(payload)
     sys.exit(1)
 
 
@@ -1412,17 +1423,23 @@ def _run_batch(
             archive_raw(workdir, "af2_batch")
 
     runtime_seconds = int(time.time() - start)
-    # Unlike boltz2, this tool's zero-design abort only fires when colabfold
-    # itself exited non-zero (see the guard above), so an all-uploads-failed
-    # run that exited 0 still writes a COMPLETED result and still bills. That
-    # is deliberately left alone here; what changes is that the counts and the
-    # log no longer blame the model for it.
-    if n_folded and not designs_out:
-        logger.error(
-            "%d of %d designs folded but 0 uploaded in %ds — the delivery hop "
-            "failed, not the folds; see the per-design upload warnings above, "
-            "and this job's raw archive for the structures",
-            n_folded, designs_total, runtime_seconds,
+    if not designs_out and n_folded:
+        _fail(
+            "storage",
+            "no_designs",
+            f"{n_folded} of {designs_total} designs folded but 0 uploaded "
+            f"— the delivery hop failed, not the folds; see the per-design "
+            f"upload warnings in the run log, and this job's raw archive "
+            f"for the structures",
+            runtime_seconds=runtime_seconds,
+        )
+    if not designs_out:
+        _fail(
+            "pipeline",
+            "no_designs",
+            f"none of {designs_total} designs folded ({n_failures} "
+            f"failures) — nothing to deliver.",
+            runtime_seconds=runtime_seconds,
         )
     _write_result(
         {

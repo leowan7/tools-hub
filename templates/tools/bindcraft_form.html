@@ -5,6 +5,7 @@
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 {% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
+{% from "components/form_section.html" import form_section %}
 
 {% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
@@ -178,6 +179,7 @@
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <input type="hidden" name="preset" value="pilot">
 
+          {% call form_section("Target", "{target_pdb}, chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
           {{ pdb_source_banner(pdb_source) }}
           <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
           {# BindCraft is pilot-only; the file input is always visible.
@@ -294,7 +296,9 @@
             </div>
             <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
           </div>
+          {% endcall %}
 
+          {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues") %}
           <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (min)</label>
           <input type="number" name="binder_length_min" id="binder_length_min" required {{ pre_value(pre_fill, "binder_length_min", "50") }} min="50" max="150"
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1rem;">
@@ -324,6 +328,7 @@
             campaigns run for days. Billed by actual GPU consumed; cancellation
             does not refund time already used.
           </div>
+          {% endcall %}
 
           {{ field_campaign(prefilled=pre_fill) }}
 
@@ -351,6 +356,7 @@
                     {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
               Submit run
             </button>
+            {% include "components/_check_settings.html" %}
           {% else %}
             {% include "components/_signin_cta.html" %}
           {% endif %}
