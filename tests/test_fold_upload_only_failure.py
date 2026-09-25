@@ -3,15 +3,11 @@
 af2, colabfold and esmfold each count a design only after its PDB has been
 uploaded, so ``designs_out`` was the sole record that anything folded: a run
 where every fold succeeded and every PUT failed left it empty, which is
-indistinguishable from a run that folded nothing. Unlike boltz2 -- whose guard
-turns that into a FAILED "all N designs failed", pinned by
-``tests/test_boltz2_smoke.py::TestZeroDesignsFailsTheJob`` -- af2 and
-colabfold complete green with zero designs on that run when the fold step
-exits 0, so what is pinned for them is the count and the message rather than
-the exit status. esmfold fails a zero-design run, with bucket ``storage`` when
-something folded and ``pipeline`` when nothing did, both refunded
-(``tests/test_zero_design_runs_fail.py``); what is pinned for it here is that
-the failure names the upload hop only when something folded.
+indistinguishable from a run that folded nothing. af2, colabfold and esmfold
+each fail a zero-design run, with bucket ``storage`` when something folded
+and ``pipeline`` when nothing did, both refunded
+(``tests/test_zero_design_runs_fail.py``); what is pinned here is that the
+failure names the upload hop only when something folded.
 
 The negative controls (nothing folded) are what make the rest mean anything: a
 count or a message that named the upload hop unconditionally would satisfy the
@@ -113,42 +109,59 @@ class TestConsolidatedBatch:
     ):
         """The point: every fold worked, every PUT died, nothing was delivered.
 
-        Before the fix ``designs_completed`` 0 was the only count and the
-        closing log line called it "designs folded", so a storage outage read
-        as the model failing on all of them.
+        colabfold exited 0 here, so the nonzero-exit guard does not fire; the
+        zero-design guard after it must.
         """
         result_file = _arrange_consolidated(
             rp, tmp_path, monkeypatch, upload_exc=_UPLOAD_DIED
         )
 
-        rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time())
+        with pytest.raises(SystemExit):
+            rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time())
 
         result = json.loads(result_file.read_text())
-        assert result["designs_folded"] == 2, (
-            "both designs folded; only the delivery hop failed")
-        assert result["designs_completed"] == 0
-
-        # Unchanged on purpose. This path has no zero-design abort, so the run
-        # still completes and still bills; the fix is to the counts, not to
-        # the verdict.
-        assert result["status"] == "COMPLETED"
-        assert result["n_failures"] == 2
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "storage"
+        assert isinstance(result.get("runtime_seconds"), int), result
+        detail = result["error"]["detail"]
+        assert "2 of 2 designs folded but 0 uploaded" in detail, detail
 
     def test_a_run_that_folded_nothing_still_says_so(self, rp, tmp_path, monkeypatch):
-        """Negative control for the count.
-
-        A ``designs_folded`` that stood in for "records we were handed" would
-        pass the test above while lying about this run.
-        """
+        """Negative control for the message: nothing folded, exit 0."""
         result_file = _arrange_consolidated(rp, tmp_path, monkeypatch, folds=False)
+
+        with pytest.raises(SystemExit):
+            rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time())
+
+        result = json.loads(result_file.read_text())
+        assert result["status"] == "FAILED"
+        assert result["error"]["bucket"] == "pipeline"
+        assert isinstance(result.get("runtime_seconds"), int), result
+        detail = result["error"]["detail"]
+        assert "none of 2 designs folded (2 failures)" in detail, detail
+        assert "folded but 0 uploaded" not in detail, detail
+
+    def test_a_partial_upload_still_completes(self, rp, tmp_path, monkeypatch):
+        """Positive control for the guard: one design delivered is a billed
+        COMPLETED run, as before."""
+        result_file = _arrange_consolidated(rp, tmp_path, monkeypatch)
+        calls = []
+
+        def _upload(url, data):
+            calls.append(url)
+            if len(calls) == 1:
+                raise _UPLOAD_DIED
+
+        monkeypatch.setattr(rp, "upload_pdb", _upload)
 
         rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time())
 
         result = json.loads(result_file.read_text())
-        assert result["designs_folded"] == 0
-        assert result["designs_completed"] == 0
         assert result["status"] == "COMPLETED"
-        assert result["n_failures"] == 2
+        assert result["designs_folded"] == 2
+        assert result["designs_completed"] == 1
+        assert result["n_failures"] == 1
+        assert isinstance(result.get("runtime_seconds"), int), result
 
     def test_a_healthy_run_reports_both_counts(self, rp, tmp_path, monkeypatch):
         """The count that separates the two failure shapes must exist on the
