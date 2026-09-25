@@ -145,16 +145,17 @@
           <label for="target_pdb" id="target-pdb-label">Target structure (.pdb / .cif)</label>
           <input type="file" id="target_pdb" name="target_pdb" accept=".pdb,.cif,.mmcif"{% if target %} disabled{% else %} required{% endif %}>
         </div>
-        <div class="runs-field" id="target-sdf-field" style="display:none;">
-          <label for="target_sdf">Target molecule (.sdf)</label>
-          <input type="file" id="target_sdf" name="target_sdf" accept=".sdf,.mol" disabled>
-          <!-- This input cannot produce a run: tools/proteina/__init__.py
-               ::_CUSTOM_TARGET_PRESETS is {"protein_binder"}, so validate()
-               refuses any ligand_binder post carrying a staged target. Leave
-               the field blank; the hint says so rather than the field being
-               silently removed mid-session. -->
-          <div class="hint">Leave this blank — the ligand variant designs against a benchmark ligand bundled with the model, and an uploaded molecule is refused.</div>
-        </div>
+        {# There is no target-molecule input here. It existed, shown only for
+           ligand_binder, and could never produce a run:
+           tools/proteina/__init__.py::_CUSTOM_TARGET_PRESETS holds
+           protein_binder alone, so validate() refuses any ligand_binder post
+           carrying a staged target.
+           A hint telling people to leave it blank was the first fix and the
+           wrong one -- the field itself was the bug. The ligand variant needs
+           no upload at all: its task is bundled with the model. The server
+           check stays (blueprints/campaigns.py:378-386 still derives
+           _has_custom_target from a target_sdf part), because deleting an
+           input does not stop a crafted post. #}
         <div class="runs-row">
           <div class="runs-field">
             <label for="target_name">Target name</label>
@@ -188,8 +189,8 @@
              proteina's prefix rule — that copy lives under proteina's field. #}
           <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
         </div>
-        {# Hidden AND disabled in the server-rendered markup, like
-           #target-sdf-field above. The form opens on a non-proteina tool, so
+        {# Hidden AND disabled in the server-rendered markup. The form opens on
+           a non-proteina tool, so
            this starts closed; the `disabled` is what makes it inert with no JS
            at all, and refreshTool() opens it only for a custom proteina run. #}
         <div class="runs-field" id="chain-hotspot-field" style="display:none;">
@@ -256,7 +257,6 @@
   var preset = document.getElementById('preset');
   var taskName = document.getElementById('task_name');
   var pdbInput = document.getElementById('target_pdb');
-  var sdfInput = document.getElementById('target_sdf');
   var chainInput = document.getElementById('target_chain');
   var regionInput = document.getElementById('target_input');
   var lenMin = document.getElementById('binder_length_min');
@@ -383,20 +383,18 @@
       // can never re-expose an upload that would shadow the target. The chain
       // stays editable: it is a per-run override of the target's default.
       show('target-pdb-field', false);
-      show('target-sdf-field', false);
       pdbInput.disabled = true;
-      sdfInput.disabled = true;
       pdbInput.required = false;
       show('target-chain-field', !isLigand);
       chainInput.disabled = isLigand;
       return;
     }
-    // Ligand variant takes an SDF; every other case takes a PDB.
+    // The ligand variant designs against a task bundled with the model, so it
+    // takes no target upload at all and no input is shown for it; every other
+    // case takes a PDB.
     show('target-pdb-field', !isLigand);
-    show('target-sdf-field', isLigand);
     show('target-chain-field', !isLigand);
     pdbInput.disabled = isLigand;
-    sdfInput.disabled = !isLigand;
     chainInput.disabled = isLigand;
     // A PDB is mandatory for the live tools. For proteina it is genuinely
     // optional — a curated benchmark task carries its own target — so the

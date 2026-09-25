@@ -24,8 +24,10 @@ it, because English has no finite list of ways to offer something.
 So the scan is for the VOCABULARY alone -- ligand, molecule, compound, SDF,
 .mol, small molecule, singular or plural -- with no notion of who supplies
 what, and every string that matches must appear verbatim in ``_REVIEWED``.
-There are 16, listed below, and they are the whole of this product's
-molecule-adjacent copy. Consequences, all deliberate:
+There are 15, listed below: that is every match across the surfaces
+``_all_surfaces`` walks, which is not the same as every string in the product
+-- a surface missing from that walk is a hole, and round 4 of review found one
+by mutation (see ``_all_surfaces``). Consequences, all deliberate:
 
 * A new sentence naming any of that vocabulary fails this test, whatever it
   says. The author adds it to ``_REVIEWED``, which is the moment someone
@@ -46,8 +48,8 @@ fails first, and the right repair is to restore the copy, not to delete this
 file.
 
 Surfaces come from ``test_proteina_promises_no_clustering._prose_sources``
-(meta, adapter, hero lede) plus two that walk cannot see: the campaign form
-template and ``blueprints/targets.py::_REFUSED_PRESETS``.
+(meta, adapter, hero lede) plus five that walk cannot see: four templates and
+``blueprints/targets.py::_REFUSED_PRESETS``.
 """
 
 from __future__ import annotations
@@ -156,7 +158,11 @@ _REVIEWED = {
         "resolves from a separate upstream registry, so this "
         "variant is limited to the curated ligand tasks."
     ),
-    # the campaign form: option labels, field labels, hints.
+    # the campaign form: the option label and the variant hint. There is no
+    # target-molecule field any more; round 4 of review pointed out that a
+    # field which can only ever be refused is worse than the hint explaining
+    # it, so templates/runs/new.html lost the input and this set lost its
+    # label and hint (the liveness check below is what forced that).
     "Ligand binder (vs a bundled benchmark ligand)",
     (
         "Which Proteina-Complexa model variant to run. Only the "
@@ -164,11 +170,12 @@ _REVIEWED = {
         "ligand and motif variants run benchmark tasks bundled with "
         "the model."
     ),
-    "Target molecule (.sdf)",
+    # templates/tools/proteina_form.html -- the tool's own single-run form,
+    # which says the same thing in its own words.
     (
-        "Leave this blank — the ligand variant designs against a "
-        "benchmark ligand bundled with the model, and an uploaded "
-        "molecule is refused."
+        "Which model variant to run. Only the protein binder can "
+        "design against a structure you upload; the ligand and motif "
+        "variants run curated benchmark tasks."
     ),
     # blueprints/targets.py -- the refusal shown when a
     # stored target is launched with a preset that cannot take it.
@@ -226,9 +233,23 @@ def _all_surfaces():
     there until 2026-09-24.
     """
     from blueprints.targets import _REFUSED_PRESETS
+    from tools.proteina import adapter
 
     sources = dict(_prose_sources())
-    sources["templates/runs/new.html"] = _visible_text("templates/runs/new.html")
+    # The tool's OWN single-run form, taken from the adapter rather than
+    # spelled out, so renaming the template cannot silently drop it from the
+    # scan. Review round 4 caught this one by mutation: the promise was
+    # re-addable to its variant help text with the whole suite green, because
+    # this walk listed only the campaign form.
+    for template in (
+        "templates/" + adapter.form_template,
+        "templates/" + adapter.results_partial,
+        # Reached from a stored target, and it renders proteina's variant
+        # rules in its own words.
+        "templates/targets/launch.html",
+        "templates/runs/new.html",
+    ):
+        sources[template] = _visible_text(template)
     sources["targets / _REFUSED_PRESETS"] = [
         msg for (tool, _preset), msg in _REFUSED_PRESETS.items()
         if tool == "proteina"
