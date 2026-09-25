@@ -100,7 +100,7 @@
                data-tool="{{ tools[0].slug if tools else '' }}" data-kind="" data-ok="1" data-no-alphafold="1"></div>
           {% endcall %}
 
-          {% call form_section("Download or send", "{tool}", open=true) %}
+          {% call form_section("Download or send", "", open=true) %}
           <div class="field-group">
             <button type="button" class="btn-secondary" id="prep-trim">Download trimmed PDB</button>
             {% if tools %}
@@ -110,10 +110,10 @@
               Sending opens the tool's form with this trimmed target, chains and
               hotspots filled in. Nothing runs until you submit that form.
             </div>
-            <div class="prep-error" id="prep-error" role="alert"></div>
           </div>
           {% endcall %}
         </form>
+        <div class="prep-error" id="prep-error" role="alert"></div>
       </div>
     </div>
 
