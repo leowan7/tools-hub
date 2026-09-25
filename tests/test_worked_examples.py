@@ -45,6 +45,8 @@ from pathlib import Path
 
 import pytest
 
+from markupsafe import Markup
+
 from shared.metric_glossary import plddt_on_100
 from shared.score_legends import SCORE_LEGENDS, _resolve_state
 from shared.tool_meta import meta_for
@@ -3204,3 +3206,175 @@ class TestTheRankColumnIsAPosition:
                 f"{slug} rendered no candidate row from the shared payload, "
                 "so this guard no longer covers the tool it was written for"
             )
+
+
+class TestTheTeaserComesFromTheExample:
+    """The form-hero teaser that points down at the worked example.
+
+    It exists because nothing linked to ``#worked-example``: the example
+    renders in the right rail thousands of pixels below the form, so an
+    anonymous visitor's first view of the page carried no evidence that a
+    real run was on it at all. The teaser is therefore read by people who
+    will never reach the panel it summarises, which makes a hand-typed
+    figure in it the one number on the page that no run backs.
+
+    ``blueprints/tools._example_teaser`` derives every word from
+    ``EXAMPLE``. These tests are what stops that quietly becoming prose.
+    """
+
+    def test_no_figure_in_the_teaser_is_invented(self, tools_app):
+        """Every number in the teaser traces to a field of EXAMPLE.
+
+        The load-bearing one. ``target`` alone carries residue counts and
+        PDB ids, and ``runtime`` / ``cost_usd`` are the two figures the
+        teaser appends, so a digit outside their union was typed by a
+        person rather than recorded by a run.
+        """
+        from blueprints.tools import _example_teaser
+
+        _, slugs = tools_app
+        number = re.compile(r"\d+(?:\.\d+)?")
+        checked = []
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            teaser = _example_teaser(example)
+            recorded = " ".join(
+                field for field in (
+                    Markup(example["target"]).striptags(),
+                    example.get("runtime"),
+                    example.get("cost_usd"),
+                ) if field
+            )
+            for figure in number.findall(teaser):
+                assert figure in recorded, (
+                    f"{slug}: the teaser says {figure!r}, which appears in "
+                    f"no EXAMPLE field it is built from. Teaser: {teaser!r}"
+                )
+            checked.append(slug)
+        assert len(checked) >= 14, (
+            f"only {checked} produced a teaser; this is meant to cover "
+            "every tool that ships an EXAMPLE"
+        )
+
+    def test_the_teaser_opens_with_the_targets_own_words(self, tools_app):
+        """The prose half is a prefix of ``target``, not a paraphrase."""
+        from blueprints.tools import _example_teaser
+
+        _, slugs = tools_app
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            target = Markup(example["target"]).striptags()
+            # 25 characters is inside the shortest first sentence any
+            # EXAMPLE currently carries (boltz2, 38), so this compares
+            # real prose on every tool rather than passing on a short one.
+            assert _example_teaser(example).startswith(target[:25]), (
+                f"{slug}: teaser does not open with its own target.\n"
+                f"  target: {target[:60]!r}\n"
+                f"  teaser: {_example_teaser(example)[:60]!r}"
+            )
+
+    def test_both_recorded_figures_reach_the_teaser(self, tools_app):
+        """A figure the example carries is not silently dropped."""
+        from blueprints.tools import _example_teaser
+
+        _, slugs = tools_app
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            teaser = _example_teaser(example)
+            if example.get("runtime"):
+                assert example["runtime"] in teaser, f"{slug}: runtime lost"
+            if example.get("cost_usd"):
+                assert f"${example['cost_usd']}" in teaser, (
+                    f"{slug}: cost_usd lost"
+                )
+
+    def test_the_teaser_renders_above_the_panel_it_links_to(self, tools_app):
+        """Placement is the whole point, so it is asserted and not assumed.
+
+        A teaser rendering BELOW the worked example would be a link the
+        reader meets only after arriving unaided, which is the state this
+        change exists to end.
+        """
+        from blueprints.tools import _example_teaser
+
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        for slug, example in _examples(slugs).items():
+            if not example:
+                continue
+            page = client.get(f"/tools/{slug}").get_data(as_text=True)
+            # markupsafe's escaper, not html.escape: the two disagree on the
+            # apostrophe (&#39; vs &#x27;) and esmfold2-design's target has
+            # one, so html.escape reports a false absence for that tool.
+            teaser = str(Markup.escape(_example_teaser(example)))
+            assert teaser in page, (
+                f"{slug}: the derived teaser is not on the rendered page"
+            )
+            assert 'id="worked-example"' in page, f"{slug}: no anchor target"
+            assert page.index(teaser) < page.index('id="worked-example"'), (
+                f"{slug}: the teaser renders below the panel it links to"
+            )
+
+    def test_a_tool_without_an_example_renders_no_teaser(self, tools_app):
+        """The None branch, driven rather than reasoned about.
+
+        All fourteen tools ship an EXAMPLE today, so this is the only way
+        the empty case is exercised at all.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        slug = "bindcraft"
+        assert "Example run" in client.get(f"/tools/{slug}").get_data(
+            as_text=True,
+        ), "positive control: bindcraft should carry a teaser to remove"
+
+        meta = meta_for(slug)
+        original = meta.EXAMPLE
+        meta.EXAMPLE = None
+        try:
+            page = client.get(f"/tools/{slug}").get_data(as_text=True)
+        finally:
+            meta.EXAMPLE = original
+        assert "Example run" not in page, (
+            "EXAMPLE is None and the hero still rendered a teaser"
+        )
+        assert 'id="worked-example"' not in page, (
+            "EXAMPLE is None and the panel still rendered — the assertion "
+            "above would then be testing the wrong absence"
+        )
+
+    def test_a_targetless_example_does_not_500(self, tools_app):
+        """An EXAMPLE missing ``target`` degrades, it does not take the page.
+
+        Nothing requires the key: no schema guard here, and the three gates
+        in shared/tool_chooser.has_example are EXAMPLE being truthy,
+        result.json parsing, and adapter.results_partial — none of them
+        looks inside the dict. Before blueprints/tools._example_teaser
+        existed the panel read it as ``ex.target|safe`` and jinja's default
+        Undefined rendered an empty paragraph, so a hard subscript in the
+        teaser would have turned that into a 500 on the form itself.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        slug = "bindcraft"
+
+        meta = meta_for(slug)
+        original = meta.EXAMPLE
+        meta.EXAMPLE = {
+            key: value for key, value in original.items() if key != "target"
+        }
+        try:
+            response = client.get(f"/tools/{slug}")
+        finally:
+            meta.EXAMPLE = original
+        assert response.status_code == 200, (
+            f"EXAMPLE without 'target' returned {response.status_code}"
+        )
+        page = response.get_data(as_text=True)
+        assert "Example run" in page, (
+            "the teaser vanished rather than degrading — then this test "
+            "would pass without exercising _example_teaser at all"
+        )
