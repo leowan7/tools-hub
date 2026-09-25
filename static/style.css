@@ -2468,3 +2468,33 @@ select.form-control { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .rail { transition: none; }
 }
+
+/* Signed-in jobs list (templates/jobs_list.html). The wrapper scrolls the
+   nine-column table sideways inside .app-shell > main rather than widening
+   the page beside the rail. */
+.jobs-group-title {
+  margin: 1.75rem 0 0.5rem 0;
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.jobs-group-title:first-child { margin-top: 0; }
+.jobs-group-title a { color: inherit; text-decoration: none; }
+.jobs-group-count { color: var(--text-tertiary); font-size: 0.85rem; font-weight: 400; }
+.jobs-table-wrap { overflow-x: auto; }
+.jobs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.jobs-table thead tr {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  text-align: left;
+}
+.jobs-table th { padding: 0.5rem 0.4rem; white-space: nowrap; }
+.jobs-table tbody tr { border-bottom: 1px solid var(--border); }
+.jobs-table td { padding: 0.55rem 0.4rem; }
+.jobs-table td a { color: var(--accent); }
+.jobs-table .jobs-col-select { width: 2rem; }
+.jobs-muted { color: var(--text-secondary); }
+.jobs-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.jobs-spend-note { display: block; color: var(--text-tertiary); font-family: var(--font-body); font-size: 0.78rem; }
+.jobs-progress { width: 5rem; height: 0.5rem; accent-color: var(--accent); vertical-align: middle; }

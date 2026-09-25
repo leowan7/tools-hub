@@ -32,6 +32,7 @@ def sidebar_groups() -> list[dict]:
     home = [
         _link("public.index", "Home"),
         _link("targets.targets_list", "Targets"),
+        _link("prep.prep_page", "Target prep"),
         _link("campaigns.compute_campaigns_list", "Campaigns"),
     ]
     home = [i for i in home if i]

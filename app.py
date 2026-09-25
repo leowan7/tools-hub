@@ -168,6 +168,7 @@ from blueprints.admin import admin_bp
 from blueprints.auth import auth_bp
 from blueprints.wallet import wallet_bp
 from blueprints.tools import tools_bp
+from blueprints.prep import prep_bp
 from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
 from webhooks.uploads import register_upload_urls
@@ -784,6 +785,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(auth_bp)
     flask_app.register_blueprint(wallet_bp)
     flask_app.register_blueprint(tools_bp)
+    flask_app.register_blueprint(prep_bp)
 
     # ------------------------------------------------------------------
     # Platform API — wet-lab as an API for binder-design agents.

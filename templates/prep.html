@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% from "components/preflight_panel.html" import preflight_styles %}
+
+{% block title %}Target prep — Ranomics Tools{% endblock %}
+{% block description %}Free protein target preparation: load a structure from the PDB or your own file, check it, trim it to the chains and residues you need, pick hotspots in 3D, and send it to a binder design tool.{% endblock %}
+
+{% block content %}
+  <style>
+    .prep-step { margin-bottom: 1.5rem; }
+    .prep-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem; }
+    .prep-row input[type=text], .prep-row select {
+      background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 0.5rem 0.7rem; font-family: var(--font-body); font-size: 0.9rem;
+    }
+    .prep-hint { color: var(--text-secondary); font-size: 0.85rem; max-width: 62ch; margin: 0 0 0.75rem; }
+    .prep-results { list-style: none; padding: 0; margin: 0 0 0.75rem; }
+    .prep-results button { background: none; border: 0; color: var(--text-primary); cursor: pointer; text-align: left; padding: 0.25rem 0; font-family: var(--font-body); }
+    .prep-results button:hover { color: var(--accent-text, #2B9E7E); }
+    .prep-error { color: #f87171; font-size: 0.88rem; min-height: 1.2em; }
+    .hotspot-viewer { width: 100%; height: 360px; background: var(--bg-deep); position: relative; display: none; }
+    .hotspot-viewer-empty { padding: 1.5rem 1rem; text-align: center; color: var(--text-tertiary); font-size: 0.82rem; }
+    .hotspot-viewer-error { padding: 1rem; color: #f87171; font-size: 0.85rem; }
+  </style>
+  {{ preflight_styles() }}
+
+  <div class="hero">
+    <p class="label-accent">Free</p>
+    <h1>Target prep</h1>
+    <p class="subtitle">
+      Load a protein target from the PDB or your own file, check it the way
+      the design tools will, trim it to the chains and residues you need,
+      pick hotspots in 3D, and download the result or send it straight to a
+      design tool. Nothing on this page spends wallet funds or starts a GPU.
+    </p>
+  </div>
+
+  {% if not viewer_is_signed_in() %}
+    <div class="panel"><div class="panel-body">
+      <p class="prep-hint">Target prep is free with an account.</p>
+      {% include "components/_signin_cta.html" %}
+    </div></div>
+  {% else %}
+  <form id="prep-form" class="panel" onsubmit="return false">
+    <div class="panel-body">
+      <section class="prep-step">
+        <h2>1. Load a target</h2>
+        <div class="prep-row">
+          <input type="text" id="prep-pdb-id" maxlength="4" placeholder="PDB ID, e.g. 1BRS" aria-label="PDB ID">
+          <button type="button" class="btn-secondary" id="prep-load-id">Load</button>
+        </div>
+        <div class="prep-row">
+          <input type="text" id="prep-query" maxlength="200" placeholder="Search RCSB, e.g. PD-L1" aria-label="Search RCSB">
+          <button type="button" class="btn-secondary" id="prep-search">Search</button>
+        </div>
+        <ul class="prep-results" id="prep-results"></ul>
+        <div class="prep-row">
+          <label for="target_pdb" class="label">Or upload</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif">
+        </div>
+        <div class="prep-hint" id="prep-loaded"></div>
+      </section>
+
+      <section class="prep-step">
+        <h2>2. Choose chains, range and hotspots</h2>
+        <div class="prep-row">
+          <label for="prep-tool" class="label">Check against</label>
+          <select name="tool" id="prep-tool">
+            {% for a in tools %}<option value="{{ a.slug }}">{{ a.label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="prep-row">
+          <label for="target_chain" class="label">Chains to keep</label>
+          <input type="text" name="target_chain" id="target_chain" value="A" placeholder="A or A B">
+        </div>
+        <div class="prep-row">
+          <label for="target_input" class="label">Residue range (optional)</label>
+          <input type="text" name="target_input" id="target_input" placeholder="A1-120,B5-80">
+        </div>
+        <p class="prep-hint">A range replaces the chain list: only the chains it names are kept.</p>
+        <div class="prep-row">
+          <label for="hotspot_residues" class="label">Hotspots</label>
+          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="A45,A73">
+        </div>
+        <p class="prep-hint">
+          Click residues in the viewer to add or remove them. Each hotspot
+          carries its chain letter, so A45 and B45 are different residues.
+        </p>
+        <div class="hotspot-picker">
+          <div class="prep-row">
+            <label><input type="checkbox" id="hotspot-surface-toggle"> Surface</label>
+            <button type="button" class="btn-secondary" id="hotspot-clear-btn">Clear hotspots</button>
+          </div>
+          <div id="hotspot-empty" class="hotspot-viewer-empty">Load a target to see it here.</div>
+          <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+        </div>
+        <div id="preflight-panel" class="preflight-panel"
+             data-tool="{{ tools[0].slug if tools else '' }}" data-kind="" data-ok="1" data-no-alphafold="1"></div>
+      </section>
+
+      <section class="prep-step">
+        <h2>3. Download or send</h2>
+        <div class="prep-row">
+          <button type="button" class="btn-secondary" id="prep-trim">Download trimmed PDB</button>
+          {% if tools %}
+            <button type="button" class="btn-primary" id="prep-handoff">Send to the selected tool</button>
+          {% endif %}
+        </div>
+        <p class="prep-hint">
+          Sending opens the tool's form with this trimmed target, chains and
+          hotspots filled in. Nothing runs until you submit that form.
+        </p>
+        <div class="prep-error" id="prep-error" role="alert"></div>
+      </section>
+    </div>
+  </form>
+
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/preflight.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (typeof window.initHotspotPicker === 'function') {
+        window.initHotspotPicker({
+          pdbInputId: 'target_pdb',
+          hotspotInputId: 'hotspot_residues',
+          chainInputId: 'target_chain',
+          viewerId: 'hotspot-viewer',
+          emptyMessageId: 'hotspot-empty',
+          surfaceToggleId: 'hotspot-surface-toggle',
+          clearBtnId: 'hotspot-clear-btn',
+          chainPrefixed: true,
+        });
+      }
+
+      var form = document.getElementById('prep-form');
+      var fileInput = document.getElementById('target_pdb');
+      var errEl = document.getElementById('prep-error');
+      var loadedEl = document.getElementById('prep-loaded');
+      var resultsEl = document.getElementById('prep-results');
+
+      function showError(msg) { errEl.textContent = msg || ''; }
+
+      function errorOf(resp) {
+        return resp.json().then(function (j) { return j.error || 'Request failed.'; },
+                                function () { return 'Request failed.'; });
+      }
+
+      function useFile(blob, name) {
+        var dt = new DataTransfer();
+        dt.items.add(new File([blob], name));
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      fileInput.addEventListener('change', function () {
+        var f = fileInput.files && fileInput.files[0];
+        loadedEl.textContent = f ? 'Loaded ' + f.name : '';
+        showError('');
+      });
+
+      function loadId(id) {
+        showError('');
+        loadedEl.textContent = 'Loading ' + id + '...';
+        fetch('/prep/fetch/' + encodeURIComponent(id), { credentials: 'same-origin' })
+          .then(function (r) {
+            if (!r.ok) return errorOf(r).then(function (m) { loadedEl.textContent = ''; showError(m); });
+            var cd = r.headers.get('Content-Disposition') || '';
+            var m = /filename="?([^";]+)/.exec(cd);
+            return r.blob().then(function (b) { useFile(b, m ? m[1] : id + '.pdb'); });
+          })
+          .catch(function () { loadedEl.textContent = ''; showError('Could not reach RCSB.'); });
+      }
+
+      document.getElementById('prep-load-id').addEventListener('click', function () {
+        loadId(document.getElementById('prep-pdb-id').value.trim());
+      });
+
+      document.getElementById('prep-search').addEventListener('click', function () {
+        var q = document.getElementById('prep-query').value.trim();
+        if (!q) return;
+        showError('');
+        resultsEl.textContent = 'Searching...';
+        fetch('/prep/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' })
+          .then(function (r) {
+            if (!r.ok) return errorOf(r).then(function (m) { resultsEl.textContent = ''; showError(m); });
+            return r.json().then(function (j) {
+              resultsEl.textContent = j.results.length ? '' : 'No entries found.';
+              j.results.forEach(function (hit) {
+                var li = document.createElement('li');
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = hit.id + (hit.title ? ' — ' + hit.title : '');
+                b.addEventListener('click', function () { loadId(hit.id); });
+                li.appendChild(b);
+                resultsEl.appendChild(li);
+              });
+            });
+          })
+          .catch(function () { resultsEl.textContent = ''; showError('Could not reach RCSB.'); });
+      });
+
+      document.getElementById('prep-tool').addEventListener('change', function (e) {
+        document.getElementById('preflight-panel').dataset.tool = e.target.value;
+        document.getElementById('target_chain').dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+      function post(url) {
+        showError('');
+        return fetch(url, {
+          method: 'POST', body: new FormData(form), credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': document.querySelector('meta[name=csrf-token]').content },
+        });
+      }
+
+      document.getElementById('prep-trim').addEventListener('click', function () {
+        post('/prep/trim').then(function (r) {
+          if (!r.ok) return errorOf(r).then(showError);
+          var cd = r.headers.get('Content-Disposition') || '';
+          var m = /filename="?([^";]+)/.exec(cd);
+          return r.blob().then(function (b) {
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(b);
+            a.download = m ? m[1] : 'target_trimmed.pdb';
+            a.click();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+          });
+        }).catch(function () { showError('Could not trim the target.'); });
+      });
+
+      var handoffBtn = document.getElementById('prep-handoff');
+      if (handoffBtn) {
+        handoffBtn.addEventListener('click', function () {
+          post('/prep/handoff').then(function (r) {
+            return r.json().then(function (j) {
+              if (r.ok && j.redirect) { window.location.href = j.redirect; }
+              else { showError(j.error || 'Could not send the target.'); }
+            });
+          }).catch(function () { showError('Could not send the target.'); });
+        });
+      }
+    });
+  </script>
+  {% endif %}
+{% endblock %}

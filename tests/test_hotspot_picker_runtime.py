@@ -75,7 +75,11 @@ _SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
 # repo, and bindcraft is the one binder tool with no smoke tier — the only way
 # to test it is a full paid pilot. It is already gated
 # multi_chain_container_ready=False, so the flag buys it the least.
-CHAIN_PREFIXED_FORMS = ("rfdiffusion", "pxdesign", "boltzgen", "proteina")
+#
+# prep is the free /prep page, not a tool form. It is ON because its handoff
+# refuses a hotspot whose chain is outside the trimmed selection
+# (test_prep_page.py::test_handoff_refuses_hotspot_outside_trim).
+CHAIN_PREFIXED_FORMS = ("rfdiffusion", "pxdesign", "boltzgen", "proteina", "prep")
 BARE_INT_FORMS = ("rfantibody", "bindcraft")
 ALL_PICKER_FORMS = CHAIN_PREFIXED_FORMS + BARE_INT_FORMS
 
@@ -115,8 +119,9 @@ def _form_page(app, slug: str) -> dict:
         "blueprints.tools.get_or_create_wallet",
         return_value={"balance_usd": "100", "wallet_frozen": False},
     ):
-        resp = client.get(f"/tools/{slug}")
-    assert resp.status_code == 200, f"/tools/{slug} -> {resp.status_code}"
+        url = "/prep" if slug == "prep" else f"/tools/{slug}"
+        resp = client.get(url)
+    assert resp.status_code == 200, f"{url} -> {resp.status_code}"
     html = resp.get_data(as_text=True)
     blocks = [b for b in _SCRIPT_RE.findall(html) if "initHotspotPicker" in b]
     assert len(blocks) == 1, (
