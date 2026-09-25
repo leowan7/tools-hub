@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import re
+from datetime import datetime, timezone
 
 from flask import (
     Blueprint,
@@ -460,6 +461,98 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     return f"{name} {shown}{unit}"
 
 
+def _parse_ts(value):  # noqa: ANN001
+    if not isinstance(value, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
+def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN001
+    """``{job.id: {runtime, spend, spend_note, progress}}`` for the jobs table.
+
+    ``None`` renders as a dash, so a row whose fields cannot be read shows
+    dashes and stays in the table.
+    ``runtime`` is ``now - started_at`` while running and
+    ``completed_at - started_at`` once terminal. ``spend`` is the ledger's
+    net for the job's ``inputs._wallet.hold_tx_id``
+    (``shared.wallet.job_spend_by_hold``). ``progress`` is set only for a
+    pending or running job whose heartbeat ``inputs._progress`` carries a
+    positive ``designs_total``.
+    """
+    from shared.compute_campaigns import display_cost_usd, display_ledger_usd  # noqa: PLC0415
+    from shared.jobs import _REFUNDED_FAILURE_CLASSES  # noqa: PLC0415
+    from shared.wallet import job_spend_by_hold  # noqa: PLC0415
+
+    def _inputs(job):  # noqa: ANN001, ANN202
+        inputs = getattr(job, "inputs", None)
+        return inputs if isinstance(inputs, dict) else {}
+
+    def _hold_id(job):  # noqa: ANN001, ANN202
+        wallet = _inputs(job).get("_wallet")
+        hold = wallet.get("hold_tx_id") if isinstance(wallet, dict) else None
+        return str(hold) if isinstance(hold, (str, int)) and hold else None
+
+    spend = job_spend_by_hold(user_id, [h for h in map(_hold_id, jobs) if h])
+    cells = {}
+    for job in jobs:
+        status = getattr(job, "status", None)
+        started = _parse_ts(getattr(job, "started_at", None))
+        end = now if status == "running" else _parse_ts(getattr(job, "completed_at", None))
+        runtime = None
+        if started and end and status != "pending" and end >= started:
+            runtime = _fmt_duration((end - started).total_seconds())
+
+        spend_text = spend_note = None
+        ledger = spend.get(_hold_id(job)) if _hold_id(job) else None
+        if ledger is not None:
+            usd = max(ledger["usd"], 0)
+            # Settled: the exact figure the wallet page prints for this hold
+            # (templates/wallet/transactions.html, display_ledger_usd). Reserved,
+            # or a settled figure finer than 4dp that display_ledger_usd refuses:
+            # round up, as a hold is shown everywhere else.
+            try:
+                spend_text = "$" + (display_ledger_usd(usd) if ledger["settled"] else display_cost_usd(usd))
+            except ValueError:
+                spend_text = "$" + display_cost_usd(usd)
+            if not ledger["settled"]:
+                spend_note = "reserved"
+            elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
+                spend_note = "refunded"
+
+        progress = None
+        prog = _inputs(job).get("_progress")
+        if status in ("pending", "running") and isinstance(prog, dict):
+            try:
+                total = int(prog.get("designs_total"))
+                done = int(prog.get("designs_completed") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            if total > 0:
+                done = max(0, min(done, total))
+                progress = {"done": done, "total": total}
+
+        cells[getattr(job, "id", None)] = {
+            "runtime": runtime,
+            "spend": spend_text,
+            "spend_note": spend_note,
+            "progress": progress,
+        }
+    return cells
+
+
 @jobs_bp.route("/jobs", methods=["GET"])
 @login_required
 def jobs_list():
@@ -516,6 +609,7 @@ def jobs_list():
     return render_template(
         "jobs_list.html",
         jobs=jobs,
+        cells=_jobs_table_cells(jobs, ctx.user_id, datetime.now(timezone.utc)),
         page=page,
         page_size=page_size,
         total=total,
