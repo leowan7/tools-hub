@@ -777,7 +777,47 @@ def job_detail(job_id: str):
         share_allowed=share_allowed,
         handoff=handoff,
         scale_up=scale_up_quote(ctx.user_id, job),
+        failure_money=_failure_money(ctx.user_id, job),
     )
+
+
+def _failure_money(user_id: str, job) -> "str | None":  # noqa: ANN001
+    """The refund sentence for a failed or timed-out job, read from the ledger.
+
+    None when the job did not fail, carried no wallet hold, or the ledger
+    lookup (``shared.wallet.job_spend_by_hold``) returned nothing usable, so
+    the page says nothing about money rather than guessing.
+    """
+    if getattr(job, "status", None) not in ("failed", "timeout"):
+        return None
+    wallet = (getattr(job, "inputs", None) or {}).get("_wallet")
+    hold = wallet.get("hold_tx_id") if isinstance(wallet, dict) else None
+    if not hold:
+        return None
+    from shared.compute_campaigns import display_cost_usd, display_ledger_usd  # noqa: PLC0415
+    from shared.wallet import job_spend_by_hold  # noqa: PLC0415
+
+    ledger = job_spend_by_hold(user_id, [str(hold)]).get(str(hold))
+    if ledger is None:
+        return None
+
+    def _usd(value) -> str:  # noqa: ANN001
+        try:
+            return "$" + display_ledger_usd(value)
+        except ValueError:
+            return "$" + display_cost_usd(value)
+
+    usd, held = max(ledger["usd"], 0), ledger.get("held") or 0
+    if not ledger["settled"]:
+        return f"{_usd(usd)} is still on hold for this run and has not been settled yet."
+    if usd == 0:
+        if held > 0:
+            return f"The {_usd(held)} hold was returned to your wallet in full. You were not charged for this run."
+        return "You were not charged for this run."
+    if held > usd:
+        return (f"You were charged {_usd(usd)} for the GPU time this run used. "
+                f"The rest of the {_usd(held)} hold was returned to your wallet.")
+    return f"You were charged {_usd(usd)} for the GPU time this run used."
 
 
 def _scale_up_target_id(user_id: str, job) -> "str | None":  # noqa: ANN001
