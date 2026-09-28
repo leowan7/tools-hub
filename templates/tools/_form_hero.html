@@ -46,4 +46,36 @@
   {% else %}
     <p class="subtitle">{{ adapter.blurb }}</p>
   {% endif %}
+
+  {# The trailer for components/worked_example.html, which renders in the
+     right rail below this hero. Before this line the only link to that
+     anchor anywhere was tools/comparison.html:335, on the /tools chooser
+     — a visitor who arrived on the tool page itself had to scroll past
+     the form and every reference panel to find out a real run was on it.
+     tests/test_worked_examples.py::TestTheTeaserComesFromTheExample
+     ::test_the_teaser_renders_above_the_panel_it_links_to keeps this
+     above its target.
+
+     BOTH auth states, matching the panel it points at: the explainer is
+     no longer anonymous-only (see the header of
+     components/about_panel.html), so gating this on auth would leave a
+     signed-in reader with the anchor and no way to find it.
+
+     The gate is the macro's own `{% raw %}{% if ex and adapter.results_partial %}{% endraw %}`,
+     spelled out again rather than shared, so this link cannot outlive
+     its target. ``teaser`` is built by blueprints/tools._example_teaser
+     and is plain text, hence no ``|safe``.
+
+     ``position: relative`` for the same reason .hero h1 and .hero
+     .subtitle carry it (static/style.css): .hero::before is an
+     absolutely positioned glow that paints over unpositioned children. #}
+  {% set _example = tool_public_context(adapter).example %}
+  {% if _example and adapter.results_partial %}
+    <p style="margin: 0.9rem 0 0; position: relative; font-size: 0.85rem;
+              color: var(--text-secondary); line-height: 1.6; max-width: 60ch;">
+      <strong style="color: var(--warm-white); font-weight: 500;">Example run</strong>
+      &mdash; {{ _example.teaser }}
+      <a href="#worked-example" style="white-space: nowrap;">See what came back &rarr;</a>
+    </p>
+  {% endif %}
 </div>

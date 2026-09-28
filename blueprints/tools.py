@@ -27,6 +27,7 @@ from flask import (
     session,
     url_for,
 )
+from markupsafe import Markup
 
 from scout.handoff import VALID_HANDOFF_TOOLS
 from shared import resample as _resample
@@ -900,6 +901,49 @@ def _example_result(slug: str) -> dict | None:
         return None
 
 
+def _example_teaser(example: dict) -> str:
+    """The one-line trailer for the worked example, for the form hero.
+
+    ``components/worked_example.html`` renders in the right rail below
+    the form, so this line is what a visitor sees of it before deciding
+    to scroll. Every word is taken from ``EXAMPLE``: the first sentence
+    of ``target``, then whichever of ``runtime`` / ``cost_usd`` that
+    example carries.
+    ``tests/test_worked_examples.py::TestTheTeaserComesFromTheExample``
+    fails on a digit in the output that is absent from those three fields.
+
+    ``Markup.striptags`` rather than splitting the raw string because
+    ``target`` carries both markup and entities: it unescapes as it
+    strips, so ``templates/tools/_form_hero.html`` renders the result
+    WITHOUT ``|safe`` and an ``&mdash;`` still reaches the page as one
+    character instead of six. Splitting plain text also means the cut
+    cannot land inside a tag.
+
+    Every field is read with ``.get``, matching the rest of
+    ``_example_context``, which fails soft when the payload is missing
+    rather than raising. This runs inside the tool-page render, so a
+    ``KeyError`` here would 500 the form for both auth states, not just
+    blank the rail panel.
+    ``tests/test_worked_examples.py
+    ::TestTheTeaserComesFromTheExample::test_a_targetless_example_does_not_500``
+    renders a tool whose ``EXAMPLE`` has no ``target``.
+    """
+    lead, sentence_end, _rest = (
+        Markup(example.get("target") or "").striptags().partition(". ")
+    )
+    if sentence_end:
+        lead += "."
+    figures = ", ".join(
+        figure
+        for figure in (
+            example.get("runtime"),
+            f"${example['cost_usd']}" if example.get("cost_usd") else None,
+        )
+        if figure
+    )
+    return f"{lead} {figures}.".lstrip() if figures else lead
+
+
 def _example_context(adapter, meta) -> dict | None:
     """The worked example for a tool: narration + the real payload.
 
@@ -919,7 +963,7 @@ def _example_context(adapter, meta) -> dict | None:
             "or unreadable; rendering no worked example", adapter.slug,
         )
         return None
-    return dict(example, result=result)
+    return dict(example, result=result, teaser=_example_teaser(example))
 
 def _showcase_note(slug: str) -> dict | None:
     """The showcase card for a tool, with its URL resolved, or None."""
