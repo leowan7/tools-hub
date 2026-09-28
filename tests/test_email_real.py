@@ -19,6 +19,7 @@ Supabase service-role client.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -363,6 +364,9 @@ class TestResendContract:
          {"user_id": TEST_USER_ID, "spent_30d_usd": 1200}),
         ("send_wallet_frozen_email",
          {"user_id": TEST_USER_ID, "dispute_id": "dp_x"}),
+        ("send_signup_credit_expiring_email",
+         {"user_id": TEST_USER_ID, "remaining_usd": 12,
+          "expires_at": datetime(2026, 10, 28)}),
     ]
 
     @pytest.mark.parametrize("name,kwargs", SENDER_CALLS)

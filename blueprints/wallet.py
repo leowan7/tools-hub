@@ -31,6 +31,7 @@ from shared.wallet import (
     SELF_SERVE_CEILING_USD,
     _round_up_topup_amount,
     get_or_create_wallet,
+    signup_credit_status,
 )
 from shared.wallet_estimates import compute_hard_cap, estimated_cost_for_tool
 
@@ -635,6 +636,7 @@ def wallet_overview():
         wallet=wallet,
         recent_transactions=recent_transactions,
         user_email=session.get("user_email", ""),
+        signup_credit_status=signup_credit_status(ctx.user_id, wallet=wallet),
     )
 
 @wallet_bp.route("/account/wallet/topup", methods=["GET"])

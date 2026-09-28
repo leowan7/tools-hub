@@ -4,6 +4,7 @@
    Variables:
      base_url       URL prefix for tools.ranomics.com (no trailing slash)
      credit_usd     dollar amount of the signup credit (string, e.g. "15")
+     expiry_days    days until unspent credit expires (SIGNUP_CREDIT_EXPIRY_DAYS)
 #}
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
             color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
@@ -15,6 +16,8 @@
   <p style="margin:0 0 1rem 0;line-height:1.55;">
     We have added ${{ credit_usd }} to your wallet so you can try any tool on a
     real target. Your balance is your spend cap, and design count is unlimited.
+    Any of this free credit you have not used expires {{ expiry_days }} days
+    after you sign up; money you add yourself never expires.
   </p>
 
   <p style="margin:0 0 1rem 0;line-height:1.55;">

@@ -1,10 +1,12 @@
-{# 7-day re-engagement email (C6).
+{# Balance reminder / re-engagement email (C6).
    Sender: shared.email.send_reengagement_email
    Triggered by cron.reengagement.send_reengagement when a user has
-   credits sitting unused and a 7+ day silence.
+   a balance and a 14+ day silence (or never ran and signed up 14+ days ago).
    Variables:
      base_url       URL prefix for tools.ranomics.com (no trailing slash)
      balance_usd    user's current USD balance, formatted (e.g. "12.50")
+     never_ran      true when the user has never run a job
+     tools_url      link to the tool catalog, with UTM tags
      suggestions    list of {slug, label, blurb, url} dicts (1-2 items)
 #}
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -16,9 +18,9 @@
 
   <p style="margin:0 0 1rem 0;line-height:1.55;">
     Your tools-hub wallet still has <strong>${{ balance_usd }}</strong>
-    on it, and we have not seen a run from you in the last week. No
-    pressure, but here are two tools you have not tried yet that your
-    balance comfortably covers.
+    on it, and {% if never_ran %}you have not run a tool yet{% else %}we
+    have not seen a run from you in the last two weeks{% endif %}. No
+    pressure, but here are two tools you have not tried yet.
   </p>
 
   {% for suggestion in suggestions %}
@@ -39,6 +41,10 @@
       </a>
     </div>
   {% endfor %}
+
+  <p style="margin:1rem 0;line-height:1.55;">
+    Or <a href="{{ tools_url }}" style="color:#2B9E7E;">browse all the tools</a>.
+  </p>
 
   <p style="margin:1.5rem 0 0 0;line-height:1.55;font-size:13px;
             color:#666;">

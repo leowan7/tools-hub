@@ -39,7 +39,7 @@ from typing import Any, Optional
 import requests
 
 from shared import metric_glossary as _metric_glossary
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
 
@@ -1322,11 +1322,15 @@ def send_reengagement_email(
     the sweep) and the user's balance off ``candidate.balance_usd``.
     Returns True on confirmed send. Failures are logged but never raise.
     """
+    from cron.reengagement import UTM_CAMPAIGN, _with_utm  # noqa: PLC0415
+
     subject = "You have credits sitting unused"
     suggestions = list(getattr(candidate, "suggestions", []) or [])
     context = {
         "base_url":    base_url,
         "balance_usd": _money(getattr(candidate, "balance_usd", 0) or 0, "down"),
+        "never_ran":   not getattr(candidate, "last_job_at", ""),
+        "tools_url":   _with_utm(f"{base_url}/tools", campaign=UTM_CAMPAIGN),
         "suggestions": suggestions,
     }
     try:
@@ -2170,12 +2174,46 @@ def send_signup_credit_email(
         "send_signup_credit.html",
         base_url=base_url,
         credit_usd=credit_usd,
+        expiry_days=SIGNUP_CREDIT_EXPIRY_DAYS,
     )
     return _post_resend(
         to_email=email,
         subject=subject,
         html_body=html,
         log_tag=f"signup_credit user={user_id}",
+    )
+
+
+def send_signup_credit_expiring_email(
+    *,
+    user_id: str,
+    remaining_usd,
+    expires_at,
+    **_extra: Any,
+) -> bool:
+    """One-time reminder that unspent signup credit is about to expire.
+
+    Trigger: ``cron.signup_credit.run``, which claims the send first.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_signup_credit_expiring_email: no email for user %s", user_id
+        )
+        return False
+    credit_usd = _money(remaining_usd, "down")
+    expires_on = f"{expires_at:%B} {expires_at.day}, {expires_at.year}"
+    html = _render_template(
+        "send_signup_credit_expiring.html",
+        base_url=_base_url(),
+        credit_usd=credit_usd,
+        expires_on=expires_on,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=f"Your ${credit_usd} free credit expires on {expires_on}",
+        html_body=html,
+        log_tag=f"signup_credit_expiring user={user_id}",
     )
 
 

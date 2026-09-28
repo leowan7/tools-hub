@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 # The signup credit is quoted in SEO copy that reaches JSON-LD structured
 # data, so it is read from the grant rather than retyped. It was hardcoded
@@ -67,8 +67,8 @@ seo_faq: list[dict] = [
             "Billing is by the second of dedicated GPU time. A typical "
             "single-complex fold costs a few cents to a dollar from your "
             "wallet. New accounts start with "
-            f"{_SIGNUP_CREDIT} of credit, which covers many monomer "
-            "folds or a handful of multimers."
+            f"{_SIGNUP_CREDIT} of credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
+            "days, which covers many monomer folds or a handful of multimers."
         ),
     },
 ]

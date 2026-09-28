@@ -21,7 +21,7 @@ from flask import (
 )
 
 from shared.auth import login_required
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +355,8 @@ def signup():
         # user "$5" for the whole time the wallet was depositing $15.
         success_msg=(
             f"Account created with ${SIGNUP_CREDIT_USD:.0f} of compute "
-            "credit. Sign in to get started."
+            f"credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} days. Sign in "
+            "to get started."
         ),
     )
 

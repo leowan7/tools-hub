@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 # The signup credit is quoted in SEO copy that reaches JSON-LD structured
 # data, so it is read from the grant rather than retyped. It was hardcoded
@@ -53,7 +53,8 @@ seo_faq: list[dict] = [
             "Billing is by the second. A typical ProteinMPNN job costs a "
             "fraction of a cent because the model finishes in under a "
             "minute on most backbones. New accounts start with a "
-            f"{_SIGNUP_CREDIT} wallet balance, which is enough for "
+            f"{_SIGNUP_CREDIT} wallet balance, usable for "
+            f"{SIGNUP_CREDIT_EXPIRY_DAYS} days, which is enough for "
             "thousands of runs."
         ),
     },

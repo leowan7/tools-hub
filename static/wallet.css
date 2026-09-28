@@ -182,6 +182,7 @@
 }
 .wallet-tx-kind-charge,
 .wallet-tx-kind-refund,
+.wallet-tx-kind-signup_credit_expiry,
 .wallet-tx-kind-absorbed_variance {
   background: rgba(196, 91, 83, 0.08);
   color: var(--warm-cream);

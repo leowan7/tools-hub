@@ -632,6 +632,9 @@ def create_app() -> Flask:
         return f"{SIGNUP_CREDIT_USD:.0f}"
 
     flask_app.jinja_env.globals["signup_credit"] = _signup_credit
+    from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS  # noqa: PLC0415
+
+    flask_app.jinja_env.globals["signup_credit_expiry_days"] = SIGNUP_CREDIT_EXPIRY_DAYS
 
     # Left-rail groups. Jinja globals rather than a context processor
     # because templates/_sidebar.html is the only caller and it renders
@@ -991,7 +994,7 @@ def create_app() -> Flask:
 
     @flask_app.cli.command("reengagement:send")
     def cli_reengagement_send():
-        """Sweep for unused-credit users and send the 7-day re-engagement email.
+        """Sweep for idle users with a balance and send the re-engagement email.
 
         Usage::
 
@@ -1007,6 +1010,25 @@ def create_app() -> Flask:
             f"reengagement:send qualified={summary['qualified']} "
             f"sent={summary['sent']} "
             f"skipped_no_suggestions={summary['skipped_no_suggestions']} "
+            f"errors={summary['errors']}",
+            flush=True,
+        )
+
+    @flask_app.cli.command("credit:expire")
+    def cli_credit_expire():
+        """Send signup-credit expiry reminders and expire due signup credit.
+
+        Usage::
+
+            flask credit:expire
+        """
+        from cron.signup_credit import run  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = run()
+        print(
+            f"credit:expire reminded={summary['reminded']} "
+            f"expired={summary['expired']} skipped={summary['skipped']} "
             f"errors={summary['errors']}",
             flush=True,
         )
