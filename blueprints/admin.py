@@ -810,15 +810,115 @@ def admin_campaign_save_results(campaign_id: str):
 # Admin routes — /admin/users/* and /admin/signups/rejected
 # ------------------------------------------------------------------
 
+# PostgREST returns at most this many rows per response, so an unpaged
+# select silently stops at the first 1000.
+_PAGE = 1000
+
+
+def _all_rows(query) -> list[dict]:  # noqa: ANN001
+    """Every row of ``query()``, one ``.range()`` page at a time.
+
+    ``query`` builds a fresh, ordered select on each call; the order must
+    be on a unique column so pages do not overlap.
+    """
+    rows: list[dict] = []
+    while True:
+        page = query().range(len(rows), len(rows) + _PAGE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < _PAGE:
+            return rows
+
+
+def _iso(value) -> str:  # noqa: ANN001
+    if value is None:
+        return ""
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _user_field(u, name: str):  # noqa: ANN001, ANN202
+    return getattr(u, name, None) or (u.get(name) if isinstance(u, dict) else None)
+
+
+def _funnel(signups: dict, run_rows: list, event_rows: list, topup_rows: list,
+            now) -> list[dict]:  # noqa: ANN001
+    """7- and 30-day counts for the staff funnel block.
+
+    ``signups`` maps user id to signup time. Runs are counted per
+    submission: a compute campaign's child jobs share one ``campaign_id``
+    and count once.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    submissions: dict = {}
+    for r in run_rows:
+        uid = r.get("user_id")
+        if uid:
+            submissions.setdefault(uid, set()).add(r.get("campaign_id") or r.get("id"))
+    out = []
+    for days in (7, 30):
+        start = (now - timedelta(days=days)).isoformat()
+        cohort = [uid for uid, ts in signups.items() if ts and ts >= start]
+        events = [e for e in event_rows if (e.get("created_at") or "") >= start]
+        topups = [t for t in topup_rows if (t.get("created_at") or "") >= start]
+        out.append({
+            "days": days,
+            "signups": len(cohort),
+            "ran_1": sum(1 for uid in cohort if len(submissions.get(uid, ())) >= 1),
+            "ran_2": sum(1 for uid in cohort if len(submissions.get(uid, ())) >= 2),
+            "scale_up_click": sum(1 for e in events if e.get("event_type") == "scale_up_click"),
+            "result_download": sum(1 for e in events if e.get("event_type") == "result_download"),
+            "outbound_click": sum(1 for e in events if e.get("event_type") == "outbound_click"),
+            "topups": len(topups),
+            "topup_users": len({t.get("user_id") for t in topups}),
+            "topup_usd": sum(float(t.get("amount_usd") or 0) for t in topups),
+        })
+    return out
+
+
+def _reminder_days(reengaged: list[str], reminded: list[str], expired: list[str],
+                   now) -> dict:  # noqa: ANN001
+    """Per-day counts for the two marketing crons over the last 30 days.
+
+    Each source keeps one timestamp per user, and the re-engagement stamp
+    is overwritten on each send, so an earlier send to the same user
+    drops out of these counts.
+    """
+    from datetime import timedelta  # noqa: PLC0415
+
+    start = (now - timedelta(days=30)).isoformat()
+    days: dict = {}
+    for key, stamps in (("reengagement", reengaged), ("credit_reminder", reminded),
+                        ("credit_expired", expired)):
+        for ts in stamps:
+            if ts and ts >= start:
+                day = days.setdefault(ts[:10], {"reengagement": 0, "credit_reminder": 0,
+                                                "credit_expired": 0})
+                day[key] += 1
+    return {
+        "days": sorted(days.items(), reverse=True),
+        "last": {
+            "reengagement": max(reengaged, default=""),
+            "credit_reminder": max(reminded, default=""),
+            "credit_expired": max(expired, default=""),
+        },
+        "total": {
+            "reengagement": len(reengaged),
+            "credit_reminder": len(reminded),
+            "credit_expired": len(expired),
+        },
+    }
+
+
 @admin_bp.route("/admin/users", methods=["GET"])
 def admin_users_list():
     """Per-user activity dashboard: signup quality, runs, last seen.
 
     Pulls every auth.users row via service role (list_all_auth_users), joins
-    ``public.user_profiles``, ``credits_balance``, and the trailing
-    30-day count from ``public.user_events`` + ``public.tool_jobs``.
-    Sorts by last-activity DESC so the most engaged users surface
-    first.
+    ``public.user_profiles``, the wallet, and the trailing 30-day rows from
+    ``public.user_events`` + ``public.tool_jobs``, each read in full through
+    ``_all_rows``. Sorts by last-activity DESC so the most engaged users
+    surface first. Also builds the funnel block and the reminder-email
+    counts.
     """
     from shared.auth import STAFF_EMAILS  # noqa: PLC0415
     from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
@@ -831,47 +931,50 @@ def admin_users_list():
 
     client = get_service_client()
     users: list[dict] = []
+    funnel: list[dict] = []
+    reminders: dict = {}
     if client is not None:
         try:
             from datetime import datetime, timedelta, timezone  # noqa: PLC0415
-            window_start = (
-                datetime.now(timezone.utc) - timedelta(days=30)
-            ).isoformat()
+            now = datetime.now(timezone.utc)
+            window_start = (now - timedelta(days=30)).isoformat()
 
             auth_users = list_all_auth_users(client)
 
-            profile_rows = (
-                client.table("user_profiles").select("*").execute().data or []
+            profile_rows = _all_rows(
+                lambda: client.table("user_profiles").select("*").order("user_id")
             )
             profiles_by_id = {r["user_id"]: r for r in profile_rows}
 
-            balance_rows = (
-                client.table("user_wallets")
-                .select("user_id,balance_usd")
-                .execute()
-                .data
-                or []
+            wallet_rows = _all_rows(
+                lambda: client.table("user_wallets")
+                .select("user_id,balance_usd,signup_credit_reminder_sent_at,"
+                        "signup_credit_expired_at")
+                .order("user_id")
             )
             balance_by_id = {
                 r["user_id"]: float(r.get("balance_usd") or 0)
-                for r in balance_rows
+                for r in wallet_rows
             }
 
-            event_rows = (
-                client.table("user_events")
-                .select("user_id,event_type,created_at")
+            event_rows = _all_rows(
+                lambda: client.table("user_events")
+                .select("id,user_id,event_type,created_at")
                 .gte("created_at", window_start)
-                .execute()
-                .data
-                or []
+                .order("id")
             )
-            run_rows = (
-                client.table("tool_jobs")
-                .select("user_id,created_at,status")
+            run_rows = _all_rows(
+                lambda: client.table("tool_jobs")
+                .select("id,user_id,campaign_id,created_at,status")
                 .gte("created_at", window_start)
-                .execute()
-                .data
-                or []
+                .order("id")
+            )
+            topup_rows = _all_rows(
+                lambda: client.table("wallet_transactions")
+                .select("id,user_id,amount_usd,created_at")
+                .in_("kind", ["topup", "auto_reload"])
+                .gte("created_at", window_start)
+                .order("id")
             )
 
             from collections import defaultdict  # noqa: PLC0415
@@ -897,40 +1000,52 @@ def admin_users_list():
                 if ts > last_run.get(uid, ""):
                     last_run[uid] = ts
 
+            signups: dict = {}
+            reengaged: list[str] = []
             for u in auth_users:
-                uid = getattr(u, "id", None) or (u.get("id") if isinstance(u, dict) else None)
+                uid = _user_field(u, "id")
                 if not uid:
                     continue
-                user_email = (
-                    getattr(u, "email", None)
-                    or (u.get("email") if isinstance(u, dict) else None)
-                )
-                created_at = (
-                    getattr(u, "created_at", None)
-                    or (u.get("created_at") if isinstance(u, dict) else None)
-                )
+                created_at = _iso(_user_field(u, "created_at"))
+                signups[uid] = created_at
+                meta = _user_field(u, "user_metadata")
+                if isinstance(meta, dict) and meta.get("reengagement_email_sent_at"):
+                    reengaged.append(str(meta["reengagement_email_sent_at"]))
                 profile = profiles_by_id.get(uid, {})
                 last_activity = max(
                     last_event.get(uid, ""),
                     last_run.get(uid, ""),
-                ) or created_at or ""
+                ) or created_at
                 users.append({
                     "user_id": uid,
-                    "email": user_email,
-                    "created_at": str(created_at)[:19] if created_at else "",
+                    "email": _user_field(u, "email"),
+                    "created_at": created_at[:19],
                     "signup_quality": profile.get("signup_quality") or "legacy",
                     "domain_class": profile.get("domain_class") or "",
                     "purpose": profile.get("purpose"),
                     "wallet_usd": balance_by_id.get(uid, 0.0),
                     "runs_30d": run_count.get(uid, 0),
                     "events_30d": event_count.get(uid, 0),
-                    "last_activity": str(last_activity)[:19] if last_activity else "",
+                    "last_activity": last_activity[:19],
                 })
             users.sort(key=lambda u: u.get("last_activity") or "", reverse=True)
+
+            funnel = _funnel(signups, run_rows, event_rows, topup_rows, now)
+            reminders = _reminder_days(
+                reengaged,
+                [r["signup_credit_reminder_sent_at"] for r in wallet_rows
+                 if r.get("signup_credit_reminder_sent_at")],
+                [r["signup_credit_expired_at"] for r in wallet_rows
+                 if r.get("signup_credit_expired_at")],
+                now,
+            )
         except Exception:
             logger.warning("admin_users_list query failed", exc_info=True)
 
-    return render_template("admin/users_list.html", users=users)
+    return render_template(
+        "admin/users_list.html", users=users, funnel=funnel, reminders=reminders,
+    )
+
 
 # TODO(account-deletion): There is no in-app account-deletion action yet;
 # deleting a user (Supabase dashboard or a future admin/self-serve control)
@@ -960,6 +1075,10 @@ def admin_user_detail(user_id: str):
         "created_at": "",
         "profile": {},
         "wallet_usd": 0.0,
+        "reengagement_sent_at": "",
+        "credit_reminder_sent_at": "",
+        "credit_expires_at": "",
+        "credit_expired_at": "",
         "timeline": [],
     }
     if client is None:
@@ -972,6 +1091,10 @@ def admin_user_detail(user_id: str):
             target["email"] = getattr(user_obj, "email", None)
             target["created_at"] = (
                 str(getattr(user_obj, "created_at", "") or "")[:19]
+            )
+            meta = getattr(user_obj, "user_metadata", None) or {}
+            target["reengagement_sent_at"] = str(
+                meta.get("reengagement_email_sent_at") or ""
             )
     except Exception:
         logger.warning("get_user_by_id failed for %s", user_id, exc_info=True)
@@ -991,13 +1114,17 @@ def admin_user_detail(user_id: str):
     try:
         bal = (
             client.table("user_wallets")
-            .select("balance_usd")
+            .select("balance_usd,signup_credit_expires_at,"
+                    "signup_credit_reminder_sent_at,signup_credit_expired_at")
             .eq("user_id", user_id)
             .maybe_single()
             .execute()
         )
         data = getattr(bal, "data", None) or {}
         target["wallet_usd"] = float(data.get("balance_usd") or 0)
+        target["credit_reminder_sent_at"] = data.get("signup_credit_reminder_sent_at") or ""
+        target["credit_expires_at"] = data.get("signup_credit_expires_at") or ""
+        target["credit_expired_at"] = data.get("signup_credit_expired_at") or ""
     except Exception:
         target["wallet_usd"] = 0.0
 
@@ -1123,15 +1250,12 @@ def admin_signups_rejected():
             window_start = (
                 datetime.now(timezone.utc) - timedelta(days=30)
             ).isoformat()
-            rows = (
-                client.table("signup_rejections")
+            rows = _all_rows(
+                lambda: client.table("signup_rejections")
                 .select("*")
                 .gte("created_at", window_start)
                 .order("created_at", desc=True)
-                .limit(500)
-                .execute()
-                .data
-                or []
+                .order("id")
             )
         except Exception:
             logger.warning(

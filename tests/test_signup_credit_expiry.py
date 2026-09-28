@@ -219,10 +219,10 @@ def test_no_grant_or_already_expired_is_zero():
 
 def test_expiry_after_partial_spend_removes_only_the_rest(db):
     db.new_wallet()
-    hold = db.add("hold", -6)
-    db.add("hold_release", 2, parent=hold)
+    hold = db.add("hold", -3)
+    db.add("hold_release", 1, parent=hold)
     assert wallet.expire_signup_credit(UID) == "expired"
-    assert [r["amount_usd"] for r in _expiry_rows(db)] == ["-16.0000"]
+    assert [r["amount_usd"] for r in _expiry_rows(db)] == [f"-{SIGNUP_CREDIT_USD - 2:.4f}"]
     assert db.balance() == 0
 
 

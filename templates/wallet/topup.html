@@ -117,8 +117,9 @@
     <h1>Top up your wallet</h1>
     <p class="subtitle">
       Minimum top up is ${{ '%.0f'|format(_min) }}. Tax is added at checkout
-      where applicable. Top ups are non refundable and unused balance does
-      not expire.
+      where applicable. Top ups are non refundable. Money you add does not
+      expire; the free signup credit expires {{ signup_credit_expiry_days }}
+      days after signup.
     </p>
   </div>
 
@@ -126,11 +127,18 @@
     <div class="panel wallet-topup-gate-notice">
       <div class="panel-body">
         <p class="wallet-section-body">
-          <strong>Top up and run.</strong> Your job estimate exceeds your
-          current balance by
-          <strong>${{ display_cost_usd(_deficit_raw) }}</strong>. Add at
-          least that amount and we will pick up the job submission right
-          where you left off.
+          <strong>Top up to run your job.</strong>
+          {% if shown_short_usd is defined and shown_short_usd is not none %}
+          This job needs <strong>${{ display_cost_usd(estimate_usd) }}</strong>
+          and your balance is <strong>${{ display_balance_usd(balance_usd) }}</strong>,
+          short by <strong>${{ shown_short_usd }}</strong>.
+          {% else %}
+          To start, your job needs
+          <strong>${{ display_cost_usd(_deficit_raw) }}</strong> more than
+          your balance.
+          {% endif %}
+          Add at least that amount, then go back to the form and run the
+          job once your balance updates. Nothing is submitted for you.
         </p>
       </div>
     </div>
@@ -210,7 +218,7 @@
 
         <div class="wallet-topup-cta-row">
           <button type="submit" class="btn-primary submit-cta">
-            {% if next_url %}Top up and run{% else %}Continue to checkout{% endif %}
+            {% if next_url %}Top up{% else %}Continue to checkout{% endif %}
           </button>
           {% if next_url %}
             <a href="{{ next_url }}" class="btn-secondary">Back to the form</a>

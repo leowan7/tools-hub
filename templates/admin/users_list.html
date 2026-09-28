@@ -23,7 +23,92 @@
   .quality-academic { color:#7B61FF; }
   .quality-personal_explained { color:#D4A14B; }
   .quality-legacy { color:var(--text-secondary); }
+  .admin-mini td, .admin-mini th { padding:.4rem .75rem; }
+  .admin-mini th { color:var(--text-secondary);text-align:left;font-weight:500; }
+  .admin-mini .num { text-align:right; }
 </style>
+
+{% if funnel %}
+  <div class="panel" style="margin-bottom:1.25rem;">
+    <div class="panel-body" style="padding:0;">
+      <h3 style="margin:0;padding:.6rem .75rem;font-size:.9rem;color:var(--text-secondary);">Funnel</h3>
+      <table class="admin-mini" style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);">
+            <th>Window</th><th class="num">Signups</th><th class="num">Ran 1+</th>
+            <th class="num">Ran 2+</th><th class="num">Scale-up clicks</th>
+            <th class="num">Downloads</th><th class="num">Outbound clicks</th>
+            <th class="num">Top-ups</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in funnel %}
+            <tr style="border-bottom:1px solid var(--border);">
+              <td>Last {{ f.days }} days</td>
+              <td class="num">{{ f.signups }}</td>
+              <td class="num">{{ f.ran_1 }}</td>
+              <td class="num">{{ f.ran_2 }}</td>
+              <td class="num">{{ f.scale_up_click }}</td>
+              <td class="num">{{ f.result_download }}</td>
+              <td class="num">{{ f.outbound_click }}</td>
+              <td class="num">{{ f.topups }} ({{ f.topup_users }} users, ${{ '%.2f' % f.topup_usd }})</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="subtitle" style="margin:0;padding:.5rem .75rem;font-size:.78rem;">
+        Ran 1+ / 2+ count users who signed up in the window. A campaign counts as one run.
+      </p>
+    </div>
+  </div>
+{% endif %}
+
+{% if reminders %}
+  <div class="panel" style="margin-bottom:1.25rem;">
+    <div class="panel-body" style="padding:0;">
+      <h3 style="margin:0;padding:.6rem .75rem;font-size:.9rem;color:var(--text-secondary);">Reminder emails</h3>
+      <table class="admin-mini" style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);">
+            <th>Email</th><th class="num">Users stamped</th><th>Last sent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key, label in [('reengagement', 'Re-engagement'), ('credit_reminder', 'Credit expiring soon'), ('credit_expired', 'Credit expired (no email)')] %}
+            <tr style="border-bottom:1px solid var(--border);">
+              <td>{{ label }}</td>
+              <td class="num">{{ reminders.total[key] }}</td>
+              <td>{{ reminders.last[key][:16] if reminders.last[key] else 'never sent' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if reminders.days %}
+        <table class="admin-mini" style="width:100%;border-collapse:collapse;font-size:.82rem;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border);">
+              <th>Day (UTC)</th><th class="num">Re-engagement</th>
+              <th class="num">Credit reminder</th><th class="num">Credit expired</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for day, c in reminders.days %}
+              <tr style="border-bottom:1px solid var(--border);">
+                <td>{{ day }}</td>
+                <td class="num">{{ c.reengagement }}</td>
+                <td class="num">{{ c.credit_reminder }}</td>
+                <td class="num">{{ c.credit_expired }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      <p class="subtitle" style="margin:0;padding:.5rem .75rem;font-size:.78rem;">
+        One stamp per user: a later re-engagement email overwrites the earlier one.
+      </p>
+    </div>
+  </div>
+{% endif %}
 
 {% if users %}
   <div class="panel">
