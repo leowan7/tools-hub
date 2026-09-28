@@ -11,6 +11,12 @@
     quality <strong>{{ target.profile.signup_quality or 'legacy' }}</strong>
     {% if target.profile.domain_class %}· domain {{ target.profile.domain_class }}{% endif %}
   </p>
+  <p class="subtitle" style="font-size:.85rem;">
+    Re-engagement email: {{ target.reengagement_sent_at[:16] if target.reengagement_sent_at else 'never sent' }} ·
+    credit reminder: {{ target.credit_reminder_sent_at[:16] if target.credit_reminder_sent_at else 'never sent' }}
+    {% if target.credit_expired_at %}· signup credit expired {{ target.credit_expired_at[:10] }}
+    {% elif target.credit_expires_at %}· signup credit expires {{ target.credit_expires_at[:10] }}{% endif %}
+  </p>
 </div>
 
 <div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.25rem;">
