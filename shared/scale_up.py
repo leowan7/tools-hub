@@ -53,13 +53,14 @@ def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     """The offer for ``job``, or None when there is nothing to offer."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
     from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    from shared.jobs import candidate_records  # noqa: PLC0415
     from shared.wallet import get_or_create_wallet  # noqa: PLC0415
     from shared.wallet_estimates import estimated_cost_for_tool  # noqa: PLC0415
 
     entry = SCALE_UP.get(job.tool)
     if entry is None or job.status != "succeeded" or job.preset == "validate":
         return None
-    if not (job.result or {}).get("candidates"):
+    if not candidate_records(job.result):
         return None
     if not tool_enabled(job.tool):
         return None

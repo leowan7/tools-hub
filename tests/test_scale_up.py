@@ -73,6 +73,17 @@ def test_no_offer(job):
     assert _quote(job) is None
 
 
+@pytest.mark.parametrize("tool,inputs,result", [
+    ("iggm", {"num_samples": 8}, {"designs": [{"rank": 1}]}),
+    ("esmfold2-design", {"n_seeds": 4}, {"designs": [{"rank": 1}]}),
+    ("bindcraft", {"num_designs": 4}, {"status": "ok", "output": {"candidates": [{"rank": 1}]}}),
+])
+def test_offer_reads_every_result_shape(tool, inputs, result):
+    job = _job(tool=tool, preset="cdr_design" if tool == "iggm" else "pilot", inputs=inputs)
+    job.result = result
+    assert _quote(job) is not None
+
+
 def test_topup_is_the_shortfall_rounded_up_to_a_dollar():
     q = _quote(_job(tool="boltzgen", inputs={"budget": 4}), balance=0)
     assert q.topup_usd == math.ceil(q.price_usd)
