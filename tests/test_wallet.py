@@ -1392,15 +1392,38 @@ def test_concurrent_two_users_isolated(store):
 # --- Low balance email ----------------------------------------------------
 
 
-def test_settle_emits_low_balance_email_when_below_threshold(store, email_log):
-    _seed_wallet(store, USER_A, balance=Decimal("6.00"))
-    hold_id = reserve_hold(USER_A, "bindcraft", 1, Decimal("4.00"), {})
+def _low_balance_emails(email_log) -> int:
+    return sum(1 for name, _ in email_log if name == "send_low_balance_email")
+
+
+def _run_job(user_id: str) -> Decimal:
+    hold_id = reserve_hold(user_id, "bindcraft", 1, Decimal("1.00"), {})
     settle_hold(hold_id, gpu_seconds=100, gpu_class="A100-80GB", params={})
-    wallet_row = next(r for r in store.tables["user_wallets"] if r["user_id"] == USER_A)
-    if Decimal(str(wallet_row["balance_usd"])) < LOW_BALANCE_EMAIL_THRESHOLD:
-        assert any(
-            name == "send_low_balance_email" for name, _ in email_log
-        )
+    return wallet._wallet(user_id)["balance_usd"]
+
+
+def test_low_balance_email_fires_once_on_crossing(store, email_log):
+    _seed_wallet(store, USER_A, balance=Decimal("5.05"))
+    assert Decimal(str(_run_job(USER_A))) < LOW_BALANCE_EMAIL_THRESHOLD
+    assert _low_balance_emails(email_log) == 1
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 1, "second run below $5 re-sent it"
+
+
+def test_low_balance_email_not_sent_to_a_wallet_already_below(store, email_log):
+    # A fresh $5 signup-credit wallet after its first cent of spend.
+    _seed_wallet(store, USER_A, balance=Decimal("4.90"))
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 0
+
+
+def test_low_balance_email_sent_once_to_a_fresh_signup_wallet(store, email_log):
+    # A new account starts at exactly the threshold: warned after its first run, not after later ones.
+    _seed_wallet(store, USER_A, balance=Decimal("5.00"))
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 1
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 1
 
 
 # --- Preflight email side-effects ----------------------------------------

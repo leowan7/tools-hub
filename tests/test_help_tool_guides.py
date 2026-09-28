@@ -325,24 +325,19 @@ def test_help_index_step_count_matches_the_guide(app):
     )
 
 
-def test_signup_credit_actually_covers_every_pilot(app):
-    """Step 4 claims the signup credit "covers every pilot on the site".
+def test_pilots_over_the_signup_credit_are_all_binder_design(app):
+    """Step 4 says the credit covers structure prediction and sequence runs,
+    and that most binder design runs need a top-up.
 
-    The credit is $20 (raised from $15 on 2026-09-10) and the dearest pilots
-    are proteina AND pxdesign, tied at $12.59 displayed ($12.5827 raw), and
-    both numbers move independently: #151/#153
-    changed the credit, and every pilot price is derived from live GPU
-    rates over the recipe's params. Note PRICE is the weaker of the two
-    tests — what actually admits a job is the cushioned HOLD, which sits
-    above the price on any tool with a worst-case floor. That is the
-    subject of tests/test_signup_credit_covers_smallest_run.py, and it is
-    the check that would have caught esmfold2-design's hold landing exactly
-    on the old credit. Neither side knows about this
-    sentence.
+    The credit is $5 (cut from $20 on 2026-09-28). Every pilot priced above it
+    must be a binder-design tool, or step 4's "covers structure prediction and
+    sequence runs" is false. OpenDDE publishes no pilot card, so it cannot show
+    up here; tests/test_signup_credit_covers_smallest_run.py covers it by hold.
     """
     import re as _re  # noqa: PLC0415
     from decimal import Decimal  # noqa: PLC0415
 
+    from shared.tools_catalog import _TOOL_CATEGORIES  # noqa: PLC0415
     from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
 
     client = app.test_client()
@@ -359,7 +354,13 @@ def test_signup_credit_actually_covers_every_pilot(app):
     assert len(prices) >= 10, f"only {len(prices)} pilot prices found"
 
     over = {s: p for s, p in prices.items() if p > SIGNUP_CREDIT_USD}
-    assert not over, (
-        f"the ${SIGNUP_CREDIT_USD} signup credit no longer covers {over}; "
-        "step 4 of /help/getting-started says it covers every pilot"
+    assert over, "no pilot costs more than the credit; step 4's top-up line is stale"
+    not_binder = {
+        s: p for s, p in over.items()
+        if _TOOL_CATEGORIES.get(s) != "Make new binders for my target"
+    }
+    assert not not_binder, (
+        f"the ${SIGNUP_CREDIT_USD} signup credit no longer covers {not_binder}; "
+        "step 4 of /help/getting-started says it covers structure prediction "
+        "and sequence runs"
     )

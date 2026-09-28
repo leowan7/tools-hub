@@ -30,7 +30,7 @@
   {"q": "What happens if I cancel a running job?",
    "a": "Cancellation stops the run but charges for the GPU minutes already consumed. There is no refund for compute we already paid for. A job cancelled before the first heartbeat reports zero GPU consumed settles at zero and the full hold returns to your wallet."},
   {"q": "Are there subscriptions?",
-   "a": "No. There are no subscriptions, seats, tiers, or credits, and no minimum monthly spend. You pay only for the compute your jobs use. Top ups are final and unused balance does not expire."},
+   "a": "No. There are no subscriptions, seats, tiers, or credits, and no minimum monthly spend. You pay only for the compute your jobs use. Top ups are final and money you add does not expire; the free signup credit expires " ~ signup_credit_expiry_days ~ " days after signup."},
   {"q": "What happens if a job fails?",
    "a": "It depends on the cause. If the failure is on our side (Modal pod crash, our tool image bug, our preflight letting bad input through, no progress timeout), the full hold is refunded. If the job completed normally but produced zero passing designs, if you cancelled it mid run, or if our overrun safety system stopped a runaway job, you pay for the GPU consumed. Ambiguous cases default to refund."},
   {"q": "More on pricing",
@@ -40,7 +40,7 @@
   {"q": "How is my data handled?",
    "a": "Your uploads and results belong to your account and are tied to the email you signed in with. A job link opened under a different account will not show another user's results. See the privacy policy for the full detail."},
   {"q": "Can I run a tool to test it first?",
-   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $" ~ signup_credit() ~ " signup balance, usable for " ~ signup_credit_expiry_days ~ " days after sign-up, also covers a small first run to see real output on your target."},
+   "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $" ~ signup_credit() ~ " signup balance, usable for " ~ signup_credit_expiry_days ~ " days after sign-up, covers a first structure prediction or sequence run on your target. Most binder design runs cost more than that and need a top-up."},
   {"q": "How long do runs take?",
    "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large full-size run takes longer and bills as its pieces finish. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
@@ -134,7 +134,8 @@
         <p class="why-card-body">
           No. There are no subscriptions, seats, tiers, or credits, and no
           minimum monthly spend. You pay only for the compute your jobs use.
-          Top ups are final and unused balance does not expire.
+          Top ups are final and money you add does not expire; the free
+          signup credit expires {{ signup_credit_expiry_days }} days after signup.
         </p>
       </article>
       <article class="why-card">
@@ -195,7 +196,9 @@
           Your inputs are validated before any compute runs, so a bad chain
           ID or a malformed PDB is caught up front rather than after you have
           paid. Your ${{ signup_credit() }} signup balance, usable for {{ signup_credit_expiry_days }} days after sign-up,
-          also covers a small first run to see real output on your target.
+          covers a first structure prediction or sequence run on your
+          target. Most binder design runs cost more than that and need a
+          top-up.
         </p>
       </article>
     </div>
