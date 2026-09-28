@@ -25,6 +25,8 @@ Configuration
                                considered orphaned.
 ``STUCK_RUNNING_AGE_HOURS``    default 6  — running with no progress
                                this long is considered dead.
+                               Campaign pieces with a longer session
+                               budget get that budget plus 2 h instead.
 
 CLI entry point::
 
@@ -42,6 +44,41 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Grace past a campaign piece's session budget before the sweeper calls it
+# dead: queue time the poll reports as running, cold start, the design in
+# flight when the budget runs out, and the final upload.
+_CAMPAIGN_SESSION_SLACK_HOURS = 2
+
+
+def _within_campaign_session(row: dict, now: datetime) -> bool:
+    """True while a campaign piece is still inside its own session budget.
+
+    A bindcraft or rfantibody campaign piece is sent to Modal with a
+    ``_total_budget_hours`` of 10
+    (shared/compute_campaigns.py::_campaign_session_inputs) and is planned at
+    about 8 h (``_chunk_size_for``), longer than the flat running cutoff. Without
+    this the sweeper refunds a piece that is still working.
+    """
+    if not row.get("campaign_id"):
+        return False
+    from shared.compute_campaigns import _campaign_session_inputs  # noqa: PLC0415
+
+    budget = _campaign_session_inputs(str(row.get("tool") or "")).get(
+        "_total_budget_hours"
+    )
+    started = row.get("started_at")
+    if not budget or not started:
+        return False
+    try:
+        started_at = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    limit = timedelta(hours=budget + _CAMPAIGN_SESSION_SLACK_HOURS)
+    return now - started_at < limit
 
 
 def sweep_stuck_jobs(
@@ -130,7 +167,7 @@ def sweep_stuck_jobs(
     try:
         stuck_running = (
             client.table("tool_jobs")
-            .select("id")
+            .select("id, tool, campaign_id, started_at")
             .eq("status", "running")
             .lt("started_at", running_cutoff)
             .execute()
@@ -144,6 +181,8 @@ def sweep_stuck_jobs(
     for row in stuck_running:
         job_id = row.get("id")
         if not job_id:
+            continue
+        if _within_campaign_session(row, now):
             continue
         try:
             outcome = timeout_stuck_job(job_id)
