@@ -1,9 +1,9 @@
 """A run that did not succeed says WHY in plain words and whether it was paid for.
 
-Two surfaces, one decision: ``shared/jobs.py::failure_notice`` is called by
-the failure panel in ``templates/job_detail.html`` (through the jinja global
-registered in ``app.py``) and by the ``failed`` tone of
-``shared/email.py::_result_summary``.
+``shared/jobs.py::failure_notice`` is called by the ``failed`` tone of
+``shared/email.py::_result_summary``. The job page's refund sentence is read
+from the ledger instead (``blueprints/jobs.py::_failure_money``); its tests
+are in tests/test_failed_run_page.py.
 
 The defect this file pins: both surfaces were gated on ``status == "failed"``.
 Every non-succeeded status takes the failed tone
@@ -209,9 +209,11 @@ class TestJobPage:
     def test_timeout_page_states_cause_and_refund(self, client):
         """A timed-out row carries no ``error`` dict, so the old
         ``status == 'failed' and job.error`` gate rendered nothing at all."""
-        text = _page(client, _job())
+        with patch("shared.wallet.job_spend_by_hold", return_value={
+                "tx-hold-stub": {"usd": 0, "settled": True, "held": 4.5}}):
+            text = _page(client, _job())
         assert "hit its time limit" in text
-        assert "Your wallet was not charged for this run." in text
+        assert "You were not charged for this run." in text
 
     def test_failed_page_keeps_the_raw_detail_under_the_plain_words(self, client):
         text = _page(client, _job(
@@ -220,7 +222,7 @@ class TestJobPage:
             error={"bucket": "pipeline", "detail": "no *scores*.json in output"},
         ))
         assert "hit an error while running" in text
-        assert "Your wallet was not charged for this run." in text
+        assert "no *scores*.json in output" in text
         assert "no *scores*.json in output" in text
 
     def test_page_makes_no_refund_claim_without_a_wallet_hold(self, client):

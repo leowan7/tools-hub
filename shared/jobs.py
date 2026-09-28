@@ -20,6 +20,7 @@ through the self-read policy from migration 0005.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -796,8 +797,8 @@ def failure_notice(job) -> Optional[dict]:  # noqa: ANN001
     function's legacy refund arm). A NULL class WITH consumed seconds
     settles, so it is not claimed as refunded here. Free-tier runs never
     carried a hold, so they get the cause and no money sentence. Consumers:
-    the failure panel in ``templates/job_detail.html`` and the ``failed``
-    tone of ``shared/email.py::_result_summary``.
+    the ``failed`` tone of ``shared/email.py::_result_summary``, and
+    ``failure_advice`` below for its fallback cause.
     """
     status = getattr(job, "status", None)
     if status in (None, "succeeded", "pending", "running"):
@@ -814,6 +815,96 @@ def failure_notice(job) -> Optional[dict]:  # noqa: ANN001
         not gpu_seconds or failure_class in _REFUNDED_FAILURE_CLASSES
     )
     return {"cause": cause, "refunded": refunded}
+
+
+_GENERIC_FIX = ("Try again with the same settings. If it fails a second time, "
+                "contact us with the job ID and we will look at it.")
+
+# (kind, pattern, cause, fix), first match wins. Each pattern is matched
+# case-insensitively against the job's stored error text (bucket, check,
+# category, detail, message joined). The strings come from the emitters:
+# ``_fail(bucket, check, detail)`` in tools/*/run_pipeline.py,
+# ``_stringify_error`` in gpu/modal_client.py, the webhook path in
+# webhooks/modal.py, and the tool_submit failures in blueprints/tools.py.
+# "our_side" is listed first because an input download failing
+# (``input:download``) is our storage, not the user's file.
+_FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
+    ("our_side", re.compile(
+        r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
+        r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
+        r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
+        r"upload failed for|failed to download input|download failed",
+        re.I),
+     "This run failed on our side, not because of your input.",
+     _GENERIC_FIX),
+    ("timeout", re.compile(r"timeout|timed out|time limit", re.I),
+     "The run hit its time limit before it finished.",
+     "Ask for fewer designs, or crop the target to the domain you want to "
+     "bind, then try again."),
+    ("hotspot", re.compile(r"hotspot|epitope residue", re.I),
+     "One or more of the hotspot residues could not be found on the target.",
+     "Use the residue numbers exactly as they appear in your file, on the "
+     "chain you picked. If the file has several chains, name the chain "
+     "for each hotspot (for example A45)."),
+    ("chain", re.compile(
+        r"antigen_chain|chain \S+ (produced 0 residues|"
+        r"is not present)", re.I),
+     "The chain you picked is not in the uploaded structure, or has no "
+     "residues in it.",
+     "Check which chains your file contains and pick the one you want to "
+     "bind."),
+    ("size", re.compile(r"antigen_size|over the \d+ aa limit", re.I),
+     "The target is larger than this tool accepts.",
+     "Crop the target to the domain you want to bind, then try again."),
+    ("structure", re.compile(
+        r"non-positive determinant|degenerate frame|pdb sanitize failed|"
+        r"cif_prep|cif conversion failed", re.I),
+     "The tool could not read the geometry of your structure.",
+     "Structures with alternate conformations, chain breaks or missing "
+     "backbone atoms often cause this. Try a cleaned file with one "
+     "conformation per residue, or the AlphaFold model of the target."),
+    ("sequence", re.compile(
+        r"\binput:(fasta|fasta_empty|fasta_parse|binders|antibody)\b|"
+        r"no antibody chains", re.I),
+     "The sequence input could not be read.",
+     "Check that the sequences are in FASTA format, one record per "
+     "sequence, each with its own name, then try again."),
+)
+
+
+def _error_text(job) -> str:  # noqa: ANN001
+    err = getattr(job, "error", None)
+    if isinstance(err, dict):
+        return " ".join(
+            str(err.get(k) or "")
+            for k in ("bucket", "check", "category", "detail", "message")
+        )
+    return str(err or "")
+
+
+def failure_advice(job) -> Optional[dict]:  # noqa: ANN001
+    """What went wrong and what to change, for the failed-job panel.
+
+    Returns ``{"kind", "cause", "fix"}`` for a failed or timed-out job,
+    else None. ``kind`` is "generic" when no rule in ``_FAILURE_RULES``
+    matches; the cause is then the failure-class sentence from
+    ``failure_notice``.
+    """
+    status = getattr(job, "status", None)
+    if status not in ("failed", "timeout"):
+        return None
+    text = _error_text(job)
+    if status == "timeout":
+        text += " timeout"
+    if getattr(job, "failure_class", None) == "infra_crash":
+        text += " storage"
+    for kind, pattern, cause, fix in _FAILURE_RULES:
+        if pattern.search(text):
+            return {"kind": kind, "cause": cause, "fix": fix}
+    notice = failure_notice(job) or {}
+    return {"kind": "generic",
+            "cause": notice.get("cause", "The run did not finish."),
+            "fix": _GENERIC_FIX}
 
 
 def generate_job_token() -> str:

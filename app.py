@@ -493,13 +493,11 @@ def create_app() -> Flask:
     )
     flask_app.jinja_env.globals["ordinal"] = _ranking.ordinal
 
-    # The plain-words cause + "you were not charged" line for a run that did
-    # not succeed. A global reading the job object because the refund half
-    # needs ``inputs._wallet.hold_tx_id``, which ``ToolJob.to_dict`` does not
-    # expose, and because the completion email has to say the same thing —
-    # shared/email.py::_result_summary calls the same function.
-    from shared.jobs import failure_notice as _failure_notice  # noqa: PLC0415
-    flask_app.jinja_env.globals["failure_notice"] = _failure_notice
+    # What went wrong and what to change, for the failed-job panel in
+    # templates/job_detail.html. The refund sentence beside it is read from
+    # the ledger by blueprints/jobs.py::_failure_money.
+    from shared.jobs import failure_advice as _failure_advice  # noqa: PLC0415
+    flask_app.jinja_env.globals["failure_advice"] = _failure_advice
 
     # A null-safe stand-in for the built-in ``sort(attribute=)`` in the
     # per-tool results partials: the built-in compares raw values, so a
