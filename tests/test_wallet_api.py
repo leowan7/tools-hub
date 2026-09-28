@@ -138,6 +138,27 @@ class TestEstimateEndpointShape:
         # Anonymous request must not hit Supabase for a wallet row.
         gow.assert_not_called()
 
+    def test_short_balance_is_a_deficit_not_a_ceiling(self, client):
+        """A $5 wallet on a binder form gets the top-up gate, not the ceiling.
+
+        ``hard_block`` used to be ``balance < estimate``, and the partial
+        hides its top-up gate whenever ``hard_block`` is true, so a user a few
+        dollars short saw "Estimate exceeds the ceiling for a single job"
+        with a disabled submit and no price to pay.
+        """
+        with patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value={"balance_usd": 5.0, "wallet_frozen": False},
+        ):
+            _login(client)
+            resp = client.get("/api/wallet/estimate?tool=bindcraft&num_designs=1")
+        body = resp.get_json()
+        assert Decimal(body["estimate_usd"]) > Decimal("5")
+        assert body["exceeds_hard_cap"] is False
+        assert body["hard_block"] is False
+        assert Decimal(body["deficit_usd"]) == Decimal(body["estimate_usd"]) - 5
+        assert Decimal(body["rounded_topup_usd"]) >= Decimal("20")
+
     def test_uses_form_params_for_estimate_scaling(self, client):
         """Pass num_designs=1000 and see a scaled estimate above baseline."""
         with patch("blueprints.wallet.get_or_create_wallet", return_value=None):

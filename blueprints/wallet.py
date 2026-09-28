@@ -386,10 +386,12 @@ def api_wallet_estimate():
         soft_block = estimate >= (balance * Decimal("0.8")) and (
             estimate < balance
         )
-    # Hard block: balance cannot cover the estimate at all. The
-    # gate inside the partial owns the visual; this flag is what
-    # the JS reads.
-    hard_block = balance < estimate
+    # Hard block: the estimate is over this tool's per-job cap, which the
+    # partial words as "exceeds the ceiling for a single job". A balance
+    # that merely falls short is the deficit, and the partial's top-up
+    # gate shows it only while hard_block is false
+    # (templates/wallet/_partials.html, ``insufficient``).
+    hard_block = exceeds_hard_cap
     wallet_frozen = bool((wallet or {}).get("wallet_frozen"))
 
     # ANONYMOUS CALLER. This endpoint has never been @login_required,

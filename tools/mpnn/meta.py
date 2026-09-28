@@ -55,7 +55,7 @@ seo_faq: list[dict] = [
             "minute on most backbones. New accounts start with a "
             f"{_SIGNUP_CREDIT} wallet balance, usable for "
             f"{SIGNUP_CREDIT_EXPIRY_DAYS} days, which is enough for "
-            "thousands of runs."
+            "dozens of runs."
         ),
     },
     {
