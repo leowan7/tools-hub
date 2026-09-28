@@ -131,7 +131,7 @@ _DISPATCH_ATTEMPT_SLACK = 8
 # that limit queues on Modal, and the poll reports a queued call as "running"
 # (gpu/modal_client.py, poll: FunctionCall.get(timeout=0)). ComputeCampaign.from_row
 # clamps stored rows to this value, so raising the plan is an env change.
-DEFAULT_CONCURRENCY_TARGET = int(os.environ.get("CAMPAIGN_CONCURRENCY_TARGET", "4"))
+DEFAULT_CONCURRENCY_TARGET = max(1, int(os.environ.get("CAMPAIGN_CONCURRENCY_TARGET") or "4"))
 DEFAULT_MAX_ATTEMPTS = 2
 
 # Per-tool launch concurrency override. A proteina shard is heavy (A100-80GB with
@@ -210,7 +210,7 @@ def launch_concurrency_for(tool: str) -> int:
 # load/fairness guard (stops one user flooding Modal), NOT a spend guard - the
 # prepaid wallet bounds spend. Soft: concurrent drivers may briefly overshoot,
 # which is harmless.
-GLOBAL_USER_INFLIGHT_CAP = int(os.environ.get("CAMPAIGN_USER_INFLIGHT_CAP", "4"))
+GLOBAL_USER_INFLIGHT_CAP = max(1, int(os.environ.get("CAMPAIGN_USER_INFLIGHT_CAP") or "4"))
 
 # Head-room multiplier on the summed chunk estimate so the authorized
 # budget comfortably covers historical drift. Delivered-only billing

@@ -202,6 +202,21 @@ def test_the_widest_launch_stays_within_the_global_cap():
     assert sum(divide_concurrency(ALL_SEVEN)) <= tl.GLOBAL_USER_INFLIGHT_CAP
 
 
+def test_production_widths_fit_the_cap_until_the_floor_of_one(monkeypatch):
+    """At the shipped widths (4 per campaign, 4 per user) a launch of up to
+    four tools stays within the cap. Past four, every tool is floored at 1, so
+    the division sums to the tool count and the first-wave gate checks balance
+    for slots the driver will not start at once (it never debits; the driver's
+    user_inflight check still admits only the cap)."""
+    import shared.compute_campaigns as cc
+    monkeypatch.setattr(cc, "DEFAULT_CONCURRENCY_TARGET", 4)
+    monkeypatch.setattr(cc, "GLOBAL_USER_INFLIGHT_CAP", 4)
+    monkeypatch.setattr(tl, "GLOBAL_USER_INFLIGHT_CAP", 4)
+    for n in range(1, 5):
+        assert sum(divide_concurrency(ALL_SEVEN[:n])) <= 4
+    assert divide_concurrency(ALL_SEVEN) == (1,) * len(ALL_SEVEN)
+
+
 # ---------------------------------------------------------------------------
 # plan_multi_launch
 # ---------------------------------------------------------------------------
