@@ -16,8 +16,8 @@ def _link(endpoint: str, label: str, **values) -> dict | None:
     """Return a rail row, or ``None`` when the endpoint does not resolve.
 
     Dropping an unresolvable row keeps the rail from raising
-    ``BuildError`` inside ``base.html``, which every one of the 58
-    templates extending it would inherit.
+    ``BuildError`` inside ``base.html``, which every template extending
+    it would inherit.
     """
     try:
         return {"label": label, "href": url_for(endpoint, **values)}
@@ -40,7 +40,7 @@ def sidebar_groups() -> list[dict]:
         groups.append({"title": "Overview", "items": home})
 
     # The catalog walk imports every tool's meta module, and this rail
-    # renders on all 58 signed-in templates rather than just the homepage
+    # renders on every signed-in page extending base.html, not just the homepage
     # and /tools. One adapter raising anything shared.tool_meta does not
     # catch would otherwise 500 every page; losing the tool bands and
     # keeping Overview and Manage is the better failure.

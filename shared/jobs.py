@@ -72,7 +72,7 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     ):
         return result
     merged = dict(nested)
-    for key in ("tier", "gpu_seconds", "runtime_seconds"):
+    for key in ("tier", "gpu_seconds", "runtime_seconds", "backfilled"):
         if key in result and key not in merged:
             merged[key] = result[key]
     return merged
