@@ -313,7 +313,7 @@ class TestPilotIntro:
         assert ok is True
         _assert_resend_call_shape(mock_resend, "pilot_intro")
         body = mock_resend["json"]
-        assert "Binder Pilot" in body["subject"]
+        assert "testing your binders in our lab" in body["subject"]
         assert "$1234.50" in body["html"]
         assert "binder-pilot" in body["html"]  # URL slug ok with hyphen
         _assert_dash_free(body["html"], "pilot_intro")

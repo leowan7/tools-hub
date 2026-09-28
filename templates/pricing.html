@@ -172,14 +172,14 @@
         </h2>
         <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch; margin: 0 auto 1.25rem;">
           Self serve here is unlimited. If you would rather hand off the whole
-          project, a Binder Pilot is the managed option: a fixed scope
-          engagement with a defined deliverable, wet lab handoff if you want
-          it, and a single point of contact. It is a different product, not a
+          project, wet-lab binder testing is the managed option: a fixed scope
+          project where we test your designs by yeast display, with an NGS
+          readout, a report, and a single point of contact. It is a different product, not a
           spend threshold.
         </p>
         <div class="pricing-pilot-cta-actions">
           <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary-lg">
-            See the Binder Pilot
+            See wet-lab binder testing
           </a>
           {% if not session.get('user_email') %}
             <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Open the tools hub</a>

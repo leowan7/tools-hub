@@ -2632,7 +2632,7 @@ def send_pilot_intro_email(
     base_url = _base_url()
     subject = (
         "You are doing real work on Ranomics tools. "
-        "Have you considered a Binder Pilot?"
+        "Have you considered testing your binders in our lab?"
     )
     html = _render_template(
         "send_pilot_intro.html",

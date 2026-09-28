@@ -240,8 +240,8 @@ def test_the_wet_lab_panel_carries_no_primary_button():
         "went back to `in`, or to a hardcoded slug list, a missing global "
         "renders both blocks away without raising"
     )
-    assert "Binder Pilot" in html and "AI Binder Sprint" in html
-    for link in ("Binder Pilot", "AI Binder Sprint"):
+    assert "Test binders in the lab" in html and "AI Binder Sprint" in html
+    for link in ("Test binders in the lab", "AI Binder Sprint"):
         idx = html.index(">" + link + "<")
         tag_start = html.rindex("<a ", 0, idx)
         assert "btn-secondary" in html[tag_start:idx], link
