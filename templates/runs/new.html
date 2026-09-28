@@ -441,7 +441,7 @@
         if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
           setNote('warn', 'Campaigns this large need an approved account. Contact us to raise your limit.');
         } else if (!d.affordable && d.reason === 'insufficient_balance') {
-          setNote('warn', 'Top up to cover the first batch (' + money(d.first_wave_usd_display) + ') to start.');
+          setNote('warn', 'Top up ' + money(d.topup_usd_display) + ' to run this.');
         } else if (!d.affordable) {
           setNote('warn', 'This campaign cannot start yet (' + d.reason + ').');
         } else {
