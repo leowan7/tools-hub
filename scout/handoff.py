@@ -43,11 +43,34 @@ TOOLS_ORIGIN = os.environ.get("TOOLS_ORIGIN", "https://tools.ranomics.com")
 # It lives HERE, in the leaf module, rather than in ``scout/routes.py``,
 # so ``blueprints/tools.py`` can read it without importing the whole
 # routes module — a hand-copied second list in the tools blueprint is
-# exactly how the card came to promise a handoff for rfdiffusion, which
-# is not in this set and never was.
+# exactly how the card once came to promise a handoff for rfdiffusion
+# while this set did not hold it.
 # tests/test_pilot_recipes.py::TestHotspotDeflection locks all three.
+#
+# Membership test, applied per tool: its form has a target-structure
+# upload the staged PDB can replace, a target-chain field, and a field
+# for the residues. rfdiffusion and iggm both meet it and were both
+# missing, so both sent the user off to copy the numbers across by
+# hand — iggm's ``validate()`` (tools/iggm/__init__.py) REFUSES a
+# submit that names no epitope, so for iggm that copy was mandatory.
+# esmfold2-design and opendde are excluded because
+# they take sequences and have no target upload at all; boltz2 is
+# excluded because it folds a binder the Scout user does not have yet.
+#
+# The per-tool field name for the residues is NOT uniform: iggm's form
+# calls it ``epitope`` (the ``name="epitope"`` input in
+# templates/tools/iggm_form.html), everything
+# here calls it ``hotspot_residues``. blueprints/tools.py::tool_form
+# maps it; tests/test_scout_handoff_prefill.py locks every member.
 VALID_HANDOFF_TOOLS = frozenset(
-    {"rfantibody", "bindcraft", "pxdesign", "boltzgen"}
+    {
+        "rfantibody",
+        "bindcraft",
+        "pxdesign",
+        "boltzgen",
+        "rfdiffusion",
+        "iggm",
+    }
 )
 
 

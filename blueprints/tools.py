@@ -829,8 +829,11 @@ def _as_form_text(value) -> str:
 #
 # Two earlier cuts of (a) both got it wrong from a proxy. The first read
 # which adapters' ``validate()`` refuses an empty hotspot field: that put
-# rfdiffusion in — which refuses, but is NOT a Scout handoff target, so the
-# card promised a round trip that dead-ends. The second read the tool's own
+# rfdiffusion in, which at the time was not a Scout handoff target, so the
+# card promised a round trip that dead-ended. (rfdiffusion has since been
+# ADDED to VALID_HANDOFF_TOOLS, so the round trip is real now — the
+# objection was never to the answer, it was to reading (b) off (a).)
+# The second read the tool's own
 # ``about["prerequisites"]`` bullets, matching "hotspot" without "option":
 # that made a copy edit silently change a user-facing claim, and it put
 # boltzgen in the REQUIRED set purely because its bullet was worded as a
@@ -1289,11 +1292,23 @@ def tool_form(tool: str):
         ho = get_handoff(handoff_id, user_id=ctx.user_id)
         if ho is not None:
             pre_fill.setdefault("target_chain", ho.target_chain)
+            # iggm's form names the same field ``epitope`` (its
+            # ``name="epitope"`` input); every other handoff target names it
+            # ``hotspot_residues``. Writing the wrong key drops the residues
+            # silently — the form renders, the numbers are simply not in it.
+            hotspot_field = "epitope" if adapter.slug == "iggm" else "hotspot_residues"
             pre_fill.setdefault(
-                "hotspot_residues",
+                hotspot_field,
                 ",".join(str(r) for r in ho.hotspot_residues),
             )
-            pre_fill["preset"] = "pilot"
+            # Only when the tool HAS a pilot preset. templates/tools/
+            # _prefill.html::pre_checked falls back to checking the first
+            # radio ONLY when no preset is pre-filled, so pre-filling a
+            # slug that no option carries leaves the whole group unchecked
+            # and the form posts no preset at all. iggm's presets are
+            # complex_prediction / affinity_maturation / design.
+            if adapter.preset_for("pilot") is not None:
+                pre_fill["preset"] = "pilot"
             pdb_source = {
                 "label": (
                     f"Target PDB from Epitope Scout ({ho.pdb_filename})"
@@ -1303,6 +1318,23 @@ def tool_form(tool: str):
                 "filename": ho.pdb_filename,
                 "token": f"handoff:{ho.id}",
             }
+            # The far end of the Scout funnel. scout_handoff_created fires
+            # when Scout stages the target; this fires only when the row
+            # resolves onto a form, so a handoff that is created and never
+            # arrives (expired Scout run, wrong account) is visible as a
+            # gap between the two counts.
+            from shared.events import log_event  # noqa: PLC0415
+            log_event(
+                event_type="scout_handoff_opened",
+                user_id=ctx.user_id,
+                session_id=session.get("anon_session_id"),
+                path=request.full_path,
+                props={
+                    "tool": adapter.slug,
+                    "hotspot_count": len(ho.hotspot_residues),
+                    "from_scout": bool(ho.scout_job_id),
+                },
+            )
 
     # AF2-resample chain: when the user lands on the MPNN form via a
     # "Resample with MPNN" button on an AF2 / ColabFold / ESMFold

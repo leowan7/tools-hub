@@ -81,6 +81,13 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     # static/js/track.js, delegated from the result page's anchors.
     "result_download",
     "outbound_click",
+    # Server-fired, both halves of the Epitope Scout -> binder-form
+    # handoff: created in scout/routes.py::handoff_to_tool when Scout
+    # stages the target, opened in blueprints/tools.py::tool_form when
+    # the row resolves onto a form. The gap between the two counts is
+    # the drop-off; before these there was no event on this path at all.
+    "scout_handoff_created",
+    "scout_handoff_opened",
 })
 
 

@@ -98,6 +98,34 @@
         </div>
       </div>
 
+      {# The failures of POST /scout/handoff/tool a user can reach by
+         clicking the button come back HERE, as a redirect carrying
+         ?handoff_error=<code>, rather than replacing the scored results page
+         with a line of JSON. The redirect is scout/routes.py::_handoff_failed;
+         the access-control refusals in that route stay 404 and do not land
+         here.
+
+         This alert sits OUTSIDE #results-section on purpose. That section
+         carries the `hidden` attribute until a successful render clears it,
+         and the auto-load block at the foot of this file returns early when
+         the URL has no epitope_id -- which is the case for a manually typed
+         epitope. Inside it, the message would be in the DOM and invisible.
+
+         The query string is attacker-supplied on any link a user can be
+         sent, so the wording is keyed here and an unrecognised key renders
+         nothing at all; the route never reflects prose from the URL. #}
+      {% set HANDOFF_ERRORS = {
+           "not_numeric": "Hotspot residues must be numbers.",
+           "no_hotspots": "No epitope residues to carry over. Pick an epitope and run the feasibility analysis first.",
+           "stage_failed": "Could not stage the target for that tool. Try again, or upload the structure on the tool form.",
+         } %}
+      {% set handoff_error = HANDOFF_ERRORS.get(request.args.get("handoff_error")) %}
+      {% if handoff_error %}
+        <p role="alert" style="color: var(--danger, #f87171); max-width: 62ch; margin: 0 0 1rem 0;">
+          Could not open the tool form: {{ handoff_error }}
+        </p>
+      {% endif %}
+
       <!-- Results section (hidden until analysis complete) -->
       <div id="results-section" hidden>
 
@@ -169,10 +197,10 @@
           <div class="panel-body">
             <p style="color: var(--text-secondary); max-width: 62ch; margin: 0 0 1rem 0;">
               Feasibility looks promising? Carry this target straight into a
-              design pipeline. Run RFdiffusion, BindCraft, RFantibody,
-              BoltzGen, MPNN, and AF2 self-serve, funded from your wallet.
-              Design count is unlimited and you pay only for the compute each
-              job delivers.
+              design pipeline. The tools listed below take the structure, the
+              chain and these epitope residues over as-is, funded from your
+              wallet. Design count is unlimited and you pay only for the
+              compute each job delivers.
             </p>
             <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.75rem;">
               <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
@@ -190,6 +218,14 @@
                      separate model it calls at the fold/refold step. Pinned
                      by tests/test_citations_name_the_right_model.py. #}
                   <option value="boltzgen">BoltzGen: all-atom binder</option>
+                  {# rfdiffusion and iggm were absent from this picker even
+                     though both forms take a target structure, a chain and
+                     the residues. scout.handoff.VALID_HANDOFF_TOOLS is the
+                     gate the POST applies; every slug here must be in it,
+                     and tests/test_scout_handoff_prefill.py checks that this
+                     list and that set agree. #}
+                  <option value="rfdiffusion">RFdiffusion: de novo backbone</option>
+                  <option value="iggm">IgGM: antibody / nanobody</option>
                 </select>
               </div>
               <button type="submit" class="btn-primary" id="handoff-submit">

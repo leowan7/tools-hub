@@ -92,7 +92,17 @@ def create_handoff(
 
 
 def get_handoff(handoff_id: str, *, user_id: str) -> Optional[Handoff]:
-    """Fetch a handoff row scoped to ``user_id``. Rejects expired/consumed rows."""
+    """Fetch a handoff row scoped to ``user_id``. Rejects consumed rows.
+
+    Only ``consumed_at`` is checked. The ``expires_at`` column
+    (supabase/migrations/0007_scout_handoffs.sql, NOT NULL DEFAULT
+    now() + 2 hours) is read by nothing here, so a row older than two
+    hours still resolves onto the form for as long as the staged object
+    survives in the ``tool-inputs`` bucket. That is deliberate: the
+    bucket's own 30-day age sweep (cron/purge_old_storage.py) is the
+    real deadline, and expiring the row first would only take a working
+    prefill away from someone who came back the next morning.
+    """
     client = get_service_client()
     if client is None:
         return None

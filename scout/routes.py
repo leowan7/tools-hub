@@ -1799,6 +1799,32 @@ def feasibility_analyze():
     tier = result_row.get("tier", "Unknown")
     result = generate_recommendations(dimensions, composite, tier, len(epitope_residues))
 
+    # The residues the page hands to the binder form, as bare integers.
+    # ``residues`` below is resname+number ("TYR67") and the handoff POST
+    # parses its field with int(), so it needed a separate numeric field:
+    # arriving from the results table the page has an epitope_id and no
+    # residue list of its own, so the hidden hotspot input had nothing to
+    # post and the POST refused.
+    # The inline populateHandoffForm script in
+    # templates/scout/feasibility.html reads this into the
+    # #handoff-hotspots hidden input that the handoff form posts. Not
+    # written as an :: citation: the guard in
+    # tests/test_code_citations_resolve.py resolves an .html target to its
+    # Jinja macro/block names only, so a function defined inside a
+    # <script> block cannot be cited that way.
+    #
+    # All-or-nothing on purpose. ``epitope_residues`` can come straight
+    # from request JSON, so an element need not be numeric; handing over
+    # the subset that parses would silently steer the design at a
+    # DIFFERENT patch than the one just scored. An empty list makes the
+    # handoff refuse with a message instead.
+    _bare = [str(r).strip() for r in epitope_residues]
+    handoff_residues = (
+        [int(r) for r in _bare]
+        if all(re.fullmatch(r"-?\d+", r) for r in _bare)
+        else []
+    )
+
     return jsonify({
         "composite_feasibility": composite,
         "tier": result.tier,
@@ -1813,6 +1839,7 @@ def feasibility_analyze():
         "hit_rate_citation": result.hit_rate_citation,
         "risk_factors": result.risk_factors,
         "residues": result_row.get("residues", ""),
+        "epitope_residues": handoff_residues,
         "residue_count": int(result_row.get("residue_count", 0)),
         # Carries the chain that was actually scored, so the download gate can
         # be exact instead of inferring it from results.csv. The page assigns
@@ -2062,6 +2089,38 @@ def feasibility_download(job_id):
 from scout.handoff import VALID_HANDOFF_TOOLS  # noqa: E402,PLC0415
 
 
+def _handoff_failed(code: str, scout_job_id: str, epitope_id: str, chain: str):
+    """Send a failed handoff BACK to the page it was posted from.
+
+    This route is posted by a plain <form> in
+    templates/scout/feasibility.html, so a JSON body replaces the whole
+    results page with a line of JSON and the user's scored epitope is
+    gone. The failures a user can reach by clicking the button return
+    here instead. The access-control refusals do not: see the 404 in
+    ``handoff_to_tool``.
+
+    ``code`` is a key, not prose: the wording lives in HANDOFF_ERRORS in
+    templates/scout/feasibility.html and an unrecognised key renders
+    nothing. The query string is attacker-supplied on any link someone
+    can be sent, so reflecting a message straight out of it would let a
+    third party put their own text in a first-party Scout alert.
+
+    ``chain`` is carried because the feasibility page reads the chain
+    from the query string alone (``currentChain`` in that template's
+    script); dropping it would silently re-score chain A and show that
+    as the epitope the user just analysed.
+    """
+    return redirect(
+        url_for(
+            "scout.feasibility_page",
+            job_id=scout_job_id,
+            epitope_id=epitope_id,
+            chain=chain,
+            handoff_error=code,
+        )
+    )
+
+
 @scout_bp.route("/handoff/tool", methods=["POST"])
 @login_required
 def handoff_to_tool():
@@ -2083,7 +2142,12 @@ def handoff_to_tool():
     # a path from the raw, user-supplied scout_job_id.
     job_dir = _resolve_job_dir(scout_job_id)
     if job_dir is None:
-        return jsonify({"error": "Scout job not found or expired."}), 404
+        # Stays a 404, and does NOT redirect with a message. This single
+        # branch answers three different things — a traversal attempt, a
+        # malformed id, and another user's job — and only the third is
+        # distinguishable from an expired run of your own. Pinned by
+        # tests/test_scout_access_control.py::TestHandoffAccessControl.
+        return jsonify({"error": "Scout job not found"}), 404
     input_pdb = job_dir / "input.pdb"
 
     hotspots: list[int] = []
@@ -2095,9 +2159,13 @@ def handoff_to_tool():
                 if tok.strip()
             ]
         except ValueError:
-            return jsonify({"error": "hotspot_residues must be integers"}), 400
+            return _handoff_failed(
+                "not_numeric", scout_job_id, scout_epitope_id or "", target_chain
+            )
     if not hotspots:
-        return jsonify({"error": "At least one hotspot residue is required"}), 400
+        return _handoff_failed(
+            "no_hotspots", scout_job_id, scout_epitope_id or "", target_chain
+        )
 
     email = session.get("user_email", "")
     handoff_id = create_handoff(
@@ -2109,13 +2177,28 @@ def handoff_to_tool():
         pdb_path=input_pdb,
     )
     if not handoff_id:
-        return (
-            jsonify({
-                "error": (
-                    "Could not stage handoff. Make sure the Scout run "
-                    "still has its PDB, and try again."
-                )
-            }),
-            500,
+        return _handoff_failed(
+            "stage_failed", scout_job_id, scout_epitope_id or "", target_chain
         )
+
+    # Half of the funnel this route sits in. The other half
+    # (scout_handoff_opened) fires in blueprints/tools.py::tool_form when
+    # the handoff actually resolves onto a form, so the gap between the two
+    # is measurable rather than inferred.
+    # ``user_id`` is resolved the same way shared/credits.py's
+    # load_user_context does, because the paired scout_handoff_opened event
+    # uses that context's id. A plain login only stashes session["user_id"]
+    # when verify_login returned one (blueprints/auth.py), and no login sets
+    # anon_session_id, so reading the session key alone would let log_event
+    # drop CREATED while OPENED still lands -- under-counting in exactly the
+    # direction that makes this path look dead.
+    from shared.credits import _resolve_user_id  # noqa: PLC0415
+    from shared.events import log_event  # noqa: PLC0415
+    log_event(
+        event_type="scout_handoff_created",
+        user_id=session.get("user_id") or (_resolve_user_id(email) if email else None),
+        session_id=session.get("anon_session_id"),
+        path="/scout/handoff/tool",
+        props={"tool": tool, "hotspot_count": len(hotspots)},
+    )
     return redirect(handoff_redirect_url(tool, handoff_id))
