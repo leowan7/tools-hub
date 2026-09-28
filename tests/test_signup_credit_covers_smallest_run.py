@@ -7,8 +7,8 @@ What admits a job is the CUSHIONED HOLD: ``shared/wallet_guard`` reserves
 
 History: this file used to assert the credit admitted EVERY tool's smallest run,
 which is why the credit went $15 -> $20 on 2026-09-10. On 2026-09-28 Leo cut the
-credit to $5 on purpose (docs/FUNNEL-2026-09-28.md section 7: at $20 nobody ever
-ran out). At $5 the binder design tools and OpenDDE need a top-up, and the copy
+credit to $5 on purpose (the 2026-09-28 funnel review, section 7, which is not
+in this repository: at $20 nobody ever ran out). At $5 the binder design tools and OpenDDE need a top-up, and the copy
 now says so (templates/pricing.html, templates/help/getting_started.html,
 templates/email/send_signup_credit.html). This file pins that split, so a price,
 cap or credit change that moves a tool across it fails here and sends someone to

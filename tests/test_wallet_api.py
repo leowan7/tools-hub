@@ -911,3 +911,27 @@ class TestWalletTopupFrozenGuard:
         assert "wallet_frozen=1" in resp.headers["Location"]
         # Stripe must not be called when the wallet is frozen.
         create_session.assert_not_called()
+
+
+def test_gate_short_by_adds_up_on_the_page():
+    """Cost rounds up, balance rounds down: "short by" is printed cost minus printed balance."""
+    from flask import Flask
+
+    from shared import wallet_guard
+
+    flask_app = Flask(__name__)
+    flask_app.config["SECRET_KEY"] = "k"
+    flask_app.add_url_rule(
+        "/tools/<tool>", endpoint="tools.tool_form", view_func=lambda tool: "form"
+    )
+    estimate, balance = Decimal("12.581"), Decimal("2.009")
+    with flask_app.test_request_context("/"), patch(
+        "shared.wallet_guard.get_or_create_wallet", return_value={}
+    ), patch("shared.wallet_guard.render_template", return_value="") as render:
+        wallet_guard._render_topup_gate(
+            tool_slug="bindcraft", estimate=estimate, balance=balance,
+            deficit=estimate - balance, reason="insufficient_balance",
+            hard_cap=Decimal("100"), form_snapshot={},
+        )
+    # Page reads "needs $12.59, balance $2.00"; the raw deficit would print $10.58.
+    assert render.call_args.kwargs["shown_short_usd"] == Decimal("10.59")

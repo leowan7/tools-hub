@@ -142,7 +142,8 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # this constant cannot fix.
 #
 # Cut 20.00 -> 5.00 (2026-09-28, Leo). At $20 nobody had ever run out of free
-# credit (docs/FUNNEL-2026-09-28.md section 7), so the credit never led anyone
+# credit (the 2026-09-28 funnel review, section 7; that document is not in
+# this repository), so the credit never led anyone
 # to a top-up. At $5 the structure prediction and sequence tools still run
 # from the credit with $1.00 spare, and the binder design tools with a hold
 # over $4.00 (plus opendde) need a top-up; the copy says so.
@@ -1490,9 +1491,9 @@ def _post_settle_hooks(
             user_id, exc_info=True,
         )
     balance = Decimal(str((wallet or {}).get("balance_usd") or 0))
-    # Only on the settle that takes the balance below the threshold. A $5
-    # signup-credit wallet sits under it from the first charge, and sending on
-    # every settle mailed that user after every run.
+    # Only on the settle that takes the balance from the threshold or above to
+    # below it, so a $5.00 signup-credit wallet is mailed once, after its first
+    # run, and not again after every later run.
     if balance < LOW_BALANCE_EMAIL_THRESHOLD <= balance + actual_cost:
         _send_email_safe(
             "send_low_balance_email", user_id=user_id, balance_usd=balance

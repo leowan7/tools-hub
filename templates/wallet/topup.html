@@ -127,14 +127,15 @@
       <div class="panel-body">
         <p class="wallet-section-body">
           <strong>Top up and run.</strong>
-          {% if estimate_usd is defined and estimate_usd is not none and balance_usd is defined and balance_usd is not none %}
+          {% if shown_short_usd is defined and shown_short_usd is not none %}
           This job needs <strong>${{ display_cost_usd(estimate_usd) }}</strong>
           and your balance is <strong>${{ display_balance_usd(balance_usd) }}</strong>,
-          short by
+          short by <strong>${{ shown_short_usd }}</strong>.
           {% else %}
           Your job estimate exceeds your current balance by
+          <strong>${{ display_cost_usd(_deficit_raw) }}</strong>.
           {% endif %}
-          <strong>${{ display_cost_usd(_deficit_raw) }}</strong>. Add at
+          Add at
           least that amount and we will pick up the job submission right
           where you left off.
         </p>

@@ -20,6 +20,8 @@ import logging
 from decimal import Decimal
 from functools import wraps
 
+from shared.compute_campaigns import display_balance_usd, display_cost_usd
+
 from flask import g, render_template, request, session, url_for
 
 from shared.credits import load_user_context
@@ -90,6 +92,12 @@ def _render_topup_gate(
     forward compatible with that swap).
     """
     suggested = _round_up_topup_amount(deficit)
+    # The gate sentence prints the cost rounded up and the balance rounded
+    # down, so "short by" is their difference as printed: it adds up on the
+    # page and is never below the real deficit.
+    shown_short = Decimal(display_cost_usd(estimate)) - Decimal(
+        display_balance_usd(balance)
+    )
     # Stash the original form on the session so /account/topup-complete
     # can return the user back to the form with values intact. The form
     # snapshot is JSON serializable text only.
@@ -115,6 +123,7 @@ def _render_topup_gate(
         deficit_usd=deficit,
         estimate_usd=estimate,
         balance_usd=balance,
+        shown_short_usd=shown_short,
         hard_cap_usd=hard_cap,
         suggested_amount=suggested,
         min_topup_usd=MIN_TOPUP_USD,

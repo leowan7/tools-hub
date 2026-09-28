@@ -1417,6 +1417,15 @@ def test_low_balance_email_not_sent_to_a_wallet_already_below(store, email_log):
     assert _low_balance_emails(email_log) == 0
 
 
+def test_low_balance_email_sent_once_to_a_fresh_signup_wallet(store, email_log):
+    # A new account starts at exactly the threshold: warned after its first run, not after later ones.
+    _seed_wallet(store, USER_A, balance=Decimal("5.00"))
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 1
+    _run_job(USER_A)
+    assert _low_balance_emails(email_log) == 1
+
+
 # --- Preflight email side-effects ----------------------------------------
 
 
