@@ -184,8 +184,8 @@ def sitemap_xml():
       * Static URLs are enumerated below in ``_static_paths``.
       * Per-tool help pages are pulled from ``tool_base.all_adapters()``
         so newly enabled tools appear automatically.
-    Tool run forms (``/tools/<slug>``) are NOT listed because they
-    currently require login and serve a redirect to crawlers.
+    Every listed path must answer an anonymous GET with 200, not a
+    redirect: tests/test_seo_sitemap.py::test_every_loc_is_a_200.
     """
     from datetime import datetime, timezone  # noqa: PLC0415
 
@@ -200,7 +200,10 @@ def sitemap_xml():
         "/help/getting-started",
         "/help/faq",
         "/help/troubleshooting",
-        "/scout",
+        "/scout/",
+        "/prep",
+        "/developability",
+        "/library-planner",
         "/showcase",
         "/terms",
         "/privacy",

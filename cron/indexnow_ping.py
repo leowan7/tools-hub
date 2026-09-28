@@ -37,7 +37,8 @@ def _build_url_list(base: str) -> List[str]:
         "/tools",
         "/help",
         "/pricing",
-        "/scout",
+        "/scout/",
+        "/prep",
     ]
     urls: List[str] = [f"{base}{path}" for path in static_paths]
 

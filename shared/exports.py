@@ -597,7 +597,8 @@ def _missing_note(missing, written_count: int) -> str:
     "storage did not return" them, which this function cannot know: a row is
     recorded missing on the strength of the row alone (see the promise test in
     :func:`candidates_to_zip`), and a row whose inline ``pdb_content_b64`` is
-    corrupt reaches here without a fetch ever being attempted.
+    corrupt and that carries no ``pdb_key`` or job id reaches here without a fetch ever
+    being attempted.
     """
     total = written_count + len(missing)
     # Counts are LABELLED, not written into sentences. "The other 1 are
@@ -630,13 +631,16 @@ def zip_unresolved_message(missing) -> str:
     ``blueprints/campaigns.py``, ``blueprints/targets.py``).
 
     The copy offers a possible cause ("storage may have been briefly
-    unreachable") and asserts none. Three arms reach it: a corrupt inline
-    ``pdb_content_b64``, which fails with no fetch attempted; a ``pdb_key``
-    whose object is gone; and Storage being briefly unreachable.
-    ``shared/storage.py::download_output`` raises ``StorageError`` for any
-    download failure, so the last two are indistinguishable here. The retry
-    advice therefore says a retry is worth trying without predicting what a
-    second failure means.
+    unreachable") and asserts none. It receives only the missing arcnames, so
+    it cannot tell the arms that reach it apart: an inline
+    ``pdb_content_b64`` that does not decode and has no ``pdb_key`` and job id to fall
+    back on (no fetch is attempted, :func:`candidates_to_zip`); a ``pdb_key``
+    whose object is gone; and Storage being briefly unreachable. The routes'
+    fetchers catch the ``StorageError`` that
+    ``shared/storage.py::download_output`` raises for any download failure
+    and return ``None``, so even the caller cannot tell the last two apart.
+    The retry advice therefore says a retry is worth trying without
+    predicting what a second failure means.
 
     One missing file takes a singular opening; the rest of the body is
     count-neutral. The exact text is pinned by

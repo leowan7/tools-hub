@@ -2,6 +2,7 @@
 
 {% block title %}Epitope Scout — Surface Epitope Identification for Binder Design | Ranomics{% endblock %}
 {% block description %}Upload a protein structure or UniProt accession and identify surface-exposed, solvent-accessible epitopes ranked by binder design feasibility — accessibility, hydrophobic exposure, rigidity, and hot-spot density.{% endblock %}
+{% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Epitope Scout", self.description()) }}{% endblock %}
 
 {% block head_extra %}
   <link rel="stylesheet" href="{{ url_for('static', filename='scout.css') }}">

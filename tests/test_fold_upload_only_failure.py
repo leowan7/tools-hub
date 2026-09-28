@@ -294,6 +294,26 @@ class TestEsmfoldBatch:
         assert "none of 2 designs folded (2 failures)" in detail, detail
         assert "folded but 0 uploaded" not in detail, detail
 
+    def test_an_undecodable_fold_is_not_reported_as_storage(
+        self, tmp_path, monkeypatch,
+    ):
+        _arrange_esmfold(tmp_path, monkeypatch)
+        result_file = tmp_path / "smoke_results.json"
+        bad = base64.b64encode(b"\xff\xfe not utf-8").decode("ascii")
+        monkeypatch.setattr(
+            esmfold_rp, "_fold_record",
+            lambda *a, **k: {"pdb_b64": bad, "total_length": 12},
+        )
+
+        with pytest.raises(SystemExit):
+            esmfold_rp._run_batch_folds(
+                dict(_PAYLOAD), list(_RECORDS), time.time(), tmp_path
+            )
+
+        result = json.loads(result_file.read_text())
+        assert result["error"]["bucket"] == "pipeline"
+        assert "none of 2 designs folded (2 failures)" in result["error"]["detail"]
+
     def test_a_healthy_run_reports_both_counts(self, tmp_path, monkeypatch):
         result_file = _arrange_esmfold(tmp_path, monkeypatch)
 
