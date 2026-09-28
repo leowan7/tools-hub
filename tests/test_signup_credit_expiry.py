@@ -265,6 +265,17 @@ def test_concurrent_runs_from_the_same_snapshot_debit_once(db):
     assert len(_expiry_rows(db)) == 1 and db.balance() == 0
 
 
+def test_naive_timestamp_is_read_as_utc():
+    assert wallet._parse_ts("2026-10-01T12:00:00") == NOW
+
+
+def test_status_reports_the_users_own_grant(db):
+    db.new_wallet(expires_at=NOW + timedelta(days=3))
+    db.ledger()[0]["amount_usd"] = "15.0000"
+    status = wallet.signup_credit_status(UID, wallet=db.wallet())
+    assert status["grant_usd"] == Decimal("15") == status["remaining_usd"]
+
+
 def test_not_due_is_left_alone(db):
     db.new_wallet(expires_at=NOW + timedelta(days=3))
     assert wallet.expire_signup_credit(UID) == "not_due"
@@ -404,9 +415,11 @@ def test_idle_reminder_frequency_cap(monkeypatch):
         _user("active", _ago(60)),
         _user("never-ran-old", _ago(20)),
         _user("never-ran-new", _ago(3)),
+        _user("job-without-timestamp", _ago(60)),
     ]
     jobs = [{"user_id": u, "tool": "mpnn", "created_at": _ago(d)}
             for u, d in [("idle", 15), ("recent-send", 20), ("old-send", 20), ("active", 2)]]
+    jobs.append({"user_id": "job-without-timestamp", "tool": "mpnn", "created_at": None})
     d = _reengagement_db(users, jobs)
     monkeypatch.setattr("shared.credits.get_service_client", lambda: d)
     got = {c.user_id for c in reengagement.find_candidates(now=NOW)}
@@ -421,7 +434,7 @@ def test_reengagement_pages_through_all_users(monkeypatch):
     monkeypatch.setattr("shared.credits.get_service_client", lambda: d)
     got = {c.user_id for c in reengagement.find_candidates(now=NOW)}
     assert got == {f"u{i}" for i in range(5)}
-    assert [p for p, _ in d.auth.admin.calls] == [1, 2, 3]
+    assert [p for p, _ in d.auth.admin.calls] == [1, 2, 3, 4]
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +453,7 @@ def test_every_signup_credit_mention_states_the_expiry():
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
-            if "signup_credit(" not in line or "btn-primary" in line:
+            if "signup_credit(" not in line:
                 continue
             window = "\n".join(lines[max(0, i - _NEAR):i + _NEAR + 1])
             if not any(w in window for w in _EXPIRY_WORDS):

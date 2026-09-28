@@ -22,7 +22,7 @@
         <a href="/account/wallet/topup" class="btn-primary-lg">Fund your wallet</a>
         <a href="{{ url_for('public.index') }}" class="btn-secondary">Browse tools</a>
       {% else %}
-        <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with ${{ signup_credit() }} in your wallet</a>
+        <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with ${{ signup_credit() }} in your wallet, usable for {{ signup_credit_expiry_days }} days</a>
         <a href="#how-billing-works" class="btn-secondary">How billing works</a>
       {% endif %}
     </div>

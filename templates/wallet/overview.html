@@ -104,17 +104,14 @@
             <span class="wallet-stat-foot">No automatic charges</span>
           {% endif %}
         </div>
+        {% if signup_credit_status %}
+        {% set _exp = signup_credit_status.expires_at %}
         <div class="wallet-stat">
           <span class="wallet-stat-label">Signup credit</span>
-          {% if signup_credit_status %}
-            {% set _exp = signup_credit_status.expires_at %}
-            <span class="wallet-stat-value">${{ display_balance_usd(signup_credit_status.remaining_usd) }}</span>
-            <span class="wallet-stat-foot">of ${{ signup_credit(True) }} unspent, expires {{ _exp.strftime('%B') }} {{ _exp.day }}, {{ _exp.year }} (UTC)</span>
-          {% else %}
-            <span class="wallet-stat-value">$0.00</span>
-            <span class="wallet-stat-foot">none left; signup credit lasts {{ signup_credit_expiry_days }} days</span>
-          {% endif %}
+          <span class="wallet-stat-value">${{ display_balance_usd(signup_credit_status.remaining_usd) }}</span>
+          <span class="wallet-stat-foot">of ${{ display_balance_usd(signup_credit_status.grant_usd) }} unspent, expires {{ _exp.strftime('%B') }} {{ _exp.day }}, {{ _exp.year }} (UTC)</span>
         </div>
+        {% endif %}
       </div>
     </div>
   </div>

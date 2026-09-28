@@ -147,7 +147,8 @@ def find_candidates(
                 if not uid:
                     continue
                 created = j.get("created_at") or ""
-                if created > last_job_at.get(uid, ""):
+                last_job_at.setdefault(uid, "")
+                if created > last_job_at[uid]:
                     last_job_at[uid] = created
                 tool = j.get("tool") or ""
                 if tool:
@@ -177,9 +178,9 @@ def find_candidates(
         while True:
             page = client.auth.admin.list_users(page=page_no, per_page=_USERS_PAGE)
             batch = list(getattr(page, "users", None) or page or [])
-            users.extend(batch)
-            if len(batch) < _USERS_PAGE:
+            if not batch:
                 break
+            users.extend(batch)
             page_no += 1
         for u in users:
             uid = getattr(u, "id", None) or (
@@ -188,7 +189,7 @@ def find_candidates(
             if uid not in funded:
                 continue
             if uid in last_job_at:
-                if last_job_at[uid] >= inactivity_iso:
+                if not last_job_at[uid] or last_job_at[uid] >= inactivity_iso:
                     continue
             else:
                 created = getattr(u, "created_at", None) or (

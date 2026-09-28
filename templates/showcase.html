@@ -101,7 +101,7 @@
         {% if session.get('user_email') %}
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
         {% else %}
-          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with ${{ signup_credit() }}</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with ${{ signup_credit() }}, usable for {{ signup_credit_expiry_days }} days</a>
           <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
         {% endif %}
       </div>

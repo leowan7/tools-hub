@@ -143,7 +143,6 @@ class TestWalletOverviewTemplate:
         assert "Wallet frozen" in html
 
     def test_overview_shows_unspent_signup_credit_and_expiry(self, app):
-        from shared.wallet import SIGNUP_CREDIT_USD
         with app.test_request_context("/account/wallet"):
             html = render_template(
                 "wallet/overview.html",
@@ -152,11 +151,12 @@ class TestWalletOverviewTemplate:
                 user_email="u@example.com",
                 signup_credit_status={
                     "remaining_usd": Decimal("12.3456"),
+                    "grant_usd": Decimal("15"),
                     "expires_at": datetime(2026, 10, 28, 9, 0, tzinfo=timezone.utc),
                 },
             )
         assert "$12.34" in html
-        assert f"of ${SIGNUP_CREDIT_USD:.2f} unspent" in html
+        assert "of $15.00 unspent" in html
         assert "expires October 28, 2026" in html
 
     def test_overview_without_signup_credit_status(self, app):
@@ -167,7 +167,8 @@ class TestWalletOverviewTemplate:
                 recent_transactions=[],
                 user_email="u@example.com",
             )
-        assert "none left; signup credit lasts 30 days" in html
+        assert "Signup credit" not in html
+        assert "$0.00" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -543,4 +544,4 @@ class TestPricingTemplate:
             html = render_template("pricing.html")
         assert "Your wallet is your budget" in html
         from shared.wallet import SIGNUP_CREDIT_USD
-        assert f"Start with ${SIGNUP_CREDIT_USD:.0f} in your wallet" in html
+        assert f"Start with ${SIGNUP_CREDIT_USD:.0f} in your wallet, usable for 30 days" in html

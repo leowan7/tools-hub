@@ -520,16 +520,16 @@ def _has_open_hold(rows: list[Mapping]) -> bool:
 def _parse_ts(value: Any) -> Optional[datetime]:
     if not value:
         return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    if not isinstance(value, datetime):
+        try:
+            value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def signup_credit_status(user_id: str, wallet: Optional[Mapping] = None) -> Optional[dict]:
-    """``{"remaining_usd", "expires_at"}`` while unspent signup credit remains.
+    """``{"remaining_usd", "grant_usd", "expires_at"}`` while unspent signup credit remains.
 
     None when nothing is left, the expiry already ran, or the lookup failed.
     """
@@ -552,7 +552,8 @@ def signup_credit_status(user_id: str, wallet: Optional[Mapping] = None) -> Opti
         return None
     if remaining <= 0:
         return None
-    return {"remaining_usd": remaining, "expires_at": expires_at}
+    grant = next(Decimal(str(r.get("amount_usd"))) for r in rows if r.get("kind") == "signup_credit")
+    return {"remaining_usd": remaining, "grant_usd": grant, "expires_at": expires_at}
 
 
 def expire_signup_credit(user_id: str) -> str:
