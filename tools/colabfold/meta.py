@@ -192,13 +192,6 @@ EXAMPLE: dict | None = {
             "let a borderline fold settle and cost proportionally more; 2 is "
             "enough to see whether a design is in trouble.",
         ),
-        (
-            "Use PDB templates",
-            "off",
-            "Left off on purpose. Handing the model the backbone the design "
-            "was built for would be marking its own homework &mdash; the "
-            "point is an independent opinion.",
-        ),
     ],
     "what_came_back": (
         "A mean pLDDT of <strong>61.05</strong> and a pTM of 0.62 &mdash; "

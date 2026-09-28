@@ -149,6 +149,15 @@ def _stored_inputs(adapter) -> dict:
             # field are mutually exclusive and validate() rejects both.
             form.pop("sequences" if preset.slug != "batch" else "fasta", None)
             form.pop("sequences" if preset.slug != "batch" else "fasta_text", None)
+        if adapter.slug == "colabfold":
+            # ColabFold REFUSES use_templates on every preset — its image
+            # ships no hhsearch, so the flag could only bill a run that
+            # returns nothing (tools/colabfold/__init__.py::_refuse_templates,
+            # pinned by tests/test_colabfold_templates_refused.py). The
+            # superset form carries the field for AF2, whose image does ship
+            # it; dropping it here keeps this file's subject the clone
+            # round-trip rather than that refusal.
+            form.pop("use_templates", None)
         inputs, err = adapter.validate(form, {})
         if inputs:
             return inputs
