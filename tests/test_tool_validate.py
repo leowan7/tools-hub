@@ -125,7 +125,7 @@ class TestValidateIsFree:
         verdict = _validate(client, "proteina", {"preset": " validate ", "num_designs": "10",
                                                  "requested_designs": "10", "_campaign": "1"})
         assert verdict == {"ok": False,
-                           "error": "The validate tier is a free pre-flight, not a campaign."}, verdict
+                           "error": "The validate tier is a free pre-flight, not a full-size run."}, verdict
 
 
 class TestCheckButton:

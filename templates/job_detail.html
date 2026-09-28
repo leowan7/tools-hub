@@ -110,11 +110,11 @@
 {% block content %}
   <div class="hero">
     <p style="margin:0 0 .4rem;font-size:.8rem;">
-      <a href="{{ url_for('campaigns.compute_campaigns_list') }}" style="color:var(--accent-text,#2B9E7E);text-decoration:none;">&larr; Campaigns</a>
+      <a href="{{ url_for('campaigns.compute_campaigns_list') }}" style="color:var(--accent-text,#2B9E7E);text-decoration:none;">&larr; Full-size runs</a>
     </p>
     <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
     <p class="subtitle">
-      Preset <strong>{{ job.preset }}</strong> ·
+      Preset <strong>{{ job.preset | preset_label }}</strong> ·
       submitted {{ job.created_at[:19] if job.created_at else '—' }}
     </p>
   </div>
@@ -189,7 +189,7 @@
             <div style="margin-top: 1rem; padding: 0.85rem 1rem; background: var(--bg-elevated); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); max-width: 560px;">
               <strong style="color: var(--text-primary);">You can close this tab.</strong>
               <div style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.35rem;">
-                This pilot run takes 15-60 min on a real GPU. We'll email
+                This trial run takes 15-60 min on a real GPU. We'll email
                 <strong>{{ user_email }}</strong> when results are ready, with a
                 link back to this page.
               </div>
@@ -427,7 +427,7 @@
   {% endif %}
 
   <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
-    <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All campaigns</a>
+    <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All full-size runs</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
     {% if job.status == 'succeeded' and share_allowed %}

@@ -24,7 +24,7 @@
   {"q": "Is there a minimum top-up?",
    "a": "Yes. The minimum top-up is $20, and that balance is your spend cap. There are no fixed packages, so you can top up any amount at or above the minimum."},
   {"q": "Is there a limit on how many designs I can run?",
-   "a": "No. Design count is unlimited and there is no per design charge. Your wallet balance is the only ceiling. A large request fans out into a campaign that drains the wallet as compute is delivered and pauses if the balance runs low, so everything already produced stays downloadable."},
+   "a": "No. Design count is unlimited and there is no per design charge. Your wallet balance is the only ceiling. A large request becomes a full-size run that drains the wallet as compute is delivered and pauses if the balance runs low, so everything already produced stays downloadable."},
   {"q": "What is a hold versus a final charge?",
    "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. The job is billed for actual GPU minutes consumed, up to the estimate. If the job ends up cheaper than estimated, the surplus returns to your wallet automatically."},
   {"q": "What happens if I cancel a running job?",
@@ -42,9 +42,9 @@
   {"q": "Can I run a tool to test it first?",
    "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $" ~ signup_credit() ~ " signup balance, usable for " ~ signup_credit_expiry_days ~ " days after sign-up, also covers a small first run to see real output on your target."},
   {"q": "How long do runs take?",
-   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large campaign fans out across GPUs to finish sooner. Every tool form shows a typical runtime before you submit."},
+   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large full-size run takes longer and bills as its pieces finish. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
-   "a": "A design is one candidate the tool generates: a backbone — a structure with no sequence decided yet — with a sequence put on it, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
+   "a": "A design is one candidate the tool generates: a backbone — a structure with no sequence decided yet — with a sequence put on it, scored and ranked against the others in the run. A trial run of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
   {"q": "What do the scores mean?",
    "a": "ipTM is interface confidence at the contact between two chains, higher is better: " ~ metric_glossary.get("ipTM", {}).get("good_range", "") ~ ". Individual tools set their own pass bar a little either side of that. pLDDT is per-residue fold confidence, higher is better. i_pAE and pAE are predicted alignment error, lower is better."}
 ] %}
@@ -105,8 +105,8 @@
         <h3 class="why-card-title">Is there a limit on how many designs I can run?</h3>
         <p class="why-card-body">
           No. Design count is unlimited and there is no per design charge.
-          Your wallet balance is the only ceiling. A large request fans out
-          into a campaign that drains the wallet as compute is delivered and
+          Your wallet balance is the only ceiling. A large request becomes
+          a full-size run that drains the wallet as compute is delivered and
           pauses if the balance runs low, so everything already produced
           stays downloadable.
         </p>
@@ -214,8 +214,8 @@
           It depends on the tool and the scale you pick. A single ProteinMPNN
           inference finishes in about a minute. Generative tools take longer
           as you request more designs, often a minute or two per design, so a
-          small starter run lands well under an hour while a large campaign
-          fans out across GPUs to finish sooner. Every tool form shows a
+          small starter run lands well under an hour while a large full-size run
+          takes longer and bills as its pieces finish. Every tool form shows a
           typical runtime before you submit.
         </p>
       </article>
@@ -233,7 +233,7 @@
              invented a fourth time. #}
           A design is one candidate the tool generates: a backbone &mdash; a
           structure with no sequence decided yet &mdash; with a sequence put
-          on it, scored and ranked against the others in the run. A pilot
+          on it, scored and ranked against the others in the run. A trial run
           of about 8 designs gives a real first signal because roughly 1 in 5
           passes the in-silico filter on a tractable target.
         </p>

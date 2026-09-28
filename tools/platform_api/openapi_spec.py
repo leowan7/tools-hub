@@ -423,7 +423,7 @@ def build_spec() -> dict[str, Any]:
                             "description": (
                                 "Operator-authored notes about sort gates, "
                                 "panel scaffolds, or epitope anchoring used "
-                                "during previous campaigns."
+                                "during previous projects."
                             ),
                         },
                         "typical_campaign_range_usd": {

@@ -120,7 +120,7 @@ _DEFAULT_VARIANT_PRESET = {
 # through it.
 _REFUSED_PRESETS = {
     ("iggm", "affinity_maturation"): (
-        "affinity maturation is not available as a campaign (it runs one "
+        "affinity maturation is not available as a full-size run (it runs one "
         "design per masked position, so the delivered count stops matching "
         "the chunk size). Use the single-run IgGM form."
     ),
@@ -142,7 +142,7 @@ _REFUSED_PRESETS = {
     # here would file designs under a target they were not designed against.
     ("proteina", "motif_ame"): (
         "the motif/enzyme variant can only scaffold a curated benchmark motif, "
-        "not your own target. Start it from the campaign form instead."
+        "not your own target. Start it from the full-size run form instead."
     ),
 }
 
@@ -421,7 +421,7 @@ def _launch_blocker(target) -> "str | None":  # noqa: ANN001
         )
     if target.kind != "pdb":
         return (
-            "The campaign tools all take a protein structure, and this target "
+            "The tools on this page all take a protein structure, and this target "
             "is a small molecule."
         )
     return None

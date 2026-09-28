@@ -50,7 +50,7 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one RFdiffusion run cost?",
         "a": (
-            "Billing is by the second of dedicated GPU time. A pilot run "
+            "Billing is by the second of dedicated GPU time. A trial run "
             "(~25 minutes on an A100 for four designs) typically clears for "
             "under a few dollars from your wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} balance, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
@@ -177,13 +177,13 @@ about: dict = {
     "runtime_table": [
         # Must match preset_runtime_rows above and the cost FAQ. See the
         # measurement note there.
-        {"preset": "pilot", "typical": "25 to 40 min (4 to 8 designs)"},
+        {"preset": "Trial run", "typical": "25 to 40 min (4 to 8 designs)"},
     ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, i_pAE, and PDBs "
         "downloadable from a run of your own. Aim for at least 1 in 5 "
         "with ipTM &ge; 0.65 on a "
-        "tractable target before committing to a full pilot."
+        "tractable target before committing to a full-size run."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
@@ -209,7 +209,7 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 8 binders",
+    "label": "Trial run: 8 binders",
     "goal": (
         "Find out whether your target and the face you picked are "
         "workable, before paying for a large run."
@@ -313,7 +313,7 @@ EXAMPLE: dict | None = {
         (
             "Number of designs",
             "8",
-            "A pilot-sized batch. Enough to tell whether the target and "
+            "A trial-run batch. Enough to tell whether the target and "
             "hotspots are workable before committing to 100+, which is what "
             "this preset is for.",
         ),
@@ -341,9 +341,9 @@ EXAMPLE: dict | None = {
         "two the next step is an independent re-fold against the same target "
         "&mdash; a different model, so it is a real second opinion rather "
         "than the same one twice &mdash; and then SPR or BLI if they survive "
-        "it. One pilot is a screen, not a result: two hits out of eight is "
+        "it. One trial run is a screen, not a result: two hits out of eight is "
         "roughly the yield this tool is scoped for, and the point of the "
-        "pilot is to earn the bigger run."
+        "trial run is to earn the bigger run."
     ),
     "cost_usd": "2.69",
     "runtime": "37 minutes",

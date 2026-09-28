@@ -77,9 +77,9 @@ seo_faq: list[dict] = [
         ),
     },
     {
-        "q": "How long does a BindCraft pilot take?",
+        "q": "How long does a BindCraft trial run take?",
         "a": (
-            "Typical pilot runs finish in roughly 20 to 60 minutes on a "
+            "Typical trial runs finish in roughly 20 to 60 minutes on a "
             "dedicated A100, depending on target size and how many "
             "candidates pass the internal ipTM filter. Billing is by the "
             "second so a faster preset costs less."
@@ -160,7 +160,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
+        {"preset": "Trial run", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
     ],
     # shared/score_legends.py ("bindcraft", "ipTM") sets good 0.75 and
     # excellent 0.85. Stated INCLUSIVELY, which that legend's own
@@ -209,7 +209,7 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 2 trajectories",
+    "label": "Trial run: 2 trajectories",
     "goal": (
         "Check that your target parses, your hotspots resolve against "
         "it, and the pipeline returns scored designs &mdash; before "
@@ -347,7 +347,7 @@ EXAMPLE: dict | None = {
         (
             "Number of designs",
             "2",
-            "Small even for a pilot, and that is this tool rather than "
+            "Small even for a trial run, and that is this tool rather than "
             "impatience: BindCraft optimises each design individually instead "
             "of sampling a batch, so two of them cost about what eight cost "
             "on the diffusion tools. It is also why this run took 20 minutes "
@@ -370,7 +370,7 @@ EXAMPLE: dict | None = {
         "refolding RMSD wants to be inside 1.5 &Aring; and both are close to "
         "3. Put together: <strong>the interface is plausible, the fit is "
         "loose, and neither design rebuilds quite the backbone it was drawn "
-        "as</strong>. That is a normal pilot result and it is worth more to "
+        "as</strong>. That is a normal trial run result and it is worth more to "
         "you than a single headline number would be. "
         "<strong>Do not read the ranking as an ipTM sort.</strong> Design 2 "
         "has the marginally higher ipTM and still ranks second, because "
@@ -394,7 +394,7 @@ EXAMPLE: dict | None = {
         "run more of them, not a reason to order peptides. The next step is "
         "the same target and the same hotspots at a higher design count, then "
         "an independent re-fold on whatever clears the bar properly, and SPR "
-        "or BLI only after that. A two-design pilot can tell you the target "
+        "or BLI only after that. A two-design trial run can tell you the target "
         "and hotspots are workable; it cannot tell you which binder to make."
     ),
     "cost_usd": "2.04",

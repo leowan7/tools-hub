@@ -212,7 +212,7 @@ def test_iggm_campaign_rejects_affinity_maturation(client, monkeypatch):
             "requested_designs": "120",
         })
     assert resp.status_code == 400
-    assert "Affinity maturation is not available as a campaign" in resp.get_data(as_text=True)
+    assert "Affinity maturation is not available as a full-size run" in resp.get_data(as_text=True)
 
 
 def test_iggm_campaign_rejects_missing_epitope(client, monkeypatch):

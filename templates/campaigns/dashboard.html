@@ -55,7 +55,7 @@
                 {% if c.submission_source == 'target' and c.source_target_id %}
                 <a href="{{ url_for('targets.target_detail', target_id=c.source_target_id) }}" style="color:var(--accent);font-size:.85rem;">target {{ c.source_target_id[:8] }}</a>
                 {% elif c.submission_source == 'campaign' and c.source_campaign_id %}
-                <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=c.source_campaign_id) }}" style="color:var(--accent);font-size:.85rem;">campaign {{ c.source_campaign_id[:8] }}</a>
+                <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=c.source_campaign_id) }}" style="color:var(--accent);font-size:.85rem;">full-size run {{ c.source_campaign_id[:8] }}</a>
                 {% elif c.source_job_id %}
                 <a href="/jobs/{{ c.source_job_id }}" style="color:var(--accent);font-size:.85rem;">{{ c.source_job_id[:8] }}</a>
                 {% endif %}
@@ -74,7 +74,7 @@
 {% else %}
   <div class="panel">
     <div class="panel-body" style="text-align:center;padding:2.5rem 1rem;">
-      <p class="subtitle">No campaigns submitted yet.</p>
+      <p class="subtitle">No lab projects submitted yet.</p>
       <p style="color:var(--text-secondary);font-size:.9rem;margin-top:.5rem;">
         After running a GPU tool, star the candidates you want validated and click
         <strong>Send shortlist to Ranomics lab</strong> on the results page.

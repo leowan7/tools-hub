@@ -21,6 +21,11 @@ import importlib
 from types import ModuleType
 
 
+def preset_label(slug) -> str:  # noqa: ANN001
+    """The name a customer sees for a stored preset slug."""
+    return "trial run" if slug == "pilot" else (slug or "")
+
+
 def meta_for(slug: str) -> ModuleType | None:
     """Return ``tools.<slug>.meta`` or None if the tool ships none."""
     try:

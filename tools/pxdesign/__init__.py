@@ -145,13 +145,13 @@ adapter = ToolAdapter(
     blurb=(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back binders that each carry a real "
-        "AlphaFold2 confidence score against that target. A pilot run "
+        "AlphaFold2 confidence score against that target. A trial run "
         "takes 8 to 25 min."
     ),
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot run on your target, 8 to 25 min",
+            label="Trial run on your target, 8 to 25 min",
             description=(
                 "Real PXDesign run against your uploaded target with "
                 "AF2-IG validation. Up to 24 candidates with real "

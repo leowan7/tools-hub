@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Campaign {{ campaign.id[:8] }} — Ranomics Tools{% endblock %}
+{% block title %}Lab project {{ campaign.id[:8] }} — Ranomics Tools{% endblock %}
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
 <div class="hero">
   <h1>{{ campaign.target_name }}</h1>
   <p class="subtitle">
-    Campaign {{ campaign.id[:8] }} &middot;
+    Project {{ campaign.id[:8] }} &middot;
     submitted {{ campaign.created_at[:10] if campaign.created_at else '—' }}
   </p>
 </div>
@@ -211,7 +211,7 @@
 </div>
 
 <div class="panel" style="margin-bottom:1rem;">
-  <div class="panel-header"><span class="panel-title">Campaign details</span></div>
+  <div class="panel-header"><span class="panel-title">Project details</span></div>
   <div class="panel-body">
     <dl style="display:grid;grid-template-columns:max-content 1fr;gap:.4rem 1rem;font-size:.9rem;">
       <dt style="color:var(--text-secondary);">Assay</dt>
@@ -234,7 +234,7 @@
       <dd style="margin:0;">{{ shortlist.stored if shortlist else (campaign.candidate_indices | length) }} shortlisted</dd>
 
       <dt style="color:var(--text-secondary);">Budget band</dt>
-      <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
+      <dd style="margin:0;">{{ 'Initial screen' if campaign.budget_band == 'pilot' else (campaign.budget_band | title) }}</dd>
 
       {% if campaign.affinity_goal_kd_nm is not none %}
         <dt style="color:var(--text-secondary);">Affinity goal</dt>
@@ -254,7 +254,7 @@
         </a>
       </dd>
       {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
-      <dt style="color:var(--text-secondary);">Source campaign</dt>
+      <dt style="color:var(--text-secondary);">Source full-size run</dt>
       <dd style="margin:0;">
         <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" style="color:var(--accent);">
           {{ campaign.source_campaign_id[:8] }}
@@ -284,7 +284,7 @@
   {% if campaign.submission_source == 'target' and campaign.source_target_id %}
   <a href="{{ url_for('targets.target_detail', target_id=campaign.source_target_id) }}" class="btn-secondary">View source target</a>
   {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
-  <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" class="btn-secondary">View source campaign</a>
+  <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" class="btn-secondary">View source full-size run</a>
   {% elif campaign.source_job_id %}
   <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">View source job</a>
   {% endif %}

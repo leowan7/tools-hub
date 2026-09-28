@@ -144,7 +144,7 @@ adapter = ToolAdapter(
     blurb=(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back brand-new binders, each carrying a real "
-        "AlphaFold2 confidence score against your target. A pilot run "
+        "AlphaFold2 confidence score against your target. A trial run "
         "takes roughly 25 min for four designs, 40 for eight."
     ),
     presets=(

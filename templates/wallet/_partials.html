@@ -98,22 +98,22 @@
     {# Hard block — scaled per tool cap exceeded for a single container. #}
     <div class="wallet-estimate-block" data-estimate-hard-block hidden>
       <strong>Estimate exceeds the ceiling for a single job.</strong>
-      Run this as a campaign to fan the request out across GPUs, or reduce
-      the scale parameter.
+      Run this at full size to split the request into pieces that run on our
+      GPUs and bill as they finish, or reduce the scale parameter.
       <a href="/campaigns/new" class="wallet-estimate-pilot-link">
-        Run as a campaign &rarr;
+        Run at full size &rarr;
       </a>
     </div>
 
     {# Self serve ceiling — absolute cap on any single submit. #}
     <div class="wallet-estimate-block wallet-estimate-block-ceiling" data-estimate-ceiling-block hidden>
       <strong>This estimate is above the single job ceiling.</strong>
-      Run it as a campaign instead. Campaigns are wallet bounded and fan out
-      across GPUs with no per job ceiling, so you can design at any scale
+      Run it at full size instead. A full-size run is wallet bounded and is split
+      into pieces that run on our GPUs, with no per job ceiling, so you can design at any scale
       your balance covers.
       <a href="/campaigns/new"
          class="btn-primary wallet-estimate-pilot-cta">
-        Run as a campaign
+        Run at full size
       </a>
     </div>
   </div>

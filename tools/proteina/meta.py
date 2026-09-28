@@ -199,13 +199,13 @@ seo_faq: list[dict] = [
     {
         "q": "Can I run Proteina-Complexa online without a GPU cluster?",
         "a": (
-            "Yes. Ranomics Tools runs Proteina-Complexa as a fund-and-drain "
-            "campaign of independent search shards on dedicated A100-80GB "
+            "Yes. Ranomics Tools runs Proteina-Complexa as a wallet-funded "
+            "full-size run of independent search shards on dedicated A100-80GB "
             "GPUs. Upload your protein target (or pick a curated benchmark "
-            "task), choose how many designs you want, and shards fan out "
-            "automatically. You only pay "
-            "for compute that runs, and the campaign pauses if your balance "
-            "runs low."
+            "task), choose how many designs you want, and the run is split "
+            "into pieces that run on our GPUs and bill as they finish. You "
+            "only pay for compute that runs, and the run pauses if your "
+            "balance runs low."
         ),
     },
     {
@@ -463,7 +463,7 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: one shard, 8 designs",
+    "label": "Trial run: one shard, 8 designs",
     # "see what the reward stack returns" was both jargon on a page aimed
     # at a bench biologist and the loosest of the reward-stack strings —
     # the pilot runs protein_binder, which scores on AF2, not a stack.
@@ -497,8 +497,9 @@ PILOT: dict | None = {
     "next_step": (
         "8 designs is one shard on one GPU, and it costs the same as "
         "one design would &mdash; a shard is a whole container. Raise "
-        "the count and the run fans out across GPUs as a campaign "
-        "bounded by your wallet, with a single ranked list pooled "
+        "the count and it becomes a full-size run bounded by your "
+        "wallet, split into pieces that run on our GPUs and bill as they "
+        "finish, with a single ranked list pooled "
         "across every shard. Widen the length window once you know the "
         "target is workable."
     ),

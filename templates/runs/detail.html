@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "components/lab_handoff_banner.html" import handoff_sentence, truncation_sentence %}
-{% block title %}{{ campaign.name or 'Campaign' }} — Ranomics Tools{% endblock %}
+{% block title %}{{ campaign.name or 'Full-size run' }} — Ranomics Tools{% endblock %}
 {% block robots %}noindex,follow{% endblock %}
 
 {% block head_extra %}
@@ -125,7 +125,7 @@
   <div class="rd-bar-outer"><div class="rd-bar-inner" id="rd-bar"
        style="width: {% if campaign.total_subjobs > 0 %}{{ (100 * terminal_subjobs // campaign.total_subjobs) }}{% else %}0{% endif %}%;"></div></div>
   <div class="rd-progress-label"><span id="rd-subjobs-complete">{{ terminal_subjobs }}</span> of <span id="rd-subjobs-total">{{ campaign.total_subjobs }}</span> sub-jobs complete</div>
-  <div class="rd-paused" id="rd-paused" style="display:none;">Paused: your wallet cannot fund the next batch. Batches already finished stay downloadable below. <a href="/account" style="color:inherit;text-decoration:underline;">Add funds</a> and the campaign resumes automatically.</div>
+  <div class="rd-paused" id="rd-paused" style="display:none;">Paused: your wallet cannot fund the next batch. Batches already finished stay downloadable below. <a href="/account" style="color:inherit;text-decoration:underline;">Add funds</a> and the run resumes automatically.</div>
 
   <div class="rd-cards">
     <div class="rd-card"><div class="n" id="rd-running">{{ counts.running }}</div><div class="l">Running</div></div>
@@ -190,7 +190,7 @@
     </div>
   {% else %}
     <div class="rd-designs" style="margin-top:1.5rem;">
-      All sub-jobs finished; no designs are available to show for this campaign.
+      All sub-jobs finished; no designs are available to show for this run.
     </div>
   {% endif %}
 
@@ -205,10 +205,10 @@
 
   <div class="rd-actions">
     {% if campaign.status in ('funded','running','completing','paused_insufficient_funds') %}
-      <button class="rd-btn danger" id="rd-cancel">Cancel campaign</button>
+      <button class="rd-btn danger" id="rd-cancel">Cancel run</button>
     {% endif %}
     <a class="rd-btn" href="{{ url_for('jobs.jobs_list') }}?campaign={{ campaign.name or '' }}">View sub-jobs</a>
-    <a class="rd-btn" href="{{ url_for('campaigns.compute_campaigns_list') }}">All campaigns</a>
+    <a class="rd-btn" href="{{ url_for('campaigns.compute_campaigns_list') }}">All full-size runs</a>
   </div>
 
   {# The second off-platform CRO panel used to sit here. Whenever this page has
@@ -292,7 +292,7 @@
   var cancelBtn = document.getElementById('rd-cancel');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', function () {
-      if (!window.confirm('Cancel this campaign? In-flight sub-jobs stop and unused budget is refunded.')) return;
+      if (!window.confirm('Cancel this run? In-flight sub-jobs stop and unused budget is refunded.')) return;
       cancelBtn.disabled = true;
       fetch(cancelUrl, { method: 'POST', headers: { 'X-CSRF-Token': csrf() } })
         .then(function () { window.location.reload(); })

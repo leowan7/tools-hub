@@ -1667,7 +1667,7 @@ def test_iggm_affinity_maturation_is_refused_on_the_launch_path(client):
     # adapter's own mask check, so deleting the campaign-level refusal would
     # leave the test green on a different error. Assert the reason.
     body = resp.get_data(as_text=True)
-    assert "not available as a campaign" in body
+    assert "not available as a full-size run" in body
     assert "single-run IgGM form" in body
 
 
@@ -1947,7 +1947,7 @@ def test_the_refusal_reads_as_plural_for_a_multi_tool_launch(client):
     )
     body = resp.get_data(as_text=True)
     assert "these 2 runs" in body
-    assert "this campaign" not in body
+    assert "this run " not in body
 
 
 def test_preauth_is_called_once_for_the_whole_launch(client):

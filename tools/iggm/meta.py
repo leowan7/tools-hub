@@ -56,7 +56,7 @@ about: dict = {
         ),
         (
             "You want to see how an antibody sits on its antigen before "
-            "committing to a wet-lab campaign."
+            "committing to a wet-lab project."
         ),
     ],
     "prerequisites": [

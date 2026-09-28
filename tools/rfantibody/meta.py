@@ -112,7 +112,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15 to 60 min"},
+        {"preset": "Trial run", "typical": "15 to 60 min"},
     ],
     "output_summary": (
         "Ranked VHH candidates with pAE, pLDDT, ipAE, and "
@@ -143,7 +143,7 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 2 nanobodies",
+    "label": "Trial run: 2 nanobodies",
     "goal": (
         "Check that a VHH scaffold can be placed on the face you "
         "picked at all, before scaling up."

@@ -78,8 +78,8 @@ _CID = "c0ffee00-0000-4000-8000-000000000001"
 _PAID_PRESETS = ["protein_binder", "ligand_binder", "motif_ame"]
 
 # The sentence that may only appear for a paid shard inside a campaign.
-_CAMPAIGN_SENTENCE = "pooled across the whole campaign"
-_CAMPAIGN_POINTER = "check the campaign page"
+_CAMPAIGN_SENTENCE = "pooled across the whole full-size run"
+_CAMPAIGN_POINTER = "check the full-size run page"
 # The claim that is false whenever nothing was designed.
 _FILTER_CLAIM = "cleared the reward filters"
 

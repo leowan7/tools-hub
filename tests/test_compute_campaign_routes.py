@@ -51,7 +51,7 @@ def test_runs_new_renders(client):
         resp = client.get("/campaigns/new")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert "New campaign" in body
+    assert "New full-size run" in body
     assert "rfdiffusion" in body  # supported tool option
     assert 'id="rp-submit"' in body  # cost-confirm submit
 
@@ -63,7 +63,7 @@ def test_runs_list_renders(client):
     ):
         resp = client.get("/campaigns")
     assert resp.status_code == 200
-    assert "Campaigns" in resp.get_data(as_text=True)
+    assert "Full-size runs" in resp.get_data(as_text=True)
 
 
 def test_estimate_ok(client):

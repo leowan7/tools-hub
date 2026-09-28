@@ -261,12 +261,12 @@
         {# Attribution. Reached with no campaigns, so every design below came
            from a target-tagged standalone job. #}
         <p style="color: var(--text-secondary); margin-bottom: 0.6rem;">
-          No campaign runs yet.
+          No full-size runs yet.
           {% if agg.standalone_jobs %}
           {{ agg.standalone_jobs }} standalone run{{ 's' if agg.standalone_jobs != 1 else '' }}
           produced the designs listed below.
           {% else %}
-          The designs listed below came from runs outside this target's campaign list.
+          The designs listed below came from runs outside this target's full-size run list.
           {% endif %}
         </p>
         {% endif %}

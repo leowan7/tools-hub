@@ -230,7 +230,7 @@ def generate_recommendations(
 
     # Approach recommendation — based on biophysical feasibility, not novelty
     if composite_score >= 0.70:
-        approach = "De novo design using RFdiffusion, BindCraft, and Boltzgen in parallel. Favorable biophysics support a focused campaign with standard design parameters."
+        approach = "De novo design using RFdiffusion, BindCraft, and Boltzgen in parallel. Favorable biophysics support a focused design run with standard design parameters."
     elif composite_score >= 0.50:
         approach = "De novo design with broad exploration across multiple backbone topologies and hotspot combinations. Increase sampling diversity to compensate for moderate target difficulty."
     elif composite_score >= 0.35:

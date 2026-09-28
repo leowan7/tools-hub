@@ -1361,7 +1361,7 @@ def test_no_empty_state_fact_preempts_another(client, bits):
     )
 
     if tools:
-        assert "No campaign runs yet" in body
+        assert "No full-size runs yet" in body
     if partial:
         assert "could not be read" in body
     if drafts:
