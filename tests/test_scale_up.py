@@ -60,10 +60,6 @@ def test_boltzgen_clamps_to_its_per_job_cap_and_prices_one_job():
     _job(status="failed"),
     _job(candidates=()),
     _job(candidates=None),
-    _job(tool="af2"),
-    _job(tool="colabfold"),
-    _job(tool="esmfold"),
-    _job(tool="boltz2"),
     _job(tool="opendde"),
     _job(tool="proteina", preset="validate"),
     _job(tool="iggm", preset="affinity_maturation", inputs={"num_samples": 4}),
@@ -82,6 +78,60 @@ def test_offer_reads_every_result_shape(tool, inputs, result):
     job = _job(tool=tool, preset="cdr_design" if tool == "iggm" else "pilot", inputs=inputs)
     job.result = result
     assert _quote(job) is not None
+
+
+# ---- next step for the tools with no candidate count to raise --------------
+
+@pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
+def test_fold_with_a_structure_offers_mpnn_on_it(tool):
+    from shared.resample import RESAMPLE_MPNN_DEFAULTS
+    job = _job(tool=tool, preset="standalone", inputs={})
+    job.result = {"pdb_b64": "QVRPTQ=="}
+    q = _quote(job)
+    assert q.tool == "mpnn" and q.route == "resample" and q.count == 16
+    assert q.price_usd == estimated_cost_for_tool(
+        "u-1", "mpnn", dict(RESAMPLE_MPNN_DEFAULTS))
+    assert "ProteinMPNN" in q.offer_text and q.cta_text == "Design 16 sequences"
+
+
+@pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
+def test_batch_fold_without_a_structure_offers_another_batch(tool):
+    job = _job(tool=tool, preset="batch", inputs={"n_designs_total": 7})
+    job.result = {"candidates": [{"rank": 1}]}
+    q = _quote(job)
+    assert q.tool == tool and q.route == "clone" and q.count == 7
+    assert q.price_usd == estimated_cost_for_tool(
+        "u-1", tool, {"n_designs_total": 7, "preset": "batch"})
+
+
+def test_boltz2_offers_another_screen_priced_at_ten():
+    from shared.scale_up import BOLTZ2_NEXT_COUNT
+    job = _job(tool="boltz2", preset="standalone", inputs={"n_designs_total": 2})
+    job.result = {"designs": [{"rank": 1}]}
+    q = _quote(job)
+    assert q.tool == "boltz2" and q.route == "clone"
+    assert q.count == BOLTZ2_NEXT_COUNT
+    assert q.price_usd == estimated_cost_for_tool(
+        "u-1", "boltz2",
+        {"n_designs_total": BOLTZ2_NEXT_COUNT, "preset": "standalone"})
+
+
+@pytest.mark.parametrize("job", [
+    _job(tool="af2", status="failed"),
+    _job(tool="boltz2", status="failed"),
+])
+def test_no_next_step_on_a_failed_job(job):
+    assert _quote(job) is None
+
+
+def test_next_step_tops_up_against_the_hold():
+    from shared.wallet_estimates import cushioned_hold_usd
+    job = _job(tool="boltz2", preset="msa_server", inputs={})
+    job.result = {"designs": [{"rank": 1}]}
+    hold = cushioned_hold_usd(
+        "u-1", "boltz2", {"n_designs_total": 10, "preset": "msa_server"})
+    assert _quote(job, balance=0).topup_usd == math.ceil(hold)
+    assert _quote(job, balance=hold).topup_usd == 0
 
 
 def test_single_run_topup_covers_the_hold_the_submit_reserves():
@@ -158,6 +208,17 @@ def test_card_renders_price_and_button(client):
     assert "/GPU" not in html and "per GPU" not in html
 
 
+def test_card_renders_the_next_step_wording(client):
+    html = _page(client, _offer(
+        tool="mpnn", count=16, route="resample",
+        offer_text="Design 16 sequences on the structure you just predicted, "
+                   "with ProteinMPNN",
+        cta_text="Design 16 sequences"))
+    assert "with ProteinMPNN" in html
+    assert ">Design 16 sequences</button>" in html
+    assert "Run 16 candidates" not in html
+
+
 def test_card_says_top_up_when_short(client):
     html = _page(client, _offer(topup_usd=7))
     assert "Top up $7 to run this" in html
@@ -209,6 +270,27 @@ def test_single_route_clones_the_form_at_the_new_count(client):
     assert emit.call_args.kwargs["properties"]["route"] == "single"
     assert log_event.call_args.kwargs["event_type"] == "scale_up_click"
     assert log_event.call_args.kwargs["props"]["count"] == 50
+
+
+def test_resample_route_opens_mpnn_on_this_job(client):
+    offer = _offer(tool="mpnn", count=16, route="resample",
+                   cta_text="Design 16 sequences")
+    resp, emit, _, _ = _post(client, _job(tool="af2"), offer)
+    assert resp.status_code == 302
+    loc = urlparse(resp.headers["Location"])
+    assert loc.path == "/tools/mpnn"
+    assert parse_qs(loc.query) == {"resample_from": [_JID]}
+    assert emit.call_args.args[0] == "scale_up_click"
+    assert emit.call_args.kwargs["properties"]["route"] == "resample"
+
+
+def test_clone_route_opens_the_same_form_unscaled(client):
+    offer = _offer(tool="boltz2", count=10, route="clone")
+    resp, emit, _, _ = _post(client, _job(tool="boltz2"), offer)
+    loc = urlparse(resp.headers["Location"])
+    assert loc.path == "/tools/boltz2"
+    assert parse_qs(loc.query) == {"clone_from": [_JID]}
+    assert emit.call_args.kwargs["properties"]["route"] == "clone"
 
 
 def test_split_route_makes_a_target_then_opens_the_run_form(client):

@@ -78,6 +78,9 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     "signup_failed",
     "credit_exhausted",
     "scale_up_click",
+    # static/js/track.js, delegated from the result page's anchors.
+    "result_download",
+    "outbound_click",
 })
 
 

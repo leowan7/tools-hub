@@ -282,7 +282,8 @@
         <div class="panel scale-up-card" style="margin-top: 1rem; max-width: 720px;">
           <div class="panel-body">
             <p style="margin: 0 0 0.5rem 0;">
-              <strong>Want more?</strong> Run {{ scale_up.count }} candidates on the same target &mdash; est. ${{ scale_up.price_display }}.
+              <strong>Want more?</strong>
+              {% if scale_up.offer_text %}{{ scale_up.offer_text }}{% else %}Run {{ scale_up.count }} candidates on the same target{% endif %} &mdash; est. ${{ scale_up.price_display }}.
               {% if scale_up.clamped %}{{ tool_label }} runs up to {{ scale_up.count }} per job.{% endif %}
             </p>
             {% if scale_up.topup_usd > 0 %}
@@ -292,7 +293,7 @@
             {% endif %}
             <form method="post" action="{{ url_for('jobs.job_scale_up', job_id=job.id) }}" style="margin: 0;">
               {{ csrf_input() }}
-              <button type="submit" class="btn-secondary">Run {{ scale_up.count }} candidates</button>
+              <button type="submit" class="btn-secondary">{{ scale_up.cta_text or 'Run ' ~ scale_up.count ~ ' candidates' }}</button>
             </form>
           </div>
         </div>

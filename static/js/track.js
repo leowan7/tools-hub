@@ -11,6 +11,8 @@
  *   - pricing_view     when path === "/pricing"
  *   - tool_form_open   when path matches /tools/<slug>(/.*)?
  *   - tool_form_submit when a <form> inside /tools/<slug> submits
+ *   - result_download   on a click of an export / structure download link
+ *   - outbound_click    on a click of a ranomics.com link
  *
  * Also exposes window.track(eventType, props) for ad-hoc events.
  *
@@ -75,9 +77,33 @@
     return m ? m[1] : null;
   }
 
+  // Result-page exits we had no numbers for: which downloads people take,
+  // and how many leave through a ranomics.com link instead of running
+  // another job. Both are plain anchors in half a dozen templates, so this
+  // is one delegated listener on the href rather than an attribute per link.
+  var DOWNLOAD_RE = /\/export\.(csv|fasta|zip)$|\.(pdb|npz)(\?|$)/i;
+
+  function trackAnchorClick(ev) {
+    var el = ev.target;
+    while (el && el !== document.body) {
+      if (el.tagName === "A" && el.getAttribute("href")) break;
+      el = el.parentNode;
+    }
+    if (!el || el.tagName !== "A") return;
+    var href = el.getAttribute("href") || "";
+    if (DOWNLOAD_RE.test(href) || href.indexOf("data:chemical/") === 0) {
+      track("result_download", { href: href.slice(0, 200), path: location.pathname });
+      return;
+    }
+    if (/^https?:\/\/(www\.)?ranomics\.com\//i.test(href)) {
+      track("outbound_click", { href: href.slice(0, 200), path: location.pathname });
+    }
+  }
+
   function autoCapture() {
     var path = location.pathname;
     track("page_view");
+    document.addEventListener("click", trackAnchorClick, true);
 
     if (path === "/pricing" || path.indexOf("/pricing") === 0) {
       track("pricing_view");

@@ -847,6 +847,16 @@ def job_scale_up(job_id: str):
         props=props,
     )
 
+    if offer.route == "resample":
+        # Fold -> MPNN. The form prefills from the predicted structure; the
+        # PDB itself is staged at submit time from the resample token.
+        return redirect(url_for(
+            "tools.tool_form", tool=offer.tool, resample_from=job.id,
+        ))
+    if offer.route == "clone":
+        return redirect(url_for(
+            "tools.tool_form", tool=job.tool, clone_from=job.id,
+        ))
     if offer.route == "single":
         return redirect(url_for(
             "tools.tool_form", tool=job.tool, clone_from=job.id,
