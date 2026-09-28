@@ -190,8 +190,13 @@ class TestValidate:
         assert inputs is None
         assert "total" in (err or "").lower() or "max" in (err or "").lower()
 
-    def test_standalone_use_templates_checkbox_parsed(self):
-        for raw, expected in [("on", True), ("", False), (None, False)]:
+    def test_standalone_use_templates_is_refused_not_parsed(self):
+        """``use_templates`` used to parse to True and reach the GPU. It
+        cannot work on this image (no hhsearch, no PDB70), so a truthy value
+        is now refused for free and a falsy one still validates to False.
+        The refusal itself is tested in
+        tests/test_colabfold_templates_refused.py."""
+        for raw, refused in [("on", True), ("", False), (None, False)]:
             form = {
                 "preset": "standalone",
                 "fasta_text": f">x\n{UBIQUITIN}",
@@ -199,8 +204,11 @@ class TestValidate:
             if raw is not None:
                 form["use_templates"] = raw
             inputs, err = cf_mod.validate(form, {})
-            assert err is None, (raw, err)
-            assert inputs["use_templates"] is expected, (raw, inputs)
+            if refused:
+                assert inputs is None and err, (raw, inputs, err)
+            else:
+                assert err is None, (raw, err)
+                assert inputs["use_templates"] is False, (raw, inputs)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +223,6 @@ class TestBuildPayload:
                 "preset": "standalone",
                 "fasta_text": f">x\n{UBIQUITIN}",
                 "num_recycles": "3",
-                "use_templates": "on",
             },
             {},
         )
@@ -223,7 +230,9 @@ class TestBuildPayload:
         assert payload["fasta_text"].startswith(">")
         assert UBIQUITIN in payload["fasta_text"]
         assert payload["parameters"]["num_recycles"] == 3
-        assert payload["parameters"]["use_templates"] is True
+        # Always False: validate() refuses a truthy value, so no payload this
+        # adapter builds can ask the GPU for templates.
+        assert payload["parameters"]["use_templates"] is False
         # FASTA travels inline — no presigned URL embedded.
         assert "https://ignored" not in json.dumps(payload)
 

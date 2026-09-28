@@ -589,6 +589,44 @@ def validate_fasta(fasta_path: Path) -> dict[str, Any]:
 # ===========================================================================
 
 
+def _templates_available() -> bool:
+    """True if ``hhsearch`` is on $PATH.
+
+    ``colabfold_batch --templates`` spawns ``hhsearch`` directly and raises
+    ``FileNotFoundError`` when the binary is missing. This image does not
+    install hhsuite (tools/colabfold/Dockerfile.modal installs curl, git,
+    python3-pip, python3-dev and build-essential only), so --templates
+    cannot work here; the sibling AF2 image installs it and carries the
+    same probe in tools/af2/run_pipeline.py::_hhsearch_available.
+    The four failed production runs that had templates on (3a75ca7b,
+    90ec7966, 52eeaf55, f42de6aa) all landed on the parser's
+    ``scores_missing`` arm rather than the non-zero-exit arm above it,
+    which is what ``colabfold_batch`` swallowing the per-query exception
+    and exiting 0 looks like from here. That the exception is specifically
+    the missing binary is inferred from AF2's fix, not proven in this repo.
+    Applied in ``_run_single`` and ``_run_batch``, the
+    two functions that read the parameter — before the value is recorded
+    in the result payload, so the results page cannot report "Templates:
+    on" for a run that dropped them. The paid web paths never reach here
+    with it on: ``validate`` in tools/colabfold/__init__.py refuses the
+    option before billing.
+    """
+    from shutil import which  # noqa: PLC0415
+    return which("hhsearch") is not None
+
+
+def _effective_use_templates(use_templates: bool) -> bool:
+    """Downgrade ``use_templates`` to False when hhsearch is absent."""
+    if use_templates and not _templates_available():
+        logger.warning(
+            "use_templates=True but hhsearch is not on PATH on this image — "
+            "forcing use_templates=False to avoid a silent colabfold "
+            "template crash"
+        )
+        return False
+    return use_templates
+
+
 def run_colabfold(
     fasta_path: Path,
     num_recycles: int,
@@ -1098,6 +1136,8 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
         num_recycles = 1
         use_templates = False
 
+    use_templates = _effective_use_templates(use_templates)
+
     with tempfile.TemporaryDirectory(prefix="colabfold_", dir="/tmp") as _td:
         workdir = Path(_td)
         # try/finally, not a trailing call: every helper below exits via
@@ -1179,7 +1219,9 @@ def _run_batch(
     except (TypeError, ValueError):
         num_recycles = 1
     num_recycles = max(RECYCLES_MIN, min(RECYCLES_MAX, num_recycles))
-    use_templates = bool(parameters.get("use_templates", False))
+    use_templates = _effective_use_templates(
+        bool(parameters.get("use_templates", False))
+    )
 
     designs_total = len(records)
     logger.info("colabfold batch starting: designs=%d (consolidated)", designs_total)

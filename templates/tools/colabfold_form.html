@@ -10,7 +10,7 @@
   {# D3 — ColabFold standalone (no-MSA fast fold). Two-panel layout
      parallel to the D1 MPNN form: form on the left, "About ColabFold"
      on the right. The ``standalone`` preset reveals the FASTA textarea,
-     recycles picker, and templates toggle via the shared #pilot-fields
+     recycles picker via the shared #pilot-fields
      div (reused so ``prefill_script()`` from _prefill.html keeps
      working on clone/handoff). #}
   <style>
@@ -247,16 +247,11 @@
             Default 1 for speed; up to 5 for a tighter prediction.
           </div>
 
-          <label for="use_templates" class="label" style="display:flex; align-items:center; gap:0.5rem; margin-bottom: 0.4rem; cursor:pointer;">
-            <input type="checkbox" name="use_templates" id="use_templates" value="on"
-                   {% if pre_fill and pre_fill.get('use_templates') %}checked{% endif %}
-                   style="width:auto;">
-            <span>Use PDB templates</span>
-          </label>
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Off by default. When on, ColabFold pulls PDB templates from
-            the PDB70 mirror at prediction time (adds ~30 s).
-          </div>
+          {# The "Use PDB templates" checkbox was removed: this tool's image
+             ships no hhsearch and no PDB70 mirror, so every run that checked
+             it was billed and returned nothing. tools/colabfold/__init__.py::
+             _refuse_templates now refuses the field if anything still sends
+             it. #}
 
           {{ field_campaign(prefilled=pre_fill) }}
 
