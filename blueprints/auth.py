@@ -534,6 +534,55 @@ def logout():
     return redirect(url_for("auth.login"))
 
 
+def _record_marketing_opt_out(user_id: str) -> bool:
+    """Set ``user_metadata.email_preferences.marketing_email = False``.
+
+    The crons in ``cron.reengagement`` and ``cron.signup_credit`` read this key.
+    """
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        current = client.auth.admin.get_user_by_id(user_id)
+        user = getattr(current, "user", None) or current
+        meta = getattr(user, "user_metadata", None)
+        if meta is None and isinstance(user, dict):
+            meta = user.get("user_metadata")
+        meta = dict(meta) if isinstance(meta, dict) else {}
+        prefs = meta.get("email_preferences")
+        prefs = dict(prefs) if isinstance(prefs, dict) else {}
+        prefs["marketing_email"] = False
+        meta["email_preferences"] = prefs
+        client.auth.admin.update_user_by_id(user_id, {"user_metadata": meta})
+        return True
+    except Exception:
+        logger.warning("unsubscribe: could not record opt-out for %s", user_id, exc_info=True)
+        return False
+
+
+@auth_bp.route("/email/unsubscribe/<token>", methods=["GET", "POST"])
+def email_unsubscribe(token: str):
+    """Signed opt-out link from the marketing email footer and List-Unsubscribe.
+
+    GET only shows a confirm button, so link scanners that prefetch the URL do
+    not unsubscribe anyone; POST (the button, or a mail client's RFC 8058
+    one-click POST) records the opt-out. CSRF-exempt in app.py: the signed
+    token is the credential.
+    """
+    from shared.email import read_unsubscribe_token  # noqa: PLC0415
+
+    user_id = read_unsubscribe_token(token)
+    if not user_id:
+        return render_template("email_unsubscribe.html", state="invalid"), 400
+    if request.method == "GET":
+        return render_template("email_unsubscribe.html", state="confirm")
+    if not _record_marketing_opt_out(user_id):
+        return render_template("email_unsubscribe.html", state="error"), 503
+    return render_template("email_unsubscribe.html", state="done")
+
+
 @auth_bp.route("/account", methods=["GET"])
 @login_required
 def account():

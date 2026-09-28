@@ -306,6 +306,10 @@ def create_app() -> Flask:
         # Anonymous analytics beacon (navigator.sendBeacon cannot set headers).
         if path == "/api/track":
             return True
+        # Email unsubscribe: authorised by the signed token in the path, and
+        # mail clients POST it (RFC 8058) with no session at all.
+        if path.startswith("/email/unsubscribe/"):
+            return True
         # Side-effect-free input validation: no DB write, no billing, no job.
         if path.startswith("/tools/") and path.endswith("/preflight"):
             return True

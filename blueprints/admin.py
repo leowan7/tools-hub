@@ -814,14 +814,14 @@ def admin_campaign_save_results(campaign_id: str):
 def admin_users_list():
     """Per-user activity dashboard: signup quality, runs, last seen.
 
-    Pulls auth.users via service role (50-row first page), joins
+    Pulls every auth.users row via service role (list_all_auth_users), joins
     ``public.user_profiles``, ``credits_balance``, and the trailing
     30-day count from ``public.user_events`` + ``public.tool_jobs``.
     Sorts by last-activity DESC so the most engaged users surface
     first.
     """
     from shared.auth import STAFF_EMAILS  # noqa: PLC0415
-    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
 
     email = session.get("user_email", "")
     if not email:
@@ -838,8 +838,7 @@ def admin_users_list():
                 datetime.now(timezone.utc) - timedelta(days=30)
             ).isoformat()
 
-            page = client.auth.admin.list_users()
-            auth_users = getattr(page, "users", None) or page
+            auth_users = list_all_auth_users(client)
 
             profile_rows = (
                 client.table("user_profiles").select("*").execute().data or []

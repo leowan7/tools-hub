@@ -2,7 +2,8 @@
 
 For every wallet whose signup credit has not been expired yet:
 
-  * expiry date within ``REMINDER_DAYS_BEFORE`` days and unspent credit left:
+  * expiry date within ``REMINDER_DAYS_BEFORE`` days, unspent credit left and
+    not unsubscribed (``user_metadata.email_preferences.marketing_email``):
     claim ``user_wallets.signup_credit_reminder_sent_at`` and send the
     reminder once;
   * expiry date passed: :func:`shared.wallet.expire_signup_credit`.
@@ -73,6 +74,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
     from shared import wallet  # noqa: PLC0415
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.email import send_signup_credit_expiring_email  # noqa: PLC0415
+    from shared.jobs import _email_pref_enabled, resolve_user_email_and_meta  # noqa: PLC0415
 
     now = now or datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -110,6 +112,10 @@ def run(*, now: Optional[datetime] = None) -> dict:
         try:
             status = wallet.signup_credit_status(uid, wallet=w)
             if status is None:
+                continue
+            email, meta = resolve_user_email_and_meta(uid)
+            if not email or not _email_pref_enabled(meta, "marketing_email", default=True):
+                summary["skipped"] += 1
                 continue
             claimed = _claim_reminder(client, uid, now_iso)
             if not claimed:

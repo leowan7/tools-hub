@@ -51,6 +51,9 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     # now reads shared.wallet.SIGNUP_CREDIT_USD directly, so there is no
     # env override left to set. Setting one would prove nothing.
     monkeypatch.setenv("SUPPORT_EMAIL", "support@ranomics.com")
+    # Marketing senders refuse to send without an unsubscribe link, which is
+    # signed with this key (shared.email.unsubscribe_url).
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     # Clear Slack webhooks by default so the Slack tests can flip per-test.
     monkeypatch.delenv("SLACK_SALES_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("WALLET_FUNNEL_ALERT_SLACK_WEBHOOK_URL", raising=False)
