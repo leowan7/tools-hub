@@ -134,33 +134,30 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # saturates the cap -- boltzgen at its own documented pool size
 # (num_designs=200) quotes $300.00 and holds $300.00.
 #
-# THE RULE, and its limit: this constant must clear the largest hold of any
-# tool's SMALLEST REAL RUN -- one unit of its scaling parameter, a new user's
-# first action. That maximum is $15.00, reached at bootstrap by proteina,
-# opendde AND esmfold2-design alike, so 20.00 leaves $5.00.
-# ``tests/test_signup_credit_covers_smallest_run.py`` enforces it, and is
-# explicit in its own docstring that at one unit the binding clamp is
-# base_hard_cap_usd -- so that file catches a cap or credit change and NOT a
-# change to the cushion, markup, rate card or floor.
+# THE OLD RULE was that this constant must clear the largest 1-unit hold of
+# every tool, which is why it went to 20.00. That rule is retired; see below.
+# Past one unit no credit could cover a scaled-up submit anyway: af2's batch
+# holds $39.32 at MAX_BATCH=50 records. Note the panel quotes the PRICE while
+# the HOLD is what refuses -- a price/hold split in blueprints/wallet.py that
+# this constant cannot fix.
 #
-# It deliberately does NOT promise to cover a scaled-up submit, and no credit
-# could: af2's batch takes up to MAX_BATCH=50 records and holds $39.32 there,
-# and even 14 records holds $21.00. Past one unit, topping up is the intended
-# path. Note the panel quotes the PRICE ($7.34 at 14 records) while the hold
-# ($21.00) is what refuses -- a pre-existing price/hold split in
-# blueprints/wallet.py, not something this constant can fix.
-#
-# ONE ARITHMETIC COLLISION worth knowing: $20 = $15 + $5 puts a new user's
-# balance after one full-cap esmfold2-design seed at exactly $5.00, and
-# LOW_BALANCE_EMAIL_THRESHOLD fires on ``balance < 5.00``. That user gets no
-# low-balance email where the $15 credit would have sent one.
+# Cut 20.00 -> 5.00 (2026-09-28, Leo). At $20 nobody had ever run out of free
+# credit (the 2026-09-28 funnel review, section 7; that document is not in
+# this repository), so the credit never led anyone
+# to a top-up. At $5 the structure prediction and sequence tools still run
+# from the credit with $1.00 spare, and the binder design tools with a hold
+# over $4.00 (plus opendde) need a top-up; the copy says so.
+# ``tests/test_signup_credit_covers_smallest_run.py`` pins which tools fall on
+# each side (its NEEDS_TOPUP set), so a price, cap or credit change that moves
+# one fails there. Existing grants are not touched: expiry reads the
+# signup_credit ledger row, not this constant.
 #
 # This number is user-visible in ~18 places. Do NOT hardcode it in copy:
 # templates read it through the ``signup_credit`` jinja global and Python
 # callers import this constant, both sourced from here. There is no env
 # override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
 # changed only the welcome email, never the grant.
-SIGNUP_CREDIT_USD = Decimal("20.00")
+SIGNUP_CREDIT_USD = Decimal("5.00")
 
 # Unspent signup credit is removed this many days after the grant. The same
 # 30 is the column default in supabase/migrations/0043_signup_credit_expiry.sql;
@@ -1494,7 +1491,10 @@ def _post_settle_hooks(
             user_id, exc_info=True,
         )
     balance = Decimal(str((wallet or {}).get("balance_usd") or 0))
-    if balance < LOW_BALANCE_EMAIL_THRESHOLD:
+    # Only on the settle that takes the balance from the threshold or above to
+    # below it, so a $5.00 signup-credit wallet is mailed once, after its first
+    # run, and not again after every later run.
+    if balance < LOW_BALANCE_EMAIL_THRESHOLD <= balance + actual_cost:
         _send_email_safe(
             "send_low_balance_email", user_id=user_id, balance_usd=balance
         )

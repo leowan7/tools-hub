@@ -54,7 +54,9 @@ seo_faq: list[dict] = [
             "(~25 minutes on an A100 for four designs) typically clears for "
             "under a few dollars from your wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} balance, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
-            "days, which covers a first small-target run."
+            "days. A run reserves up to that much while it computes, so the "
+            "credit starts one small trial only if none of it has been spent; "
+            "plan to top up for more."
         ),
     },
     {

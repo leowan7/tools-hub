@@ -586,7 +586,9 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # $14.79 -> $15.00. $15.00 was also shared/wallet.SIGNUP_CREDIT_USD
         # exactly, which would have refused this tool to any new user who had
         # spent a cent of the free credit; that constant was raised to $20.00
-        # in the same change. See the cost note on _MAX_SESSION_S.
+        # in the same change, then cut to $5.00 on 2026-09-28, after which
+        # this tool needs a top-up (tests/test_signup_credit_covers_smallest_run.py
+        # NEEDS_TOPUP). See the cost note on _MAX_SESSION_S.
         expected_gpu_seconds=2400.0,
         designs_per_run_baseline=1,
         scaling_param="n_seeds",

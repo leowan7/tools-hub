@@ -2458,8 +2458,11 @@ def send_low_balance_email(
 ) -> bool:
     """Balance dropped below low balance threshold.
 
-    Trigger: after any ``charge`` debit leaves ``balance_usd < $5``.
-    Caller throttles to one per 24 hours per user.
+    Trigger: the ``charge`` debit that takes ``balance_usd`` from $5 or more
+    to under $5.
+    The caller sends it only on the settle that takes the balance below
+    the threshold (shared/wallet.py _post_settle_hooks); there is no time
+    throttle.
     """
     email = _resolve_user_email(user_id)
     if not email:

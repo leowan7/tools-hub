@@ -50,12 +50,14 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one ProteinMPNN job cost?",
         "a": (
-            "Billing is by the second. A typical ProteinMPNN job costs a "
-            "fraction of a cent because the model finishes in under a "
-            "minute on most backbones. New accounts start with a "
+            "Billing is by the second. The model finishes in under a minute "
+            "on most backbones, so a small ProteinMPNN job costs a few cents "
+            "and the price grows with the sequence count. New accounts "
+            "start with a "
             f"{_SIGNUP_CREDIT} wallet balance, usable for "
             f"{SIGNUP_CREDIT_EXPIRY_DAYS} days, which is enough for "
-            "thousands of runs."
+            "over a dozen runs at the form's default of 50 sequences, and "
+            "over a hundred at 8 or fewer."
         ),
     },
     {

@@ -138,6 +138,49 @@ class TestEstimateEndpointShape:
         # Anonymous request must not hit Supabase for a wallet row.
         gow.assert_not_called()
 
+    def test_short_balance_is_a_deficit_not_a_ceiling(self, client):
+        """A $5 wallet on a binder form gets the top-up gate, not the ceiling.
+
+        ``hard_block`` used to be ``balance < estimate``, and the partial
+        hides its top-up gate whenever ``hard_block`` is true, so a user a few
+        dollars short saw "Estimate exceeds the ceiling for a single job"
+        with a disabled submit and no price to pay.
+        """
+        with patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value={"balance_usd": 5.0, "wallet_frozen": False},
+        ):
+            _login(client)
+            resp = client.get("/api/wallet/estimate?tool=bindcraft&num_designs=1")
+        body = resp.get_json()
+        assert Decimal(body["estimate_usd"]) > Decimal("5")
+        assert body["exceeds_hard_cap"] is False
+        assert body["hard_block"] is False
+        # Measured against what submit reserves (the hold), not the price.
+        assert Decimal(body["required_usd"]) >= Decimal(body["estimate_usd"])
+        assert Decimal(body["deficit_usd"]) == Decimal(body["required_usd"]) - 5
+        assert Decimal(body["rounded_topup_usd"]) >= Decimal("20")
+
+    def test_balance_covering_price_but_not_hold_is_short(self, client):
+        """Enough for the shown price, not the hold: the form must still gate.
+
+        Submit reserves ``cushioned_hold_usd`` and reserve_hold refuses a
+        balance below it, so a deficit of 0 here meant a green form and a
+        refusal at submit time.
+        """
+        with patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value={"balance_usd": 7.0, "wallet_frozen": False},
+        ), patch(
+            "blueprints.wallet.estimated_cost_for_tool", return_value=Decimal("6.00"),
+        ), patch(
+            "blueprints.wallet.cushioned_hold_usd", return_value=Decimal("8.00"),
+        ):
+            _login(client)
+            body = client.get("/api/wallet/estimate?tool=bindcraft&num_designs=1").get_json()
+        assert body["required_usd"] == "8.00"
+        assert Decimal(body["deficit_usd"]) == Decimal("1.00")
+
     def test_uses_form_params_for_estimate_scaling(self, client):
         """Pass num_designs=1000 and see a scaled estimate above baseline."""
         with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
@@ -890,3 +933,103 @@ class TestWalletTopupFrozenGuard:
         assert "wallet_frozen=1" in resp.headers["Location"]
         # Stripe must not be called when the wallet is frozen.
         create_session.assert_not_called()
+
+
+def test_gate_short_by_adds_up_on_the_page():
+    """Cost rounds up, balance rounds down: "short by" is printed cost minus printed balance."""
+    from flask import Flask
+
+    from shared import wallet_guard
+
+    flask_app = Flask(__name__)
+    flask_app.config["SECRET_KEY"] = "k"
+    flask_app.add_url_rule(
+        "/tools/<tool>", endpoint="tools.tool_form", view_func=lambda tool: "form"
+    )
+    estimate, balance = Decimal("12.581"), Decimal("2.009")
+    with flask_app.test_request_context("/"), patch(
+        "shared.wallet_guard.get_or_create_wallet", return_value={}
+    ), patch("shared.wallet_guard.render_template", return_value="") as render:
+        wallet_guard._render_topup_gate(
+            tool_slug="bindcraft", estimate=estimate, balance=balance,
+            deficit=estimate - balance, reason="insufficient_balance",
+            hard_cap=Decimal("100"), form_snapshot={},
+        )
+    # Page reads "needs $12.59, balance $2.00"; the raw deficit would print $10.58.
+    assert render.call_args.kwargs["shown_short_usd"] == Decimal("10.59")
+
+
+def test_guard_prices_a_short_gate_on_the_hold():
+    """Short on the price re-preflights on the hold, so the gate asks for enough to submit."""
+    from flask import Flask
+
+    from app import requires_wallet
+    from shared.wallet import REASON_INSUFFICIENT, PreflightResult
+
+    @requires_wallet(tool_slug="bindcraft")
+    def handler():  # pragma: no cover
+        raise AssertionError("handler should not run when blocked")
+
+    flask_app = Flask(__name__)
+    flask_app.config["SECRET_KEY"] = "k"
+    flask_app.add_url_rule("/blocked", view_func=handler, methods=["POST"])
+    flask_app.add_url_rule(
+        "/tools/<tool>", endpoint="tools.tool_form", view_func=lambda tool: "form"
+    )
+
+    def fake_preflight(_uid, _slug, amount, _params):
+        return PreflightResult(
+            allow=False, reason=REASON_INSUFFICIENT, estimated_cost_usd=amount,
+            balance_usd=Decimal("4.99"), deficit_usd=amount - Decimal("4.99"),
+            hard_cap_usd=Decimal("8.00"),
+        )
+
+    with flask_app.test_client() as c, patch(
+        "shared.wallet_guard.load_user_context", return_value=_ctx()
+    ), patch(
+        "shared.wallet_guard.estimated_cost_for_tool", return_value=Decimal("6.00"),
+    ), patch(
+        "shared.wallet_guard.cushioned_hold_usd", return_value=Decimal("8.00"),
+    ), patch(
+        "shared.wallet_guard.get_or_create_wallet", return_value={"balance_usd": 4.99},
+    ), patch(
+        "shared.wallet_guard.wallet_preflight", side_effect=fake_preflight,
+    ), patch(
+        "shared.wallet_guard.wallet_reserve_hold"
+    ) as reserve, patch(
+        "shared.wallet_guard.render_template", return_value=""
+    ) as render:
+        with c.session_transaction() as sess:
+            sess["user_id"] = "u-1"
+        c.post("/blocked", data={"num_designs": "1"})
+    reserve.assert_not_called()
+    assert render.call_args.kwargs["deficit_usd"] == Decimal("3.01")
+
+
+class TestTopupFromFormGate:
+    """The form's gate links here with ``need`` and ``tool``."""
+
+    def _get(self, client, qs):
+        with patch(
+            "blueprints.wallet.load_user_context", return_value=_ctx()
+        ), patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value=TestWalletTopupFrozenGuard._wallet(frozen=False),
+        ):
+            _login(client)
+            return client.get("/account/wallet/topup" + qs)
+
+    def test_need_and_tool_preset_amount_and_return(self, client):
+        resp = self._get(client, "?tool=bindcraft&need=33.01")
+        html = resp.get_data(as_text=True)
+        assert 'value="34"' in html  # ceil of the need, above the $20 minimum
+        assert "$33.01" in html
+        with client.session_transaction() as sess:
+            assert sess["wallet_gate_form"] == {"tool": "bindcraft"}
+
+    def test_junk_params_are_ignored(self, client):
+        resp = self._get(client, "?tool=../evil&need=abc")
+        assert resp.status_code == 200
+        assert 'value="20"' in resp.get_data(as_text=True)
+        with client.session_transaction() as sess:
+            assert "wallet_gate_form" not in sess

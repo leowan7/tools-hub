@@ -198,7 +198,7 @@ class TestWalletTopupTemplate:
         assert "Auto reload" in html
         assert "wallet-topup-form" in html
 
-    def test_gate_flow_with_deficit_shows_top_up_and_run_cta(self, app):
+    def test_gate_flow_with_deficit_shows_top_up_cta(self, app):
         """Decorator gate render: deficit_usd + next_url present.
 
         Mirrors what app.py:_render_topup_gate passes. Tests the contract
@@ -219,9 +219,24 @@ class TestWalletTopupTemplate:
                 tool_slug="mpnn",
                 self_serve_ceiling_usd=Decimal("500.00"),
             )
-        assert "Top up and run" in html
+        # Nothing resumes the job after payment, so nothing may promise it.
+        assert "Top up and run" not in html
+        assert "where you left off" not in html
+        assert "Nothing is submitted for you" in html
         assert "$15.50" in html
         assert "Back to the form" in html
+
+    def test_form_gate_is_a_link_not_a_submit(self, app):
+        """The form's gate must not post the form (it had no server handler)."""
+        with app.test_request_context("/tools/bindcraft"):
+            tpl = app.jinja_env.from_string(
+                '{% from "wallet/_partials.html" import wallet_topup_gate %}'
+                '{{ wallet_topup_gate(tool_slug="bindcraft", balance_usd=5) }}'
+            )
+            html = tpl.render()
+        assert "topup_and_run" not in html
+        assert 'type="submit"' not in html
+        assert 'href="/account/wallet/topup?tool=bindcraft"' in html
 
     def test_success_state_renders_receipt_and_return_tool_cta(self, app):
         """After Stripe Checkout returns cleanly.
