@@ -93,6 +93,17 @@ _CASES = [
                             "message": "Pipeline reported FAILED with no error detail."})),
     ("generic", dict(failure_class="tool_error",
                      error=_poll_error("pipeline", "no_designs", "no designs passed filters"))),
+    # Our parser found no MPNN output: not the user's FASTA (review round 1).
+    ("generic", dict(tool="mpnn", error=_poll_error(
+        "parser", "fasta_missing", "expected MPNN FASTA at /tmp/seqs/x.fa"))),
+    ("our_side", dict(tool="af2", error=_poll_error(
+        "input", "smoke_fixture", "baked smoke fasta missing at /app/x.fa"))),
+    # A malformed proteina region string: the chain IS in the file.
+    ("generic", dict(tool="proteina", error=_poll_error(
+        "input", "target_input", "unparsable target_input segment 'A1'"))),
+    ("chain", dict(tool="proteina", error=_poll_error(
+        "input", "target_input",
+        "chain C is not present in the uploaded target. It contains: A, B"))),
 ]
 
 

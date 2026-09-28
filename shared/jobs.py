@@ -830,7 +830,7 @@ _GENERIC_FIX = ("Try again with the same settings. If it fails a second time, "
 # (``input:download``) is our storage, not the user's file.
 _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
     ("our_side", re.compile(
-        r"\binput:(download|url)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
+        r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
         r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
         r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
         r"upload failed for|failed to download input|download failed",
@@ -847,7 +847,7 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "chain you picked. If the file has several chains, name the chain "
      "for each hotspot (for example A45)."),
     ("chain", re.compile(
-        r"antigen_chain|target_input|chain \S+ (produced 0 residues|"
+        r"antigen_chain|chain \S+ (produced 0 residues|"
         r"is not present)", re.I),
      "The chain you picked is not in the uploaded structure, or has no "
      "residues in it.",
@@ -864,7 +864,8 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "backbone atoms often cause this. Try a cleaned file with one "
      "conformation per residue, or the AlphaFold model of the target."),
     ("sequence", re.compile(
-        r"fasta|input:binders|input:antibody|no antibody chains", re.I),
+        r"\binput:(fasta|fasta_empty|fasta_parse|binders|antibody)\b|"
+        r"no antibody chains", re.I),
      "The sequence input could not be read.",
      "Check that the sequences are in FASTA format, one record per "
      "sequence, each with its own name, then try again."),
@@ -895,8 +896,6 @@ def failure_advice(job) -> Optional[dict]:  # noqa: ANN001
     text = _error_text(job)
     if status == "timeout":
         text += " timeout"
-    if getattr(job, "failure_class", None) == "infra_crash":
-        text += " storage"
     if getattr(job, "failure_class", None) == "infra_crash":
         text += " storage"
     for kind, pattern, cause, fix in _FAILURE_RULES:
