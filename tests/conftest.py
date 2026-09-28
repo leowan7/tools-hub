@@ -551,3 +551,16 @@ def pytest_collection_modifyitems(config, items):
         "its own arguments, "
             "because a function-scoped mark is built too late for it."
         )
+
+
+@pytest.fixture
+def legacy_campaign_widths(monkeypatch):
+    """The concurrency-division tests were written against 16 per campaign and
+    32 per user. Production now defaults both to 4 (shared/compute_campaigns.py,
+    CAMPAIGN_CONCURRENCY_TARGET / CAMPAIGN_USER_INFLIGHT_CAP), where every tool
+    collapses to the same width and the division cases they pin go vacuous."""
+    import shared.compute_campaigns as cc
+    import shared.target_launch as tl
+    monkeypatch.setattr(cc, "DEFAULT_CONCURRENCY_TARGET", 16)
+    monkeypatch.setattr(cc, "GLOBAL_USER_INFLIGHT_CAP", 32)
+    monkeypatch.setattr(tl, "GLOBAL_USER_INFLIGHT_CAP", 32)
