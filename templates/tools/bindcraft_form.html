@@ -161,7 +161,7 @@
 
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
-      <strong>A 4-design BindCraft pilot runs ~30 to 45 min on A100-80GB;
+      <strong>A 4-design BindCraft trial run takes ~30 to 45 min on A100-80GB;
       larger counts take proportionally longer.</strong>
       Results are emailed on completion; you can close this tab.
     </div>
@@ -312,12 +312,12 @@
                  {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-            How many final filtered designs to return. Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. No fixed ceiling: large requests fan out automatically as a wallet-bounded campaign across GPUs.
+            How many final filtered designs to return. Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. No fixed ceiling: large requests become a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish.
           </div>
           {% if single_container_ceiling %}
           <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
                style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-            More than {{ single_container_ceiling }} designs fans out across GPUs as a wallet-bounded campaign. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start campaign below; upload a target file so it carries over.
+            More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start a full-size run below; upload a target file so it carries over.
           </div>
           {% endif %}
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
@@ -325,7 +325,7 @@
             confirm your hotspots and binder length range, then scale to
             100+ once the small batch looks reasonable. BindCraft
             optimises each design individually (~10 min each) so larger
-            campaigns run for days. Billed by actual GPU consumed; cancellation
+            runs take days. Billed by actual GPU consumed; cancellation
             does not refund time already used.
           </div>
           {% endcall %}

@@ -232,7 +232,7 @@ def api_runs_estimate():
         return jsonify({"ok": False, "error": "That tool is not available yet."})
     if preset == "validate":
         # The free pre-flight is not a paid campaign — mirror the create route.
-        return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a campaign."})
+        return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a full-size run."})
     try:
         # Always the "pilot" default in practice: the form's fetchEstimate()
         # sends only tool + requested_designs, never a preset
@@ -272,14 +272,14 @@ def api_runs_estimate():
 def campaign_preset_refusal(tool: str, preset: str):
     """The message refusing ``preset`` as a campaign, else None. Also used by tools.tool_validate."""
     if preset == "validate":
-        return "The validate tier is a free pre-flight, not a campaign."
+        return "The validate tier is a free pre-flight, not a full-size run."
     # IgGM affinity_maturation runs one design PER masked position PER sample, so
     # the delivered count != the per-chunk num_samples the driver injects, which
     # breaks the campaign's delivered-count==chunk-size invariant (holds, progress
     # counts, and finalize all assume equality). Keep it on the atomic tier only.
     if tool == "iggm" and preset == "affinity_maturation":
         return (
-            "Affinity maturation is not available as a campaign (its design "
+            "Affinity maturation is not available as a full-size run (its design "
             "count expands per masked position). Use the single-run IgGM form."
         )
     return None
@@ -655,7 +655,7 @@ def compute_campaign_create():
         target_id=(target.id if target is not None else None),
     )
     if campaign is None:
-        return _err("Could not create the campaign. Try again in a moment.")
+        return _err("Could not create the run. Try again in a moment.")
 
     if target is not None:
         touch_target(target.id)
@@ -700,7 +700,7 @@ def compute_campaign_create():
                 "driven", campaign.id,
             )
             return _err(
-                "That campaign could not be started, and nothing was charged. "
+                "That run could not be started, and nothing was charged. "
                 "Try again in a moment."
             )
         # Either it did move (the fund succeeded) or the read could not tell.
@@ -992,7 +992,7 @@ def _campaign_export(campaign_id: str, fmt: str):
         # would read no bar here and get no notes -- the same answer it gives
         # everywhere else that cannot name a run.
         body = candidates_to_fasta(candidates, tool=agg.get("tool")) or (
-            "# No sequences found in this campaign's output.\n"
+            "# No sequences found in this run's output.\n"
         )
         return Response(
             body,

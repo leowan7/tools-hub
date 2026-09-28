@@ -649,7 +649,7 @@ def plan_chunks(tool: str, requested_designs: int, preset: str = "pilot") -> Chu
     """
     if tool not in SUPPORTED_TOOLS:
         raise ValueError(
-            f"{tool} is not available for self-serve campaigns yet."
+            f"{tool} is not available for self-serve full-size runs yet."
         )
     try:
         requested = int(requested_designs)
@@ -664,9 +664,9 @@ def plan_chunks(tool: str, requested_designs: int, preset: str = "pilot") -> Chu
         max_designs = MAX_SUBJOBS_PER_CAMPAIGN * chunk_size
         raise ValueError(
             f"That request needs {total_subjobs} sub-jobs, over the current "
-            f"per-campaign limit of {MAX_SUBJOBS_PER_CAMPAIGN} "
+            f"per-run limit of {MAX_SUBJOBS_PER_CAMPAIGN} "
             f"({max_designs} designs for {tool}). Reduce the count or split "
-            f"it into multiple campaigns."
+            f"it into multiple full-size runs."
         )
 
     est_per_chunk = _estimate_chunk_cost(tool, chunk_size, preset)
@@ -1610,11 +1610,11 @@ _PREAUTH_MESSAGES: Mapping[str, str] = {
         "your balance runs low."
     ),
     PREAUTH_VERIFICATION: (
-        "Campaigns above {threshold} need an approved account. "
+        "Full-size runs above {threshold} need an approved account. "
         "Contact us to raise your limit."
     ),
     PREAUTH_VELOCITY: (
-        "This would exceed your daily campaign spending limit. "
+        "This would exceed your daily spending limit for full-size runs. "
         "Try again tomorrow or with {smaller}."
     ),
 }
@@ -1648,7 +1648,7 @@ def preauth_message(
     msg = _PREAUTH_MESSAGES.get(
         pre.reason,
         "These runs cannot start right now." if plural
-        else "This campaign cannot start right now.",
+        else "This run cannot start right now.",
     )
     required = getattr(pre, "required_usd", None)
     # ROUND_CEILING, not "%.2f". The gate holds a 4dp Decimal, so half-even
@@ -1686,9 +1686,9 @@ def preauth_message(
             shown = None
     return (
         msg.replace("{threshold}", f"${VERIFICATION_THRESHOLD_USD}")
-           .replace("{subject}", f"these {count} runs" if plural else "this campaign")
-           .replace("{pauses}", "they pause" if plural else "the campaign pauses")
-           .replace("{smaller}", "fewer tools" if plural else "a smaller campaign")
+           .replace("{subject}", f"these {count} runs" if plural else "this run")
+           .replace("{pauses}", "they pause" if plural else "the run pauses")
+           .replace("{smaller}", "fewer tools" if plural else "a smaller run")
            .replace(
                "{required}",
                f"${shown}" if shown is not None else "the first batch",

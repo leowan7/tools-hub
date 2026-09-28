@@ -508,6 +508,9 @@ def create_app() -> Flask:
     # shared.ranking.sort_by_number.
     flask_app.jinja_env.filters["sort_by_number"] = _ranking.sort_by_number
 
+    from shared.tool_meta import preset_label as _preset_label  # noqa: PLC0415
+    flask_app.jinja_env.filters["preset_label"] = _preset_label
+
     # The results partials read job.result DIRECTLY rather than through
     # candidate_records, so this is the render layer's only guard against
     # a candidate row that is not a dict. A global rather than a filter

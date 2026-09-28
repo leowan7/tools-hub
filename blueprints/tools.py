@@ -444,7 +444,7 @@ _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
     "pxdesign": (
         "no-install online AlphaFold2-scored binder design tool",
         "The same pipeline Ranomics runs for its own wet-lab "
-        "campaigns: every candidate comes back already re-folded "
+        "projects: every candidate comes back already re-folded "
         "against your target, carrying its own confidence score for "
         "the contact rather than a number borrowed from the generator"
     ),
@@ -662,9 +662,9 @@ _SHOWCASE_NOTES: dict[str, dict[str, str]] = {
         "title": "Real BoltzGen runs",
         "body": (
             "The showcase has two real BoltzGen runs with anonymized "
-            "targets: a nanobody discovery campaign that narrowed 2000 "
+            "targets: a nanobody discovery project that narrowed 2000 "
             "designs to a validated panel of 12, scored by two independent "
-            "structure predictors, and a de novo minibinder campaign that "
+            "structure predictors, and a de novo minibinder run that "
             "turned one interaction interface into 20,000 ranked designs "
             "with a top tier scoring ipTM 0.98."
         ),
@@ -1632,8 +1632,9 @@ def _single_container_refusal(tool: str, inputs: dict):
     return (
         f"{requested_n} designs is more than one GPU container "
         f"runs for {tool} (max {ceiling} per single job). "
-        f"Large requests run as a campaign: open /campaigns/new "
-        f"to fan this out across GPUs with no per-job ceiling.",
+        f"Start a full-size run instead: open /campaigns/new. It is "
+        f"split into pieces that run on our GPUs and bill as they "
+        f"finish, with no per-job ceiling.",
         ceiling,
     )
 

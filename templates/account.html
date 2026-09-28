@@ -8,7 +8,7 @@
 
   <div class="hero">
     <h1>Account</h1>
-    <p class="subtitle">Signed in to the Ranomics tools hub. One wallet funds every tool and campaign.</p>
+    <p class="subtitle">Signed in to the Ranomics tools hub. One wallet funds every tool and full-size run.</p>
   </div>
 
   {% if request.args.get('topup') == 'cancelled' %}
@@ -40,7 +40,7 @@
       </div>
 
       <div class="account-actions" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-        <a href="/campaigns/new" class="btn-primary">Start a campaign</a>
+        <a href="/campaigns/new" class="btn-primary">Start a full-size run</a>
         <a href="{{ url_for('wallet.billing_portal') }}" class="btn-secondary">Stripe receipts</a>
         {% if platform_api_enabled %}
           <a href="{{ url_for('platform_account.account_api_keys') }}" class="btn-secondary">API keys</a>
@@ -61,11 +61,11 @@
     <div class="panel-body">
       <p style="color: var(--text-secondary); font-size: 0.92rem; max-width: 56ch;">
         Run any design tool self-serve, funded from your wallet. Design
-        count is unlimited, and a large request fans out into a campaign
+        count is unlimited, and a large request becomes a full-size run
         that drains only for the compute it delivers.
       </p>
       <p style="margin-top: 0.85rem;">
-        <a href="/campaigns/new" class="btn-primary">Start a campaign</a>
+        <a href="/campaigns/new" class="btn-primary">Start a full-size run</a>
       </p>
     </div>
   </div>

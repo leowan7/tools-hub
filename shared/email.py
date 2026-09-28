@@ -39,6 +39,7 @@ from typing import Any, Optional
 import requests
 
 from shared import metric_glossary as _metric_glossary
+from shared.tool_meta import preset_label
 from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,7 @@ def _job_complete_template_context(
         "summary":           _result_summary(job, tone=tone),
         "cost_line":         _cost_breakdown_line(job, tone=tone),
         "job_id":            getattr(job, "id", ""),
-        "job_preset":        getattr(job, "preset", "") or "",
+        "job_preset":        preset_label(getattr(job, "preset", "")),
         "job_created":       (getattr(job, "created_at", "") or "")[:19],
         "job_url":           job_url,
         "tone":              tone,
@@ -959,7 +960,7 @@ def send_campaign_submitted_emails(
         # number the reader cannot reconcile.
         _sentences.append(
             f"Up to {truncated} further starred design{_tplural} {_twas} over "
-            f"the per-request limit and {_twas} not read. Check your campaign "
+            f"the per-request limit and {_twas} not read. Check your project "
             f"page for what this request covers, then star the rest and send a "
             f"second request; the Ranomics team has the shortfall as well."
         )
@@ -1022,7 +1023,7 @@ def send_campaign_submitted_emails(
         <a href="{campaign_href}"
            style="display:inline-block;padding:12px 22px;background:#2B9E7E;
                   color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
-          View campaign
+          View project
         </a>
       </p>
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
@@ -1043,7 +1044,7 @@ def send_campaign_submitted_emails(
         f"({n_candidates} candidate{'s' if n_candidates != 1 else ''}).\n"
         f"{dropped_note_text}\n"
         "The Ranomics team will review and follow up within 2 business days.\n\n"
-        f"View campaign: {campaign_url}\n\n"
+        f"View project: {campaign_url}\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
 
@@ -1132,7 +1133,7 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
 
     campaign_url = f"{base_url}/lab-projects/{campaign.id}"
     status_label = campaign.status.replace("_", " ").title()
-    subject      = f"Your campaign has been {status_label.lower()} — {campaign.target_name}"
+    subject      = f"Your lab project has been {status_label.lower()} — {campaign.target_name}"
 
     note_block = ""
     if campaign.notes_internal:
@@ -1141,7 +1142,7 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
     html_body = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
-      <h2 style="margin-top:0;">Campaign update: {status_label}</h2>
+      <h2 style="margin-top:0;">Project update: {status_label}</h2>
       <p>Your scoping request for <strong>{campaign.target_name}</strong>
          has moved to <strong>{status_label}</strong>.</p>
       {note_block}
@@ -1149,7 +1150,7 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
         <a href="{campaign_url}"
            style="display:inline-block;padding:12px 22px;background:#2B9E7E;
                   color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
-          View campaign
+          View project
         </a>
       </p>
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
@@ -1216,10 +1217,10 @@ def send_workspace_cap_warning(
       <p style="margin:18px 0 0 0; font-size:14px;">
         Want to keep designing beyond this target? Run any tool self-serve,
         funded from your wallet, with unlimited design count. A large ask
-        fans out into a campaign on any target.
+        becomes a full-size run on any target.
       </p>
       <p style="margin:10px 0 0 0;">
-        <a href="{campaigns_url}" style="color:#2B9E7E;">Start a campaign →</a>
+        <a href="{campaigns_url}" style="color:#2B9E7E;">Start a full-size run →</a>
       </p>
     """
 
@@ -1255,7 +1256,7 @@ def send_workspace_cap_warning(
         f"compute budget (${remaining_usd:.2f} remaining of ${cap_usd:.2f}).\n\n"
         f"Open the Workspace: {workspace_url}\n\n"
         f"Keep designing self-serve, funded from your wallet. "
-        f"Start a campaign: {base_url}/campaigns/new\n\n"
+        f"Start a full-size run: {base_url}/campaigns/new\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
 
@@ -2507,7 +2508,7 @@ def send_campaign_paused_email(
         )
         return False
     base_url = _base_url()
-    label = campaign_name.strip() or "Your campaign"
+    label = campaign_name.strip() or "Your full-size run"
     subject = f"{label} is paused: add funds to continue"
     html = _render_template(
         "send_campaign_paused.html",
@@ -2631,7 +2632,7 @@ def send_pilot_intro_email(
     base_url = _base_url()
     subject = (
         "You are doing real work on Ranomics tools. "
-        "Have you considered a Binder Pilot?"
+        "Have you considered testing your binders in our lab?"
     )
     html = _render_template(
         "send_pilot_intro.html",

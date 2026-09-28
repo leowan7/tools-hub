@@ -1397,12 +1397,12 @@ def test_singular_and_plural_copy_differ_where_the_subject_appears(reason):
 def test_the_plural_subject_names_the_run_count():
     msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT), count=7)
     assert "these 7 runs" in msg
-    assert "this campaign" not in msg
+    assert "this run" not in msg
 
 
-def test_the_singular_subject_says_campaign():
+def test_the_singular_subject_says_run():
     msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT), count=1)
-    assert "this campaign" in msg
+    assert "this run" in msg
     assert "runs" not in msg.split("Top up")[0]
 
 
@@ -1412,7 +1412,7 @@ def test_the_velocity_refusal_suggests_dropping_tools_when_plural():
     assert "fewer tools" in cc.preauth_message(
         _refused(cc.PREAUTH_VELOCITY), count=3
     )
-    assert "a smaller campaign" in cc.preauth_message(
+    assert "a smaller run" in cc.preauth_message(
         _refused(cc.PREAUTH_VELOCITY), count=1
     )
 
@@ -1422,7 +1422,7 @@ def test_the_verification_refusal_names_the_real_threshold():
     assert f"${cc.VERIFICATION_THRESHOLD_USD}" in msg
 
 
-@pytest.mark.parametrize("count,expected", [(1, "This campaign"), (2, "These runs")])
+@pytest.mark.parametrize("count,expected", [(1, "This run"), (2, "These runs")])
 def test_an_unknown_reason_still_produces_a_sentence(count, expected):
     msg = cc.preauth_message(_refused("some_reason_added_later"), count=count)
     assert msg.startswith(expected)

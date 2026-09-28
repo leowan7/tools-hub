@@ -55,7 +55,7 @@
                  so a row whose preset says "minibinder" can be judged as an
                  scFv. Printing only the preset put those two facts on one
                  panel with nothing reconciling them. #}
-              <div>{{ job.preset }}{% if col.mode and col.mode != job.preset %} <span style="color: var(--text-secondary);">(judged as {{ col.mode }})</span>{% endif %}</div>
+              <div>{{ job.preset | preset_label }}{% if col.mode and col.mode != job.preset %} <span style="color: var(--text-secondary);">(judged as {{ col.mode }})</span>{% endif %}</div>
             </div>
             {% if job.inputs %}
               <div style="margin-bottom: 0.75rem;">

@@ -60,8 +60,8 @@
       <article class="why-card">
         <h3 class="why-card-title">3. Design without limits</h3>
         <p class="why-card-body">
-          Request as many designs as you want. Large requests fan out into a
-          campaign across GPUs and bill only for compute delivered. Every
+          Request as many designs as you want. Large requests become a
+          full-size run, split into pieces that run on our GPUs and bill as they finish. Every
           form shows the live estimate and your balance before you submit.
         </p>
       </article>
@@ -84,14 +84,14 @@
       <p class="section-lede">
         There is no cap on how many designs you can run and no per design
         charge to budget around. Fund what you are comfortable spending,
-        launch a campaign of any size, and it drains your wallet as the
-        compute is delivered. If the balance runs out, the campaign pauses
+        launch a run of any size, and it drains your wallet as the
+        compute is delivered. If the balance runs out, the run pauses
         and picks up again the moment you top up. Everything already produced
         stays downloadable.
       </p>
     </div>
     <p class="price-footnote" style="margin-top: 0.75rem;">
-      Every job and campaign displays a live estimate and your balance before
+      Every job and full-size run displays a live estimate and your balance before
       you submit. You confirm or cancel. If a job ends up cheaper than
       estimated, the surplus returns to your wallet automatically.
     </p>
@@ -112,7 +112,7 @@
         <h3 class="why-card-title">Prepaid, never a surprise</h3>
         <p class="why-card-body">
           Your wallet is prepaid, so you can only ever spend what you have
-          funded. A campaign pauses the moment your balance cannot cover the
+          funded. A full-size run pauses the moment your balance cannot cover the
           next unit of compute. Top up to continue, or download what has
           already finished.
         </p>
@@ -122,7 +122,7 @@
         <p class="why-card-body">
           Every job places a wallet hold against a live estimate, then settles
           at the actual compute consumed. Whatever the job did not use returns
-          to your wallet. Failed sub jobs in a campaign are refunded.
+          to your wallet. Failed pieces of a full-size run are refunded.
         </p>
       </article>
       <article class="why-card">
@@ -168,18 +168,18 @@
       <div class="panel-body" style="text-align: center;">
         <span class="section-eyebrow">Want it run for you</span>
         <h2 class="section-title" style="margin-top: 0.5rem; margin-bottom: 0.85rem;">
-          Prefer a managed campaign with wet lab validation?
+          Prefer a managed project with wet lab validation?
         </h2>
         <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch; margin: 0 auto 1.25rem;">
           Self serve here is unlimited. If you would rather hand off the whole
-          campaign, a Binder Pilot is the managed option: a fixed scope
-          engagement with a defined deliverable, wet lab handoff if you want
-          it, and a single point of contact. It is a different product, not a
+          project, wet-lab binder testing is the managed option: a fixed scope
+          project where we test your designs by yeast display, with an NGS
+          readout, a report, and a single point of contact. It is a different product, not a
           spend threshold.
         </p>
         <div class="pricing-pilot-cta-actions">
           <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary-lg">
-            See the Binder Pilot
+            See wet-lab binder testing
           </a>
           {% if not session.get('user_email') %}
             <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Open the tools hub</a>
@@ -212,8 +212,8 @@
         <h3 class="why-card-title">Is there a limit on how many designs I can run?</h3>
         <p class="why-card-body">
           No. Design count is unlimited and there is no per design charge.
-          Your wallet balance is the only ceiling. A large request fans out
-          into a campaign that drains the wallet as compute is delivered and
+          Your wallet balance is the only ceiling. A large request becomes
+          a full-size run that drains the wallet as compute is delivered and
           pauses if the balance runs low.
         </p>
       </article>

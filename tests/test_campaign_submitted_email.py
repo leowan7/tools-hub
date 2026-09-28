@@ -374,7 +374,7 @@ def test_the_truncation_note_routes_its_retry_advice_through_the_campaign_page(s
         assert "Star them again" not in body
         assert "star them again" not in body
     user_html = _flat(sent[0]["html"])
-    assert "Check your campaign page for what this request covers" in user_html
+    assert "Check your project page for what this request covers" in user_html
     assert "then star the rest and send a second request" in user_html
     # It does not assert what that page renders. "lists the designs" was a claim
     # about a conditionally-rendered panel; this one tells the reader to look.

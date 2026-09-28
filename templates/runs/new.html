@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}New campaign — Ranomics Tools{% endblock %}
+{% block title %}New full-size run — Ranomics Tools{% endblock %}
 {% block robots %}noindex,follow{% endblock %}
 
 {% block head_extra %}
@@ -37,10 +37,10 @@
 
 {% block content %}
 <div class="runs-form-wrap">
-  <h1>New campaign</h1>
-  <p class="lead">Design many candidates against one target. We split the request into
-    GPU sub-jobs (currently up to {{ max_subjobs }} per campaign), run them in parallel,
-    and bill only for the compute delivered. Compute only, no wet-lab validation.</p>
+  <h1>New full-size run</h1>
+  <p class="lead">Design many candidates against one target. The request is split into
+    pieces that run on our GPUs and bill as they finish, so you pay only for the
+    compute delivered. Compute only, no wet-lab validation.</p>
 
   {% if error %}<div class="runs-err">{{ error }}</div>{% endif %}
 
@@ -49,7 +49,7 @@
     <div class="runs-grid">
       <div>
         <div class="runs-field">
-          <label for="name">Campaign name</label>
+          <label for="name">Run name</label>
           <input type="text" id="name" name="name" maxlength="80" value="{{ pre_fill.get('name','') }}" placeholder="e.g. HER2 binder sweep">
         </div>
         <div class="runs-field">
@@ -112,7 +112,7 @@
             <option value="fr_design" {% if pre_fill.get('preset')=='fr_design' %}selected{% endif %}>Framework redesign / humanization</option>
             <option value="inverse_design" {% if pre_fill.get('preset')=='inverse_design' %}selected{% endif %}>Inverse design (sequence from structure)</option>
           </select>
-          <div class="hint">Which IgGM mode to run across the campaign.</div>
+          <div class="hint">Which IgGM mode to run across the whole run.</div>
         </div>
         <div class="runs-field" id="iggm-fasta-field" style="display:none;">
           <label for="fasta">Antibody FASTA (&gt;H required, &gt;L optional = nanobody)</label>
@@ -220,7 +220,7 @@
         <div class="runs-field">
           <label for="requested_designs">Number of designs</label>
           <input type="number" id="requested_designs" name="requested_designs" min="1" value="{{ pre_fill.get('requested_designs','24') }}">
-          <div class="hint">Total candidates across the whole campaign.</div>
+          <div class="hint">Total candidates across the whole run.</div>
         </div>
       </div>
 
@@ -238,7 +238,7 @@
           <input type="checkbox" id="rp-confirm">
           <span id="rp-confirm-label">I understand I pay only for compute that runs.</span>
         </label>
-        <button type="submit" class="runs-submit" id="rp-submit" disabled>Start campaign</button>
+        <button type="submit" class="runs-submit" id="rp-submit" disabled>Start a full-size run</button>
         <p class="hint" style="margin-top:0.6rem;">You are billed only for compute delivered.
           It starts once your balance covers the first batch, then funds itself as it runs; failed sub-jobs are refunded.</p>
       </aside>
@@ -426,7 +426,7 @@
         latest = d;
         if (!d.ok) {
           clearFigures();
-          setNote('warn', d.error || 'Cannot plan this campaign.');
+          setNote('warn', d.error || 'Cannot plan this run.');
           syncSubmit();
           return;
         }
@@ -439,11 +439,11 @@
         document.getElementById('rp-confirm-label').textContent =
           'I understand I pay only for compute that runs, and it pauses if my balance runs low.';
         if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
-          setNote('warn', 'Campaigns this large need an approved account. Contact us to raise your limit.');
+          setNote('warn', 'Runs this large need an approved account. Contact us to raise your limit.');
         } else if (!d.affordable && d.reason === 'insufficient_balance') {
           setNote('warn', 'Top up ' + money(d.topup_usd_display) + ' to run this. It can start once your balance covers the first batch (' + money(d.first_wave_usd_display) + ').');
         } else if (!d.affordable) {
-          setNote('warn', 'This campaign cannot start yet (' + d.reason + ').');
+          setNote('warn', 'This run cannot start yet (' + d.reason + ').');
         } else {
           setNote('ok', 'Ready to run. Starts on ' + money(d.first_wave_usd_display) + '; ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
         }

@@ -139,7 +139,7 @@
           <p class="wallet-section-body">
             Auto reload is off. Your balance only changes when a job settles or
             when you manually top up. Enable auto reload on the top up page if
-            you want to keep long campaigns running without checking the
+            you want to keep long full-size runs going without checking the
             balance manually.
           </p>
         {% endif %}
@@ -216,19 +216,19 @@
   {% if wallet and (wallet.spent_30d_usd|float if wallet.spent_30d_usd is not none else 0) >= 1000 %}
     <div class="panel wallet-pilot-callout">
       <div class="panel-header">
-        <span class="panel-title">Considering a Binder Pilot?</span>
+        <span class="panel-title">Ready to test binders in the lab?</span>
       </div>
       <div class="panel-body">
         <p class="wallet-section-body">
           You have spent over $1,000 on self serve compute in the last 30 days.
-          At sustained spend above that level, a fixed scope Binder Pilot
-          engagement is usually more cost effective and removes the operational
-          overhead. Defined deliverable, optional wet lab handoff, single point
-          of contact.
+          At sustained spend above that level, it is usually worth testing
+          your best designs in the lab. Our wet-lab binder testing is a fixed
+          scope project: yeast display on your designs, NGS readout, a report,
+          and a single point of contact.
         </p>
         <p style="margin-top: 0.85rem;">
           <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary">
-            See the Binder Pilot program
+            See wet-lab binder testing
           </a>
           <a href="/pricing" class="btn-secondary" style="margin-left: 0.5rem;">
             How wallet billing works

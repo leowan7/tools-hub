@@ -382,7 +382,7 @@
                 <span class="home-recent-id">{{ job.id[:8] }}</span>
               </div>
               <div class="home-recent-meta">
-                <span>{{ job.preset }}</span>
+                <span>{{ job.preset | preset_label }}</span>
                 <span>·</span>
                 <span>{{ job.status }}</span>
               </div>
@@ -394,7 +394,7 @@
           {% endfor %}
         </div>
         <div style="margin-top: 0.85rem; text-align: right;">
-          <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="home-catalog-section-link">All campaigns →</a>
+          <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="home-catalog-section-link">All full-size runs →</a>
         </div>
       {% else %}
         <div class="home-recent-empty">
@@ -436,7 +436,7 @@
             <th scope="row" data-label="I have">A target protein structure</th>
             <td class="home-chooser-want" data-label="I want">Something that binds it</td>
             <td class="home-chooser-start" data-label="Start with">
-              {{ chooser_link(tools, 'epitope-scout', 'Epitope Scout') }}, then a binder pilot
+              {{ chooser_link(tools, 'epitope-scout', 'Epitope Scout') }}, then a binder trial run
             </td>
           </tr>
           <tr>
@@ -548,7 +548,7 @@
       <h2 class="section-title">Built by a CRO, not an API wrapper.</h2>
       <p class="section-lede">
         We run yeast display, mammalian display, DMS, and BLI in-house.
-        The tools here reflect real binder campaigns, not demos. When a
+        The tools here reflect real binder projects, not demos. When a
         computational run looks promising, it hands off into the same
         lab that designed it.
       </p>
@@ -653,9 +653,9 @@
         <span class="step-num">STEP 03</span>
         <h3 class="step-title">Validate in the lab</h3>
         <p class="step-body">
-          Send your shortlist into a
-          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Binder Pilot</a>
-          or
+          Send your shortlist to
+          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">wet-lab binder testing</a>
+          or into an
           <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer">AI Binder Sprint</a>.
           Same team, same data loop. Computational designs and wet-lab
           validation share one pipeline, not a handoff email.

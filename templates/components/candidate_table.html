@@ -801,7 +801,7 @@
                  cohort and a preset chip on every row would be noise. #}
               {% if row_tool in split_tools %}
               <span class="cand-subjob-tag"
-                    title="Preset. This design was ranked against this tool's other {{ cand.get('_source_preset') or 'default' }} designs, not against its runs at other presets.">{{ cand.get('_source_preset') or 'default' }}</span>
+                    title="Preset. This design was ranked against this tool's other {{ cand.get('_source_preset') | preset_label or 'default' }} designs, not against its runs at other presets.">{{ cand.get('_source_preset') | preset_label or 'default' }}</span>
               {% endif %}
             </td>
             <td>
@@ -1082,7 +1082,7 @@
          can switch to either of the other two before posting, so naming one
          here would be a claim this sentence cannot keep. #}
       Ranomics reviews your candidates, runs feasibility against current lab capacity,
-      and scopes a wet-lab campaign. No commitment — this is a scoping request.
+      and scopes a wet-lab project. No commitment — this is a scoping request.
     </p>
 
     <form action="/lab-projects/submit" method="POST">
@@ -1176,7 +1176,7 @@
       <div class="form-field" style="margin-bottom:1.25rem;">
         <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Budget band</label>
         <div class="radio-group">
-          <label class="radio-label"><input type="radio" name="budget_band" value="pilot" checked> Pilot — initial screen, 4–6 weeks</label>
+          <label class="radio-label"><input type="radio" name="budget_band" value="pilot" checked> Initial screen — 4–6 weeks</label>
           <label class="radio-label"><input type="radio" name="budget_band" value="sprint"> Sprint — accelerated validation, 6–10 weeks</label>
           <label class="radio-label"><input type="radio" name="budget_band" value="custom"> Custom — discuss scope with the team</label>
         </div>

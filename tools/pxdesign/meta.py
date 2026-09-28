@@ -38,7 +38,7 @@ comparison_one_liner: str = (
     "You have a target and you want every single candidate to "
     "arrive with a real AlphaFold2 confidence score against that "
     "target, not a cheaper stand-in. This is the pipeline Ranomics "
-    "runs for its own wet-lab campaigns. For design without that "
+    "runs for its own wet-lab projects. For design without that "
     "filtering step use BindCraft; for antibody formats use "
     "RFantibody or IgGM."
 )
@@ -119,7 +119,7 @@ about: dict = {
         "uses AlphaFold2's initial-guess mode, which is far quicker "
         "than a full multimer prediction and is what makes "
         "per-candidate scoring affordable at all. This is the pipeline "
-        "Ranomics runs for its own wet-lab campaigns. PXDesign is "
+        "Ranomics runs for its own wet-lab projects. PXDesign is "
         "in-house; the initial-guess method is Bennett et al., "
         "<em>Nature Communications</em> 2023."
     ),
@@ -134,7 +134,7 @@ about: dict = {
         ),
         (
             "You want the same pipeline Ranomics runs for its own wet-lab "
-            "campaigns."
+            "projects."
         ),
     ],
     "prerequisites": [
@@ -170,7 +170,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "8 to 25 min, measured at 2 to 25 designs"},
+        {"preset": "Trial run", "typical": "8 to 25 min, measured at 2 to 25 designs"},
     ],
     # 0.75 IS THE LEGEND'S BAR, AND DELIBERATELY NOT THE CONTAINER'S
     # 0.70. Both surfaces that render this sentence -- the tool form's
@@ -228,7 +228,7 @@ about: dict = {
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = {
-    "label": "Starter pilot: 4 designs",
+    "label": "Trial run: 4 designs",
     "goal": (
         "See whether your target and the face you picked give designs "
         "with usable AF2 confidence, before scaling."
@@ -321,7 +321,7 @@ EXAMPLE: dict | None = {
         (
             "Binder length (residues)",
             "63",
-            "One of four calls we made at 50, 57, 63 and 70. The pilot "
+            "One of four calls we made at 50, 57, 63 and 70. The trial run "
             "tier draws a fresh seed per call, so fanning out over lengths "
             "buys seed diversity and length coverage from four calls.",
         ),
@@ -374,7 +374,7 @@ EXAMPLE: dict | None = {
         "here were 0, 2, 2 and 4 out of 25 at 50, 57, 63 and 70 residues, "
         "which is 25 per bin &mdash; suggestive, nowhere near enough to call "
         "a length effect, and the reason the next round was a scale-up rather "
-        "than a conclusion. If your own pilot returns a page of high pLDDT "
+        "than a conclusion. If your own trial run returns a page of high pLDDT "
         "and low ipTM, that is not a broken run: it is this result, and the "
         "answer is more designs or a different site, not a different setting."
     ),

@@ -29,6 +29,7 @@ from jinja2 import Environment, FileSystemLoader
 from shared import metric_glossary, ranking, score_legends
 from shared import pdb_bfactors
 from shared.jobs import display_rows
+from shared.tool_meta import preset_label
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -63,6 +64,7 @@ def _env() -> Environment:
     # be tested against this file's idea of an ordinal rather than production's.
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
+    env.filters["preset_label"] = preset_label
     # The macro closes with two <script src="{{ url_for('static', ...) }}">
     # tags. A bare environment has no Flask app to resolve them, and the tests
     # here care about the table, not the asset paths.

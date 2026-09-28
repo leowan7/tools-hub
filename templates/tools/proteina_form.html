@@ -253,14 +253,14 @@
                  class="proteina-field" style="max-width: 120px;">
           <div class="proteina-help">
             One search shard yields up to 8 designs on a single A100-80GB.
-            Larger requests fan out automatically as a wallet-bounded
-            campaign of independent shards, with a global top-K across all
-            of them.
+            Larger requests become a wallet-bounded full-size run of
+            independent shards that run on our GPUs and bill as they finish,
+            with a global top-K across all of them.
           </div>
           {% if single_container_ceiling %}
           <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
                style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-            More than {{ single_container_ceiling }} designs fans out across GPUs as a wallet-bounded campaign. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start campaign below; upload a target file so it carries over.
+            More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start a full-size run below; upload a target file so it carries over.
           </div>
           {% endif %}
 

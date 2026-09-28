@@ -59,14 +59,14 @@ seo_faq: list[dict] = [
         ),
     },
     {
-        "q": "How long does a BoltzGen pilot run take?",
+        "q": "How long does a BoltzGen trial run take?",
         # 15 to 60, matching PRESET_RUNTIME above and the "runtime_table"
         # entry in ``about`` below. Those two are the derived source: the
         # runtime band on the tool page and the pilot card both read them.
         # This answer said 30 to 90 and ``when_to_use`` said 5 to 60, so
         # the same page quoted three different runtimes for one run.
         "a": (
-            "Pilot runs typically finish in 15 to 60 minutes on a "
+            "Trial runs typically finish in 15 to 60 minutes on a "
             "dedicated A100, depending on target size and the binder "
             "format you picked. Billing is by the second of GPU time."
         ),
@@ -203,7 +203,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15 to 60 min"},
+        {"preset": "Trial run", "typical": "15 to 60 min"},
     ],
     # "signals self-consistent BINDING" was the refold claim again, in a
     # third place. The refold folds the binder alone, so it says the design
@@ -384,7 +384,7 @@ EXAMPLE: dict | None = {
             "5",
             "How many designs to keep. BoltzGen generated and scored 200 "
             "to return these 5, ranked by ipTM &mdash; you are seeing the "
-            "top of a much larger pile. The guided pilot on this page "
+            "top of a much larger pile. The guided trial run on this page "
             "uses 4.",
         ),
     ],
@@ -400,13 +400,13 @@ EXAMPLE: dict | None = {
         "with Glu58, Arg113 and Tyr123, part of the same face PD-1 itself "
         "covers. On a target whose natural partner sits in the next chain "
         "of the same file, that is checkable rather than asserted, and it "
-        "is what a pilot is for: the epitope is reachable, so a bigger run "
+        "is what a trial run is for: the epitope is reachable, so a bigger run "
         "is worth paying for. Four of the five also refold to under "
         "1.5 &Aring; of the pose they were designed in, the tightest at "
         "0.51 &Aring;. "
         "It ran <strong>82 minutes</strong>, past the 15-to-60 range "
         "quoted higher up this page: 200 designs against a 115-residue "
-        "target is the heavy end of a pilot. The charge follows the "
+        "target is the heavy end of a trial run. The charge follows the "
         "compute actually used, so it landed just under the estimate "
         "rather than over."
     ),

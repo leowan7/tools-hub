@@ -171,7 +171,7 @@
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
       <strong>Heads up. Long-running job.</strong>
-      PXDesign pilot runs 8 to 25 min on A100-80GB. That is every pilot
+      PXDesign trial runs take 8 to 25 min on A100-80GB. That is every trial
       run on record, measured at 2 to 25 designs against targets up to
       about 420 residues; more designs cost more but do not add time in
       step. Past that, nothing has been measured, so allow longer.
@@ -259,12 +259,12 @@
                    {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              One run does up to {{ single_container_ceiling or 24 }} designs. No fixed ceiling: larger requests fan out automatically as a wallet-bounded campaign across GPUs.
+              One run does up to {{ single_container_ceiling or 24 }} designs. No fixed ceiling: larger requests become a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish.
             </div>
             {% if single_container_ceiling %}
             <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
                  style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              More than {{ single_container_ceiling }} designs fans out across GPUs as a wallet-bounded campaign. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start campaign below; upload a target file so it carries over.
+              More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start a full-size run below; upload a target file so it carries over.
             </div>
             {% endif %}
             {% endcall %}

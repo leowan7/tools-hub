@@ -1896,7 +1896,7 @@ def _check_size_envelope(
             f"{counted}, above the {env.soft_warn_target_aa}-residue size "
             f"{rules.slug.title()} has actually been run at here. It should "
             f"still work, but this size has not been measured — watch the "
-            f"first shard before scaling the campaign up."
+            f"first shard before scaling the run up."
         )
     elif over_warn:
         warn_msg = (

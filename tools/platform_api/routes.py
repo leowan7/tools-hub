@@ -546,7 +546,7 @@ def cost_estimate():
                 "requires_human_quote": False,
                 "estimated_range_usd": band,
                 "note": (
-                    "Calibrated band based on previously-run campaigns "
+                    "Calibrated band based on previously-run projects "
                     "against this catalogue entry. Final invoice depends "
                     "on round count, sort gates, and NGS depth set during "
                     "experiment design."

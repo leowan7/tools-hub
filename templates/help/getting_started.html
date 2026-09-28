@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Getting started — Ranomics Tools{% endblock %}
-{% block description %}How to run your first protein design on Ranomics Tools: start from the target you already have, open the tool and read the form, run a small pilot, read the scores, then scale up or switch tools.{% endblock %}
+{% block description %}How to run your first protein design on Ranomics Tools: start from the target you already have, open the tool and read the form, start with a small trial run, read the scores, then scale up or switch tools.{% endblock %}
 
 {% block head_extra %}
   <style>
@@ -88,15 +88,15 @@
         </p>
       </li>
       <li>
-        <h2 class="help-step-title">Start the tool's named pilot</h2>
+        <h2 class="help-step-title">Start the tool's named trial run</h2>
         <p class="help-step-body">
-          Most tool pages carry a pilot card: a named first run on your own
+          Most tool pages carry a trial run card: a named first run on your own
           target, sized to tell you whether the setup works before you spend
           on a large one. It states what the run is for, what you need in
           hand, and roughly what it costs before you commit anything.
           <strong>Load these settings</strong> fills the form with exactly
           those values — you supply your own structure and hotspots on top.
-          A few tools have no pilot card, because their smallest possible
+          A few tools have no trial run card, because their smallest possible
           run is already the only run they do; on those, just submit the
           form.
         </p>
@@ -107,7 +107,7 @@
           Submitting is the first point that needs an account. Billing is a
           USD wallet and that balance is your spend cap — no subscription,
           no monthly minimum, and a new account starts with
-          ${{ signup_credit() }} already in it, which covers every pilot on
+          ${{ signup_credit() }} already in it, which covers every trial run on
           the site; any of it left unspent expires {{ signup_credit_expiry_days }} days after sign-up. Before you confirm you see the estimated cost and what
           your balance will be afterwards; a hold is placed against the
           estimate while the job runs and the final charge settles against
@@ -133,7 +133,7 @@
       <li>
         <h2 class="help-step-title">Scale up, or switch tools</h2>
         <p class="help-step-body">
-          If the pilot produced anything that scored well, clone the run and
+          If the trial run produced anything that scored well, clone the run and
           raise the design count — the setup is proven, so the only thing
           missing is volume. If nothing scored well, the setup is the usual
           culprit rather than the model: the wrong chain, the wrong patch of
@@ -146,10 +146,9 @@
       <li>
         <h2 class="help-step-title">Take the shortlist to the bench</h2>
         <p class="help-step-body">
-          Star the designs worth pursuing to build a shortlist, then hand it
-          off to a
-          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Binder Pilot</a>
-          or
+          Star the designs worth pursuing to build a shortlist, then
+          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">test those binders in our lab</a>
+          or hand it off to an
           <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer">AI Binder Sprint</a>
           for wet-lab validation.
         </p>
@@ -159,7 +158,7 @@
     <div class="panel" style="margin-top: 1.25rem;">
       <div class="panel-body">
         <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">
-          What to expect from a pilot: about 8 designs gives a real first
+          What to expect from a trial run: about 8 designs gives a real first
           signal, because roughly 1 in 5 designs passes the in-silico
           filter — the computational quality check the tool applies before
           anything reaches you — on a tractable target. Start small, read

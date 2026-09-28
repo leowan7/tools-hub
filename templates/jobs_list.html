@@ -23,11 +23,11 @@
   {% if all_campaign_labels %}
     <form method="GET" action="{{ url_for('jobs.jobs_list') }}" id="campaign-filter-form"
           style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.88rem;">
-      <label for="campaign" style="margin: 0;">Campaign</label>
+      <label for="campaign" style="margin: 0;">Group</label>
       <select name="campaign" id="campaign" class="field-input"
               style="max-width: 320px; padding: 0.4rem 0.5rem; font-size: 0.88rem;"
               onchange="document.getElementById('campaign-filter-form').submit();">
-        <option value="" {% if not selected_campaign %}selected{% endif %}>All campaigns</option>
+        <option value="" {% if not selected_campaign %}selected{% endif %}>All groups</option>
         <option value="__uncategorized__" {% if selected_campaign == '__uncategorized__' %}selected{% endif %}>Uncategorized</option>
         {% for label in all_campaign_labels %}
           <option value="{{ label }}" {% if selected_campaign == label %}selected{% endif %}>{{ label }}</option>
@@ -82,7 +82,7 @@
                     <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}">{{ job.id[:8] }}</a>
                   </td>
                   <td>{{ job.tool or '—' }}</td>
-                  <td>{{ job.preset or '—' }}</td>
+                  <td>{{ job.preset | preset_label or '—' }}</td>
                   <td>{{ status_badge(job.status) }}</td>
                   <td>
                     {% if c.progress %}
