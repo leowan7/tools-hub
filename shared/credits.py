@@ -109,7 +109,8 @@ def list_all_auth_users(client) -> list:  # noqa: ANN001
     page_no = 1
     while True:
         page = client.auth.admin.list_users(page=page_no, per_page=_AUTH_USERS_PAGE)
-        batch = list(getattr(page, "users", None) or page or [])
+        rows = getattr(page, "users", None)
+        batch = list((page or []) if rows is None else rows)
         if not batch:
             return users
         users.extend(batch)

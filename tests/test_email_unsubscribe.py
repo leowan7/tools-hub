@@ -231,3 +231,19 @@ def test_list_all_auth_users_reads_every_page(monkeypatch):
     assert [u.id for u in credits.list_all_auth_users(c)] == [u.id for u in users]
     monkeypatch.setattr(credits, "get_service_client", lambda: c)
     assert credits._resolve_user_id("u4@example.com") == "u4"
+
+
+def test_list_all_auth_users_stops_on_empty_response_object():
+    """A response object whose ``.users`` is empty ends the walk (a truthy
+    object with an empty list must not be iterated as the batch)."""
+    from shared import credits
+
+    class _Page(list):
+        def __init__(self, users):
+            super().__init__(["not-a-user"])
+            self.users = users
+
+    pages = {1: _Page([_user("a")]), 2: _Page([])}
+    admin = SimpleNamespace(list_users=lambda page, per_page: pages[page])
+    got = credits.list_all_auth_users(SimpleNamespace(auth=SimpleNamespace(admin=admin)))
+    assert [u.id for u in got] == ["a"]
