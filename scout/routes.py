@@ -1799,6 +1799,27 @@ def feasibility_analyze():
     tier = result_row.get("tier", "Unknown")
     result = generate_recommendations(dimensions, composite, tier, len(epitope_residues))
 
+    # The residues the page hands to the binder form, as bare integers.
+    # ``residues`` below is resname+number ("TYR67") and the handoff POST
+    # parses its field with int(), so it needed a separate numeric field:
+    # arriving from the results table the page has an epitope_id and no
+    # residue list of its own, so the hidden hotspot input had nothing to
+    # post and the POST refused.
+    # templates/scout/feasibility.html::populateHandoffForm reads this
+    # into the #handoff-hotspots input.
+    #
+    # All-or-nothing on purpose. ``epitope_residues`` can come straight
+    # from request JSON, so an element need not be numeric; handing over
+    # the subset that parses would silently steer the design at a
+    # DIFFERENT patch than the one just scored. An empty list makes the
+    # handoff refuse with a message instead.
+    _bare = [str(r).strip() for r in epitope_residues]
+    handoff_residues = (
+        [int(r) for r in _bare]
+        if all(re.fullmatch(r"-?\d+", r) for r in _bare)
+        else []
+    )
+
     return jsonify({
         "composite_feasibility": composite,
         "tier": result.tier,
@@ -1813,6 +1834,7 @@ def feasibility_analyze():
         "hit_rate_citation": result.hit_rate_citation,
         "risk_factors": result.risk_factors,
         "residues": result_row.get("residues", ""),
+        "epitope_residues": handoff_residues,
         "residue_count": int(result_row.get("residue_count", 0)),
         # Carries the chain that was actually scored, so the download gate can
         # be exact instead of inferring it from results.csv. The page assigns
@@ -2062,6 +2084,27 @@ def feasibility_download(job_id):
 from scout.handoff import VALID_HANDOFF_TOOLS  # noqa: E402,PLC0415
 
 
+def _handoff_failed(message: str, scout_job_id: str, epitope_id: str):
+    """Send a failed handoff BACK to the page it was posted from.
+
+    This route is posted by a plain <form> in
+    templates/scout/feasibility.html, so a JSON body replaces the whole
+    results page with a line of JSON and the user's scored epitope is
+    gone. The failures a user can reach by clicking the button return
+    here instead, with the message in ``handoff_error``, which the panel
+    renders. The access-control refusals above do not: see the 404 in
+    ``handoff_to_tool``.
+    """
+    return redirect(
+        url_for(
+            "scout.feasibility_page",
+            job_id=scout_job_id,
+            epitope_id=epitope_id,
+            handoff_error=message,
+        )
+    )
+
+
 @scout_bp.route("/handoff/tool", methods=["POST"])
 @login_required
 def handoff_to_tool():
@@ -2083,7 +2126,12 @@ def handoff_to_tool():
     # a path from the raw, user-supplied scout_job_id.
     job_dir = _resolve_job_dir(scout_job_id)
     if job_dir is None:
-        return jsonify({"error": "Scout job not found or expired."}), 404
+        # Stays a 404, and does NOT redirect with a message. This single
+        # branch answers three different things — a traversal attempt, a
+        # malformed id, and another user's job — and only the third is
+        # distinguishable from an expired run of your own. Pinned by
+        # tests/test_scout_access_control.py::TestHandoffAccessControl.
+        return jsonify({"error": "Scout job not found"}), 404
     input_pdb = job_dir / "input.pdb"
 
     hotspots: list[int] = []
@@ -2095,9 +2143,18 @@ def handoff_to_tool():
                 if tok.strip()
             ]
         except ValueError:
-            return jsonify({"error": "hotspot_residues must be integers"}), 400
+            return _handoff_failed(
+                "Hotspot residues must be numbers.",
+                scout_job_id,
+                scout_epitope_id or "",
+            )
     if not hotspots:
-        return jsonify({"error": "At least one hotspot residue is required"}), 400
+        return _handoff_failed(
+            "No epitope residues to carry over. Pick an epitope and run the "
+            "feasibility analysis first.",
+            scout_job_id,
+            scout_epitope_id or "",
+        )
 
     email = session.get("user_email", "")
     handoff_id = create_handoff(
@@ -2109,13 +2166,23 @@ def handoff_to_tool():
         pdb_path=input_pdb,
     )
     if not handoff_id:
-        return (
-            jsonify({
-                "error": (
-                    "Could not stage handoff. Make sure the Scout run "
-                    "still has its PDB, and try again."
-                )
-            }),
-            500,
+        return _handoff_failed(
+            "Could not stage the target for that tool. Try again, or upload "
+            "the structure on the tool form.",
+            scout_job_id,
+            scout_epitope_id or "",
         )
+
+    # Half of the funnel this route sits in. The other half
+    # (scout_handoff_opened) fires in blueprints/tools.py::tool_form when
+    # the handoff actually resolves onto a form, so the gap between the two
+    # is measurable rather than inferred.
+    from shared.events import log_event  # noqa: PLC0415
+    log_event(
+        event_type="scout_handoff_created",
+        user_id=session.get("user_id"),
+        session_id=session.get("anon_session_id"),
+        path="/scout/handoff/tool",
+        props={"tool": tool, "hotspot_count": len(hotspots)},
+    )
     return redirect(handoff_redirect_url(tool, handoff_id))

@@ -807,10 +807,14 @@ class TestHotspotDeflection:
 
     * **rfdiffusion** refuses, so it got a card, and the card told the
       user Scout's results "hand the target and the residues back into
-      this form". rfdiffusion is not in ``VALID_HANDOFF_TOOLS`` and
-      Scout's picker does not offer it, so the round trip dead-ends in
-      re-typing — worse than the wall it replaced, because it costs the
-      user the trip first.
+      this form". At the time rfdiffusion was not in
+      ``VALID_HANDOFF_TOOLS`` and Scout's picker did not offer it, so the
+      round trip dead-ended in re-typing — worse than the wall it
+      replaced, because it cost the user the trip first. (rfdiffusion and
+      iggm have since been ADDED to the handoff set and to the picker, so
+      their cards now tell the truth. What stays wrong is deriving the
+      one claim from the other: a tool can refuse without being a handoff
+      target, and the guard below still has to catch that.)
     * **boltzgen** IS a handoff target and its own about panel asks for
       a hotspot residue, but got no card at all, because its
       ``validate()`` happens to tolerate an empty field and run
@@ -988,7 +992,8 @@ class TestHotspotDeflection:
         pilots = _pilots(slugs)
         carded = {s for s in slugs if pilots[s] and self._carded(client, s)}
         assert carded == {
-            "bindcraft", "boltzgen", "pxdesign", "rfantibody", "rfdiffusion",
+            "bindcraft", "boltzgen", "iggm", "pxdesign", "rfantibody",
+            "rfdiffusion",
         }, sorted(carded)
         for slug in slugs:
             expected = bool(pilots[slug]) and (
