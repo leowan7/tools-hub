@@ -75,6 +75,7 @@
         <select id="kind" name="kind" class="field-input" style="max-width: 220px;" onchange="this.form.submit()">
           <option value="" {% if not filter_kind %}selected{% endif %}>All entries</option>
           <option value="signup_credit"     {% if filter_kind == 'signup_credit' %}selected{% endif %}>Signup credit</option>
+          <option value="signup_credit_expiry" {% if filter_kind == 'signup_credit_expiry' %}selected{% endif %}>Signup credit expiry</option>
           <option value="topup"             {% if filter_kind == 'topup' %}selected{% endif %}>Top ups</option>
           <option value="auto_reload"       {% if filter_kind == 'auto_reload' %}selected{% endif %}>Auto reloads</option>
           <option value="hold"              {% if filter_kind == 'hold' %}selected{% endif %}>Holds</option>
@@ -197,7 +198,10 @@
     <div class="panel-body">
       <dl class="wallet-tx-legend">
         <dt><span class="wallet-tx-kind wallet-tx-kind-signup_credit">signup credit</span></dt>
-        <dd>One time ${{ signup_credit() }} signup balance on first account creation.</dd>
+        <dd>One time ${{ signup_credit() }} signup balance on first account creation, usable for {{ signup_credit_expiry_days }} days.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-signup_credit_expiry">signup credit expiry</span></dt>
+        <dd>The part of the signup balance still unspent {{ signup_credit_expiry_days }} days after it was granted, removed. Money you added is never touched.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-topup">topup</span></dt>
         <dd>Manual top up via Stripe Checkout. Net of Stripe fees and tax.</dd>

@@ -13,6 +13,8 @@
                              tool_slug (optional), job_id (optional),
                              note (optional)
      user_email            session.user_email
+     signup_credit_status  None, or {remaining_usd, expires_at} while unspent
+                           signup credit remains (shared.wallet.signup_credit_status)
 #}
 
 {% block title %}Wallet: Ranomics Tools{% endblock %}
@@ -104,16 +106,13 @@
         </div>
         <div class="wallet-stat">
           <span class="wallet-stat-label">Signup credit</span>
-          {# Defensive: signup_credit_used_usd is not a column on user_wallets
-             and is not always injected by the route. Treat undefined and none
-             the same so the page does not 500. #}
-          {% set _signup_used = wallet.signup_credit_used_usd|default(none, true) if wallet else none %}
-          {% if _signup_used is not none %}
-            <span class="wallet-stat-value">${{ display_cost_usd(_signup_used) }}</span>
-            <span class="wallet-stat-foot">of ${{ signup_credit(True) }} signup balance</span>
+          {% if signup_credit_status %}
+            {% set _exp = signup_credit_status.expires_at %}
+            <span class="wallet-stat-value">${{ display_balance_usd(signup_credit_status.remaining_usd) }}</span>
+            <span class="wallet-stat-foot">of ${{ signup_credit(True) }} unspent, expires {{ _exp.strftime('%B') }} {{ _exp.day }}, {{ _exp.year }} (UTC)</span>
           {% else %}
-            <span class="wallet-stat-value">${{ signup_credit(True) }}</span>
-            <span class="wallet-stat-foot">signup balance available</span>
+            <span class="wallet-stat-value">$0.00</span>
+            <span class="wallet-stat-foot">none left; signup credit lasts {{ signup_credit_expiry_days }} days</span>
           {% endif %}
         </div>
       </div>

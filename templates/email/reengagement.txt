@@ -1,14 +1,16 @@
 {# Plain-text version of reengagement.html. Same variables. #}
 You have a balance sitting unused
 
-Your tools-hub wallet still has ${{ balance_usd }} on it, and we have not
-seen a run from you in the last week. No pressure, but here are two tools
-you have not tried yet that your balance comfortably covers.
+Your tools-hub wallet still has ${{ balance_usd }} on it, and {% if never_ran %}you have
+not run a tool yet{% else %}we have not seen a run from you in the last two weeks{% endif %}.
+No pressure, but here are two tools you have not tried yet.
 {% for suggestion in suggestions %}
 {{ suggestion.label }}
 {{ suggestion.blurb }}
 Try {{ suggestion.label }}: {{ suggestion.url }}
 {% endfor %}
+Or browse all the tools: {{ tools_url }}
+
 The Ranomics team
 
 Ranomics Tools. {{ base_url }}

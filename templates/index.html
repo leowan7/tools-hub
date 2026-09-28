@@ -348,7 +348,7 @@
         You fund a USD
         wallet, your balance is the only cap, and the number of designs is
         unlimited. <strong>New accounts start with
-        ${{ signup_credit() }} in their wallet. No credits, no tiers, no subscriptions.</strong>
+        ${{ signup_credit() }} in their wallet, usable for {{ signup_credit_expiry_days }} days. No credits, no tiers, no subscriptions.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
@@ -672,7 +672,8 @@
         <span class="pricing-teaser-title">Your wallet is your budget.</span>
         <span class="pricing-teaser-body">
           Fund a USD wallet, design without limits, pay only for the compute
-          delivered. New accounts start with ${{ signup_credit() }} in their wallet on signup.
+          delivered. New accounts start with ${{ signup_credit() }} in their wallet on signup,
+          usable for {{ signup_credit_expiry_days }} days.
           No credits, no tiers, no subscriptions.
         </span>
       </div>

@@ -13,7 +13,7 @@ ipTM / pLDDT / i_pAE statistics from the AF2 model.
 
 from __future__ import annotations
 
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 # The signup credit is quoted in SEO copy that reaches JSON-LD structured
 # data, so it is read from the grant rather than retyped. It was hardcoded
@@ -53,8 +53,8 @@ seo_faq: list[dict] = [
             "Billing is by the second of dedicated GPU time. A pilot run "
             "(~25 minutes on an A100 for four designs) typically clears for "
             "under a few dollars from your wallet. New accounts start with a "
-            f"{_SIGNUP_CREDIT} balance, which covers a first "
-            "small-target run."
+            f"{_SIGNUP_CREDIT} balance, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
+            "days, which covers a first small-target run."
         ),
     },
     {

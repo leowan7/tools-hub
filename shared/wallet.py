@@ -55,7 +55,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from functools import wraps
 from typing import Any, Callable, Mapping, Optional
 
@@ -161,6 +161,11 @@ DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 # override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
 # changed only the welcome email, never the grant.
 SIGNUP_CREDIT_USD = Decimal("20.00")
+
+# Unspent signup credit is removed this many days after the grant. The same
+# 30 is the column default in supabase/migrations/0043_signup_credit_expiry.sql;
+# tests/test_signup_credit_expiry.py fails if the two differ.
+SIGNUP_CREDIT_EXPIRY_DAYS = 30
 
 # Send the low-balance email when balance drops below this.
 LOW_BALANCE_EMAIL_THRESHOLD = Decimal("5.00")
@@ -447,6 +452,143 @@ def record_signup_credit(user_id: str) -> bool:
             user_id, exc_info=True,
         )
         return False
+
+
+# ---------------------------------------------------------------------------
+# Signup credit expiry
+# ---------------------------------------------------------------------------
+
+_CREDIT_INFLOW_KINDS = frozenset({"signup_credit", "topup", "auto_reload", "promo"})
+_LEDGER_PAGE = 1000
+
+
+def unspent_signup_credit(rows: list[Mapping], balance: Decimal) -> Decimal:
+    """How much of the signup credit is still unspent, given the whole ledger.
+
+    ``rows`` are the user's ``wallet_transactions`` rows with signed amounts as
+    the SQL functions write them (holds negative). Spend is minus the sum of
+    every row after the grant that is not money coming in: holds net of their
+    releases, charges, freezes and negative adjustments. Credit is treated as
+    spent first, so paid money is only ever spent after it. The result is
+    ``grant - spend`` floored at 0 and capped at ``balance``; it is 0 when
+    there is no grant or an expiry row already exists.
+    """
+    grant_id = None
+    grant = Decimal("0")
+    for r in rows:
+        if r.get("kind") == "signup_credit_expiry":
+            return Decimal("0")
+        if r.get("kind") == "signup_credit" and grant_id is None:
+            grant_id = r.get("id")
+            grant = Decimal(str(r.get("amount_usd") or 0))
+    if grant_id is None:
+        return Decimal("0")
+    spend = Decimal("0")
+    for r in rows:
+        if r.get("id") is None or r["id"] <= grant_id:
+            continue
+        amount = Decimal(str(r.get("amount_usd") or 0))
+        kind = r.get("kind")
+        if kind in _CREDIT_INFLOW_KINDS or (kind == "adjustment" and amount > 0):
+            continue
+        spend -= amount
+    return max(Decimal("0"), min(grant - spend, balance))
+
+
+def _ledger_rows(client, user_id: str) -> list[dict]:
+    rows: list[dict] = []
+    while True:
+        resp = (
+            client.table("wallet_transactions")
+            .select("id,kind,amount_usd,parent_tx_id")
+            .eq("user_id", user_id)
+            .order("id")
+            .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
+            .execute()
+        )
+        page = list(getattr(resp, "data", None) or [])
+        rows.extend(page)
+        if len(page) < _LEDGER_PAGE:
+            return rows
+
+
+def _has_open_hold(rows: list[Mapping]) -> bool:
+    parents = {r.get("parent_tx_id") for r in rows if r.get("parent_tx_id") is not None}
+    return any(r.get("kind") == "hold" and r.get("id") not in parents for r in rows)
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def signup_credit_status(user_id: str, wallet: Optional[Mapping] = None) -> Optional[dict]:
+    """``{"remaining_usd", "expires_at"}`` while unspent signup credit remains.
+
+    None when nothing is left, the expiry already ran, or the lookup failed.
+    """
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        if wallet is None:
+            wallet = _wallet(user_id)
+        if not wallet or wallet.get("signup_credit_expired_at"):
+            return None
+        expires_at = _parse_ts(wallet.get("signup_credit_expires_at"))
+        if expires_at is None:
+            return None
+        rows = _ledger_rows(client, user_id)
+        balance = sum((Decimal(str(r.get("amount_usd") or 0)) for r in rows), Decimal("0"))
+        remaining = unspent_signup_credit(rows, balance)
+    except Exception:
+        logger.warning("signup_credit_status failed for %s", user_id, exc_info=True)
+        return None
+    if remaining <= 0:
+        return None
+    return {"remaining_usd": remaining, "expires_at": expires_at}
+
+
+def expire_signup_credit(user_id: str) -> str:
+    """Remove this user's unspent signup credit if its expiry date has passed.
+
+    Returns the outcome string of the ``expire_signup_credit`` SQL function
+    (``expired``, ``not_due``, ``already_expired``, ``ledger_moved``,
+    ``hold_open``, ...), ``hold_open`` without calling it when a hold is
+    visible here, or ``error``. Anything but ``expired`` / ``already_expired``
+    leaves the wallet untouched for the next run to retry. The SQL function
+    re-checks due date, open holds and the ledger tail under the wallet row
+    lock (supabase/migrations/0043_signup_credit_expiry.sql), which is what
+    makes a second concurrent run a no-op.
+    """
+    client = get_service_client()
+    if client is None:
+        return "error"
+    try:
+        rows = _ledger_rows(client, user_id)
+        if _has_open_hold(rows):
+            return "hold_open"
+        balance = sum((Decimal(str(r.get("amount_usd") or 0)) for r in rows), Decimal("0"))
+        amount = unspent_signup_credit(rows, balance).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+        last_id = rows[-1]["id"] if rows else None
+        resp = client.rpc(
+            "expire_signup_credit",
+            {
+                "p_user_id": user_id,
+                "p_amount_usd": str(amount),
+                "p_seen_last_tx_id": last_id,
+            },
+        ).execute()
+        return str(getattr(resp, "data", None) or "error")
+    except Exception:
+        logger.warning("expire_signup_credit failed for %s", user_id, exc_info=True)
+        return "error"
 
 
 # ---------------------------------------------------------------------------

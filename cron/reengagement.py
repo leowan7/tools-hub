@@ -1,10 +1,11 @@
-"""7-day re-engagement email for users with credits sitting unused (C6).
+"""Balance reminder: re-engagement email for idle users with a balance (C6).
 
 Sweep design
 ------------
 Find users that match all three conditions:
 
-  * Most recent ``tool_jobs`` row is older than 7 days.
+  * Most recent ``tool_jobs`` row is older than 14 days, or they have never
+    run a job and signed up more than 14 days ago.
   * ``user_wallets.balance_usd`` is greater than zero.
   * No re-engagement email has been sent in the last 30 days
     (stamped in ``auth.users.user_metadata.reengagement_email_sent_at``).
@@ -38,9 +39,8 @@ logger = logging.getLogger(__name__)
 # this, and we re-stamp every successful send.
 REENGAGEMENT_COOLDOWN_DAYS: int = 30
 
-# How long a user must have been silent before they qualify. Matches the
-# "last_job_at < now - 7d" rule in the C6 plan.
-INACTIVITY_DAYS: int = 7
+# How long a user must have been silent before they qualify.
+INACTIVITY_DAYS: int = 14
 
 # How many candidate tools to surface in one email. Two keeps the body
 # scannable on mobile without padding it with marginal suggestions.
@@ -48,10 +48,12 @@ SUGGESTIONS_PER_EMAIL: int = 2
 
 # UTM constants. Match the cross-domain analytics convention used by the
 # tools-hub funnel reporter (utm_source=email, utm_medium=reengagement,
-# utm_campaign=7d).
+# utm_campaign=14d).
 UTM_SOURCE: str = "email"
 UTM_MEDIUM: str = "reengagement"
-UTM_CAMPAIGN: str = "7d"
+UTM_CAMPAIGN: str = "14d"
+
+_USERS_PAGE: int = 1000
 
 
 @dataclass
@@ -160,26 +162,43 @@ def find_candidates(
         return []
 
     inactivity_iso = inactivity_cutoff.isoformat()
-    inactive_user_ids = {
-        uid for uid in funded_user_ids
-        if last_job_at.get(uid, "") and last_job_at[uid] < inactivity_iso
-    }
-    if not inactive_user_ids:
-        return []
+    funded = set(funded_user_ids)
 
-    # 3. Resolve emails + user_metadata in a single admin.list_users()
-    #    pass. The 30-day cooldown stamp lives in user_metadata.
+    # 3. Resolve emails + user_metadata + signup time, paging through
+    #    admin.list_users() (GoTrue returns 50 per page by default). The
+    #    30-day cooldown stamp lives in user_metadata. A user who never ran a
+    #    job is idle once their account is older than the cutoff.
     cooldown_iso = cooldown_cutoff.isoformat()
+    inactive_user_ids: set[str] = set()
     users_by_id: dict[str, dict] = {}
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
+        users: list = []
+        page_no = 1
+        while True:
+            page = client.auth.admin.list_users(page=page_no, per_page=_USERS_PAGE)
+            batch = list(getattr(page, "users", None) or page or [])
+            users.extend(batch)
+            if len(batch) < _USERS_PAGE:
+                break
+            page_no += 1
         for u in users:
             uid = getattr(u, "id", None) or (
                 u.get("id") if isinstance(u, dict) else None
             )
-            if uid not in inactive_user_ids:
+            if uid not in funded:
                 continue
+            if uid in last_job_at:
+                if last_job_at[uid] >= inactivity_iso:
+                    continue
+            else:
+                created = getattr(u, "created_at", None) or (
+                    u.get("created_at") if isinstance(u, dict) else None
+                )
+                if isinstance(created, datetime):
+                    created = created.isoformat()
+                if not created or str(created) >= inactivity_iso:
+                    continue
+            inactive_user_ids.add(uid)
             email = getattr(u, "email", None) or (
                 u.get("email") if isinstance(u, dict) else None
             )

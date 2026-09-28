@@ -73,6 +73,39 @@ In the Railway project dashboard:
    `STAFF_NOTIFY_EMAIL`. Use Railway's "Shared Variables" if you have
    it enabled.
 
+### 3b. Signup-credit expiry and balance reminders
+
+Two more services, set up the same way as `tools-hub-digest` (same
+source and env vars):
+
+| Service name                | Start command              | Cron schedule |
+|-----------------------------|----------------------------|---------------|
+| `tools-hub-credit-expire`   | `flask credit:expire`      | `0 15 * * *`  |
+| `tools-hub-reengagement`    | `flask reengagement:send`  | `0 17 * * *`  |
+
+- `credit:expire` (`cron/signup_credit.py`) sends the one-time "your
+  free credit expires on <date>" email 5 days before expiry, and on
+  the expiry date removes whatever is left of the signup credit with a
+  `signup_credit_expiry` ledger row. Money the user added is never
+  removed. Wallets with a job still holding funds are skipped and
+  retried on the next run. Prints
+  `credit:expire reminded=N expired=N skipped=N errors=N`.
+- `reengagement:send` (`cron/reengagement.py`) emails users with a
+  balance who have not run anything for 14 days, at most once per 30
+  days.
+- Migration `0043_signup_credit_expiry.sql` must be applied before the
+  deploy that ships `credit:expire`. Accounts that exist when it is
+  applied get 30 days from that moment.
+
+`credit:expire` can be run twice, even at the same time, without a
+second debit or a second reminder (`tests/test_signup_credit_expiry.py`).
+`reengagement:send` skips anyone emailed in the last 30 days. Run one
+by hand with:
+
+```bash
+venv\Scripts\python -m flask --app app credit:expire
+```
+
 If your Railway plan doesn't include cron, alternatives:
 
 - **GitHub Actions cron** — `.github/workflows/digest.yml` running

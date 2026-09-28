@@ -142,28 +142,32 @@ class TestWalletOverviewTemplate:
             )
         assert "Wallet frozen" in html
 
-    def test_overview_renders_without_signup_credit_used_usd_key(self, app):
-        """The user_wallets schema does not have signup_credit_used_usd.
-
-        The Session 8 Pass 6 surfaced that overview.html was reading this
-        key directly and 500'ing on every real wallet because the column
-        does not exist on user_wallets. The route does not inject it
-        either. The template must tolerate the missing key.
-        """
-        wallet_no_signup_field = _wallet_fixture()
-        wallet_no_signup_field.pop("signup_credit_used_usd", None)
+    def test_overview_shows_unspent_signup_credit_and_expiry(self, app):
+        from shared.wallet import SIGNUP_CREDIT_USD
         with app.test_request_context("/account/wallet"):
             html = render_template(
                 "wallet/overview.html",
-                wallet=wallet_no_signup_field,
+                wallet=_wallet_fixture(),
+                recent_transactions=[],
+                user_email="u@example.com",
+                signup_credit_status={
+                    "remaining_usd": Decimal("12.3456"),
+                    "expires_at": datetime(2026, 10, 28, 9, 0, tzinfo=timezone.utc),
+                },
+            )
+        assert "$12.34" in html
+        assert f"of ${SIGNUP_CREDIT_USD:.2f} unspent" in html
+        assert "expires October 28, 2026" in html
+
+    def test_overview_without_signup_credit_status(self, app):
+        with app.test_request_context("/account/wallet"):
+            html = render_template(
+                "wallet/overview.html",
+                wallet=_wallet_fixture(),
                 recent_transactions=[],
                 user_email="u@example.com",
             )
-        assert "signup balance available" in html
-        # Derived, not literal: the grant has changed once already and a
-        # hardcoded figure here just moves the drift into the test suite.
-        from shared.wallet import SIGNUP_CREDIT_USD
-        assert f"${SIGNUP_CREDIT_USD:.2f}" in html
+        assert "none left; signup credit lasts 30 days" in html
 
 
 # ---------------------------------------------------------------------------
