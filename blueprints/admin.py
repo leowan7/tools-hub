@@ -814,7 +814,7 @@ def admin_campaign_save_results(campaign_id: str):
 def admin_users_list():
     """Per-user activity dashboard: signup quality, runs, last seen.
 
-    Pulls auth.users via service role (50-row first page), joins
+    Pulls every auth.users row via service role (list_all_auth_users), joins
     ``public.user_profiles``, ``credits_balance``, and the trailing
     30-day count from ``public.user_events`` + ``public.tool_jobs``.
     Sorts by last-activity DESC so the most engaged users surface
