@@ -374,6 +374,13 @@ _NOT_A_SHAPE_GATE = {
     # what catches it is test_every_reader_routes_through_the_one_predicate
     # above, which covers this pair through _READERS.
     ("blueprints/admin.py", "admin_campaign_save_results"),
+    # ``sequences`` here is a FORM FIELD NAME, not a per-candidate array out
+    # of ``job.result``: the function maps stored ``job.inputs`` keys onto the
+    # names the templates look up, and its ``isinstance(value, (list, tuple))``
+    # gate is the generic "a list cannot render in a text control" conversion
+    # over EVERY prefill value, answering no shape question about candidates.
+    # The name collision is what reaches this sweep.
+    ("blueprints/tools.py", "_normalize_clone_pre_fill"),
 }
 
 # Every module the negative sweep reads, DERIVED from the tree. _READERS is a

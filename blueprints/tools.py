@@ -752,6 +752,17 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     if slug == "mpnn" and pre_fill.get("target_chain") is not None:
         pre_fill.setdefault("chains_to_design", pre_fill["target_chain"])
 
+    # The batch folds store the parsed records under ``batch_records``
+    # (tools/af2/__init__.py:347, tools/colabfold/__init__.py:335,
+    # tools/esmfold/__init__.py:229) while all three textareas are named
+    # ``sequences`` (templates/tools/af2_form.html:245,
+    # colabfold_form.html:222, esmfold_form.html:221) and both parsers read
+    # that name back (tools/colabfold/__init__.py:248,
+    # tools/esmfold/__init__.py:169). Without this the box renders empty, so
+    # cloning a batch fold silently dropped every record.
+    if pre_fill.get("batch_records") is not None:
+        pre_fill.setdefault("sequences", pre_fill["batch_records"])
+
     # Every remaining list becomes text. LAST, so the shape-specific
     # rules above still see the structure they were written against.
     for key, value in pre_fill.items():

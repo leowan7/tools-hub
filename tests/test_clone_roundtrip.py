@@ -401,6 +401,38 @@ class TestNoPythonReprReachesAField:
         assert err is None, err
         assert again["binder_sequences"] == inputs["binder_sequences"]
 
+    @pytest.mark.parametrize("slug", ["af2", "colabfold", "esmfold"])
+    def test_batch_records_round_trip_through_validate(self, tools_app, slug):
+        """A cloned BATCH fold carries its records, not an empty box.
+
+        The batch presets store ``batch_records`` while the textarea is
+        named ``sequences``, so the name lookup missed and the clone
+        rendered empty -- every record silently dropped. The scale-up card
+        quotes this clone by its stored batch size
+        (shared/scale_up.py::_stored_count), so the price is only honest if
+        the form actually carries the batch.
+        """
+        flask_app, adapters = tools_app
+        adapter = next(a for a in adapters if a.slug == slug)
+        form = dict(_FORM, preset="batch")
+        form.pop("fasta", None)
+        form.pop("fasta_text", None)
+        if slug == "colabfold":
+            form.pop("use_templates", None)
+        inputs, err = adapter.validate(form, {})
+        assert err is None, err
+        assert isinstance(inputs["batch_records"], list) and inputs["batch_records"]
+
+        html = _clone_html(flask_app, adapter, inputs)
+        rendered = _posted_value(html, "sequences")
+        assert rendered and rendered.startswith(">"), rendered
+
+        again, err = adapter.validate(
+            dict(form, sequences=rendered), {},
+        )
+        assert err is None, err
+        assert again["batch_records"] == inputs["batch_records"]
+
     def test_af2_fasta_records_round_trip_through_validate(self, tools_app):
         """Same shape, other tool. af2_form.html used to rebuild the
 
