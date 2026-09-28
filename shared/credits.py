@@ -99,6 +99,24 @@ def get_service_client():
         return None
 
 
+_AUTH_USERS_PAGE = 1000
+
+
+def list_all_auth_users(client) -> list:  # noqa: ANN001
+    """Every auth.users row. ``admin.list_users()`` with no page argument
+    returns only the first page (GoTrue's default page size is 50)."""
+    users: list = []
+    page_no = 1
+    while True:
+        page = client.auth.admin.list_users(page=page_no, per_page=_AUTH_USERS_PAGE)
+        rows = getattr(page, "users", None)
+        batch = list((page or []) if rows is None else rows)
+        if not batch:
+            return users
+        users.extend(batch)
+        page_no += 1
+
+
 # ---------------------------------------------------------------------------
 # User context helpers
 # ---------------------------------------------------------------------------
@@ -122,12 +140,8 @@ def _resolve_user_id(email: str) -> Optional[str]:
     if client is None:
         return None
     try:
-        # supabase-py v2: admin.list_users is paginated; filter client-side
-        # since we expect small cohorts in Wave-0. Swap to a stored function
-        # once user counts grow.
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for user in users:
+        # Filter client-side; swap to a stored function once user counts grow.
+        for user in list_all_auth_users(client):
             candidate = getattr(user, "email", None) or (
                 user.get("email") if isinstance(user, dict) else None
             )

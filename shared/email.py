@@ -1325,8 +1325,12 @@ def send_reengagement_email(
     from cron.reengagement import UTM_CAMPAIGN, _with_utm  # noqa: PLC0415
 
     subject = "You have credits sitting unused"
+    unsub = unsubscribe_url(getattr(candidate, "user_id", ""))
+    if not unsub:
+        return False
     suggestions = list(getattr(candidate, "suggestions", []) or [])
     context = {
+        "unsubscribe_url": unsub,
         "base_url":    base_url,
         "balance_usd": _money(getattr(candidate, "balance_usd", 0) or 0, "down"),
         "never_ran":   not getattr(candidate, "last_job_at", ""),
@@ -1342,14 +1346,13 @@ def send_reengagement_email(
             getattr(candidate, "user_id", "?"), exc_info=True,
         )
         return False
-    return _send_simple(
-        api_key=os.environ.get("RESEND_API_KEY", "").strip(),
-        from_addr=_from_address(),
+    return _post_resend(
         to_email=user_email,
         subject=subject,
         html_body=html_body,
         text_body=text_body,
         log_tag=f"reengagement user={getattr(candidate, 'user_id', '?')}",
+        unsubscribe_link=unsub,
     )
 
 
@@ -1972,9 +1975,9 @@ def _resolve_user_email(user_id: str) -> Optional[str]:
         client = get_service_client()
         if client is None:
             return None
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for user in users:
+        from shared.credits import list_all_auth_users  # noqa: PLC0415
+
+        for user in list_all_auth_users(client):
             uid = getattr(user, "id", None) or (
                 user.get("id") if isinstance(user, dict) else None
             )
@@ -1991,6 +1994,41 @@ def _resolve_user_email(user_id: str) -> Optional[str]:
     return None
 
 
+_UNSUBSCRIBE_SALT = "email-unsubscribe"
+
+
+def _unsubscribe_serializer():  # noqa: ANN202
+    from itsdangerous import URLSafeSerializer  # noqa: PLC0415
+
+    secret = os.environ.get("SESSION_SECRET_KEY", "").strip()
+    return URLSafeSerializer(secret, salt=_UNSUBSCRIBE_SALT) if secret else None
+
+
+def unsubscribe_url(user_id: str) -> Optional[str]:
+    """Signed, non-expiring ``/email/unsubscribe/<token>`` link for ``user_id``.
+
+    None when SESSION_SECRET_KEY is unset: the marketing senders then refuse
+    to send rather than mail without a working unsubscribe link.
+    """
+    serializer = _unsubscribe_serializer()
+    if serializer is None or not user_id:
+        logger.warning("unsubscribe_url: SESSION_SECRET_KEY unset or no user id")
+        return None
+    return f"{_base_url()}/email/unsubscribe/{serializer.dumps(user_id)}"
+
+
+def read_unsubscribe_token(token: str) -> Optional[str]:
+    """The user id signed into ``token``, or None if it does not verify."""
+    serializer = _unsubscribe_serializer()
+    if serializer is None:
+        return None
+    try:
+        user_id = serializer.loads(token)
+    except Exception:
+        return None
+    return user_id if isinstance(user_id, str) and user_id else None
+
+
 def _post_resend(
     *,
     to_email: str,
@@ -1998,8 +2036,14 @@ def _post_resend(
     html_body: str,
     text_body: Optional[str] = None,
     log_tag: str,
+    unsubscribe_link: Optional[str] = None,
 ) -> bool:
-    """POST one message to Resend; return True on confirmed send."""
+    """POST one message to Resend; return True on confirmed send.
+
+    ``unsubscribe_link`` marks a non-transactional email: it adds the RFC 8058
+    List-Unsubscribe headers and an unsubscribe line to the text part (the
+    HTML template renders its own footer link).
+    """
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     from_addr = _from_address()
     if not api_key:
@@ -2015,6 +2059,12 @@ def _post_resend(
         "html": html_body,
         "text": text_body or _html_to_text(html_body),
     }
+    if unsubscribe_link:
+        payload["text"] += f"\n\nUnsubscribe: {unsubscribe_link}"
+        payload["headers"] = {
+            "List-Unsubscribe": f"<{unsubscribe_link}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
     try:
         response = requests.post(
             RESEND_ENDPOINT,
@@ -2201,6 +2251,9 @@ def send_signup_credit_expiring_email(
             "send_signup_credit_expiring_email: no email for user %s", user_id
         )
         return False
+    unsub = unsubscribe_url(user_id)
+    if not unsub:
+        return False
     credit_usd = _money(remaining_usd, "down")
     expires_on = f"{expires_at:%B} {expires_at.day}, {expires_at.year}"
     html = _render_template(
@@ -2208,12 +2261,14 @@ def send_signup_credit_expiring_email(
         base_url=_base_url(),
         credit_usd=credit_usd,
         expires_on=expires_on,
+        unsubscribe_url=unsub,
     )
     return _post_resend(
         to_email=email,
         subject=f"Your ${credit_usd} free credit expires on {expires_on}",
         html_body=html,
         log_tag=f"signup_credit_expiring user={user_id}",
+        unsubscribe_link=unsub,
     )
 
 

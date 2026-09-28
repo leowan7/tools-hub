@@ -3,6 +3,7 @@
    Triggered by cron.reengagement.send_reengagement when a user has
    a balance and a 14+ day silence (or never ran and signed up 14+ days ago).
    Variables:
+     unsubscribe_url  signed opt-out link (shared.email.unsubscribe_url)
      base_url       URL prefix for tools.ranomics.com (no trailing slash)
      balance_usd    user's current USD balance, formatted (e.g. "12.50")
      never_ran      true when the user has never run a job
@@ -56,4 +57,5 @@
     Ranomics Tools.
     <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
   </p>
+  {% include "_unsubscribe_footer.html" %}
 </div>

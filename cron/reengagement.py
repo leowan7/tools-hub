@@ -2,13 +2,15 @@
 
 Sweep design
 ------------
-Find users that match all three conditions:
+Find users that match all of these conditions:
 
   * Most recent ``tool_jobs`` row is older than 14 days, or they have never
     run a job and signed up more than 14 days ago.
   * ``user_wallets.balance_usd`` is greater than zero.
   * No re-engagement email has been sent in the last 30 days
     (stamped in ``auth.users.user_metadata.reengagement_email_sent_at``).
+  * Not unsubscribed (``user_metadata.email_preferences.marketing_email``
+    is not False; set by ``/email/unsubscribe``).
 
 For each qualifying user, pick two GPU tools they have NOT yet run and
 send one templated email linking each to the public preview at
@@ -53,9 +55,6 @@ UTM_SOURCE: str = "email"
 UTM_MEDIUM: str = "reengagement"
 UTM_CAMPAIGN: str = "14d"
 
-_USERS_PAGE: int = 1000
-
-
 @dataclass
 class Candidate:
     """One user that qualifies for the sweep, with their suggested tools."""
@@ -78,7 +77,8 @@ def find_candidates(
     The function never raises. A Supabase outage produces an empty list
     and a logged warning so the CLI entry can no-op gracefully.
     """
-    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
+    from shared.jobs import _email_pref_enabled  # noqa: PLC0415
 
     now = now or datetime.now(timezone.utc)
     inactivity_cutoff = now - timedelta(days=INACTIVITY_DAYS)
@@ -173,16 +173,7 @@ def find_candidates(
     inactive_user_ids: set[str] = set()
     users_by_id: dict[str, dict] = {}
     try:
-        users: list = []
-        page_no = 1
-        while True:
-            page = client.auth.admin.list_users(page=page_no, per_page=_USERS_PAGE)
-            batch = list(getattr(page, "users", None) or page or [])
-            if not batch:
-                break
-            users.extend(batch)
-            page_no += 1
-        for u in users:
+        for u in list_all_auth_users(client):
             uid = getattr(u, "id", None) or (
                 u.get("id") if isinstance(u, dict) else None
             )
@@ -228,6 +219,8 @@ def find_candidates(
         if isinstance(meta, dict):
             last_sent = str(meta.get("reengagement_email_sent_at") or "")
         if last_sent and last_sent > cooldown_iso:
+            continue
+        if not _email_pref_enabled(meta, "marketing_email", default=True):
             continue
         out.append(Candidate(
             user_id=uid,

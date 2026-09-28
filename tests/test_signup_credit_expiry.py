@@ -157,8 +157,10 @@ class _Db:
 @pytest.fixture
 def db(monkeypatch):
     d = _Db()
+    d.auth = SimpleNamespace(admin=_Admin([_user(UID, NOW.isoformat())]))
     monkeypatch.setattr(wallet, "get_service_client", lambda: d)
     monkeypatch.setattr("shared.credits.get_service_client", lambda: d)
+    monkeypatch.setattr("shared.jobs.get_service_client", lambda: d)
     return d
 
 
@@ -363,6 +365,7 @@ def test_run_expires_due_wallets(db, sent):
 def test_expiring_email_wording(monkeypatch):
     from shared import email
     posted = {}
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     monkeypatch.setattr(email, "_resolve_user_email", lambda _uid: "a@example.com")
     monkeypatch.setattr(email, "_post_resend", lambda **kw: posted.update(kw) or True)
     assert email.send_signup_credit_expiring_email(
@@ -428,7 +431,7 @@ def test_idle_reminder_frequency_cap(monkeypatch):
 
 def test_reengagement_pages_through_all_users(monkeypatch):
     from cron import reengagement
-    monkeypatch.setattr(reengagement, "_USERS_PAGE", 2)
+    monkeypatch.setattr("shared.credits._AUTH_USERS_PAGE", 2)
     users = [_user(f"u{i}", _ago(60)) for i in range(5)]
     d = _reengagement_db(users, [])
     monkeypatch.setattr("shared.credits.get_service_client", lambda: d)

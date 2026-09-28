@@ -2103,9 +2103,9 @@ def resolve_user_email_and_meta(
     if client is None:
         return None, {}
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for u in users:
+        from shared.credits import list_all_auth_users  # noqa: PLC0415
+
+        for u in list_all_auth_users(client):
             uid = getattr(u, "id", None) or (
                 u.get("id") if isinstance(u, dict) else None
             )

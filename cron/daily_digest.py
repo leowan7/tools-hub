@@ -83,7 +83,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     Each section is independently best-effort so a single failure
     doesn't blank the digest.
     """
-    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
 
     site_base = os.environ.get(
         "PUBLIC_BASE_URL", "https://tools.ranomics.com"
@@ -127,9 +127,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     # listing all users created in the window, then merging.
     auth_in_window: dict = {}
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for u in users:
+        for u in list_all_auth_users(client):
             created = (
                 getattr(u, "created_at", None)
                 or (u.get("created_at") if isinstance(u, dict) else None)
@@ -329,8 +327,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     email_by_id: dict = {info["email"]: info for info in auth_in_window.values()}
     email_lookup: dict = {}
     try:
-        page = client.auth.admin.list_users()
-        for u in (getattr(page, "users", None) or page):
+        for u in list_all_auth_users(client):
             uid = (
                 getattr(u, "id", None)
                 or (u.get("id") if isinstance(u, dict) else None)
