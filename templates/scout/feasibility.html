@@ -98,6 +98,34 @@
         </div>
       </div>
 
+      {# The failures of POST /scout/handoff/tool a user can reach by
+         clicking the button come back HERE, as a redirect carrying
+         ?handoff_error=<code>, rather than replacing the scored results page
+         with a line of JSON. The redirect is scout/routes.py::_handoff_failed;
+         the access-control refusals in that route stay 404 and do not land
+         here.
+
+         This alert sits OUTSIDE #results-section on purpose. That section
+         carries the `hidden` attribute until a successful render clears it,
+         and the auto-load block at the foot of this file returns early when
+         the URL has no epitope_id -- which is the case for a manually typed
+         epitope. Inside it, the message would be in the DOM and invisible.
+
+         The query string is attacker-supplied on any link a user can be
+         sent, so the wording is keyed here and an unrecognised key renders
+         nothing at all; the route never reflects prose from the URL. #}
+      {% set HANDOFF_ERRORS = {
+           "not_numeric": "Hotspot residues must be numbers.",
+           "no_hotspots": "No epitope residues to carry over. Pick an epitope and run the feasibility analysis first.",
+           "stage_failed": "Could not stage the target for that tool. Try again, or upload the structure on the tool form.",
+         } %}
+      {% set handoff_error = HANDOFF_ERRORS.get(request.args.get("handoff_error")) %}
+      {% if handoff_error %}
+        <p role="alert" style="color: var(--danger, #f87171); max-width: 62ch; margin: 0 0 1rem 0;">
+          Could not open the tool form: {{ handoff_error }}
+        </p>
+      {% endif %}
+
       <!-- Results section (hidden until analysis complete) -->
       <div id="results-section" hidden>
 
@@ -174,17 +202,6 @@
               wallet. Design count is unlimited and you pay only for the
               compute each job delivers.
             </p>
-            {# The failures of POST /scout/handoff/tool a user can reach by
-               clicking the button come back HERE, as a redirect carrying
-               ?handoff_error=, rather than replacing the scored results page
-               with a line of JSON. The redirect is
-               scout/routes.py::_handoff_failed; the access-control refusals
-               in that route stay 404 and do not land here. #}
-            {% if request.args.get("handoff_error") %}
-              <p role="alert" style="color: var(--danger, #f87171); max-width: 62ch; margin: 0 0 1rem 0;">
-                Could not open the tool form: {{ request.args.get("handoff_error") }}
-              </p>
-            {% endif %}
             <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.75rem;">
               <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
               <input type="hidden" name="scout_epitope_id" id="handoff-epitope-id" value="">

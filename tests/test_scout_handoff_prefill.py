@@ -1,9 +1,11 @@
 """The Scout -> binder-form handoff, end to end, with nothing typed twice.
 
-Prod says this path was dead: one ``scout_handoffs`` row has ever been
+Prod said this path was dead: one ``scout_handoffs`` row had ever been
 created (2026-05-05, never consumed) against 58 feasibility page views,
-and no event records a handoff arriving on a form. The three faults
-behind that, each pinned by a class here:
+and no event recorded a handoff arriving on a form. Those three figures
+come from a read-only query of the production tables on 2026-09-28 and
+are NOT reproducible from this repository. The three faults behind
+them, each pinned by a class here:
 
 1. ``/scout/feasibility/analyze`` never returned the epitope's residue
    numbers. The page's handoff form posts them from a hidden input, so
@@ -351,21 +353,55 @@ class TestAFailedHandoffReturnsToThePage:
             data={
                 "tool": "bindcraft",
                 "scout_job_id": job_id,
+                "target_chain": "B",
                 "hotspot_residues": "",
             },
         )
         assert resp.status_code == 302, resp.data[:300]
         loc = resp.headers["Location"]
         assert loc.startswith("/scout/feasibility"), loc
-        assert "handoff_error=" in loc, loc
+        assert "handoff_error=no_hotspots" in loc, loc
+        # The page reads the chain from the query string and falls back to
+        # "A", so a redirect that dropped it would re-score chain A and
+        # present that as the epitope the user just analysed.
+        assert "chain=B" in loc, loc
 
     def test_the_page_renders_the_reason(self, client):
         """Vacuity guard: the redirect is pointless if nothing shows it."""
         _login(client)
-        resp = client.get(
-            "/scout/feasibility?handoff_error=Pick+an+epitope+first"
-        )
+        resp = client.get("/scout/feasibility?handoff_error=no_hotspots")
         assert resp.status_code == 200, resp.status_code
-        assert "Pick an epitope first" in resp.get_data(as_text=True), (
-            "the feasibility page swallows handoff_error"
-        )
+        assert "No epitope residues to carry over" in resp.get_data(
+            as_text=True
+        ), "the feasibility page swallows handoff_error"
+
+    def test_the_alert_is_outside_the_hidden_results_section(self, client):
+        """In #results-section the message renders into display:none.
+
+        That section keeps its ``hidden`` attribute until a successful
+        render clears it, and the auto-load script returns early when the
+        URL carries no epitope_id -- which is exactly the state a manually
+        typed epitope leaves behind. The alert has to come first in the
+        document.
+        """
+        _login(client)
+        body = client.get(
+            "/scout/feasibility?handoff_error=no_hotspots"
+        ).get_data(as_text=True)
+        assert body.index("No epitope residues to carry over") < body.index(
+            'id="results-section"'
+        ), "the alert sits inside the section that starts out hidden"
+
+    def test_arbitrary_query_text_is_not_reflected(self, client):
+        """handoff_error is a key, not prose.
+
+        Anyone can send a user a link to this page, so reflecting the
+        parameter verbatim would put a third party's words in a
+        first-party Scout alert.
+        """
+        _login(client)
+        body = client.get(
+            "/scout/feasibility?handoff_error=Your+account+is+suspended"
+        ).get_data(as_text=True)
+        assert "Your account is suspended" not in body
+        assert "Could not open the tool form" not in body

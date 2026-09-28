@@ -1805,8 +1805,13 @@ def feasibility_analyze():
     # arriving from the results table the page has an epitope_id and no
     # residue list of its own, so the hidden hotspot input had nothing to
     # post and the POST refused.
-    # templates/scout/feasibility.html::populateHandoffForm reads this
-    # into the #handoff-hotspots input.
+    # The inline populateHandoffForm script in
+    # templates/scout/feasibility.html reads this into the
+    # #handoff-hotspots hidden input that the handoff form posts. Not
+    # written as an :: citation: the guard in
+    # tests/test_code_citations_resolve.py resolves an .html target to its
+    # Jinja macro/block names only, so a function defined inside a
+    # <script> block cannot be cited that way.
     #
     # All-or-nothing on purpose. ``epitope_residues`` can come straight
     # from request JSON, so an element need not be numeric; handing over
@@ -2084,23 +2089,34 @@ def feasibility_download(job_id):
 from scout.handoff import VALID_HANDOFF_TOOLS  # noqa: E402,PLC0415
 
 
-def _handoff_failed(message: str, scout_job_id: str, epitope_id: str):
+def _handoff_failed(code: str, scout_job_id: str, epitope_id: str, chain: str):
     """Send a failed handoff BACK to the page it was posted from.
 
     This route is posted by a plain <form> in
     templates/scout/feasibility.html, so a JSON body replaces the whole
     results page with a line of JSON and the user's scored epitope is
     gone. The failures a user can reach by clicking the button return
-    here instead, with the message in ``handoff_error``, which the panel
-    renders. The access-control refusals above do not: see the 404 in
+    here instead. The access-control refusals do not: see the 404 in
     ``handoff_to_tool``.
+
+    ``code`` is a key, not prose: the wording lives in HANDOFF_ERRORS in
+    templates/scout/feasibility.html and an unrecognised key renders
+    nothing. The query string is attacker-supplied on any link someone
+    can be sent, so reflecting a message straight out of it would let a
+    third party put their own text in a first-party Scout alert.
+
+    ``chain`` is carried because the feasibility page reads the chain
+    from the query string alone (``currentChain`` in that template's
+    script); dropping it would silently re-score chain A and show that
+    as the epitope the user just analysed.
     """
     return redirect(
         url_for(
             "scout.feasibility_page",
             job_id=scout_job_id,
             epitope_id=epitope_id,
-            handoff_error=message,
+            chain=chain,
+            handoff_error=code,
         )
     )
 
@@ -2144,16 +2160,11 @@ def handoff_to_tool():
             ]
         except ValueError:
             return _handoff_failed(
-                "Hotspot residues must be numbers.",
-                scout_job_id,
-                scout_epitope_id or "",
+                "not_numeric", scout_job_id, scout_epitope_id or "", target_chain
             )
     if not hotspots:
         return _handoff_failed(
-            "No epitope residues to carry over. Pick an epitope and run the "
-            "feasibility analysis first.",
-            scout_job_id,
-            scout_epitope_id or "",
+            "no_hotspots", scout_job_id, scout_epitope_id or "", target_chain
         )
 
     email = session.get("user_email", "")
@@ -2167,20 +2178,25 @@ def handoff_to_tool():
     )
     if not handoff_id:
         return _handoff_failed(
-            "Could not stage the target for that tool. Try again, or upload "
-            "the structure on the tool form.",
-            scout_job_id,
-            scout_epitope_id or "",
+            "stage_failed", scout_job_id, scout_epitope_id or "", target_chain
         )
 
     # Half of the funnel this route sits in. The other half
     # (scout_handoff_opened) fires in blueprints/tools.py::tool_form when
     # the handoff actually resolves onto a form, so the gap between the two
     # is measurable rather than inferred.
+    # ``user_id`` is resolved the same way shared/credits.py's
+    # load_user_context does, because the paired scout_handoff_opened event
+    # uses that context's id. A plain login only stashes session["user_id"]
+    # when verify_login returned one (blueprints/auth.py), and no login sets
+    # anon_session_id, so reading the session key alone would let log_event
+    # drop CREATED while OPENED still lands -- under-counting in exactly the
+    # direction that makes this path look dead.
+    from shared.credits import _resolve_user_id  # noqa: PLC0415
     from shared.events import log_event  # noqa: PLC0415
     log_event(
         event_type="scout_handoff_created",
-        user_id=session.get("user_id"),
+        user_id=session.get("user_id") or (_resolve_user_id(email) if email else None),
         session_id=session.get("anon_session_id"),
         path="/scout/handoff/tool",
         props={"tool": tool, "hotspot_count": len(hotspots)},
