@@ -249,6 +249,15 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             pre = wallet_preflight(
                 user_id, resolved_slug, estimate, params
             )
+            if not pre.allow and pre.reason == REASON_INSUFFICIENT and not free_run:
+                # Short on the point estimate means short on the hold too, and
+                # the hold is what must fit (reserve_hold below). Price the
+                # gate on it so the amount it asks for is enough to submit.
+                pre = wallet_preflight(
+                    user_id, resolved_slug,
+                    max(estimate, cushioned_hold_usd(user_id, resolved_slug, params)),
+                    params,
+                )
             if not pre.allow:
                 return _render_topup_gate(
                     tool_slug=resolved_slug,

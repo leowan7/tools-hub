@@ -135,8 +135,8 @@
     <div class="wallet-topup-gate-head">
       <span class="wallet-topup-gate-title">Top up to run this job</span>
       <span class="wallet-topup-gate-sub">
-        The estimated cost is more than your wallet balance. Top up the
-        difference and we will pick up right where you left off.
+        Starting this job holds the amount below in your wallet while it
+        runs. You are billed for the GPU time it uses and the rest comes back.
       </span>
     </div>
     <dl class="wallet-topup-gate-figures">
@@ -145,29 +145,33 @@
         <dd data-gate-estimate>$0.00</dd>
       </div>
       <div class="wallet-topup-gate-figure">
+        <dt>Held to start</dt>
+        <dd data-gate-required>$0.00</dd>
+      </div>
+      <div class="wallet-topup-gate-figure">
         <dt>Your balance</dt>
         <dd data-gate-balance>$0.00</dd>
       </div>
       <div class="wallet-topup-gate-figure wallet-topup-gate-figure-deficit">
-        <dt>Deficit</dt>
+        <dt>You need</dt>
         <dd data-gate-deficit>$0.00</dd>
       </div>
     </dl>
     <div class="wallet-topup-gate-actions">
-      {# This button submits the same form to the same submit handler with
-         a hidden flag so the route can redirect to Stripe Checkout pre
-         filled with the rounded deficit. Wave 3 may move the click handler
-         to an XHR call instead. The data-topup-route attribute is the
-         contract surface for that. #}
-      <button type="submit"
-              name="_action"
-              value="topup_and_run"
-              class="btn-primary wallet-topup-gate-submit"
-              data-gate-button>
-        Top up <span data-gate-rounded-amount>$20</span> and run
-      </button>
+      {# A link, not a submit: it must not post the form or trip its
+         required-file validation. It opens the top-up page in a new tab so
+         this form, uploaded file included, stays as it is; the script
+         re-reads the estimate when the user comes back. #}
+      <a href="{{ topup_route or '/account/wallet/topup' }}?tool={{ tool_slug|urlencode }}"
+         target="_blank" rel="noopener"
+         class="btn-primary wallet-topup-gate-submit"
+         data-gate-button>
+        Top up <span data-gate-rounded-amount>$20.00</span>
+      </a>
       <span class="wallet-topup-gate-helper">
-        Minimum top up $20. Tax added at checkout where applicable.
+        Opens checkout in a new tab and keeps this form as it is. Come back
+        here and run the job once your balance updates. Minimum top up $20;
+        tax added at checkout where applicable.
       </span>
     </div>
   </div>
@@ -199,6 +203,7 @@
       var gateEstimateEl = gate && gate.querySelector('[data-gate-estimate]');
       var gateBalanceEl = gate && gate.querySelector('[data-gate-balance]');
       var gateDeficitEl = gate && gate.querySelector('[data-gate-deficit]');
+      var gateRequiredEl = gate && gate.querySelector('[data-gate-required]');
       var gateRoundedEl = gate && gate.querySelector('[data-gate-rounded-amount]');
       var gateButton = gate && gate.querySelector('[data-gate-button]');
 
@@ -258,17 +263,27 @@
         var deficit = parseFloat(data.deficit_usd || 0);
         var rounded = parseFloat(data.rounded_topup_usd || 20);
         var cap = parseFloat(data.scaled_hard_cap_usd || 0);
+        // The hold submit reserves; the deficit is measured against it.
+        var required = parseFloat(data.required_usd);
+        if (!isFinite(required)) required = estimate;
+        // Printed required minus printed balance, so the gate adds up.
+        var shortShown = deficit > 0
+          ? Math.max(_q(required, true) - _q(balance, false), 0.01) : 0;
 
         if (costEl) costEl.textContent = fmtUp(estimate);
         if (balanceEl) balanceEl.textContent = fmtDown(balance);
         if (balanceAfterEl) {
-          balanceAfterEl.textContent = fmtDown(balanceAfter);
-          balanceAfterEl.classList.toggle('wallet-estimate-value-neg', balanceAfter < 0);
+          // Never a negative dollar figure: a short balance reads as the
+          // amount still needed.
+          balanceAfterEl.textContent = deficit > 0
+            ? 'you need ' + fmtUp(shortShown) + ' more'
+            : fmtDown(Math.max(balanceAfter, 0));
+          balanceAfterEl.classList.toggle('wallet-estimate-value-neg', deficit > 0);
         }
 
         var ceiling = !!data.self_serve_block;
         var hard = !!data.hard_block;
-        var soft = !!data.soft_block && !hard && !ceiling;
+        var soft = !!data.soft_block && !hard && !ceiling && !(deficit > 0);
         setHidden(ceilingBlockEl, !ceiling);
         setHidden(hardBlockEl, !hard);
         setHidden(softWarnEl, !soft);
@@ -284,8 +299,13 @@
         if (insufficient) {
           if (gateEstimateEl) gateEstimateEl.textContent = fmtUp(estimate);
           if (gateBalanceEl) gateBalanceEl.textContent = fmtDown(balance);
-          if (gateDeficitEl) gateDeficitEl.textContent = fmtUp(deficit);
+          if (gateRequiredEl) gateRequiredEl.textContent = fmtUp(required);
+          if (gateDeficitEl) gateDeficitEl.textContent = fmtUp(shortShown);
           if (gateRoundedEl) gateRoundedEl.textContent = fmtUp(rounded);
+          if (gateButton) {
+            var href = gateButton.getAttribute('href').split('&need=')[0];
+            gateButton.setAttribute('href', href + '&need=' + fmtUp(shortShown).slice(1));
+          }
         }
 
         if (submitBtn) {
@@ -347,6 +367,10 @@
 
       form.addEventListener('input', debouncedFetch);
       form.addEventListener('change', debouncedFetch);
+      // Back from the top-up tab: re-read the balance so the gate clears.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') fetchEstimate();
+      });
       // First paint.
       fetchEstimate();
     })();

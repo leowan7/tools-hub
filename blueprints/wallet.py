@@ -33,7 +33,12 @@ from shared.wallet import (
     get_or_create_wallet,
     signup_credit_status,
 )
-from shared.wallet_estimates import compute_hard_cap, estimated_cost_for_tool
+from shared.wallet_estimates import (
+    compute_hard_cap,
+    cushioned_hold_usd,
+    estimated_cost_for_tool,
+    TOOL_SPECS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -368,16 +373,29 @@ def api_wallet_estimate():
         wallet = get_or_create_wallet(user_id)
         balance = Decimal(str((wallet or {}).get("balance_usd") or 0))
 
+    exceeds_self_serve = estimate > SELF_SERVE_CEILING_USD
+    exceeds_hard_cap = estimate > hard_cap
+
+    # What submit actually needs in the wallet: requires_wallet reserves
+    # ``cushioned_hold_usd`` for any paid run and reserve_hold refuses a
+    # balance below it (shared/wallet_guard.py). A free run reserves nothing.
+    # The deficit is measured against this, so the form shows the gate for a
+    # balance that covers the price but not the hold.
+    required = estimate
+    if user_id and estimate > 0 and not exceeds_hard_cap and not exceeds_self_serve:
+        try:
+            required = max(estimate, cushioned_hold_usd(user_id, tool_slug, params))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "api_wallet_estimate: hold failed for tool=%s",
+                tool_slug, exc_info=True,
+            )
+
     # Derived contract values consumed by templates/wallet/_partials.html.
     # The Moment 1 estimate panel and the inline Moment 2 gate both
     # read these flag fields to flip visibility.
-    deficit = estimate - balance
-    if deficit < 0:
-        deficit = Decimal("0")
+    deficit = max(required - balance, Decimal("0"))
     rounded_topup = _round_up_topup_amount(deficit)
-
-    exceeds_self_serve = estimate > SELF_SERVE_CEILING_USD
-    exceeds_hard_cap = estimate > hard_cap
     # Soft warning band: estimate has eaten 80% of the current
     # balance without going under, so the user is close to a top up
     # gate on the next click. Suppressed when a harder block trips.
@@ -433,6 +451,7 @@ def api_wallet_estimate():
         "hard_cap_usd": str(hard_cap),
         "balance_usd": str(balance),
         "balance_after_usd": str(balance - estimate),
+        "required_usd": str(required),
         "self_serve_ceiling_usd": str(SELF_SERVE_CEILING_USD),
         "exceeds_hard_cap": exceeds_hard_cap,
         "exceeds_self_serve_ceiling": exceeds_self_serve,
@@ -660,10 +679,23 @@ def wallet_topup():
     if wallet.get("wallet_frozen"):
         return redirect(url_for("wallet.wallet_overview") + "?wallet_frozen=1")
     topup_error = (request.args.get("topup_error") or "").strip() or None
+    # Arrived from a tool form's gate link: ``need`` presets the amount and
+    # ``tool`` makes the post-checkout page offer "Return to <tool>".
+    need = None
+    try:
+        need = Decimal(request.args.get("need") or "")
+        if not (Decimal("0") < need <= SELF_SERVE_CEILING_USD):
+            need = None
+    except (ArithmeticError, ValueError):
+        need = None
+    tool = (request.args.get("tool") or "").strip()
+    if tool in TOOL_SPECS:
+        session["wallet_gate_form"] = {"tool": tool}
     return render_template(
         "wallet/topup.html",
         wallet=wallet,
         min_topup_usd=MIN_TOPUP_USD,
+        deficit_usd=need,
         next_url=None,
         topup_action_url="/account/wallet/checkout",
         topup_error=topup_error,
