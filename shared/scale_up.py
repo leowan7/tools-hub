@@ -55,7 +55,10 @@ def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     from shared.feature_flags import tool_enabled  # noqa: PLC0415
     from shared.jobs import candidate_records  # noqa: PLC0415
     from shared.wallet import get_or_create_wallet  # noqa: PLC0415
-    from shared.wallet_estimates import estimated_cost_for_tool  # noqa: PLC0415
+    from shared.wallet_estimates import (  # noqa: PLC0415
+        cushioned_hold_usd,
+        estimated_cost_for_tool,
+    )
 
     entry = SCALE_UP.get(job.tool)
     if entry is None or job.status != "succeeded" or job.preset == "validate":
@@ -85,10 +88,10 @@ def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
         needed = max(price, cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(job.tool)))
         route = "split"
     else:
-        price = estimated_cost_for_tool(
-            user_id, job.tool, {**inputs, key: count, "preset": preset}
-        )
-        needed = price
+        params = {**inputs, key: count, "preset": preset}
+        price = estimated_cost_for_tool(user_id, job.tool, params)
+        # The submit reserves this, not the estimate (shared/wallet_guard.py).
+        needed = cushioned_hold_usd(user_id, job.tool, params)
         route = "single"
 
     wallet = get_or_create_wallet(user_id) or {}

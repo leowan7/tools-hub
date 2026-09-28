@@ -84,11 +84,17 @@ def test_offer_reads_every_result_shape(tool, inputs, result):
     assert _quote(job) is not None
 
 
-def test_topup_is_the_shortfall_rounded_up_to_a_dollar():
+def test_single_run_topup_covers_the_hold_the_submit_reserves():
+    from shared.wallet_estimates import cushioned_hold_usd
+    hold = cushioned_hold_usd("u-1", "boltzgen", {"budget": 50, "preset": "pilot"})
     q = _quote(_job(tool="boltzgen", inputs={"budget": 4}), balance=0)
-    assert q.topup_usd == math.ceil(q.price_usd)
+    assert hold > q.price_usd
+    assert q.topup_usd == math.ceil(hold)
     assert _quote(_job(tool="boltzgen", inputs={"budget": 4}),
-                  balance=q.price_usd).topup_usd == 0
+                  balance=hold).topup_usd == 0
+
+
+def test_topup_is_the_shortfall_rounded_up_to_a_dollar():
     assert topup_usd(Decimal("10.01"), Decimal("10")) == 1
     assert topup_usd(Decimal("5"), Decimal("10")) == 0
 
