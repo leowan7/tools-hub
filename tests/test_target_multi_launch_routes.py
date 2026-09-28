@@ -19,7 +19,7 @@ import pytest
 # These exercise real routes through a real create_app(), and app.py calls
 # load_dotenv() at import, so without this fixture every read reaches the
 # PRODUCTION Supabase project.
-pytestmark = pytest.mark.usefixtures("isolate_supabase")
+pytestmark = pytest.mark.usefixtures("isolate_supabase", "legacy_campaign_widths")
 
 from shared.compute_campaigns import PREAUTH_INSUFFICIENT, PREAUTH_OK
 from tests.money_display_guard import assert_template_prints_no_raw_money

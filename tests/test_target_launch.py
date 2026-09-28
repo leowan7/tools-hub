@@ -23,10 +23,10 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("isolate_supabase")
+pytestmark = pytest.mark.usefixtures("isolate_supabase", "legacy_campaign_widths")
 
+import shared.target_launch as tl
 from shared.compute_campaigns import (
-    GLOBAL_USER_INFLIGHT_CAP,
     first_wave_hold_usd,
     launch_concurrency_for,
     plan_chunks,
@@ -199,7 +199,22 @@ def test_no_tools_divides_nothing():
 def test_the_widest_launch_stays_within_the_global_cap():
     """The cap is the reason to divide at all. Seven tools may not sum past
     it, or the first-wave gate collects for slots that cannot exist."""
-    assert sum(divide_concurrency(ALL_SEVEN)) <= GLOBAL_USER_INFLIGHT_CAP
+    assert sum(divide_concurrency(ALL_SEVEN)) <= tl.GLOBAL_USER_INFLIGHT_CAP
+
+
+def test_production_widths_fit_the_cap_until_the_floor_of_one(monkeypatch):
+    """At the shipped widths (4 per campaign, 4 per user) a launch of up to
+    four tools stays within the cap. Past four, every tool is floored at 1, so
+    the division sums to the tool count and the first-wave gate checks balance
+    for slots the driver will not start at once (it never debits; the driver's
+    user_inflight check still admits only the cap)."""
+    import shared.compute_campaigns as cc
+    monkeypatch.setattr(cc, "DEFAULT_CONCURRENCY_TARGET", 4)
+    monkeypatch.setattr(cc, "GLOBAL_USER_INFLIGHT_CAP", 4)
+    monkeypatch.setattr(tl, "GLOBAL_USER_INFLIGHT_CAP", 4)
+    for n in range(1, 5):
+        assert sum(divide_concurrency(ALL_SEVEN[:n])) <= 4
+    assert divide_concurrency(ALL_SEVEN) == (1,) * len(ALL_SEVEN)
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +458,6 @@ def test_a_narrowed_launch_explains_why():
     plan = plan_multi_launch([_spec(t) for t in ALL_SEVEN])
     note = concurrency_note(plan)
     assert note is not None
-    assert str(GLOBAL_USER_INFLIGHT_CAP) in note
+    assert str(tl.GLOBAL_USER_INFLIGHT_CAP) in note
     # It must not imply the user pays more for running them together.
     assert "cost are unchanged" in note

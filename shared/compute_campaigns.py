@@ -125,9 +125,13 @@ _DISPATCH_ATTEMPT_SLACK = 8
 # Driver defaults persisted on the campaign row. Concurrency is the per-campaign
 # in-flight target; the first wave is dispatched ASYNC (drive_campaign_async, a
 # daemon thread) so raising it does not block POST /runs. It is bounded by the
-# global per-user in-flight cap below (2 campaigns x 16 = the 32 cap). (The 0034
+# global per-user in-flight cap below. (The 0034
 # column default is 20 but create_campaign always writes this value explicitly.)
-DEFAULT_CONCURRENCY_TARGET = 16
+# Sized to the Modal plan's GPU count (~8, per Leo 2026-09-28): a sub-job over
+# that limit queues on Modal, and the poll reports a queued call as "running"
+# (gpu/modal_client.py, poll: FunctionCall.get(timeout=0)). ComputeCampaign.from_row
+# clamps stored rows to this value, so raising the plan is an env change.
+DEFAULT_CONCURRENCY_TARGET = max(1, int(os.environ.get("CAMPAIGN_CONCURRENCY_TARGET", "").strip() or "4"))
 DEFAULT_MAX_ATTEMPTS = 2
 
 # Per-tool launch concurrency override. A proteina shard is heavy (A100-80GB with
@@ -197,13 +201,16 @@ def launch_concurrency_for(tool: str) -> int:
     START gate (``first_wave_hold_usd``) can size the required balance to the
     shards that will actually launch first rather than the global default.
     """
-    return _LAUNCH_CONCURRENCY_OVERRIDE.get(tool, DEFAULT_CONCURRENCY_TARGET)
+    return min(
+        _LAUNCH_CONCURRENCY_OVERRIDE.get(tool, DEFAULT_CONCURRENCY_TARGET),
+        DEFAULT_CONCURRENCY_TARGET,
+    )
 
 # Global per-user in-flight sub-job cap across ALL of a user's campaigns. A
 # load/fairness guard (stops one user flooding Modal), NOT a spend guard - the
 # prepaid wallet bounds spend. Soft: concurrent drivers may briefly overshoot,
-# which is harmless. ~2 campaigns at the default concurrency of 16.
-GLOBAL_USER_INFLIGHT_CAP = 32
+# which is harmless.
+GLOBAL_USER_INFLIGHT_CAP = max(1, int(os.environ.get("CAMPAIGN_USER_INFLIGHT_CAP", "").strip() or "4"))
 
 # Head-room multiplier on the summed chunk estimate so the authorized
 # budget comfortably covers historical drift. Delivered-only billing
@@ -758,8 +765,9 @@ class ComputeCampaign:
             requested_designs=int(row.get("requested_designs") or 0),
             chunk_size=int(row.get("chunk_size") or 0),
             total_subjobs=int(row.get("total_subjobs") or 0),
-            concurrency_target=int(
-                row.get("concurrency_target") or DEFAULT_CONCURRENCY_TARGET
+            concurrency_target=min(
+                int(row.get("concurrency_target") or DEFAULT_CONCURRENCY_TARGET),
+                DEFAULT_CONCURRENCY_TARGET,
             ),
             max_attempts=int(row.get("max_attempts") or DEFAULT_MAX_ATTEMPTS),
             budget_usd=_dec("budget_usd"),

@@ -77,6 +77,7 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     "signup_form_started",
     "signup_failed",
     "credit_exhausted",
+    "scale_up_click",
 })
 
 
@@ -226,6 +227,7 @@ class EVENTS:
     SHARE_CLICKED = "share_clicked"
     REFOLD_SPAWNED = "refold_spawned"
     RESAMPLE_LOADED = "resample_loaded"
+    SCALE_UP_CLICK = "scale_up_click"
 
 
 # PostHog server-side capture endpoint. The legacy /capture/ path is

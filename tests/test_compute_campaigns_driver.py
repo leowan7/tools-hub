@@ -18,7 +18,7 @@ from shared.compute_campaigns import (
     drive_campaign,
 )
 
-pytestmark = pytest.mark.usefixtures("isolate_supabase")
+pytestmark = pytest.mark.usefixtures("isolate_supabase", "legacy_campaign_widths")
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +894,18 @@ def test_drive_dispatches_first_wave_for_large_campaign(driver_env):
     assert len(kids) == 16
     assert {k["chunk_index"] for k in kids} == set(range(16))
 
+
+
+def test_drive_clamps_a_stored_wider_target_to_the_env_cap(driver_env, monkeypatch):
+    """A row written at the old width of 16 dispatches only the current cap, so
+    lowering CAMPAIGN_CONCURRENCY_TARGET also narrows campaigns already running."""
+    monkeypatch.setattr(cc, "DEFAULT_CONCURRENCY_TARGET", 4)
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=500, chunk_size=12, requested=6000,
+                   concurrency_target=16)
+    drive_campaign("camp-1")
+    kids = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
+    assert len(kids) == 4
 
 def test_drive_repairs_legacy_gap(driver_env):
     """A NON-contiguous campaign (a hole from the old skip-past driver) is
