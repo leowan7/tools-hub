@@ -27,6 +27,7 @@ them, each pinned by a class here:
 from __future__ import annotations
 
 import csv
+import pathlib
 import re
 import shutil
 from pathlib import Path
@@ -391,6 +392,32 @@ class TestAFailedHandoffReturnsToThePage:
         assert body.index("No epitope residues to carry over") < body.index(
             'id="results-section"'
         ), "the alert sits inside the section that starts out hidden"
+
+    def test_every_code_the_route_emits_has_wording(self):
+        """The vocabulary is split across a producer and a consumer.
+
+        scout/routes.py emits the key; the template holds the wording. A
+        key with no entry renders NOTHING -- silently, and in exactly the
+        state this whole class exists to stop. Bind the two sets.
+        """
+        route = pathlib.Path("scout/routes.py").read_text(encoding="utf-8")
+        emitted = set(
+            re.findall(r'_handoff_failed\(\s*"([a-z_]+)"', route)
+        )
+        assert emitted, "no _handoff_failed call sites found -- regex rotted"
+
+        tpl = pathlib.Path(
+            "templates/scout/feasibility.html"
+        ).read_text(encoding="utf-8")
+        block = tpl.split("HANDOFF_ERRORS = {", 1)[1].split("} %}", 1)[0]
+        worded = set(re.findall(r'"([a-z_]+)":', block))
+
+        assert emitted - worded == set(), (
+            f"codes the route emits with no wording: {sorted(emitted - worded)}"
+        )
+        assert worded - emitted == set(), (
+            f"wording for codes nothing emits: {sorted(worded - emitted)}"
+        )
 
     def test_arbitrary_query_text_is_not_reflected(self, client):
         """handoff_error is a key, not prose.
