@@ -409,8 +409,8 @@ def register_user(
         return SignupResult(
             success=False,
             error_message=(
-                "Your session expired. Please reload the page and "
-                "try again."
+                "The form timed out. Please re-enter your password "
+                "and submit again."
             ),
             rejection_reason="timing",
             failure_code="timing_expired",
