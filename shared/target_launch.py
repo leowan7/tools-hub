@@ -176,7 +176,10 @@ def divide_concurrency(
 
     Returns one value per ENTRY, so a repeated tool gets its own slot rather
     than sharing one. Each value is bounded three ways, and every bound is
-    load-bearing:
+    load-bearing. The worked numbers below use the widths these bounds were
+    written against (32 per user, 16 per campaign); production now defaults
+    both to 4 (``CAMPAIGN_USER_INFLIGHT_CAP`` / ``CAMPAIGN_CONCURRENCY_TARGET``
+    in shared/compute_campaigns.py):
 
     * **Never above the tool's own launch concurrency.** ``proteina`` is
       deliberately throttled to 4 because one shard is a full A100. A naive
@@ -199,7 +202,9 @@ def divide_concurrency(
 
     ``pace`` trades start-gate size against ramp speed. Both settings reach
     the same total spend; ``concurrency_target`` is re-read by the driver
-    every tick, so speeding a launch up afterwards is a one-column UPDATE.
+    every tick, so speeding a launch up afterwards is a one-column UPDATE, up
+    to ``DEFAULT_CONCURRENCY_TARGET``: ``ComputeCampaign.from_row`` clamps
+    anything wider (test_drive_clamps_a_stored_wider_target_to_the_env_cap).
     """
     entries = list(tools)
     if not entries:
@@ -337,7 +342,7 @@ def concurrency_note(plan: MultiLaunchPlan) -> Optional[str]:
     * pace narrowing = the chosen pace is below the burst division.
 
     Branching on ``len(specs) > 1`` looks equivalent and is not. Two tools at
-    burst get ``32 // 2 = 16`` each, which is exactly their solo width, so at
+    burst get ``32 // 2 = 16`` each at the legacy widths, which is exactly their solo width, so at
     n=2 the cap takes nothing and every bit of narrowing comes from the pace --
     yet a width-based branch would blame the cap. That is the same
     mis-attribution as the original "Running 1 tools at once shares one limit"

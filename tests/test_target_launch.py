@@ -23,10 +23,10 @@ from unittest.mock import patch
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("isolate_supabase")
+pytestmark = pytest.mark.usefixtures("isolate_supabase", "legacy_campaign_widths")
 
+import shared.target_launch as tl
 from shared.compute_campaigns import (
-    GLOBAL_USER_INFLIGHT_CAP,
     first_wave_hold_usd,
     launch_concurrency_for,
     plan_chunks,
@@ -199,7 +199,7 @@ def test_no_tools_divides_nothing():
 def test_the_widest_launch_stays_within_the_global_cap():
     """The cap is the reason to divide at all. Seven tools may not sum past
     it, or the first-wave gate collects for slots that cannot exist."""
-    assert sum(divide_concurrency(ALL_SEVEN)) <= GLOBAL_USER_INFLIGHT_CAP
+    assert sum(divide_concurrency(ALL_SEVEN)) <= tl.GLOBAL_USER_INFLIGHT_CAP
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +443,6 @@ def test_a_narrowed_launch_explains_why():
     plan = plan_multi_launch([_spec(t) for t in ALL_SEVEN])
     note = concurrency_note(plan)
     assert note is not None
-    assert str(GLOBAL_USER_INFLIGHT_CAP) in note
+    assert str(tl.GLOBAL_USER_INFLIGHT_CAP) in note
     # It must not imply the user pays more for running them together.
     assert "cost are unchanged" in note
