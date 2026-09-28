@@ -2,6 +2,7 @@
    Sender: shared.email.send_signup_credit_expiring_email
    Triggered once per user by cron.signup_credit.run.
    Variables:
+     unsubscribe_url  signed opt-out link (shared.email.unsubscribe_url)
      base_url       URL prefix for tools.ranomics.com (no trailing slash)
      credit_usd     unspent signup credit, formatted (e.g. "12.50")
      expires_on     expiry date, formatted (e.g. "October 28, 2026")
@@ -36,4 +37,5 @@
     Ranomics Tools.
     <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
   </p>
+  {% include "_unsubscribe_footer.html" %}
 </div>

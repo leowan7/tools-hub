@@ -290,8 +290,9 @@ def process_reset_request(
     if supabase_admin_client is None:
         return drop
     try:
-        page = supabase_admin_client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
+        from shared.credits import list_all_auth_users  # noqa: PLC0415
+
+        users = list_all_auth_users(supabase_admin_client)
         target = email.lower()
         for user in users:
             candidate = getattr(user, "email", None) or (

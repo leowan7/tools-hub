@@ -821,7 +821,7 @@ def admin_users_list():
     first.
     """
     from shared.auth import STAFF_EMAILS  # noqa: PLC0415
-    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
 
     email = session.get("user_email", "")
     if not email:
@@ -838,8 +838,7 @@ def admin_users_list():
                 datetime.now(timezone.utc) - timedelta(days=30)
             ).isoformat()
 
-            page = client.auth.admin.list_users()
-            auth_users = getattr(page, "users", None) or page
+            auth_users = list_all_auth_users(client)
 
             profile_rows = (
                 client.table("user_profiles").select("*").execute().data or []
