@@ -1237,6 +1237,11 @@ def tool_form(tool: str):
                     "filename": stored_name,
                     "token": f"job:{prior.id}",
                 }
+            from shared.scale_up import SCALE_UP  # noqa: PLC0415
+            scale_to = request.args.get("scale_to", "").strip()
+            if scale_to.isdigit() and adapter.slug in SCALE_UP:
+                key, max_count = SCALE_UP[adapter.slug]
+                pre_fill[key] = str(max(1, min(int(scale_to), max_count)))
 
     from_job = request.args.get("from_job", "").strip()
     if from_job and not pre_fill:

@@ -171,20 +171,54 @@ def compute_campaign_new():
         target = get_target(target_id, user_id=ctx.user_id)
         if target is not None and (target.is_archived or not target.storage_path):
             target = None
+    pre_fill = target_defaults_for_form(target)
+    # ?source_job= comes from the "Run more candidates" button on a result
+    # (blueprints/jobs.py::job_scale_up). An unowned id is ignored, like target_id.
+    from shared.jobs import get_job  # noqa: PLC0415
+    source_job = (request.args.get("source_job") or "").strip()
+    job =get_job(source_job, user_id=ctx.user_id) if source_job else None
+    if job is not None:
+        pre_fill.update(_source_job_pre_fill(job))
     return render_template(
         "runs/new.html",
         supported_tools=cc.visible_campaign_tools(),
         max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
         verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
         target=target,
-        pre_fill=target_defaults_for_form(target),
+        pre_fill=pre_fill,
     )
+
+
+# The runs/new.html fields a finished job's inputs can fill.
+_SOURCE_JOB_FIELDS = (
+    "preset", "task_name", "target_input", "fasta", "epitope", "target_name",
+    "target_chain", "hotspot_residues", "binder_length_min", "binder_length_max",
+)
+
+
+def _source_job_pre_fill(job) -> dict:  # noqa: ANN001
+    from blueprints.tools import _normalize_clone_pre_fill  # noqa: PLC0415
+    from shared.scale_up import SCALE_UP, SUGGESTED_COUNT  # noqa: PLC0415
+
+    inputs = {k: v for k, v in (job.inputs or {}).items() if not k.startswith("_")}
+    _normalize_clone_pre_fill(job.tool, inputs)
+    out = {k: inputs[k] for k in _SOURCE_JOB_FIELDS if inputs.get(k) not in (None, "")}
+    # proteina reads chain-qualified hotspots from its own field
+    # (tools/proteina/__init__.py reads chain_hotspots before hotspot_residues).
+    if job.tool == "proteina" and "hotspot_residues" in out:
+        out["chain_hotspots"] = out.pop("hotspot_residues")
+    out["tool"] = job.tool
+    if job.preset:
+        out["preset"] = job.preset
+    out["requested_designs"] = min(SUGGESTED_COUNT, SCALE_UP.get(job.tool, ("", SUGGESTED_COUNT))[1])
+    return out
 
 @campaigns_bp.route("/api/campaigns/estimate", methods=["GET"])
 @login_required
 def api_runs_estimate():
     """Live budget + chunk-plan preview for the campaign create form."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.scale_up import topup_usd  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
     # Lowercased to match the estimator's own normalisation
     # (shared/wallet_estimates.py::estimated_cost_for_tool), so a cased "Validate" cannot slip
@@ -228,6 +262,7 @@ def api_runs_estimate():
         "first_wave_usd_display": cc.display_cost_usd(first_wave),
         "balance_usd": str(pre.balance_usd),
         "balance_usd_display": cc.display_balance_usd(pre.balance_usd),
+        "topup_usd_display": str(topup_usd(max(plan.budget_usd, first_wave), pre.balance_usd)),
         "affordable": pre.ok,
         "reason": pre.reason,
         "needs_verification": cc.CAMPAIGN_KYC_ENABLED and (plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD),

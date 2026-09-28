@@ -50,6 +50,7 @@ from shared.jobs import (
     mark_running,
     timeout_stuck_job,
 )
+from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
     download_output,
@@ -775,7 +776,87 @@ def job_detail(job_id: str):
         send_target_tools=send_target_tools,
         share_allowed=share_allowed,
         handoff=handoff,
+        scale_up=scale_up_quote(ctx.user_id, job),
     )
+
+
+def _scale_up_target_id(user_id: str, job) -> "str | None":  # noqa: ANN001
+    """A target made from ``job``'s staged PDB, or None to fall back to an upload."""
+    from io import BytesIO  # noqa: PLC0415
+
+    from werkzeug.datastructures import FileStorage  # noqa: PLC0415
+
+    from shared.pdb_intake import resolve_target_upload  # noqa: PLC0415
+    from shared.storage import download_input  # noqa: PLC0415
+    from shared.targets import create_target, find_target_by_sha256  # noqa: PLC0415
+
+    inputs = job.inputs or {}
+    path = inputs.get("_pdb_storage_path")
+    if not path:
+        return None
+    try:
+        data = download_input(path)
+    except StorageError:
+        return None
+    # The staged bytes are already PDB, so the name must not say .cif.
+    filename = str(inputs.get("_pdb_filename") or "target").rsplit(".", 1)[0] + ".pdb"
+    chain = str(inputs.get("target_chain") or "").strip()
+    upload, _err = resolve_target_upload(
+        FileStorage(stream=BytesIO(data), filename=filename), target_chain=chain,
+    )
+    if upload is None:
+        return None
+    existing = find_target_by_sha256(user_id, upload.sha256)
+    if existing is not None:
+        return existing.id
+    try:
+        target = create_target(
+            user_id=user_id, upload=upload, target_chain=chain or None,
+            source="scale_up",
+        )
+    except StorageError:
+        return None
+    return target.id if target is not None else None
+
+
+@jobs_bp.route("/jobs/<job_id>/scale-up", methods=["POST"])
+@login_required
+def job_scale_up(job_id: str):
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    job = get_job(job_id, user_id=ctx.user_id)
+    if job is None:
+        return render_template("404.html"), 404
+    offer = scale_up_quote(ctx.user_id, job)
+    if offer is None:
+        return redirect(url_for("jobs.job_detail", job_id=job.id))
+
+    from shared.events import EVENTS, emit, log_event  # noqa: PLC0415
+    props = {
+        "tool": offer.tool,
+        "count": offer.count,
+        "route": offer.route,
+        "source_job_id": job.id,
+    }
+    emit(EVENTS.SCALE_UP_CLICK, user_id=ctx.user_id, properties=props)
+    log_event(
+        event_type=EVENTS.SCALE_UP_CLICK,
+        user_id=ctx.user_id,
+        path=request.path,
+        props=props,
+    )
+
+    if offer.route == "single":
+        return redirect(url_for(
+            "tools.tool_form", tool=job.tool, clone_from=job.id,
+            scale_to=offer.count,
+        ))
+    return redirect(url_for(
+        "campaigns.compute_campaign_new",
+        target_id=_scale_up_target_id(ctx.user_id, job),
+        source_job=job.id,
+    ))
 
 @jobs_bp.route("/jobs/<job_id>/status.json", methods=["GET"])
 @login_required
