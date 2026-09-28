@@ -102,6 +102,35 @@ def _parse_fasta_text(raw: str) -> Optional[tuple[list[tuple[str, str]], str]]:
     return records, ""
 
 
+_TEMPLATES_REFUSAL = (
+    "PDB templates are not available for ColabFold. This tool's image ships "
+    "no hhsearch binary and no PDB70 database, so ColabFold's template step "
+    "cannot run — it exits without writing any prediction and the run "
+    "produces nothing. Leave \"Use PDB templates\" off and resubmit: the "
+    "single-sequence (no-MSA, no-template) path is the supported one."
+)
+
+
+def _refuse_templates(form: Mapping[str, Any]) -> Optional[str]:
+    """Refuse ``use_templates`` before billing. Returns the message or None.
+
+    Free refusal for both presets. The option was offered by the form and
+    accepted here, but ColabFold cannot honour it on this image: --templates
+    spawns hhsearch, which tools/colabfold/Dockerfile.modal does not install,
+    and all four failed production runs that carried it (3a75ca7b, 90ec7966,
+    52eeaf55, f42de6aa) were billed and surfaced only as the parser's
+    ``scores_missing`` — the empty-output, exit-0 arm, not the non-zero-exit
+    one. That the swallowed exception is specifically the missing binary is
+    inferred from AF2's fix (``0bb3bbf8``), not proven here. The GPU-side
+    downgrade in
+    tools/colabfold/run_pipeline.py::_effective_use_templates catches any
+    payload that does not come through here.
+    """
+    if _parse_bool(form.get("use_templates"), False):
+        return _TEMPLATES_REFUSAL
+    return None
+
+
 def validate(
     form: Mapping[str, Any], files: Mapping[str, Any]
 ) -> tuple[Optional[dict], Optional[str]]:
@@ -121,6 +150,10 @@ def validate(
     preset = (form.get("preset") or "standalone").strip() or "standalone"
     if preset not in {"standalone", "batch"}:
         return None, "Pick a preset (standalone or batch)."
+
+    templates_err = _refuse_templates(form)
+    if templates_err:
+        return None, templates_err
 
     if preset == "batch":
         return _validate_batch(form)
@@ -169,7 +202,9 @@ def validate(
             f"num_recycles must be between {RECYCLES_MIN} and {RECYCLES_MAX}.",
         )
 
-    use_templates = _parse_bool(form.get("use_templates"), False)
+    # Always False: _refuse_templates above rejects a truthy value for
+    # both presets, so this is the only value that can reach a payload.
+    use_templates = False
 
     # Normalise the FASTA for ColabFold. ``colabfold_batch`` treats each
     # ``>header`` record as an independent job — which means two ``>``
@@ -279,7 +314,9 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
         return None, (
             f"num_recycles must be between {RECYCLES_MIN} and {RECYCLES_MAX}."
         )
-    use_templates = _parse_bool(form.get("use_templates"), False)
+    # Always False: _refuse_templates above rejects a truthy value for
+    # both presets, so this is the only value that can reach a payload.
+    use_templates = False
 
     batch_records = [
         {

@@ -281,9 +281,25 @@
       <div id="results-container">
         {% if job.status == 'succeeded' and job.result %}
           {% include tool_results_partial %}
-        {% elif job.status == 'failed' and job.error %}
+        {% elif job.status in ('failed', 'timeout') %}
+          {# Plain-words cause and the money sentence FIRST, raw error detail
+             underneath for support. The gate covers 'timeout' as well as
+             'failed': a timed-out run is refunded the same way
+             (no_progress_timeout is in _REFUNDED_FAILURE_CLASSES) and used to
+             be told nothing here. Rendered even when job.error is empty,
+             which is the usual shape of a timeout row. #}
+          {% set _notice = failure_notice(job) %}
           <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-top: 1rem;">
             <div class="panel-body">
+              {% if _notice %}
+                <p style="margin: 0 0 0.75rem 0;">
+                  {{ _notice.cause }}
+                  {% if _notice.refunded %}
+                    <strong>Your wallet was not charged for this run.</strong>
+                  {% endif %}
+                </p>
+              {% endif %}
+              {% if job.error %}
               <strong>Error:</strong>
               {% if job.error.bucket %}
                 <div>Category: {{ job.error.bucket }}{% if job.error.check %} / {{ job.error.check }}{% endif %}</div>
@@ -293,6 +309,7 @@
               {% endif %}
               {% if job.error.detail or job.error.message %}
                 <pre style="white-space: pre-wrap; font-size: 0.85rem; margin-top: 0.75rem; color: var(--text-secondary);">{{ job.error.detail or job.error.message }}</pre>
+              {% endif %}
               {% endif %}
             </div>
           </div>

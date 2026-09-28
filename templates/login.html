@@ -82,7 +82,7 @@
              arrived non-empty (bots fill every input they can see).
              The honeypot is moved off-screen rather than display:none
              so submitters using auto-fill extensions still skip it. #}
-          <input type="hidden" name="signup_token" value="{{ signup_token or '' }}">
+          <input type="hidden" name="signup_token" value="{{ signup_token or issue_signup_token() }}">
           <div aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;">
             <label for="signup-website">Leave this field blank</label>
             <input type="text" id="signup-website" name="website" tabindex="-1" autocomplete="off" value="">
@@ -109,7 +109,7 @@
             <textarea id="signup-purpose" name="purpose" rows="3"
                       maxlength="500"
                       placeholder="A sentence or two about your target, lab, or project helps us tune what we build.">{{ signup_purpose or '' }}</textarea>
-            <span class="field-hint">Optional for institutional or work email. Required for personal email (30+ characters).</span>
+            <span class="field-hint">Optional for institutional or work email. Required for personal email such as Gmail, QQ or 163 (30+ characters). <span id="signup-purpose-count"></span></span>
           </div>
 
           <div class="field">
@@ -217,6 +217,17 @@
         btn.classList.toggle('active', (i === 0 && tab === 'signin') || (i === 1 && tab === 'signup'));
       });
     }
+
+    (function () {
+      // Live count against the 30-character floor register_user applies
+      // (after strip) to personal-email signups.
+      var box = document.getElementById('signup-purpose');
+      var out = document.getElementById('signup-purpose-count');
+      if (!box || !out) return;
+      function update() { out.textContent = Array.from(box.value.trim()).length + '/30 characters.'; }
+      box.addEventListener('input', update);
+      update();
+    })();
 
     (function () {
       // signup_form_started: fire once when the user first interacts

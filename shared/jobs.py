@@ -768,6 +768,54 @@ def is_billed_failure_class(failure_class: Optional[str]) -> bool:
     return failure_class in _BILLED_FAILURE_CLASSES
 
 
+# Plain-words cause per failure class, for the job page and the completion
+# email. Keyed on the enum that ``classify_terminal_state`` writes, so a class
+# added there without a line here falls back to the generic sentence below
+# rather than rendering the raw enum at the user.
+_FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
+    "tool_error":          "The tool hit an error while running and stopped.",
+    "infra_crash":         "The run could not be set up, or lost its machine, "
+                           "on our side.",
+    "preflight_miss":      "A check on the GPU machine rejected the input "
+                           "before the run began.",
+    "no_progress_timeout": "The run hit its time limit before it finished.",
+    "unclassified":        "The run stopped for a reason we could not identify.",
+    "user_cancelled":      "You cancelled this run.",
+    "safety_kill":         "We stopped the run for exceeding its safety limit.",
+}
+
+
+def failure_notice(job) -> Optional[dict]:  # noqa: ANN001
+    """Plain-words cause + refund flag for a non-succeeded job. None if N/A.
+
+    Returns ``{"cause": str, "refunded": bool}``. ``refunded`` is True only
+    when the job carried a wallet hold AND the routing in
+    ``_settle_wallet_hold_for_completed_job`` (below) bills it nothing: its
+    class is in ``_REFUNDED_FAILURE_CLASSES``, or no GPU time was consumed
+    (a billed class then settles at zero, and a NULL class takes that
+    function's legacy refund arm). A NULL class WITH consumed seconds
+    settles, so it is not claimed as refunded here. Free-tier runs never
+    carried a hold, so they get the cause and no money sentence. Consumers:
+    the failure panel in ``templates/job_detail.html`` and the ``failed``
+    tone of ``shared/email.py::_result_summary``.
+    """
+    status = getattr(job, "status", None)
+    if status in (None, "succeeded", "pending", "running"):
+        return None
+    failure_class = getattr(job, "failure_class", None)
+    cause = _FAILURE_CLASS_PLAIN_WORDS.get(
+        failure_class or "",
+        "The run did not finish.",
+    )
+    wallet_ctx = (getattr(job, "inputs", None) or {}).get("_wallet") or {}
+    has_hold = isinstance(wallet_ctx, dict) and bool(wallet_ctx.get("hold_tx_id"))
+    gpu_seconds = getattr(job, "gpu_seconds_used", None)
+    refunded = has_hold and (
+        not gpu_seconds or failure_class in _REFUNDED_FAILURE_CLASSES
+    )
+    return {"cause": cause, "refunded": refunded}
+
+
 def generate_job_token() -> str:
     """Return a 64-char hex token used to authenticate the Modal callback."""
     return secrets.token_hex(32)

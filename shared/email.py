@@ -1582,19 +1582,16 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # debit the Workspace cap, not the wallet. Surface that reassurance in
         # the email body for jobs that actually carried a hold; free smoke
         # runs skip the message since no charge was ever possible.
-        from shared.jobs import _REFUNDED_FAILURE_CLASSES  # noqa: PLC0415
+        # ``failure_notice`` is the one decision, shared with the failure
+        # panel in templates/job_detail.html so the two surfaces cannot
+        # disagree. It also covers 'timeout' and 'cancelled', which the
+        # previous ``job.status == "failed"`` gate here excluded: every
+        # non-succeeded status takes this tone (see _result_tone), so a
+        # refunded timeout used to be told nothing about the money.
+        from shared.jobs import failure_notice  # noqa: PLC0415
 
-        wallet_ctx = (job.inputs or {}).get("_wallet") or {}
-        has_hold = isinstance(wallet_ctx, dict) and bool(wallet_ctx.get("hold_tx_id"))
-        no_charge = (
-            job.status == "failed"
-            and (
-                not job.gpu_seconds_used
-                or job.failure_class in _REFUNDED_FAILURE_CLASSES
-            )
-            and has_hold
-        )
-        if no_charge:
+        notice = failure_notice(job) or {}
+        if notice.get("refunded"):
             return (
                 f"The run did not complete; your wallet was not charged. "
                 f"Detail: {detail}"
