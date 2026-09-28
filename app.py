@@ -281,8 +281,8 @@ def create_app() -> Flask:
         + '">'
     )
     flask_app.jinja_env.globals["csrf_meta_value"] = _ensure_app_csrf_token
-    # login.html carries the Create-account panel on every render (/login,
-    # /forgot-password, ...), not only /signup; see test_signup_timing_token.py.
+    # login.html carries the Create-account panel on every render, and /login
+    # shows it as a tab without passing signup_token; see test_signup_timing_token.py.
     from shared.auth import issue_signup_token  # noqa: PLC0415
     flask_app.jinja_env.globals["issue_signup_token"] = issue_signup_token
 

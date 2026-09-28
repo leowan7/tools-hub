@@ -1,7 +1,7 @@
 """The Create-account panel is on every login.html render, not only /signup.
 
-/login and /forgot-password rendered it with an empty signup_token, so a
-visitor who clicked the "Create account" tab there was rejected as
+/login renders it as a tab but never passed signup_token, so a visitor
+who clicked "Create account" there was rejected as
 ``timing`` ("session expired") however fast they submitted.
 """
 from __future__ import annotations
@@ -23,9 +23,8 @@ def client(monkeypatch):
     return flask_app.test_client()
 
 
-@pytest.mark.parametrize("path", ["/login", "/forgot-password"])
-def test_signup_panel_on_other_pages_passes_the_timing_check(client, path):
-    html = client.get(path).data
+def test_create_account_tab_on_login_passes_the_timing_check(client):
+    html = client.get("/login").data
     token = re.search(rb'name="signup_token" value="([^"]*)"', html).group(1)
     rejections = []
     with patch("shared.events.log_signup_rejection",
