@@ -32,12 +32,6 @@ SCALE_UP: dict[str, tuple[str, int]] = {
 # prefill actually applies, so the quote prices the run the button opens.
 FOLD_TOOLS: frozenset[str] = frozenset({"af2", "colabfold", "esmfold"})
 
-# Boltz-2 screens a list the user pastes, so there is no count to bump on a
-# clone the way ``SCALE_UP`` tools have. The offer quotes a round next batch
-# and opens the cloned form for the user to paste into. 10 is under both
-# per-preset ceilings (tools/boltz2/__init__.py: MAX_BINDERS 50, msa_server 16).
-BOLTZ2_NEXT_COUNT = 10
-
 
 @dataclass(frozen=True)
 class ScaleUp:
@@ -67,6 +61,27 @@ def _current_count(inputs: dict, key: str) -> int:
         return int(inputs.get(key) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _stored_count(inputs: dict) -> int:
+    """How many designs the job actually ran, from its stored inputs.
+
+    The batch adapters record the count one level down, under ``parameters``
+    (tools/af2/__init__.py:351, tools/colabfold/__init__.py:337,
+    tools/esmfold/__init__.py:231, tools/boltz2/__init__.py:418). None of them
+    writes it at the top level, so a flat read returns 0 and prices a batch of
+    any size as a single design. Pinned by
+    tests/test_scale_up.py::test_clone_offer_prices_the_stored_batch_size.
+    """
+    nested = inputs.get("parameters")
+    if isinstance(nested, dict):
+        count = _current_count(nested, "n_designs_total")
+        if count:
+            return count
+    records = inputs.get("batch_records") or inputs.get("binder_sequences")
+    if isinstance(records, list) and records:
+        return len(records)
+    return _current_count(inputs, "n_designs_total")
 
 
 def _offer(
@@ -103,12 +118,12 @@ def _offer(
 def _next_step(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     """The offer for a tool with no candidate count to raise, or None.
 
-    Fold predictors point at MPNN sequence design on the structure they just
-    predicted; Boltz-2 points at screening another batch of binders against
-    the same target. Both open a form the existing prefill already fills
-    (``?resample_from=`` and ``?clone_from=`` in blueprints/tools.py::tool_form),
-    so the gates here mirror that route's: a resample needs the predicted PDB
-    the token resolver decodes, a clone needs nothing beyond the job.
+    A fold that produced a structure points at MPNN sequence design on it;
+    everything else here points at another run of the same shape. Both open a
+    form the existing prefill already fills (``?resample_from=`` and
+    ``?clone_from=`` in blueprints/tools.py::tool_form), so the gates here
+    mirror that route's: a resample needs the predicted PDB the token resolver
+    decodes, a clone needs nothing beyond the job.
     """
     from shared.feature_flags import tool_enabled  # noqa: PLC0415
     from shared.resample import (  # noqa: PLC0415
@@ -133,35 +148,42 @@ def _next_step(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
                 ),
                 cta_text=f"Design {count} sequences",
             )
-        # A batch fold stores its structures per record, not under
-        # ``pdb_b64``, so the resample prefill has nothing to read. Quote
-        # another run of the same shape instead of leaving the page unpriced.
-        if not has_pdb and tool_enabled(job.tool):
-            inputs = {k: v for k, v in (job.inputs or {}).items()
-                      if not k.startswith("_")}
-            count = max(1, _current_count(inputs, "n_designs_total"))
-            return _offer(
-                user_id,
-                tool=job.tool,
-                count=count,
-                route="clone",
-                params={**inputs, "preset": job.preset or "standalone"},
-                offer_text="Fold another batch on the same settings",
-                cta_text="Fold another batch",
+    # Everything else here has no structure to hand on and no count field the
+    # card can raise, so the offer is another run of the same shape. The
+    # ``?clone_from=`` prefill copies the whole stored input
+    # (blueprints/tools.py:1227), and for boltz2 that includes the pasted
+    # ``binder_sequences`` list, so the quote prices the batch the form will
+    # actually carry rather than a round number the user never submits.
+    if (job.tool in FOLD_TOOLS or job.tool == "boltz2") and tool_enabled(job.tool):
+        inputs = {k: v for k, v in (job.inputs or {}).items()
+                  if not k.startswith("_")}
+        count = max(1, _stored_count(inputs))
+        screening = job.tool == "boltz2"
+        if count == 1:
+            offer_text = (
+                "Screen another binder against the same target" if screening
+                else "Fold another structure on the same settings"
             )
-
-    if job.tool == "boltz2" and tool_enabled("boltz2"):
-        count = BOLTZ2_NEXT_COUNT
+            cta_text = "Screen another" if screening else "Fold another"
+        else:
+            offer_text = (
+                f"Screen another {count} binders against the same target"
+                if screening
+                else f"Fold another {count} on the same settings"
+            )
+            cta_text = f"Screen {count} more" if screening else f"Fold {count} more"
         return _offer(
             user_id,
-            tool="boltz2",
+            tool=job.tool,
             count=count,
             route="clone",
-            params={"n_designs_total": count, "preset": job.preset or "standalone"},
-            offer_text=(
-                f"Screen {count} more binders against the same target"
-            ),
-            cta_text=f"Screen {count} more binders",
+            params={
+                **inputs,
+                "n_designs_total": count,
+                "preset": job.preset or "standalone",
+            },
+            offer_text=offer_text,
+            cta_text=cta_text,
         )
 
     return None

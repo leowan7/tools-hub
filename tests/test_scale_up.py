@@ -94,26 +94,59 @@ def test_fold_with_a_structure_offers_mpnn_on_it(tool):
     assert "ProteinMPNN" in q.offer_text and q.cta_text == "Design 16 sequences"
 
 
+# The shape the adapters actually store: the count is one level down, under
+# ``parameters`` (tools/af2/__init__.py:351, tools/colabfold/__init__.py:337,
+# tools/esmfold/__init__.py:231, tools/boltz2/__init__.py:418). A flat
+# ``{"n_designs_total": 7}`` is a shape production never writes, and a quote
+# built from it prices one design no matter how large the batch was.
+def _batch_inputs(n, **extra):
+    return {"parameters": {"n_designs_total": n}, **extra}
+
+
 @pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
 def test_batch_fold_without_a_structure_offers_another_batch(tool):
-    job = _job(tool=tool, preset="batch", inputs={"n_designs_total": 7})
+    inputs = _batch_inputs(7, batch_records=[{"name": f"d{i}"} for i in range(7)])
+    job = _job(tool=tool, preset="batch", inputs=inputs)
     job.result = {"candidates": [{"rank": 1}]}
     q = _quote(job)
     assert q.tool == tool and q.route == "clone" and q.count == 7
     assert q.price_usd == estimated_cost_for_tool(
-        "u-1", tool, {"n_designs_total": 7, "preset": "batch"})
+        "u-1", tool, {**inputs, "n_designs_total": 7, "preset": "batch"})
+    assert "Fold another 7" in q.offer_text
 
 
-def test_boltz2_offers_another_screen_priced_at_ten():
-    from shared.scale_up import BOLTZ2_NEXT_COUNT
-    job = _job(tool="boltz2", preset="standalone", inputs={"n_designs_total": 2})
+@pytest.mark.parametrize("tool", ["af2", "boltz2"])
+def test_clone_offer_prices_the_stored_batch_size(tool):
+    """The card must quote the run the button opens, not one design.
+
+    ``?clone_from=`` copies the whole stored input into the form
+    (blueprints/tools.py:1227), so a 200-record batch re-submits 200 records.
+    Reading the count flat returned 0, collapsing the quote to a single
+    design -- a ~200x understatement on the price the user is shown.
+    """
+    big = _batch_inputs(200)
+    small = _batch_inputs(1)
+    job_big = _job(tool=tool, preset="standalone", inputs=big)
+    job_big.result = {"designs": [{"rank": 1}]}
+    job_small = _job(tool=tool, preset="standalone", inputs=small)
+    job_small.result = {"designs": [{"rank": 1}]}
+    q_big, q_small = _quote(job_big), _quote(job_small)
+    assert q_big.count == 200 and q_small.count == 1
+    assert q_big.price_usd > q_small.price_usd
+
+
+def test_boltz2_offers_another_screen_priced_at_the_pasted_list():
+    # The clone carries ``binder_sequences`` through to the textarea
+    # (templates/tools/boltz2_form.html:164), so the count comes from the list.
+    inputs = {"binder_sequences": ["AAA", "CCC", "DDD"]}
+    job = _job(tool="boltz2", preset="standalone", inputs=inputs)
     job.result = {"designs": [{"rank": 1}]}
     q = _quote(job)
-    assert q.tool == "boltz2" and q.route == "clone"
-    assert q.count == BOLTZ2_NEXT_COUNT
+    assert q.tool == "boltz2" and q.route == "clone" and q.count == 3
     assert q.price_usd == estimated_cost_for_tool(
         "u-1", "boltz2",
-        {"n_designs_total": BOLTZ2_NEXT_COUNT, "preset": "standalone"})
+        {**inputs, "n_designs_total": 3, "preset": "standalone"})
+    assert q.cta_text == "Screen 3 more"
 
 
 @pytest.mark.parametrize("job", [
@@ -126,10 +159,11 @@ def test_no_next_step_on_a_failed_job(job):
 
 def test_next_step_tops_up_against_the_hold():
     from shared.wallet_estimates import cushioned_hold_usd
-    job = _job(tool="boltz2", preset="msa_server", inputs={})
+    inputs = _batch_inputs(10)
+    job = _job(tool="boltz2", preset="msa_server", inputs=inputs)
     job.result = {"designs": [{"rank": 1}]}
     hold = cushioned_hold_usd(
-        "u-1", "boltz2", {"n_designs_total": 10, "preset": "msa_server"})
+        "u-1", "boltz2", {**inputs, "n_designs_total": 10, "preset": "msa_server"})
     assert _quote(job, balance=0).topup_usd == math.ceil(hold)
     assert _quote(job, balance=hold).topup_usd == 0
 

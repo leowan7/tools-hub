@@ -45,20 +45,22 @@ def results() -> dict:
 @needs_node
 @pytest.mark.parametrize(
     "case",
-    ["csv", "fasta", "zip", "pdb", "npz", "api_pdb", "inline_pdb"],
+    ["csv", "csv_query", "fasta", "zip", "pdb", "npz", "api_pdb", "inline_pdb"],
 )
 def test_download_links_emit_result_download(results: dict, case: str) -> None:
     assert results[case] == ["result_download"], results
 
 
 @needs_node
-@pytest.mark.parametrize("case", ["outbound", "outbound_www"])
+@pytest.mark.parametrize(
+    "case", ["outbound", "outbound_www", "outbound_bare", "outbound_bare_slash"]
+)
 def test_ranomics_links_emit_outbound_click(results: dict, case: str) -> None:
     assert results[case] == ["outbound_click"], results
 
 
 @needs_node
-@pytest.mark.parametrize("case", ["internal", "scale_up_form", "not_an_anchor"])
+@pytest.mark.parametrize("case", ["internal", "scale_up_form", "not_an_anchor", "outbound_lookalike"])
 def test_ordinary_clicks_emit_nothing(results: dict, case: str) -> None:
     assert results[case] == [], results
 

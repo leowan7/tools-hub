@@ -81,7 +81,11 @@
   // and how many leave through a ranomics.com link instead of running
   // another job. Both are plain anchors in half a dozen templates, so this
   // is one delegated listener on the href rather than an attribute per link.
-  var DOWNLOAD_RE = /\/export\.(csv|fasta|zip)$|\.(pdb|npz)(\?|$)/i;
+  var DOWNLOAD_RE = /\/export\.(csv|fasta|zip)(\?|$)|\.(pdb|npz)(\?|$)/i;
+  // The host alone, with no path, is how the header and footer logos link out
+  // (templates/_header.html, templates/_footer.html, templates/login.html) --
+  // the highest-traffic exits on the site -- so the path is optional here.
+  var OUTBOUND_RE = /^https?:\/\/(www\.)?ranomics\.com(\/|$)/i;
 
   function trackAnchorClick(ev) {
     var el = ev.target;
@@ -95,7 +99,7 @@
       track("result_download", { href: href.slice(0, 200), path: location.pathname });
       return;
     }
-    if (/^https?:\/\/(www\.)?ranomics\.com\//i.test(href)) {
+    if (OUTBOUND_RE.test(href)) {
       track("outbound_click", { href: href.slice(0, 200), path: location.pathname });
     }
   }

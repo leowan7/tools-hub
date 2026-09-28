@@ -62,6 +62,7 @@ function click(href) {
 
 const cases = {
   csv: '/jobs/abc/export.csv',
+  csv_query: '/jobs/abc/export.csv?chain=A',
   fasta: '/jobs/abc/export.fasta',
   zip: '/jobs/abc/export.zip',
   pdb: '/jobs/abc/af2.pdb',
@@ -70,6 +71,11 @@ const cases = {
   inline_pdb: 'data:chemical/x-pdb;base64,QUJD',
   outbound: 'https://ranomics.com/ai-binder-sprint',
   outbound_www: 'https://www.ranomics.com/contact',
+  // The header and footer logos, on every rendered page.
+  outbound_bare: 'https://www.ranomics.com',
+  outbound_bare_slash: 'https://ranomics.com/',
+  // A look-alike host must not be counted as our own outbound link.
+  outbound_lookalike: 'https://ranomics.com.evil.test/x',
   internal: '/tools/af2',
   scale_up_form: '#',
   not_an_anchor: null,
