@@ -1586,10 +1586,9 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # debit the Workspace cap, not the wallet. Surface that reassurance in
         # the email body for jobs that actually carried a hold; free smoke
         # runs skip the message since no charge was ever possible.
-        # ``failure_notice`` is the one decision, shared with the failure
-        # panel in templates/job_detail.html so the two surfaces cannot
-        # disagree. It also covers 'timeout' and 'cancelled', which the
-        # previous ``job.status == "failed"`` gate here excluded: every
+        # ``failure_notice`` makes the decision. It also covers 'timeout'
+        # and 'cancelled', which the previous ``job.status == "failed"``
+        # gate here excluded: every
         # non-succeeded status takes this tone (see _result_tone), so a
         # refunded timeout used to be told nothing about the money.
         from shared.jobs import failure_notice  # noqa: PLC0415

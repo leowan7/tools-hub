@@ -1252,7 +1252,8 @@ def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[d
     whose ``parent_tx_id`` is that hold, the same group net the wallet page
     annotates (``blueprints/wallet.py::_build_tx_lineage_annotations``). ``settled`` is
     whether any such child row exists; without one, ``usd`` is the amount
-    still reserved. A hold whose rows carry an unreadable amount maps to
+    still reserved. ``held`` is minus the hold row's own amount (zero when
+    that row was not returned). A hold whose rows carry an unreadable amount maps to
     ``None``; a hold the ledger returned no row for is absent. A failed
     lookup returns ``{}``.
     """
@@ -1293,10 +1294,14 @@ def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[d
         if amount is None or not amount.is_finite():
             out[key] = None
             continue
-        entry = out.setdefault(key, {"usd": Decimal("0"), "settled": False})
+        entry = out.setdefault(
+            key, {"usd": Decimal("0"), "settled": False, "held": Decimal("0")},
+        )
         entry["usd"] -= amount
         if parent is not None:
             entry["settled"] = True
+        else:
+            entry["held"] = -amount
     return out
 
 

@@ -303,23 +303,25 @@
         {% if job.status == 'succeeded' and job.result %}
           {% include tool_results_partial %}
         {% elif job.status in ('failed', 'timeout') %}
-          {# Plain-words cause and the money sentence FIRST, raw error detail
-             underneath for support. The gate covers 'timeout' as well as
+          {# Plain-words cause, what to change, the ledger's refund sentence
+             and a retry link FIRST, raw error detail underneath for support. The gate covers 'timeout' as well as
              'failed': a timed-out run is refunded the same way
              (no_progress_timeout is in _REFUNDED_FAILURE_CLASSES) and used to
              be told nothing here. Rendered even when job.error is empty,
              which is the usual shape of a timeout row. #}
-          {% set _notice = failure_notice(job) %}
+          {% set _advice = failure_advice(job) %}
           <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-top: 1rem;">
             <div class="panel-body">
-              {% if _notice %}
-                <p style="margin: 0 0 0.75rem 0;">
-                  {{ _notice.cause }}
-                  {% if _notice.refunded %}
-                    <strong>Your wallet was not charged for this run.</strong>
-                  {% endif %}
-                </p>
+              {% if _advice %}
+                <p style="margin: 0 0 0.5rem 0;" data-failure-kind="{{ _advice.kind }}">{{ _advice.cause }}</p>
+                <p style="margin: 0 0 0.5rem 0;"><strong>What to change:</strong> {{ _advice.fix }}</p>
               {% endif %}
+              {% if failure_money %}
+                <p style="margin: 0 0 0.75rem 0;" data-failure-money><strong>{{ failure_money }}</strong></p>
+              {% endif %}
+              <p style="margin: 0 0 0.75rem 0;">
+                <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-primary" data-retry-link>Try again with these settings</a>
+              </p>
               {% if job.error %}
               <strong>Error:</strong>
               {% if job.error.bucket %}
@@ -339,12 +341,13 @@
     </div>
   </div>
 
-  {# "What next?" reverse-funnel block. Renders only on terminal-success
-     jobs (status=succeeded). Pairs the run with a matching explainer on
+  {# "What next?" reverse-funnel block. Renders on succeeded, failed and
+     timed-out jobs; the copy switches to a help offer when the run did
+     not succeed. Pairs the run with a matching explainer on
      ranomics.com plus a soft contact link. Additive to the
      "Take it further" CRO panel rendered by results_shell.html, which
      handles the hard Pilot / Sprint CTAs for composite binder tools. #}
-  {% if job.status == 'succeeded' %}
+  {% if job.status in ('succeeded', 'failed', 'timeout') %}
     {% set _utm = '?utm_source=tools-hub&utm_medium=reverse-funnel&utm_campaign=' ~ job.tool %}
     {% set _binder_tools = ['mpnn', 'rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
     {% if job.tool == 'mpnn' %}
@@ -399,7 +402,9 @@
         </div>
         <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
           <div style="flex: 1 1 320px; color: var(--text-secondary); font-size: 0.9rem;">
-            {% if _blog_path %}
+            {% if job.status != 'succeeded' %}
+              Stuck on this target? Talk to the team that built the pipeline.
+            {% elif _blog_path %}
               Read the explainer on
               <a href="https://www.ranomics.com{{ _blog_path }}{{ _utm }}"
                  target="_blank" rel="noopener noreferrer"
@@ -420,7 +425,7 @@
             <a href="https://www.ranomics.com{{ _contact_path }}"
                target="_blank" rel="noopener noreferrer"
                class="btn-secondary"
-               style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Run this at scale</a>
+               style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">{% if job.status == 'succeeded' %}Run this at scale{% else %}Ask the team{% endif %}</a>
           </div>
         </div>
       </div>
