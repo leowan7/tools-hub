@@ -280,6 +280,80 @@ def billing_portal():
 # Wallet endpoints
 # ------------------------------------------------------------------
 
+def _whole_count(value) -> int | None:  # noqa: ANN001
+    """``value`` as an integer of 1 or more, else None."""
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _full_size_estimate(user_id, tool_slug: str, count: int, preset: str):  # noqa: ANN001, ANN202
+    """The estimate response for a count that runs as a full-size run."""
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.scale_up import full_size_plan  # noqa: PLC0415
+
+    plan = full_size_plan(tool_slug, count, preset)
+    if plan is None:
+        return jsonify({
+            "ok": True,
+            "tool_slug": tool_slug,
+            "estimate_usd": None,
+            "no_estimate_reason": (
+                f"{count} designs cannot start as a full-size run. "
+                "Reduce the count to see a price."
+            ),
+        })
+    estimate = plan.budget_usd
+    # Same top-up figure as shared/scale_up.py::quote: the start gate needs
+    # the first batch, which can exceed the whole estimate.
+    required = max(
+        estimate, cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool_slug))
+    )
+    body = {
+        "ok": True,
+        "tool_slug": tool_slug,
+        "estimate_usd": str(estimate),
+        "full_size_run": True,
+        "total_subjobs": plan.total_subjobs,
+        "hard_cap_usd": None,
+        "scaled_hard_cap_usd": None,
+        "self_serve_ceiling_usd": str(SELF_SERVE_CEILING_USD),
+        "exceeds_hard_cap": False,
+        "exceeds_self_serve_ceiling": False,
+        "soft_block": False,
+        "hard_block": False,
+        "self_serve_block": False,
+        "confirm_band": False,
+    }
+    if not user_id:
+        body.update({
+            "balance_usd": None,
+            "balance_after_usd": None,
+            "deficit_usd": "0",
+            "rounded_topup_usd": "0",
+            "wallet_frozen": False,
+            "authenticated": False,
+        })
+        return jsonify(body)
+    wallet = get_or_create_wallet(user_id) or {}
+    balance = Decimal(str(wallet.get("balance_usd") or 0))
+    deficit = max(required - balance, Decimal("0"))
+    body.update({
+        "balance_usd": str(balance),
+        "balance_after_usd": str(balance - estimate),
+        "required_usd": str(required),
+        "deficit_usd": str(deficit),
+        "rounded_topup_usd": str(_round_up_topup_amount(deficit)),
+        "wallet_frozen": bool(wallet.get("wallet_frozen")),
+    })
+    return jsonify(body)
+
+
 @wallet_bp.route("/api/wallet/estimate", methods=["GET"])
 def api_wallet_estimate():
     """Return the wallet estimate, hard cap, and current balance.
@@ -348,6 +422,37 @@ def api_wallet_estimate():
             except ValueError:
                 pass
             params[key] = value
+
+    # A count the adapter would refuse (tools/rfdiffusion/__init__.py:102
+    # refuses below 1) gets no price. estimate_usd null makes the panel print
+    # a dash instead of the baseline figure the estimator falls back to.
+    spec = TOOL_SPECS.get(tool_slug)
+    count_key = spec.scaling_param if spec else None
+    if count_key and count_key in params and _whole_count(params[count_key]) is None:
+        return jsonify({
+            "ok": True,
+            "tool_slug": tool_slug,
+            "estimate_usd": None,
+            "no_estimate_reason": "Enter a whole number, 1 or more, to see a price.",
+        })
+
+    # Over the single-container ceiling the form cannot run one job: it posts
+    # to the full-size run, or tool_submit refuses it
+    # (blueprints/tools.py::_single_container_refusal, which this test mirrors,
+    # default-preset ceiling included). Price the full-size run, the figure the
+    # result page's offer shows. That offer tests the job's own preset
+    # (shared/scale_up.py::quote); the two agree only while no tool's ceiling
+    # varies by preset, which holds today but nothing enforces.
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    requested = _whole_count(params.get("num_designs"))
+    if (
+        tool_slug in cc.SUPPORTED_TOOLS
+        and requested is not None
+        and requested > cc.single_container_ceiling(tool_slug)
+    ):
+        return _full_size_estimate(
+            user_id, tool_slug, requested, str(params.get("preset") or "pilot")
+        )
 
     try:
         estimate = estimated_cost_for_tool(user_id, tool_slug, params)
@@ -426,6 +531,7 @@ def api_wallet_estimate():
         return jsonify({
             "ok": True,
             "tool_slug": tool_slug,
+            "count_key": count_key,
             "estimate_usd": str(estimate),
             "hard_cap_usd": str(hard_cap),
             "balance_usd": None,
@@ -447,6 +553,7 @@ def api_wallet_estimate():
     return jsonify({
         "ok": True,
         "tool_slug": tool_slug,
+        "count_key": count_key,
         "estimate_usd": str(estimate),
         "hard_cap_usd": str(hard_cap),
         "balance_usd": str(balance),

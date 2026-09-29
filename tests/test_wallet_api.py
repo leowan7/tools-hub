@@ -182,13 +182,18 @@ class TestEstimateEndpointShape:
         assert Decimal(body["deficit_usd"]) == Decimal("1.00")
 
     def test_uses_form_params_for_estimate_scaling(self, client):
-        """Pass num_designs=1000 and see a scaled estimate above baseline."""
+        """A larger single-job count scales the estimate and the cap.
+
+        Both counts stay at or under bindcraft's single-container ceiling
+        (16): above it the endpoint prices the full-size run instead, which
+        has no single-job cap (TestFullSizeEstimate).
+        """
         with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             small = client.get(
-                "/api/wallet/estimate?tool=bindcraft&num_designs=100"
+                "/api/wallet/estimate?tool=bindcraft&num_designs=2"
             ).get_json()
             large = client.get(
-                "/api/wallet/estimate?tool=bindcraft&num_designs=2000"
+                "/api/wallet/estimate?tool=bindcraft&num_designs=16"
             ).get_json()
         # Both succeed and the larger params yield a higher estimate.
         assert Decimal(large["estimate_usd"]) > Decimal(small["estimate_usd"])
@@ -230,23 +235,81 @@ class TestEstimateEndpointShape:
 
 
 class TestEstimateAndCapFlags:
-    def test_exceeds_self_serve_ceiling_flag_trips_on_giant_param(self, client):
-        """num_designs typo into the millions trips the ceiling flag."""
-        # Estimate gets clamped by compute_hard_cap inside the estimator,
-        # but the exceeds_self_serve_ceiling flag reflects the raw value
-        # so the form can render the Pilot CTA path.
+    def test_a_count_no_run_can_start_gets_no_price(self, client):
+        """A typo into the millions is past the single-job ceiling AND past
+        anything the full-size planner accepts, so no run can start at it
+        and the panel shows no price rather than a clamped one."""
         with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             resp = client.get(
                 "/api/wallet/estimate",
                 query_string={"tool": "bindcraft", "num_designs": 10_000_000},
             )
         body = resp.get_json()
-        # The hard cap of $500 for bindcraft caps the estimate at $500.
-        # At this scale the estimate equals the absolute cap so it is
-        # not over the self serve ceiling. This is the documented
-        # behaviour. The flag fires only when estimate crosses the
-        # ceiling.
-        assert body["estimate_usd"] is not None
+        assert body["ok"] is True
+        assert body["estimate_usd"] is None
+        assert "cannot start" in body["no_estimate_reason"]
+
+
+class TestFullSizeEstimate:
+    """Over the single-container ceiling the form prices the full-size run,
+    the same figure the result page's "Run more candidates" card shows
+    (shared/scale_up.py::quote)."""
+
+    @pytest.mark.parametrize("tool", ["rfdiffusion", "proteina"])
+    def test_form_price_equals_the_result_page_price(self, client, monkeypatch, tool):
+        from types import SimpleNamespace as NS
+        from shared import compute_campaigns as cc
+        from shared.scale_up import quote
+        monkeypatch.setenv(f"FLAG_TOOL_{tool.upper()}", "on")
+        job = NS(id="j", tool=tool, preset="pilot", status="succeeded",
+                 created_at="2026-01-01T00:00:00+00:00",
+                 inputs={"num_designs": 4}, result={"candidates": [{"rank": 1}]},
+                 error=None, gpu_seconds_used=None)
+        with patch("shared.wallet.get_or_create_wallet",
+                   return_value={"balance_usd": 1000}),                 patch("shared.feature_flags.tool_enabled", return_value=True):
+            q = quote("u-1", job)
+        assert q.route == "split" and q.count == 100
+        with patch("blueprints.wallet.get_or_create_wallet") as gow:
+            body = client.get(
+                "/api/wallet/estimate",
+                query_string={"tool": tool, "num_designs": 100, "preset": "pilot"},
+            ).get_json()
+        gow.assert_not_called()
+        assert body["full_size_run"] is True
+        assert Decimal(body["estimate_usd"]) == q.price_usd
+        assert body["total_subjobs"] == cc.plan_chunks(tool, 100, "pilot").total_subjobs
+        # Anonymous: no wallet-derived fields, no blocks.
+        assert body["balance_usd"] is None and body["authenticated"] is False
+        assert body["hard_block"] is False and body["soft_block"] is False
+
+    def test_signed_in_deficit_is_against_the_start_gate(self, client):
+        from shared import compute_campaigns as cc
+        with patch(
+            "blueprints.wallet.get_or_create_wallet",
+            return_value={"balance_usd": 1.0, "wallet_frozen": False},
+        ):
+            _login(client)
+            body = client.get(
+                "/api/wallet/estimate?tool=bindcraft&num_designs=100"
+            ).get_json()
+        plan = cc.plan_chunks("bindcraft", 100, "pilot")
+        required = max(plan.budget_usd,
+                       cc.first_wave_hold_usd(plan, cc.launch_concurrency_for("bindcraft")))
+        assert Decimal(body["required_usd"]) == required
+        assert Decimal(body["deficit_usd"]) == required - 1
+
+
+class TestInvalidCountGetsNoPrice:
+    @pytest.mark.parametrize("value", ["0", "-5", "abc", "2.5"])
+    def test_invalid_count(self, client, value):
+        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
+            body = client.get(
+                "/api/wallet/estimate",
+                query_string={"tool": "bindcraft", "num_designs": value},
+            ).get_json()
+        assert body["ok"] is True
+        assert body["estimate_usd"] is None
+        assert body["no_estimate_reason"]
 
 
 # ===========================================================================

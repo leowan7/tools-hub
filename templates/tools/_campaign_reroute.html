@@ -9,8 +9,9 @@
    selects button[type="submit"] and disables it when the SINGLE-JOB estimate
    exceeds the balance/ceiling — never disables it. An over-ceiling request is
    bounded by the campaign's own preauth (fund-and-drain), not the single-job
-   estimate, so the single-job estimate panel + top-up gate are hidden while in
-   campaign mode. The single-job wallet hold is never taken (the POST goes to a
+   estimate, so the single-job top-up gate is hidden while in campaign mode.
+   The estimate panel stays: over the ceiling /api/wallet/estimate prices the
+   full-size run (blueprints/wallet.py::_full_size_estimate). The single-job wallet hold is never taken (the POST goes to a
    different endpoint entirely). A reuse-token-only submit (no fresh file) is
    left on the single-job endpoint, where the server backstop returns the
    campaign pointer. Money path is untouched. #}
@@ -101,7 +102,7 @@
       if (campaign) {
         pointAtCampaign();
         show(singleBtn, false);
-        show(estimatePanel, false);
+        show(estimatePanel, true);
         show(topupGate, false);
         if (campaignBtn) campaignBtn.hidden = false;
       } else {

@@ -1177,3 +1177,29 @@ class TestHotspotDeflection:
             card = self._card(client, slug)
             assert "score your target&rsquo;s surface" not in card, slug
             assert "asks for at least one" not in card, slug
+
+
+class TestPilotCardCostParagraph:
+    """The card names what its price is for, the job's cap, and (below the
+    spec baseline) why a smaller trial shows the same figure."""
+
+    def test_rfdiffusion_card_names_the_floor_and_the_cap(self, tools_app):
+        from shared.wallet_estimates import compute_hard_cap, get_tool_spec
+        flask_app, slugs = tools_app
+        assert "rfdiffusion" in slugs
+        pilot = _pilots(slugs)["rfdiffusion"]["params"]
+        baseline = get_tool_spec("rfdiffusion").designs_per_run_baseline
+        assert int(pilot["num_designs"]) < baseline, "no floor to explain"
+        card = _pilot_card_html(flask_app.test_client(), "rfdiffusion")
+        assert f"Any run of up to {baseline}" in card
+        cap = compute_hard_cap("rfdiffusion", dict(pilot))
+        assert f"cap of ${cap:.2f}" in card
+        assert "above or below the estimate" in card
+
+    def test_no_card_promises_the_estimate_is_a_ceiling(self, tools_app):
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        for slug, pilot in _pilots(slugs).items():
+            if pilot:
+                card = _pilot_card_html(client, slug)
+                assert "never more than the estimate" not in card, slug

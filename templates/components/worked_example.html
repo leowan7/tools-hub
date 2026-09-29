@@ -46,7 +46,7 @@ Usage:
        tests/test_tool_chooser.py::test_has_example_agrees_with_the_renderer_for_every_tool. #}
     <aside class="panel about-panel" id="worked-example">
       <div class="panel-header">
-        <span class="panel-title">A run we actually did</span>
+        <span class="panel-title">A past run we actually did</span>
       </div>
       <div class="panel-body">
         <h3>The target</h3>
@@ -113,11 +113,11 @@ Usage:
         {% endif %}
 
         <p style="color: var(--text-tertiary); font-size: 0.8rem;">
-          Recorded from that one run
+          Recorded from that one past run
           {%- if ex.cost_usd %}, which cost ${{ ex.cost_usd }}{% endif %}
           {%- if ex.runtime %}, and took {{ ex.runtime }}{% endif %}.
-          That is what it did, not a quote for yours &mdash; the estimate
-          on the form is the live number for your own inputs.
+          That is what it did, not a quote for yours &mdash; the estimates
+          on this page are today&rsquo;s numbers for their own settings.
         </p>
       </div>
     </aside>
