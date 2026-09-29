@@ -85,10 +85,19 @@
           />
         </label>
         <label style="display: grid; gap: 0.25rem;">
-          <span style="font-size: 0.875rem;">Role</span>
-          <select name="role" style="padding: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--color-border, #2a2a2a); background: var(--color-bg-surface, #111); color: inherit;">
-            <option value="member">Member — read &amp; write (submit experiments)</option>
-            <option value="viewer">Viewer — read only (poll status &amp; results)</option>
+          <span style="font-size: 0.875rem;">Scope</span>
+          <select name="scope" style="padding: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--color-border, #2a2a2a); background: var(--color-bg-surface, #111); color: inherit;">
+            <option value="full">Full access — submit, confirm and withdraw experiments, and read everything</option>
+            <option value="read-only">Read-only — list targets, estimate costs, poll status, read quotes &amp; results</option>
+          </select>
+        </label>
+        <label style="display: grid; gap: 0.25rem;">
+          <span style="font-size: 0.875rem;">Expires</span>
+          <select name="expires_in_days" style="padding: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--color-border, #2a2a2a); background: var(--color-bg-surface, #111); color: inherit;">
+            <option value="none">Never</option>
+            <option value="30">In 30 days</option>
+            <option value="90">In 90 days</option>
+            <option value="365">In 365 days</option>
           </select>
         </label>
         <button type="submit" class="btn-primary" style="justify-self: start;">Mint key</button>
@@ -112,9 +121,10 @@
             <tr style="text-align: left; border-bottom: 1px solid var(--color-border, #2a2a2a);">
               <th style="padding: 0.5rem;">Prefix</th>
               <th style="padding: 0.5rem;">Label</th>
-              <th style="padding: 0.5rem;">Role</th>
+              <th style="padding: 0.5rem;">Scope</th>
               <th style="padding: 0.5rem;">Created</th>
               <th style="padding: 0.5rem;">Last used</th>
+              <th style="padding: 0.5rem;">Expires</th>
               <th style="padding: 0.5rem;">Status</th>
               <th style="padding: 0.5rem;"></th>
             </tr>
@@ -124,12 +134,15 @@
               <tr style="border-bottom: 1px solid var(--color-border, #2a2a2a);">
                 <td style="padding: 0.5rem; font-family: monospace;">{{ k.prefix }}…</td>
                 <td style="padding: 0.5rem;">{{ k.label or '—' }}</td>
-                <td style="padding: 0.5rem;">{{ k.role }}</td>
+                <td style="padding: 0.5rem;">{{ k.scope }}</td>
                 <td style="padding: 0.5rem; font-size: 0.85rem;">{{ k.created_at_display }}</td>
                 <td style="padding: 0.5rem; font-size: 0.85rem;">{{ k.last_used_display or '—' }}</td>
+                <td style="padding: 0.5rem; font-size: 0.85rem;">{{ k.expires_display or 'never' }}</td>
                 <td style="padding: 0.5rem;">
                   {% if k.revoked_at %}
                     <span style="color: #c66;">revoked</span>
+                  {% elif k.expired %}
+                    <span style="color: #c66;">expired</span>
                   {% else %}
                     <span style="color: var(--color-accent-text, #2B9E7E);">active</span>
                   {% endif %}

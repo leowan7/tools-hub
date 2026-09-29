@@ -25,7 +25,7 @@ Usage
 
     # /api/v1/experiments
     ctx = resolve_token(bearer_value)
-    if ctx is None or ctx.revoked_at:
+    if ctx is None or not ctx.is_active:
         return jsonify({"error": "invalid_api_key"}), 401
     g.api_user_id = ctx.user_id
     g.api_key_role = ctx.role
@@ -53,7 +53,8 @@ Security notes
 - The plaintext is never written to logs, never sent in webhooks, and
   never echoed back after the mint call.
 - Revoked keys remain in the table for audit; ``resolve_token`` filters
-  them out via ``revoked_at IS NULL``.
+  them out via ``revoked_at IS NULL``. Expired keys also remain;
+  ``resolve_token`` returns None for them after the lookup.
 - Webhook secrets follow the same plaintext-shown-once rule. Migration
   0028 revokes SELECT on the secret column for anon and authenticated
   roles, so only the service-role path can read it.
@@ -66,7 +67,7 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from shared.credits import get_service_client
@@ -95,6 +96,15 @@ _PREFIX_DISPLAY_LEN = len(_TOKEN_PREFIX)  # "rk_live_" — no plaintext bits
 
 VALID_ROLES = frozenset({"member", "viewer"})
 
+# The customer-facing name for a key's stored ``role``. "Scope" is what
+# /account/api-keys shows; the column stays ``role`` so existing keys
+# keep their meaning without a data migration.
+SCOPE_BY_ROLE = {"member": "full", "viewer": "read-only"}
+ROLE_BY_SCOPE = {scope: role for role, scope in SCOPE_BY_ROLE.items()}
+
+# Expiry choices offered at creation, in days. None means no expiry.
+VALID_EXPIRY_DAYS = frozenset({30, 90, 365})
+
 
 # Throwaway env var for local-dev rate guarding only; the API itself is
 # always behind ENABLE_PLATFORM_API which is checked in the blueprint.
@@ -118,14 +128,62 @@ class APIKeyContext:
     created_at: Optional[str]
     last_used_at: Optional[str]
     revoked_at: Optional[str]
+    expires_at: Optional[str] = None
+
+    @property
+    def is_expired(self) -> bool:
+        return _is_expired(self.expires_at)
 
     @property
     def is_active(self) -> bool:
-        return self.revoked_at is None
+        return self.revoked_at is None and not self.is_expired
 
     @property
     def can_write(self) -> bool:
         return self.role == "member"
+
+    @property
+    def scope(self) -> str:
+        return SCOPE_BY_ROLE.get(self.role, "read-only")
+
+
+def _parse_ts(raw: Any) -> Optional[datetime]:
+    """Parse a Supabase ISO 8601 timestamp (or datetime) to aware UTC.
+
+    Returns None when the value cannot be parsed.
+    """
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        try:
+            value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _is_expired(expires_at_raw: Any) -> bool:
+    if not expires_at_raw:
+        return False
+    expires = _parse_ts(expires_at_raw)
+    # An unreadable expiry is treated as expired: refuse, never admit.
+    return expires is None or datetime.now(timezone.utc) >= expires
+
+
+def _row_to_ctx(row: dict) -> APIKeyContext:
+    return APIKeyContext(
+        key_id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        role=row["role"],
+        prefix=row["prefix"],
+        label=row.get("label"),
+        created_at=row.get("created_at"),
+        last_used_at=row.get("last_used_at"),
+        revoked_at=row.get("revoked_at"),
+        expires_at=row.get("expires_at"),
+    )
 
 
 def _read_throttle_seconds() -> int:
@@ -389,6 +447,7 @@ def mint_token(
     user_id: str,
     role: str = "member",
     label: Optional[str] = None,
+    expires_in_days: Optional[int] = None,
 ) -> Optional[tuple[str, str, Optional[str]]]:
     """Create a new API key. Returns ``(plaintext, prefix, webhook_secret)``.
 
@@ -396,11 +455,16 @@ def mint_token(
     user — store nothing else. ``webhook_secret`` is non-None ONLY on the
     first mint per user (CR-01) — see :func:`ensure_webhook_secret`.
 
+    ``expires_in_days`` is None (no expiry) or one of
+    ``VALID_EXPIRY_DAYS``.
+
     Returns None on database failure or if the user has hit
     ``PLATFORM_API_MAX_KEYS_PER_USER`` active keys.
     """
     if role not in VALID_ROLES:
         raise ValueError(f"invalid role: {role!r}")
+    if expires_in_days is not None and expires_in_days not in VALID_EXPIRY_DAYS:
+        raise ValueError(f"invalid expires_in_days: {expires_in_days!r}")
 
     client = get_service_client()
     if client is None:
@@ -411,7 +475,7 @@ def mint_token(
     try:
         existing = (
             client.table(_TABLE)
-            .select("id")
+            .select("id,expires_at")
             .eq("user_id", user_id)
             .is_("revoked_at", "null")
             .execute()
@@ -420,7 +484,11 @@ def mint_token(
         logger.error("mint_token: count query failed", exc_info=True)
         return None
 
-    active = list(getattr(existing, "data", None) or [])
+    active = [
+        r
+        for r in (getattr(existing, "data", None) or [])
+        if not _is_expired(r.get("expires_at"))
+    ]
     if len(active) >= _MAX_KEYS_PER_USER:
         logger.info(
             "mint_token: user %s already has %d active keys (cap=%d)",
@@ -441,6 +509,10 @@ def mint_token(
         "role": role,
         "label": (label or "").strip()[:120] or None,
     }
+    if expires_in_days is not None:
+        row["expires_at"] = (
+            datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+        ).isoformat()
     try:
         response = client.table(_TABLE).insert(row).execute()
     except Exception:
@@ -461,7 +533,8 @@ def mint_token(
 def resolve_token(plaintext: str) -> Optional[APIKeyContext]:
     """Resolve a Bearer plaintext to an active APIKeyContext.
 
-    Returns None for: malformed input, unknown token, or revoked key.
+    Returns None for: malformed input, unknown token, revoked key, or
+    expired key.
     Updates ``last_used_at`` on success — best-effort, never blocks.
     """
     if not _looks_like_platform_token(plaintext):
@@ -490,6 +563,8 @@ def resolve_token(plaintext: str) -> Optional[APIKeyContext]:
     if not rows:
         return None
     row = rows[0]
+    if _is_expired(row.get("expires_at")):
+        return None
 
     # Best-effort last_used touch; swallow errors so a hot-path DB blip
     # doesn't 5xx the agent.
@@ -515,20 +590,11 @@ def resolve_token(plaintext: str) -> Optional[APIKeyContext]:
                 "resolve_token: last_used_at update failed", exc_info=True
             )
 
-    return APIKeyContext(
-        key_id=str(row["id"]),
-        user_id=str(row["user_id"]),
-        role=row["role"],
-        prefix=row["prefix"],
-        label=row.get("label"),
-        created_at=row.get("created_at"),
-        last_used_at=row.get("last_used_at"),
-        revoked_at=row.get("revoked_at"),
-    )
+    return _row_to_ctx(row)
 
 
 def list_keys(user_id: str) -> list[APIKeyContext]:
-    """Return the user's API keys (active first, then revoked)."""
+    """Return the user's API keys (active first, then revoked or expired)."""
     client = get_service_client()
     if client is None:
         return []
@@ -545,24 +611,12 @@ def list_keys(user_id: str) -> list[APIKeyContext]:
         return []
 
     rows = list(getattr(response, "data", None) or [])
-    contexts = [
-        APIKeyContext(
-            key_id=str(r["id"]),
-            user_id=str(r["user_id"]),
-            role=r["role"],
-            prefix=r["prefix"],
-            label=r.get("label"),
-            created_at=r.get("created_at"),
-            last_used_at=r.get("last_used_at"),
-            revoked_at=r.get("revoked_at"),
-        )
-        for r in rows
-    ]
+    contexts = [_row_to_ctx(r) for r in rows]
     # Active first, newest first within each group. Two stable passes:
     # newest-first by created_at, then active-first — the stable sort
     # preserves the newest-first ordering inside each group.
     contexts.sort(key=lambda c: c.created_at or "", reverse=True)
-    contexts.sort(key=lambda c: c.revoked_at is not None)
+    contexts.sort(key=lambda c: not c.is_active)
     return contexts
 
 

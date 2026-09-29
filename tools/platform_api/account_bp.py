@@ -29,7 +29,8 @@ from flask import (
 )
 
 from shared.api_keys import (
-    VALID_ROLES,
+    ROLE_BY_SCOPE,
+    VALID_EXPIRY_DAYS,
     list_keys,
     mint_token,
     revoke_key,
@@ -133,8 +134,10 @@ def _render_api_keys_page(
             "key_id": k.key_id,
             "prefix": k.prefix,
             "label": k.label,
-            "role": k.role,
+            "scope": k.scope,
             "revoked_at": k.revoked_at,
+            "expired": k.is_expired,
+            "expires_display": _format_dt(k.expires_at),
             "created_at_display": _format_dt(k.created_at),
             "last_used_display": _format_dt(k.last_used_at),
         }
@@ -178,11 +181,26 @@ def account_api_keys_create():
             ),
         ), 400
     label = (request.form.get("label") or "").strip()[:120] or None
-    role = (request.form.get("role") or "member").strip().lower()
-    if role not in VALID_ROLES:
-        role = "member"
+    scope = (request.form.get("scope") or "full").strip().lower()
+    expires_raw = (request.form.get("expires_in_days") or "none").strip().lower()
+    expires_in_days = None if expires_raw == "none" else (
+        int(expires_raw) if expires_raw.isdigit() else -1
+    )
+    if scope not in ROLE_BY_SCOPE or (
+        expires_in_days is not None and expires_in_days not in VALID_EXPIRY_DAYS
+    ):
+        return _render_api_keys_page(
+            user_ctx.user_id,
+            create_error=(
+                "Choose a scope (full or read-only) and an expiry "
+                "(none, 30, 90 or 365 days) from the form, then try again."
+            ),
+        ), 400
     minted = mint_token(
-        user_id=user_ctx.user_id, role=role, label=label
+        user_id=user_ctx.user_id,
+        role=ROLE_BY_SCOPE[scope],
+        label=label,
+        expires_in_days=expires_in_days,
     )
     if minted is None:
         return _render_api_keys_page(
