@@ -71,6 +71,7 @@ from shared.storage import (
     StorageError,
     copy_input,
     download_input,
+    input_exists,
     presigned_input_url,
     upload_input,
 )
@@ -707,6 +708,65 @@ def _runtime_band_for_adapter(adapter, meta) -> str:
     return runtime_band(meta, [p.slug for p in adapter.presets])
 
 
+# (stored key, form field, label shown when the stored key is absent).
+# iggm: tools/iggm/__init__.py:334-337 vs templates/tools/iggm_form.html:93,116,122.
+_CLONE_RENAMES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "iggm": (
+        ("antibody_fasta", "fasta", "Antibody FASTA"),
+        ("antigen_chain", "target_chain", "Antigen chain"),
+        ("epitope_pdb_resnums", "epitope", "Epitope residues"),
+    ),
+}
+
+# OpenDDE spec entity key -> guided textarea (tools/opendde/__init__.py:193-234).
+_OPENDDE_BOXES = {
+    "proteinChain": "proteins",
+    "dnaSequence": "dna",
+    "rnaSequence": "rna",
+    "ligand": "ligands",
+}
+
+
+def _upload_purged(stored_path: str) -> bool:
+    """True only when storage confirms the staged input is gone.
+
+    A job row keeps ``_pdb_storage_path`` after the object is deleted
+    (cron/purge_old_storage.py:414 deletes objects and writes no job row).
+    An unknown answer keeps the reuse offer; if the file is missing,
+    download_input raises StorageError (shared/storage.py:146) and
+    tool_submit marks the job failed and releases the hold (the
+    ``except StorageError`` branch after staging).
+    """
+    return input_exists(stored_path) is False
+
+
+def _form_takes_structure(adapter) -> bool:
+    """Whether the tool's form renders the reuse-structure banner.
+
+    proteina takes a structure but has requires_pdb=False
+    (tools/proteina/__init__.py:824-868), so _needs_pdb cannot answer this.
+    """
+    env = current_app.jinja_env
+    source, _, _ = env.loader.get_source(env, adapter.form_template)
+    return "pdb_source_banner(" in source
+
+
+def _clone_missing(adapter, prior_inputs: dict, pre_fill: dict, pdb_source) -> list[str]:
+    """Labels of the cloned run's inputs the form could not refill."""
+    missing = [
+        label for stored, field, label in _CLONE_RENAMES.get(adapter.slug, ())
+        if prior_inputs.get(stored) is None and not pre_fill.get(field)
+    ]
+    if adapter.slug == "opendde" and not prior_inputs.get("spec"):
+        missing.append("Entities (proteins, DNA, RNA, ligands)")
+    preset = next(
+        (p for p in adapter.presets if p.slug == prior_inputs.get("preset")), None
+    )
+    if pdb_source is None and _needs_pdb(adapter, preset, prior_inputs):
+        missing.append("Structure file (upload it again)")
+    return missing
+
+
 def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     """Map stored ``job.inputs`` keys onto the form's field names, in place.
 
@@ -766,6 +826,35 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     # cloning a batch fold silently dropped every record.
     if pre_fill.get("batch_records") is not None:
         pre_fill.setdefault("sequences", pre_fill["batch_records"])
+
+    # Stored under another name than the field that reads it back.
+    for stored, field, _label in _CLONE_RENAMES.get(slug, ()):
+        if pre_fill.get(stored) is not None:
+            pre_fill.setdefault(field, pre_fill[stored])
+    # esmfold2-design stores the scFv framework as binder_name
+    # (tools/esmfold2_design/__init__.py:166) and the minibinder preset stores
+    # the literal "minibinder" there, which is no framework.
+    if slug == "esmfold2-design" and pre_fill.get("is_antibody"):
+        pre_fill.setdefault("binder_framework", pre_fill.get("binder_name"))
+    # OpenDDE stores only the assembled spec (tools/opendde/__init__.py:454),
+    # never the textareas it was built from
+    # (templates/tools/opendde_form.html:144-167). Rebuild both modes from it.
+    if slug == "opendde" and isinstance(pre_fill.get("spec"), list) and pre_fill["spec"]:
+        pre_fill.setdefault("spec_json", json.dumps(pre_fill["spec"], indent=2))
+        boxes: dict[str, list[str]] = {}
+        for entity in pre_fill["spec"][0].get("sequences") or []:
+            for key, box in _OPENDDE_BOXES.items():
+                body = entity.get(key) if isinstance(entity, dict) else None
+                if not isinstance(body, dict):
+                    continue
+                if key == "ligand":
+                    boxes.setdefault(box, []).append(str(body.get("ligand", "")))
+                else:
+                    chain = (body.get("id") or [""])[0]
+                    boxes.setdefault(box, []).append(f">{chain}\n{body.get('sequence', '')}")
+        for box, lines in boxes.items():
+            pre_fill.setdefault(box, "\n".join(lines))
+        del pre_fill["spec"]
 
     # Every remaining list becomes text. LAST, so the shape-specific
     # rules above still see the structure they were written against.
@@ -1253,6 +1342,7 @@ def tool_form(tool: str):
 
     pre_fill: dict = {}
     pdb_source = None  # dict describing a reusable PDB, or None
+    clone_missing: list[str] = []
 
     clone_from = request.args.get("clone_from", "").strip()
     if clone_from:
@@ -1265,12 +1355,15 @@ def tool_form(tool: str):
             _normalize_clone_pre_fill(adapter.slug, pre_fill)
             stored_path = (prior.inputs or {}).get("_pdb_storage_path")
             stored_name = (prior.inputs or {}).get("_pdb_filename")
-            if stored_path and stored_name:
+            if stored_path and stored_name and not _upload_purged(stored_path):
                 pdb_source = {
                     "label": f"PDB from job {prior.id[:8]} ({stored_name})",
                     "filename": stored_name,
                     "token": f"job:{prior.id}",
                 }
+            clone_missing = _clone_missing(
+                adapter, prior.inputs or {}, pre_fill, pdb_source
+            )
             from shared.scale_up import SCALE_UP  # noqa: PLC0415
             scale_to = request.args.get("scale_to", "").strip()
             if scale_to.isdigit() and adapter.slug in SCALE_UP:
@@ -1297,7 +1390,10 @@ def tool_form(tool: str):
             pre_fill["preset"] = "pilot"
             stored_path = src_inputs.get("_pdb_storage_path")
             stored_name = src_inputs.get("_pdb_filename")
-            if stored_path and stored_name:
+            if stored_path and stored_name and _upload_purged(stored_path):
+                if _form_takes_structure(adapter):
+                    clone_missing = ["Structure file (upload it again)"]
+            elif stored_path and stored_name:
                 pdb_source = {
                     "label": (
                         f"Target PDB from {src.tool} job {src.id[:8]} "
@@ -1428,6 +1524,7 @@ def tool_form(tool: str):
         error=None,
         pre_fill=pre_fill,
         pdb_source=pdb_source,
+        clone_missing=clone_missing,
         workspace_ctx=workspace_ctx,
         wallet=wallet_for_form,
         single_container_ceiling=campaign_ceiling,

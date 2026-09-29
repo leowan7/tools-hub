@@ -149,6 +149,25 @@ def download_input(object_path: str) -> bytes:
     return data
 
 
+def input_exists(object_path: str) -> Optional[bool]:
+    """Whether ``object_path`` is still in the inputs bucket; None if unknown."""
+    import posixpath  # noqa: PLC0415
+    folder, name = posixpath.split(object_path)
+    client = get_service_client()
+    if client is None or not name:
+        return None
+    try:
+        listing = client.storage.from_(BUCKET).list(
+            path=folder, options={"search": name}
+        )
+    except Exception:
+        logger.warning("Storage list failed for %s", object_path, exc_info=True)
+        return None
+    if not isinstance(listing, list):
+        return None
+    return any(isinstance(i, dict) and i.get("name") == name for i in listing)
+
+
 def copy_input(
     *,
     source_path: str,
