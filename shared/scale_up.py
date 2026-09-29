@@ -189,6 +189,25 @@ def _next_step(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     return None
 
 
+def full_size_plan(tool: str, count: int, preset: str):  # noqa: ANN201
+    """The full-size run ``count`` designs of ``tool`` would start, or None.
+
+    None when the tool is gated off, the preset is refused, or
+    ``plan_chunks`` refuses the size. The result-page offer below and the
+    tool form's estimate (blueprints/wallet.py::api_wallet_estimate) both
+    price an over-ceiling count from this plan's ``budget_usd``.
+    """
+    from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+
+    if cc.campaign_tool_gated_off(tool) or campaign_preset_refusal(tool, preset):
+        return None
+    try:
+        return cc.plan_chunks(tool, count, preset)
+    except ValueError:
+        return None
+
+
 def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     """The offer for ``job``, or None when there is nothing to offer."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
@@ -217,12 +236,8 @@ def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     preset = job.preset or "pilot"
 
     if job.tool in cc.SUPPORTED_TOOLS and count > cc.single_container_ceiling(job.tool, preset):
-        from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
-        if cc.campaign_tool_gated_off(job.tool) or campaign_preset_refusal(job.tool, preset):
-            return None
-        try:
-            plan = cc.plan_chunks(job.tool, count, preset)
-        except ValueError:
+        plan = full_size_plan(job.tool, count, preset)
+        if plan is None:
             return None
         price = plan.budget_usd
         # The start gate (cc.campaign_preauth) needs the first batch, which can

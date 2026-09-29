@@ -164,9 +164,6 @@ _ALLOWED = {
     # than the deficit. The copy two lines down says "We round to whole
     # dollars at checkout", so the user is told.
     ("templates/wallet/topup.html", "_default_amount = (_deficit_raw|float|round(0, 'ceil'))"),
-    # A literal zero placeholder in the markup; the inline script overwrites it
-    # via fmtUp/fmtDown before it is ever meaningful.
-    ("templates/wallet/_partials.html", "'%.2f'|format(0)"),
 }
 
 

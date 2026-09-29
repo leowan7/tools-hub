@@ -26,7 +26,7 @@
   {"q": "Is there a limit on how many designs I can run?",
    "a": "No. Design count is unlimited and there is no per design charge. Your wallet balance is the only ceiling. A large request becomes a full-size run that drains the wallet as compute is delivered and pauses if the balance runs low, so everything already produced stays downloadable."},
   {"q": "What is a hold versus a final charge?",
-   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. The job is billed for actual GPU minutes consumed, up to the estimate. If the job ends up cheaper than estimated, the surplus returns to your wallet automatically."},
+   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. The job is billed for actual GPU minutes consumed, which can come in above or below the estimate but never above the job's cap. Any part of the hold the job does not use returns to your wallet automatically."},
   {"q": "What happens if I cancel a running job?",
    "a": "Cancellation stops the run but charges for the GPU minutes already consumed. There is no refund for compute we already paid for. A job cancelled before the first heartbeat reports zero GPU consumed settles at zero and the full hold returns to your wallet."},
   {"q": "Are there subscriptions?",
@@ -116,8 +116,9 @@
         <p class="why-card-body">
           When you submit a job, a hold is placed against your wallet for the
           estimated cost. The job is billed for actual GPU minutes consumed,
-          up to the estimate. If the job ends up cheaper than estimated, the
-          surplus returns to your wallet automatically.
+          which can come in above or below the estimate but never above the
+          job&rsquo;s cap. Any part of the hold the job does not use returns to your
+          wallet automatically.
         </p>
       </article>
       <article class="why-card">

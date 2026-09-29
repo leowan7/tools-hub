@@ -81,7 +81,11 @@ from shared.tools_catalog import (
 )
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
 from shared.tool_meta import meta_for, preset_runtime_text, runtime_band
-from shared.wallet_estimates import estimated_cost_for_tool
+from shared.wallet_estimates import (
+    compute_hard_cap,
+    estimated_cost_for_tool,
+    get_tool_spec,
+)
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
 
@@ -867,10 +871,26 @@ def _pilot_context(adapter, meta) -> dict | None:
     if not pilot:
         return None
     params = dict(pilot.get("params") or {})
+    # A count under the spec's baseline is estimated as the baseline
+    # (shared/wallet_estimates.py::_scale_seconds floors the ratio at 1.0),
+    # so the card says the smaller trial shows the same figure.
+    spec = get_tool_spec(adapter.slug)
+    floor_count = None
+    if spec and spec.scaling_param:
+        try:
+            count = int(params.get(spec.scaling_param))
+        except (TypeError, ValueError):
+            count = None
+        if count is not None and count < spec.designs_per_run_baseline:
+            floor_count = spec.designs_per_run_baseline
     return dict(
         pilot,
         params=params,
         cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
+        # What settle can charge at most: the per-job cap, not the estimate
+        # (supabase/migrations/0020_wallet_corrections.sql:188).
+        max_charge_usd=compute_hard_cap(adapter.slug, params),
+        floor_count=floor_count,
         runtime=preset_runtime_text(meta, str(params.get("preset") or "")),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
         # Rendered by components/pilot_card.html as the "this tool asks

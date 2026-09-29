@@ -280,7 +280,7 @@ class TestNoDeadLinkInsideAnExample:
             resp = client.get(f"/tools/{slug}")
             assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
             html = resp.get_data(as_text=True)
-            assert "A run we actually did" in html, (
+            assert "A past run we actually did" in html, (
                 f"{slug} declares an EXAMPLE but the page does not render "
                 "it — the scan below would be vacuously clean"
             )

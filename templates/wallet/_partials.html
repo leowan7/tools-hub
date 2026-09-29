@@ -47,9 +47,9 @@
        aria-live="polite">
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Estimated cost</span>
-      <span class="wallet-estimate-value" data-estimate-cost>
-        ${{ '%.2f'|format(0) }}
-      </span>
+      {# A dash until the estimate call answers: a "$0.00" here read as a
+         free run to anyone whose script had not run yet. #}
+      <span class="wallet-estimate-value" data-estimate-cost>&mdash;</span>
       <span class="wallet-estimate-helper" title="Estimated from your parameters and historical compute time.">
         based on parameters and historical compute time
       </span>
@@ -80,11 +80,16 @@
        consumption-based billing model + the no-refund-on-cancel rule
        so users see the rule before they submit, not after they cancel
        and discover the charge. #}
+    <div class="wallet-estimate-row" data-estimate-note hidden>
+      <span class="wallet-estimate-helper" data-estimate-note-text></span>
+    </div>
+    {# The charge is the GPU time used, clamped to the job's hard cap, not
+       to the estimate (supabase/migrations/0020_wallet_corrections.sql:188). #}
     <div class="wallet-estimate-row wallet-estimate-row--billing-note">
       <span class="wallet-estimate-helper">
-        Billed by actual GPU consumed, up to the estimate. Surplus
-        returns to your wallet automatically. Cancellation does not
-        refund GPU time already used.
+        Billed by actual GPU consumed, which can come in above or below
+        the estimate. Unused hold returns to your wallet automatically.
+        Cancellation does not refund GPU time already used.
       </span>
     </div>
 
@@ -199,6 +204,8 @@
       var softCapEl = panel.querySelector('[data-estimate-cap]');
       var hardBlockEl = panel.querySelector('[data-estimate-hard-block]');
       var ceilingBlockEl = panel.querySelector('[data-estimate-ceiling-block]');
+      var noteEl = panel.querySelector('[data-estimate-note]');
+      var noteTextEl = panel.querySelector('[data-estimate-note-text]');
 
       var gateEstimateEl = gate && gate.querySelector('[data-gate-estimate]');
       var gateBalanceEl = gate && gate.querySelector('[data-gate-balance]');
@@ -254,8 +261,49 @@
         else { el.removeAttribute('hidden'); }
       }
 
+      function setNote(text) {
+        if (noteTextEl) noteTextEl.textContent = text || '';
+        setHidden(noteEl, !text);
+      }
+
+      // No price: a count the server refuses (estimate_usd null), an input
+      // the browser marks invalid, or an empty count field, which the
+      // estimator would otherwise price at its baseline.
+      function applyNoPrice(reason) {
+        if (costEl) costEl.textContent = '—';
+        if (balanceAfterEl) {
+          balanceAfterEl.textContent = '—';
+          balanceAfterEl.classList.remove('wallet-estimate-value-neg');
+        }
+        setNote(reason);
+        setHidden(ceilingBlockEl, true);
+        setHidden(hardBlockEl, true);
+        setHidden(softWarnEl, true);
+        setHidden(gate, true);
+        if (submitBtn) {
+          delete submitBtn.dataset.blockWallet;
+          submitBtn.disabled = submitBtn.dataset.blockWallet === '1' ||
+                               submitBtn.dataset.blockPreflight === '1';
+          submitBtn.setAttribute('aria-disabled', String(submitBtn.disabled));
+          submitBtn.removeAttribute('hidden');
+        }
+      }
+
       function applyState(data) {
         if (!data) return;
+        if (data.estimate_usd === null || data.estimate_usd === undefined) {
+          applyNoPrice(data.no_estimate_reason || '');
+          return;
+        }
+        var countEl = data.count_key && form.elements[data.count_key];
+        if (countEl && countEl.type === 'number' && !countEl.value.trim()) {
+          applyNoPrice('Enter a number to see a price.');
+          return;
+        }
+        setNote(data.full_size_run
+          ? 'This count runs as a full-size run in ' + data.total_subjobs +
+            ' pieces. The estimate is the same total the full-size run page shows.'
+          : '');
         var estimate = parseFloat(data.estimate_usd || 0);
         var balance = parseFloat(data.balance_usd || 0);
         var balanceAfter = parseFloat(data.balance_after_usd);
@@ -338,6 +386,14 @@
       }
 
       function fetchEstimate() {
+        var numbers = form.querySelectorAll('input[type="number"]');
+        for (var i = 0; i < numbers.length; i++) {
+          var n = numbers[i];
+          if (n.willValidate && n.offsetParent !== null && !n.validity.valid) {
+            applyNoPrice('Fix the highlighted number to see a price.');
+            return;
+          }
+        }
         var params = new URLSearchParams();
         params.set('tool', toolSlug);
         var fd = new FormData(form);
