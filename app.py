@@ -1005,7 +1005,7 @@ def create_app() -> Flask:
 
             flask reengagement:send
 
-        No-ops cleanly when no user qualifies.
+        No-ops cleanly when no user qualifies; exits 1 when errors > 0.
         """
         from cron.reengagement import send_reengagement  # noqa: PLC0415
 
@@ -1018,6 +1018,8 @@ def create_app() -> Flask:
             f"errors={summary['errors']}",
             flush=True,
         )
+        if summary["errors"]:
+            raise SystemExit(1)
 
     @flask_app.cli.command("credit:expire")
     def cli_credit_expire():
@@ -1037,6 +1039,8 @@ def create_app() -> Flask:
             f"errors={summary['errors']}",
             flush=True,
         )
+        if summary["errors"]:
+            raise SystemExit(1)
 
     @flask_app.cli.command("jobs:sweep-stuck")
     def cli_sweep_stuck():
