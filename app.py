@@ -677,6 +677,9 @@ def create_app() -> Flask:
     flask_app.jinja_env.globals["display_ledger_usd"] = (
         _compute_campaigns.display_ledger_usd
     )
+    flask_app.jinja_env.globals["display_record_usd"] = (
+        _compute_campaigns.display_record_usd
+    )
 
     # Inject Workspace context into every template so the shared header
     # can render the "Active Workspaces (N)" badge. Replaces the legacy
