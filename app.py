@@ -670,6 +670,7 @@ def create_app() -> Flask:
     #   display_ledger_usd   exact stored figure (form values, staff) -> EXACT
     #   display_record_usd   customer-facing ledger rows, job spend,
     #                        returned holds; "$" and sign included     -> HALF-UP
+    #                        (balance=True: "Balance after" cells)     -> DOWN
     #
     # A cap rounds DOWN with the balances: a cap shown above its real value
     # overstates the headroom, which is the same error as overstating a balance.

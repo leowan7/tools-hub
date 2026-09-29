@@ -420,8 +420,9 @@ def display_record_usd(value, balance: bool = False) -> str:  # noqa: ANN001
     this way can be a cent off reconciling; ``display_ledger_usd`` keeps the
     exact figure for form values and staff pages.
 
-    ``balance=True`` rounds DOWN instead, matching ``display_balance_usd``, so
-    a "Balance after" cell never sits above the headline balance.
+    ``balance=True`` rounds DOWN instead, as ``display_balance_usd`` does, so
+    a "Balance after" cell of a cent or more is not printed above the real
+    balance (tests/test_money_display_surfaces.py, 9.9960 -> $9.99).
     """
     amount = Decimal(str(value))
     if not amount.is_finite():
