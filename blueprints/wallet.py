@@ -438,8 +438,11 @@ def api_wallet_estimate():
 
     # Over the single-container ceiling the form cannot run one job: it posts
     # to the full-size run, or tool_submit refuses it
-    # (blueprints/tools.py::_single_container_refusal, which this test mirrors).
-    # Price the full-size run, the figure the result page's offer shows.
+    # (blueprints/tools.py::_single_container_refusal, which this test mirrors,
+    # default-preset ceiling included). Price the full-size run, the figure the
+    # result page's offer shows. That offer tests the job's own preset
+    # (shared/scale_up.py::quote); the two agree only while no tool's ceiling
+    # varies by preset, which holds today but nothing enforces.
     from shared import compute_campaigns as cc  # noqa: PLC0415
     requested = _whole_count(params.get("num_designs"))
     if (
