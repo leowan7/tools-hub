@@ -1206,14 +1206,16 @@ def test_an_unknown_pasted_sort_mode_falls_back_to_the_default_mode(client):
 
 def test_a_split_cohort_row_names_its_preset(client):
     """The Tool column prints a slug, and for a tool that ran at two presets the
-    slug does not identify the population the row was ranked against."""
+    slug does not identify the population the row was ranked against. The chip
+    prints the preset's display label, not its slug
+    (shared/tool_meta.py::_PRESET_LABELS)."""
     cand = dict(_one_design()[0], _source_tool="proteina",
                 _source_preset="motif_ame", _metric_key="total_reward",
                 _metric_value=12.4)
     body = _detail(client, tools=["proteina"], multi_tool=True,
                    split_tools=["proteina"], candidates=[cand],
                    total=1, shown=1)
-    assert "motif_ame" in body
+    assert "motif scaffolding" in body
 
 
 def test_an_unsplit_tool_gets_no_preset_chip(client):
@@ -1224,6 +1226,7 @@ def test_an_unsplit_tool_gets_no_preset_chip(client):
                 _metric_value=12.4)
     body = _detail(client, tools=["proteina", "bindcraft"], multi_tool=True,
                    split_tools=[], candidates=[cand], total=1, shown=1)
+    assert "motif scaffolding" not in body
     assert "motif_ame" not in body
 
 

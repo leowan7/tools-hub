@@ -509,6 +509,11 @@ def create_app() -> Flask:
     from shared.tool_meta import preset_label as _preset_label  # noqa: PLC0415
     flask_app.jinja_env.filters["preset_label"] = _preset_label
 
+    # Job timestamps are stored UTC; the tables printed them raw with no
+    # zone. See shared.jobs.utc_stamp.
+    from shared.jobs import utc_stamp as _utc_stamp  # noqa: PLC0415
+    flask_app.jinja_env.filters["utc_stamp"] = _utc_stamp
+
     # The results partials read job.result DIRECTLY rather than through
     # candidate_records, so this is the render layer's only guard against
     # a candidate row that is not a dict. A global rather than a filter

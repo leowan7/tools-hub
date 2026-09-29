@@ -21,10 +21,11 @@ from __future__ import annotations
 # Guess (AF2-IG) validation. The generator is private; the AF2-IG
 # scoring stage is published.
 paper_citation: str = (
-    "Bennett, N. R., Coventry, B., Goreshnik, I., et al. "
+    "Ranomics in-house pipeline. Its scoring stage uses the AF2 "
+    "Initial Guess method of Bennett, N. R., Coventry, B., "
+    "Goreshnik, I., et al. "
     "\"Improving de novo protein binder design with deep learning.\" "
-    "Nature Communications 14, 2625 (2023). "
-    "Ranomics in-house pipeline; scoring stage uses AF2 Initial Guess."
+    "Nature Communications 14, 2625 (2023)."
 )
 
 paper_url: str = "https://www.nature.com/articles/s41467-023-38328-5"

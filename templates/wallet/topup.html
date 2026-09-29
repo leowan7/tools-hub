@@ -104,10 +104,10 @@
   {% set _min = (_min_raw|float) if _min_raw is not none else 20 %}
   {% set _deficit_raw = deficit_usd|default(none, true) %}
   {% set _suggested = suggested_amounts or [
-    {'value': 20,   'label': '$20',    'covers': 'About 40 ProteinMPNN runs. Good for first exploration after the signup balance.'},
+    {'value': 20,   'label': '$20',    'covers': 'First exploration after the signup balance. Sequence design and single folds.'},
     {'value': 50,   'label': '$50',    'covers': 'One small project. Tens of folds, a single round of MPNN sequence design.'},
     {'value': 200,  'label': '$200',   'covers': 'Multi target exploration. Several design loops across two or three targets.'},
-    {'value': 500,  'label': '$500',   'covers': 'One full-size run. Thousands of RFdiffusion backbones plus design and validation.'},
+    {'value': 500,  'label': '$500',   'covers': 'One full-size run: backbone generation plus design and validation.'},
     {'value': 2500, 'label': '$2,500', 'covers': 'Production scale. At this level, testing your best designs in our lab is often the next step.'},
   ] %}
   {% set _default_amount = (_deficit_raw|float|round(0, 'ceil')) if _deficit_raw is not none and (_deficit_raw|float) > _min else _min %}
@@ -137,8 +137,14 @@
           <strong>${{ display_cost_usd(_deficit_raw) }}</strong> more than
           your balance.
           {% endif %}
-          Add at least that amount, then go back to the form and run the
-          job once your balance updates. Nothing is submitted for you.
+          Add at least that amount, then
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
+          {% else %}
+            go back to the form
+          {% endif %}
+          and run the job once your balance updates.
+          Nothing is submitted for you.
         </p>
       </div>
     </div>
@@ -300,8 +306,9 @@
       <p style="margin: 0 0 0.75rem 0; color: var(--text-secondary); line-height: 1.65;">
         The amount you fund is your spend cap. There is no per design charge:
         you pay only for the compute each job delivers, and whatever a job does
-        not use returns to your wallet. Design count is unlimited, so a large
-        request becomes a full-size run that pauses if your balance runs low.
+        not use returns to your wallet. Every form that takes a design count
+        caps it, and a larger request becomes a full-size run that pauses if
+        your balance runs low.
       </p>
       <p style="margin: 0; color: var(--text-secondary); line-height: 1.65;">
         Free tools (Epitope Scout, Developability Scout, Library Planner)

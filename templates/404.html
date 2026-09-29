@@ -5,8 +5,13 @@
   <div class="hero">
     <h1>Not found.</h1>
     <p class="subtitle">
-      The page you're looking for doesn't exist, or you're signed in with a
-      different account than the one that owns it.
+      {% if session.get('user_email') %}
+        The page you're looking for doesn't exist, or you're signed in with a
+        different account than the one that owns it.
+      {% else %}
+        The page you're looking for doesn't exist. If it is your wallet, your
+        runs or a result, sign in first — those pages live behind your account.
+      {% endif %}
     </p>
   </div>
 

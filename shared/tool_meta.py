@@ -21,9 +21,37 @@ import importlib
 from types import ModuleType
 
 
+# Stored preset slug -> the short name a customer sees. Every slug in
+# tools/*/__init__.py Preset tuples is listed; the Preset.label strings
+# themselves are form sentences ("Your target, ~30 min start to first
+# results"), too long for a table cell or a badge. An unlisted slug falls
+# back to its own words, so a new preset reads as prose, not as code.
+_PRESET_LABELS: dict[str, str] = {
+    "pilot": "trial run",
+    "standalone": "standalone",
+    "batch": "batch",
+    "msa_server": "with MSA",
+    "minibinder": "de novo minibinder",
+    "scfv": "scFv",
+    "complex_prediction": "complex prediction",
+    "cdr_design": "CDR design",
+    "fr_design": "framework redesign",
+    "affinity_maturation": "affinity maturation",
+    "inverse_design": "inverse design",
+    "general": "general co-folding",
+    "abag": "antibody-antigen",
+    "protein_binder": "protein binder",
+    "ligand_binder": "ligand binder",
+    "motif_ame": "motif scaffolding",
+    "validate": "validate (free dry run)",
+}
+
+
 def preset_label(slug) -> str:  # noqa: ANN001
     """The name a customer sees for a stored preset slug."""
-    return "trial run" if slug == "pilot" else (slug or "")
+    if not slug:
+        return ""
+    return _PRESET_LABELS.get(slug, str(slug).replace("_", " "))
 
 
 def meta_for(slug: str) -> ModuleType | None:

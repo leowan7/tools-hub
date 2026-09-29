@@ -517,19 +517,37 @@
       });
     });
 
-    // Column sort
+    // Column sort. The first click on any column puts the BEST value first,
+    // which is descending for a higher-is-better metric and ascending for a
+    // lower-is-better one. data-better is emitted by
+    // components/candidate_table.html from the column's legend direction.
+    // The header is a focusable columnheader and answers Enter/Space, so the
+    // sort is reachable without a mouse; aria-sort reports the current state.
     table.querySelectorAll('th[data-col]').forEach(function (th) {
       th.style.cursor = 'pointer';
-      th.dataset.dir  = 'desc';
-      th.addEventListener('click', function () {
+      var best = th.dataset.better === 'low' ? 'asc' : 'desc';
+      // Seeded to the opposite of `best` so the first flip lands on it.
+      th.dataset.dir = best === 'asc' ? 'desc' : 'asc';
+      function applySort() {
         var col = th.dataset.col;
         var dir = th.dataset.dir === 'desc' ? 'asc' : 'desc';
         th.dataset.dir = dir;
         sortTable(table, col, dir);
         table.querySelectorAll('th[data-col]').forEach(function (h) {
           h.classList.remove('sort-asc', 'sort-desc');
+          h.setAttribute('aria-sort', 'none');
         });
         th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
+        th.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
+      }
+      th.addEventListener('click', applySort);
+      th.addEventListener('keydown', function (ev) {
+        // The metric tooltip's own focusable span sits inside this th, so its
+        // Enter must not also sort the column.
+        if (ev.target !== th) return;
+        if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+        ev.preventDefault();
+        applySort();
       });
     });
   }
@@ -584,6 +602,17 @@
           return '<li>' + label + '</li>';
         }).join('');
       }
+    }
+
+    // A scoping request with nothing starred names no designs, so the submit
+    // stays disabled until at least one star exists. Set on every open, both
+    // ways, because the same modal is reopened after the customer stars rows.
+    var submitBtn = modal.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = sl.length === 0;
+      submitBtn.title = sl.length === 0
+        ? 'Star at least one design to send a shortlist.'
+        : '';
     }
 
     modal.style.display = 'flex';

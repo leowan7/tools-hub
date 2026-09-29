@@ -56,7 +56,7 @@ comparison_one_liner: str = (
     "hit, and you want to know whether they actually stick together "
     "before you order DNA. Returns the predicted complex and a "
     "0-to-1 interface confidence score. Trained on antibody-antigen "
-    "complexes, so it is a genuinely second opinion next to "
+    "complexes, so it gives a genuine second opinion next to "
     "AlphaFold2."
 )
 example_output_id: Optional[str] = None

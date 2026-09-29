@@ -14,8 +14,8 @@ them at once and the suite would stay green.
 Both invariants below are claims the templates make about themselves, in
 comments, in the imperative:
 
-  "DOWNLOAD IS THE PRIMARY OUTCOME, and there is exactly one btn-primary in
-   this bar."                                        candidate_table.html
+  "NOTHING IN THIS BAR IS btn-primary ... The handoff stays secondary and
+   adjacent, not above."                             candidate_table.html
 
   "It used to open with 'Take it further' and carry a `btn-primary`, which
    made it the loudest control on a page whose primary outcome is the
@@ -169,21 +169,18 @@ _MODES = [
 
 
 @pytest.mark.parametrize("name,kw", _MODES, ids=[m[0] for m in _MODES])
-def test_the_action_bar_has_exactly_one_primary_in_every_mode(name, kw):
+def test_the_action_bar_carries_no_primary_in_any_mode(name, kw):
+    """Phase 5.2 made "Download CSV" this bar's one btn-primary. #376 then
+    made the priced scale-up offer the page's primary next step
+    (templates/job_detail.html:301), so a succeeded job carried two primaries
+    and the download is secondary now (QA 2026-09-29, R2). The invariant the
+    two tests here used to protect -- the CRO handoff is not the loudest
+    control -- is what
+    test_the_shortlist_and_export_controls_are_all_secondary below pins, and
+    it now names the download too."""
     controls = _controls(_render_table(**kw))
     assert controls, f"{name}: no action bar parsed at all"
-    primaries = _primaries(controls)
-    assert len(primaries) == 1, (name, primaries, controls)
-
-
-@pytest.mark.parametrize("name,kw", _MODES, ids=[m[0] for m in _MODES])
-def test_the_one_primary_is_the_download_not_the_sales_handoff(name, kw):
-    """WHICH control is primary is the whole point of 5.2. It used to be "Send
-    shortlist to Ranomics lab", which framed the CRO handoff as the goal of the
-    page rather than as one option after the download. Counting primaries alone
-    would stay green if the primary simply moved back."""
-    primaries = _primaries(_controls(_render_table(**kw)))
-    assert primaries == ["Download CSV"], (name, primaries)
+    assert _primaries(controls) == [], (name, controls)
 
 
 def test_the_shortlist_and_export_controls_are_all_secondary():
@@ -199,8 +196,8 @@ def test_the_shortlist_and_export_controls_are_all_secondary():
     # own example converted, so they are .pdb).
     # The label is only this test's handle on the control -- what it
     # pins is that the control is SECONDARY, which is unchanged.
-    for label in ("FASTA", "Structures (ZIP)", "Starred only (CSV)",
-                  "Send shortlist to Ranomics lab"):
+    for label in ("Download CSV", "FASTA", "Structures (ZIP)",
+                  "Starred only (CSV)", "Send shortlist to Ranomics lab"):
         assert label in labels, (label, sorted(labels))
         assert "btn-secondary" in labels[label].split(), (label, labels[label])
 
@@ -209,9 +206,9 @@ def test_the_wet_lab_panel_carries_no_primary_button():
     """`results_shell.html`'s outbound sales panel. Two of a results page's
     three loudest buttons pointed at ranomics.com before 5.2 demoted these.
 
-    Parsed from the whole rendered panel rather than a subtree, because the
-    claim is about the macro's own markup and it has exactly one primary to
-    lose: the table's Download CSV.
+    Parsed from the whole rendered panel rather than a subtree: the claim is
+    about the macro's own markup, and the table it renders now has no
+    btn-primary of its own for this count to have to excuse.
     """
     tmpl = _env().from_string(
         '{% from "components/results_shell.html" import results_panel %}'

@@ -301,7 +301,7 @@ adapter = ToolAdapter(
     blurb=(
         "Upload a backbone — a structure with no sequence decided yet — "
         "and get back candidate sequences that should fold into it, "
-        "each with a score and a native-recovery figure. About 30 s per "
+        "each with a score and a native-recovery figure. About a minute per "
         "run."
     ),
     presets=(

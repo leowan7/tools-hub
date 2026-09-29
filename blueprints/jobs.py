@@ -531,7 +531,10 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
             if not ledger["settled"]:
                 spend_note = "reserved"
             elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
-                spend_note = "refunded"
+                # A released hold nets zero, and "$0.00 refunded" reads as a
+                # refund that failed. The job page says the same thing in
+                # words ("the hold was returned ... not charged").
+                spend_note = "refunded" if usd > 0 else "not charged"
 
         progress = None
         prog = _inputs(job).get("_progress")

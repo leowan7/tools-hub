@@ -905,11 +905,13 @@ def _pilot_context(adapter, meta) -> dict | None:
             )
             else None
         ),
-        # Whether the gate REFUSES a submit that names none, not whether
+        # Whether ANYTHING refuses a submit that names none, not whether
         # the tool can use one. boltzgen is offered the deflection because
         # Scout can hand residues back to it, and runs unsteered without
-        # them, so its paragraph must not say it needs one.
-        hotspot_required=tool_chooser.needs_hotspots(adapter.slug),
+        # them, so its paragraph must not say it needs one. iggm is the
+        # other direction: its own validate refuses, which the preflight
+        # flag alone does not see — tool_chooser.refuses_without_residues.
+        hotspot_required=tool_chooser.refuses_without_residues(adapter.slug),
         # Only these tools can actually receive the residues back. Scout's
         # picker offers exactly this set; on anything else the user has to
         # copy the numbers across by hand, and the copy says so.

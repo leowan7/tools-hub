@@ -74,7 +74,7 @@ seo_faq: list[dict] = [
 comparison_one_liner: str = (
     "You have a backbone — a 3D shape with no sequence decided yet "
     "— and need amino-acid sequences that will fold into it. Ranked "
-    "candidates come back in about 30 seconds. To generate the "
+    "candidates come back in about a minute. To generate the "
     "backbone in the first place, run a binder design tool and feed "
     "its PDB in here."
 )

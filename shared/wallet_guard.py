@@ -128,6 +128,9 @@ def _render_topup_gate(
         suggested_amount=suggested,
         min_topup_usd=MIN_TOPUP_USD,
         next_url=next_url,
+        # Same slug as next_url, for the gate paragraph's inline "go back to
+        # the <tool> form" link (templates/wallet/topup.html).
+        return_tool=tool_slug,
         gate_reason=reason,
         tool_slug=tool_slug,
         self_serve_ceiling_usd=SELF_SERVE_CEILING_USD,

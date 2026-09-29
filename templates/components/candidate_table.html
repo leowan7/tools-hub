@@ -424,13 +424,16 @@
      and asserted only that the ROUTE reads ?sort when present, which is the
      half that was never in doubt. #}
   {% set export_q = ('?sort=' ~ sort_mode) if sort_mode else '' %}
-  {# DOWNLOAD IS THE PRIMARY OUTCOME, and there is exactly one btn-primary in
-     this bar. It used to be "Send shortlist to Ranomics lab", with all three
-     exports secondary, which framed the CRO handoff as the goal of the page
-     rather than as one option after it. The handoff below is now secondary and
-     adjacent, not above. #}
+  {# NOTHING IN THIS BAR IS btn-primary. "Download CSV" was Phase 5.2's one
+     primary, taken off the handoff ("Send shortlist to Ranomics lab"), which
+     had framed the CRO handoff as the goal of the page rather than as one
+     option after it. #376 then made the priced scale-up offer the page's
+     primary next step (templates/job_detail.html:301), which left a succeeded
+     job with two, so the download is secondary now. The handoff stays
+     secondary and adjacent, not above.
+     (tests/test_results_action_bar.py, tests/test_target_table_render.py) #}
   <div class="cand-export-btns">
-    <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-primary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
+    <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
     <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">FASTA</a>
     <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Structures (ZIP)</a>
     {# "Export starred only" — the star's payoff for a user who never contacts
@@ -579,12 +582,21 @@
             {% set _cite = (('. ' if _range else ' ') ~ g.citation) if g.citation else '' %}
             {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ _range ~ _cite %}
           {% endif %}
+          {# data-better tells static/js/candidate_table.js which direction
+             the first click should sort, so every column opens best-first.
+             The eight columns with no legend are all higher-is-better
+             (opendde ranking_score, esmfold pTM, proteina total_reward) or
+             not numeric at all (against_bar), so the default holds.
+             tabindex + role + aria-sort make the sort keyboard reachable;
+             the keydown handler lives in that same file. #}
           <th data-col="{{ col }}" class="sortable-col"
+              data-better="{{ 'low' if leg and leg.get('direction') == 'lower_is_better' else 'high' }}"
+              tabindex="0" role="columnheader" aria-sort="none"
               {% if leg %}title="{{ leg_text }}"{% endif %}>
             {{ g.get('label', col) -}}
-            {# tabindex so the tooltip is reachable without a mouse. A <span>
-               does not fire a click on Enter the way a <button> does, so this
-               does not hand the enclosing th[data-col] a keyboard sort. #}
+            {# tabindex so the tooltip is reachable without a mouse. The <th>
+               itself now carries the keyboard sort (see data-better above);
+               this span only opens the tooltip. #}
             {% if tooltip_text %}
               <span class="mtt" tabindex="0"
                     data-tooltip="{{ tooltip_text }}">?</span>

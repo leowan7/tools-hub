@@ -1229,16 +1229,19 @@ def _bar(html: str) -> list:
     return p.controls
 
 
-def test_download_csv_is_the_only_primary_control_in_the_action_bar():
-    """Phase 5.2. "Send shortlist to Ranomics lab" was the ONLY btn-primary in
-    this bar and all three exports were secondary, which framed the CRO handoff
-    as the goal of the results page rather than as one option after it. Per
-    decision 5 download wins and there is exactly one primary."""
+def test_no_control_in_the_action_bar_is_primary():
+    """Phase 5.2 took the one btn-primary off "Send shortlist to Ranomics lab"
+    and gave it to the download. #376 then made the priced scale-up offer the
+    page's primary next step (templates/job_detail.html:301), so a succeeded job
+    carried two primaries and the download is secondary now (QA 2026-09-29, R2).
+    The handoff not taking the slot back is the next test.
+    """
     controls = _bar(_multi_tool_table())
-    primaries = [c for c in controls if "btn-primary" in c[1]]
-    assert len(primaries) == 1, primaries
-    assert primaries[0][2] == "Download CSV"
-    assert primaries[0][3].endswith("/targets/t-abc12345/export.csv")
+    assert [c for c in controls if "btn-primary" in c[1]] == []
+    csv = [c for c in controls if c[2] == "Download CSV"]
+    assert len(csv) == 1, controls
+    assert "btn-secondary" in csv[0][1]
+    assert csv[0][3].endswith("/targets/t-abc12345/export.csv")
 
 
 def test_the_lab_handoff_is_secondary_and_adjacent_not_above():

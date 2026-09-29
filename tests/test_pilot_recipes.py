@@ -892,6 +892,35 @@ class TestHotspotDeflection:
     def _carded(cls, client, slug: str) -> bool:
         return "<strong>Hotspot residues</strong>" in cls._card(client, slug)
 
+    @classmethod
+    def _refuses_without_any_residues(cls, adapter, pilot) -> bool:
+        """Whether the ADAPTER refuses with hotspot_residues AND epitope empty.
+
+        Not every residue field: proteina also reads ``chain_hotspots``
+        (tools/proteina/__init__.py), which this leaves populated. proteina is
+        not carded as requiring residues, so the omission cannot excuse an
+        overclaim today; a tool that refuses only on a third field would need
+        that field added here.
+
+        ``_validate_without_hotspots`` clears ``hotspot_residues`` only, so
+        iggm -- which reads ``epitope`` -- validated clean and looked like a
+        tool nothing refuses, while tools/iggm/__init__.py answers an empty
+        epitope with "Epitope residues are required." Its card says the tool
+        will not start, and that claim is true; the preflight flag alone
+        cannot see why.
+        """
+        form = dict(cls.PROBE_FORM)
+        if pilot:
+            form.update(pilot["params"])
+        form["hotspot_residues"] = ""
+        form["epitope"] = ""
+        try:
+            _out, err = adapter.validate(form, None)
+        except TypeError:
+            _out, err = adapter.validate(form)
+        err = (err or "").lower()
+        return "hotspot" in err or "epitope" in err
+
     @staticmethod
     def _preflight_requires_hotspots(slug: str) -> bool:
         """Read the preflight gate directly, not through the app."""
@@ -1041,15 +1070,21 @@ class TestHotspotDeflection:
     ):
         """The false-promise direction, read off the rendered sentence.
 
-        "will not start without at least one" is a refusal claim, and the
-        only thing that refuses is
-        ``shared/pdb_preflight.py::preflight_for_tool`` on
-        ``TOOL_RULES[slug].hotspots_required``. A tool carded for the
-        handoff alone must get the other branch of the sentence.
+        "will not start without at least one" is a refusal claim, and two
+        different things can refuse: the preflight gate
+        (``shared/pdb_preflight.py::preflight_for_tool`` on
+        ``TOOL_RULES[slug].hotspots_required``) or the adapter's own
+        ``validate``. Reading the gate alone called iggm an overclaim when
+        its validate is what refuses, so this drives the adapter too. A tool
+        carded for the handoff alone must get the other branch of the
+        sentence.
         """
+        from tools import base as tool_base
+
         flask_app, slugs = tools_app
         client = flask_app.test_client()
         pilots = _pilots(slugs)
+        adapters = {a.slug: a for a in tool_base.all_adapters()}
         carded = sorted(s for s in slugs
                         if pilots[s] and self._carded(client, s))
         assert carded
@@ -1057,12 +1092,15 @@ class TestHotspotDeflection:
             s for s in carded
             if self._says_required(client, s)
             and not self._preflight_requires_hotspots(s)
+            and not self._refuses_without_any_residues(
+                adapters[s], pilots.get(s),
+            )
         ]
         assert not overclaims, (
             f"{overclaims}: the pilot card says the tool will not start "
             f"without a hotspot residue, but its preflight rules set "
-            f"hotspots_required=False, so a hotspot-free submit runs and "
-            f"bills"
+            f"hotspots_required=False and its own validate accepts a form "
+            f"naming no residues, so that submit runs and bills"
         )
         # Vacuity: the phrase is reachable, so the check is not blind.
         required = [s for s in carded if self._preflight_requires_hotspots(s)]

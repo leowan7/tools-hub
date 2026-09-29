@@ -346,9 +346,9 @@
         {%- if design_count %} {{ design_count }} different design tools sit
         behind that, and you do not have to name one to start.{% endif %}
         You fund a USD
-        wallet, your balance is the only cap, and the number of designs is
-        unlimited. <strong>New accounts start with
-        ${{ signup_credit() }} in their wallet, usable for {{ signup_credit_expiry_days }} days. No credits, no tiers, no subscriptions.</strong>
+        wallet, your balance is the only cap, and no plan limits how many
+        designs you run. <strong>New accounts start with
+        ${{ signup_credit() }} in their wallet, usable for {{ signup_credit_expiry_days }} days. No tiers, no subscriptions.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
@@ -501,7 +501,7 @@
     <section class="section" id="tools">
       <div class="home-catalog-section-head">
         <span class="home-catalog-section-title">{% if authenticated %}Run a new tool{% else %}What you can run{% endif %}</span>
-        <a href="{{ url_for('tools.tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
+        <a href="{{ url_for('tools.tools_comparison') }}" class="home-catalog-section-link">All tools →</a>
       </div>
       {% for category, items in grouped %}
         <div class="home-catalog-group{{ ' home-catalog-group--first' if loop.first }}">
@@ -581,11 +581,11 @@
         <span class="why-card-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
         </span>
-        <h3 class="why-card-title">Validated pipelines, public audit log</h3>
+        <h3 class="why-card-title">Validated pipelines</h3>
         <p class="why-card-body">
           Every tool ships only after two consecutive real-score passes
-          on staging. We publish the commit SHAs, run dates, and failure
-          modes, not just marketing claims.
+          on staging. Each tool page shows a real run of that tool, with its
+          settings and what came back.
         </p>
       </article>
     </div>
@@ -603,7 +603,7 @@
         <h3 class="step-title">Score the target</h3>
         <p class="step-body">
           Use <a href="{{ url_for('scout.index') }}">Epitope Scout</a>
-          (free) to score your target's surface on six feasibility
+          (free) to score your target's surface on five feasibility
           dimensions: topology, rigidity, accessibility, glycan risk,
           interface competition, before burning GPU-hours on a hard
           epitope.
@@ -674,7 +674,7 @@
           Fund a USD wallet, design without limits, pay only for the compute
           delivered. New accounts start with ${{ signup_credit() }} in their wallet on signup,
           usable for {{ signup_credit_expiry_days }} days.
-          No credits, no tiers, no subscriptions.
+          No tiers, no subscriptions.
         </span>
       </div>
       <a href="{{ url_for('public.pricing') }}" class="btn-primary-lg">See pricing</a>
