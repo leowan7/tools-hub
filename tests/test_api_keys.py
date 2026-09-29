@@ -263,6 +263,70 @@ def test_revoke_scoped_to_owner(fake_rows):
     assert api_keys_mod.revoke_key(key_id=ctx.key_id, user_id="user-10") is True
 
 
+def test_mint_with_expiry_sets_expires_at(fake_rows):
+    from datetime import datetime, timedelta, timezone
+
+    api_keys_mod.mint_token(user_id="u1", expires_in_days=30)
+    expires = datetime.fromisoformat(fake_rows[0]["expires_at"])
+    delta = expires - datetime.now(timezone.utc)
+    assert timedelta(days=29, hours=23) < delta <= timedelta(days=30)
+
+
+def test_mint_without_expiry_writes_no_expires_at(fake_rows):
+    api_keys_mod.mint_token(user_id="u1")
+    assert "expires_at" not in fake_rows[0]
+
+
+@pytest.mark.parametrize("days", [0, 7, -30, 366])
+def test_mint_rejects_unoffered_expiry(fake_rows, days):
+    with pytest.raises(ValueError):
+        api_keys_mod.mint_token(user_id="u1", expires_in_days=days)
+    assert fake_rows == []
+
+
+@pytest.mark.parametrize(
+    "expires_at", ["2020-01-01T00:00:00+00:00", "not-a-date"]
+)
+def test_resolve_token_rejects_expired_or_unreadable(fake_rows, expires_at):
+    plaintext, _, _ = api_keys_mod.mint_token(user_id="u1")
+    fake_rows[0]["expires_at"] = expires_at
+    fake_rows[0]["last_used_at"] = None
+    assert api_keys_mod.resolve_token(plaintext) is None
+    # Refused before the last_used touch, like a revoked key.
+    assert fake_rows[0]["last_used_at"] is None
+
+
+def test_resolve_token_admits_future_expiry(fake_rows):
+    plaintext, _, _ = api_keys_mod.mint_token(user_id="u1", expires_in_days=365)
+    ctx = api_keys_mod.resolve_token(plaintext)
+    assert ctx is not None and ctx.is_active and ctx.expires_at
+
+
+def test_expired_keys_do_not_count_toward_cap(fake_rows, monkeypatch):
+    monkeypatch.setattr(api_keys_mod, "_MAX_KEYS_PER_USER", 1)
+    assert api_keys_mod.mint_token(user_id="u1") is not None
+    assert api_keys_mod.mint_token(user_id="u1") is None
+    fake_rows[0]["expires_at"] = "2020-01-01T00:00:00+00:00"
+    assert api_keys_mod.mint_token(user_id="u1") is not None
+
+
+def test_list_keys_puts_expired_after_active(fake_rows):
+    api_keys_mod.mint_token(user_id="u1", label="a")
+    api_keys_mod.mint_token(user_id="u1", label="b")
+    fake_rows[0]["created_at"] = "2026-09-02T00:00:00+00:00"  # newer
+    fake_rows[0]["expires_at"] = "2020-01-01T00:00:00+00:00"
+    labels = [k.label for k in api_keys_mod.list_keys("u1")]
+    assert labels == ["b", "a"]
+
+
+def test_scope_names(fake_rows):
+    member = api_keys_mod.resolve_token(api_keys_mod.mint_token(user_id="u1")[0])
+    viewer = api_keys_mod.resolve_token(
+        api_keys_mod.mint_token(user_id="u1", role="viewer")[0]
+    )
+    assert (member.scope, viewer.scope) == ("full", "read-only")
+
+
 def test_viewer_role_cannot_write(fake_rows):
     plaintext, _, _ = api_keys_mod.mint_token(user_id="u", role="viewer")
     ctx = api_keys_mod.resolve_token(plaintext)

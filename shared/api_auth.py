@@ -11,16 +11,19 @@ Behaviour
 - Accepts ``Authorization: Bearer rk_live_…``.
 - Resolves via :func:`shared.api_keys.resolve_token`.
 - On success populates ``flask.g.api_user_id``, ``g.api_key_role``,
-  ``g.api_key_id``.
-- ``role="viewer"`` keys may only call endpoints decorated with
-  ``read_only=True``. Writes return ``403 forbidden_role``.
+  ``g.api_key_scope``, ``g.api_key_id``.
+- Read-only keys (stored ``role="viewer"``) may only call endpoints
+  decorated with ``read_only=True``. Every other endpoint returns
+  ``403 forbidden_role``. ``read_only`` defaults to False, so an
+  endpoint that does not opt in refuses read-only keys.
+  tests/test_api_key_scope_routes.py pins which endpoints opt in.
 
 Failure responses
 -----------------
 - Missing header                 → 401 ``missing_credentials``
 - Malformed header               → 401 ``invalid_credentials``
-- Unknown / revoked token        → 401 ``invalid_api_key``
-- Viewer key on a write route    → 403 ``forbidden_role``
+- Unknown / revoked / expired    → 401 ``invalid_api_key``
+- Read-only key on a write route → 403 ``forbidden_role``
 
 All responses are JSON with ``Content-Type: application/json`` and
 ``X-Robots-Tag: noindex`` so search crawlers never index API surfaces.
@@ -95,23 +98,30 @@ def api_auth_required(read_only: bool = False) -> Callable:
                 return _json_error(
                     401,
                     "invalid_api_key",
-                    "API key is invalid, revoked, or no longer recognised.",
+                    "API key is invalid, revoked, expired, or no longer recognised.",
                 )
 
             if not read_only and not ctx.can_write:
                 return _json_error(
                     403,
                     "forbidden_role",
-                    "This API key is read-only. Use a 'member' key for write operations.",
+                    "This API key is read-only. It can list targets, estimate "
+                    "costs, and read experiments, quotes and results, but it "
+                    "cannot submit, confirm, or withdraw experiments. Create a "
+                    "full-access key at /account/api-keys for those calls.",
                 )
 
             g.api_user_id = ctx.user_id
             g.api_key_id = ctx.key_id
             g.api_key_role = ctx.role
+            g.api_key_scope = ctx.scope
             g.api_key_prefix = ctx.prefix
 
             return view(*args, **kwargs)
 
+        # Read by tests/test_api_key_scope_routes.py to find every
+        # Bearer-authenticated endpoint in the app.
+        wrapper.api_read_only = read_only
         return wrapper
 
     return decorator

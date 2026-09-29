@@ -137,6 +137,7 @@ def build_spec() -> dict[str, Any]:
                         },
                         "400": {"$ref": "#/components/responses/Error400"},
                         "401": {"$ref": "#/components/responses/Error401"},
+                        "403": {"$ref": "#/components/responses/Error403"},
                     },
                 }
             },
@@ -284,6 +285,7 @@ def build_spec() -> dict[str, Any]:
                             },
                         },
                         "401": {"$ref": "#/components/responses/Error401"},
+                        "403": {"$ref": "#/components/responses/Error403"},
                         "404": {"$ref": "#/components/responses/Error404"},
                         "409": {"$ref": "#/components/responses/Error409"},
                     },
@@ -334,8 +336,8 @@ def build_spec() -> dict[str, Any]:
             },
             "responses": {
                 "Error400": _err_response("Validation error."),
-                "Error401": _err_response("Missing or invalid API key."),
-                "Error403": _err_response("Read-only key on a write endpoint."),
+                "Error401": _err_response("Missing, invalid, revoked or expired API key."),
+                "Error403": _err_response("Read-only key on an endpoint that needs a full-access key."),
                 "Error404": _err_response("Not found."),
                 "Error409": _err_response("State conflict."),
             },
