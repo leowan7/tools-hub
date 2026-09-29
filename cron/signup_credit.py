@@ -72,9 +72,9 @@ def _release_reminder(client, user_id: str, now_iso: str) -> None:
 def run(*, now: Optional[datetime] = None) -> dict:
     """Send due reminders and expire due credit. Never raises."""
     from shared import wallet  # noqa: PLC0415
-    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
     from shared.email import send_signup_credit_expiring_email  # noqa: PLC0415
-    from shared.jobs import _email_pref_enabled, resolve_user_email_and_meta  # noqa: PLC0415
+    from shared.jobs import _email_pref_enabled  # noqa: PLC0415
 
     now = now or datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -87,10 +87,11 @@ def run(*, now: Optional[datetime] = None) -> dict:
     try:
         due = _due_wallets(client, now + timedelta(days=REMINDER_DAYS_BEFORE))
     except Exception:
-        logger.warning("signup_credit: wallet query failed", exc_info=True)
+        logger.error("signup_credit: wallet query failed", exc_info=True)
         summary["errors"] += 1
         return summary
 
+    users = None  # auth users by id, listed on the first reminder due
     for w in due:
         uid = w.get("user_id")
         expires_at = wallet._parse_ts(w.get("signup_credit_expires_at"))
@@ -113,7 +114,11 @@ def run(*, now: Optional[datetime] = None) -> dict:
             status = wallet.signup_credit_status(uid, wallet=w)
             if status is None:
                 continue
-            email, meta = resolve_user_email_and_meta(uid)
+            if users is None:
+                users = {u.id: u for u in list_all_auth_users(client)}
+            user = users.get(uid)
+            email = getattr(user, "email", None)
+            meta = getattr(user, "user_metadata", None)
             if not email or not _email_pref_enabled(meta, "marketing_email", default=True):
                 summary["skipped"] += 1
                 continue
@@ -129,7 +134,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
                 continue
             summary["errors"] += 1
         except Exception:
-            logger.warning("signup_credit: reminder failed for %s", uid, exc_info=True)
+            logger.error("signup_credit: reminder failed for %s", uid, exc_info=True)
             summary["errors"] += 1
         if claimed:
             try:

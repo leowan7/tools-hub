@@ -72,10 +72,10 @@ def find_candidates(
     *,
     now: Optional[datetime] = None,
 ) -> list[Candidate]:
-    """Return users matching the sweep criteria. Defensive against missing tables.
+    """Return users matching the sweep criteria.
 
-    The function never raises. A Supabase outage produces an empty list
-    and a logged warning so the CLI entry can no-op gracefully.
+    Raises when the service client is missing or any read fails, so a
+    Supabase outage is never mistaken for "nobody qualifies".
     """
     from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
     from shared.jobs import _email_pref_enabled  # noqa: PLC0415
@@ -86,10 +86,7 @@ def find_candidates(
 
     client = get_service_client()
     if client is None:
-        logger.warning(
-            "reengagement: no service client; sweep returns empty"
-        )
-        return []
+        raise RuntimeError("reengagement: no service client")
 
     # 1. Wallets with positive balance. Cheap filter to do first because
     #    most users in the cohort will not qualify.
@@ -110,7 +107,7 @@ def find_candidates(
         logger.warning(
             "reengagement: user_wallets query failed", exc_info=True,
         )
-        return []
+        raise
     if not funded_user_ids:
         return []
     balance_by_user = {
@@ -160,7 +157,7 @@ def find_candidates(
         logger.warning(
             "reengagement: tool_jobs query failed", exc_info=True,
         )
-        return []
+        raise
 
     inactivity_iso = inactivity_cutoff.isoformat()
     funded = set(funded_user_ids)
@@ -205,7 +202,7 @@ def find_candidates(
         logger.warning(
             "reengagement: admin.list_users failed", exc_info=True,
         )
-        return []
+        raise
 
     # 4. Build the final candidate list. Drop users still in the 30-day
     #    cooldown window from a prior re-engagement send.
@@ -321,8 +318,8 @@ def send_reengagement() -> dict:
         {"qualified": N, "sent": M, "skipped_no_suggestions": K,
          "errors": L}
 
-    Always returns; failures are logged and counted but never raised so
-    the cron entry stays well-behaved.
+    A failed sweep read sends nothing and counts one error; the CLI exits
+    non-zero on any error.
     """
     from shared.email import send_reengagement_email  # noqa: PLC0415
 
@@ -332,13 +329,19 @@ def send_reengagement() -> dict:
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
 
-    candidates = find_candidates(now=now)
     summary = {
-        "qualified": len(candidates),
+        "qualified": 0,
         "sent": 0,
         "skipped_no_suggestions": 0,
         "errors": 0,
     }
+    try:
+        candidates = find_candidates(now=now)
+    except Exception:
+        logger.error("reengagement: sweep failed; nothing sent", exc_info=True)
+        summary["errors"] += 1
+        return summary
+    summary["qualified"] = len(candidates)
     for cand in candidates:
         suggestions = _suggested_tools_for(cand, base_url=base_url)
         if not suggestions:

@@ -13,6 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from shared import wallet
@@ -21,6 +22,8 @@ from shared.wallet import (
     SIGNUP_CREDIT_USD,
     unspent_signup_credit,
 )
+
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 UID = "11111111-1111-1111-1111-111111111111"
@@ -438,6 +441,72 @@ def test_reengagement_pages_through_all_users(monkeypatch):
     got = {c.user_id for c in reengagement.find_candidates(now=NOW)}
     assert got == {f"u{i}" for i in range(5)}
     assert [p for p, _ in d.auth.admin.calls] == [1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# Listing auth users times out: nothing sent, run fails (cron run e72fc157)
+# ---------------------------------------------------------------------------
+
+
+class _TimeoutAdmin(_Admin):
+    """Serves page 1, then times out, as the 2026-09-29 reengagement run did."""
+
+    def list_users(self, page=None, per_page=None):
+        if page > 1:
+            raise httpx.ReadTimeout("timed out")
+        return super().list_users(page, per_page)
+
+
+def _cli(args):
+    from app import create_app  # noqa: PLC0415
+    return create_app().test_cli_runner().invoke(args=args)
+
+
+@pytest.mark.parametrize("admin_cls", [_Admin, _TimeoutAdmin])
+def test_reengagement_list_timeout_sends_nothing_and_fails(monkeypatch, admin_cls):
+    sends = []
+    monkeypatch.setattr("shared.email.send_reengagement_email",
+                        lambda **kw: sends.append(kw) or True)
+    monkeypatch.setattr("cron.reengagement._stamp_reengagement", lambda *_: True)
+    monkeypatch.setattr("cron.reengagement._suggested_tools_for",
+                        lambda *_a, **_k: [{"slug": "mpnn"}])
+    d = _reengagement_db([_user("idle", _ago(60))], [])
+    d.auth = SimpleNamespace(admin=admin_cls(d.auth.admin.users))
+    monkeypatch.setattr("shared.credits.get_service_client", lambda: d)
+    result = _cli(["reengagement:send"])
+    if admin_cls is _Admin:  # control: the same fake does send when listing works
+        assert result.exit_code == 0, result.output
+        assert len(sends) == 1
+        return
+    assert result.exit_code != 0, result.output
+    assert "qualified=0 sent=0" in result.output
+    assert "errors=1" in result.output
+    assert sends == []
+
+
+def test_credit_expire_list_timeout_is_an_error_not_a_skip(db, sent, monkeypatch):
+    from cron.signup_credit import run
+    # The CLI runs at the real clock, so the wallet is due relative to it.
+    db.new_wallet(expires_at=datetime.now(timezone.utc) + timedelta(days=4))
+    db.auth = SimpleNamespace(admin=_TimeoutAdmin([_user(UID, NOW.isoformat())] * 2))
+    monkeypatch.setattr("shared.credits._AUTH_USERS_PAGE", 1)
+    summary = run()
+    assert summary["errors"] == 1 and summary["skipped"] == 0
+    assert sent == []
+    assert db.wallet()["signup_credit_reminder_sent_at"] is None
+    result = _cli(["credit:expire"])
+    assert result.exit_code != 0, result.output
+    assert sent == []
+
+
+def test_gotrue_client_gets_the_bounded_timeout():
+    """GoTrue builds its httpx Client with no timeout (httpx default: 5s)."""
+    from shared import supabase_client
+    from supabase_auth._sync import gotrue_base_api
+
+    c = gotrue_base_api.Client()
+    assert c.timeout.read == supabase_client._CLIENT_TIMEOUT_S
+    assert gotrue_base_api.Client(timeout=7).timeout == httpx.Timeout(7)
 
 
 # ---------------------------------------------------------------------------

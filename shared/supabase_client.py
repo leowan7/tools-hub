@@ -37,6 +37,11 @@ def _force_supabase_http1() -> None:
         class _Http1Client(httpx.Client):
             def __init__(self, *args, **kwargs):
                 kwargs["http2"] = False
+                # GoTrue builds its Client with no timeout, so it inherits
+                # httpx's 5s default; PostgREST and Storage pass their own.
+                kwargs.setdefault(
+                    "timeout", httpx.Timeout(_CLIENT_TIMEOUT_S, connect=5.0)
+                )
                 super().__init__(*args, **kwargs)
 
         import importlib  # noqa: PLC0415
