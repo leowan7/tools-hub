@@ -171,18 +171,18 @@ def _image_files(image, repo: Path) -> tuple[list[str], int]:
 
 
 def _source_info(fn):
-    """The local ``FunctionInfo`` (``modal._utils.function_utils``) behind ``fn``.
+    """The local source-info object (``modal._utils.function_utils``) behind ``fn``.
 
-    ``_Function._info`` on 1.4.2; renamed ``_source_info`` on 1.6.0, where
-    ``info`` became the public async ``Function.info()`` returning a different
-    type. RAISES if neither is there, for the reason ``_builder_versions`` does.
+    ``_Function._info`` holding a ``FunctionInfo`` on 1.4.2; on 1.6.0 it is
+    ``_source_info`` holding a ``FunctionSourceInfo``, and ``info`` became the
+    public async ``Function.info()`` returning ``modal.types.FunctionInfo``. RAISES if neither is there, for the reason ``_builder_versions`` does.
     """
     for attr in ("_source_info", "_info"):
         info = getattr(fn, attr, None)
         if info is not None and hasattr(info, "get_entrypoint_mount"):
             return info
     raise RuntimeError(
-        f"{type(fn).__name__} has no local FunctionInfo on _source_info or _info; "
+        f"{type(fn).__name__} has no local source info on _source_info or _info; "
         "the installed modal moved it again"
     )
 
