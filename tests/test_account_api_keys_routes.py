@@ -171,8 +171,10 @@ def test_create_with_valid_token_mints(app, monkeypatch):
     _patch_ctx(monkeypatch)
     seen = {}
 
-    def _mint(*, user_id, role, label):
-        seen.update(user_id=user_id, role=role, label=label)
+    def _mint(*, user_id, role, label, expires_in_days):
+        seen.update(
+            user_id=user_id, role=role, label=label, expires=expires_in_days
+        )
         return ("rk_live_PLAINTEXT_ONCE", "rk_live", "whsec_ONCE")
 
     monkeypatch.setattr("tools.platform_api.account_bp.mint_token", _mint)
@@ -184,13 +186,98 @@ def test_create_with_valid_token_mints(app, monkeypatch):
     _login(client, with_token=True)
     resp = client.post(
         "/account/api-keys/create",
-        data={"_csrf": _TOKEN, "label": "prod key", "role": "member"},
+        data={"_csrf": _TOKEN, "label": "prod key"},
     )
     # Passing the global CSRF guard (CSRF_PROTECT=1) with only the api-keys
     # token proves the path exemption still fires; _csrf_ok then admits it.
     assert resp.status_code == 200
-    assert seen == {"user_id": "u-test", "role": "member", "label": "prod key"}
+    # No scope / expiry fields: full scope, no expiry.
+    assert seen == {
+        "user_id": "u-test", "role": "member", "label": "prod key", "expires": None
+    }
     assert b"rk_live_PLAINTEXT_ONCE" in resp.data  # revealed exactly once
+
+
+def test_create_read_only_key_with_expiry(app, monkeypatch):
+    _patch_ctx(monkeypatch)
+    seen = {}
+
+    def _mint(**kw):
+        seen.update(kw)
+        return ("rk_live_PLAINTEXT_ONCE", "rk_live", None)
+
+    monkeypatch.setattr("tools.platform_api.account_bp.mint_token", _mint)
+    monkeypatch.setattr("tools.platform_api.account_bp.list_keys", lambda uid: [])
+    monkeypatch.setattr(
+        "shared.api_keys.get_webhook_secret_display", lambda user_id: None
+    )
+    client = app.test_client()
+    _login(client, with_token=True)
+    resp = client.post(
+        "/account/api-keys/create",
+        data={"_csrf": _TOKEN, "scope": "read-only", "expires_in_days": "90"},
+    )
+    assert resp.status_code == 200
+    assert seen["role"] == "viewer"
+    assert seen["expires_in_days"] == 90
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"scope": "admin"},
+        {"expires_in_days": "7"},
+        {"expires_in_days": "-30"},
+        {"expires_in_days": "forever"},
+    ],
+)
+def test_create_refuses_unknown_scope_or_expiry(app, monkeypatch, data):
+    _patch_ctx(monkeypatch)
+    called = {"mint": False}
+
+    def _mint(**kw):
+        called["mint"] = True
+
+    monkeypatch.setattr("tools.platform_api.account_bp.mint_token", _mint)
+    monkeypatch.setattr("tools.platform_api.account_bp.list_keys", lambda uid: [])
+    monkeypatch.setattr(
+        "shared.api_keys.get_webhook_secret_display", lambda user_id: None
+    )
+    client = app.test_client()
+    _login(client, with_token=True)
+    resp = client.post("/account/api-keys/create", data={"_csrf": _TOKEN, **data})
+    assert resp.status_code == 400
+    assert called["mint"] is False
+
+
+def test_key_list_shows_scope_and_expiry(app, monkeypatch):
+    from shared.api_keys import APIKeyContext
+
+    _patch_ctx(monkeypatch)
+    keys = [
+        APIKeyContext(
+            key_id="k1", user_id="u-test", role="viewer", prefix="rk_live_",
+            label="ci-reader", created_at="2026-09-01T00:00:00+00:00",
+            last_used_at=None, revoked_at=None,
+            expires_at="2099-01-01T00:00:00+00:00",
+        ),
+        APIKeyContext(
+            key_id="k2", user_id="u-test", role="member", prefix="rk_live_",
+            label="old-bot", created_at="2026-01-01T00:00:00+00:00",
+            last_used_at=None, revoked_at=None,
+            expires_at="2026-02-01T00:00:00+00:00",
+        ),
+    ]
+    monkeypatch.setattr("tools.platform_api.account_bp.list_keys", lambda uid: keys)
+    monkeypatch.setattr(
+        "shared.api_keys.get_webhook_secret_display", lambda user_id: None
+    )
+    client = app.test_client()
+    _login(client, with_token=True)
+    html = client.get("/account/api-keys").get_data(as_text=True)
+    assert "read-only" in html
+    assert "2099-01-01 00:00:00 UTC" in html
+    assert "expired" in html
 
 
 def test_revoke_without_token_is_rejected_400(app, monkeypatch):
