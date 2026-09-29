@@ -293,7 +293,7 @@
             {% endif %}
             <form method="post" action="{{ url_for('jobs.job_scale_up', job_id=job.id) }}" style="margin: 0;">
               {{ csrf_input() }}
-              <button type="submit" class="btn-secondary">{{ scale_up.cta_text or 'Run ' ~ scale_up.count ~ ' candidates' }}</button>
+              <button type="submit" class="btn-primary">{{ scale_up.cta_text or 'Run ' ~ scale_up.count ~ ' candidates' }}</button>
             </form>
           </div>
         </div>
@@ -344,9 +344,9 @@
   {# "What next?" reverse-funnel block. Renders on succeeded, failed and
      timed-out jobs; the copy switches to a help offer when the run did
      not succeed. Pairs the run with a matching explainer on
-     ranomics.com plus a soft contact link. Additive to the
-     "Take it further" CRO panel rendered by results_shell.html, which
-     handles the hard Pilot / Sprint CTAs for composite binder tools. #}
+     ranomics.com plus a contact link. When the scale-up card above
+     rendered, the contact link is plain text so the priced in-app run
+     stays the one button for "more of this". #}
   {% if job.status in ('succeeded', 'failed', 'timeout') %}
     {% set _utm = '?utm_source=tools-hub&utm_medium=reverse-funnel&utm_campaign=' ~ job.tool %}
     {% set _binder_tools = ['mpnn', 'rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
@@ -408,11 +408,18 @@
               Read the explainer on
               <a href="https://www.ranomics.com{{ _blog_path }}{{ _utm }}"
                  target="_blank" rel="noopener noreferrer"
-                 style="color: var(--accent-text);">{{ _blog_label }}</a>,
-              or get a hand running this at scale.
-            {% else %}
-              Want help running this at scale? Talk to the team that built
-              the pipeline.
+                 style="color: var(--accent-text);">{{ _blog_label }}</a>.
+            {% endif %}
+            {% if scale_up %}
+              <div style="margin-top: 0.35rem;">
+                <a href="https://www.ranomics.com{{ _contact_path }}"
+                   target="_blank" rel="noopener noreferrer"
+                   data-contact-link
+                   style="color: var(--accent-text);">Need more than one target, or want us to run it? Talk to the team</a>
+              </div>
+            {% elif job.status == 'succeeded' %}
+              {% if _blog_path %}<br>{% endif %}
+              Need more than one target, or want our team to run the project?
             {% endif %}
           </div>
           <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
@@ -422,10 +429,12 @@
                  class="btn-secondary"
                  style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Read explainer</a>
             {% endif %}
-            <a href="https://www.ranomics.com{{ _contact_path }}"
-               target="_blank" rel="noopener noreferrer"
-               class="btn-secondary"
-               style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">{% if job.status == 'succeeded' %}Run this at scale{% else %}Ask the team{% endif %}</a>
+            {% if not scale_up %}
+              <a href="https://www.ranomics.com{{ _contact_path }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="btn-secondary" data-contact-link
+                 style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">{% if job.status == 'succeeded' %}Talk to the team{% else %}Ask the team{% endif %}</a>
+            {% endif %}
           </div>
         </div>
       </div>
