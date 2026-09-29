@@ -522,7 +522,7 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
             usd = max(ledger["usd"], 0)
             # Settled: rendered as the wallet page renders a ledger row
             # (templates/wallet/transactions.html, display_record_usd). Reserved:
-            # round up, as a hold is shown everywhere else.
+            # round up, as the unsettled line on the failed-run page does.
             spend_text = display_record_usd(usd) if ledger["settled"] else "$" + display_cost_usd(usd)
             if not ledger["settled"]:
                 spend_note = "reserved"
@@ -804,7 +804,7 @@ def _failure_money(user_id: str, job) -> "str | None":  # noqa: ANN001
         if held > 0:
             return f"The {_usd(held)} hold was returned to your wallet in full. You were not charged for this run."
         return "You were not charged for this run."
-    if held > usd:
+    if _usd(held) != _usd(usd) and held > usd:
         return (f"You were charged {_usd(usd)} for the GPU time this run used. "
                 f"The rest of the {_usd(held)} hold was returned to your wallet.")
     return f"You were charged {_usd(usd)} for the GPU time this run used."

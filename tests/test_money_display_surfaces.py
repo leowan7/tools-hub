@@ -425,3 +425,5 @@ def test_record_display_signs_rounds_and_floors_sub_cent():
     assert cc.display_record_usd(Decimal("0.0020")) == "<$0.01"
     assert cc.display_record_usd(Decimal("-0.0020")) == "−<$0.01"
     assert cc.display_record_usd(Decimal("0")) == "$0.00"
+    assert cc.display_record_usd(Decimal("9.9960"), balance=True) == "$9.99"
+    assert cc.display_record_usd(Decimal("-0.0040"), balance=True) == "−$0.01"

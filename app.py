@@ -667,7 +667,9 @@ def create_app() -> Flask:
     #
     #   display_cost_usd     costs, holds, spend, required top-up   -> UP
     #   display_balance_usd  balances, caps, thresholds             -> DOWN
-    #   display_ledger_usd   historical rows that must reconcile    -> EXACT
+    #   display_ledger_usd   exact stored figure (form values, staff) -> EXACT
+    #   display_record_usd   customer-facing ledger rows, job spend,
+    #                        returned holds; "$" and sign included     -> HALF-UP
     #
     # A cap rounds DOWN with the balances: a cap shown above its real value
     # overstates the headroom, which is the same error as overstating a balance.

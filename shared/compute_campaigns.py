@@ -411,7 +411,7 @@ def display_ledger_usd(value) -> str:  # noqa: ANN001
     return str(two if two == amount else four)
 
 
-def display_record_usd(value) -> str:  # noqa: ANN001
+def display_record_usd(value, balance: bool = False) -> str:  # noqa: ANN001
     """A customer-facing past amount, "$" and sign included: "−$0.98", "$15.00".
 
     For records (ledger rows, a job's spend, a returned hold), not decisions,
@@ -419,12 +419,16 @@ def display_record_usd(value) -> str:  # noqa: ANN001
     amount that would print as $0.00 prints as "<$0.01" instead. Rows rounded
     this way can be a cent off reconciling; ``display_ledger_usd`` keeps the
     exact figure for form values and staff pages.
+
+    ``balance=True`` rounds DOWN instead, matching ``display_balance_usd``, so
+    a "Balance after" cell never sits above the headline balance.
     """
     amount = Decimal(str(value))
     if not amount.is_finite():
         raise ValueError(f"cannot display a non-finite amount: {value!r}")
     sign = "−" if amount < 0 else ""
-    two = abs(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    rounding = ROUND_FLOOR if balance else ROUND_HALF_UP
+    two = abs(amount.quantize(Decimal("0.01"), rounding=rounding))
     if two == 0 and amount != 0:
         return f"{sign}<$0.01"
     return f"{sign}${two}"

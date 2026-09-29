@@ -160,7 +160,7 @@
                 </td>
                 <td class="wallet-tx-amount">
                   {% if tx.balance_after_usd is not none %}
-                    {{ display_record_usd(tx.balance_after_usd) }}
+                    {{ display_record_usd(tx.balance_after_usd, balance=True) }}
                   {% endif %}
                 </td>
               </tr>
