@@ -1,7 +1,7 @@
 """Every Platform API route, and what a read-only key may call.
 
 Builds the real app (ENABLE_PLATFORM_API=1), enumerates its URL map, and
-calls every /api/v1 route with a read-only key and with a full key. A
+calls every route that needs a key with a read-only key and a full key. A
 read-only key must get 403 ``forbidden_role`` on every route that is not in
 READ_ONLY_ALLOWED, and must get past auth on every route that is. Adding a
 route to the API without adding it to one of the three sets below fails
