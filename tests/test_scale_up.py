@@ -417,3 +417,47 @@ def test_run_form_estimate_says_how_much_to_top_up(client):
             "/api/campaigns/estimate?tool=bindcraft&requested_designs=100").get_json()
     need = max(Decimal(data["budget_usd"]), Decimal(data["first_wave_usd"]))
     assert data["topup_usd_display"] == str(math.ceil(need))
+
+
+def _finished_page(client, offer, status="succeeded"):
+    with patch("blueprints.jobs.load_user_context", return_value=_ctx()), \
+            patch("blueprints.jobs.get_job", return_value=_job(status=status)), \
+            patch("blueprints.jobs.scale_up_quote", return_value=offer):
+        resp = client.get(f"/jobs/{_JID}")
+    assert resp.status_code == 200
+    return resp.get_data(as_text=True)
+
+
+def _contact_tags(html):
+    return re.findall(r"<a\b[^>]*data-contact-link[^>]*>.*?</a>", html, re.S)
+
+
+def test_scale_up_is_the_primary_next_step_and_contact_is_a_text_link(client):
+    html = _finished_page(client, _offer())
+    # Download CSV (candidate_table.html) and the shortlist modal's submit
+    # keep their own btn-primary; the offer is the only primary next step.
+    buttons = re.findall(r'<(?:a|button)\b[^>]*class="btn-primary"[^>]*>(.*?)</(?:a|button)>',
+                         html, re.S)
+    assert "Run 100 candidates" in buttons
+    assert not any("team" in b.lower() or "scale" in b.lower() for b in buttons)
+    [contact] = _contact_tags(html)
+    assert "btn-" not in contact
+    assert "Talk to the team" in contact
+    assert "Run this at scale" not in html
+    assert "at scale" not in html
+
+
+def test_without_an_offer_the_contact_button_promises_no_run(client):
+    html = _finished_page(client, None)
+    [contact] = _contact_tags(html)
+    assert 'class="btn-secondary"' in contact
+    assert ">Talk to the team</a>" in contact
+    assert "Run this at scale" not in html
+    assert "at scale" not in html
+
+
+def test_failed_job_retry_outranks_ask_the_team(client):
+    html = _finished_page(client, None, status="failed")
+    [contact] = _contact_tags(html)
+    assert "btn-primary" not in contact and "Ask the team" in contact
+    assert html.index("data-retry-link") < html.index(contact)
