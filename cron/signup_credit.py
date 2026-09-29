@@ -91,7 +91,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
         summary["errors"] += 1
         return summary
 
-    users = None  # auth users by id, listed on the first reminder due
+    users = None  # auth users by id, listed on the first reminder due; False if that failed
     for w in due:
         uid = w.get("user_id")
         expires_at = wallet._parse_ts(w.get("signup_credit_expires_at"))
@@ -115,7 +115,14 @@ def run(*, now: Optional[datetime] = None) -> dict:
             if status is None:
                 continue
             if users is None:
-                users = {u.id: u for u in list_all_auth_users(client)}
+                try:
+                    users = {u.id: u for u in list_all_auth_users(client)}
+                except Exception:
+                    logger.error("signup_credit: auth user listing failed; no reminders this run", exc_info=True)
+                    summary["errors"] += 1
+                    users = False
+            if users is False:
+                continue
             user = users.get(uid)
             email = getattr(user, "email", None)
             meta = getattr(user, "user_metadata", None)

@@ -487,11 +487,15 @@ def test_reengagement_list_timeout_sends_nothing_and_fails(monkeypatch, admin_cl
 def test_credit_expire_list_timeout_is_an_error_not_a_skip(db, sent, monkeypatch):
     from cron.signup_credit import run
     # The CLI runs at the real clock, so the wallet is due relative to it.
-    db.new_wallet(expires_at=datetime.now(timezone.utc) + timedelta(days=4))
-    db.auth = SimpleNamespace(admin=_TimeoutAdmin([_user(UID, NOW.isoformat())] * 2))
+    for uid in (UID, "second"):
+        db.new_wallet(uid, expires_at=datetime.now(timezone.utc) + timedelta(days=4))
+    admin = _TimeoutAdmin([_user(UID, NOW.isoformat()), _user("second", NOW.isoformat())])
+    db.auth = SimpleNamespace(admin=admin)
     monkeypatch.setattr("shared.credits._AUTH_USERS_PAGE", 1)
     summary = run()
+    # One failed listing is one error, not one per due wallet.
     assert summary["errors"] == 1 and summary["skipped"] == 0
+    assert admin.calls == [(1, 1)]  # the timed-out page 2 raises before it is recorded
     assert sent == []
     assert db.wallet()["signup_credit_reminder_sent_at"] is None
     result = _cli(["credit:expire"])
