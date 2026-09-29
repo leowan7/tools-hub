@@ -170,6 +170,23 @@ def _image_files(image, repo: Path) -> tuple[list[str], int]:
     return sorted(set(files)), layers
 
 
+def _source_info(fn):
+    """The local ``FunctionInfo`` (``modal._utils.function_utils``) behind ``fn``.
+
+    ``_Function._info`` on 1.4.2; renamed ``_source_info`` on 1.6.0, where
+    ``info`` became the public async ``Function.info()`` returning a different
+    type. RAISES if neither is there, for the reason ``_builder_versions`` does.
+    """
+    for attr in ("_source_info", "_info"):
+        info = getattr(fn, attr, None)
+        if info is not None and hasattr(info, "get_entrypoint_mount"):
+            return info
+    raise RuntimeError(
+        f"{type(fn).__name__} has no local FunctionInfo on _source_info or _info; "
+        "the installed modal moved it again"
+    )
+
+
 def probe(slug: str) -> dict:
     repo = Path.cwd().resolve()
     module = import_file_or_module(
@@ -181,17 +198,24 @@ def probe(slug: str) -> dict:
         "functions": [],
     }
     for app in [v for v in vars(module).values() if isinstance(v, modal.App)]:
-        for name, fn in app.registered_functions.items():
-            info = fn.info
+        # `modal deploy` walks this same mapping (modal/runner.py,
+        # `app_local_state.functions`); `App.registered_functions`, the public
+        # wrapper around it, warns on 1.6 and is removed in 1.7.
+        for name, fn in app._local_state.functions.items():
+            info = _source_info(fn)
+            # The `spec` property is 1.4.2 only; `_spec` is set on both.
+            spec = fn._spec
+            if spec is None:
+                raise RuntimeError(f"{name}: _Function._spec is unset")
             entrypoint = [
                 f
                 for mount in info.get_entrypoint_mount().values()
                 for f in _mount_files(mount, repo)
             ]
             spec_mounts = [
-                f for mount in (getattr(fn.spec, "mounts", ()) or ()) for f in _mount_files(mount, repo)
+                f for mount in (getattr(spec, "mounts", ()) or ()) for f in _mount_files(mount, repo)
             ]
-            image_files, layers = _image_files(fn.spec.image, repo)
+            image_files, layers = _image_files(spec.image, repo)
             result["functions"].append(
                 {
                     "app": app.name,
