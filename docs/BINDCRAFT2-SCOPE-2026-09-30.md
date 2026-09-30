@@ -14,6 +14,8 @@ Anything not verified that way is labelled **UNVERIFIED** or **UNKNOWN**.
 
 There is a second path the same licence leaves open, and it is worth knowing before anyone writes to UZH: the licence expressly exempts "the internal use of the Software" and "the provision of design outputs (for example designed binders, sequences, or structures)" (`LICENSE:60-64`). Running BC2 ourselves and delivering binders as a service — the AI Binder Sprint and custom-campaign side of the business — appears to need no commercial licence. Only the self-serve hub tool does. That distinction should be put to a lawyer before it is relied on; I am not one, and this document is not legal advice.
 
+**Does this recommendation depend on which bindcraft build serves production?** No. It is licence-driven, and the licence question is the same whether today's tool runs on Modal or on RunPod — so the answer is "do not start" both ways, and §2.1's UNKNOWN does not need resolving to act on §0. What it does change, and changes a great deal, is the *work* if the gate ever clears: Phase 1 and rungs 1 to 3 of the cost ladder assume a Modal image rebuild, and would be a different job against a GHCR-tagged RunPod pod image. See UNKNOWN 8.
+
 Everything in sections 3 to 5 is contingent on that gate clearing.
 
 ---
@@ -36,7 +38,7 @@ Reading those together: a self-serve form on tools.ranomics.com, where a custome
 
 The third-party component list does not rescue the self-serve case either. The licence lists AlphaFold2 + ColabDesign (Apache-2.0) and ProteinMPNN (MIT) + HyperMPNN as third-party components whose "rights in it, including any right to operate it as a hosted service, derive from its own terms and not from this license." That is a statement that the *dependencies* are free, not the BindCraft2 pipeline code — and the pipeline code is precisely what a hosted tool would be running.
 
-**Contrast with what we run today.** BindCraft 1 is used via the cytokineking FreeBindCraft fork (`llm-proteinDesigner/docker/bindcraft/Dockerfile.modal`, `git clone https://github.com/cytokineking/FreeBindCraft.git`), which carries no hosting restriction. Our current hosting of BindCraft 1 is not affected by the BindCraft2 licence.
+**Contrast with what we run today.** BindCraft 1 is used via the cytokineking FreeBindCraft fork — both candidate builds clone it (`llm-proteinDesigner/docker/bindcraft/Dockerfile:47` and `Dockerfile.modal:46`; see §2.1, which build serves production is UNKNOWN) — and FreeBindCraft carries no hosting restriction. Our current hosting of BindCraft 1 is not affected by the BindCraft2 licence.
 
 **Action, and it is a business action not an engineering one:** Leo (or whoever owns partnerships) writes to the Pacesa Lab / UZH technology transfer office asking the terms of a commercial hosting licence, and separately gets a lawyer's read on whether the design-outputs carve-out covers our Sprint work. Until those answers exist, every engineering rung below is dead weight, **including the free CPU-only image build probe** — building an image is not hosting, but spending worker time on a tool we may never be allowed to serve is the waste this document exists to prevent.
 
@@ -44,9 +46,26 @@ The third-party component list does not rescue the self-serve case either. The l
 
 ## 2. What we run today (BindCraft 1)
 
-### 2.1 The image is not reproducible
+### 2.1 Two candidate builds, and neither is reproducible
 
-`llm-proteinDesigner/docker/bindcraft/Dockerfile.modal`:
+**Which build serves production is UNKNOWN**, and this pass did not establish it. There are two, in the same directory, and resolving between them needs live Modal or RunPod deploy state that cannot be read from either checkout. Do not read anything below as naming the live one.
+
+**Candidate A — RunPod, `docker/bindcraft/Dockerfile`.** `llm-proteinDesigner/.github/workflows/docker-bindcraft.yml:40-43` builds with `context: docker/bindcraft` and no `file:` key, so Docker's default applies and the file built is `Dockerfile`, not `Dockerfile.modal`. It is tagged `ghcr.io/<owner>/kendrew-bindcraft:v7` (`:44`). Its header comment says "Adapted for RunPod pod deployment" (`Dockerfile:9`). The consuming config is `llm-proteinDesigner/backend/config.py:111`, `runpod_image_bindcraft: str = "ghcr.io/leowan7/kendrew-bindcraft:v7"`, read at `backend/gpu/__init__.py:118` and `backend/jobs/service.py:28`. This is the story four tools-hub comments tell, including `shared/pdb_preflight_rules.py:185` and `:586`.
+
+**Candidate B — Modal, `docker/bindcraft/Dockerfile.modal`.** No workflow builds it; `docker-bindcraft.yml` is the only bindcraft workflow in that repo. Its wrapper is `llm-proteinDesigner/infrastructure/modal/bindcraft_app.py` (§2.2). The hub-side caller is a Modal client: `gpu/modal_client.py:312-313` holds this tool's container ceilings.
+
+Two file facts narrow the question without settling it. The hub calls bindcraft through `gpu/modal_client.py`, which is a Modal client, not a RunPod one — but a ceilings entry is not proof of the serving path. And `shared/pdb_preflight_rules.py:586` names `config.runpod_image_bindcraft`, a symbol that **does not exist anywhere in tools-hub** (grepped) and lives only in the sibling repo's `backend/`, which is a different product surface from the hub. Both observations are evidence, neither is deploy state.
+
+**What is reproducible about either: nothing.** Both clone unpinned `master`:
+
+| | clone | install |
+|---|---|---|
+| `Dockerfile` | `:47` `git clone --depth 1 https://github.com/cytokineking/FreeBindCraft.git` | `:60` `--no-pyrosetta` |
+| `Dockerfile.modal` | `:46` same line | `:54` same flags |
+
+So the four tools-hub comments describing the runtime as FreeBindCraft without PyRosetta are backed by a file in either case — they are correct about *which source*, and correct whichever build is live. They are silent on *which version*, and so is everything else.
+
+`llm-proteinDesigner/docker/bindcraft/Dockerfile.modal` (Candidate B), quoted here because §2.2's wrapper reads it:
 
 ```
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
@@ -55,11 +74,11 @@ RUN bash /app/install_bindcraft.sh --pkg_manager conda --cuda 12.1 --no-pyrosett
 RUN pip install --no-cache-dir requests "pydantic>=2,<3"
 ```
 
-There is **no tag, no commit pin and no image digest**. `--depth 1` takes whatever FreeBindCraft `master` happens to be at build time, and `install_bindcraft.sh` resolves its own dependency set at build time. The brief asked for "the pinned upstream commit or image digest" — **it does not exist for bindcraft.** The production image is named `kendrew-bindcraft:v7` at `shared/pdb_preflight_rules.py:586` (`config.runpod_image_bindcraft`); what source that tag actually contains is UNKNOWN and could only be recovered by reading the pushed image's config blob (registry-API read; not done in this pass).
+There is **no tag, no commit pin and no image digest** in either file. `--depth 1` takes whatever FreeBindCraft `master` happens to be at build time, and `install_bindcraft.sh` resolves its own dependency set at build time. The brief asked for "the pinned upstream commit or image digest" — **it does not exist for bindcraft, on either candidate.** What source the pushed `kendrew-bindcraft:v7` tag actually contains could only be recovered by reading that image's config blob (registry-API read; not done in this pass).
 
 This matters for the BC2 decision: we have no baseline we can rebuild, so any "BC2 vs BC1" comparison would compare BC2 against an image we cannot reproduce. Same failure class as the proteina image that could not be rebuilt once `dm-haiku` moved.
 
-### 2.2 Modal wrapper
+### 2.2 Modal wrapper (Candidate B only)
 
 `llm-proteinDesigner/infrastructure/modal/bindcraft_app.py`:
 
@@ -283,13 +302,15 @@ Raw Modal A100-80GB cost, `shared/wallet_estimates.py:74` = $0.001028/s = **$3.7
 | Rung | What it answers | GPU | Cost | Basis |
 |---|---|---|---|---|
 | **0. Licence** | May we host it at all? | none | $0 | §1. A written answer from Pacesa Lab / UZH TTO. **Blocking — no rung below starts until this clears.** |
-| **1. CPU-only image build probe** | Does the image build, and does JAX import? | none | $0 | `containers/Dockerfile` already runs `import jax`, `import bindcraft.proteinmpnn`, `bindcraft --help` and `selfcheck cuda13 --shipped-only` at build time. Build on a CPU builder with `ALPHAFOLD_PARAMETERS=download-on-first-campaign` so the 5.3 GB of params stay out of the layer. `install.sh` refuses CPU, but the container path does not use `install.sh`. |
+| **1. CPU-only image build probe** | Does the image build, and does JAX import? | none | $0 (see the RunPod caveat below) | `containers/Dockerfile` already runs `import jax`, `import bindcraft.proteinmpnn`, `bindcraft --help` and `selfcheck cuda13 --shipped-only` at build time. Build on a CPU builder with `ALPHAFOLD_PARAMETERS=download-on-first-campaign` so the 5.3 GB of params stay out of the layer. `install.sh` refuses CPU, but the container path does not use `install.sh`. |
 | **2. GPU smoke, no design** | Does CUDA actually initialise on our A100, and can we populate a weights Volume? | 1 × A100-80GB, ~10 min | **~$0.62** | `selfcheck cuda13` plus `bindcraft fetch-weights` into a Modal Volume. Size the Volume from the real download, not the doc figure — a previous weights Volume was off by ~7×. |
 | **3. One minimal campaign** | Does a real campaign complete end to end, and what does the output tree actually look like? | 1 × A100-80GB, ≤30 min | **~$1.85** | Shipped `hPDL1` target, `binder_lengths [60,60]`, `number_of_final_designs 1`, `max_trajectories 5`, one worker. 5 trajectories × 90.5 s (the GH200 figure, `installation.md`) ≈ 450 s plus model load; budget 1800 s at 2× because the GH200 → A100 transfer is UNVERIFIED. Deliverable: the real `3_Ranked/!_Ranked.csv` header, so the column census stops being a grep of upstream source. |
 | **4. Parity pilot** | How does BC2 compare to the one BC1 run we have numbers for? | 1 × A100-80GB, ≤2 h | **~$7.40** | The same input as job `1c4d5803`: 4ZQK chain A, hotspots 54/56/115, 2 designs. `max_trajectories` set so the run cannot exceed the ceiling. Gives the first honest runtime anchor and a like-for-like score comparison. |
 | **5. Size/scaling sweep** | What is `runtime_alpha` really? | 3 × A100-80GB, ≤2 h each | **~$22.20** | Three target sizes across the envelope (≈100 / 300 / 500 aa). The only way to replace the unmeasured `runtime_alpha=1.5`. Defer until the tool is committed to — this rung buys accuracy, not a go/no-go. |
 
 **Ladder through rung 4: ≈ $10 of GPU.** Through rung 5: ≈ $32. The go/no-go decision is fully answered at rung 4.
+
+**Caveat on the whole ladder.** Rungs 1 to 3 are costed as a Modal image build plus Modal GPU time, because that is what a BC2 integration would look like on the Modal path. If production bindcraft in fact runs the RunPod pod image (§2.1, UNKNOWN 8), the shape of the work changes — a GHCR build-and-push workflow and pod deployment rather than a Modal image and wrapper — and these figures should be re-derived rather than reused. The GPU-second costs at rungs 2 to 5 are provider-independent; the engineering around them is not.
 
 ---
 
@@ -331,7 +352,7 @@ Every string named in §2.8 and in Phase 4 is **customer-visible**.
 5. **Trajectories needed per accepted design on a representative target.** UNKNOWN, and it is the cost driver — upstream says a difficult target "may need thousands". Without a number, `max_trajectories` and the wallet cap cannot be set honestly. Partly resolved by rung 4; properly only by several runs.
 6. **What replaces `shape_complementarity`,** if anything. A product decision, not a measurement.
 7. **Job `c43329f3` ran 14403 s of wall time under a `pilot` booking against a 7200 s pilot ceiling.** UNVERIFIED how the row was selected, and UNVERIFIED whether the row held 7200 on 2026-09-22. Overlaps `task_9a3538be`. Must be understood before any new ceiling row is added.
-8. **What source the current `kendrew-bindcraft:v7` production image actually contains.** UNKNOWN — the Dockerfile does not pin. Recoverable from the registry config blob.
+8. **Which of the two candidate builds serves production, RunPod `Dockerfile` or Modal `Dockerfile.modal`.** UNKNOWN (§2.1). **This is the largest single unknown in this scope**, because it decides what a BC2 upgrade *is*: rebuilding a Modal image and its wrapper is a different piece of work, on a different repo surface, from replacing a GHCR-tagged RunPod pod image. It changes Phase 1 and every rung cost below it. Needs live deploy state; it cannot be read from either checkout and must not be settled by counting comments. Separately, what source the pushed `kendrew-bindcraft:v7` tag contains is also UNKNOWN — neither Dockerfile pins — and is recoverable from the registry config blob.
 9. **The actual size of the AF2 parameter download.** Stated as 5.3 GB; a previous weights Volume was off by ~7× against its doc figure. Measure at rung 2.
 10. **Whether `multi_chain_container_ready` would be true for BC2.** UNKNOWN. BC2's `targets` list and chain-qualified hotspots suggest better multi-chain support, but our BC1 flag is `False` and unverified for the same reason — there is no free smoke tier on which to prove it.
 11. **Whether the licence's design-outputs carve-out (`LICENSE:60-64`) covers the Sprint and custom-campaign business.** UNKNOWN, and it is a lawyer's question, not an engineer's. It is the difference between "BC2 is unusable to us" and "BC2 is usable for everything except the self-serve tool", so it should go to counsel at the same time as the licensing enquiry.
