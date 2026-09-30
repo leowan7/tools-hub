@@ -589,31 +589,283 @@ class TestCountJobDirs:
 
 
 # ---------------------------------------------------------------------------
+# Feasibility: anonymous since 2026-09-30, scoped to the visitor's own jobs
+# ---------------------------------------------------------------------------
+
+
+_FEAS_COLUMNS = (
+    "surface_topology", "epitope_rigidity", "geometric_access", "glycan_risk",
+    "interface_competition", "composite_feasibility", "tier", "residues",
+    "residue_count", "chain_id",
+)
+
+
+@pytest.fixture
+def stub_feasibility(monkeypatch):
+    """Replace run_feasibility_pipeline with one that writes a fixed CSV.
+
+    The real one needs freesasa, like run_pipeline. What is under test here
+    is the route: who may call it, what it charges, which slot it holds.
+    Returns the list of calls so a test can tell whether the pipeline ran.
+    """
+    import csv
+
+    calls = []
+
+    def fake(pdb_path, chain_id, epitope_residues, progress_callback=None):
+        calls.append((Path(pdb_path).parent.name, chain_id, list(epitope_residues)))
+        out = Path(pdb_path).parent / "feasibility_results.csv"
+        with out.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=_FEAS_COLUMNS)
+            writer.writeheader()
+            writer.writerow({
+                "surface_topology": "0.5", "epitope_rigidity": "0.5",
+                "geometric_access": "0.5", "glycan_risk": "0.0",
+                "interface_competition": "0.0", "composite_feasibility": "0.6",
+                "tier": "Moderate", "residues": "ALA10,ALA11",
+                "residue_count": "2", "chain_id": chain_id,
+            })
+        return out
+
+    monkeypatch.setattr("scout.pipeline.run_feasibility_pipeline", fake)
+    return calls
+
+
+def _feasibility_job(client) -> str:
+    """An example job owned by *client*, with chain A's results in place."""
+    job_id = client.get("/scout/example").get_json()["job_id"]
+    _write_results_csv(job_id)
+    return job_id
+
+
+def _feas_progress(client, job_id):
+    return client.get(
+        f"/scout/feasibility/progress?job_id={job_id}&chain=A&epitope_id=1"
+    )
+
+
+def _feas_analyze(client, job_id):
+    return client.post(
+        "/scout/feasibility/analyze",
+        json={"job_id": job_id, "chain": "A", "epitope_id": 1},
+    )
+
+
+def _sse_events(resp) -> list[dict]:
+    return [
+        json.loads(line[len("data: "):])
+        for line in resp.get_data(as_text=True).splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+class TestAnonymousCanRunFeasibility:
+    def test_page_renders_without_a_login_redirect(self, client):
+        resp = client.get("/scout/feasibility", follow_redirects=False)
+        assert resp.status_code == 200
+        assert "/login" not in resp.headers.get("Location", "")
+
+    def test_stream_runs_the_pipeline_and_carries_the_result(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        resp = _feas_progress(client, job_id)
+        assert resp.mimetype == "text/event-stream"
+        done = _sse_events(resp)[-1]
+        assert done["stage"] == "done"
+        assert done["result"]["composite_feasibility"] == 0.6
+        assert done["result"]["download_url"] == (
+            f"/scout/feasibility/download/{job_id}?chain=A"
+        )
+        assert stub_feasibility == [(job_id, "A", [10, 11, 12, 13, 14, 15, 16])]
+
+    def test_stream_reports_a_result_it_cannot_read(
+        self, client, monkeypatch, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_feasibility_pipeline",
+            lambda pdb_path, *a, **k: Path(pdb_path).parent / "missing.csv",
+        )
+        (done,) = [
+            e for e in _sse_events(_feas_progress(client, job_id))
+            if e["stage"] in ("done", "error")
+        ]
+        assert done == {"stage": "error", "msg": scout_routes._GENERIC_ERROR}
+
+    def test_page_takes_the_result_from_the_stream(self, client):
+        body = client.get("/scout/feasibility").get_data(as_text=True)
+        assert "showFeasibilityResults(jobId, chain, epitopeResidues, data.result)" in body
+        assert "showFeasibilityResults(currentJobId, currentChain, [], data.result)" in body
+        assert "/scout/feasibility/analyze" not in body
+
+    def test_analyze_and_download(self, client, stub_feasibility, reap_jobs):
+        job_id = _feasibility_job(client)
+        resp = _feas_analyze(client, job_id)
+        assert resp.status_code == 200, resp.data
+        assert resp.get_json()["composite_feasibility"] == 0.6
+        assert client.get(
+            f"/scout/feasibility/download/{job_id}?chain=A"
+        ).status_code == 200
+
+    def test_results_table_links_straight_to_feasibility(self, client):
+        body = client.get("/scout/").get_data(as_text=True)
+        assert "Sign in to assess" not in body
+        assert "SCOUT_AUTHENTICATED" not in body
+        assert ">Assess feasibility</a>" in body
+
+
+class TestFeasibilityJobsAreOwnerScoped:
+    """The three job-touching feasibility routes (progress, analyze,
+    download) resolve the job through _resolve_job_dir, which matches only
+    the caller's own owner keys (scout/routes.py). The page route reads no
+    job."""
+
+    def _assert_locked_out(self, stranger, job_id):
+        events = _sse_events(_feas_progress(stranger, job_id))
+        assert events == [{"stage": "error", "msg": "Job not found or expired."}]
+        assert _feas_analyze(stranger, job_id).status_code == 404
+        assert stranger.get(
+            f"/scout/feasibility/download/{job_id}?chain=A"
+        ).status_code == 404
+
+    def test_another_anonymous_visitor_cannot_read_a_feasibility_job(
+        self, app, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        assert _feas_analyze(client, job_id).status_code == 200
+
+        visitor_b = app.test_client()
+        # B holds an anonymous id of its own, not merely no session.
+        visitor_b.get("/scout/example")
+        with visitor_b.session_transaction() as sess:
+            assert sess[scout_routes.ANON_SESSION_KEY]
+        self._assert_locked_out(visitor_b, job_id)
+        assert [c[0] for c in stub_feasibility] == [job_id]
+
+    def test_a_signed_in_user_cannot_read_an_anonymous_feasibility_job(
+        self, app, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        assert _feas_analyze(client, job_id).status_code == 200
+
+        stranger = app.test_client()
+        _login(stranger, user_id="some-other-user", email="other@example.com")
+        self._assert_locked_out(stranger, job_id)
+        assert [c[0] for c in stub_feasibility] == [job_id]
+
+    def test_the_creator_keeps_the_job_after_signing_in(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        _login(client)
+        assert _feas_analyze(client, job_id).status_code == 200
+
+
+class TestFeasibilityIsMetered:
+    """Both compute routes are on the scout_analyze bucket, unpaired, and
+    hold an anonymous compute slot while the pipeline runs. The page uses
+    only the stream, so one assessment there is one charge."""
+
+    def test_analyze_shares_the_epitope_analysis_budget(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT):
+            client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        resp = _feas_analyze(client, job_id)
+        assert resp.status_code == 429
+        assert resp.get_json()["reason"] == ratelimit.REASON_SESSION_LIMITED
+        assert stub_feasibility == []
+
+    def test_stream_is_refused_in_band(self, client, stub_feasibility, reap_jobs):
+        job_id = _feasibility_job(client)
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT):
+            client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        resp = _feas_progress(client, job_id)
+        assert resp.mimetype == "text/event-stream"
+        (event,) = _sse_events(resp)
+        assert event["reason"] == ratelimit.REASON_SESSION_LIMITED
+        assert stub_feasibility == []
+
+    def test_each_call_is_one_charge_and_grants_no_credit(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        _feas_progress(client, job_id)
+        assert _hits("scout_analyze", "127.0.0.1") == 1
+        _feas_analyze(client, job_id)
+        assert _hits("scout_analyze", "127.0.0.1") == 2
+        assert ratelimit._FOLLOWUP == {}
+
+    def test_the_last_allowed_charge_still_delivers_the_result(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        """Review finding: with the result fetched by a second, separately
+        charged POST, a caller on their last charge watched the stream reach
+        100% and then had the POST refused. The result now rides the stream."""
+        job_id = _feasibility_job(client)
+        for _ in range(scout_routes.ANON_ANALYZE_SESSION_LIMIT - 1):
+            client.post("/scout/analyze", json={"job_id": "x", "chain": "A"})
+        done = _sse_events(_feas_progress(client, job_id))[-1]
+        assert done["stage"] == "done"
+        assert done["result"]["composite_feasibility"] == 0.6
+
+    def test_signed_in_callers_are_not_charged(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        _login(client)
+        job_id = _feasibility_job(client)
+        _feas_progress(client, job_id)
+        assert _feas_analyze(client, job_id).status_code == 200
+        assert _hits("scout_analyze", "127.0.0.1") == 0
+
+    def test_analyze_refuses_when_the_pool_is_full(
+        self, client, monkeypatch, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
+        resp = _feas_analyze(client, job_id)
+        assert resp.status_code == 503
+        assert resp.get_json()["reason"] == ratelimit.REASON_BUSY
+        assert stub_feasibility == []
+
+    def test_stream_reports_busy_in_band(
+        self, client, monkeypatch, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        monkeypatch.setattr(scout_routes, "ANON_MAX_CONCURRENT_RUNS", 0)
+        (event,) = _sse_events(_feas_progress(client, job_id))
+        assert event["reason"] == ratelimit.REASON_BUSY
+        assert stub_feasibility == []
+
+    def test_slot_is_released_after_each_route(
+        self, client, stub_feasibility, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        _feas_progress(client, job_id)
+        assert ratelimit.inflight_anon_runs() == 0
+        _feas_analyze(client, job_id)
+        assert ratelimit.inflight_anon_runs() == 0
+
+    def test_slot_is_released_when_the_pipeline_raises(
+        self, client, monkeypatch, reap_jobs
+    ):
+        job_id = _feasibility_job(client)
+        monkeypatch.setattr(
+            "scout.pipeline.run_feasibility_pipeline",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        assert _feas_analyze(client, job_id).status_code == 500
+        assert ratelimit.inflight_anon_runs() == 0
+
+
+# ---------------------------------------------------------------------------
 # The parts that still require an account
 # ---------------------------------------------------------------------------
 
 
 class TestStillGated:
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/scout/feasibility",
-            # A fixed literal rather than str(uuid.uuid4()): pytest renders a
-            # string argvalue into this case's node ID, so a fresh value here
-            # would give the test a different node ID on every collection.
-            "/scout/feasibility/download/00000000-0000-0000-0000-000000000001",
-        ],
-    )
-    def test_feasibility_get_requires_login(self, client, path):
-        resp = client.get(path, follow_redirects=False)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_feasibility_analyze_requires_login(self, client):
-        resp = client.post("/scout/feasibility/analyze", json={"job_id": "x", "chain": "A"})
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
     def test_handoff_requires_login(self, client, reap_jobs):
         """The handoff writes a user-keyed scout_handoffs row — it needs an id."""
         job_id = client.get("/scout/example").get_json()["job_id"]
@@ -629,15 +881,17 @@ class TestStillGated:
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
-    def test_results_table_degrades_the_feasibility_link_when_anonymous(self, client):
-        body = client.get("/scout/").get_data(as_text=True)
-        assert "var SCOUT_AUTHENTICATED = false;" in body
-        assert "Sign in to assess" in body
+    def test_feasibility_page_offers_sign_in_instead_of_the_handoff_form(self, client):
+        url = "/scout/feasibility?job_id=abc&epitope_id=1&chain=A"
+        body = client.get(url).get_data(as_text=True)
+        assert 'action="/scout/handoff/tool"' not in body
+        assert "to carry the residues you pick straight into a design tool." in body
+        assert "/login?next=/scout/feasibility?job_id%3Dabc" in body
 
-    def test_results_table_links_straight_through_when_signed_in(self, client):
+    def test_feasibility_page_shows_the_handoff_form_when_signed_in(self, client):
         _login(client)
-        body = client.get("/scout/").get_data(as_text=True)
-        assert "var SCOUT_AUTHENTICATED = true;" in body
+        body = client.get("/scout/feasibility").get_data(as_text=True)
+        assert 'action="/scout/handoff/tool"' in body
 
 
 class TestRateLimitKeyCannotBeChosenByTheCaller:

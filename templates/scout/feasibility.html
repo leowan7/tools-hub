@@ -202,6 +202,11 @@
               wallet. Design count is unlimited and you pay only for the
               compute each job delivers.
             </p>
+            {# POST /scout/handoff/tool is @login_required (scout/routes.py,
+               handoff_tool), and a login redirect from a POST cannot return
+               to this page with its job, so an anonymous visitor gets a
+               sign-in link back to this URL instead of the form. #}
+            {% if session.get('user_email') %}
             <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.75rem;">
               {{ csrf_input() }}
               <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
@@ -233,6 +238,12 @@
                 Open tool form
               </button>
             </form>
+            {% else %}
+            <p style="margin: 0 0 0.75rem 0;">
+              <a href="{{ url_for('auth.login', next=request.full_path) }}">Sign in</a>
+              to carry the residues you pick straight into a design tool.
+            </p>
+            {% endif %}
             <p style="color: var(--text-tertiary); font-size: 0.78rem; margin: 0;">
               Target PDB and hotspots flow over automatically. Each job is
               funded from your wallet, and you only pay for the compute it
@@ -489,7 +500,7 @@ function runFeasibility() {
     if (data.stage === 'done') {
       source.close();
       document.getElementById('progress-container').hidden = true;
-      fetchFeasibilityResults(jobId, chain, epitopeResidues);
+      showFeasibilityResults(jobId, chain, epitopeResidues, data.result);
     } else if (data.stage === 'error') {
       source.close();
       document.getElementById('progress-container').hidden = true;
@@ -506,26 +517,11 @@ function runFeasibility() {
   };
 }
 
-function fetchFeasibilityResults(jobId, chain, epitopeResidues) {
-  var body = { job_id: jobId, chain: chain };
-  if (epitopeResidues && epitopeResidues.length) {
-    body.epitope_residues = epitopeResidues;
-  } else if (currentEpitopeId) {
-    body.epitope_id = parseInt(currentEpitopeId, 10);
-  }
-
-  fetch('/scout/feasibility/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) { showAnalyzeError(data.error); return; }
-      renderFeasibilityResults(data);
-      populateHandoffForm(jobId, chain, epitopeResidues, data);
-    })
-    .catch(function(err) { showAnalyzeError('Failed to fetch results: ' + err.message); });
+// The progress stream's done event carries the result, so showing it is not a
+// second request (scout/routes.py, feasibility_progress._sse).
+function showFeasibilityResults(jobId, chain, epitopeResidues, data) {
+  renderFeasibilityResults(data);
+  populateHandoffForm(jobId, chain, epitopeResidues, data);
 }
 
 function populateHandoffForm(jobId, chain, epitopeResidues, data) {
@@ -726,7 +722,7 @@ function render3DViewer(data) {
     if (data.stage === 'done') {
       source.close();
       document.getElementById('progress-container').hidden = true;
-      fetchFeasibilityResults(currentJobId, currentChain, []);
+      showFeasibilityResults(currentJobId, currentChain, [], data.result);
     } else if (data.stage === 'error') {
       source.close();
       document.getElementById('progress-container').hidden = true;

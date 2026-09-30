@@ -831,10 +831,12 @@ def _binders_with_contacts(cache: dict) -> list[dict]:
     has.
 
     Deliberately ``cached_binders`` and not ``fetch_known_binders``: this runs
-    in /feasibility/analyze, which -- unlike /analyze -- holds no
-    anon_compute_slot, so a lookup here is not covered by the concurrency
-    bound. On a cold worker fetch_known_binders is a 12 s RCSB search plus a
-    60 s summary fetch plus a round of downloads, against a 120 s gunicorn
+    in /feasibility/analyze, which -- unlike /analyze -- releases its
+    anon_compute_slot before this runs, so a lookup here is not covered by
+    the concurrency bound; and in the /feasibility/progress done event, which
+    is built inside that stream's slot (feasibility_progress._slotted), so a
+    lookup there would hold the slot for its whole length. On a cold
+    worker fetch_known_binders is a 12 s RCSB search plus a 60 s summary fetch plus a round of downloads, against a 120 s gunicorn
     timeout and workers = 2. A read of the in-process cache is the whole of
     what this is worth: the job's own /analyze already rewrites
     analyze_cache.json, so a re-analyze remains the way a cold worker heals.
@@ -1397,7 +1399,7 @@ def analyze():
     # chain's file for /scout/download — the same job-scoped assumption as the
     # results.csv cache, one file further on.
     # epitope_id is the pipeline's patch id in every file, the id the page's
-    # "Sign in to assess" links carry. rank is the page's order: 1-3 for the
+    # "Assess feasibility" links carry. rank is the page's order: 1-3 for the
     # reported epitopes, blank for patches not reported.
     ranked_rows = [(rank, e) for rank, e in enumerate(top3, start=1)]
     reported = {id(e) for e in top3}
@@ -1680,17 +1682,115 @@ def progress():
 # ---------------------------------------------------------------------------
 
 @scout_bp.route("/feasibility", methods=["GET"])
-@login_required
 def feasibility_page():
     job_id = request.args.get("job_id", "")
     epitope_id = request.args.get("epitope_id", "")
     return render_template("scout/feasibility.html", job_id=job_id, epitope_id=epitope_id)
 
 
-@scout_bp.route("/feasibility/analyze", methods=["POST"])
-@login_required
-def feasibility_analyze():
+def _feasibility_payload(
+    job_id: str,
+    job_dir: Path,
+    pdb_path: Path,
+    chain_id: str,
+    epitope_residues: list,
+    feasibility_csv: Path,
+) -> dict:
+    """The results body the feasibility page renders, read from *feasibility_csv*.
+
+    Built by both /feasibility/analyze and the done event of
+    /feasibility/progress. Calls url_for, so it needs a request context.
+    """
     from scout.feasibility import generate_recommendations  # noqa: PLC0415
+
+    result_row = {}
+    with feasibility_csv.open() as f:
+        reader = csv_module.DictReader(f)
+        for row in reader:
+            result_row = row
+            break
+
+    dimensions = {
+        "surface_topology": float(result_row.get("surface_topology", 0)),
+        "epitope_rigidity": float(result_row.get("epitope_rigidity", 0)),
+        "geometric_access": float(result_row.get("geometric_access", 0)),
+        "glycan_risk": float(result_row.get("glycan_risk", 0)),
+        "interface_competition": float(result_row.get("interface_competition", 0)),
+    }
+
+    composite = float(result_row.get("composite_feasibility", 0))
+    tier = result_row.get("tier", "Unknown")
+    result = generate_recommendations(dimensions, composite, tier, len(epitope_residues))
+
+    # The residues the page hands to the binder form, as bare integers.
+    # ``residues`` below is resname+number ("TYR67") and the handoff POST
+    # parses its field with int(), so it needed a separate numeric field:
+    # arriving from the results table the page has an epitope_id and no
+    # residue list of its own, so the hidden hotspot input had nothing to
+    # post and the POST refused.
+    # The inline populateHandoffForm script in
+    # templates/scout/feasibility.html reads this into the
+    # #handoff-hotspots hidden input that the handoff form posts. Not
+    # written as an :: citation: the guard in
+    # tests/test_code_citations_resolve.py resolves an .html target to its
+    # Jinja macro/block names only, so a function defined inside a
+    # <script> block cannot be cited that way.
+    #
+    # All-or-nothing on purpose. ``epitope_residues`` can come straight
+    # from request JSON, so an element need not be numeric; handing over
+    # the subset that parses would silently steer the design at a
+    # DIFFERENT patch than the one just scored. An empty list makes the
+    # handoff refuse with a message instead.
+    _bare = [str(r).strip() for r in epitope_residues]
+    handoff_residues = (
+        [int(r) for r in _bare]
+        if all(re.fullmatch(r"-?\d+", r) for r in _bare)
+        else []
+    )
+
+    return {
+        "composite_feasibility": composite,
+        "tier": result.tier,
+        "tier_color": result.tier_color,
+        "dimensions": dimensions,
+        "dimension_descriptions": result.dimension_descriptions,
+        "recommended_approach": result.recommended_approach,
+        "recommended_scaffold": result.recommended_scaffold,
+        "design_scale_min": result.design_scale_min,
+        "design_scale_max": result.design_scale_max,
+        "expected_hit_rate": result.expected_hit_rate,
+        "hit_rate_citation": result.hit_rate_citation,
+        "risk_factors": result.risk_factors,
+        "residues": result_row.get("residues", ""),
+        "epitope_residues": handoff_residues,
+        "residue_count": int(result_row.get("residue_count", 0)),
+        # Carries the chain that was actually scored, so the download gate can
+        # be exact instead of inferring it from results.csv. The page assigns
+        # this verbatim to the download button, so no front-end change.
+        "download_url": url_for(
+            "scout.feasibility_download", job_id=job_id, chain=chain_id
+        ),
+        "pdb_url": url_for("scout.serve_pdb", job_id=job_id),
+        "pdb_format": pdb_path.suffix.lstrip("."),
+        "chain": chain_id,
+        "known_binder_overlaps": _get_binder_overlaps(job_dir, epitope_residues, chain_id),
+    }
+
+
+@scout_bp.route("/feasibility/analyze", methods=["POST"])
+@anon_rate_limit(
+    "scout_analyze",
+    limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+    # One charge per call: this route runs run_feasibility_pipeline on every
+    # call. It shares the "scout_analyze" bucket with /scout/progress and
+    # /scout/analyze and is unpaired, so it neither grants nor spends a
+    # follow-up credit: credits are keyed on (session, ip, job_id) with no
+    # route in the key (scout/ratelimit.py::_followup_key), so a pair here
+    # could be spent by /scout/analyze on the same job.
+)
+def feasibility_analyze():
     from scout.pipeline import run_feasibility_pipeline  # noqa: PLC0415
 
     data = request.get_json(silent=True) or {}
@@ -1756,118 +1856,63 @@ def feasibility_analyze():
             }), 404
         return jsonify({"error": "epitope_residues or epitope_id is required."}), 400
 
-    try:
-        feasibility_csv = run_feasibility_pipeline(
-            pdb_path, chain_id, epitope_residues,
-        )
-    except FileNotFoundError:
-        # A staged file is missing server-side. Answering 422 "check that the
-        # PDB is valid" blamed the user for the server losing the job; it is
-        # gone, and re-uploading is the actionable instruction. The path is
-        # the whole diagnostic, so it is logged rather than sent.
-        logger.warning(
-            "Feasibility staged file missing for job %s", job_id, exc_info=True
-        )
-        return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
-    except ValueError as exc:
-        if isinstance(exc, ScoutInputError):
-            # Forwarded verbatim, so nothing is hidden that a traceback would
-            # help reconstruct -- and a wrong-chain typo is the most common
-            # user error on this route, so exc_info would be pure log noise.
-            logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
-            return jsonify({"error": _client_error(exc)}), 422
-        # Withheld, so the traceback is the only surviving account of it -- and
-        # 500, not 422, because a plain ValueError is a server fault. Blaming
-        # the upload here is the mistake the FileNotFoundError clause above
-        # was written to avoid.
-        logger.exception("Feasibility pipeline fault for job %s", job_id)
-        return jsonify({"error": _GENERIC_ERROR}), 500
-    except Exception:
-        # Anything else used to escape as an unhandled 500 with a stack-trace
-        # page. The route contracts to return JSON; the UI only reaches it
-        # after the SSE stream reports done, but it is directly callable.
-        # _GENERIC_ERROR directly, not _client_error: the ValueError clause
-        # above catches every ValueError by isinstance, so a forward from here
-        # is unreachable and only reads as though it were possible.
-        logger.exception("Feasibility pipeline error for job %s", job_id)
-        return jsonify({"error": _GENERIC_ERROR}), 500
+    with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
+        if not _slot:
+            observe_scout_refusal(REASON_BUSY)
+            return jsonify({"error": _BUSY_MESSAGE, "reason": REASON_BUSY}), 503
+        try:
+            feasibility_csv = run_feasibility_pipeline(
+                pdb_path, chain_id, epitope_residues,
+            )
+        except FileNotFoundError:
+            # A staged file is missing server-side. Answering 422 "check that the
+            # PDB is valid" blamed the user for the server losing the job; it is
+            # gone, and re-uploading is the actionable instruction. The path is
+            # the whole diagnostic, so it is logged rather than sent.
+            logger.warning(
+                "Feasibility staged file missing for job %s", job_id, exc_info=True
+            )
+            return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
+        except ValueError as exc:
+            if isinstance(exc, ScoutInputError):
+                # Forwarded verbatim, so nothing is hidden that a traceback would
+                # help reconstruct -- and a wrong-chain typo is the most common
+                # user error on this route, so exc_info would be pure log noise.
+                logger.warning("Feasibility rejected input for job %s: %s", job_id, exc)
+                return jsonify({"error": _client_error(exc)}), 422
+            # Withheld, so the traceback is the only surviving account of it -- and
+            # 500, not 422, because a plain ValueError is a server fault. Blaming
+            # the upload here is the mistake the FileNotFoundError clause above
+            # was written to avoid.
+            logger.exception("Feasibility pipeline fault for job %s", job_id)
+            return jsonify({"error": _GENERIC_ERROR}), 500
+        except Exception:
+            # Anything else used to escape as an unhandled 500 with a stack-trace
+            # page. The route contracts to return JSON, and it is directly
+            # callable.
+            # _GENERIC_ERROR directly, not _client_error: the ValueError clause
+            # above catches every ValueError by isinstance, so a forward from here
+            # is unreachable and only reads as though it were possible.
+            logger.exception("Feasibility pipeline error for job %s", job_id)
+            return jsonify({"error": _GENERIC_ERROR}), 500
 
-    result_row = {}
-    with feasibility_csv.open() as f:
-        reader = csv_module.DictReader(f)
-        for row in reader:
-            result_row = row
-            break
-
-    dimensions = {
-        "surface_topology": float(result_row.get("surface_topology", 0)),
-        "epitope_rigidity": float(result_row.get("epitope_rigidity", 0)),
-        "geometric_access": float(result_row.get("geometric_access", 0)),
-        "glycan_risk": float(result_row.get("glycan_risk", 0)),
-        "interface_competition": float(result_row.get("interface_competition", 0)),
-    }
-
-    composite = float(result_row.get("composite_feasibility", 0))
-    tier = result_row.get("tier", "Unknown")
-    result = generate_recommendations(dimensions, composite, tier, len(epitope_residues))
-
-    # The residues the page hands to the binder form, as bare integers.
-    # ``residues`` below is resname+number ("TYR67") and the handoff POST
-    # parses its field with int(), so it needed a separate numeric field:
-    # arriving from the results table the page has an epitope_id and no
-    # residue list of its own, so the hidden hotspot input had nothing to
-    # post and the POST refused.
-    # The inline populateHandoffForm script in
-    # templates/scout/feasibility.html reads this into the
-    # #handoff-hotspots hidden input that the handoff form posts. Not
-    # written as an :: citation: the guard in
-    # tests/test_code_citations_resolve.py resolves an .html target to its
-    # Jinja macro/block names only, so a function defined inside a
-    # <script> block cannot be cited that way.
-    #
-    # All-or-nothing on purpose. ``epitope_residues`` can come straight
-    # from request JSON, so an element need not be numeric; handing over
-    # the subset that parses would silently steer the design at a
-    # DIFFERENT patch than the one just scored. An empty list makes the
-    # handoff refuse with a message instead.
-    _bare = [str(r).strip() for r in epitope_residues]
-    handoff_residues = (
-        [int(r) for r in _bare]
-        if all(re.fullmatch(r"-?\d+", r) for r in _bare)
-        else []
-    )
-
-    return jsonify({
-        "composite_feasibility": composite,
-        "tier": result.tier,
-        "tier_color": result.tier_color,
-        "dimensions": dimensions,
-        "dimension_descriptions": result.dimension_descriptions,
-        "recommended_approach": result.recommended_approach,
-        "recommended_scaffold": result.recommended_scaffold,
-        "design_scale_min": result.design_scale_min,
-        "design_scale_max": result.design_scale_max,
-        "expected_hit_rate": result.expected_hit_rate,
-        "hit_rate_citation": result.hit_rate_citation,
-        "risk_factors": result.risk_factors,
-        "residues": result_row.get("residues", ""),
-        "epitope_residues": handoff_residues,
-        "residue_count": int(result_row.get("residue_count", 0)),
-        # Carries the chain that was actually scored, so the download gate can
-        # be exact instead of inferring it from results.csv. The page assigns
-        # this verbatim to the download button, so no front-end change.
-        "download_url": url_for(
-            "scout.feasibility_download", job_id=job_id, chain=chain_id
-        ),
-        "pdb_url": url_for("scout.serve_pdb", job_id=job_id),
-        "pdb_format": pdb_path.suffix.lstrip("."),
-        "chain": chain_id,
-        "known_binder_overlaps": _get_binder_overlaps(job_dir, epitope_residues, chain_id),
-    }), 200
+    return jsonify(_feasibility_payload(
+        job_id, job_dir, pdb_path, chain_id, epitope_residues, feasibility_csv,
+    )), 200
 
 
 @scout_bp.route("/feasibility/progress", methods=["GET"])
-@login_required
+@anon_rate_limit(
+    "scout_analyze",
+    limit=ANON_ANALYZE_LIMIT,
+    session_limit=ANON_ANALYZE_SESSION_LIMIT,
+    window_seconds=ANON_RATE_WINDOW_SECONDS,
+    sse=True,
+    # Unpaired, one charge per call, for the reason given on
+    # feasibility_analyze: this stream also runs run_feasibility_pipeline.
+    # Its done event carries the result (_sse below), so on the feasibility
+    # page one assessment is this one request and one charge.
+)
 def feasibility_progress():
     from flask import stream_with_context  # noqa: PLC0415
 
@@ -1910,7 +1955,7 @@ def feasibility_progress():
                 pass
 
     if not epitope_residues:
-        # Both UI paths open this stream before the JSON route, so this is the
+        # Both UI paths take their result from this stream, so this is the
         # message the user actually reads. "No results for this chain" is only
         # true when the chain gate missed; when it passed, the chain HAS been
         # analysed and the epitope_id simply is not in it, and telling the user
@@ -1943,6 +1988,25 @@ def feasibility_progress():
         except ImportError:
             _use_gevent = False
 
+        produced = {}
+
+        def _sse(event):
+            # The done event carries the whole result, so the page renders it
+            # without a second request (templates/scout/feasibility.html,
+            # showFeasibilityResults). Built here, in the generator that
+            # stream_with_context runs inside the request context, because
+            # _feasibility_payload calls url_for.
+            if event.get("stage") == "done":
+                try:
+                    event["result"] = _feasibility_payload(
+                        job_id, job_dir, pdb_path, chain_id, epitope_residues,
+                        produced["csv"],
+                    )
+                except Exception:
+                    logger.exception("Feasibility result build failed for job %s", job_id)
+                    event = {"stage": "error", "msg": _GENERIC_ERROR}
+            return f"data: {json.dumps(event)}\n\n"
+
         def _run_worker(q):
             def callback(stage, pct):
                 stage_labels = {
@@ -1959,11 +2023,10 @@ def feasibility_progress():
 
             try:
                 from scout.pipeline import run_feasibility_pipeline  # noqa: PLC0415
-                run_feasibility_pipeline(pdb_path, chain_id, epitope_residues, progress_callback=callback)
-                q.put({"stage": "done", "pct": 100, "result": {
-                    "job_id": job_id,
-                    "chain": chain_id,
-                }})
+                produced["csv"] = run_feasibility_pipeline(
+                    pdb_path, chain_id, epitope_residues, progress_callback=callback,
+                )
+                q.put({"stage": "done", "pct": 100})
             except Exception as exc:
                 logger.exception("Feasibility SSE error for job %s", job_id)
                 q.put({"stage": "error", "msg": _client_error(exc)})
@@ -1979,7 +2042,7 @@ def feasibility_progress():
                 except gqueue.Empty:
                     yield ": keepalive\n\n"
                     continue
-                yield f"data: {json.dumps(event)}\n\n"
+                yield _sse(event)
                 if event.get("stage") in ("done", "error"):
                     break
         else:
@@ -1988,19 +2051,29 @@ def feasibility_progress():
             _run_worker(q)
             while not q.empty():
                 event = q.get_nowait()
-                yield f"data: {json.dumps(event)}\n\n"
+                yield _sse(event)
                 if event.get("stage") in ("done", "error"):
                     break
 
+    def _slotted():
+        # Same slot handling as progress()._slotted: held while the stream is
+        # iterated, released when the generator closes.
+        with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as slot:
+            if not slot:
+                observe_scout_refusal(REASON_BUSY)
+                busy = {"stage": "error", "msg": _BUSY_MESSAGE, "reason": REASON_BUSY}
+                yield f"data: {json.dumps(busy)}\n\n"
+                return
+            yield from _generate()
+
     return current_app.response_class(
-        stream_with_context(_generate()),
+        stream_with_context(_slotted()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 @scout_bp.route("/feasibility/download/<job_id>", methods=["GET"])
-@login_required
 def feasibility_download(job_id):
     # Validated FIRST, like every other chain this blueprint takes from a
     # request (analyze, progress, feasibility/analyze, feasibility/progress) --

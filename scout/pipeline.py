@@ -636,11 +636,10 @@ def run_feasibility_pipeline(
 
     # NB: this writes feasibility_results.csv only at the very end, so a raise
     # leaves the PREVIOUS run's file on disk. Do not "fix" that by deleting on
-    # entry: one user click runs this pipeline TWICE (the
-    # /scout/feasibility/progress SSE, then POST /scout/feasibility/analyze
-    # re-running it to read the numbers back), so an entry-delete destroys a
-    # good result whenever the second run fails. Staleness is handled where the
-    # file is READ, in feasibility_download.
+    # entry: POST /scout/feasibility/analyze re-runs this pipeline over the file
+    # a /scout/feasibility/progress stream already wrote, so an entry-delete
+    # destroys a good result whenever that re-run fails. Staleness is handled
+    # where the file is READ, in feasibility_download.
 
     def _emit(stage: str, pct: int) -> None:
         if progress_callback is not None:
