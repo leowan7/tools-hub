@@ -862,6 +862,43 @@ def failure_notice(job) -> Optional[dict]:  # noqa: ANN001
 _GENERIC_FIX = ("Try again with the same settings. If it fails a second time, "
                 "contact us with the job ID and we will look at it.")
 
+# A numerical blow-up inside the model (an SVD or eigendecomposition that
+# will not converge, a NaN in the loss). The run already reached the GPU, so
+# it is not an input-format problem the user can see on the form.
+#
+# _NUMERICAL_FIX_SEEDED is used when the job stamped a starting seed.
+# tools/esmfold2_design/__init__.py:198 and tools/opendde/__init__.py:458 are
+# the only two adapters that stamp inputs["seed"], and esmfold2_design passes
+# it straight through to the payload (__init__.py:246). It names the seed as
+# the thing to vary instead of telling the user to resubmit the identical
+# form, which is what _GENERIC_FIX does. It does NOT claim that an identical
+# resubmit must fail again: for esmfold2-design it demonstrably need not --
+# two byte-identical payloads returned 0 of 6 shared sequences
+# (docs/VALIDATION-LOG.md:243). That row names live inference-time dropout
+# upstream as the likely mechanism but labels it an unverified hypothesis;
+# the 0-of-6 measurement itself is what this relies on, and it is enough to
+# say the run is not reproducible even at a fixed seed.
+# The cause says WHERE it failed, not that the input is blameless: the fix
+# below may ask for a different input, and a panel that exonerates the
+# input in one sentence and asks to change it in the next reads as a
+# contradiction (found by a code review of this change).
+_NUMERICAL_CAUSE = ("The model hit a numerical error part-way through this "
+                    "run and stopped. It failed inside the run, after your "
+                    "inputs had been read and accepted.")
+# Deliberately claims nothing about what the seed does downstream: this
+# tool is not reproducible even at a fixed seed (docs/VALIDATION-LOG.md:243,
+# two byte-identical payloads shared 0 of 6 sequences), and whether a
+# different seed avoids this particular failure is unverified.
+_NUMERICAL_FIX_SEEDED = (
+    "Change the starting seed and run again. A repeat is not guaranteed to "
+    "take the same path, so a fresh run may get past this. If a second "
+    "attempt stops the same way, try a different target, or contact us with "
+    "the job ID.")
+_NUMERICAL_FIX = (
+    "Run it again. If it stops the same way a second time, something in the "
+    "input may be triggering it: try a cleaned structure or a smaller "
+    "target, or contact us with the job ID.")
+
 # (kind, pattern, cause, fix), first match wins. Each pattern is matched
 # case-insensitively against the job's stored error text (bucket, check,
 # category, detail, message joined). The strings come from the emitters:
@@ -869,9 +906,85 @@ _GENERIC_FIX = ("Try again with the same settings. If it fails a second time, "
 # ``_stringify_error`` in gpu/modal_client.py, the webhook path in
 # webhooks/modal.py, and the tool_submit failures in blueprints/tools.py.
 # "our_side" is listed first because an input download failing
-# (``input:download``) is our storage, not the user's file.
+# (``input:download``) is our storage, not the user's file. It also owns
+# the whole ``parser`` bucket and both ``internal`` checks.
+#
+# Of the ``internal`` bucket -- proteina's own crash reporting -- only
+# ``unhandled_exception`` is listed. Its detail text says "This is a bug in
+# run_pipeline.py, not a bad request" (tools/proteina/run_pipeline.py's
+# catch-all ``_write_result``), so the cause sentence is accurate for it.
+# Its sibling ``did_not_complete`` is deliberately NOT listed: that emitter's
+# own comment names an OOM-kill or a full /tmp among its causes and refuses
+# to assert which, and an OOM-kill follows from how large a target was
+# submitted -- so claiming the input was not the cause, and offering an
+# identical retry, would be wrong there. It keeps the "generic" cause, which
+# claims nothing about the input.
+# ``TestSilentStubIsOurSide::test_did_not_complete_makes_no_claim_about_input``
+# pins the split.
+#
+# This alternative is NOT ``^``-anchored, unlike ``parser`` below: the poll
+# path drops the ``check`` key and leaves the pair only inside the flattened
+# detail (blueprints/jobs.py:944), so an anchored form matched the webhook
+# shape alone. The check name is specific enough that no prose can collide
+# with it, which is not true of the bare word "parser".
+#
+# ``parser`` is matched as a whole bucket rather than check by check,
+# because every site in it reads output the TOOL produced -- the scores
+# JSON, the predicted PDB, the pLDDT array, the sampled FASTA, on disk for
+# af2/colabfold/mpnn and in memory for esmfold, whose ``reject_stub`` takes
+# a parsed dict (tools/esmfold/run_pipeline.py::reject_stub) -- so what
+# each check reports is a fault in our own output rather than a rejected
+# input. That is about what the check inspects, not about what can
+# influence it: mpnn's near-clone and score-spread guards do depend on how
+# many positions the user left free (tools/mpnn/run_pipeline.py:1018-1072).
+# An AST walk of tools/*/run_pipeline.py finds
+# the sites only in tools/af2, tools/colabfold, tools/esmfold and
+# tools/mpnn run_pipeline.py.
+#
+# The ``parser`` alternative -- and only that one -- is anchored with
+# ``^`` rather than ``\b`` because the bucket is the first field
+# ``_error_text`` joins, while the word "parser" also occurs in the middle
+# of an unrelated detail: mpnn's ``verify:fixed_positions`` text reads
+# "residue counts disagree with MPNN's parser for ..." (the ``_fail`` call
+# at tools/mpnn/run_pipeline.py:869-872). An unanchored
+# prefix would reclassify that failure on a word in its prose;
+# ``TestSilentStubIsOurSide::test_the_word_parser_in_a_detail_is_not_a_bucket``
+# pins that it does not.
+#
+# The ``stub`` sites sit inside a function named ``reject_stub`` and reject
+# the TOOL's OWN output: a pLDDT
+# array that is empty, uniform, outside [0, 100], or carrying any NaN or
+# infinity at all -- the guards count entries and do not require the whole
+# array to be bad (``any(isnan or isinf)`` in tools/colabfold and
+# tools/esmfold run_pipeline.py, a nonzero ``nan_count`` in tools/af2) --
+# a pTM/ipTM head that returned exactly zero, an output PDB that will not
+# decode or carries no ATOM records, and for mpnn (which has no pLDDT)
+# returned sequences that are identical, near-clones, or clustered too
+# tightly on score and recovery. colabfold's ``reject_stub`` docstring
+# names the NaN case as weights never loaded or a wrong dtype, which is
+# ours to fix, not the user's.
+#
+# Without these alternatives, the details that happen to carry the word NaN
+# (or, for an ``internal`` crash, a torch _LinAlgError message) reach the
+# "numerical" rule at the end of this table, whose fix text asks the user to
+# change an input; their siblings fall through to "generic". Both answers are
+# wrong for a fault of ours, and the first is wrong twice over on a tool that
+# takes no structure at all (af2, colabfold and esmfold carry
+# ``requires_pdb=False``). Listing the buckets here puts all of them on one
+# cause, which is the accurate one.
+#
+# The bucket/check separator is a character class because the two live write
+# paths store the pair differently: the webhook keeps the raw
+# ``{bucket, check, detail}``
+# dict (webhooks/modal.py:154), which ``_error_text`` joins with a space,
+# while the poll path flattens it to ``"parser:stub — ..."`` and drops the
+# ``check`` key (gpu/modal_client.py::_stringify_error ->
+# blueprints/jobs.py:943). Both shapes are pinned by
+# tests/test_failed_run_page.py::TestSilentStubIsOurSide.
 _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
     ("our_side", re.compile(
+        r"^parser[: ]|"
+        r"\binternal[: ]unhandled_exception\b|"
         r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
         r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
         r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
@@ -911,6 +1024,16 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "The sequence input could not be read.",
      "Check that the sequences are in FASTA format, one record per "
      "sequence, each with its own name, then try again."),
+    # Last in the table: these words can also appear inside a message an
+    # earlier, more specific rule owns (a degenerate frame is reported as a
+    # non-positive determinant, which the "structure" rule reads as a bad
+    # input file and answers with input advice).
+    ("numerical", re.compile(
+        r"linalg|\bsvd\b|ill-conditioned|failed to converge|"
+        r"\bcholesky\b|\beigh\b|repeated singular values|"
+        r"\bnan\b|\binf\b", re.I),
+     _NUMERICAL_CAUSE,
+     _NUMERICAL_FIX),
 )
 
 
@@ -924,13 +1047,40 @@ def _error_text(job) -> str:  # noqa: ANN001
     return str(err or "")
 
 
+def _has_pinned_seed(job) -> bool:  # noqa: ANN001
+    """True iff this job was submitted through a form with a seed field.
+
+    Only ``esmfold2-design`` and ``opendde`` offer the field, and both
+    stamp it as an int under ``inputs["seed"]``
+    (tools/esmfold2_design/__init__.py:198, tools/opendde/__init__.py:458).
+    A blank field is stored as ``0`` rather than left out
+    (tools/esmfold2_design/__init__.py::_parse_seed), so this is True for
+    every run of those two tools, whether or not the user typed a number --
+    which is what the seeded advice wants, since the field is on the form
+    either way. A string is accepted too so a hand-written or legacy row
+    still reads.
+    """
+    seed = (getattr(job, "inputs", None) or {}).get("seed")
+    if isinstance(seed, bool):
+        return False
+    if isinstance(seed, int):
+        return True
+    return isinstance(seed, str) and seed.strip().lstrip("-").isdigit()
+
+
 def failure_advice(job) -> Optional[dict]:  # noqa: ANN001
     """What went wrong and what to change, for the failed-job panel.
 
-    Returns ``{"kind", "cause", "fix"}`` for a failed or timed-out job,
-    else None. ``kind`` is "generic" when no rule in ``_FAILURE_RULES``
-    matches; the cause is then the failure-class sentence from
-    ``failure_notice``.
+    Returns ``{"kind", "cause", "fix", "retry_unchanged"}`` for a failed or
+    timed-out job, else None. ``kind`` is "generic" when no rule in
+    ``_FAILURE_RULES`` matches; the cause is then the failure-class sentence
+    from ``failure_notice``.
+
+    ``retry_unchanged`` is True only when ``fix`` is one of the two texts
+    that actually ask for an identical resubmit (``_GENERIC_FIX``,
+    ``_NUMERICAL_FIX``). templates/job_detail.html labels the clone button
+    from it, so a run whose advice is "change something" is not offered a
+    button reading "Try again with these settings".
     """
     status = getattr(job, "status", None)
     if status not in ("failed", "timeout"):
@@ -942,11 +1092,16 @@ def failure_advice(job) -> Optional[dict]:  # noqa: ANN001
         text += " storage"
     for kind, pattern, cause, fix in _FAILURE_RULES:
         if pattern.search(text):
-            return {"kind": kind, "cause": cause, "fix": fix}
-    notice = failure_notice(job) or {}
-    return {"kind": "generic",
-            "cause": notice.get("cause", "The run did not finish."),
-            "fix": _GENERIC_FIX}
+            break
+    else:
+        notice = failure_notice(job) or {}
+        kind = "generic"
+        cause = notice.get("cause", "The run did not finish.")
+        fix = _GENERIC_FIX
+    if kind == "numerical" and _has_pinned_seed(job):
+        fix = _NUMERICAL_FIX_SEEDED
+    return {"kind": kind, "cause": cause, "fix": fix,
+            "retry_unchanged": fix in (_GENERIC_FIX, _NUMERICAL_FIX)}
 
 
 def utc_stamp(value) -> str:  # noqa: ANN001

@@ -30,6 +30,7 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
+from shared import auth as auth_mod
 from shared import email as email_mod
 from shared.jobs import (
     _BILLED_FAILURE_CLASSES,
@@ -215,15 +216,28 @@ class TestJobPage:
         assert "hit its time limit" in text
         assert "You were not charged for this run." in text
 
-    def test_failed_page_keeps_the_raw_detail_under_the_plain_words(self, client):
-        text = _page(client, _job(
+    def test_raw_detail_is_staff_only(self, client):
+        """The emitter's raw text is support material, not an explanation.
+
+        QA 2026-09-30 P0-4: an esmfold2-design run showed a bench biologist
+        ``design() raised: linalg.svd: ... ill-conditioned ...`` as the reason
+        it failed. The plain-words cause and fix stay for everyone; the raw
+        detail is gated on ``is_staff`` (app.py:711 puts it in the template
+        context from ``shared.auth.STAFF_EMAILS``).
+        """
+        job = _job(
             status="failed",
             failure_class="tool_error",
             error={"bucket": "pipeline", "detail": "no *scores*.json in output"},
-        ))
+        )
+        text = _page(client, job)
         assert "hit an error while running" in text
-        assert "no *scores*.json in output" in text
-        assert "no *scores*.json in output" in text
+        assert "no *scores*.json in output" not in text
+        assert "Category: pipeline" not in text
+
+        with patch.object(auth_mod, "STAFF_EMAILS", frozenset({"u@example.com"})):
+            staff_text = _page(client, job)
+        assert "no *scores*.json in output" in staff_text
 
     def test_page_makes_no_refund_claim_without_a_wallet_hold(self, client):
         text = _page(client, _job(inputs={}))

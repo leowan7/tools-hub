@@ -327,10 +327,23 @@
               {% if failure_money %}
                 <p style="margin: 0 0 0.75rem 0;" data-failure-money><strong>{{ failure_money }}</strong></p>
               {% endif %}
+              {# The clone link is offered on every failure, but its LABEL
+                 follows shared/jobs.py::failure_advice's retry_unchanged: only
+                 the two fixes that actually ask for an identical resubmit say
+                 "try again". Everything else -- a hotspot off the chain, a
+                 numerical stop on a seed-pinned run -- opens the same prefilled
+                 form to be edited, which is what the fix sentence above asks
+                 for. #}
               <p style="margin: 0 0 0.75rem 0;">
-                <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-primary" data-retry-link>Try again with these settings</a>
+                <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-primary" data-retry-link>{% if _advice and not _advice.retry_unchanged %}Open this form with these settings{% else %}Try again with these settings{% endif %}</a>
               </p>
-              {% if job.error %}
+              {# Staff only. The stored detail is the emitter's raw text -- a
+                 torch traceback line for the numerical class -- and a bench
+                 biologist was being shown it as the explanation (QA 2026-09-30
+                 P0-4). The plain-words cause and fix above replace it for
+                 everyone else; the short job id in the page <h1> is what
+                 support asks for. #}
+              {% if job.error and is_staff %}
               <strong>Error:</strong>
               {% if job.error.bucket %}
                 <div>Category: {{ job.error.bucket }}{% if job.error.check %} / {{ job.error.check }}{% endif %}</div>
