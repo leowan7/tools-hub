@@ -68,12 +68,19 @@ def _target(**kw):
         target_chain="A",
         hotspot_residues=[42, 88],
         epitope_residues=[32, 45],
+        # 140 aa, down from 210. The cohort tests below launch boltzgen
+        # against this target, and boltzgen folds a pinned 200-design pool
+        # inside the 6600 s timeout its pipeline enforces, which its runtime
+        # curve overruns above ~153 aa (tests/test_runtime_ceiling.py). At 210
+        # the launch is refused for runtime and every money assertion here
+        # becomes a test of that refusal instead. 140 still clears every
+        # tool's 30 aa floor and sits far inside every size cap.
         chain_summary={
-            "total_standard_residues": 210,
+            "total_standard_residues": 140,
             "chains": [{
-                "chain_id": "A", "standard_residue_count": 210,
+                "chain_id": "A", "standard_residue_count": 140,
                 "hetatm_resnames": [], "water_count": 0,
-                "min_resnum": 1, "max_resnum": 210,
+                "min_resnum": 1, "max_resnum": 140,
             }],
         },
     )
@@ -95,9 +102,9 @@ def _proteina_target(**kw):
     `test_proteina_oversized_target_is_refused_before_any_run_is_funded`.
 
     It was written when the cap was 140 and the default `_target()`'s 210
-    residues were over it. That is no longer why it exists: 210 fits now. It
-    stays at 130 because a plumbing test should sit far from every boundary,
-    not because it has to.
+    residues were over it. That is no longer why it exists: the default is 140
+    aa now and fits. It stays at 130 because a plumbing test should sit far
+    from every boundary, not because it has to.
     """
     base = dict(
         name="small antigen",
@@ -1281,6 +1288,44 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     assert "600 residues, above the 500-residue limit" in body, body[-600:]
 
 
+def test_a_bindcraft_chunk_that_cannot_finish_is_refused_on_this_route(client):
+    """THE RUNTIME HALF of the envelope, which needs a design count to fire.
+
+    ``shared/pdb_preflight.py::_check_size_envelope`` estimates a runtime only
+    when it is given one, so a ``size_error`` call that omits ``num_designs``
+    reaches the size caps and nothing else. This route funded campaigns that
+    way: bindcraft at 400 aa is inside its 500-residue cap, so the target-size
+    branch passes it, while a 6-design chunk there is estimated at 6.1 h
+    against the 240-minute timeout its pipeline enforces
+    (``docs/qa/RUNTIME-CEILING-2026-09-30.md`` section 2). Every chunk of that
+    campaign is killed, refunded in full, and its designs discarded, so we
+    absorb the GPU bill.
+
+    Pinned on the refusal's own phrase rather than the status code: a 400 aa
+    bindcraft launch has no other reason to be refused, so a bare 400 would
+    still pass with the runtime branch dead.
+    """
+    _login(client)
+    t = _target(chain_summary={
+        "total_standard_residues": 400,
+        "chains": [{
+            "chain_id": "A", "standard_residue_count": 400,
+            "hetatm_resnames": [], "water_count": 0,
+            "min_resnum": 1, "max_resnum": 400,
+        }],
+    })
+    resp, rec = _launch(client, t, form=_form(
+        tools=["bindcraft"],
+        bindcraft__designs="16",
+        bindcraft__binder_length_min="50",
+        bindcraft__binder_length_max="100",
+    ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "a run stopped there returns nothing" in body, body[-600:]
+
+
 def test_a_contig_smaller_than_the_upload_is_sized_on_the_contig(client):
     """Sizing the FILE rather than the SELECTION would refuse runs that fit.
 
@@ -1607,7 +1652,7 @@ def test_a_single_chain_launch_is_untouched_for_every_tool(client):
         ("bindcraft", {"bindcraft__designs": "4"}),
         ("rfdiffusion", {"rfdiffusion__designs": "12"}),
     ):
-        t = _target()          # single chain A, 210 residues
+        t = _target()          # single chain A, 140 residues
         resp, rec = _launch(client, t, form=_form(
             tools=[tool], target_chain="A", **extra,
         ))

@@ -162,9 +162,14 @@
             {{ verdict.suggested_fix }}
           </p>
         {% endif %}
+        {# over_runtime_ceiling is in this set because it is now a refusal
+           reason of its own (shared/pdb_preflight.py::_check_size_envelope
+           clears over_soft_warn when it fires), so without it the one refusal
+           that is ABOUT runtime was the only one rendering no runtime line. #}
         {% if verdict.size_envelope and (
               verdict.size_envelope.over_hard_cap
               or verdict.size_envelope.over_combined_cap
+              or verdict.size_envelope.over_runtime_ceiling
               or verdict.size_envelope.over_soft_warn) %}
           <div class="preflight-meta preflight-meta--warn">
             Size envelope:
@@ -177,8 +182,12 @@
             {% endif %}
             {% if verdict.size_envelope.runtime_estimate_min %}
               <br>Estimated runtime: ~{{ verdict.size_envelope.runtime_estimate_min }} min
-              for {{ verdict.size_envelope.runtime_basis }} (advisory only,
-              long runs are supported).
+              for {{ verdict.size_envelope.runtime_basis }}
+              {%- if verdict.size_envelope.over_runtime_ceiling %}
+                — past the limit one GPU run is stopped at, which is why this
+                one is refused.
+              {%- else %} (advisory only, long runs are supported).
+              {%- endif %}
             {% endif %}
           </div>
         {% endif %}

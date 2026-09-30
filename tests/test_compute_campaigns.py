@@ -57,8 +57,11 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 def test_chunk_size_per_tool():
     # rfdiffusion: 277.5 gpu_s/design, pilot cap 3600s, 0.8 util -> 10.
     assert _chunk_size_for("rfdiffusion") == 10
-    # bindcraft: 1800 gpu_s/design, campaign container 36000s, 0.8 util -> 16.
-    assert _chunk_size_for("bindcraft") == 16
+    # bindcraft: 1800 gpu_s/design, campaign container 14400s, 0.8 util -> 6.
+    # WAS 16, off a 36000s container. llm-proteinDesigner's bindcraft pipeline
+    # kills the design step at 14400s and returns nothing, so a 16-design chunk
+    # could not finish; see tests/test_runtime_ceiling.py.
+    assert _chunk_size_for("bindcraft") == 6
     # boltzgen: budget-based, fixed 200-pool -> 50 delivered/job.
     assert _chunk_size_for("boltzgen") == BOLTZGEN_DESIGNS_PER_JOB
     # pxdesign: pinned to its validated 24-design pilot job (override).
@@ -129,7 +132,7 @@ def test_campaign_container_fits_the_chunk_it_is_given():
     [
         ("rfdiffusion", 20, 2),   # 10+10, an exact multiple of the chunk
         ("rfdiffusion", 21, 3),   # 10+10+1, one design over it
-        ("bindcraft", 40, 3),   # 16+16+8
+        ("bindcraft", 40, 7),   # 6x6+4, chunk 6 (see test_chunk_size_per_tool)
         ("boltzgen", 100, 2),
         ("boltzgen", 101, 3),
         ("pxdesign", 48, 2),    # 24+24
@@ -179,10 +182,14 @@ def test_plan_chunks_rejects_bad_count():
 
 
 def test_bindcraft_campaign_bigger_chunk_and_session_budget():
-    # bindcraft campaigns size against a larger container than the 3/chunk pilot,
-    # and carry a matching session budget so the pipeline does not stop early.
-    assert cc._chunk_size_for("bindcraft") == 16
-    assert cc._campaign_session_inputs("bindcraft") == {"_total_budget_hours": 10.0}
+    # bindcraft campaigns still size against a larger container than the
+    # 3/chunk pilot (14400s vs 7200s), and still carry a session budget input.
+    # That input is advisory: neither GPU pipeline reads TOTAL_BUDGET_HOURS
+    # today, so the claim it used to carry -- "so the pipeline does not stop
+    # early" -- was false. What stops a chunk is the pipeline's own 14400s
+    # subprocess timeout, which is what the container is now sized to.
+    assert cc._chunk_size_for("bindcraft") == 6
+    assert cc._campaign_session_inputs("bindcraft") == {"_total_budget_hours": 4.0}
     # other tools keep the default 4h session budget (no override injected).
     assert cc._campaign_session_inputs("rfdiffusion") == {}
     assert cc._campaign_session_inputs("boltzgen") == {}

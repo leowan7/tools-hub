@@ -23,8 +23,8 @@ from types import ModuleType
 
 # Stored preset slug -> the short name a customer sees. Every slug in
 # tools/*/__init__.py Preset tuples is listed; the Preset.label strings
-# themselves are form sentences ("Your target, ~30 min start to first
-# results"), too long for a table cell or a badge. An unlisted slug falls
+# themselves are form sentences ("Your target, ~80 min on a small target"),
+# too long for a table cell or a badge. An unlisted slug falls
 # back to its own words, so a new preset reads as prose, not as code.
 _PRESET_LABELS: dict[str, str] = {
     "pilot": "trial run",

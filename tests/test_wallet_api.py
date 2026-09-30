@@ -185,15 +185,17 @@ class TestEstimateEndpointShape:
         """A larger single-job count scales the estimate and the cap.
 
         Both counts stay at or under bindcraft's single-container ceiling
-        (16): above it the endpoint prices the full-size run instead, which
-        has no single-job cap (TestFullSizeEstimate).
+        (6, down from 16 now that a campaign chunk is sized to the 14400 s
+        timeout its pipeline enforces): above it the endpoint prices the
+        full-size run instead, which has no single-job cap
+        (TestFullSizeEstimate).
         """
         with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             small = client.get(
                 "/api/wallet/estimate?tool=bindcraft&num_designs=2"
             ).get_json()
             large = client.get(
-                "/api/wallet/estimate?tool=bindcraft&num_designs=16"
+                "/api/wallet/estimate?tool=bindcraft&num_designs=6"
             ).get_json()
         # Both succeed and the larger params yield a higher estimate.
         assert Decimal(large["estimate_usd"]) > Decimal(small["estimate_usd"])

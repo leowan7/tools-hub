@@ -76,7 +76,15 @@ def _pdb(chains: str = "A", residues: int = 120) -> bytes:
 
 
 ONE_CHAIN = _pdb("A")
-TWO_CHAIN = _pdb("AB")
+# 70 per chain, not the 120 default: 140 total keeps the two-chain fixture under
+# the ~153 aa above which boltzgen's 200-design pool overruns the 6600 s timeout
+# its pipeline enforces (tests/test_runtime_ceiling.py). The chooser offers
+# boltzgen for a multi-chain site and this file asserts preflight then says
+# READY, so at 240 aa the assertion would be about target size rather than about
+# multi-chain support. That the chooser recommends boltzgen for targets its own
+# preflight refuses on size is real and is NOT fixed here -- it is filed in
+# docs/qa/RUNTIME-CEILING-2026-09-30.md.
+TWO_CHAIN = _pdb("AB", residues=70)
 
 
 # ---------------------------------------------------------------------------

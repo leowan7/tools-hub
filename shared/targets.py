@@ -556,6 +556,7 @@ class DesignTarget:
     def size_error(
         self, tool: str, target_chain: str, segments,  # noqa: ANN001
         binder_max_aa=None,  # noqa: ANN001
+        num_designs=None,  # noqa: ANN001
     ) -> Optional[str]:
         """Reject a launch whose target is over the tool's size cap.
 
@@ -585,6 +586,20 @@ class DesignTarget:
         return size_only_refusal(
             tool, count, binder_max_aa=binder_max_aa,
             selection_label=_segments_label(segments),
+            # The count ONE CONTAINER will run, not the campaign total: the
+            # runtime ceiling is per container. All three production callers
+            # pass ``plan.designs_for_chunk(0)`` -- the target and upload
+            # branches of
+            # ``blueprints/campaigns.py::compute_campaign_create`` and the
+            # per-spec loop of
+            # ``blueprints/targets.py::_collect_launch_specs`` -- and NOT
+            # ``plan.chunk_size``, for the reason spelled out at those call
+            # sites. None leaves the runtime half of the envelope unjudged for
+            # a per-design tool, which is what the default means and what
+            # ``tests/test_targets.py`` exercises; a pinned-pool tool still
+            # gets an estimate from
+            # ``SizeEnvelope.runtime_fixed_designs``.
+            num_designs=num_designs,
         )
 
     def to_dict(self) -> dict:

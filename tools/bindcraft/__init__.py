@@ -130,13 +130,28 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~30 min start to first results",
+            # "~40 min", not the "~30 min" this replaces, and it now says
+            # what the number depends on. The one measured bindcraft run is
+            # 1170 GPU-s for 2 trajectories at 115 aa (docs/VALIDATION-LOG.md,
+            # job 1c4d5803), and
+            # shared/pdb_preflight_rules.py::runtime_estimate_min puts 4
+            # trajectories at that size at 37.5 min. That estimator scales
+            # steeply with target size: it puts the same 4-trajectory batch
+            # at 158 min on a 300 aa target. The
+            # form's own estimate panel prints the figure for the target that
+            # was actually uploaded; this sentence only sets expectations
+            # before one is. docs/qa/RUNTIME-CEILING-2026-09-30.md.
+            label="Your target, ~40 min for a small batch on a small target",
             description=(
                 "BindCraft against your uploaded PDB on A100-80GB. "
                 "Pick 1 to 500 trajectories. Start with a small batch "
-                "(4 trajectories, ~30 to 45 min) to confirm your target "
-                "and hotspots, then scale to 100+ once the small batch "
-                "looks reasonable. Results emailed on completion."
+                "(4 trajectories, ~40 min on a 115-residue target, longer "
+                "on a bigger one) to confirm your target and hotspots, then "
+                "scale up. A batch whose estimated runtime is over the "
+                "four-hour limit one run is stopped at is refused when you "
+                "submit it, and the refusal names a count that fits — about "
+                "25 trajectories at 115 residues, fewer on a bigger target. "
+                "Results emailed on completion."
             ),
             requires_pdb=True,
             long_running=True,
