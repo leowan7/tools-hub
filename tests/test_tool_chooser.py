@@ -554,6 +554,56 @@ class TestChooserRendering:
         body = self._get("?have=target-structure&shape=nanobody")
         assert "No tool in the catalog covers that combination" not in body
 
+    def test_an_empty_have_says_to_pick_one(self):
+        """P1-3: `?have=` rendered the bare form with no explanation."""
+        assert "Pick what you have from the first question" in self._get(
+            "?have="
+        )
+
+    def test_a_bogus_have_says_to_pick_one(self):
+        assert "Pick what you have from the first question" in self._get(
+            "?have=banana"
+        )
+
+    def test_submitting_the_form_with_no_radio_picked_says_to_pick_one(self):
+        """The reachable case: an unchecked radio group sends no key.
+
+        Only the form's hidden marker arrives, which is why the message
+        cannot be keyed on `have` alone.
+        """
+        body = self._get()
+        assert 'name="asked" value="1"' in body, "marker missing from the form"
+        assert "Pick what you have from the first question" in self._get(
+            "?asked=1"
+        )
+
+    def test_pressing_on_with_no_shape_picked_says_to_pick_one(self):
+        """The same dead end one question later.
+
+        The shape radios send nothing when untouched, so the second
+        press was indistinguishable from the first and the page came
+        back unchanged.
+        """
+        first = self._get("?asked=1&have=target-structure")
+        assert 'name="asked_shape" value="1"' in first
+        assert "Pick a shape from the second question" not in first
+
+        second = self._get("?asked=1&asked_shape=1&have=target-structure")
+        assert "Pick a shape from the second question" in second
+
+    def test_the_shape_prompt_is_not_shown_where_the_question_is_not_put(self):
+        body = self._get("?asked=1&asked_shape=1&have=backbone")
+        assert "Pick a shape from the second question" not in body
+        assert 'class="chooser-pick-name"' in body
+
+    def test_a_first_visit_is_not_told_off(self):
+        assert "Pick what you have from the first question" not in self._get()
+
+    def test_structure_plus_scfv_names_the_scfv_tool_and_its_limits(self):
+        body = self._get("?have=target-structure&shape=scfv")
+        assert "ESMFold2" in body
+        assert "takes no structure file" in body
+
 
 # ---------------------------------------------------------------------
 # Adapter-level residue refusals
@@ -658,13 +708,16 @@ def test_a_stale_chemistry_answer_does_not_empty_a_bucket_that_never_asked():
             )
 
 
-def test_multi_chain_does_not_drop_a_tool_that_takes_no_upload():
+def test_having_no_preflight_rules_is_not_itself_a_refusal():
     """_multi_chain_block only runs on a STAGED target.
 
-    esmfold2-design needs no PDB, so nothing refuses it for a two-chain
-    target; dropping it emptied the scFv answer for a visitor with only a
-    sequence. boltzgen also designs scFvs, but only from a structure, so
-    it is not a substitute in that bucket.
+    esmfold2-design needs no PDB and has no TOOL_RULES entry, and that
+    absence must not drop it: it is the only scFv designer in the
+    target-sequence bucket (boltzgen also designs scFvs, but only from a
+    structure), so dropping it emptied that answer. It IS dropped for a
+    multi-chain patch, by the _ADAPTER_SINGLE_CHAIN_TARGETS check in
+    recommend, whose cited reason its own validate is driven for in
+    test_a_single_sequence_target_tool_is_withheld_for_a_multi_chain_patch.
     """
     assert not tool_chooser.needs_structure("esmfold2-design")
     assert "esmfold2-design" not in TOOL_RULES
@@ -672,7 +725,7 @@ def test_multi_chain_does_not_drop_a_tool_that_takes_no_upload():
     picks = {
         p["slug"]
         for p in tool_chooser.recommend(
-            "target-sequence", shape="scfv", chemistry="multi-chain"
+            "target-sequence", shape="scfv", chemistry="plain"
         )
     }
     assert "esmfold2-design" in picks, sorted(picks)
@@ -720,3 +773,142 @@ def test_proteina_is_not_offered_to_a_visitor_with_no_structure():
         for p in tool_chooser.recommend("target-structure", shape="mini-protein")
     }
     assert "proteina" in struct, sorted(struct)
+
+
+# ---------------------------------------------------------------------
+# The one tool offered outside its own HAVE bucket (P1-3).
+# ---------------------------------------------------------------------
+
+def _shapes(have, shape, chemistry=None):
+    return {
+        p["slug"]
+        for p in tool_chooser.recommend(have, shape=shape, chemistry=chemistry)
+    }
+
+
+def test_the_scfv_designer_is_offered_to_a_visitor_holding_a_structure():
+    """P1-3: structure + scFv returned BoltzGen alone.
+
+    Its card claims the paired-scFv run is something "No other tool here
+    does", so the answer that asks for exactly that must list it.
+    """
+    assert "esmfold2-design" in _shapes("target-structure", "scfv")
+    assert "esmfold2-design" in _shapes("target-structure", "unsure")
+    assert "esmfold2-design" in _shapes("target-structure", None)
+
+
+def test_the_cross_bucket_offer_is_scoped_to_that_one_shape():
+    """mini-protein and nanobody are answered by tools that use the upload."""
+    assert "esmfold2-design" not in _shapes("target-structure", "mini-protein")
+    assert "esmfold2-design" not in _shapes("target-structure", "nanobody")
+    assert "esmfold2-design" not in _shapes("target-structure", "peptide")
+
+
+def test_a_single_sequence_target_tool_is_withheld_for_a_multi_chain_patch():
+    """One pasted sequence cannot span two chains, in EITHER bucket.
+
+    ``tools/esmfold2_design/__init__.py::_check_protein_sequence`` refuses
+    a ':' separator as a non-canonical residue, driven below. The
+    target-sequence bucket offered it for a multi-chain patch before
+    this: the generic filter is keyed on TOOL_RULES membership, and this
+    tool, taking no upload, has no preflight rules.
+    """
+    assert "esmfold2-design" not in _shapes(
+        "target-structure", "scfv", chemistry="multi-chain"
+    )
+    assert "esmfold2-design" not in _shapes(
+        "target-sequence", "scfv", chemistry="multi-chain"
+    )
+    adapter = _adapters()["esmfold2-design"]
+    spec, err = adapter.validate(
+        {
+            "preset": "scfv",
+            "target_mode": "paste",
+            "target_sequence": "A" * 60 + ":" + "A" * 60,
+            "binder_framework": "trastuzumab_framework_vhvl",
+        },
+        {},
+    )
+    assert spec is None and err and "non-canonical" in err, (spec, err)
+
+
+def test_its_own_bucket_still_answers_the_same_way():
+    assert "esmfold2-design" in _shapes("target-sequence", "scfv")
+    assert "esmfold2-design" in _shapes("target-sequence", "mini-protein")
+
+
+def test_the_input_limits_are_stated_in_every_bucket_the_tool_appears_in():
+    """They are facts about the adapter, not about the answer given.
+
+    The tool's own bucket showed no prerequisite at all, so a visitor
+    with a 900-residue target met TARGET_SEQ_MAX at the form instead.
+    """
+    own = {
+        p["slug"]: p["prerequisite"]
+        for p in tool_chooser.recommend("target-sequence", shape="scfv")
+    }["esmfold2-design"]
+    cross = {
+        p["slug"]: p["prerequisite"]
+        for p in tool_chooser.recommend("target-structure", shape="scfv")
+    }["esmfold2-design"]
+    for line in (own, cross):
+        assert "30 to 800 amino acids" in line
+        assert "five built-in targets" in line
+        assert "three built-in humanised frameworks" in line
+    # Only the cross-bucket card carries the extra sentence, which
+    # answers a question only a structure holder asked.
+    assert "takes no structure file" in cross
+    assert "takes no structure file" not in own
+
+
+def test_the_cross_bucket_line_states_the_limits_the_adapter_enforces():
+    """Both clauses of the offer's prerequisite are driven, not read.
+
+    Clause 1, "takes no structure file": requires_pdb is False on the
+    adapter and on every preset, and a paste-mode submit with no files
+    at all is accepted.
+    Clause 2, three built-in humanised frameworks: FRAMEWORK_NAMES holds
+    three, and validate refuses anything else.
+    Clause 3, 30 to 800 amino acids, and five built-in targets: driven
+    at both ends and against the preset list.
+    """
+    picks = {
+        p["slug"]: p
+        for p in tool_chooser.recommend("target-structure", shape="scfv")
+    }
+    line = picks["esmfold2-design"]["prerequisite"]
+    assert "takes no structure file" in line
+    assert "30 to 800 amino acids" in line
+    assert "five built-in targets" in line
+    assert "three built-in humanised frameworks" in line
+
+    adapter = _adapters()["esmfold2-design"]
+    assert adapter.requires_pdb is False
+    assert not any(p.requires_pdb for p in adapter.presets)
+
+    def _scfv(**over):
+        form = {
+            "preset": "scfv",
+            "target_mode": "paste",
+            "target_sequence": "A" * 60,
+            "binder_framework": "trastuzumab_framework_vhvl",
+        }
+        form.update(over)
+        return adapter.validate(form, {})
+
+    spec, err = _scfv()
+    assert err is None and spec is not None, err  # no file field needed
+
+    from tools.esmfold2_design import FRAMEWORK_NAMES, TARGET_PRESET_NAMES
+
+    assert len(FRAMEWORK_NAMES) == 3, FRAMEWORK_NAMES
+    assert len(TARGET_PRESET_NAMES) == 5, TARGET_PRESET_NAMES
+    assert _scfv(binder_framework="my_own_framework")[0] is None
+    assert _scfv(target_sequence="A" * 29)[0] is None
+    assert _scfv(target_sequence="A" * 801)[0] is None
+    # Both ends of the range the line states are accepted, so the
+    # sentence is not stricter than the refusal either.
+    assert _scfv(target_sequence="A" * 30)[1] is None
+    assert _scfv(target_sequence="A" * 800)[1] is None
+    assert _scfv(target_mode="preset", target_name="not-a-target")[0] is None
+    assert _scfv(target_mode="preset", target_name="egfr")[1] is None

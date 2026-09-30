@@ -9,7 +9,9 @@ WHAT IS TYPED HERE AND WHAT IS DERIVED
 --------------------------------------
 Typed: ``_FACTS`` — which HAVE bucket and which binder shapes each tool
 serves, plus the one target-chemistry capability (glycans) that only
-appears in prose. Each entry cites the
+appears in prose — and ``_CROSS_BUCKET_OFFERS`` /
+``_CROSS_BUCKET_PREREQUISITE``, the one tool offered outside its bucket
+and the limits that offer must state. Each entry cites the
 ``about["when_to_use"]`` or ``comparison_one_liner`` line it came from.
 This is a single table in one module, the same shape as the existing
 ``shared.tools_catalog._TOOL_CATEGORIES``; no per-tool metadata field
@@ -254,6 +256,68 @@ _FACTS: dict[str, _Facts] = {
 }
 
 
+# Offers a tool OUTSIDE its own HAVE bucket, for the shapes named here.
+#
+# esmfold2-design is the only entry. Its card says the paired scFv run is
+# something "No other tool here does" (tools/esmfold2_design/meta.py,
+# about["when_to_use"][0]), so a visitor who has a target structure and
+# wants an scFv was shown BoltzGen alone and never learned it existed.
+# It is NOT moved into the target-structure bucket, because it accepts no
+# structure at all: ``requires_pdb`` is False on the adapter and on both
+# presets, ``tools/esmfold2_design/__init__.py::validate`` reads no file
+# field, and its form offers a target preset or a pasted-sequence
+# textarea and no upload at all
+# (templates/tools/esmfold2_design_form.html), so a visitor's structure
+# has nowhere to go on it. The offer therefore carries its own
+# prerequisite line below.
+#
+# Narrowed to "scfv": the other tools in that bucket already answer
+# mini-protein, nanobody and peptide from the upload itself, and this
+# one would discard it. The two UNnarrowed answers still reach it, as
+# they reach every tool: ``recommend`` skips the shape filter for
+# "unsure" and for no shape at all (``blueprints/tools.py`` withholds
+# the answer until a shape is picked, so the second only arrives from a
+# direct call or a hand-edited URL).
+_CROSS_BUCKET_OFFERS: dict[str, dict[str, frozenset[str]]] = {
+    "esmfold2-design": {"target-structure": frozenset({"scfv"})},
+}
+
+# What a tool demands of its input when that demand is neither a
+# structure nor a residue list, so needs_structure and needs_hotspots
+# both leave prerequisite_line empty. Stated in EVERY bucket the tool
+# appears in, because these are facts about the adapter, not about the
+# answer that led here: a visitor in its own target-sequence bucket was
+# shown no prerequisite at all and met the 800-residue ceiling at the
+# form instead.
+_ADAPTER_INPUT_LIMITS: dict[str, str] = {
+    "esmfold2-design": (
+        "You will need your target as a sequence: paste it (30 to 800 "
+        "amino acids) or pick one of its five built-in targets. An scFv "
+        "is built on one of three built-in humanised frameworks, not one "
+        "you supply."
+    ),
+}
+
+# The prerequisite line shown INSTEAD of ``prerequisite_line`` when a tool
+# is reached through _CROSS_BUCKET_OFFERS: the same limits, behind the
+# one sentence that answer needs and the others do not. Both limits are
+# read off
+# tools/esmfold2_design/__init__.py: ``validate`` takes target_mode
+# "preset" (TARGET_PRESET_NAMES, five of them) or "paste"
+# (_check_protein_sequence, TARGET_SEQ_MIN 30 to TARGET_SEQ_MAX 800), and
+# the scfv preset refuses any binder_framework outside FRAMEWORK_NAMES,
+# which holds three humanised frameworks. Pinned by
+# tests/test_tool_chooser.py::test_the_cross_bucket_line_states_the_limits_
+# the_adapter_enforces, which drives that validate.
+_CROSS_BUCKET_PREREQUISITE: dict[tuple[str, str], str] = {
+    ("esmfold2-design", "target-structure"): (
+        "This one takes no structure file. " + _ADAPTER_INPUT_LIMITS[
+            "esmfold2-design"
+        ]
+    ),
+}
+
+
 def _adapter_by_slug() -> dict:
     return {a.slug: a for a in tool_base.all_adapters()}
 
@@ -366,6 +430,16 @@ _ADAPTER_RESIDUE_REFUSALS: dict[str, str] = {
 # which drives all three adapters' real validate.
 _ADAPTER_MULTI_CHAIN_REFUSALS: frozenset[str] = frozenset({"esmfold"})
 
+# Designers whose TARGET is a single pasted sequence, so a patch spanning
+# two chains cannot be described to them at all. Separate from the set
+# above, which is about the FASTA a folding tool is given.
+# ``tools/esmfold2_design/__init__.py::_check_protein_sequence`` refuses a
+# ':' separator as a non-canonical residue. Pinned by
+# tests/test_tool_chooser.py::
+# test_a_single_sequence_target_tool_is_withheld_for_a_multi_chain_patch,
+# which drives that validate.
+_ADAPTER_SINGLE_CHAIN_TARGETS: frozenset[str] = frozenset({"esmfold2-design"})
+
 # Tools that accept a submit with NO upload by falling back to a bundled
 # benchmark target. requires_pdb is False on them, so needs_structure is
 # False and prerequisite_line would otherwise say nothing -- which, on a
@@ -394,6 +468,11 @@ def prerequisite_line(slug: str) -> str:
     """
     if slug in _CURATED_DEFAULT_TARGETS:
         return _CURATED_DEFAULT_TARGETS[slug]
+    if slug in _ADAPTER_INPUT_LIMITS:
+        # A sequence-input tool: nothing below would compose a line for
+        # it (needs_structure and needs_hotspots are both False), and an
+        # empty line on a card is read as "bring nothing".
+        return _ADAPTER_INPUT_LIMITS[slug]
     parts: list[str] = []
     if needs_structure(slug):
         # The structure a backbone-only tool wants is the customer's own
@@ -450,7 +529,19 @@ def recommend(
     for entry in catalog:
         slug = entry["slug"]
         facts = _FACTS.get(slug)
-        if facts is None or have not in facts.haves:
+        if facts is None:
+            continue
+        offer_shapes = _CROSS_BUCKET_OFFERS.get(slug, {}).get(have)
+        if have not in facts.haves and offer_shapes is None:
+            continue
+        # esmfold2-design cannot be aimed at a patch spanning two chains
+        # in EITHER bucket: it takes one pasted target sequence, and a
+        # ':' chain separator is refused by _check_protein_sequence as a
+        # non-canonical residue (tools/esmfold2_design/__init__.py,
+        # CANONICAL_AA). The generic multi-chain filter below misses it
+        # because that one is keyed on TOOL_RULES membership and this
+        # tool, taking no upload, has no preflight rules.
+        if slug in _ADAPTER_SINGLE_CHAIN_TARGETS and chemistry == "multi-chain":
             continue
 
         is_designer = bool(facts.shapes)
@@ -477,18 +568,23 @@ def recommend(
         # non-designers. Pinned by test_a_stale_chemistry_answer_does_not_
         # empty_a_bucket_that_never_asked.
         if have in DESIGN_HAVES and is_designer:
-            if shape and shape != "unsure" and shape not in facts.shapes:
+            allowed = offer_shapes if offer_shapes is not None else facts.shapes
+            if shape and shape != "unsure" and shape not in allowed:
                 continue
             if chemistry == "glycan" and "glycan" not in facts.chemistries:
                 continue
             # Multi-chain is a preflight concept: _multi_chain_block runs
             # on a STAGED target. A tool that takes no upload never reaches
             # it, so its absence from TOOL_RULES is not a refusal and must
-            # not drop it — esmfold2-design is the only scFv designer in
-            # the target-sequence bucket (boltzgen also designs scFvs, but
-            # only from a target structure) and needs no PDB (requires_pdb
-            # False on the adapter and both presets), so excluding it
-            # emptied that answer.
+            # not drop it. esmfold2-design is the tool that showed this:
+            # it is the only scFv designer in the target-sequence bucket
+            # (boltzgen also designs scFvs, but only from a target
+            # structure) and needs no PDB (requires_pdb False on the
+            # adapter and both presets), so dropping it for having no
+            # rules emptied that answer. It IS dropped for a multi-chain
+            # patch now, but by _ADAPTER_SINGLE_CHAIN_TARGETS above,
+            # which cites the refusal in its own validate rather than
+            # inferring one from a missing preflight rule.
             # Keyed on TOOL_RULES membership, not needs_structure: those
             # are different questions, and proteina is the tool that shows
             # it -- requires_pdb is False on it (so needs_structure is
@@ -514,7 +610,9 @@ def recommend(
                 "reason": reason,
                 "runtime_band": entry.get("runtime_band", "—"),
                 "route": entry.get("route", "#"),
-                "prerequisite": prerequisite_line(slug),
+                "prerequisite": _CROSS_BUCKET_PREREQUISITE.get(
+                    (slug, have), prerequisite_line(slug)
+                ),
                 "is_designer": is_designer,
                 "has_example": has_example(slug),
             }

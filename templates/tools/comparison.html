@@ -287,6 +287,12 @@
     </p>
 
     <form method="get" action="{{ url_for('tools.tools_comparison') }}#chooser">
+      {# An unchecked radio group is not a successful control, so a form
+         submitted with nothing picked sends no `have` key and arrives
+         looking exactly like a first visit. This marker is always sent,
+         so blueprints/tools.py can tell the two apart and say "pick
+         one" for the first. #}
+      <input type="hidden" name="asked" value="1">
       <fieldset class="chooser-step">
         <legend class="chooser-q">What do you have right now?</legend>
         <div class="chooser-opts">
@@ -301,6 +307,10 @@
       </fieldset>
 
       {% if chooser_asks_shape %}
+        {# Same reason as `asked` above, for question 2: pressing the
+           button with no shape picked sends nothing, and the page that
+           came back was identical to the one just left. #}
+        <input type="hidden" name="asked_shape" value="1">
         <fieldset class="chooser-step">
           <legend class="chooser-q">What shape of binder do you want back?</legend>
           <div class="chooser-opts">
@@ -346,6 +356,19 @@
         </div>
       </a>
     {% endmacro %}
+
+    {% if chooser_unanswered %}
+      <p class="chooser-note">
+        Pick what you have from the first question above, then press
+        &ldquo;Show me the tools&rdquo;.
+      </p>
+    {% elif chooser_shape_unanswered %}
+      <p class="chooser-note">
+        Pick a shape from the second question above &mdash; or
+        &ldquo;I don&rsquo;t know yet&rdquo; to see everything that could
+        work &mdash; then press &ldquo;Show me the tools&rdquo;.
+      </p>
+    {% endif %}
 
     {% if chooser_picks is not none %}
       {% if chooser_picks %}

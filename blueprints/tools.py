@@ -2754,6 +2754,27 @@ def tools_comparison():
     chooser_shape = _pick("shape", tool_chooser.SHAPE_CHOICES)
     chooser_chemistry = _pick("chemistry", tool_chooser.CHEMISTRY_CHOICES)
     chooser_asks_shape = chooser_have in tool_chooser.DESIGN_HAVES
+    # The form was submitted but no usable answer came back: the radios
+    # were left alone (an unchecked radio group sends no key at all, so
+    # the form's hidden `asked` marker is the only thing that arrives),
+    # or `have` came in empty or outside HAVE_CHOICES. Either way the
+    # page used to re-render the bare form with no answer and no
+    # explanation. A first visit sends neither key and gets no message.
+    chooser_unanswered = (
+        ("asked" in request.args or "have" in request.args)
+        and chooser_have is None
+    )
+    # The same dead end one question later: `asked_shape` is rendered
+    # only alongside the shape fieldset, so its arrival means the
+    # visitor pressed the button with that fieldset in front of them and
+    # picked nothing. Without it the press is indistinguishable from the
+    # press that revealed the fieldset, and the page just came back
+    # unchanged.
+    chooser_shape_unanswered = (
+        chooser_asks_shape
+        and ("asked_shape" in request.args or "shape" in request.args)
+        and chooser_shape is None
+    )
 
     # Hold the answer back until the follow-up questions have been put,
     # otherwise a visitor who wants a nanobody sees every design tool in
@@ -2789,6 +2810,8 @@ def tools_comparison():
         chooser_shape=chooser_shape,
         chooser_chemistry=chooser_chemistry,
         chooser_asks_shape=chooser_asks_shape,
+        chooser_unanswered=chooser_unanswered,
+        chooser_shape_unanswered=chooser_shape_unanswered,
         chooser_picks=chooser_picks,
         chooser_prep=chooser_prep,
     )
