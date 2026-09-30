@@ -1049,12 +1049,14 @@ class TestAnalyzeParsesInsideTheBound:
         assert index_path.exists(), "intake did not record the chain index"
         index = json.loads(index_path.read_text(encoding="utf-8"))
         by_id = {c["id"]: c["residue_count"] for c in payload["chains"]}
-        assert index == by_id, "the recorded counts differ from the ones served"
+        assert {k: v[0] for k, v in index.items()} == by_id, (
+            "the recorded counts differ from the ones served"
+        )
 
     def test_upload_records_them_too(self, client, reap_jobs):
         payload = _upload(client, _tiny_pdb(12)).get_json()
         index_path = TMP / payload["job_id"] / scout_routes._CHAIN_INDEX_NAME
-        assert json.loads(index_path.read_text(encoding="utf-8"))["A"] == 12
+        assert json.loads(index_path.read_text(encoding="utf-8"))["A"][0] == 12
 
     def test_analyze_does_not_reparse_when_the_index_is_there(
         self, client, monkeypatch, stub_scoring, reap_jobs
@@ -1108,8 +1110,8 @@ class TestAnalyzeParsesInsideTheBound:
         index_path = job_dir / scout_routes._CHAIN_INDEX_NAME
         index = json.loads(index_path.read_text(encoding="utf-8"))
         index_path.unlink()
-        from_parse = scout_routes._chain_residue_count(job_dir, pdb_path, "A")
-        assert from_parse == index["A"]
+        from_parse = scout_routes._chain_extent(job_dir, pdb_path, "A")
+        assert list(from_parse) == index["A"]
 
 
 

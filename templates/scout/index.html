@@ -627,7 +627,7 @@
         implication: 'Rigidity scores are derived from pLDDT (high = confident/rigid) rather than experimental B-factors. pLDDT reflects prediction confidence, which correlates with but is not identical to backbone flexibility. Consider validating with experimental structures if available.',
       },
       'terminal patch': {
-        meaning: 'More than half of this patch\u2019s residues are within 5 positions of the protein\u2019s N- or C-terminus.',
+        meaning: 'More than half of this patch\u2019s residues are numbered within 5 of the first or last residue in this chain\u2019s structure. Gaps inside the chain do not count as termini.',
         implication: 'Terminal regions are often disordered in solution even when resolved in crystal structures. Binders designed against terminal epitopes may fail if the terminus is flexible or processed (cleaved) in vivo.',
       },
       'electrostatic asymmetry': {

@@ -135,15 +135,22 @@ class ChainInfo:
             other heteroatoms are excluded -- except a free MSE/SEC ligand,
             which is indistinguishable from a chain link here. See
             _is_polymer_residue. NOT display-only: scout/routes.py derives
-            the epitope ranking's patch-size cap (_max_resi) and the
-            "terminal patch" flag's chain_length from this number.
+            the epitope ranking's patch-size cap (_max_resi) from this number.
         name: Molecule name from the file header (e.g. "Epidermal Growth Factor
             Receptor"). Empty string if not available in the header.
+        first_resseq: Lowest residue number among the residues counted in
+            residue_count, insertion code dropped. None when not computed.
+        last_resseq: Highest such residue number. scout/routes.py passes both
+            to compute_quality_flags as the chain's ends for the "terminal
+            patch" flag. A free MSE/SEC ligand counted in residue_count can
+            set either end.
     """
 
     id: str
     residue_count: int
     name: str = ""
+    first_resseq: "int | None" = None
+    last_resseq: "int | None" = None
 
 
 @dataclass
@@ -388,6 +395,8 @@ def parse_pdb(pdb_path: Union[str, Path]) -> ParseResult:
                     id=cid,
                     residue_count=len(protein_residues),
                     name=chain_name_map.get(cid.upper(), ""),
+                    first_resseq=min(r.get_id()[1] for r in protein_residues),
+                    last_resseq=max(r.get_id()[1] for r in protein_residues),
                 )
             )
 
