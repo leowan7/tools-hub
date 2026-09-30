@@ -223,28 +223,57 @@ def plan_library(
     }
 
     # --- Sort strategy ----------------------------------------------------
-    # Size the sort by the functional library (stop-codon free). Cap at the
-    # yeast transformation ceiling so downstream NGS and MACS triggers
-    # reflect what is physically in the flask.
+    # Two sizes, deliberately. The sort plan reads the uncapped functional
+    # library (stop-codon free) because MACS exists to compress diversity
+    # that will not fit through FACS, and
+    # sort_strategy.py::recommend_sort_rounds fires that round on
+    # library_size > 1e8. Passing the capped size made
+    # the comparison min(functional, ceiling) > 1e8 unsatisfiable at the 1e8
+    # default ceiling, so the MACS branch never ran. NGS read depth below
+    # keeps the cap: that is what is physically in the flask to sequence.
     sortable_library = min(functional, yeast_transformation_ceiling)
     sort_rounds = sort_strategy.recommend_sort_rounds(
         target_kd_nm=target_kd_nm,
         starting_material=starting_material,
-        library_size=sortable_library,
+        library_size=functional,
     )
 
     # --- NGS depth --------------------------------------------------------
     ngs_section = ngs_depth.coverage_profile(sortable_library)
-    # Map sort rounds to gate fractions for per-round coverage planning.
-    gate_fractions = [
-        (r["gate_percent"] / 100.0) if r.get("gate_percent") else 0.01
-        for r in sort_rounds
-    ]
-    ngs_section["per_round"] = ngs_depth.per_round_coverage(
-        initial_library_size=sortable_library,
-        round_gate_fractions=gate_fractions,
-        target_coverage=max(target_coverage, 0.90),
-    )
+    # Only the gated rounds walk the pool down. A MACS round carries no sort
+    # gate: it hands on the fixed number of cells it recovers
+    # (sort_strategy.py::MACS_RECOVERY_CELLS, capped by what is in the flask),
+    # so that is the pool it is priced at and the pool the FACS walk starts
+    # from -- not the whole library, which MACS exists to compress.
+    # Substituting a stand-in gate for the missing one instead would price the
+    # MACS row at that gate and push every FACS round one multiplication
+    # deeper, shrinking each of their read budgets by the same factor.
+    # ponytail: assumes at most one gateless round and that it comes first,
+    # which is the only shape recommend_sort_rounds emits; a gateless middle
+    # round would drop a row and misnumber the rest against the sort card.
+    # Walk the rounds pool-in-hand if that ever changes.
+    round_coverage = max(target_coverage, 0.90)
+    gated = [r for r in sort_rounds if r["gate_percent"] is not None]
+    gateless = [r for r in sort_rounds if r["gate_percent"] is None]
+    per_round = []
+    facs_start = sortable_library
+    if gateless:
+        facs_start = int(min(sortable_library, gateless[0]["recovered_pool"]))
+        per_round.append({
+            "round": 1,
+            "pool_size": facs_start,
+            "recommended_reads": ngs_depth.reads_for_coverage(
+                facs_start, target_coverage=round_coverage
+            ),
+        })
+    per_round.extend(ngs_depth.per_round_coverage(
+        initial_library_size=facs_start,
+        round_gate_fractions=[r["gate_percent"] / 100.0 for r in gated],
+        target_coverage=round_coverage,
+    ))
+    for number, row in enumerate(per_round, start=1):
+        row["round"] = number
+    ngs_section["per_round"] = per_round
 
     # --- Feasibility ------------------------------------------------------
     partial_plan = {"inputs": inputs, "library": library_section}
