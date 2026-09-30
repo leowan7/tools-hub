@@ -47,7 +47,7 @@ from shared.compute_campaigns import (
     _campaign_container_seconds,
     _chunk_size_for,
 )
-from shared.pdb_preflight import size_only_refusal
+from shared.pdb_preflight import _check_size_envelope, size_only_refusal
 from shared.pdb_preflight_rules import (
     TOOL_RULES,
     largest_target_aa_within_ceiling,
@@ -523,7 +523,10 @@ def test_the_campaign_refusal_quotes_a_size_that_is_then_admitted():
 
 
 def test_the_preset_copy_quotes_counts_the_ceiling_actually_allows():
-    """Every "N trajectories on an M-residue target" in the copy is measured.
+    """Every count-and-size pair in the preset copy is asked of the curve.
+
+    Three phrasings carry one, and an earlier version of this test read only
+    the first, so a drift in "2 on a 500-residue one" would have passed:
 
     The copy carried "about 25 trajectories at 115 residues" through a commit
     in which the container ceiling made that refusal unreachable, and then
@@ -538,11 +541,92 @@ def test_the_preset_copy_quotes_counts_the_ceiling_actually_allows():
 
     rules = TOOL_RULES["bindcraft"]
     text = " ".join(p.description or "" for p in adapter.presets)
-    pairs = re.findall(r"(\d+) trajectories on a (\d+)-residue", text)
-    assert pairs, text
+    pairs = []
+    for pattern in (
+        r"(\d+) trajectories on a (\d+)-residue",       # "5 ... on a 320-"
+        r"(\d+) on a (\d+)-residue one",                # "2 on a 500-residue one"
+        r"(\d+) trajectories fit the limit up to about (\d+) residues",
+    ):
+        pairs.extend(re.findall(pattern, text))
+    # Three phrasings, so three pairs. A copy edit that drops one to a shape
+    # none of the patterns match would otherwise silently stop being checked.
+    assert len(pairs) == 3, f"{pairs} from {text}"
     for count, target_aa in pairs:
         assert max_designs_within_ceiling(rules, int(target_aa)) == int(count), (
             f"copy says {count} trajectories fit a {target_aa}-residue target; "
             f"the curve says "
             f"{max_designs_within_ceiling(rules, int(target_aa))}"
         )
+
+
+def test_the_panel_header_cap_is_never_larger_than_the_size_it_refuses():
+    """The header cap names the same limit as the refusal below it.
+
+    boltzgen's memory cap is 600 aa and its ceiling refuses above 153, so the
+    panel header read "cap 600 aa" directly above a refusal of a 154-residue
+    target: a customer reading one screen saw the tool refuse a size its own
+    stated cap allows four times over.
+
+    The inverse is just as wrong and the first version of the fix created it.
+    The refusal chain in ``_check_size_envelope`` is ordered memory cap, then
+    combined budget, then runtime ceiling, so a 520 aa bindcraft target is
+    refused by the 500-residue memory cap while the ceiling solves to 396 at 4
+    designs -- and a header showing 396 beside a refusal quoting 500 is the
+    same contradiction upside down. So this walks every arm of that chain and
+    asserts the header shows the figure the arm that FIRED quotes, which is why
+    the sweep runs past the memory cap rather than stopping at it.
+
+    Sampled, not exhaustive: every seventh residue from 40 to well above the
+    cap, at five design counts.
+    """
+    for slug in ("bindcraft", "boltzgen"):
+        rules = TOOL_RULES[slug]
+        env = rules.size
+        assert env.runtime_ceiling_s, slug
+        seen = set()
+        for target_aa in range(40, env.hard_cap_target_aa + 221, 7):
+            for n in (1, 4, 6, 50, 100):
+                status = _check_size_envelope(
+                    rules, target_aa, binder_max_aa=None, num_designs=n,
+                )
+                shown = (
+                    status.runtime_cap_target_aa or status.hard_cap_target_aa
+                )
+                if status.over_hard_cap:
+                    # The memory cap fired, and its message quotes
+                    # hard_cap_target_aa, so that is the only figure the header
+                    # may show -- not the smaller runtime one.
+                    seen.add("hard")
+                    assert shown == status.hard_cap_target_aa, (
+                        f"{slug} refused {target_aa} aa quoting its "
+                        f"{status.hard_cap_target_aa}-residue memory cap while "
+                        f"its panel header shows a cap of {shown} aa"
+                    )
+                    assert target_aa > shown, (slug, target_aa, shown)
+                elif status.over_combined_cap:
+                    # That message quotes the combined budget rather than any
+                    # target-size cap, so the header keeps the memory figure it
+                    # showed before this field existed.
+                    seen.add("combined")
+                    assert shown == status.hard_cap_target_aa, (
+                        f"{slug} refused {target_aa} aa on the combined budget "
+                        f"while its header shows {shown} aa"
+                    )
+                elif status.over_runtime_ceiling:
+                    seen.add("runtime")
+                    assert target_aa > shown, (
+                        f"{slug} refused {target_aa} aa at {n} designs while "
+                        f"its panel header shows a cap of {shown} aa"
+                    )
+                else:
+                    # The converse: an ADMITTED size must not sit above the
+                    # figure the header calls the cap, or the header refuses
+                    # what the panel just accepted.
+                    seen.add("ready")
+                    assert target_aa <= shown, (
+                        f"{slug} admitted {target_aa} aa at {n} designs while "
+                        f"its panel header shows a cap of {shown} aa"
+                    )
+        # An arm nobody reaches asserts nothing. binder_max_aa is None here, so
+        # the combined arm is unreachable by construction and is not required.
+        assert {"hard", "runtime", "ready"} <= seen, (slug, seen)

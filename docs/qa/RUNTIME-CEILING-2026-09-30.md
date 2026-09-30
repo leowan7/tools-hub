@@ -156,7 +156,17 @@ it comes back:
 * The full preflight's fix line quoted the residue cap, which is not the
   binding limit above the ceiling: a 500 aa boltzgen upload read "Targets up to
   about 153 residues fit" and "keep it at or under 600 residues" in the same
-  panel. It now takes whichever limit is smaller.
+  panel. One helper, `_fit_target_aa`, now answers that question for both the
+  form route and the money routes, and it consults all three limits rather than
+  one: the residue cap, the room the binder leaves inside the combined budget,
+  and the ceiling. It returns no figure at all when the design count rather
+  than the size is the lever, because every residue figure available there is
+  one the target is already under.
+* The panel header printed the residue cap beside a refusal that quoted the
+  ceiling's much smaller figure — "cap 600 aa" above a refused 154-residue
+  boltzgen target. The header now prints the binding limit
+  (`SizeEnvelopeStatus.runtime_cap_target_aa`) with the count it was solved
+  at, in the server-rendered panel and its JS twin.
 
 The server-rendered preflight panel also skipped its size-envelope line for a
 ceiling refusal (the condition listed the cap flags only), so the one refusal
@@ -320,3 +330,60 @@ file, so the chooser cannot see either cap. So it can recommend boltzgen for a 4
 preflight now refuses on runtime. The user gets a recommendation and then a
 refusal. Worth its own change; it needs a decision about whether the chooser
 should read `TOOL_RULES` size limits, which is more than a one-line fix.
+
+The gap is now pinned by a test rather than only described here:
+`tests/test_tool_chooser.py::test_the_chooser_is_not_size_aware_and_this_pins_where_that_shows`
+asserts that a 240 aa two-chain target IS refused by the boltzgen tool the
+chooser offers, so closing the gap fails that test and forces this note to be
+deleted with it. The multi-chain fixture in that file was dropped to 140 aa to
+keep its own assertion about multi-chain support rather than about size, which
+is what left the disagreement untested until this test was added.
+
+### The campaign chunk size does not know the target size
+
+`_chunk_size_for` (`shared/compute_campaigns.py:615`) derives a per-tool
+constant from GPU-seconds per design against the campaign container, and takes
+no target size. bindcraft is therefore fixed at 6 designs per chunk at every
+target size, so the new campaign gate — which correctly judges
+`plan.designs_for_chunk(0)` — refuses any bindcraft campaign whose target makes
+6 designs overrun, at every requested count above the per-target maximum.
+Measured against a 400 aa target with real `plan_chunks` + `size_only_refusal`:
+3 designs is accepted; 4, 6, 100 and 500 are all refused. The first chunk is 6
+for 6, 100 and 500 — `plan_chunks` does not clamp the nominal chunk down to a
+smaller request — and 4 for a request of 4, which overruns on its own merit
+because only 3 fit at that size. The work is runnable — 100 designs as 34 chunks of 3 all fit
+the 14400 s timeout — and `max_designs_within_ceiling` (added in this change
+set) already computes the 3. It is used only to write the refusal copy, never
+to size the chunk.
+
+Not fixed here, deliberately. The clamp belongs in `_chunk_size_for`, and the
+target size is available at some of the seven `plan_chunks` call sites but not
+all. It IS available at `blueprints/targets.py:273`, which sits inside
+`_collect_launch_specs(target, form)` and passes that same target to
+`size_error` a few lines later. It is NOT available at
+`blueprints/campaigns.py:401`, which plans before the target is resolved, nor at
+`blueprints/campaigns.py:241` — the estimate endpoint the create form calls for
+the budget it displays, which takes no target at all. The other four
+(`blueprints/tools.py:1886`, `shared/compute_campaigns.py:904`,
+`shared/scale_up.py:213`, `shared/target_launch.py:243`) were not traced for
+this note. So a clamp added
+only where the size happens to be in scope would make the budget quoted on the
+form disagree with the budget charged, which is a money defect traded for a
+capacity one; making it consistent means reordering the create route and giving
+the estimate endpoint a target. The
+refusal a user meets today is at least honest and actionable: it names the
+count that runs, and that count does clear the gate.
+
+boltzgen is a different case and its refusal is correct, not a capacity gap: its
+pool is pinned at 200 designs per container, so no chunk size the hub picks
+changes what the pipeline runs, and a target over ~153 aa genuinely cannot
+finish inside the 6600 s timeout. A clamp cannot help there; only a smaller
+pinned pool in `llm-proteinDesigner` could (section 7).
+
+What WAS fixed for this, in `blueprints/tools.py::_single_container_refusal`:
+that message used to send the user to `/campaigns/new` promising "no per-job
+ceiling". The campaign routes run the same size gate, so for a large target
+that promise bought a second refusal. It now says only that a campaign lifts
+the count ONE container runs, and that each piece is still one container. It
+does not claim the total is uncapped, because `plan_chunks` still raises above
+`MAX_SUBJOBS_PER_CAMPAIGN` (`shared/compute_campaigns.py:117`, 50000).

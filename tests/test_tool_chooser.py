@@ -80,8 +80,8 @@ ONE_CHAIN = _pdb("A")
 # the ~153 aa above which boltzgen's 200-design pool overruns the 6600 s timeout
 # its pipeline enforces (tests/test_runtime_ceiling.py). The chooser offers
 # boltzgen for a multi-chain site and this file asserts preflight then says
-# READY, so at 240 aa the assertion would be about target size rather than about
-# multi-chain support. That the chooser recommends boltzgen for targets its own
+# READY, so at the 120-residue default the assertion would be about target
+# size rather than about multi-chain support. That the chooser recommends boltzgen for targets its own
 # preflight refuses on size is real and is NOT fixed here -- it is filed in
 # docs/qa/RUNTIME-CEILING-2026-09-30.md.
 TWO_CHAIN = _pdb("AB", residues=70)
@@ -947,3 +947,40 @@ def test_the_cross_bucket_line_states_the_limits_the_adapter_enforces():
     assert _scfv(target_sequence="A" * 800)[1] is None
     assert _scfv(target_mode="preset", target_name="not-a-target")[0] is None
     assert _scfv(target_mode="preset", target_name="egfr")[1] is None
+
+
+def test_the_chooser_is_not_size_aware_and_this_pins_where_that_shows():
+    """The chooser offers a tool whose own preflight refuses that size.
+
+    ``TWO_CHAIN`` above was dropped to 140 aa so the multi-chain assertion
+    stays about multi-chain support. That keeps this file honest but it also
+    moved the only chooser/preflight agreement check entirely below the size
+    at which the disagreement starts, so the gap became untested as well as
+    unfixed. This pins it at 238 aa: it asserts the gap EXISTS, so the day the
+    chooser learns about size (``shared/tool_chooser.py`` reads ToolRules only
+    for ``hotspots_required`` and the two multi-chain flags) this fails and is
+    deleted rather than quietly kept.
+
+    Not a refusal to fix: the fix is a chooser that filters on size, which
+    needs a target size the chooser does not have -- it answers before any
+    upload. Filed in docs/qa/RUNTIME-CEILING-2026-09-30.md.
+    """
+    # Two 120-residue chains, which preflight counts as 238 aa, not 240 -- the
+    # two are not the same number and only the counted one matters here. I
+    # have not traced where the other two go. Measured by calling
+    # preflight_for_tool on this fixture: residue_count 238,
+    # runtime_cap_target_aa 153, so it is over the limit, which is the point.
+    big = _pdb("AB", residues=120)
+    picks = tool_chooser.recommend(
+        "target-structure", shape="unsure", chemistry="multi-chain",
+    )
+    slugs = [p["slug"] for p in picks]
+    assert "boltzgen" in slugs, slugs
+    verdict = preflight_for_tool(
+        "boltzgen", big, target_chain="A,B", hotspots=["A10", "B10"],
+    )
+    assert verdict.kind is not VerdictKind.READY, (
+        "boltzgen now accepts a 238 aa two-chain target, so the size gap this "
+        "test pins is closed -- delete this test and restore TWO_CHAIN to the "
+        "120-residue default in the multi-chain assertion above"
+    )

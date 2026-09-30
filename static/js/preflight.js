@@ -198,8 +198,7 @@
           env2.over_soft_warn ? " preflight-meta--warn" : ""
         }">
           Size envelope: ${env2.residue_count} aa target
-          (cap ${env2.hard_cap_target_aa} aa on
-          <code>${escapeHtml(env2.gpu || "")}</code>).
+          ${capPhrase(env2)}
           ${env2.runtime_estimate_min
             ? `<br>Estimated runtime: ≈${env2.runtime_estimate_min} min for
                ${escapeHtml(env2.runtime_basis || "")}.`
@@ -302,8 +301,7 @@
       ) {
         html += `<div class="preflight-meta preflight-meta--warn">
           Size envelope: ${envFail.residue_count} aa target
-          (cap ${envFail.hard_cap_target_aa} aa on
-          <code>${escapeHtml(envFail.gpu || "")}</code>).
+          ${capPhrase(envFail)}
           ${envFail.runtime_estimate_min
             ? `<br>Estimated runtime: ~${envFail.runtime_estimate_min} min for
                ${escapeHtml(envFail.runtime_basis || "")}${
@@ -376,6 +374,23 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  // Header cap phrase, shared by both blocks above so they cannot drift apart.
+  // Prints the runtime cap when one binds, because that is the limit a refusal
+  // on this same panel is quoting: boltzgen refuses a 154 aa target while its
+  // memory cap is 600, and printing the 600 here contradicted the refusal on
+  // one screen. Mirrors the Jinja twin's branch in
+  // templates/components/preflight_panel.html.
+  function capPhrase(env) {
+    if (env.runtime_cap_target_aa) {
+      return `(cap ${env.runtime_cap_target_aa} aa at ${
+        escapeHtml(env.runtime_basis || "")
+      } on <code>${escapeHtml(env.gpu || "")}</code>).`;
+    }
+    return `(cap ${env.hard_cap_target_aa} aa on <code>${
+      escapeHtml(env.gpu || "")
+    }</code>).`;
   }
 
   function maxBinderLen() {

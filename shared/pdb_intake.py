@@ -31,7 +31,11 @@ from shared.pdb_preflight import (
     PreflightVerdict,
     preflight_for_tool,
 )
-from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+from shared.pdb_preflight_rules import (
+    TOOL_RULES,
+    largest_target_aa_within_ceiling,
+    runtime_estimate_min,
+)
 from shared.uniprot_lookup import alphafold_api_url
 
 logger = logging.getLogger(__name__)
@@ -121,9 +125,31 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
         num_designs = rules.size.runtime_fixed_designs or num_designs
     minutes = None
     basis = size.get("runtime_basis")
+    cap_aa = size.get("runtime_cap_target_aa")
     if rules is not None and isinstance(target_aa, int) and num_designs:
         minutes = round(runtime_estimate_min(rules, target_aa, num_designs), 1)
-        # The basis is recomputed with the minutes, never carried over. A
+        # The binding cap is re-derived alongside the minutes for the same
+        # reason: it is a function of the count, so a stored figure from a
+        # different count would disagree with the minutes printed next to it.
+        # A job stored before this key existed carries no value at all.
+        # Suppressed when a larger limit is what refused, mirroring
+        # ``shared/pdb_preflight.py::_check_size_envelope``: the header has to
+        # keep naming the figure the stored refusal quotes. The two flags are
+        # read off the stored envelope, which is where _verdict_to_json below
+        # put them.
+        ceiling_aa = largest_target_aa_within_ceiling(rules, num_designs)
+        cap_aa = (
+            ceiling_aa
+            if 0 < ceiling_aa < rules.size.hard_cap_target_aa
+            and not (size.get("over_hard_cap") or size.get("over_combined_cap"))
+            else None
+        )
+        # The basis is recomputed whenever the minutes are, and carried over
+        # unchanged otherwise. Harmless because the cap above moves with it:
+        # both panels also print the basis inside the cap phrase, whenever a
+        # cap is set and independent of the minutes, and the cap and the basis
+        # are re-derived in the same branch here, so a carried-over basis can
+        # only ever sit beside a carried-over cap. A
         # boltzgen job submitted before the substitution above existed stored
         # ``runtime_estimate_min: None`` AND ``runtime_basis: None``; reviving
         # only the minutes made the panel print "82.4 min for None", because
@@ -137,6 +163,7 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
         **stored,
         "size_envelope": {
             **size, "runtime_estimate_min": minutes, "runtime_basis": basis,
+            "runtime_cap_target_aa": cap_aa,
         },
     }
 
@@ -181,6 +208,14 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
         size_block = {
             "residue_count": verdict.size_envelope.residue_count,
             "hard_cap_target_aa": verdict.size_envelope.hard_cap_target_aa,
+            # The smaller, binding cap when the runtime ceiling bites first.
+            # Omitting it would leave the JS panel printing the memory cap
+            # beside a refusal that quoted the ceiling's figure, which is the
+            # contradiction SizeEnvelopeStatus.runtime_cap_target_aa exists to
+            # remove; static/js/preflight.js::capPhrase reads this key.
+            "runtime_cap_target_aa": (
+                verdict.size_envelope.runtime_cap_target_aa
+            ),
             "soft_warn_target_aa": verdict.size_envelope.soft_warn_target_aa,
             "hard_cap_combined_aa": verdict.size_envelope.hard_cap_combined_aa,
             "binder_max_aa": verdict.size_envelope.binder_max_aa,

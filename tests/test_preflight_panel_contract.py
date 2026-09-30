@@ -129,7 +129,31 @@ def _ready_branch() -> str:
     """
     start = _JS.index('if (v.kind === "ready"')
     end = _JS.index('} else if (v.kind === "needs_fix")', start)
-    return _JS[start:end]
+    branch = _JS[start:end]
+    # A field the arm renders THROUGH a helper is still rendered by the arm.
+    # ``capPhrase`` exists so the two headers cannot print different caps, and
+    # moving ``hard_cap_target_aa`` behind it must not read here as the arm
+    # having dropped the cap. Only the helpers this arm actually CALLS are
+    # spliced in, one level deep, so a token sitting in some unrelated function
+    # still cannot answer for this one.
+    for name in sorted(set(re.findall(r"\b([a-z][A-Za-z0-9]*)\(", branch))):
+        if f"function {name}(" in _JS:
+            branch += "\n" + _function_source(name)
+    return branch
+
+
+def _function_source(name: str) -> str:
+    """The text of the top-level ``function name(...)`` declaration."""
+    i = _JS.index(f"function {name}(")
+    depth = 0
+    for k in range(_JS.index("{", i), len(_JS)):
+        if _JS[k] == "{":
+            depth += 1
+        elif _JS[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return _JS[i:k + 1]
+    raise AssertionError(f"function {name} has unbalanced braces")
 
 
 def _guard_before(branch: str, marker: str) -> str:

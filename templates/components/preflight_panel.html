@@ -74,8 +74,18 @@
           <div class="preflight-meta{% if verdict.size_envelope.over_soft_warn %} preflight-meta--warn{% endif %}">
             Size envelope:
             {{ verdict.size_envelope.residue_count }} aa target
-            (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
-            <code>{{ verdict.size_envelope.gpu }}</code>).
+            {#- The runtime cap, when one binds, is the smaller limit and the
+                one a refusal here is quoting; printing hard_cap_target_aa
+                beside it contradicts the refusal on the same screen. See
+                SizeEnvelopeStatus.runtime_cap_target_aa. -#}
+            {% if verdict.size_envelope.runtime_cap_target_aa %}
+              (cap {{ verdict.size_envelope.runtime_cap_target_aa }} aa at
+              {{ verdict.size_envelope.runtime_basis }} on
+              <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% else %}
+              (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
+              <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% endif %}
             {% if verdict.size_envelope.combined_aa %}
               Combined with binder: {{ verdict.size_envelope.combined_aa }} aa
               (cap {{ verdict.size_envelope.hard_cap_combined_aa }} aa).
@@ -174,8 +184,18 @@
           <div class="preflight-meta preflight-meta--warn">
             Size envelope:
             {{ verdict.size_envelope.residue_count }} aa target
-            (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
-            <code>{{ verdict.size_envelope.gpu }}</code>).
+            {#- The runtime cap, when one binds, is the smaller limit and the
+                one a refusal here is quoting; printing hard_cap_target_aa
+                beside it contradicts the refusal on the same screen. See
+                SizeEnvelopeStatus.runtime_cap_target_aa. -#}
+            {% if verdict.size_envelope.runtime_cap_target_aa %}
+              (cap {{ verdict.size_envelope.runtime_cap_target_aa }} aa at
+              {{ verdict.size_envelope.runtime_basis }} on
+              <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% else %}
+              (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
+              <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% endif %}
             {% if verdict.size_envelope.combined_aa %}
               Combined with binder: {{ verdict.size_envelope.combined_aa }} aa
               (cap {{ verdict.size_envelope.hard_cap_combined_aa }} aa).

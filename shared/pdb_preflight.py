@@ -168,6 +168,19 @@ class SizeEnvelopeStatus:
     hard_cap_target_aa: int
     soft_warn_target_aa: int
     hard_cap_combined_aa: int
+    # The size limit that actually binds, when the runtime ceiling bites before
+    # the memory cap above. boltzgen refuses a 154 aa target while its
+    # ``hard_cap_target_aa`` is 600, and both panels printed the 600 in their
+    # header, so the refusal and a cap six times larger than the size it
+    # refused appeared on one screen. None when the memory cap IS the binding
+    # limit: no ceiling declared, no design count to solve at, the ceiling
+    # solves above the cap, it solves to 0 because the fixed term alone already
+    # overruns at any size, or a LARGER limit is what refused this target -- the
+    # memory cap or the combined budget -- in which case the header has to keep
+    # naming the figure that refusal quotes. The panels then print
+    # ``hard_cap_target_aa`` as before. Set from ``largest_target_aa_within_ceiling`` at the count the
+    # container runs, so it moves with the count the way the refusal does.
+    runtime_cap_target_aa: Optional[int] = None
     binder_max_aa: Optional[int] = None
     combined_aa: Optional[int] = None
     over_soft_warn: bool = False
@@ -1971,9 +1984,31 @@ def _check_size_envelope(
             f"out-of-memory."
         )
 
+    # The cap the header prints. Solved at ``effective_designs`` rather than the
+    # form's count for the same reason the estimate is: for a pinned pool the
+    # form's number does not reach the container.
+    #
+    # Suppressed when a LARGER limit is the one that refused. The chain above is
+    # ordered ``over_hard`` / ``over_combined`` / ``over_runtime``, so a 520 aa
+    # bindcraft target is refused by the 500-residue memory cap even though the
+    # ceiling solves to 396 at 4 designs. Printing the 396 beside a refusal that
+    # quotes 500 is the same two-caps-on-one-screen contradiction this field
+    # exists to remove, inverted -- so the header keeps naming the figure the
+    # refusal names, and takes the runtime cap only where the runtime ceiling is
+    # what binds. On a READY verdict nothing has fired and the runtime cap is
+    # the smaller of the two, which is the one a larger target would hit first.
+    runtime_cap_aa: Optional[int] = None
+    if env.runtime_ceiling_s and effective_designs and not (
+        over_hard or over_combined
+    ):
+        ceiling_aa = largest_target_aa_within_ceiling(rules, effective_designs)
+        if 0 < ceiling_aa < env.hard_cap_target_aa:
+            runtime_cap_aa = ceiling_aa
+
     return SizeEnvelopeStatus(
         residue_count=target_aa,
         hard_cap_target_aa=env.hard_cap_target_aa,
+        runtime_cap_target_aa=runtime_cap_aa,
         soft_warn_target_aa=env.soft_warn_target_aa,
         hard_cap_combined_aa=env.hard_cap_combined_aa,
         binder_max_aa=binder_max_aa,
