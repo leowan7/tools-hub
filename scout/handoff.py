@@ -105,9 +105,9 @@ def resolve_user_id(email: str) -> Optional[str]:
     if client is None:
         return None
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for u in users:
+        from shared.credits import list_all_auth_users  # noqa: PLC0415
+
+        for u in list_all_auth_users(client):
             u_email = getattr(u, "email", None) or (
                 u.get("email") if isinstance(u, dict) else None
             )
@@ -179,6 +179,7 @@ def create_handoff(
     """
     user_id = resolve_user_id(user_email)
     if not user_id:
+        logger.warning("scout handoff failed: user_unresolved")
         return None
 
     handoff_id = str(uuid.uuid4())
@@ -193,6 +194,7 @@ def create_handoff(
 
         job_dir = safe_job_dir(scout_job_id)
         if job_dir is None:
+            logger.warning("scout handoff failed: job_dir_invalid")
             return None
         path = job_dir / "input.pdb"
     storage_path = stage_pdb(
@@ -201,10 +203,12 @@ def create_handoff(
         pdb_path=path,
     )
     if not storage_path:
+        logger.warning("scout handoff failed: stage_pdb")
         return None
 
     client = _get_service_client()
     if client is None:
+        logger.warning("scout handoff failed: no_service_client")
         return None
     row = {
         "id": handoff_id,
@@ -220,9 +224,12 @@ def create_handoff(
         response = client.table("scout_handoffs").insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
         if not rows:
+            logger.warning("scout handoff failed: insert_returned_no_rows")
             return None
     except Exception:
-        logger.warning("Failed to insert scout_handoffs row.", exc_info=True)
+        logger.warning(
+            "scout handoff failed: insert_raised", exc_info=True
+        )
         return None
     return handoff_id
 
