@@ -427,28 +427,29 @@ def test_every_residue_figure_the_fix_quotes_is_one_that_runs():
                 quoted = re.search(
                     r"at or under (\d+) residues", verdict.suggested_fix or "",
                 )
-                if not quoted:
-                    continue
-                effective = rules.size.runtime_fixed_designs or n
                 named = re.search(r"at most (\d+) design", verdict.reason)
                 if named:
-                    # The reason names the COUNT lever, so the size figure is
-                    # the untightened hard cap and runs at the count named --
-                    # not at the count asked for. What must hold is that the
-                    # two lines do not both move, and that the named count
-                    # really fits at this size.
-                    assert int(quoted.group(1)) == rules.size.hard_cap_target_aa, (
-                        f"{slug} {target_aa} aa / {n}: reason names a count, "
-                        f"fix also tightened the size to {quoted.group(1)}"
+                    # The reason names the COUNT lever. The fix line must then
+                    # name NO residue budget: quoting the hard cap here printed
+                    # a size this target is already under (bindcraft at 303 aa
+                    # was told to keep it at or under 500), so the user who
+                    # read the fix changed nothing and was refused identically.
+                    assert not quoted, (
+                        f"{slug} {target_aa} aa / {n}: reason names a count of "
+                        f"{named.group(1)}, fix also quotes "
+                        f"{quoted.group(1)} residues -- {verdict.suggested_fix}"
                     )
                     est = runtime_estimate_min(
                         rules, target_aa, int(named.group(1)),
                     )
                 else:
+                    if not quoted:
+                        continue
                     # SIZE is the only lever named, so the size it names has
                     # to run at the count the user asked for.
                     est = runtime_estimate_min(
-                        rules, int(quoted.group(1)), effective,
+                        rules, int(quoted.group(1)),
+                        rules.size.runtime_fixed_designs or n,
                     )
                 assert est <= ceiling_min + 0.5, (
                     f"{slug} {target_aa} aa / {n} designs: the fix points at "

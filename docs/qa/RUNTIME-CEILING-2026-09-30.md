@@ -164,8 +164,14 @@ that is about runtime was the only one printing no runtime; and that line's
 "advisory only, long runs are supported" now says the opposite when the run is
 being refused for it.
 
-`tests/test_runtime_ceiling.py` fails if any of that regresses. Its docstring
-states what it does **not** claim: that a run which passes the gate finishes.
+`tests/test_runtime_ceiling.py` fails if the *refusal figures* regress: every
+residue count a refusal quotes must itself be admitted, the panel must post the
+design count, and a revived runtime figure must carry its own basis. Its
+docstring states what it does **not** claim: that a run which passes the gate
+finishes. Two things in this section are **not** covered by a test: the panel
+template's `over_runtime_ceiling` branch is only checked for the flag name
+appearing in the template, not by rendering it, and the "past the limit one GPU
+run is stopped at" versus "advisory only" wording has no test at all.
 
 Consequence, accepted deliberately: **boltzgen is now small-target-only**,
 ~153 aa at alpha 1.0. Its 360 aa soft warn is unreachable. Both September

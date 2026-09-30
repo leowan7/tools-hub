@@ -53,7 +53,8 @@
   // The design count decides ADMISSION now, not just an advisory number:
   // _check_size_envelope refuses bindcraft when the count puts the estimate
   // past runtime_ceiling_s, and bindcraft is the only per-design tool with a
-  // ceiling (shared/pdb_preflight_rules.py:669). The panel used to post no
+  // ceiling (``runtime_ceiling_s`` in shared/pdb_preflight_rules.py's
+  // bindcraft ToolRules). The panel used to post no
   // count at all, so /preflight saw num_designs=None, left the estimate None
   // and answered "ready" for a 100-trajectory run that submit then refused.
   // Both names _parse_preflight_size_params reads off a form

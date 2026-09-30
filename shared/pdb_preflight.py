@@ -711,8 +711,15 @@ def preflight_for_tool(
                     f"Narrow the target region to the part you want to design "
                     f"against — e.g. one domain rather than "
                     f"{size_envelope.selection_label or 'the whole structure'}"
-                    f" — and keep it at or under "
-                    f"{fit_aa} residues."
+                    + (
+                        f" — and keep it at or under {fit_aa} residues."
+                        if fit_aa is not None
+                        # ``None`` means the count is the lever and the reason
+                        # above already names the count that fits; a residue
+                        # budget printed here is one this target is already
+                        # under.
+                        else ", or ask for the design count named above."
+                    )
                 )
                 + (
                     " You can also use the AlphaFold model below and trim that "
@@ -1992,8 +1999,11 @@ def _fit_target_aa(
     rules: ToolRules,
     env: SizeEnvelopeStatus,
     num_designs: Optional[int],
-) -> int:
+) -> Optional[int]:
     """The residue figure a size refusal may quote: one that actually RUNS.
+
+    ``None`` means quote NO residue figure: the count is the lever and any
+    size sentence is wrong here. See the lever paragraph below.
 
     The hard cap alone is not. Above the runtime ceiling the binding limit is
     smaller, so a boltzgen 500 aa upload was refused with "Targets up to about
@@ -2002,14 +2012,19 @@ def _fit_target_aa(
     estimate was made from, which is the pinned pool where there is one (same
     selection as ``_check_size_envelope``).
 
-    Clamped only when TARGET SIZE is the lever. For a per-design tool whose
-    count can still bring the estimate under the ceiling, the reason says "Ask
-    for at most N designs against a target this size" (the ``over_runtime``
-    branch of ``_check_size_envelope``) and clamping the residue figure
-    contradicted it -- bindcraft at 115 aa / 100 designs asked for "at most 25
-    designs" and then "keep it at or under 46 residues", 40% of a target it
-    runs happily at 25. Both lines call ``max_designs_within_ceiling``, so they
-    cannot disagree about which knob to turn.
+    Clamped only when TARGET SIZE is the lever, and when it is NOT the lever
+    there is no admissible residue figure to quote at all. For a per-design
+    tool whose count can still bring the estimate under the ceiling, the reason
+    says "Ask for at most N designs against a target this size" (the
+    ``over_runtime`` branch of ``_check_size_envelope``); clamping the residue
+    figure contradicted it -- bindcraft at 115 aa / 100 designs asked for "at
+    most 25 designs" and then "keep it at or under 46 residues", 40% of a
+    target it runs happily at 25 -- and leaving the figure UNclamped was just
+    as wrong the other way: bindcraft at 303 aa / 6 designs was told to keep it
+    at or under 500 residues, a budget the target is 197 residues under, so a
+    user who read the fix line changed nothing and was refused identically.
+    Returning ``None`` drops the sentence and leaves the count advice standing
+    alone, which is what the campaign route already did.
 
     The condition is "does the REASON name a count", not "does a count fit".
     ``_check_size_envelope``'s message branches are exclusive and over_hard /
@@ -2048,7 +2063,7 @@ def _fit_target_aa(
         or max_designs_within_ceiling(rules, env.residue_count) < 1
     )
     if not size_is_the_lever:
-        return fit_aa
+        return None
     ceiling_aa = largest_target_aa_within_ceiling(rules, pinned or num_designs)
     return min(fit_aa, ceiling_aa) if ceiling_aa > 0 else fit_aa
 
@@ -2108,9 +2123,15 @@ def size_only_refusal(
         # the cap message with no fix sentence at all -- and for a pinned-pool
         # tool that happens without any caller passing a count.
         return status.hard_fail_message
+    fit_aa = _fit_target_aa(rules, status, num_designs)
+    if fit_aa is None:
+        # Unreachable while the early return above owns the ceiling-only arms
+        # (``_fit_target_aa`` returns None only for a ceiling-only refusal), but
+        # the two conditions are written apart and a message reading "at most
+        # None residues" is worse than no fix sentence.
+        return status.hard_fail_message
     fix = (
-        f"Narrow the target region to at most "
-        f"{_fit_target_aa(rules, status, num_designs)} residues, or pick a "
+        f"Narrow the target region to at most {fit_aa} residues, or pick a "
         f"smaller target."
     )
     return f"{status.hard_fail_message} {fix}"

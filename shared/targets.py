@@ -587,12 +587,13 @@ class DesignTarget:
             tool, count, binder_max_aa=binder_max_aa,
             selection_label=_segments_label(segments),
             # The count ONE CONTAINER will run, not the campaign total: the
-            # runtime ceiling is per container. All three production callers
-            # pass ``plan.designs_for_chunk(0)`` -- the target and upload
-            # branches of
+            # runtime ceiling is per container. Both callers of this method
+            # pass ``plan.designs_for_chunk(0)`` -- the target branch of
             # ``blueprints/campaigns.py::compute_campaign_create`` and the
             # per-spec loop of
-            # ``blueprints/targets.py::_collect_launch_specs`` -- and NOT
+            # ``blueprints/targets.py::_collect_launch_specs``; the upload
+            # branch calls ``size_only_refusal`` directly and passes the same
+            # per-chunk figure -- and NOT
             # ``plan.chunk_size``, for the reason spelled out at those call
             # sites. None leaves the runtime half of the envelope unjudged for
             # a per-design tool, which is what the default means and what
