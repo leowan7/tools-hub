@@ -124,6 +124,26 @@ def _is_polymer_residue(residue) -> bool:
 # Data classes
 # ---------------------------------------------------------------------------
 
+def _chain_ends(residues: list) -> tuple[int, int]:
+    """First and last residue number of a chain's polymer residues.
+
+    Taken over the standard (ATOM) residues, then extended one number at a
+    time through adjacent HETATM MSE/SEC. A free MSE/SEC ligand numbered away
+    from the chain therefore does not become an end; one numbered directly
+    next to it does. With no standard residue, the plain min and max.
+    """
+    nums = {r.get_id()[1] for r in residues}
+    standard = [r.get_id()[1] for r in residues if r.get_id()[0] == " "]
+    if not standard:
+        return min(nums), max(nums)
+    first, last = min(standard), max(standard)
+    while first - 1 in nums:
+        first -= 1
+    while last + 1 in nums:
+        last += 1
+    return first, last
+
+
 @dataclass
 class ChainInfo:
     """Information about a single protein chain extracted from a structure file.
@@ -138,12 +158,11 @@ class ChainInfo:
             the epitope ranking's patch-size cap (_max_resi) from this number.
         name: Molecule name from the file header (e.g. "Epidermal Growth Factor
             Receptor"). Empty string if not available in the header.
-        first_resseq: Lowest residue number among the residues counted in
-            residue_count, insertion code dropped. None when not computed.
-        last_resseq: Highest such residue number. scout/routes.py passes both
-            to compute_quality_flags as the chain's ends for the "terminal
-            patch" flag. A free MSE/SEC ligand counted in residue_count can
-            set either end.
+        first_resseq: The chain's first residue number, insertion code
+            dropped. See _chain_ends. None when not computed.
+        last_resseq: The chain's last residue number. scout/routes.py passes
+            both to compute_quality_flags as the chain's ends for the
+            "terminal patch" flag.
     """
 
     id: str
@@ -390,13 +409,14 @@ def parse_pdb(pdb_path: Union[str, Path]) -> ParseResult:
             protein_residues.append(residue)
         if protein_residues:
             cid = chain.get_id()
+            first_resseq, last_resseq = _chain_ends(protein_residues)
             chain_infos.append(
                 ChainInfo(
                     id=cid,
                     residue_count=len(protein_residues),
                     name=chain_name_map.get(cid.upper(), ""),
-                    first_resseq=min(r.get_id()[1] for r in protein_residues),
-                    last_resseq=max(r.get_id()[1] for r in protein_residues),
+                    first_resseq=first_resseq,
+                    last_resseq=last_resseq,
                 )
             )
 

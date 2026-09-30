@@ -2,8 +2,9 @@
 
 It used to measure from the patch's own lowest residue number, so the lowest
 residue of every patch counted as terminal and any compact patch was flagged
-wherever it sat. Observed on prod: 1BTL THR200-GLN206 (chain numbered ~26-290)
-and all three top 1HEW epitopes were flagged "terminal patch".
+wherever it sat. Reported by the hub lead on prod build dbbb7833, 2026-09-30:
+1BTL THR200-GLN206 (chain numbered ~26-290) and all three top 1HEW epitopes
+were flagged "terminal patch".
 """
 
 import csv
@@ -62,10 +63,10 @@ def test_unknown_chain_ends_skip_the_flag():
 
 
 def _pdb(residues) -> bytes:
-    """One CA per (resseq, icode, resname); HETATM rows marked by resname HOH."""
+    """One CA per (resseq, icode, resname); HOH and MSE written as HETATM."""
     lines = []
     for serial, (resseq, icode, resname) in enumerate(residues, start=1):
-        record = "HETATM" if resname == "HOH" else "ATOM  "
+        record = "HETATM" if resname in ("HOH", "MSE") else "ATOM  "
         atom = " O  " if resname == "HOH" else " CA "
         lines.append(
             f"{record}{serial:5d} {atom} {resname} A{resseq:4d}{icode}   "
@@ -88,6 +89,17 @@ def test_parser_records_chain_ends_across_insertion_codes_and_breaks(tmp_path):
 
     (chain,) = parse_pdb(path).chains
     assert (chain.residue_count, chain.first_resseq, chain.last_resseq) == (10, 26, 45)
+
+
+def test_parser_chain_ends_skip_a_free_mse_but_keep_a_terminal_one(tmp_path):
+    # HETATM MSE25 and MSE31 are the chain's termini; MSE401 is a free ligand.
+    residues = [(25, " ", "MSE")] + [(n, " ", "ALA") for n in range(26, 31)]
+    residues += [(31, " ", "MSE"), (401, " ", "MSE")]
+    path = tmp_path / "t.pdb"
+    path.write_bytes(_pdb(residues))
+
+    (chain,) = parse_pdb(path).chains
+    assert (chain.first_resseq, chain.last_resseq) == (25, 31)
 
 
 # -- Route: the flag written to results_annotated.csv uses the chain's ends --
