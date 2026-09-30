@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import shared.compute_campaigns as cc
+from shared.scale_up import SINGLE_JOB_TOOLS
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -265,3 +266,66 @@ def test_pxdesign_form_render_wires_reroute(app):
     assert resp.status_code == 200
     assert 'data-campaign-ceiling="24"' in body
     assert 'id="campaign-submit-btn"' in body
+
+
+# ---------------------------------------------------------------------------
+# D1 — the ceiling reads each tool's own count field (iggm: num_samples)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tool", [t for t in cc.SUPPORTED_TOOLS if t not in SINGLE_JOB_TOOLS])
+def test_over_ceiling_count_reads_the_tools_design_field(tool):
+    from shared.scale_up import over_ceiling_count
+
+    key = cc.design_param_key(tool)
+    ceiling = cc.single_container_ceiling(tool)
+    assert over_ceiling_count(tool, {key: ceiling + 1}, "pilot") == ceiling + 1
+    assert over_ceiling_count(tool, {key: str(ceiling + 1)}, "pilot") == ceiling + 1
+    assert over_ceiling_count(tool, {key: ceiling}, "pilot") is None
+    if key != "num_designs":
+        assert over_ceiling_count(tool, {"num_designs": ceiling + 1}, "pilot") is None
+
+
+def test_iggm_over_ceiling_samples_stay_one_job():
+    """iggm is in SINGLE_JOB_TOOLS: its validator max runs as one job."""
+    from blueprints.tools import _single_container_refusal
+    from shared.scale_up import over_ceiling_count
+
+    refusal = _single_container_refusal("iggm", {"preset": "cdr_design", "num_samples": 100})
+    assert refusal is None
+    assert over_ceiling_count("iggm", {"num_samples": 100}, "cdr_design") is None
+
+
+def test_iggm_maturation_keeps_its_single_job_route():
+    """Maturation cannot run full-size (blueprints/campaigns.py::campaign_preset_refusal),
+    so pointing it at /campaigns/new would leave it no route at all."""
+    from blueprints.tools import _single_container_refusal
+    from shared.scale_up import over_ceiling_count
+
+    over = cc.single_container_ceiling("iggm") + 1
+    inputs = {"preset": "affinity_maturation", "num_samples": over}
+    assert over_ceiling_count("iggm", inputs, "affinity_maturation") is None
+    assert _single_container_refusal("iggm", inputs) is None
+
+
+def test_iggm_estimate_prices_one_job(app, monkeypatch):
+    monkeypatch.setenv("FLAG_TOOL_IGGM", "on")
+    client = app.test_client()
+    with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
+        for preset in ("cdr_design", "affinity_maturation"):
+            body = client.get("/api/wallet/estimate", query_string={
+                "tool": "iggm", "preset": preset, "num_samples": 100,
+            }).get_json()
+            assert "full_size_run" not in body and body["estimate_usd"] is not None, preset
+
+
+def test_ceiling_does_not_vary_by_preset():
+    """The form and tool_submit test the default-preset ceiling; the result
+    page's offer (shared/scale_up.py::quote) tests the job's own preset. They
+    agree only while every preset a job can carry has the same ceiling."""
+    import app  # noqa: F401  (fills the adapter registry)
+    from tools.base import get as get_adapter
+
+    for tool in cc.SUPPORTED_TOOLS:
+        default = cc.single_container_ceiling(tool)
+        for preset in get_adapter(tool).presets:
+            assert cc.single_container_ceiling(tool, preset.slug) == default, (tool, preset.slug)

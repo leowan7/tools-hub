@@ -56,6 +56,14 @@ def test_boltzgen_clamps_to_its_per_job_cap_and_prices_one_job():
         "u-1", "boltzgen", {"budget": 50, "preset": "pilot"})
 
 
+def test_iggm_offer_prices_one_job_above_its_campaign_ceiling():
+    q = _quote(_job(tool="iggm", preset="cdr_design", inputs={"num_samples": 8}))
+    assert 100 > cc.single_container_ceiling("iggm")
+    assert q.route == "single" and q.count == 100
+    assert q.price_usd == estimated_cost_for_tool(
+        "u-1", "iggm", {"num_samples": 100, "preset": "cdr_design"})
+
+
 @pytest.mark.parametrize("job", [
     _job(status="failed"),
     _job(candidates=()),

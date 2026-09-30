@@ -436,23 +436,14 @@ def api_wallet_estimate():
             "no_estimate_reason": "Enter a whole number, 1 or more, to see a price.",
         })
 
-    # Over the single-container ceiling the form cannot run one job: it posts
-    # to the full-size run, or tool_submit refuses it
-    # (blueprints/tools.py::_single_container_refusal, which this test mirrors,
-    # default-preset ceiling included). Price the full-size run, the figure the
-    # result page's offer shows. That offer tests the job's own preset
-    # (shared/scale_up.py::quote); the two agree only while no tool's ceiling
-    # varies by preset, which holds today but nothing enforces.
-    from shared import compute_campaigns as cc  # noqa: PLC0415
-    requested = _whole_count(params.get("num_designs"))
-    if (
-        tool_slug in cc.SUPPORTED_TOOLS
-        and requested is not None
-        and requested > cc.single_container_ceiling(tool_slug)
-    ):
-        return _full_size_estimate(
-            user_id, tool_slug, requested, str(params.get("preset") or "pilot")
-        )
+    # Over the single-container ceiling tool_submit refuses one job
+    # (blueprints/tools.py::_single_container_refusal, the same helper), so
+    # price the full-size run, the figure the result page's offer shows.
+    from shared.scale_up import over_ceiling_count  # noqa: PLC0415
+    preset = str(params.get("preset") or "pilot")
+    requested = over_ceiling_count(tool_slug, params, preset)
+    if requested is not None:
+        return _full_size_estimate(user_id, tool_slug, requested, preset)
 
     try:
         estimate = estimated_cost_for_tool(user_id, tool_slug, params)
