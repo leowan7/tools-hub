@@ -80,8 +80,17 @@ def _reversed_designs(slug: str) -> dict:
     return result
 
 
+# colabfold/esmfold examples are the single-structure shape, which renders
+# no candidate table; this is their multi-design shape, stored in ascending
+# pLDDT so the page's sort has to move every row.
+_BATCH = {"designs": [
+    {"name": f"d{i}", "pdb_key": f"designs/design_{i}.pdb", "mean_plddt": p,
+     "iptm": 0.1 * i, "ptm": 0.2, "total_aa": 90 + i, "num_chains": 2}
+    for i, p in enumerate((0.61, 0.72, 0.83))]}
+
 _PARITY_CASES = [(s, False) for s in TABLE_TOOLS] + [
-    (s, True) for s in ("af2", "boltz2", "esmfold2-design", "iggm", "opendde")]
+    (s, True) for s in ("af2", "boltz2", "esmfold2-design", "iggm", "opendde")
+] + [("colabfold", "batch"), ("esmfold", "batch")]
 
 
 @pytest.mark.parametrize("slug,reverse", _PARITY_CASES)
@@ -91,7 +100,10 @@ def test_csv_rows_are_the_page_rows_in_page_order_with_every_page_value(
     from shared.jobs import page_ordered_records
 
     flask_app, _ = tools_app
-    result = _reversed_designs(slug) if reverse else _example(slug)
+    if reverse == "batch":
+        result = copy.deepcopy(_BATCH)
+    else:
+        result = _reversed_designs(slug) if reverse else _example(slug)
     page = _page_rows(_render_partial(
         flask_app, slug, job_id=JOB_ID, example=False, result=result))
     assert page, f"{slug}: the page rendered no candidate rows"
@@ -198,6 +210,15 @@ def test_mpnn_malformed_row_is_kept_not_renumbered():
     assert [r["sequence"] for r in rows] == ["AA", "", "CC"]
 
 
+def test_mpnn_csv_row_keys_named_rank_or_sequence_do_not_duplicate_columns():
+    from shared.exports import sequences_to_csv
+
+    text = sequences_to_csv([{"seq": "AAA", "rank": 7, "sequence": "ZZZ"}])
+    assert text.splitlines()[0] == "rank,score,recovery,sequence"
+    row = next(csv.DictReader(io.StringIO(text)))
+    assert (row["rank"], row["sequence"]) == ("1", "AAA")
+
+
 def test_the_csv_route_exports_in_page_order(client, monkeypatch):
     result = _example("iggm")
     job = _wire(monkeypatch, "iggm", result)
@@ -290,6 +311,20 @@ def test_fasta_storage_miss_and_unparseable_bytes_fall_back_to_the_note(client, 
                 fetch=lambda **_kw: b"not a structure")
     assert "No sequences found" in client.get(
         f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+
+
+def test_structure_chain_sequences_skips_placeholder_chains():
+    from shared.exports import structure_chain_sequences
+
+    assert structure_chain_sequences(_pdb({"A": "GGGG", "B": "MK"})) == [("B", "MK")]
+
+
+def test_fasta_chain_suffix_follows_an_id_that_holds_a_space(client, monkeypatch):
+    job = _wire(monkeypatch, "af2", {"designs": [{"pdb_key": "my design.pdb"}]},
+                fetch=lambda **_kw: _pdb({"A": "MK"}))
+    body = client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+    header = [ln for ln in body.splitlines() if ln.startswith(">")][0]
+    assert header.split(" [")[0].endswith("design.pdb_chainA"), header
 
 
 def test_structure_chain_sequences_reads_mmcif_and_modified_residues():

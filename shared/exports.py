@@ -482,7 +482,8 @@ def sequences_to_csv(sequences) -> str:
     extra: list[str] = []
     for row in rows:
         for k, v in row.items():
-            if (k not in ("seq", "score", "recovery") and k not in extra
+            if (k not in ("seq", "score", "recovery", "rank", "sequence")
+                    and k not in extra
                     and not k.startswith("_") and _is_metric_value(v)):
                 extra.append(k)
     fields = ["rank", "score", "recovery", *extra, "sequence"]
@@ -547,7 +548,9 @@ def structure_chain_sequences(data: bytes) -> list[tuple[str, str]]:
             protein_letters_3to1_extended.get(res.get_resname().strip(), "")
             for res in chain
         )
-        if seq:
+        # A one-letter chain (poly-GLY placeholder backbone) is not a
+        # designed sequence; test_structure_chain_sequences_skips_placeholder_chains.
+        if len(set(seq)) > 1:
             out.append((str(chain.get_id()), seq))
     return out
 
@@ -581,7 +584,7 @@ def candidates_to_fasta(
     FALLBACK: a row carrying no sequence field is read from its structure --
     the same bytes :func:`candidates_to_zip` would archive -- and written as
     one record per protein chain, id suffixed ``_chain<X>``. Every chain,
-    because no per-tool map says which chain is the design, so a complex's
+    because this function is not told which chain is the design, so a complex's
     target chain repeats once per design. Without ``fetch_bytes`` such a row
     is skipped as before (the campaign and target routes).
 
@@ -644,7 +647,7 @@ def candidates_to_fasta(
         if key.get("source_job"):
             parts.append(str(key["source_job"])[:8])
         parts.append(_basename(key["pdb_key"], f"candidate_{i + 1}"))
-        header = ">" + "_".join(parts)
+        base_id = header = ">" + "_".join(parts)
         row_tool, row_mode = _bar_scope(cand, tool, preset)
         if row_tool:
             verdict = judge(row_tool, cand, preset=row_mode)
@@ -658,9 +661,9 @@ def candidates_to_fasta(
                         f" [does not meet bar: {note}]"
                         if verdict.verdict == "below" else f" [{note}]"
                     )
-        base_id, _, note = header.partition(" ")
+        # Suffix after the id, before any note; the id can hold a space.
         for suffix, rec_seq in records:
-            lines.append(base_id + suffix + (" " + note if note else ""))
+            lines.append(base_id + suffix + header[len(base_id):])
             for start in range(0, len(rec_seq), 80):
                 lines.append(rec_seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):
