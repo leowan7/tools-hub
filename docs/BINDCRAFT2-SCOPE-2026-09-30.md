@@ -28,11 +28,11 @@ The file is titled **"BindCraft2 Source-Available License (Hosting-Restricted)"*
 - **Hosted Service Restriction** (`LICENSE:36-44`) — "You may not, without a separate written commercial license from the copyright holders, provide the Software, a modified version of the Software, or a service whose material functionality is provided by or derived from the Software, to Third Parties as a hosted, managed, cloud, API, web application, workflow platform, or software-as-a-service offering, **where that offering provides Third Parties with access to any substantial set of the features or functionality of the Software**". The emphasised qualifier is load-bearing, and this document does not attempt to judge it.
 - A separate paragraph (`LICENSE:52-58`) closes the obvious workaround: "Making the Software available to Third Parties as an invocable tool, plugin, agent action, connector, or workflow step within a hosted platform, such that those Third Parties can run the functionality of the Software without installing it themselves, is treated as provision of a Hosted Service". It carries its own exception, which does not help us: "this does not apply where a Third Party has installed the Software themselves, or on infrastructure operated for their sole benefit, and directs its execution through their own agent, script, or automated tooling."
 - **The carve-out that matters** (`LICENSE:60-64`) — "the redistribution of source code or binaries for others to run themselves, the internal use of the Software (including execution directed by your own automated or agentic tooling), and the provision of design outputs (for example designed binders, sequences, or structures) are not Hosted Services and require no commercial license."
-- **Naming Restriction** (`LICENSE:66-72`) — narrower than a blanket trademark bar. It forbids using the name "BindCraft2" to identify, market or describe a Hosted Service or derivative "in any manner that asserts or implies equivalent functionality to, or official association with, the original Software", and explicitly does not prevent accurate descriptive statements.
+- **Naming Restriction** (`LICENSE:66-79`) — narrower than a blanket trademark bar. It forbids using the name "BindCraft2" to identify, market or describe a Hosted Service or derivative "in any manner that asserts or implies equivalent functionality to, or official association with, the original Software", and explicitly "does not prevent accurate statements that a work is based on, derived from, or compatible with BindCraft2" (`:72-74`). A separate paragraph (`:76-79`) reserves the trademark itself to the University of Zurich.
 - **Termination** (`LICENSE:102-108`): rights terminate automatically on violation; they are reinstated if you cease within 30 days of the copyright holders notifying you; a subsequent violation after reinstatement terminates them permanently.
 - The licence states of itself that it is **not an Open Source Initiative approved open source licence**.
 
-Reading those together: a self-serve form on tools.ranomics.com, where a customer supplies a target and BC2 runs on our infrastructure for them, is squarely the "invocable tool … without installing it themselves" case. Running BC2 ourselves and shipping the resulting binders to a Sprint or custom-campaign customer is squarely the "provision of design outputs" carve-out. The two halves of our business fall on opposite sides of the same licence.
+Reading those together: a self-serve form on tools.ranomics.com, where a customer supplies a target and BC2 runs on our infrastructure for them, reads as the "invocable tool … without installing it themselves" case. Running BC2 ourselves and shipping the resulting binders to a Sprint or custom-campaign customer reads as the "provision of design outputs" carve-out. Both readings are mine, not a lawyer's. The two halves of our business fall on opposite sides of the same licence.
 
 The third-party component list does not rescue the self-serve case either. The licence lists AlphaFold2 + ColabDesign (Apache-2.0) and ProteinMPNN (MIT) + HyperMPNN as third-party components whose "rights in it, including any right to operate it as a hosted service, derive from its own terms and not from this license." That is a statement that the *dependencies* are free, not the BindCraft2 pipeline code — and the pipeline code is precisely what a hosted tool would be running.
 
@@ -95,7 +95,7 @@ Rate card `shared/wallet_estimates.py:74`: `"A100-80GB": 0.001028` USD/s raw (= 
 
 ### 2.5 The only measured runtime
 
-`docs/VALIDATION-LOG.md`: job `1c4d5803` (2026-05-28) is **the only bindcraft run with recorded GPU seconds** — 1170 GPU-s (19.5 min), 2/2 candidates, hold $4.37 / release $2.33 / net $2.04. The 2026-04-22 4Z18 pilot passed but its GPU seconds were "(not captured)".
+`docs/VALIDATION-LOG.md`: job `1c4d5803` (2026-05-28) is **the only successful bindcraft run with recorded GPU seconds** — 1170 GPU-s (19.5 min), 2/2 candidates, hold $4.37 / release $2.33 / net $2.04. (Two *failed* runs also carry measured GPU-seconds, 5015 and 5012; see §2.9. Neither produced candidates, so neither anchors a runtime curve.) The 2026-04-22 4Z18 pilot passed but its GPU seconds were "(not captured)".
 
 So: **one run, one size, one design count.** Every runtime constant downstream rests on it.
 
@@ -136,18 +136,18 @@ All in `tools/bindcraft/meta.py` (406 lines) unless noted:
 
 `docs/qa/FAILED-RUNS-2026-09-30.md`, bindcraft rows:
 
-That file defines its columns at line 40: "Gs means GPU-seconds used. Wall means seconds from start to finish." The two are not interchangeable, and for these rows the distinction decides what the numbers mean.
+That file defines its columns at line 39: "Gs means GPU-seconds used. Wall means seconds from start to finish." The two are not interchangeable, and for these rows the distinction decides what the numbers mean.
 
 | job | date | outcome | GPU-s | wall s | cost |
 |---|---|---|---|---|---|
-| `cd7150c1` | 06-11 | no_progress_timeout | 5015 | — | $4.37 |
-| `763247f5` | 07-02 | safety_kill, billed | 5012 | — | $3.63 absorbed |
+| `cd7150c1` | 06-11 | no_progress_timeout | 5015 | 413271 | $4.37 |
+| `763247f5` | 07-02 | safety_kill, billed | 5012 | 5013 | $3.63 absorbed |
 | `7eae70ba` | 08-28 | "Failed to download input PDB: HTTP 400" | not recorded | 11346 | $13.11 |
 | `c43329f3` | 09-22 | "timed out after 14400 s" | not recorded | 14403 | $12.00 |
 
-Only the first two rows carry measured GPU-seconds. For the last two the figure is wall time, and that file's own caveats warn that for `7eae70ba` "the container may have died early", which "would cut up to $11.66" from the total. The headline number is an upper bound, not a measurement.
+Only the first two rows carry measured GPU-seconds; for the last two, only wall time was recorded. `cd7150c1`'s 413271 s of wall time against 5015 GPU-seconds is worth noticing on its own — that job sat for nearly five days.
 
-`docs/qa/FAILED-RUNS-2026-09-30.md:100-101` attributes **$45.11** to three of these, and the composition matters: $20.00 is refunded or absorbed customer price, and $25.11 is our Modal cost, which is not refundable and is itself computed from wall time at the A100-80GB rate. Note that `7eae70ba` ran 11346 seconds *failing to download its input* — a wrapper defect, not a BindCraft defect, and BC2 would not fix it.
+`docs/qa/FAILED-RUNS-2026-09-30.md:100` attributes **$45.11** to three of these (`cd7150c1`, `763247f5`, `c43329f3`; `7eae70ba` is not among them), and the composition matters: $20.00 is refunded or absorbed customer price — 4.37 + 3.63 + 12.00 — and $25.11 is our Modal cost, which the refund does not recover. That Modal figure is an upper bound rather than a measurement: the same file's caveats at `:122` say "the Modal figures are upper bounds … wall time overstates GPU time on hung runs", and for two of the three jobs wall time is all there is. (That file also records a separate $11.66 caveat at `:123`, but it concerns `7eae70ba` and so reduces the wider OUR FAULT total, not the $45.11.) Note that `7eae70ba` ran 11346 seconds *failing to download its input* — a wrapper defect, not a BindCraft defect, and BC2 would not fix it.
 
 **Caveat on every cite to this file:** `docs/qa/FAILED-RUNS-2026-09-30.md` is untracked in git at the time of writing, so a reader checking out this commit will not find it. It needs committing by whoever owns it before these cites resolve for anyone else.
 
@@ -203,7 +203,7 @@ BC1 runs a fixed number of trajectories and returns what passes. BC2 does not.
 - `docs/source/reference.md:118`: "`max_trajectories` | Unset | Optional attempt limit. Leave unset to keep working toward the requested count."
 - `docs/source/design-guide.md:79`: "How many attempts are allowed, note that **a difficult target may need thousands of attempts per design**."
 
-So the default BC2 contract is *unbounded*: run until N designs are accepted, however long that takes. Dropped onto a fixed Modal container ceiling, that is precisely the failure mode that produced $45.11 of refunds on BC1 — a run that burns the whole ceiling and returns nothing. **Any hub integration must set `max_trajectories` explicitly, derive it from the container ceiling, and treat "budget exhausted" as a first-class customer-visible outcome rather than a timeout.** BC2 does emit a distinct message for it (`bindcraft/campaign.py:230-231`, `campaign_budget_exhausted(...)`) — but only if the adapter reads it. Whether BC1 has any equivalent signal is UNVERIFIED; `run_pipeline.py` was not audited for one in this pass.
+So the default BC2 contract is *unbounded*: run until N designs are accepted, however long that takes. Dropped onto a fixed Modal container ceiling, that is precisely the failure mode behind the $45.11 of BC1 losses in §2.9 — of which $20.00 was refunded or absorbed customer price and $25.11 our own Modal cost — a run that burns the whole ceiling and returns nothing. **Any hub integration must set `max_trajectories` explicitly, derive it from the container ceiling, and treat "budget exhausted" as a first-class customer-visible outcome rather than a timeout.** BC2 does emit a distinct message for it (`bindcraft/campaign.py:230-231`, `campaign_budget_exhausted(...)`) — but only if the adapter reads it. Whether BC1 has any equivalent signal is UNVERIFIED; `run_pipeline.py` was not audited for one in this pass.
 
 ### 3.5 Output layout — a full rewrite of the result reader
 
@@ -271,7 +271,7 @@ Per `README.md`: de novo miniproteins, **scaffolded binders, cyclic peptides, mu
 
 1. Replacing in place invalidates the single measured runtime anchor (job `1c4d5803`, 1170 GPU-s), both container ceiling rows, the `expected_gpu_seconds=3600` spec, the whole `SizeEnvelope`, and every bindcraft validation row in `docs/VALIDATION-LOG.md` — with nothing measured to replace them, so the tool would be live on constants known to be wrong. This project has already shipped runtime constants that were stale by 3× and paid for it.
 2. The score set is not a superset. `shape_complementarity` disappears. A customer comparing an old run to a new one under the same tool name would see a column vanish and the ranking metric change from ipTM to `i_pDAE`. Two distinct tools is the honest presentation.
-3. The **Naming Restriction** (`LICENSE:66-72`) bars using the name "BindCraft2" for a Hosted Service in a way that implies equivalent functionality or official association, while permitting accurate description. Presenting a BC2-backed tool as a new version of our existing "BindCraft" tool sits on the wrong side of that line; presenting it as a separate tool, accurately described, does not.
+3. The **Naming Restriction** (`LICENSE:66-79`) bars using the name "BindCraft2" for a Hosted Service in a way that implies equivalent functionality or official association, while permitting accurate description. Presenting a BC2-backed tool as a new version of our existing "BindCraft" tool sits on the wrong side of that line; presenting it as a separate tool, accurately described, does not.
 4. BC1's own headline failures (`7eae70ba`, 11346 s of wall time failing to download its input; the pilot/full ceiling anomaly in §2.3) are **wrapper** defects. They are cheaper to fix in place than to migrate away from, and they would reappear in a BC2 wrapper built on the same scaffolding. Fix those regardless of what happens to BC2.
 
 ---
