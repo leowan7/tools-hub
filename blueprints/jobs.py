@@ -50,6 +50,7 @@ from shared.jobs import (
     mark_running,
     timeout_stuck_job,
 )
+from shared.pdb_intake import job_preflight_for_display
 from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
@@ -777,6 +778,7 @@ def job_detail(job_id: str):
         handoff=handoff,
         scale_up=scale_up_quote(ctx.user_id, job),
         failure_money=_failure_money(ctx.user_id, job),
+        preflight=job_preflight_for_display(job.inputs),
     )
 
 
