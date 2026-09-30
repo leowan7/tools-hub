@@ -39,7 +39,7 @@
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">
     <span class="panel-title">Candidates ({{ candidates | length }})</span>
-    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+    {% if tier %}<span class="panel-badge">{{ tier | preset_label }}</span>{% endif %}
   </div>
   <div class="panel-body">
     {% if candidates %}

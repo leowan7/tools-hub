@@ -109,13 +109,18 @@
 
 {% block content %}
   <div class="hero">
+    {# Only a campaign sub-job belongs to a full-size run: shared/jobs.py
+       sets campaign_id on those and leaves it NULL on an ordinary single job
+       (migration 0034), so an ordinary job no longer points at /campaigns. #}
+    {% if job.campaign_id %}
     <p style="margin:0 0 .4rem;font-size:.8rem;">
-      <a href="{{ url_for('campaigns.compute_campaigns_list') }}" style="color:var(--accent-text,#2B9E7E);text-decoration:none;">&larr; Full-size runs</a>
+      <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=job.campaign_id) }}" style="color:var(--accent-text,#2B9E7E);text-decoration:none;">&larr; This full-size run</a>
     </p>
+    {% endif %}
     <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
     <p class="subtitle">
       Preset <strong>{{ job.preset | preset_label }}</strong> ·
-      submitted {{ job.created_at[:19] if job.created_at else '—' }}
+      submitted {{ job.created_at | utc_stamp }}
     </p>
   </div>
 
@@ -442,7 +447,9 @@
   {% endif %}
 
   <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
-    <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All full-size runs</a>
+    {% if job.campaign_id %}
+      <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All full-size runs</a>
+    {% endif %}
     <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
     {% if job.status == 'succeeded' and share_allowed %}

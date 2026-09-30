@@ -796,11 +796,21 @@ def wallet_topup():
     except (ArithmeticError, ValueError):
         need = None
     tool = (request.args.get("tool") or "").strip()
-    if tool in TOOL_SPECS:
+    # The adapter registry, not TOOL_SPECS: the latter still carries the
+    # historic key "alphafold2" whose adapter registers as "af2"
+    # (shared/wallet_estimates.py), so ?tool=alphafold2 would offer a link to
+    # /tools/alphafold2, which blueprints/tools.py::_require_tool 404s.
+    from shared.feature_flags import tool_enabled
+    from tools import base as tool_base
+
+    if tool_base.get(tool) is not None and tool_enabled(tool):
         session["wallet_gate_form"] = {"tool": tool}
+    else:
+        tool = ""
     return render_template(
         "wallet/topup.html",
         wallet=wallet,
+        return_tool=tool or None,
         min_topup_usd=MIN_TOPUP_USD,
         deficit_usd=need,
         next_url=None,

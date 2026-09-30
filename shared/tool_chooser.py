@@ -417,6 +417,19 @@ def prerequisite_line(slug: str) -> str:
     return "You will need " + " and ".join(parts) + "."
 
 
+def refuses_without_residues(slug: str) -> bool:
+    """True when SOMETHING refuses a submit that names no residues.
+
+    ``needs_hotspots`` reads the preflight gate only, and a tool whose own
+    ``validate`` does the refusing is absent from TOOL_RULES by design
+    (see ``_ADAPTER_RESIDUE_REFUSALS``). iggm is that case: its guided-run
+    card read the preflight flag and told the customer the tool "does not
+    require them" while tools/iggm/__init__.py answers an empty epitope
+    with "Epitope residues are required."
+    """
+    return needs_hotspots(slug) or slug in _ADAPTER_RESIDUE_REFUSALS
+
+
 def recommend(
     have: str,
     shape: str | None = None,

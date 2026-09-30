@@ -89,7 +89,10 @@
                       <progress class="jobs-progress" max="{{ c.progress.total }}" value="{{ c.progress.done }}"></progress>
                       <span class="jobs-num">{{ c.progress.done }}/{{ c.progress.total }} designs</span>
                     {% else %}
-                      <span class="jobs-muted">{{ job.status or '—' }}</span>
+                      {# The Status column beside this already says
+                         "succeeded"; repeating it here read as two
+                         different facts. #}
+                      <span class="jobs-muted">—</span>
                     {% endif %}
                   </td>
                   <td class="jobs-num">{{ c.runtime or '—' }}</td>
@@ -97,7 +100,7 @@
                     {{ c.spend or '—' }}
                     {% if c.spend_note %}<span class="jobs-spend-note">{{ c.spend_note }}</span>{% endif %}
                   </td>
-                  <td class="jobs-muted">{{ job.created_at[:19] if job.created_at is string else '—' }}</td>
+                  <td class="jobs-muted">{{ job.created_at | utc_stamp }}</td>
                 </tr>
               {% endfor %}
             </tbody>

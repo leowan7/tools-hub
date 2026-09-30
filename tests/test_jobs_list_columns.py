@@ -134,7 +134,9 @@ def test_a_refunded_job_shows_what_was_charged_after_the_refund(client):
     job = _job("ref-1", "failed", hold="30", failure_class="infra_crash",
                started=_iso(start), completed=_iso(start + timedelta(seconds=41)))
     row = _row(_render(client, [job], [_tx(30, "-12.50"), _tx(31, "12.50", parent=30)]), "ref-1")
-    assert "$0.00" in row and "refunded" in row
+    # A fully released hold nets zero: "$0.00 refunded" read as a refund that
+    # failed, so the note says "not charged" instead (QA 2026-09-29, F2).
+    assert "$0.00" in row and "not charged" in row
     assert "$12.50" not in row
     assert "41s" in row
     assert 'class="compare-chk"' not in row
@@ -148,7 +150,10 @@ def test_no_progress_signal_shows_the_status_and_no_bar(client):
     for jid, status in (("pend-1", "pending"), ("run-2", "running")):
         row = _row(html, jid)
         assert "<progress" not in row
-        assert f'<span class="jobs-muted">{status}</span>' in row
+        # Progress falls back to an em dash, not to a second copy of the
+        # status the Status column already shows (QA 2026-09-29, J2).
+        assert '<span class="jobs-muted">—</span>' in row
+        assert row.count(status) == 1
     assert "$" not in _row(html, "pend-1")
 
 

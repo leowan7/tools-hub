@@ -27,8 +27,8 @@
     <h1>Wallet</h1>
     <p class="subtitle">
       Your USD balance funds every job on Ranomics Tools and is your spend cap.
-      Top up in any amount from $20 and design without limits. No credits, no
-      tiers, no subscriptions.
+      Top up in any amount from $20 and design without limits. No tiers, no
+      subscriptions.
     </p>
   </div>
 
@@ -90,19 +90,6 @@
         <div class="wallet-stat">
           <span class="wallet-stat-label">Spent today</span>
           <span class="wallet-stat-value">${{ display_cost_usd(wallet.spent_today_usd if wallet and wallet.spent_today_usd is not none else 0) }}</span>
-        </div>
-        <div class="wallet-stat">
-          <span class="wallet-stat-label">Auto reload</span>
-          {% if wallet and wallet.auto_reload_enabled %}
-            <span class="wallet-stat-value wallet-stat-value-on">On</span>
-            <span class="wallet-stat-foot">
-              Adds ${{ display_cost_usd(wallet.auto_reload_amount_usd if wallet.auto_reload_amount_usd is not none else 50) }}
-              when balance drops below ${{ display_cost_usd(wallet.auto_reload_threshold_usd if wallet.auto_reload_threshold_usd is not none else 10) }}
-            </span>
-          {% else %}
-            <span class="wallet-stat-value wallet-stat-value-off">Off</span>
-            <span class="wallet-stat-foot">No automatic charges</span>
-          {% endif %}
         </div>
         {% if signup_credit_status %}
         {% set _exp = signup_credit_status.expires_at %}

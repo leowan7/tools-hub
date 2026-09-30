@@ -78,8 +78,6 @@
   font-size: 1.4rem;
   color: var(--warm-white);
 }
-.wallet-stat-value-on { color: var(--accent-text); }
-.wallet-stat-value-off { color: var(--text-secondary); }
 .wallet-stat-foot {
   font-size: 0.78rem;
   color: var(--text-secondary);

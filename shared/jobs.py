@@ -907,6 +907,29 @@ def failure_advice(job) -> Optional[dict]:  # noqa: ANN001
             "fix": _GENERIC_FIX}
 
 
+def utc_stamp(value) -> str:  # noqa: ANN001
+    """A stored timestamp as "23 Sep 2026, 17:13 UTC", or a dash.
+
+    The jobs table and the result header printed ``created_at[:19]``, a
+    bare ISO string with no zone, so "2026-09-23T17:13:38" left the
+    reader to guess whether it was their own clock. Stored timestamps are
+    UTC; naive ones are read as UTC, which is what ``_parse_ts`` in
+    blueprints/jobs.py does with the same values.
+    """
+    if isinstance(value, datetime):
+        ts = value
+    elif isinstance(value, str) and value:
+        try:
+            ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return "—"
+    else:
+        return "—"
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
+    return ts.strftime("%d %b %Y, %H:%M UTC")
+
+
 def generate_job_token() -> str:
     """Return a 64-char hex token used to authenticate the Modal callback."""
     return secrets.token_hex(32)

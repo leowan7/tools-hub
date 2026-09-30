@@ -26,6 +26,12 @@
   {% elif material_warnings %}
     {% set tier_class = 'dev-tier-amber' %}
     {% set tier_label = 'Feasible with caveats' %}
+  {% elif warnings %}
+    {# The one informational warning is the transformation ceiling: the library
+       is buildable but only partly sampled, so the headline says so instead of
+       claiming a clean pass. See informational_codes above. #}
+    {% set tier_class = 'dev-tier-green' %}
+    {% set tier_label = 'Feasible on yeast, sampled in part' %}
   {% else %}
     {% set tier_class = 'dev-tier-green' %}
     {% set tier_label = 'Feasible on yeast' %}
@@ -146,9 +152,11 @@
         <span class="dev-dim-name">Sort strategy</span>
         <span class="dev-dim-score">{{ rounds | length }} rounds</span>
       </div>
+      {% set _methods = rounds | map(attribute='method') | unique | list %}
       <p class="dev-dim-interp">
-        MACS and FACS rounds with KD-decreasing label concentration.
-        Enrichment is estimated from gate width and starting material.
+        {{ _methods | join(' and ') }} rounds with KD-decreasing label
+        concentration. Enrichment is estimated from gate width and starting
+        material.
       </p>
       <dl class="dev-dim-stats">
         {% for r in rounds %}

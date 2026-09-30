@@ -2,7 +2,7 @@
 
 {% block title %}Pricing | Wallet cap, unlimited design{% endblock %}
 
-{% block description %}Fund a USD wallet and it becomes your spend cap. Design as many candidates as you want, pay only for the compute delivered. No credits, no tiers, no subscriptions. New accounts start with a ${{ signup_credit() }} wallet balance, usable for {{ signup_credit_expiry_days }} days.{% endblock %}
+{% block description %}Fund a USD wallet and it becomes your spend cap. Design as many candidates as you want, pay only for the compute delivered. No tiers, no subscriptions. New accounts start with a ${{ signup_credit() }} wallet balance, usable for {{ signup_credit_expiry_days }} days.{% endblock %}
 
 {% block content %}
 
@@ -14,7 +14,7 @@
       Fund a USD wallet and that balance becomes your spend cap. Design as
       many candidates as you want. A large request fans out across GPUs and
       drains only for the compute it delivers, pausing the moment your
-      balance runs low. No credits, no tiers, no subscriptions. New accounts
+      balance runs low. No tiers, no subscriptions. New accounts
       start with a ${{ signup_credit() }} wallet balance, usable for {{ signup_credit_expiry_days }} days.
     </p>
     <div class="pricing-hero-actions">
@@ -184,7 +184,7 @@
             See wet-lab binder testing
           </a>
           {% if not session.get('user_email') %}
-            <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Open the tools hub</a>
+            <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Create a free account</a>
           {% else %}
             <a href="{{ url_for('public.index') }}" class="btn-secondary">Open the tools hub</a>
           {% endif %}
@@ -213,8 +213,9 @@
       <article class="why-card">
         <h3 class="why-card-title">Is there a limit on how many designs I can run?</h3>
         <p class="why-card-body">
-          No. Design count is unlimited and there is no per design charge.
-          Your wallet balance is the only ceiling. A large request becomes
+          No plan limit, and no per design charge. One job's form caps how
+          many designs it may ask for, and your wallet balance is the only
+          ceiling on the account. A large request becomes
           a full-size run that drains the wallet as compute is delivered and
           pauses if the balance runs low.
         </p>

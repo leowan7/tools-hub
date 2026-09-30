@@ -3,6 +3,9 @@
 # Public surfaces (homepage, comparison page, pricing, help guides,
 # Epitope Scout) are open to crawlers. User-state and auth surfaces
 # are blocked because they're per-user and behind login redirects.
+# /account, /campaigns, /login and /signup are left crawlable so a
+# crawler can follow the login redirect and read the noindex on
+# templates/login.html, account.html and campaigns/dashboard.html.
 
 User-agent: *
 Allow: /
@@ -14,22 +17,16 @@ Allow: /scout
 Allow: /terms
 Allow: /privacy
 
-Disallow: /account
-Disallow: /account/
 Disallow: /workspaces
 Disallow: /workspaces/
 Disallow: /jobs
 Disallow: /jobs/
-Disallow: /campaigns
-Disallow: /campaigns/
 Disallow: /lab-projects
 Disallow: /lab-projects/
 Disallow: /runs
 Disallow: /runs/
 Disallow: /admin
 Disallow: /admin/
-Disallow: /login
-Disallow: /signup
 Disallow: /logout
 Disallow: /forgot-password
 Disallow: /reset-password

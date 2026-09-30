@@ -62,8 +62,9 @@ seo_faq: list[dict] = [
     {
         "q": "Do I need to choose hotspots before running RFdiffusion?",
         "a": (
-            "Hotspots are strongly recommended. They tell RFdiffusion "
-            "which residues on the target the binder should contact. If you "
+            "Yes — the form will not start a run without them. They tell "
+            "RFdiffusion which residues on the target the binder should "
+            "contact. If you "
             "do not have a hotspot guess, run Epitope Scout first to score "
             "the target surface, then hand off the picked residues into "
             "the RFdiffusion form."

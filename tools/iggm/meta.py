@@ -64,8 +64,9 @@ about: dict = {
         "from this file — you do not type it).",
         "Antibody heavy chain sequence (>H); light chain (>L) optional "
         "(omit it for a nanobody / VHH). Mark positions to design with X.",
-        "Optional: an epitope — click antigen residues on the structure and "
-        "IgGM guides design toward them.",
+        "An epitope: the antigen residues the antibody should aim at. "
+        "Required for every mode — tools/iggm/__init__.py rejects a run "
+        "without one.",
     ],
     "inputs": [
         {
@@ -96,9 +97,10 @@ about: dict = {
         {
             "name": "Epitope",
             "explanation": (
-                "Optional. Click residues on the antigen structure; IgGM "
-                "guides design toward them. Positions are handled correctly "
-                "regardless of the PDB's residue numbering."
+                "Required. The antigen residues IgGM should aim the design "
+                "at; it cannot infer them from an antigen-only structure. "
+                "Positions are handled correctly regardless of the PDB's "
+                "residue numbering."
             ),
         },
         {
