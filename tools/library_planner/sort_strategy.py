@@ -29,6 +29,12 @@ from typing import List
 
 VALID_STARTING = ("naive", "immunized", "computational_pool")
 
+# Cells a MACS round is planned to hand to the first FACS round. A
+# cytometer-throughput figure, not a transformation figure: a host that
+# transforms more cells still sorts them through the same instrument, so this
+# does not scale with planner.py::plan_library's yeast_transformation_ceiling.
+MACS_RECOVERY_CELLS = 10 ** 8
+
 
 def _validate(
     target_kd_nm: float, starting_material: str, library_size: int
@@ -81,10 +87,12 @@ def recommend_sort_rounds(
             "method": "MACS",
             "label_concentration_nm": round(max(target_kd_nm * 10.0, 100.0), 2),
             "gate_percent": None,
+            "recovered_pool": MACS_RECOVERY_CELLS,
             "expected_enrichment": "10-100x",
             "notes": (
                 "Magnetic pre-enrichment to compress the library into the "
-                "FACS-tractable range. Recover ~1e8 cells for round 2."
+                f"FACS-tractable range. Recover ~{MACS_RECOVERY_CELLS:.0e} "
+                "cells for round 2."
             ),
         })
 

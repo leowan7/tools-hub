@@ -63,6 +63,120 @@ def test_canonical_vhh_nnk_6_positions_naive_10nm():
     assert plan["library"]["feasible_on_yeast"] is True
 
 
+def test_naive_large_library_gets_macs_first():
+    """A naive library far above 1e8 members must open on a MACS round.
+
+    Principle 3 of the sort_strategy module docstring triggers MACS on
+    ``library_size > 1e8`` for naive material
+    (``tools/library_planner/sort_strategy.py::recommend_sort_rounds``).
+    The planner
+    used to hand that test ``min(functional, yeast_transformation_ceiling)``,
+    and since the ceiling defaults to 1e8 the comparison could never be true,
+    so every plan the tool returned was three FACS rounds. 7 NNK positions is
+    ~2.8e10 stop-free variants, well above the trigger.
+    """
+    plan = plan_library(
+        scaffold="VHH",
+        diversification_positions=7,
+        diversification_scheme="NNK",
+        target_kd_nm=10.0,
+        starting_material="naive",
+    )
+
+    assert plan["library"]["functional_size"] > 1e10
+    rounds = plan["sort_strategy"]
+    assert rounds[0]["method"] == "MACS", (
+        "a naive library of "
+        f"{plan['library']['functional_size']:.2e} members opened on "
+        f"{rounds[0]['method']}; the MACS pre-enrichment exists so the full "
+        "diversity is compressed before the FACS bottleneck"
+    )
+    assert [r["method"] for r in rounds] == ["MACS", "FACS", "FACS", "FACS"]
+    assert "MACS" in plan["summary"]
+
+
+@pytest.mark.parametrize(
+    "ceiling, expected_macs_pool",
+    [
+        (10 ** 8, 10 ** 8),
+        (10 ** 10, 10 ** 8),
+        (5 * 10 ** 7, 5 * 10 ** 7),
+    ],
+)
+def test_macs_round_is_priced_at_its_recovery_not_a_sort_gate(
+    ceiling, expected_macs_pool
+):
+    """The MACS row is priced at what MACS recovers, at any ceiling.
+
+    A MACS round has no sort gate: ``recommend_sort_rounds`` sets
+    ``gate_percent`` to None and instead states the cells it hands to round 2
+    (``sort_strategy.MACS_RECOVERY_CELLS``), a cytometer-throughput figure
+    that does not scale with the transformation ceiling. Two ways to get this
+    wrong, both pinned here:
+
+    * substituting a stand-in gate for the missing one prices the MACS row at
+      that gate AND pushes every FACS round one multiplication deeper,
+      shrinking each of their read budgets by the same factor;
+    * pricing it at the whole sortable library says MACS compressed nothing,
+      and at a raised ceiling overstates every FACS round by the same factor
+      while the round's own ``notes`` still promise ~1e8 cells.
+
+    The third case is the other direction: a flask smaller than the recovery
+    cannot hand on more cells than it holds.
+    """
+    plan = plan_library(
+        scaffold="VHH",
+        diversification_positions=7,
+        diversification_scheme="NNK",
+        target_kd_nm=10.0,
+        starting_material="naive",
+        yeast_transformation_ceiling=ceiling,
+    )
+
+    rounds = plan["sort_strategy"]
+    per_round = plan["ngs_depth"]["per_round"]
+
+    assert rounds[0]["method"] == "MACS"
+    # The NGS pills render beside the sort card, so the numbering has to line
+    # up round for round (templates/library_planner_results.html).
+    assert [r["round"] for r in per_round] == [r["round"] for r in rounds]
+    assert per_round[0]["pool_size"] == expected_macs_pool, (
+        f"the MACS round reports a pool of {per_round[0]['pool_size']:,} "
+        f"at a transformation ceiling of {ceiling:,}; it has no sort gate to "
+        f"shrink the pool by, and its own notes say {rounds[0]['notes']!r}"
+    )
+    assert "1e+08 cells" in rounds[0]["notes"]
+    assert per_round[0]["pool_size"] <= 10 ** 8, (
+        "priced above the cell count the round's own notes promise"
+    )
+
+    pool = float(expected_macs_pool)
+    for sort_round, ngs_round in zip(rounds[1:], per_round[1:]):
+        pool *= sort_round["gate_percent"] / 100.0
+        assert ngs_round["pool_size"] == int(math.ceil(pool))
+        assert ngs_round["recommended_reads"] == int(
+            math.ceil(-ngs_round["pool_size"] * math.log(1 - 0.90))
+        )
+
+
+def test_naive_small_library_skips_macs():
+    """Below the 1e8 trigger a naive library still starts on FACS.
+
+    Pins the other side of the boundary: 5 NNK positions is ~2.9e7 stop-free
+    variants, which is FACS-tractable without a magnetic pre-enrichment.
+    """
+    plan = plan_library(
+        scaffold="VHH",
+        diversification_positions=5,
+        diversification_scheme="NNK",
+        target_kd_nm=10.0,
+        starting_material="naive",
+    )
+
+    assert plan["library"]["functional_size"] < 1e8
+    assert [r["method"] for r in plan["sort_strategy"]] == ["FACS"] * 3
+
+
 def test_infeasible_scfv_nnk_20_positions():
     """20 NNK positions on scFv is infeasible and must trip the hard error.
 
