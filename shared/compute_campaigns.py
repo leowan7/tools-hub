@@ -629,6 +629,11 @@ def single_container_ceiling(tool: str, preset: str = "pilot") -> int:
     return _chunk_size_for(tool, preset)
 
 
+def design_param_key(tool: str) -> Optional[str]:
+    """The form field carrying ``tool``'s design count, or None off ``SUPPORTED_TOOLS``."""
+    return _DESIGN_PARAM_KEY.get(tool)
+
+
 def _scaling_key_for(tool: str) -> str:
     """The params key the wallet estimator scales the per-chunk cost on.
 

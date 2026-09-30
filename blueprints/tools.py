@@ -1785,12 +1785,11 @@ def _run_validate(adapter, overrides=None):
 def _single_container_refusal(tool: str, inputs: dict):
     """Return ``(message, ceiling)`` when the design count needs a campaign, else None."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    if tool not in cc.SUPPORTED_TOOLS:
+    from shared.scale_up import over_ceiling_count  # noqa: PLC0415
+    requested_n = over_ceiling_count(tool, inputs, inputs.get("preset") or "pilot")
+    if requested_n is None:
         return None
-    requested_n = inputs.get("num_designs")
     ceiling = cc.single_container_ceiling(tool)
-    if not (isinstance(requested_n, int) and requested_n > ceiling):
-        return None
     return (
         f"{requested_n} designs is more than one GPU container "
         f"runs for {tool} (max {ceiling} per single job). "
@@ -1939,8 +1938,7 @@ def tool_submit(tool: str):
     # form re-points such submits to the campaign chunker client-side; this
     # catches the JS-off / reuse-token path. Returning here (before
     # create_job) leaves g.wallet_hold_consumed False, so requires_wallet
-    # auto-releases the hold — no money-path change. boltzgen has no
-    # num_designs key (its budget maxes at one chunk), so it is skipped.
+    # auto-releases the hold — no money-path change.
     refusal = _single_container_refusal(tool, inputs)
     if refusal is not None:
         return render_template(

@@ -9,6 +9,13 @@ from typing import Optional
 
 SUGGESTED_COUNT = 100
 
+# Tools whose whole validator range runs as one job, so no count is ever sent to
+# a full-size run. iggm: tools/iggm/__init__.py caps samples at NUM_SAMPLES_MAX,
+# which its MAX_TOTAL_PASSES comment sizes to fit one session. Its campaign
+# ceiling (compute_campaigns._CHUNK_SIZE_OVERRIDE) is a lower, pricing-derived
+# chunk size; gating on it would reprice single runs of 41-100 samples.
+SINGLE_JOB_TOOLS = frozenset({"iggm"})
+
 # tool -> (the input key that carries the candidate count, the most one run takes)
 SCALE_UP: dict[str, tuple[str, int]] = {
     "bindcraft": ("num_designs", 100),
@@ -208,6 +215,30 @@ def full_size_plan(tool: str, count: int, preset: str):  # noqa: ANN201
         return None
 
 
+def over_ceiling_count(tool: str, params: dict, preset: str) -> Optional[int]:
+    """The count in ``params`` when it needs a full-size run, else None.
+
+    The count is read from the tool's full-size design field
+    (``compute_campaigns.design_param_key``: boltzgen's is ``budget``). None
+    for ``SINGLE_JOB_TOOLS``, and when the preset cannot run full-size
+    (``campaign_preset_refusal``), since the single job is then the only
+    route. The submit backstop
+    (blueprints/tools.py::_single_container_refusal) and the form estimate
+    (blueprints/wallet.py::api_wallet_estimate) both call this.
+    """
+    from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+
+    key = cc.design_param_key(tool)
+    if key is None or tool in SINGLE_JOB_TOOLS or campaign_preset_refusal(tool, preset):
+        return None
+    try:
+        count = int(str(params.get(key)).strip())
+    except ValueError:
+        return None
+    return count if count > cc.single_container_ceiling(tool) else None
+
+
 def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
     """The offer for ``job``, or None when there is nothing to offer."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
@@ -235,7 +266,17 @@ def quote(user_id: str, job) -> Optional[ScaleUp]:  # noqa: ANN001
         return None
     preset = job.preset or "pilot"
 
-    if job.tool in cc.SUPPORTED_TOOLS and count > cc.single_container_ceiling(job.tool, preset):
+    split = job.tool in cc.SUPPORTED_TOOLS and count > cc.single_container_ceiling(job.tool, preset)
+    if split and job.tool in SINGLE_JOB_TOOLS:
+        from blueprints.campaigns import campaign_preset_refusal  # noqa: PLC0415
+
+        # iggm maturation runs samples x masked positions passes, so the
+        # validator (MAX_TOTAL_PASSES) refuses this count unless one position
+        # is masked. No offer, as before this exemption.
+        if campaign_preset_refusal(job.tool, preset):
+            return None
+        split = False
+    if split:
         plan = full_size_plan(job.tool, count, preset)
         if plan is None:
             return None
