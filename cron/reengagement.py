@@ -320,8 +320,8 @@ def send_reengagement() -> dict:
 
     A failed sweep read sends nothing and counts one error; the CLI exits
     non-zero on any error. An address Resend refuses counts under
-    ``invalid_recipients``, is not stamped, and is retried next run; if
-    no send succeeded, that also counts one error.
+    ``invalid_recipients``, is not stamped, and is retried next run; two
+    or more refusals with no send and no other error count one error.
     """
     from shared.email import RecipientRejected, send_reengagement_email  # noqa: PLC0415
 
@@ -374,9 +374,11 @@ def send_reengagement() -> dict:
         # email actually failed to go out.
         _stamp_reengagement(cand.user_id, now_iso)
         summary["sent"] += 1
-    if summary["invalid_recipients"] and not summary["sent"]:
-        # Every attempted send refused looks like a sender-side fault
-        # (e.g. an unverified sending domain), not bad addresses.
+    if (summary["invalid_recipients"] >= 2 and not summary["sent"]
+            and not summary["errors"]):
+        # Two or more refusals and no success looks like a sender-side fault
+        # (e.g. an unverified sending domain). One refusal alone is treated
+        # as a bad address, so a single unstamped user cannot fail every run.
         logger.error("reengagement: every attempted send was refused")
         summary["errors"] += 1
     return summary

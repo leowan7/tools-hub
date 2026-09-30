@@ -80,11 +80,12 @@ def test_systemic_failure_still_exits_one(app, monkeypatch, resp):
     assert "invalid_recipients=0 errors=1" in result.output
 
 
-def test_every_address_refused_exits_one(app, monkeypatch):
+@pytest.mark.parametrize("n, code", [(1, 0), (2, 1)])
+def test_every_address_refused(app, monkeypatch, n, code):
     monkeypatch.setattr(reengagement, "find_candidates", lambda now=None: [
-        reengagement.Candidate(user_id="u1", email=REFUSED)])
+        reengagement.Candidate(user_id=f"u{i}", email=REFUSED) for i in range(n)])
     _resend(monkeypatch, _Resp(422, {"name": "validation_error",
                                      "message": MESSAGE_422}))
     result = app.test_cli_runner().invoke(args=["reengagement:send"])
-    assert result.exit_code == 1, result.output
-    assert "sent=0 skipped_no_suggestions=0 invalid_recipients=1 errors=1" in result.output
+    assert result.exit_code == code, result.output
+    assert f"sent=0 skipped_no_suggestions=0 invalid_recipients={n} errors={code}" in result.output
