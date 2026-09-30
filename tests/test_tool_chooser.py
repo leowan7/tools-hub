@@ -13,6 +13,8 @@ restatement of the same table.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import app  # noqa: F401  — populates tools.base._REGISTRY
@@ -590,6 +592,31 @@ class TestChooserRendering:
 
         second = self._get("?asked=1&asked_shape=1&have=target-structure")
         assert "Pick a shape from the second question" in second
+
+    def test_each_prompt_names_the_button_that_is_on_the_page(self):
+        """The button is relabelled between the two questions.
+
+        `comparison.html` renders "Next question" while a shape is
+        still owed and "Show me the tools" otherwise, so a prompt
+        naming the other label sends the visitor looking for a control
+        that is not there.
+        """
+        for query in ("?asked=1", "?asked=1&asked_shape=1&have=target-structure"):
+            body = self._get(query)
+            labels = re.findall(
+                r'<button type="submit"[^>]*>\s*(.*?)\s*</button>', body, re.S
+            )
+            assert len(labels) == 1, f"{query}: {labels}"
+            quoted = "&ldquo;" + labels[0] + "&rdquo;"
+            notes = [
+                n
+                for n in re.findall(
+                    r'<p class="chooser-note">(.*?)</p>', body, re.S
+                )
+                if n.lstrip().startswith("Pick ")
+            ]
+            assert len(notes) == 1, (query, notes)
+            assert quoted in notes[0], (query, labels[0], notes[0])
 
     def test_the_shape_prompt_is_not_shown_where_the_question_is_not_put(self):
         body = self._get("?asked=1&asked_shape=1&have=backbone")
