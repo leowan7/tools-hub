@@ -1028,6 +1028,7 @@ def create_app() -> Flask:
             f"reengagement:send qualified={summary['qualified']} "
             f"sent={summary['sent']} "
             f"skipped_no_suggestions={summary['skipped_no_suggestions']} "
+            f"invalid_recipients={summary['invalid_recipients']} "
             f"errors={summary['errors']}",
             flush=True,
         )
