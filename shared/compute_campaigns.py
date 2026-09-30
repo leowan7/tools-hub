@@ -1441,7 +1441,9 @@ def aggregate_campaign_candidates(
     ``max_rows`` clamp, so ``limit=None`` really is the full set.
 
     Returns ``{"candidates": [...top ``limit``...], "total": int,
-    "columns": [...], "capped": bool, "tool": str}``. Each returned candidate
+    "columns": [...], "capped": bool, "tool": str, "partial_chunks": int,
+    "timeout_chunks": int}``; the last two count kept sub-jobs whose result
+    carries ``partial``, and of those, ``search.status == "timeout"``. Each returned candidate
     is a shallow copy tagged with ``_source_job_id`` / ``_source_chunk`` /
     ``_source_index`` so the merged table can build per-candidate PDB, export,
     and shortlist references back to the child job that produced it.
@@ -1507,9 +1509,16 @@ def aggregate_campaign_candidates(
             best_by_chunk[key] = r
 
     merged: list[dict] = []
+    partial_chunks = timeout_chunks = 0
     for r in best_by_chunk.values():
         job_id = r.get("id")
         chunk = r.get("chunk_index")
+        res = r.get("result")
+        if isinstance(res, dict) and res.get("partial"):
+            partial_chunks += 1
+            search = res.get("search")
+            if isinstance(search, dict) and search.get("status") == "timeout":
+                timeout_chunks += 1
         for local_idx, cand in enumerate(candidate_records(r.get("result"))):
             if not isinstance(cand, dict):
                 continue
@@ -1549,6 +1558,8 @@ def aggregate_campaign_candidates(
         "columns": columns,
         "capped": capped,
         "tool": tool,
+        "partial_chunks": partial_chunks,
+        "timeout_chunks": timeout_chunks,
     }
 
 

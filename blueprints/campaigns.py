@@ -30,6 +30,7 @@ from shared.auth import login_required
 from shared.credits import get_service_client, load_user_context
 from shared.idempotency import idempotent
 from shared.pdb_intake import _parse_preflight_size_params, resolve_target_upload
+from shared.run_notices import campaign_partial_line
 from shared.storage import StorageError, upload_input
 from tools import base as tool_base
 
@@ -816,6 +817,10 @@ def compute_campaign_detail(campaign_id):
         candidates_capped=agg.get("capped", False),
         was_running=not terminal,
         handoff=handoff,
+        partial_notice=campaign_partial_line(
+            campaign, agg.get("total", 0),
+            agg.get("partial_chunks", 0), agg.get("timeout_chunks", 0),
+        ) if terminal else "",
     )
 
 @campaigns_bp.route("/campaigns/<campaign_id>/status.json", methods=["GET"])

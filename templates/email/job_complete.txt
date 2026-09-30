@@ -13,6 +13,10 @@ Top design: {{ top_score_label }} {{ top_score_value }}{% if top_pdb_key %} ({{ 
 {{ cost_line }}
 
 {% endif -%}
+{% for notice in run_notices -%}
+{{ notice }}
+
+{% endfor -%}
 {% if tone == 'success' -%}
 View results: {{ job_url }}
 {%- else -%}

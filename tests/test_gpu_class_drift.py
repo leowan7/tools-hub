@@ -68,6 +68,10 @@ from shared.wallet_estimates import (
     gpu_class_for_job,
 )
 
+# The completion-email test reaches shared.wallet.job_spend_by_hold, which builds a
+# Supabase client; tests/conftest.py refuses a real one without this.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # tools/<dir> -> wallet slug, when the two differ.
