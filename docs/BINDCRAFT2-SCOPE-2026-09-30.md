@@ -1,0 +1,329 @@
+# BindCraft 2 — research and scoping pass
+
+Date: 2026-09-30. Author: hub worker session (research only).
+Scope of this document: research and scoping. **No product code was changed and no GPU job was launched.**
+
+Every claim below names the command, `file:line` or URL that verified it.
+Anything not verified that way is labelled **UNVERIFIED** or **UNKNOWN**.
+
+---
+
+## 0. Recommendation in one line
+
+**Neither replace nor add alongside: keep BindCraft 1 (FreeBindCraft) exactly as it is, and do not start engineering work on BindCraft2 until a written commercial hosting licence from the Pacesa Lab / University of Zurich is in hand** — BindCraft2 ships under a source-available licence whose Hosted Service Restriction names, word for word, what tools.ranomics.com does.
+
+Everything in sections 3 to 5 is contingent on that gate clearing.
+
+---
+
+## 1. The blocker: BindCraft2 is not licensed for what we do
+
+Verified by reading `LICENSE` in the BindCraft2 clone at HEAD `ce3150f8d1132a0c900d66ad8f6d85ec08c9ad17`
+(repo <https://github.com/PacesaLab/BindCraft2>, cloned to the session scratchpad on 2026-09-30).
+
+The file is titled **"BindCraft2 Source-Available License (Hosting-Restricted)"**, copyright Martin Pacesa, University of Zurich. The operative clauses:
+
+- **Hosted Service Restriction** — "You may not, without a separate written commercial license from the copyright holders, provide the Software … to Third Parties as a hosted, managed, cloud, API, web application, workflow platform, or software-as-a-service offering".
+- A second sentence closes the obvious workaround: "Making the Software available to Third Parties as an invocable tool, plugin, agent action, connector, or workflow step within a hosted platform … is treated as provision of a Hosted Service."
+- **Naming Restriction** on the mark "BindCraft2" (UZH trademark) — we could not call the tool that even if we ran it.
+- **Termination**: 30-day cure on written notice; permanent on repeat breach.
+- The licence states of itself that it is **not an Open Source Initiative approved open source licence**.
+
+The third-party carve-outs do not rescue this. The licence lists AlphaFold2 + ColabDesign (Apache-2.0) and ProteinMPNN (MIT) + HyperMPNN as third-party components whose "rights in it, including any right to operate it as a hosted service, derive from its own terms and not from this license." That is a statement that the *dependencies* are free, not the BindCraft2 pipeline code — and the pipeline code is precisely what a hosted tool would be running.
+
+**Contrast with what we run today.** BindCraft 1 is used via the cytokineking FreeBindCraft fork (`llm-proteinDesigner/docker/bindcraft/Dockerfile.modal`, `git clone https://github.com/cytokineking/FreeBindCraft.git`), which carries no hosting restriction. Our current hosting of BindCraft 1 is not affected by the BindCraft2 licence.
+
+**Action, and it is a business action not an engineering one:** Leo (or whoever owns partnerships) writes to the Pacesa Lab / UZH technology transfer office asking the terms of a commercial hosting licence. Until that answer exists, every engineering rung below is dead weight, **including the free CPU-only image build probe** — building an image is not hosting, but spending worker time on a tool we may never be allowed to serve is the waste this document exists to prevent.
+
+---
+
+## 2. What we run today (BindCraft 1)
+
+### 2.1 The image is not reproducible
+
+`llm-proteinDesigner/docker/bindcraft/Dockerfile.modal`:
+
+```
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+RUN git clone --depth 1 https://github.com/cytokineking/FreeBindCraft.git /app/src && ...
+RUN bash /app/install_bindcraft.sh --pkg_manager conda --cuda 12.1 --no-pyrosetta
+RUN pip install --no-cache-dir requests "pydantic>=2,<3"
+```
+
+There is **no tag, no commit pin and no image digest**. `--depth 1` takes whatever FreeBindCraft `master` happens to be at build time, and `install_bindcraft.sh` resolves its own dependency set at build time. The brief asked for "the pinned upstream commit or image digest" — **it does not exist for bindcraft.** The production image is referred to as `kendrew-bindcraft:v7` in the Dockerfile header; what source that digest actually contains is UNKNOWN and could only be recovered by reading the pushed image's config blob (registry-API read; not done in this pass).
+
+This matters for the BC2 decision: we have no baseline we can rebuild, so any "BC2 vs BC1" comparison would compare BC2 against an image we cannot reproduce. Same failure class as the proteina image that could not be rebuilt once `dm-haiku` moved.
+
+### 2.2 Modal wrapper
+
+`llm-proteinDesigner/infrastructure/modal/bindcraft_app.py`:
+
+- `_GPU = "A100-80GB"`
+- `_MAX_SESSION_S = 82800` (23 h — Modal's `@app.function` timeout ceiling)
+- `_PYTHON = "/miniforge3/envs/BindCraft/bin/python"`
+- raw output Volume `ranomics-bindcraft-raw` mounted at `/raw`
+- the subprocess is given `timeout=max(60, _MAX_SESSION_S - 120)`
+
+### 2.3 Container ceilings
+
+`gpu/modal_client.py:312-313`:
+
+```python
+("bindcraft", "pilot"):         7200,
+("bindcraft", "full"):          14400,
+```
+
+**Open anomaly.** `docs/qa/FAILED-RUNS-2026-09-30.md` records job `c43329f3` (2026-09-22) as a **pilot** that failed with "timed out after 14400 s" and burned 14403 GPU-seconds — the **`full`** ceiling, not the pilot 7200. Either the row selection for a `long_running` preset does not use the preset the job was booked under, or the recorded preset is wrong. **UNVERIFIED — not traced in this pass.** It overlaps the territory of the concurrent worker `task_9a3538be` (reconciling bindcraft/boltzgen runtime numbers), so it is reported here rather than fixed. Whoever owns it should start at the `submit` path in `gpu/modal_client.py` and at how a `long_running` preset picks its row.
+
+### 2.4 Wallet estimates and caps
+
+`shared/wallet_estimates.py:360-368`:
+
+```python
+"bindcraft": ToolSpec(slug="bindcraft", gpu_class="A100-80GB",
+    expected_gpu_seconds=3600.0, designs_per_run_baseline=2,
+    scaling_param="num_designs", base_hard_cap_usd=Decimal("8.00"),
+    absolute_cap_usd=Decimal("500.00")),
+```
+
+Rate card `shared/wallet_estimates.py:74`: `"A100-80GB": 0.001028` USD/s raw (= $3.70/GPU-hour). `WALLET_MARKUP = Decimal("1.70")` at `:54` (customer $6.29/GPU-hour). `HOLD_CUSHION_MULTIPLIER = Decimal("1.5")` at `:103`.
+
+### 2.5 The only measured runtime
+
+`docs/VALIDATION-LOG.md`: job `1c4d5803` (2026-05-28) is **the only bindcraft run with recorded GPU seconds** — 1170 GPU-s (19.5 min), 2/2 candidates, hold $4.37 / release $2.33 / net $2.04. The 2026-04-22 4Z18 pilot passed but its GPU seconds were "(not captured)".
+
+So: **one run, one size, one design count.** Every runtime constant downstream rests on it.
+
+### 2.6 Preflight size envelope
+
+`shared/pdb_preflight_rules.py:574+` (`_BINDCRAFT`): A100-80GB, `multi_chain_supported=True`, **`multi_chain_container_ready=False`**, `hotspots_required=True`, `min_target_aa=30`; SizeEnvelope `hard_cap_target_aa=500`, `soft_warn_target_aa=300`, `hard_cap_combined_aa=600`, `runtime_base_min=40.0`, **`runtime_alpha=1.5`**, `runtime_baseline_designs=4`, `cap_basis="literature"`; GapThresholds warn 10 / needs-fix 20 / hotspot distance 5.
+
+`runtime_alpha=1.5` is **explicitly unmeasured** — it cannot be measured from one run at one size. It is pinned by `tests/test_pdb_preflight.py::test_bindcraft_runtime_curve_reproduces_its_one_measured_run`, whose name is itself the admission.
+
+### 2.7 Output and score fields the product expects
+
+- `shared/result_columns.py:26` — `"bindcraft": ["ipTM","pLDDT","RMSD","shape_complementarity","surface_hydrophobicity"]`; `:68` sort `("ipTM","desc")`.
+- `templates/tools/bindcraft_results.html:7` — the same five column names, hard-coded in the partial.
+- `shared/score_legends.py` — bindcraft legends at `:405` (ipTM, good 0.75 / excellent 0.85), `:414` (pLDDT), `:423` (RMSD), `:432` (shape_complementarity, 0.65 "antibody-grade"), `:486` (surface_hydrophobicity, reject > 0.35); the membership set at `:1412` is `{"rfdiffusion","pxdesign","bindcraft"}`.
+- `tools/bindcraft/example/result.json` — top-level keys `candidate_count, candidates, next_steps, runtime_minutes, total_designs_requested`; per-candidate shape `{"pdb_key": "designs/design_001.pdb", "rank": 1, "scores": {...}}` with scores `Hotspot_RMSD, RMSD, SAP, Target_RMSD, i_pAE, ipTM, pLDDT, pTM, shape_complementarity`. Note `pLDDT: 0.81` — **0–1 scale** in the stored record.
+- `tools/bindcraft/__init__.py` (152 lines) — `validate()` accepts only `preset == "pilot"`; chain ids ≤ 4 chars per token; `binder_length_min >= 50`; `binder_length_max <= 150`; `num_designs` 1–500 (default 4). `build_payload()` emits `{target_chain, hotspot_residues, parameters: {binder_length: {min,max}, num_designs}}`.
+- `llm-proteinDesigner/docker/bindcraft/run_pipeline.py` (1639 lines) reads `{output_dir}/Accepted/*.pdb` and `{output_dir}/final_design_stats.csv`, and maps BC1's `Average_*` column names onto our score keys via `_METRIC_MAP`.
+
+### 2.8 Customer-visible strings today
+
+All in `tools/bindcraft/meta.py` (406 lines) unless noted:
+
+- `PRESET_RUNTIME = {"pilot": {"typical_minutes": "30 to 45", "minutes": (30, 45)}}`
+- preset label "Your target, ~30 min start to first results" (`tools/bindcraft/__init__.py`)
+- `paper_citation="Pacesa et al., Nature 2025"`, `github_url="https://github.com/martinpacesa/BindCraft"`
+- `seo_faq` — 3 Q&As, one of which says "roughly 20 to 60 minutes"
+- `about` dict — `what_it_is`, `when_to_use`, `prerequisites`, `inputs`, `runtime_table`, `output_summary` (states ipTM 0.75 credible / 0.85 strong)
+- `PILOT` card — "Trial run: 2 trajectories", `num_designs=2`
+- `EXAMPLE` — job `1c4d5803`, 4ZQK chain A, hotspots 54/56/115, ipTM 0.75/0.76, pLDDT 81, SC 0.64/0.60, RMSD 3.04/2.96 Å, surface hydrophobicity 0.29/0.30, `cost_usd "2.04"`, runtime "20 minutes"
+- `shared/tools_catalog.py:90` — "Make new binders for my target"
+- `shared/tool_chooser.py:114-118` — `_Facts(haves={"target-structure"}, shapes={"mini-protein"})`, with the comparison one-liner quoted in the comment above it
+- templates carrying bindcraft copy (`grep -rln bindcraft templates/`): `components/about_panel.html`, `components/candidate_table.html`, `components/preflight_panel.html`, `components/results_shell.html`, `email/job_complete.html`, `email/send_job_capped.html`, `email/send_overrun_warning.html`, `help/tool_guide.html`, `index.html`, `jobs_compare.html`, `job_detail.html`, `runs/detail.html`, `scout/feasibility.html`, `showcase.html`, `targets/launch.html`, `tools/bindcraft_form.html` (422 lines), `tools/bindcraft_results.html` (27 lines), `tools/comparison.html`
+- SEO surfaces: `docs/seo/AUDIT-2026-09-25.md`, `docs/MARKETING-SURFACE-REWRITE.md`
+
+**Every string in this subsection is a proposal surface only.** Per the brief, the Website SEO lead (session `local_2ace4d20-8705-46f1-8854-8855905923d0`) owns the marketing surfaces and must be told before any of it ships.
+
+### 2.9 The reliability record
+
+`docs/qa/FAILED-RUNS-2026-09-30.md`, bindcraft rows:
+
+| job | date | outcome | GPU-s | cost |
+|---|---|---|---|---|
+| `cd7150c1` | 06-11 | no_progress_timeout | 5015 | $4.37 |
+| `763247f5` | 07-02 | safety_kill, billed | 5012 | $3.63 absorbed |
+| `7eae70ba` | 08-28 | "Failed to download input PDB: HTTP 400" | 11346 | $13.11 |
+| `c43329f3` | 09-22 | "timed out after 14400 s" | 14403 | $12.00 |
+
+`docs/qa/FAILED-RUNS-2026-09-30.md:100-101` attributes $20.00 price + $25.11 Modal = **$45.11** to three of these. Note that `7eae70ba` burned 11346 GPU-seconds *failing to download its input* — that is a wrapper defect, not a BindCraft defect, and BC2 would not fix it.
+
+---
+
+## 3. What BindCraft2 changed upstream
+
+Source: the v1.0.3 clone at HEAD `ce3150f8d1132a0c900d66ad8f6d85ec08c9ad17`. Release v1.0.3 published 2026-09-26 ("Updated scaffold design definitions"); the latest commit on the default branch at clone time was `a8d0f200` (2026-09-29). Repo id 1368271613, org `PacesaLab` — confirmed via the GitHub API. This is a **new repository**, not a v2 tag on `martinpacesa/BindCraft`.
+
+Caution recorded for whoever picks this up: a `WebFetch` of the raw README returned "not stated" for GPU memory, runtime and licence. All three are stated in the repository. Clone it and read the files.
+
+### 3.1 Dependencies and CUDA — better than BC1, and no torch
+
+`pyproject.toml`: `requires-python = ">=3.12"`; runtime deps `jax>=0.11,<0.12`, `dm-haiku`, `optax`, `biotite`, `matplotlib`, `numpy`, `scipy`, `ml_collections`, `absl-py`. Extras `cuda12` / `cuda13` (`jax[cudaXX]` + `cuequivariance-jax` + `cuequivariance-ops-cuXX`) and `rocm`.
+
+**There is no torch dependency at all.** Our most common image-build failure — an unpinned pip pulling torch past the base image, which is what killed the Boltz-2 production image — cannot occur here, because the stack is JAX-only and JAX's CUDA wheels are self-contained. The upper bound `jax<0.12` is a real pin, unlike BC1's `install_bindcraft.sh`.
+
+`containers/Dockerfile`: `FROM ubuntu:24.04`; `pip install -e "/opt/bindcraft[cuda13]"`; `ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility`; `ld.so.conf` entries from `nvidia/*/lib` then `ldconfig -p | grep -q libcupti`; `ARG ALPHAFOLD_PARAMETERS=download-on-first-campaign` (alternative `bake`); build-time verification runs `import jax`, `import bindcraft.proteinmpnn`, `bindcraft --help` and `selfcheck cuda13 --shipped-only`; `ENTRYPOINT ["bindcraft"]`.
+
+The install is **editable and must stay editable** — `settings/` and `scaffolds/` are read from the repo root, not from site-packages.
+
+`install.sh` auto-detects the accelerator from `nvidia-smi`; CUDA 13 requires compute capability ≥ 7.5; it refuses a CPU install outright ("there is no CPU installation… exit 2"). AF2 parameters (5.3 GB) are fetched separately by `bindcraft fetch-weights`; ProteinMPNN weights ship in package data.
+
+### 3.2 GPU memory and worker packing
+
+`docs/source/installation.md:156-190`:
+
+- "A whole-cycle campaign runs up to **seven workers per card**."
+- Per-worker budget: `2.0 × (3.4 GB + 38 kB × N²)` for a padded complex of N residues, with 4 GB of the card left as headroom and 4 GB of *host* RAM per worker.
+- Stated per-worker sizes: 7.1 GB @ 64 residues, 8.0 @ 128, 11.8 @ 256, 18.0 @ 384, 26.7 @ 512.
+- `max_trajectories` must exceed the worker count (`installation.md:160`).
+- Overrides: `BINDCRAFT_WORKERS_PER_GPU`, `BINDCRAFT_MAX_WORKERS_PER_GPU` (8), `BINDCRAFT_DESIGN_WORKERS`, `BINDCRAFT_GPU_IDS`, `BINDCRAFT_WORKER_LAUNCH_STAGGER`; settings `auto_multi_gpu`, `subbatch_size`, `length_bucket_size` (32), `compile_next_length`, `attention_backend`, `use_cueq`.
+- Cluster guidance: "at least one GPU, about 4 cores and 24 GB of host memory per card"; Slurm defaults 1 GPU / 8 cores / 48 GB / 24 h; ~20 GB free disk for the install.
+
+Applying the formula to our current envelope (`hard_cap_combined_aa=600`): `2.0 × (3.4 + 38e-6 × 600²)` = **34.2 GB per worker**. An A100-80GB with 4 GB headroom fits **two** workers at our maximum allowed size, or four at N ≈ 400. Our existing GPU class is adequate; the parallelism is what would have to be tuned, and `BINDCRAFT_WORKERS_PER_GPU` is the knob.
+
+### 3.3 Runtime
+
+The only timing figure stated anywhere in the repository (`docs/source/installation.md`, same section): **"On a GH200 a forty-trajectory campaign took 3620 s at one worker and 2021 s at seven."** That is 90.5 s per trajectory serial, 50.5 s per trajectory wall-clock at seven workers — a 1.79× speedup for 7× the workers.
+
+- Whether BC2 is faster or slower than BC1 **per design**: **UNKNOWN.** A grep across `README.md` and `docs/source/*.md` for "BindCraft 1", "BC1", "previous version", "faster" and "speed" returned nothing comparative.
+- Whether runtime scales linearly with design count: **it does not, and worse, it is not bounded by design count at all.** See 3.4.
+- The GH200 figure transferred to an A100-80GB: **UNVERIFIED.** Different card, different memory bandwidth, different worker packing.
+
+### 3.4 The cost contract changed, and this is the second big risk
+
+BC1 runs a fixed number of trajectories and returns what passes. BC2 does not.
+
+- `README.md:34`: "BC2 continues until it reaches that number, with no limit on design attempts."
+- `settings/core/reference.json:175`: `"max_trajectories": null`.
+- `docs/source/reference.md:118`: "`max_trajectories` | Unset | Optional attempt limit. Leave unset to keep working toward the requested count."
+- `docs/source/design-guide.md:79`: "How many attempts are allowed, note that **a difficult target may need thousands of attempts per design**."
+
+So the default BC2 contract is *unbounded*: run until N designs are accepted, however long that takes. Dropped onto a fixed Modal container ceiling, that is precisely the failure mode that produced $45.11 of refunds on BC1 — a run that burns the whole ceiling and returns nothing. **Any hub integration must set `max_trajectories` explicitly, derive it from the container ceiling, and treat "budget exhausted" as a first-class customer-visible outcome rather than a timeout.** BC2 does emit a distinct message for it (`bindcraft/campaign.py:230-231`, `campaign_budget_exhausted(...)`), which is a real improvement over BC1's silent wall-clock kill — but only if the adapter reads it.
+
+### 3.5 Output layout — a full rewrite of the result reader
+
+`bindcraft/campaign_output.py:30-45`:
+
+```python
+TRAJECTORY_STAGE, REFOLD_STAGE, RANK_STAGE = '1_Trajectories', '2_Refolded', '3_Ranked'
+STAGE_TABLE_NAMES = {TRAJECTORY_STAGE:'!_Trajectories.csv', REFOLD_STAGE:'!_Refolded.csv', RANK_STAGE:'!_Ranked.csv'}
+RANKING_METRIC = 'i_pDAE'
+STRUCTURE_SUFFIXES = ('.cif', '.pdb', '.mmcif', '.ent')
+DESIGN_IDENTITY_COLUMNS = ('rank','trajectory','design','length','outcome')
+LEADING_CONFIDENCE_COLUMNS = (RANKING_METRIC,'i_pTM','pLDDT','pTM','i_pAE','Unbound_Binder_pLDDT','Target_pLDDT')
+```
+
+Every one of these breaks `run_pipeline.py`:
+
+| BC1 (what we read) | BC2 |
+|---|---|
+| `Accepted/*.pdb` | `3_Ranked/<design>_seq<n>[_<target>].cif` |
+| `final_design_stats.csv` | `3_Ranked/!_Ranked.csv` (plus `summary.csv`, `campaign_metadata.json`) |
+| `Average_i_pTM`, `Average_pLDDT`, … | `i_pTM`, `pLDDT`, … — the `Average_` prefix is gone |
+| ranked by ipTM | ranked by **`i_pDAE`** |
+| structures are `.pdb` | structures are **`.cif`** |
+
+Also emitted: `.campaign_state.json`, `workers/worker_<NN>_gpu_<id>.log`. Legacy flat layouts (`accepted.csv`, `ranked.csv`) are still *read* by BC2 but not written by it.
+
+`docs/source/outputs.md` states the scale convention explicitly: CSV `pLDDT` / `i_pTM` / `pTM` are **0–1**, while the structure B-factor column carries per-residue pLDDT on **0–100**. Our stored record is already 0–1 (`tools/bindcraft/example/result.json`), so the CSV side matches — but the `.cif` B-factor side is the same 0–1-versus-0–100 split that has bitten this codebase twice before.
+
+**`shape_complementarity` has no source in BC2.** A grep for `Shape_Complementarity` over `bindcraft/*.py` in the clone returned zero hits, and `bindcraft/rank.py::MODALITY_METRICS` does not list it. Our results column, our score legend at `shared/score_legends.py:432` with its "0.65 antibody-grade" threshold, and the column in the results partial would all have to be removed or sourced elsewhere. `Surface_Hydrophobicity` does survive, but it sits in `ALWAYS_SUPPRESSED_METRICS` (`bindcraft/campaign_log.py:14`), so it is computed and hidden by default.
+
+Downstream consequences already known to this codebase: a `.cif` key flows into the download label (which follows the storage key, not the MIME type) and into the export writers; and the preflight panel has a history of inverting `.cif` handling.
+
+### 3.6 Input contract changed
+
+`examples/pdl1_custom_target.json`:
+
+```json
+{"campaign_name": "...", "project_folder": "...", "modality": "binder",
+ "targets": [{"name": "...", "target_path": "...", "chains": "A", "hotspots": "A54,A56,A66,A115"}],
+ "binder_lengths": [60, 100], "number_of_final_designs": 10, "max_trajectories": 2000}
+```
+
+Changes against the settings dict `run_pipeline.py` builds today:
+
+- `targets` is now a **list of objects**; `starting_pdb` / `chains` / `target_hotspot_residues` become per-target fields inside it
+- `lengths` → `binder_lengths`
+- new `modality` (binder, VHH and others — `bindcraft/rank.py::MODALITY_METRICS`)
+- new `max_trajectories`, `binder_scaffold`, `mutate_positions`
+- `binder_name` / `design_path` are replaced by `campaign_name` / `project_folder`
+- hotspots are now chain-qualified (`A54`), which is strictly better than BC1's bare residue numbers — bare numbers have silently steered the wrong protomer before
+
+The default binder length range for modality `binder` is **60–180**; our `validate()` enforces 50–150. The ranges overlap but do not match.
+
+New acceptance filters, `settings/core/reference.json`: `Unbound_Binder_pLDDT >= 0.8`, `pTM >= 0.55`, `i_pTM >= 0.7`, `i_pAE <= 0.35`, `Backbone_Clashes <= 0`, `Interface_Residues >= 7`, `Off_Paratope_Contact_Fraction` null.
+
+### 3.7 New capability (the upside, for completeness)
+
+Per `README.md`: de novo miniproteins, **scaffolded binders, cyclic peptides, multistate design**, a VHH modality with a `--humanize` property, and named presets carrying both design settings and acceptance filters. A parameter sweep mode exists (`docs/source/reference.md:429-447`). None of this is available in BC1. If the licence clears, this — not speed — is the reason to want BC2.
+
+---
+
+## 4. Replace versus add alongside
+
+**If and only if the licence clears**, the recommendation is **add alongside as a new slug, never replace in place.** Reasons:
+
+1. Replacing in place invalidates the single measured runtime anchor (job `1c4d5803`, 1170 GPU-s), both container ceiling rows, the `expected_gpu_seconds=3600` spec, the whole `SizeEnvelope`, and every bindcraft validation row in `docs/VALIDATION-LOG.md` — with nothing measured to replace them, so the tool would be live on constants known to be wrong. This project has already shipped runtime constants that were stale by 3× and paid for it.
+2. The score set is not a superset. `shape_complementarity` disappears. A customer comparing an old run to a new one under the same tool name would see a column vanish and the ranking metric change from ipTM to `i_pDAE`. Two distinct tools is the honest presentation.
+3. The **Naming Restriction** in the licence means we could not call the new tool "BindCraft2" anyway, so the "same tool, new version" framing is unavailable to us by licence as well as by engineering.
+4. BC1's own headline failures (`7eae70ba`, 11346 GPU-s failing to download its input; the pilot/full ceiling anomaly in §2.3) are **wrapper** defects. They are cheaper to fix in place than to migrate away from, and they would reappear in a BC2 wrapper built on the same scaffolding. Fix those regardless of what happens to BC2.
+
+---
+
+## 5. Cost to validate — cheapest first
+
+Raw Modal A100-80GB cost, `shared/wallet_estimates.py:74` = $0.001028/s = **$3.70/GPU-hour**. Figures below are our raw spend, not customer price. **Every rung is a proposal; Leo approves GPU spend per job. Nothing here has been launched.**
+
+| Rung | What it answers | GPU | Cost | Basis |
+|---|---|---|---|---|
+| **0. Licence** | May we host it at all? | none | $0 | §1. A written answer from Pacesa Lab / UZH TTO. **Blocking — no rung below starts until this clears.** |
+| **1. CPU-only image build probe** | Does the image build, and does JAX import? | none | $0 | `containers/Dockerfile` already runs `import jax`, `import bindcraft.proteinmpnn`, `bindcraft --help` and `selfcheck cuda13 --shipped-only` at build time. Build on a CPU builder with `ALPHAFOLD_PARAMETERS=download-on-first-campaign` so the 5.3 GB of params stay out of the layer. `install.sh` refuses CPU, but the container path does not use `install.sh`. |
+| **2. GPU smoke, no design** | Does CUDA actually initialise on our A100, and can we populate a weights Volume? | 1 × A100-80GB, ~10 min | **~$0.62** | `selfcheck cuda13` plus `bindcraft fetch-weights` into a Modal Volume. Size the Volume from the real download, not the doc figure — a previous weights Volume was off by ~7×. |
+| **3. One minimal campaign** | Does a real campaign complete end to end, and what does the output tree actually look like? | 1 × A100-80GB, ≤30 min | **~$1.85** | Shipped `hPDL1` target, `binder_lengths [60,60]`, `number_of_final_designs 1`, `max_trajectories 5`, one worker. 5 trajectories × 90.5 s (the GH200 figure, `installation.md`) ≈ 450 s plus model load; budget 1800 s at 2× because the GH200 → A100 transfer is UNVERIFIED. Deliverable: the real `3_Ranked/!_Ranked.csv` header, so the column census stops being a grep of upstream source. |
+| **4. Parity pilot** | How does BC2 compare to the one BC1 run we have numbers for? | 1 × A100-80GB, ≤2 h | **~$7.40** | The same input as job `1c4d5803`: 4ZQK chain A, hotspots 54/56/115, 2 designs. `max_trajectories` set so the run cannot exceed the ceiling. Gives the first honest runtime anchor and a like-for-like score comparison. |
+| **5. Size/scaling sweep** | What is `runtime_alpha` really? | 3 × A100-80GB, ≤2 h each | **~$22.20** | Three target sizes across the envelope (≈100 / 300 / 500 aa). The only way to replace the unmeasured `runtime_alpha=1.5`. Defer until the tool is committed to — this rung buys accuracy, not a go/no-go. |
+
+**Ladder through rung 4: ≈ $10 of GPU.** Through rung 5: ≈ $32. The go/no-go decision is fully answered at rung 4.
+
+---
+
+## 6. Work plan, with a gate between each phase
+
+Phase 0 is not engineering, and it gates everything.
+
+**Phase 0 — Licence.** Owner: Leo / partnerships. Output: a written answer from Pacesa Lab / UZH. *Gate: a commercial hosting licence exists in writing. If it does not, stop; the rest of this document is void.*
+
+**Phase 1 — Image.** A new `llm-proteinDesigner/docker/bindcraft2/Dockerfile.modal` derived from upstream `containers/Dockerfile`, **pinned to a commit or tag** (do not repeat the `--depth 1 master` mistake of §2.1). Weights on a Modal Volume, not baked. Run rungs 1 and 2. *Gate: the image builds reproducibly and `selfcheck` passes on a real A100.*
+
+**Phase 2 — Modal app and wrapper.** A new `infrastructure/modal/bindcraft2_app.py` and a new `run_pipeline.py`. The pipeline script is a **rewrite, not an edit** — §3.5 and §3.6 change the input dict, the output tree, the file format and every column name. It must set `max_trajectories` derived from the container ceiling, parse `3_Ranked/!_Ranked.csv`, collect `.cif` structures, and surface `campaign_budget_exhausted` as a distinct outcome. Run rungs 3 and 4. *Gate: a parity pilot returns candidates with a known runtime and a known score set.*
+
+**Phase 3 — Hub plumbing.** In dependency order, all under a new `bindcraft2` slug:
+
+- `tools/bindcraft2/__init__.py` — adapter, `validate()`, `build_payload()`; binder length range reconciled against BC2's 60–180 default
+- `gpu/modal_client.py` — new ceiling rows, measured at rung 4 rather than guessed. **Fix the pilot/full selection anomaly of §2.3 for bindcraft first, since bindcraft2 would inherit it.**
+- `shared/wallet_estimates.py` — a new `ToolSpec` from the rung-4 measurement; `base_hard_cap_usd` and `absolute_cap_usd` set against the unbounded-trajectory risk of §3.4
+- `shared/pdb_preflight_rules.py` — a new `_BINDCRAFT2` envelope; the GPU memory cap derived from the `2.0 × (3.4 GB + 38 kB × N²)` formula rather than from literature; `runtime_alpha` left explicitly unmeasured and labelled so until rung 5
+- `shared/result_columns.py` and `templates/tools/bindcraft2_results.html` — a new column set **without** `shape_complementarity`, sorted by `i_pDAE`
+- `shared/score_legends.py` — new legends for `i_pDAE`, `Unbound_Binder_pLDDT`, `Target_pLDDT` and `Interface_Residues`; thresholds taken from `settings/core/reference.json` (§3.6) and cited there
+- `shared/exports.py` and the download-label path — `.cif` structures, not `.pdb`
+- `tools/bindcraft2/example/result.json` — generated from the rung-4 run, never hand-written
+
+*Gate: a full QC round on the delta (`review-code` plus `review-claims`), and a real run through the live form.*
+
+**Phase 4 — Copy and catalog. Customer-visible; the SEO lead owns it.** `tools/bindcraft2/meta.py` (runtime labels, preset labels, `seo_faq`, `about`, `output_summary` thresholds, `EXAMPLE`), `shared/tools_catalog.py`, `shared/tool_chooser.py`, `templates/tools/comparison.html`, `templates/help/tool_guide.html`, `templates/index.html`, `templates/showcase.html`, and the email templates listed in §2.8. Plus the positioning question nobody has answered yet: **what does a customer choose between bindcraft and bindcraft2, in one sentence?** *Gate: SEO lead sign-off. Nothing in this phase ships without it.*
+
+Every string named in §2.8 and in Phase 4 is **customer-visible**.
+
+---
+
+## 7. UNKNOWNs and UNVERIFIEDs that must be resolved before phase 1
+
+1. **Will UZH grant a commercial hosting licence, and on what terms?** UNKNOWN. Blocking; everything else is contingent on it.
+2. **BC2 runtime per design on an A100-80GB.** UNKNOWN. The only upstream figure is a GH200 40-trajectory campaign. Resolved by rungs 3 and 4.
+3. **BC2 versus BC1 speed.** UNKNOWN. Upstream makes no comparative claim (grepped, §3.3). Resolved by rung 4 against job `1c4d5803`.
+4. **What the real `3_Ranked/!_Ranked.csv` header contains.** Currently read from upstream *source*, not from an actual run. Resolved by rung 3.
+5. **Trajectories needed per accepted design on a representative target.** UNKNOWN, and it is the cost driver — upstream says a difficult target "may need thousands". Without a number, `max_trajectories` and the wallet cap cannot be set honestly. Partly resolved by rung 4; properly only by several runs.
+6. **What replaces `shape_complementarity`,** if anything. A product decision, not a measurement.
+7. **Job `c43329f3` ran 14403 s under a `pilot` booking against a 7200 s pilot ceiling.** UNVERIFIED how the row was selected. Overlaps `task_9a3538be`. Must be understood before any new ceiling row is added.
+8. **What source the current `kendrew-bindcraft:v7` production image actually contains.** UNKNOWN — the Dockerfile does not pin. Recoverable from the registry config blob.
+9. **The actual size of the AF2 parameter download.** Stated as 5.3 GB; a previous weights Volume was off by ~7× against its doc figure. Measure at rung 2.
+10. **Whether `multi_chain_container_ready` would be true for BC2.** UNKNOWN. BC2's `targets` list and chain-qualified hotspots suggest better multi-chain support, but our BC1 flag is `False` and unverified for the same reason — there is no free smoke tier on which to prove it.
+
+---
+
+## 8. What this pass did not do
+
+No product code was changed. No GPU job was launched. No customer-visible string was edited. The BindCraft2 clone lives in the session scratchpad and is not committed.
