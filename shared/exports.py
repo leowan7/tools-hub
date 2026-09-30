@@ -469,6 +469,36 @@ def candidates_to_csv(candidates) -> str:
     return buf.getvalue()
 
 
+def sequences_to_csv(sequences) -> str:
+    """CSV for MPNN's ``result["sequences"]`` (``{seq, score, recovery, ...}``).
+
+    MPNN stores no ``candidates``/``designs``, so :func:`candidates_to_csv`
+    over :func:`shared.jobs.candidate_records` wrote a header and no rows
+    (QA 2026-09-30 P0-3). Columns follow templates/tools/mpnn_results.html --
+    #, Score, Recovery, Sequence -- plus any other scalar the row carries.
+    Rows are coerced, never filtered, so ``rank`` is the page's ``#``.
+    """
+    rows = _dict_candidates(sequences)
+    extra: list[str] = []
+    for row in rows:
+        for k, v in row.items():
+            if (k not in ("seq", "score", "recovery") and k not in extra
+                    and not k.startswith("_") and _is_metric_value(v)):
+                extra.append(k)
+    fields = ["rank", "score", "recovery", *extra, "sequence"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for i, row in enumerate(rows):
+        out = {k: row.get(k) for k in ("score", "recovery", *extra)
+               if _is_metric_value(row.get(k))}
+        out["rank"] = i + 1
+        seq = row.get("seq")
+        out["sequence"] = seq if isinstance(seq, str) else ""
+        writer.writerow(out)
+    return buf.getvalue()
+
+
 def _bar_scope(cand: dict, tool, preset) -> tuple[str, object]:
     """``(tool, mode)`` to judge ONE exported row under.
 
@@ -483,7 +513,50 @@ def _bar_scope(cand: dict, tool, preset) -> tuple[str, object]:
     return (tool or ""), preset
 
 
-def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -> str:
+def _structure_bytes(cand: dict, key: dict, fetch_bytes, default_job_id) -> Optional[bytes]:
+    """A row's structure: inline ``pdb_content_b64`` first, then
+    ``fetch_bytes(job_id, pdb_key)``. Shared by the ZIP and the FASTA
+    structure fallback so the two resolve a row the same way."""
+    data = _decode_b64(cand.get("pdb_content_b64"))
+    job_id = key.get("source_job") or default_job_id
+    if data is None and fetch_bytes is not None and job_id and key["pdb_key"]:
+        data = fetch_bytes(job_id, key["pdb_key"])
+    return data
+
+
+def structure_chain_sequences(data: bytes) -> list[tuple[str, str]]:
+    """``[(chain_id, sequence), ...]`` for the first model of PDB or mmCIF
+    bytes, protein residues only (modified residues mapped by Biopython's
+    extended 3-to-1 table; waters and ligands skipped). ``[]`` on anything
+    that does not parse -- a FASTA fallback, never a reason to fail the file.
+    """
+    from Bio.Data.PDBData import protein_letters_3to1_extended  # noqa: PLC0415
+    from Bio.PDB import MMCIFParser, PDBParser  # noqa: PLC0415
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+        parser = (MMCIFParser(QUIET=True) if text.lstrip().startswith("data_")
+                  else PDBParser(QUIET=True))
+        structure = parser.get_structure("s", io.StringIO(text))
+        model = next(iter(structure), None)
+    except Exception:  # noqa: BLE001 -- see docstring
+        return []
+    out: list[tuple[str, str]] = []
+    for chain in model or []:
+        seq = "".join(
+            protein_letters_3to1_extended.get(res.get_resname().strip(), "")
+            for res in chain
+        )
+        if seq:
+            out.append((str(chain.get_id()), seq))
+    return out
+
+
+def candidates_to_fasta(
+    candidates, sequences=None, *, tool=None, preset=None,
+    fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
+    default_job_id: Optional[str] = None,
+) -> str:
     """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
     output arrives as a separate ``sequences`` list (seq + score + recovery).
@@ -504,8 +577,17 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
     in ``shared.score_legends.MODE_GATE_COLUMNS`` and inert elsewhere; resolve
     it with ``score_legends.resolve_mode``.
 
+    ``fetch_bytes`` (with ``default_job_id``) turns on the STRUCTURE
+    FALLBACK: a row carrying no sequence field is read from its structure --
+    the same bytes :func:`candidates_to_zip` would archive -- and written as
+    one record per protein chain, id suffixed ``_chain<X>``. Every chain,
+    because no per-tool map says which chain is the design, so a complex's
+    target chain repeats once per design. Without ``fetch_bytes`` such a row
+    is skipped as before (the campaign and target routes).
+
     WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
-    ``candidates[0]``, which is the container's ranking key and not its bar --
+    ``candidates[0]`` of the list the route hands over -- page order, via
+    ``shared.jobs.page_ordered_records`` -- which is not the bar --
     on esmfold2-design job 2b917b54 that is the pI 11.95 design the pipeline
     drops. Moving it would fix the leading record and break something worse:
     the CSV and this function take their ``rank`` LABEL from
@@ -539,10 +621,20 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
     lines: list[str] = []
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
-        seq = cand.get("sequence") or cand.get("binder_sequence") or ""
-        if not seq:
-            continue
         key = export_key(cand, i)
+        seq = cand.get("sequence") or cand.get("binder_sequence") or ""
+        if seq:
+            records = [("", seq)]
+        elif fetch_bytes is not None:
+            data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
+            records = [
+                (f"_chain{cid}", chain_seq)
+                for cid, chain_seq in (structure_chain_sequences(data) if data else [])
+            ]
+        else:
+            records = []
+        if not records:
+            continue
         # rank{global}_{tool}_{job8}_{basename}: unique across a merged export,
         # where the old rank+pdb_key pair was not (every tool emits a rank 1
         # and a design_1.pdb). Segments absent from this export are omitted.
@@ -566,9 +658,11 @@ def candidates_to_fasta(candidates, sequences=None, *, tool=None, preset=None) -
                         f" [does not meet bar: {note}]"
                         if verdict.verdict == "below" else f" [{note}]"
                     )
-        lines.append(header)
-        for start in range(0, len(seq), 80):
-            lines.append(seq[start:start + 80])
+        base_id, _, note = header.partition(" ")
+        for suffix, rec_seq in records:
+            lines.append(base_id + suffix + (" " + note if note else ""))
+            for start in range(0, len(rec_seq), 80):
+                lines.append(rec_seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):
         if not isinstance(seq_obj, dict):
             continue
@@ -757,9 +851,7 @@ def candidates_to_zip(
                 elif job_id:
                     prefix = f"{str(job_id)[:8]}/"
             arcname = _safe_arcname(pdb_key, prefix)
-            data = _decode_b64(cand.get("pdb_content_b64"))
-            if data is None and job_id and lookup_key:
-                data = fetch_bytes(job_id, lookup_key)
+            data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
             if data is None:
                 # Read the row, not the archive: a structureless row is not a
                 # miss, and the archive it produces is byte-identical to the

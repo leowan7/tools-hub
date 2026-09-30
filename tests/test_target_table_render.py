@@ -524,7 +524,12 @@ def test_stars_survive_in_target_mode():
 # ---------------------------------------------------------------------------
 
 def test_target_mode_points_exports_at_the_target():
-    html = _multi_tool_table()
+    # With a sequence, so the FASTA link renders (it is hidden on a table no
+    # row of which has one -- tests/test_export_page_parity.py).
+    rows = [dict(r, sequence="MK") for r in
+            ranking.rank_candidates(_two_tool_rows())["rows"]]
+    html = _render(candidates=rows, columns=[], job_id="", tool_slug="",
+                   target_id="t-abc12345", multi_tool=True)
     for fmt in ("csv", "fasta", "zip"):
         assert f"/targets/t-abc12345/export.{fmt}" in html
     assert "/campaigns/" not in html
@@ -736,8 +741,9 @@ def _export_hrefs(html):
 
 
 def test_the_export_links_carry_the_active_sort_mode():
-    html = _render(candidates=[], columns=[], job_id="", tool_slug="",
-                   target_id="t-abc12345", multi_tool=True, sort_mode="tool")
+    html = _render(candidates=[{"sequence": "MK", "scores": {}}], columns=[],
+                   job_id="", tool_slug="", target_id="t-abc12345",
+                   multi_tool=True, sort_mode="tool")
     hrefs = _export_hrefs(html)
     assert len(hrefs) == 3, hrefs
     assert all(h.endswith("?sort=tool") for h in hrefs), hrefs
@@ -747,7 +753,8 @@ def test_the_export_links_carry_the_active_sort_mode():
 def test_no_sort_mode_means_no_query_string():
     """The pair. Appending an unconditional "?sort=" would satisfy the test
     above while sending an empty mode on every campaign and job page."""
-    html = _render(candidates=[], columns=[], job_id="j1", tool_slug="bindcraft")
+    html = _render(candidates=[{"sequence": "MK", "scores": {}}], columns=[],
+                   job_id="j1", tool_slug="bindcraft")
     hrefs = _export_hrefs(html)
     assert len(hrefs) == 3, hrefs
     assert all("?" not in h for h in hrefs), hrefs
