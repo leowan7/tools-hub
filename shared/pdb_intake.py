@@ -109,6 +109,16 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
     rules = TOOL_RULES.get(stored.get("tool_slug"))
     target_aa = size.get("residue_count")
     num_designs = _parse_preflight_size_params(inputs)[1]
+    # A pinned-pool tool's container runs a fixed count whatever the form
+    # said, so the estimate does not need the caller to supply one -- the same
+    # substitution ``shared/pdb_preflight.py::_check_size_envelope`` makes
+    # (``env.runtime_fixed_designs or num_designs``). Without it boltzgen's
+    # form panel showed a figure the result page then dropped: its form field
+    # is ``budget`` (tools/boltzgen/__init__.py:100) and none of the three
+    # keys _parse_preflight_size_params reads is in the validated inputs
+    # stored on the job.
+    if rules is not None:
+        num_designs = rules.size.runtime_fixed_designs or num_designs
     minutes = None
     if rules is not None and isinstance(target_aa, int) and num_designs:
         minutes = round(runtime_estimate_min(rules, target_aa, num_designs), 1)
@@ -162,6 +172,14 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "over_soft_warn": verdict.size_envelope.over_soft_warn,
             "over_hard_cap": verdict.size_envelope.over_hard_cap,
             "over_combined_cap": verdict.size_envelope.over_combined_cap,
+            # A refusal reason of its own, and the only one that is ABOUT
+            # runtime. ``shared/pdb_preflight.py::_check_size_envelope`` clears
+            # over_soft_warn when it fires (:1987-1991), so a panel keyed on
+            # over_soft_warn alone renders a ceiling refusal unhighlighted and
+            # with no runtime line. The server-rendered twin reads it at
+            # templates/components/preflight_panel.html:172 and :186;
+            # static/js/preflight.js reads it for the same two decisions.
+            "over_runtime_ceiling": verdict.size_envelope.over_runtime_ceiling,
             "runtime_estimate_min": (
                 None
                 if verdict.size_envelope.runtime_estimate_min is None

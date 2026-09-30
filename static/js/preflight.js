@@ -171,12 +171,26 @@
       // to the count: a bare residue number is not interpretable, and this is
       // the branch where the user is deciding whether to spend money.
       if (v.size_envelope) {
+        const env2 = v.size_envelope;
+        // Mirrors the READY block of the server twin
+        // (templates/components/preflight_panel.html:73-86): highlight keyed
+        // on over_soft_warn alone, and a runtime line with no refusal clause.
+        // The other three flags are absent from this condition deliberately --
+        // shared/pdb_preflight.py:689-708 returns NEEDS_FIX whenever any of
+        // them is set, so none of them can be true on a verdict that reaches
+        // this branch. The ceiling refusal renders in the needs_fix branch
+        // below. Neither JS block prints the combined-with-binder figures the
+        // twin does (preflight_panel.html:79-82).
         html += `<div class="preflight-meta${
-          v.size_envelope.over_soft_warn ? " preflight-meta--warn" : ""
+          env2.over_soft_warn ? " preflight-meta--warn" : ""
         }">
-          Size envelope: ${v.size_envelope.residue_count} aa target
-          (cap ${v.size_envelope.hard_cap_target_aa} aa on
-          <code>${escapeHtml(v.size_envelope.gpu || "")}</code>).
+          Size envelope: ${env2.residue_count} aa target
+          (cap ${env2.hard_cap_target_aa} aa on
+          <code>${escapeHtml(env2.gpu || "")}</code>).
+          ${env2.runtime_estimate_min
+            ? `<br>Estimated runtime: ≈${env2.runtime_estimate_min} min for
+               ${escapeHtml(env2.runtime_basis || "")}.`
+            : ""}
         </div>`;
         if (v.size_envelope.warn_message) {
           html += `<p class="preflight-warn">${
@@ -251,6 +265,42 @@
           <strong>Try one of these:</strong><br>
           ${escapeHtml(v.suggested_fix)}
         </p>`;
+      }
+      // THE CEILING REFUSAL LANDS HERE, not in the ready branch above:
+      // shared/pdb_preflight.py:689-708 returns NEEDS_FIX whenever
+      // over_runtime_ceiling is set, so a panel that rendered the envelope
+      // only under `kind === "ready"` showed no envelope, no runtime figure
+      // and no highlight on the exact verdict the figure explains. Mirrors the
+      // needs_fix block of the server twin
+      // (templates/components/preflight_panel.html:169-193): the same four
+      // flags, always highlighted, the same runtime sentence.
+      // over_runtime_ceiling has to be in the set because
+      // shared/pdb_preflight.py::_check_size_envelope CLEARS over_soft_warn
+      // when the ceiling fires, so a condition keyed on over_soft_warn alone
+      // leaves the one refusal that is ABOUT runtime as the only one with no
+      // runtime line.
+      const envFail = v.size_envelope;
+      if (
+        envFail &&
+        (envFail.over_hard_cap ||
+          envFail.over_combined_cap ||
+          envFail.over_runtime_ceiling ||
+          envFail.over_soft_warn)
+      ) {
+        html += `<div class="preflight-meta preflight-meta--warn">
+          Size envelope: ${envFail.residue_count} aa target
+          (cap ${envFail.hard_cap_target_aa} aa on
+          <code>${escapeHtml(envFail.gpu || "")}</code>).
+          ${envFail.runtime_estimate_min
+            ? `<br>Estimated runtime: ~${envFail.runtime_estimate_min} min for
+               ${escapeHtml(envFail.runtime_basis || "")}${
+                 envFail.over_runtime_ceiling
+                   ? " — past the limit one GPU run is stopped at, which is " +
+                     "why this one is refused."
+                   : " (advisory only, long runs are supported)."
+               }`
+            : ""}
+        </div>`;
       }
       if (v.alphafold) {
         html += `<div class="preflight-af preflight-af--hard">

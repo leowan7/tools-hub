@@ -25,10 +25,13 @@ WHAT IS PINNED. Three things, each of which was silently wrong before:
     against a 14400s kill.
 
 WHAT IS NOT PINNED, AND IS NOT CLAIMED ANYWHERE. That a run which PASSES the
-gate finishes. Job c43329f3 was estimated at 74.5 min and hit 14400s -- 3.2x
-over -- so the curve's exponent is optimistic somewhere above the one size it
-was fitted at. This gate refuses what provably cannot finish; it does not make
-the estimate trustworthy. Both alphas are unmeasured (one measured target size
+gate finishes. Job c43329f3 was estimated at 74.5 min and hit 14400s -- at
+LEAST 3.2x over, since it was killed rather than finished -- so the curve's
+exponent is optimistic somewhere above the one size it
+was fitted at. This gate refuses what the estimator says cannot finish -- the
+estimator, not a proof: both alphas are fitted on one target size per tool, so
+the boundary itself inherits that uncertainty. It does not make the estimate
+trustworthy in the other direction either. Both alphas are unmeasured (one measured target size
 per tool), and the follow-ups that would close the rest are in
 ``docs/qa/RUNTIME-CEILING-2026-09-30.md``.
 """
@@ -92,9 +95,12 @@ def test_a_run_that_cannot_finish_is_refused(tool, target_aa, num_designs):
     reaches it on both branches, ``blueprints/targets.py`` on the multi-tool
     launch route, and ``preflight_for_tool`` shares ``_check_size_envelope``
     with it. So this pins the VERDICT for all four, but not that each caller
-    asks for it -- a caller that omits ``num_designs`` gets no runtime estimate
-    at all and this test cannot see that. ``blueprints/targets.py`` shipped
-    exactly that hole. One route-level test per money route covers the asking:
+    asks for it -- for a PER-DESIGN tool a caller that omits ``num_designs``
+    gets no runtime estimate at all, and this test cannot see that. (A
+    pinned-pool tool like boltzgen is judged anyway: ``_check_size_envelope``
+    reads ``env.runtime_fixed_designs or num_designs``.)
+    ``blueprints/targets.py`` shipped exactly that hole, and it is a bindcraft
+    hole for exactly that reason. One route-level test per money route covers the asking:
     ``tests/test_campaign_size_gates.py`` and
     ``tests/test_target_multi_launch_routes.py::
     test_a_bindcraft_chunk_that_cannot_finish_is_refused_on_this_route``.
@@ -204,3 +210,78 @@ def test_an_over_cap_refusal_keeps_its_fix_sentence(tool, num_designs):
     assert msg is not None
     assert "Narrow the target region to at most" in msg, msg
 
+
+def test_both_panels_read_the_same_envelope_fields():
+    """The AJAX panel shipped blind to ``over_runtime_ceiling``.
+
+    ``_check_size_envelope`` clears ``over_soft_warn`` when the ceiling fires
+    (``shared/pdb_preflight.py``), so a panel keyed on ``over_soft_warn``
+    renders the one refusal that is ABOUT runtime unhighlighted and with no
+    runtime line. The server twin was updated with the gate and
+    ``shared/pdb_intake.py::_verdict_to_json`` was not, which is the drift the
+    comment at ``static/js/preflight.js`` says the mirror exists to prevent.
+
+    This compares the fields the Jinja twin reads against the keys
+    ``_verdict_to_json`` emits, matched by NAME over its whole source rather
+    than only its size block -- permissive in the other direction (a key from
+    another block would satisfy a template field of the same name), and enough
+    to fail when a field is added to one panel and not the other.
+    """
+    import inspect
+    import re
+    from pathlib import Path
+
+    from shared.pdb_intake import _verdict_to_json
+
+    template = Path("templates/components/preflight_panel.html").read_text(
+        encoding="utf-8"
+    )
+    read_by_template = set(
+        re.findall(r"verdict\.size_envelope\.(\w+)", template)
+    )
+    assert "over_runtime_ceiling" in read_by_template, (
+        "the server twin stopped reading the flag; this test is now vacuous"
+    )
+    emitted = set(re.findall(r'"(\w+)":', inspect.getsource(_verdict_to_json)))
+    assert not (read_by_template - emitted), (
+        "server-rendered panel reads envelope fields the JSON panel never "
+        f"receives: {sorted(read_by_template - emitted)}"
+    )
+
+    # The flag has to be read in the branch that actually receives a ceiling
+    # verdict. A mention anywhere in the file is not enough: the first repair
+    # put the whole envelope block in ``renderVerdict``'s ready branch, where
+    # ``shared/pdb_preflight.py:689-708`` guarantees the flag is false, so the
+    # refusal rendered with no envelope at all while this assertion passed.
+    js = Path("static/js/preflight.js").read_text(encoding="utf-8")
+    needs_fix_at = js.index('v.kind === "needs_fix"')
+    assert "over_runtime_ceiling" in js[needs_fix_at:], (
+        "the JS reads the ceiling flag only before its needs_fix branch, and a "
+        "ceiling refusal is never kind=ready"
+    )
+
+
+def test_a_pinned_pool_tool_keeps_its_runtime_figure_on_the_result_page():
+    """The form panel and the result page have to agree, and did not.
+
+    ``job_preflight_for_display`` re-derives the minutes from the job's stored
+    inputs, and boltzgen's validated inputs carry ``budget`` -- none of the
+    three keys ``_parse_preflight_size_params`` reads. Once the envelope
+    started substituting ``runtime_fixed_designs`` the form panel showed a
+    figure the result page dropped. Nothing in the stored dict below is a
+    design count, which is the point.
+    """
+    from shared.pdb_intake import job_preflight_for_display
+
+    shown = job_preflight_for_display(
+        {
+            "budget": 12,
+            "_preflight": {
+                "tool_slug": "boltzgen",
+                "size_envelope": {"residue_count": 115},
+            },
+        }
+    )
+    assert shown["size_envelope"]["runtime_estimate_min"] == pytest.approx(
+        82.4, abs=0.2
+    )
