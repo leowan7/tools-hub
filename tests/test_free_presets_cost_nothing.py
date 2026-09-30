@@ -110,12 +110,12 @@ def test_every_preset_that_promises_no_charge_estimates_zero(offline_estimator):
 def test_proteina_paid_presets_still_cost(offline_estimator):
     """Control: the zero above is the tier row, not a dead estimator.
 
-    Each of these priced at $12.5827 before the tier row was added and still
-    does; only ``validate`` moved.
+    Each of these priced at the spec's expected_gpu_seconds before the tier
+    row was added and still does ($2.4466 at 1400 s); only ``validate`` moved.
     """
     for preset in ("protein_binder", "ligand_binder", "motif_ame"):
         estimate = estimated_cost_for_tool(None, "proteina", {"preset": preset})
-        assert estimate == Decimal("12.5827"), f"{preset} now estimates ${estimate}"
+        assert estimate == Decimal("2.4466"), f"{preset} now estimates ${estimate}"
 
 
 def test_validate_stays_free_at_any_design_count(offline_estimator):

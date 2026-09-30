@@ -563,8 +563,8 @@ class DesignTarget:
         ``preflight_for_tool``, which only ``/tools/<slug>/submit`` calls — and
         that route refuses anything bigger than one container. So the cap never
         guarded a campaign, which is the shape that spends real money (proteina
-        opens 4 concurrent shards at ~$12.58 each, inside a ~$15/shard hold
-        that covers all of it). Both campaign routes land here.
+        opens 4 concurrent shards that can each bill up to ~$12.58 if they run
+        to the session limit). Both campaign routes land here.
 
         Size ONLY, deliberately. The full preflight also applies a min-residue
         floor, gap rules and hotspot rules; switching those on for campaigns
