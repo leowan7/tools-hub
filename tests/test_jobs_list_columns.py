@@ -206,9 +206,10 @@ def test_the_empty_state_ladder_is_unchanged(client):
     assert "Browse all tools" in html
 
 
-def test_a_settled_charge_is_shown_exactly_as_the_wallet_ledger_records_it(client):
+def test_a_settled_charge_is_shown_at_2dp_as_the_wallet_ledger_shows_it(client):
     start = NOW - timedelta(hours=1)
     job = _job("done-2", "succeeded", hold="80", failure_class="succeeded",
                started=_iso(start), completed=_iso(start + timedelta(minutes=3)))
     row = _row(_render(client, [job], [_tx(80, "-12.5000"), _tx(81, "8.0035", parent=80)]), "done-2")
-    assert "$4.4965" in row
+    assert "$4.50" in row
+    assert "$4.4965" not in row

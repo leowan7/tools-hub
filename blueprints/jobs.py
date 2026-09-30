@@ -493,7 +493,7 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
     pending or running job whose heartbeat ``inputs._progress`` carries a
     positive ``designs_total``.
     """
-    from shared.compute_campaigns import display_cost_usd, display_ledger_usd  # noqa: PLC0415
+    from shared.compute_campaigns import display_cost_usd, display_record_usd  # noqa: PLC0415
     from shared.jobs import _REFUNDED_FAILURE_CLASSES  # noqa: PLC0415
     from shared.wallet import job_spend_by_hold  # noqa: PLC0415
 
@@ -520,14 +520,10 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         ledger = spend.get(_hold_id(job)) if _hold_id(job) else None
         if ledger is not None:
             usd = max(ledger["usd"], 0)
-            # Settled: the exact figure the wallet page prints for this hold
-            # (templates/wallet/transactions.html, display_ledger_usd). Reserved,
-            # or a settled figure finer than 4dp that display_ledger_usd refuses:
-            # round up, as a hold is shown everywhere else.
-            try:
-                spend_text = "$" + (display_ledger_usd(usd) if ledger["settled"] else display_cost_usd(usd))
-            except ValueError:
-                spend_text = "$" + display_cost_usd(usd)
+            # Settled: rendered as the wallet page renders a ledger row
+            # (templates/wallet/transactions.html, display_record_usd). Reserved:
+            # round up, as the unsettled line on the failed-run page does.
+            spend_text = display_record_usd(usd) if ledger["settled"] else "$" + display_cost_usd(usd)
             if not ledger["settled"]:
                 spend_note = "reserved"
             elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
@@ -797,27 +793,21 @@ def _failure_money(user_id: str, job) -> "str | None":  # noqa: ANN001
     hold = wallet.get("hold_tx_id") if isinstance(wallet, dict) else None
     if not hold:
         return None
-    from shared.compute_campaigns import display_cost_usd, display_ledger_usd  # noqa: PLC0415
+    from shared.compute_campaigns import display_cost_usd, display_record_usd as _usd  # noqa: PLC0415
     from shared.wallet import job_spend_by_hold  # noqa: PLC0415
 
     ledger = job_spend_by_hold(user_id, [str(hold)]).get(str(hold))
     if ledger is None:
         return None
 
-    def _usd(value) -> str:  # noqa: ANN001
-        try:
-            return "$" + display_ledger_usd(value)
-        except ValueError:
-            return "$" + display_cost_usd(value)
-
     usd, held = max(ledger["usd"], 0), ledger.get("held") or 0
     if not ledger["settled"]:
-        return f"{_usd(usd)} is still on hold for this run and has not been settled yet."
+        return f"${display_cost_usd(usd)} is still on hold for this run and has not been settled yet."
     if usd == 0:
         if held > 0:
             return f"The {_usd(held)} hold was returned to your wallet in full. You were not charged for this run."
         return "You were not charged for this run."
-    if held > usd:
+    if _usd(held) != _usd(usd) and held > usd:
         return (f"You were charged {_usd(usd)} for the GPU time this run used. "
                 f"The rest of the {_usd(held)} hold was returned to your wallet.")
     return f"You were charged {_usd(usd)} for the GPU time this run used."

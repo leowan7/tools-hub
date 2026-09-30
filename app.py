@@ -672,7 +672,10 @@ def create_app() -> Flask:
     #
     #   display_cost_usd     costs, holds, spend, required top-up   -> UP
     #   display_balance_usd  balances, caps, thresholds             -> DOWN
-    #   display_ledger_usd   historical rows that must reconcile    -> EXACT
+    #   display_ledger_usd   exact stored figure (form values, staff) -> EXACT
+    #   display_record_usd   customer-facing ledger rows, job spend,
+    #                        returned holds; "$" and sign included     -> HALF-UP
+    #                        (balance=True: "Balance after" cells)     -> DOWN
     #
     # A cap rounds DOWN with the balances: a cap shown above its real value
     # overstates the headroom, which is the same error as overstating a balance.
@@ -681,6 +684,9 @@ def create_app() -> Flask:
     )
     flask_app.jinja_env.globals["display_ledger_usd"] = (
         _compute_campaigns.display_ledger_usd
+    )
+    flask_app.jinja_env.globals["display_record_usd"] = (
+        _compute_campaigns.display_record_usd
     )
 
     # Inject Workspace context into every template so the shared header

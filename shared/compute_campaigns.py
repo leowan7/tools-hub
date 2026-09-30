@@ -411,6 +411,30 @@ def display_ledger_usd(value) -> str:  # noqa: ANN001
     return str(two if two == amount else four)
 
 
+def display_record_usd(value, balance: bool = False) -> str:  # noqa: ANN001
+    """A customer-facing past amount, "$" and sign included: "−$0.98", "$15.00".
+
+    For records (ledger rows, a job's spend, a returned hold), not decisions,
+    so it rounds half-up to 2dp rather than picking a direction. A non-zero
+    amount that would print as $0.00 prints as "<$0.01" instead. Rows rounded
+    this way can be a cent off reconciling; ``display_ledger_usd`` keeps the
+    exact figure for form values and staff pages.
+
+    ``balance=True`` rounds DOWN instead, as ``display_balance_usd`` does, so
+    a "Balance after" cell of a cent or more is not printed above the real
+    balance (tests/test_money_display_surfaces.py, 9.9960 -> $9.99).
+    """
+    amount = Decimal(str(value))
+    if not amount.is_finite():
+        raise ValueError(f"cannot display a non-finite amount: {value!r}")
+    sign = "−" if amount < 0 else ""
+    rounding = ROUND_FLOOR if balance else ROUND_HALF_UP
+    two = abs(amount.quantize(Decimal("0.01"), rounding=rounding))
+    if two == 0 and amount != 0:
+        return f"{sign}<$0.01"
+    return f"{sign}${two}"
+
+
 def display_total_usd(displays: Iterable[str]) -> str:
     """The 2dp total of a column of amounts that are ALREADY displayed at 2dp.
 

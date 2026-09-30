@@ -247,6 +247,14 @@
       {% endif %}
       <main>
         <div class="app-container">
+          {% if clone_missing %}
+            <div role="status" data-clone-missing style="margin: 1rem 0; padding: 0.85rem 1rem; border-left: 3px solid #f59e0b; background: rgba(245, 158, 11, 0.08); border-radius: var(--radius-sm);">
+              <strong style="color: var(--text-primary);">Some settings from your earlier run could not be restored.</strong>
+              <div style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.35rem;">
+                Fill these in again before you submit: {{ clone_missing | join(", ") }}.
+              </div>
+            </div>
+          {% endif %}
           {% block content %}{% endblock %}
         </div>
       </main>
