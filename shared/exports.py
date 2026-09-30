@@ -661,7 +661,7 @@ def candidates_to_fasta(
                         f" [does not meet bar: {note}]"
                         if verdict.verdict == "below" else f" [{note}]"
                     )
-        # Suffix after the id, before any note; the id can hold a space.
+        # Chain suffix goes after the id, before any note.
         for suffix, rec_seq in records:
             lines.append(base_id + suffix + header[len(base_id):])
             for start in range(0, len(rec_seq), 80):

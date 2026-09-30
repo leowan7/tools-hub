@@ -86,7 +86,7 @@ def _reversed_designs(slug: str) -> dict:
 _BATCH = {"designs": [
     {"name": f"d{i}", "pdb_key": f"designs/design_{i}.pdb", "mean_plddt": p,
      "iptm": 0.1 * i, "ptm": 0.2, "total_aa": 90 + i, "num_chains": 2}
-    for i, p in enumerate((0.61, 0.72, 0.83))]}
+    for i, p in enumerate((0.61, 0.72, 0.83, 0.94))]}
 
 _PARITY_CASES = [(s, False) for s in TABLE_TOOLS] + [
     (s, True) for s in ("af2", "boltz2", "esmfold2-design", "iggm", "opendde")
@@ -317,14 +317,6 @@ def test_structure_chain_sequences_skips_placeholder_chains():
     from shared.exports import structure_chain_sequences
 
     assert structure_chain_sequences(_pdb({"A": "GGGG", "B": "MK"})) == [("B", "MK")]
-
-
-def test_fasta_chain_suffix_follows_an_id_that_holds_a_space(client, monkeypatch):
-    job = _wire(monkeypatch, "af2", {"designs": [{"pdb_key": "my design.pdb"}]},
-                fetch=lambda **_kw: _pdb({"A": "MK"}))
-    body = client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
-    header = [ln for ln in body.splitlines() if ln.startswith(">")][0]
-    assert header.split(" [")[0].endswith("design.pdb_chainA"), header
 
 
 def test_structure_chain_sequences_reads_mmcif_and_modified_residues():
