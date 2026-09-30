@@ -316,12 +316,13 @@ def send_reengagement() -> dict:
     Summary shape::
 
         {"qualified": N, "sent": M, "skipped_no_suggestions": K,
-         "errors": L}
+         "invalid_recipients": R, "errors": L}
 
     A failed sweep read sends nothing and counts one error; the CLI exits
-    non-zero on any error.
+    non-zero on any error. An address Resend refuses counts under
+    ``invalid_recipients``, is not stamped, and is retried next run.
     """
-    from shared.email import send_reengagement_email  # noqa: PLC0415
+    from shared.email import RecipientRejected, send_reengagement_email  # noqa: PLC0415
 
     base_url = os.environ.get(
         "PUBLIC_BASE_URL", "https://tools.ranomics.com"
@@ -333,6 +334,7 @@ def send_reengagement() -> dict:
         "qualified": 0,
         "sent": 0,
         "skipped_no_suggestions": 0,
+        "invalid_recipients": 0,
         "errors": 0,
     }
     try:
@@ -354,6 +356,9 @@ def send_reengagement() -> dict:
                 candidate=cand,
                 base_url=base_url,
             )
+        except RecipientRejected:
+            summary["invalid_recipients"] += 1
+            continue
         except Exception:
             logger.warning(
                 "reengagement: send raised for user %s",
