@@ -59,6 +59,7 @@ from shared.wallet import (
     top_up_wallet,
     wallet_preflight,
 )
+from shared.wallet_estimates import MIN_CHARGE_USD
 
 
 USER_A = "00000000-0000-0000-0000-000000000001"
@@ -831,15 +832,18 @@ def test_settle_hold_releases_surplus_on_below_estimate(store):
     # Use bindcraft so a $0.50 hold sits well below the $8 base cap.
     hold_id = reserve_hold(USER_A, "bindcraft", 1, Decimal("0.50"), {})
     assert hold_id is not None
-    # Actual is 0.10
+    # 10 s on L4 prices at $0.0040, raised to the $0.05 minimum charge.
     settle_hold(hold_id, gpu_seconds=10, gpu_class="L4", params={})
     wallet_row = next(
         r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
     )
     balance = Decimal(str(wallet_row["balance_usd"]))
-    # Original $100 minus actual charge for 10s on L4 (times markup)
-    expected_actual = (Decimal("10") * Decimal(str(GPU_USD_PER_SECOND["L4"]))
-                       * WALLET_MARKUP).quantize(Decimal("0.0001"))
+    # Original $100 minus actual charge for 10s on L4 (times markup, floored)
+    expected_actual = max(
+        (Decimal("10") * Decimal(str(GPU_USD_PER_SECOND["L4"]))
+         * WALLET_MARKUP).quantize(Decimal("0.0001")),
+        MIN_CHARGE_USD,
+    )
     assert balance > Decimal("99")
     assert balance == (Decimal("100.00") - expected_actual).quantize(
         Decimal("0.0001")

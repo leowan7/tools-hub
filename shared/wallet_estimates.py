@@ -53,6 +53,18 @@ logger = logging.getLogger(__name__)
 # not pull in the full wallet module at import time.
 WALLET_MARKUP = Decimal("1.70")
 
+# Smallest amount a paid run is charged or quoted. Leo's number (2026-09-30);
+# before it, a 12 GPU-s A10G run debited $0.0042 and the email's two-decimal
+# line showed "charged $0.00". shared.wallet.compute_charge_usd applies it, so
+# settle and the completion email agree; estimated_cost_for_tool applies it so
+# no quote sits below the charge.
+MIN_CHARGE_USD = Decimal("0.05")
+
+
+def apply_min_charge(usd: Decimal) -> Decimal:
+    """Raise a positive amount to ``MIN_CHARGE_USD``; leave 0 at 0."""
+    return max(usd, MIN_CHARGE_USD) if usd > 0 else usd
+
 # Modal GPU rate card (USD per second). Copied verbatim from
 # :mod:`shared.workspaces` so this module does not depend on the legacy
 # Workspace code. See the comment in :data:`shared.wallet.GPU_USD_PER_SECOND`.
@@ -848,7 +860,7 @@ def estimated_cost_for_tool(
     scaled_seconds = _scale_seconds(base_seconds, spec, params)
     rate = Decimal(str(GPU_USD_PER_SECOND.get(spec.gpu_class, DEFAULT_USD_PER_SECOND)))
     raw_usd = Decimal(str(scaled_seconds)) * rate
-    marked_up = raw_usd * WALLET_MARKUP
+    marked_up = apply_min_charge(raw_usd * WALLET_MARKUP)
 
     scaled_cap = compute_hard_cap(tool_slug, params)
     estimate = min(marked_up, scaled_cap)

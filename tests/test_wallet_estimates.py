@@ -139,6 +139,15 @@ class _FakeClient:
 
 
 @pytest.fixture
+def no_min_charge(monkeypatch):
+    """mpnn's baseline prices under MIN_CHARGE_USD, so the floor would hide
+    which seconds source was used. Tests that pin that choice turn it off."""
+    import shared.wallet_estimates as we  # noqa: PLC0415
+
+    monkeypatch.setattr(we, "MIN_CHARGE_USD", Decimal("0"))
+
+
+@pytest.fixture
 def patched_client():
     """Patch :func:`shared.credits.get_service_client` with a stub.
 
@@ -186,7 +195,7 @@ def test_fallback_uses_expected_gpu_seconds_when_no_history(patched_client):
     assert estimate == expected
 
 
-def test_fallback_when_sample_size_below_min(patched_client):
+def test_fallback_when_sample_size_below_min(patched_client, no_min_charge):
     """A small sample size is treated as no history."""
     patched_client(job_rows(MIN_HISTORICAL_RUNS - 1, 999.0, 8))
     estimate = estimated_cost_for_tool(None, "mpnn", {"preset": "pilot"})
@@ -204,7 +213,7 @@ def test_fallback_when_sample_size_below_min(patched_client):
 # ---------------------------------------------------------------------------
 
 
-def test_uses_historical_p90_when_sample_large_enough(patched_client):
+def test_uses_historical_p90_when_sample_large_enough(patched_client, no_min_charge):
     """A baseline-sized sample prices at its own p90."""
     spec = TOOL_SPECS["mpnn"]
     # Every row is a baseline-sized run (num_seq_per_target = 8), so the
@@ -557,7 +566,7 @@ def test_percentile_matches_percentile_cont(patched_client):
 # ---------------------------------------------------------------------------
 
 
-def test_tier_without_override_falls_through_to_default(patched_client):
+def test_tier_without_override_falls_through_to_default(patched_client, no_min_charge):
     """A preset with no per-tier override uses p90/expected_gpu_seconds."""
     patched_client(None)
     spec = TOOL_SPECS["mpnn"]  # no tier_gpu_seconds entries
