@@ -181,6 +181,48 @@ def candidate_records(result: Optional[dict]) -> list:
     return []
 
 
+# The raw ``designs`` key each results partial sorts on when it has no stored
+# ``candidates`` to show, as (key, descending). Mirrors the ``sort_by_number``
+# line in templates/tools/<tool>_results.html; held level with it by
+# tests/test_export_page_parity.py, which renders each page and compares.
+_DESIGNS_PAGE_SORT: dict[str, tuple[str, bool]] = {
+    "af2": ("mean_plddt", True),
+    "colabfold": ("mean_plddt", True),
+    "esmfold": ("mean_plddt", True),
+    "boltz2": ("iptm", True),
+    "esmfold2-design": ("iptm", True),
+    "iggm": ("n_epitope_contacts", True),
+    "opendde": ("rank", False),
+}
+
+
+def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
+    """:func:`candidate_records` in the order the job page lists them.
+
+    Non-empty stored ``candidates`` are shown as stored; otherwise the page
+    shows ``designs`` re-sorted (the ``recovered or candidates`` line in each
+    partial), so an export numbering the stored list called a different design
+    "rank 1" than the page did (QA 2026-09-30 P1-2). An EMPTY ``candidates``
+    beside a non-empty ``designs`` is read the page's way too, where
+    :func:`candidate_records` would return ``[]``. No row is dropped.
+    """
+    from shared.ranking import sort_by_number  # noqa: PLC0415
+
+    normalized = _normalize_result_shape(result)
+    if not isinstance(normalized, dict):
+        return []
+    stored = normalized.get("candidates")
+    if is_candidate_array(stored) and len(stored) > 0:
+        return list(stored)
+    designs = normalized.get("designs")
+    if not is_candidate_array(designs):
+        return candidate_records(result)
+    spec = _DESIGNS_PAGE_SORT.get(tool or "")
+    if spec is None:
+        return list(designs)
+    return sort_by_number(designs, spec[0], reverse=spec[1])
+
+
 def candidate_count(result: Optional[dict]) -> Optional[int]:
     """How many per-candidate records a result carries, or ``None`` when the
     shape does not say.

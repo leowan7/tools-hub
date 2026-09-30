@@ -1475,23 +1475,46 @@ def job_share(job_id: str):
 # Export routes — /jobs/<id>/export.{csv,fasta,zip}
 # ------------------------------------------------------------------
 
+def _storage_fetcher(user_id: str, route: str):
+    """``fetch_bytes`` for the shared/exports.py serializers: a design's
+    stored structure, or None on a StorageError (logged, not raised)."""
+    def _fetch(src_job_id: str, filename: str):
+        try:
+            return download_output(
+                user_id=user_id, job_id=src_job_id, filename=filename,
+            )
+        except StorageError:
+            logger.warning(
+                "%s: storage miss for %s/%s",
+                route, src_job_id, filename, exc_info=True,
+            )
+            return None
+    return _fetch
+
+
 @jobs_bp.route("/jobs/<job_id>/export.csv", methods=["GET"])
 @login_required
 def export_csv(job_id: str):
     from flask import Response  # noqa: PLC0415
-    from shared.exports import candidates_to_csv  # noqa: PLC0415
+    from shared.exports import candidates_to_csv, sequences_to_csv  # noqa: PLC0415
+    from shared.jobs import is_candidate_array, page_ordered_records  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
-    # candidate_records, not a raw ["candidates"] read: the designs-only tools
-    # (af2/colabfold/esmfold/boltz2/iggm) persist rows under "designs" and
-    # would otherwise export a header-only CSV.
-    candidates = candidate_records(job.result)
+    # page_ordered_records, not a raw ["candidates"] read: the designs-only
+    # tools (af2/colabfold/esmfold/boltz2/iggm) persist rows under "designs",
+    # and their pages re-sort them, so rank N here is row N on the page.
+    candidates = page_ordered_records(job.tool, job.result)
+    sequences = (job.result or {}).get("sequences")
+    if not candidates and is_candidate_array(sequences):
+        body = sequences_to_csv(sequences)      # mpnn
+    else:
+        body = candidates_to_csv(candidates)
     return Response(
-        candidates_to_csv(candidates),
+        body,
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_scores.csv"},
     )
@@ -1512,11 +1535,14 @@ def export_fasta(job_id: str):
     # says so in its own record rather than sitting at rank1 unmarked. Mode
     # off the result first, stored preset as the fallback -- the order every
     # other surface on this tool resolves it in.
+    from shared.jobs import page_ordered_records  # noqa: PLC0415
     body = candidates_to_fasta(
-        candidate_records(job.result),
+        page_ordered_records(job.tool, job.result),
         sequences=result.get("sequences", []),
         tool=job.tool,
         preset=score_legends.resolve_mode(job.tool or "", job.result, job.preset),
+        fetch_bytes=_storage_fetcher(ctx.user_id, "export_fasta"),
+        default_job_id=job_id,
     )
     if not body:
         body = "# No sequences found in this job's output.\n"
@@ -1756,23 +1782,12 @@ def export_zip(job_id: str):
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
-    candidates = candidate_records(job.result)
-
-    def _fetch(src_job_id: str, filename: str):
-        try:
-            return download_output(
-                user_id=ctx.user_id, job_id=src_job_id, filename=filename,
-            )
-        except StorageError:
-            logger.warning(
-                "export_zip: storage miss for %s/%s",
-                src_job_id, filename, exc_info=True,
-            )
-            return None
-
+    from shared.jobs import page_ordered_records  # noqa: PLC0415
+    candidates = page_ordered_records(job.tool, job.result)
     report: dict = {}
     data = candidates_to_zip(
-        candidates, _fetch, default_job_id=job_id, report=report,
+        candidates, _storage_fetcher(ctx.user_id, "export_zip"),
+        default_job_id=job_id, report=report,
     )
     # 409 and not 404: the job exists and is the caller's, and its designs
     # exist as records -- only the stored bytes are unreachable. 404 is the
