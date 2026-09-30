@@ -50,6 +50,18 @@
   // other tool's form, and a null appends nothing, so their requests are
   // unchanged byte for byte.
   const contigInput = form.querySelector('input[name="target_input"]');
+  // The design count decides ADMISSION now, not just an advisory number:
+  // _check_size_envelope refuses bindcraft when the count puts the estimate
+  // past runtime_ceiling_s, and bindcraft is the only per-design tool with a
+  // ceiling (shared/pdb_preflight_rules.py:669). The panel used to post no
+  // count at all, so /preflight saw num_designs=None, left the estimate None
+  // and answered "ready" for a 100-trajectory run that submit then refused.
+  // Both names _parse_preflight_size_params reads off a form
+  // (_parse_preflight_size_params in shared/pdb_intake.py); five forms
+  // ship one of them.
+  const designsInput = form.querySelector(
+    '[name="num_designs"], [name="designs_per_shard"]'
+  );
   // boltz2 carries a binder_sequences textarea; we forward the longest
   // binder to the preflight endpoint so the live total-complex size check
   // matches the submit-side gate (which sees the validated sequences).
@@ -413,6 +425,8 @@
     if (hotspotInput)
       fd.append("hotspot_residues", hotspotInput.value || "");
     if (contigInput) fd.append("target_input", contigInput.value || "");
+    if (designsInput && designsInput.value)
+      fd.append(designsInput.name, designsInput.value);
   }
 
   function appendBinderFields(fd) {

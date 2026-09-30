@@ -1,8 +1,11 @@
 """The runtime reconciliation: what one GPU container is stopped at vs what we start.
 
-WHY THIS FILE EXISTS. Paid runs failed through our fault in September and were
-refunded in full, every one of them on wall-clock -- the QA brief calls it six
-runs and names five by job id
+WHY THIS FILE EXISTS. Paid runs failed through our fault in September. The QA
+brief calls it six runs and names five by job id; of those five, THREE died on
+the pipeline's own wall-clock (``c43329f3``, ``dd7eaf99``, ``b5707a1d``) and
+were refunded in full, which is the class this file is about. The other two are
+different mechanisms and are not addressed here: a no-progress timeout
+(refunded) and a safety kill that absorbed $3.63
 (``docs/qa/RUNTIME-CEILING-2026-09-30.md`` section 1). Nothing in the hub had ever compared
 the runtime a job would take against the timeout the pipeline actually enforces:
 ``gpu/modal_client.py``'s PRESET_CAPS is never sent in the Modal payload, the
@@ -255,7 +258,12 @@ def test_both_panels_read_the_same_envelope_fields():
     # refusal rendered with no envelope at all while this assertion passed.
     js = Path("static/js/preflight.js").read_text(encoding="utf-8")
     needs_fix_at = js.index('v.kind === "needs_fix"')
-    assert "over_runtime_ceiling" in js[needs_fix_at:], (
+    # Bounded at the far end too: `if (!html)` is the first statement after the
+    # kind branches close, so the slice is the needs_fix branch and nothing
+    # else. Slicing to end-of-file would pass on a mention in any later
+    # function.
+    branch_end = js.index("if (!html) {", needs_fix_at)
+    assert "over_runtime_ceiling" in js[needs_fix_at:branch_end], (
         "the JS reads the ceiling flag only before its needs_fix branch, and a "
         "ceiling refusal is never kind=ready"
     )
@@ -285,3 +293,103 @@ def test_a_pinned_pool_tool_keeps_its_runtime_figure_on_the_result_page():
     assert shown["size_envelope"]["runtime_estimate_min"] == pytest.approx(
         82.4, abs=0.2
     )
+
+
+def test_the_ceiling_refusal_names_one_lever_not_two():
+    """Reason and fix disagreed about which knob to turn.
+
+    ``_check_size_envelope``'s per-design branch says "Ask for at most N designs
+    against a target this size" whenever ``max_designs_within_ceiling`` finds a
+    count that fits. The fix line was clamped to the RESIDUE inverse on every
+    ceiling refusal regardless, so bindcraft at 115 aa / 100 designs asked for
+    at most 25 designs and then to keep the target at or under 46 residues --
+    40% of a target it runs happily at 25. Following it works, which is why this
+    is copy rather than a dead end, but the two lines have to name the same
+    lever.
+    """
+    from shared.pdb_preflight import _check_size_envelope, preflight_for_tool
+    from tests.test_pdb_preflight import _chain_pdb
+
+    rules = TOOL_RULES["bindcraft"]
+    env = _check_size_envelope(rules, 115, binder_max_aa=None, num_designs=100)
+    assert env.over_runtime_ceiling
+    fits_n = max_designs_within_ceiling(rules, 115)
+    assert fits_n >= 1
+    assert f"at most {fits_n} designs" in env.hard_fail_message
+    # The residue inverse at this count is far below the target, so a fix line
+    # clamped to it is the contradiction.
+    tight_aa = largest_target_aa_within_ceiling(rules, 100)
+    assert tight_aa < 115
+
+    verdict = preflight_for_tool(
+        "bindcraft", _chain_pdb("A", range(1, 116)),
+        target_chain="A", hotspots=[], num_designs=100,
+    )
+    assert verdict.kind.value == "needs_fix"
+    assert f"at most {fits_n} designs" in verdict.reason
+    assert f"{tight_aa} residues" not in verdict.suggested_fix, (
+        "the fix demands a target smaller than one the reason says this count "
+        f"runs on: {verdict.suggested_fix}"
+    )
+
+
+def test_a_revived_runtime_figure_brings_its_own_basis():
+    """Reviving the minutes without the basis printed "82.4 min for None".
+
+    ``job_preflight_for_display`` substitutes the pinned pool so a boltzgen job
+    gets an estimate. A job stored before that substitution existed has BOTH
+    ``runtime_estimate_min`` and ``runtime_basis`` as None, and
+    ``templates/components/preflight_panel.html`` interpolates the basis
+    directly with no Jinja ``finalize`` hook, so the literal string "None"
+    reached the page.
+    """
+    from shared.pdb_intake import job_preflight_for_display
+
+    env = job_preflight_for_display(
+        {
+            "budget": 12,
+            "_preflight": {
+                "tool_slug": "boltzgen",
+                "size_envelope": {
+                    "residue_count": 115,
+                    "runtime_estimate_min": None,
+                    "runtime_basis": None,
+                },
+            },
+        }
+    )["size_envelope"]
+    assert env["runtime_estimate_min"] is not None
+    assert env["runtime_basis"] == "200 designs"
+
+
+def test_the_panel_posts_the_count_that_now_decides_admission():
+    """The panel answered "ready" for a run submit refuses.
+
+    ``/preflight`` parses the design count out of the posted form
+    (``shared/pdb_intake.py::_parse_preflight_size_params``), and the panel's
+    ``appendTargetFields`` posted only chain, hotspots and contig. So the panel
+    always saw ``num_designs=None``, left the estimate None and could not reach
+    the ceiling branch -- while submit refused a 100-trajectory bindcraft run.
+    Harmless while the count only moved an advisory number; a false green light
+    once it decides admission.
+    """
+    import re
+    from pathlib import Path
+
+    js = Path("static/js/preflight.js").read_text(encoding="utf-8")
+    body = js[js.index("function appendTargetFields")
+              :js.index("function appendBinderFields")]
+    assert "designsInput" in body, (
+        "the preflight POST omits the design count, so the panel cannot see "
+        "the ceiling refusal that count causes"
+    )
+    # And the field it reads has to be one the server actually parses. The
+    # element supplies its own name, so the names live in the selector.
+    from shared.pdb_intake import _parse_preflight_size_params
+
+    at = js.index("const designsInput")
+    selector = js[at:js.index(");", at)]
+    posted = set(re.findall(r'name="(\w+)"', selector))
+    assert posted == {"num_designs", "designs_per_shard"}, posted
+    assert _parse_preflight_size_params({"num_designs": "100"})[1] == 100
+    assert _parse_preflight_size_params({"designs_per_shard": "7"})[1] == 7

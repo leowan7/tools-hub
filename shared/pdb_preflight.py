@@ -700,11 +700,27 @@ def preflight_for_tool(
         # where there is one (same selection as _check_size_envelope).
         fit_aa = size_envelope.hard_cap_target_aa
         if size_envelope.over_runtime_ceiling:
-            ceiling_aa = largest_target_aa_within_ceiling(
-                rules, rules.size.runtime_fixed_designs or num_designs,
+            # Only when TARGET SIZE is the lever. For a per-design tool whose
+            # count can still bring the estimate under the ceiling, the reason
+            # says "Ask for at most N designs against a target this size"
+            # (the over_runtime branch of _check_size_envelope) and a fix
+            # line clamped to the residue inverse
+            # contradicted it -- bindcraft at 115 aa / 100 designs asked for
+            # "at most 25 designs" and then "keep it at or under 46 residues",
+            # 40% of a target it runs happily at 25. Same test
+            # max_designs_within_ceiling makes there, so the two lines cannot
+            # disagree about which knob to turn.
+            pinned = rules.size.runtime_fixed_designs
+            size_is_the_lever = bool(pinned) or (
+                max_designs_within_ceiling(rules, size_envelope.residue_count)
+                < 1
             )
-            if ceiling_aa > 0:
-                fit_aa = min(fit_aa, ceiling_aa)
+            if size_is_the_lever:
+                ceiling_aa = largest_target_aa_within_ceiling(
+                    rules, pinned or num_designs,
+                )
+                if ceiling_aa > 0:
+                    fit_aa = min(fit_aa, ceiling_aa)
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,

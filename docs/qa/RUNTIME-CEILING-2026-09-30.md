@@ -1,7 +1,12 @@
 # Runtime reconciliation: what we start vs what the container is stopped at
 
-2026-09-30. Written for the paid runs that failed on wall-clock in September and
-were refunded in full -- the brief calls it six runs and names five by job id. Every number below names the file, job row or
+2026-09-30. Written for the paid runs that failed in September. The brief calls
+it six runs and names five by job id; of those five, **three** died on the
+pipeline's own wall-clock (`c43329f3`, `dd7eaf99`, `b5707a1d`) and were refunded
+in full, which is the class this document and the gate are about. The other two
+are different mechanisms, listed in section 1 and not addressed here: a
+no-progress timeout (refunded) and a safety kill that absorbed $3.63. Every
+number below names the file, job row or
 document it came from. Nothing here was measured on a GPU in this session — no
 GPU job was launched.
 
@@ -287,7 +292,7 @@ gate refuses on them.
 * **bindcraft alpha (1.5).** The >=3.2x miss on `c43329f3` says the curve is
   optimistic somewhere above 115 aa, and a single second size would say where.
   One 2-trajectory bindcraft run at ~300 aa: ~4600 GPU-s on A100-80GB at
-  $0.001028/s = **~$4.70 of GPU**. This is the highest-value measurement in the
+  $0.001028/s = **~$4.73 of GPU**. This is the highest-value measurement in the
   report: it is what decides whether the 17-chunk exposure above is real at
   250 aa or only at 400.
 * **boltzgen alpha (1.0).** One pilot at ~300 aa would either confirm that
@@ -300,7 +305,9 @@ Neither was run. Both need Leo's per-job approval.
 ## 9. Also found, not fixed
 
 `shared/tool_chooser.py` has no target-size dimension at all — it recommends by
-task. So it can recommend boltzgen for a 400 aa target that boltzgen's own
+task. `recommend(have, shape, chemistry)` (`shared/tool_chooser.py:512`) takes no
+size argument, and no `.size.` field of `TOOL_RULES` is read anywhere in the
+file, so the chooser cannot see either cap. So it can recommend boltzgen for a 400 aa target that boltzgen's own
 preflight now refuses on runtime. The user gets a recommendation and then a
 refusal. Worth its own change; it needs a decision about whether the chooser
 should read `TOOL_RULES` size limits, which is more than a one-line fix.

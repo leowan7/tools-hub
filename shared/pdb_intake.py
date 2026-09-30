@@ -120,9 +120,25 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
     if rules is not None:
         num_designs = rules.size.runtime_fixed_designs or num_designs
     minutes = None
+    basis = size.get("runtime_basis")
     if rules is not None and isinstance(target_aa, int) and num_designs:
         minutes = round(runtime_estimate_min(rules, target_aa, num_designs), 1)
-    return {**stored, "size_envelope": {**size, "runtime_estimate_min": minutes}}
+        # The basis is recomputed with the minutes, never carried over. A
+        # boltzgen job submitted before the substitution above existed stored
+        # ``runtime_estimate_min: None`` AND ``runtime_basis: None``; reviving
+        # only the minutes made the panel print "82.4 min for None", because
+        # templates/components/preflight_panel.html:84 interpolates the basis
+        # directly and this app sets no Jinja ``finalize`` hook. Same wording
+        # as the runtime_basis f-string in shared/pdb_preflight.py's
+        # _check_size_envelope, which is where a new job's
+        # basis comes from.
+        basis = f"{num_designs} design{'s' if num_designs != 1 else ''}"
+    return {
+        **stored,
+        "size_envelope": {
+            **size, "runtime_estimate_min": minutes, "runtime_basis": basis,
+        },
+    }
 
 
 def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
