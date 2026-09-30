@@ -63,7 +63,7 @@ Two file facts narrow the question without settling it. The hub calls bindcraft 
 | `Dockerfile` | `:47` `git clone --depth 1 https://github.com/cytokineking/FreeBindCraft.git` | `:60` `--no-pyrosetta` |
 | `Dockerfile.modal` | `:46` same line | `:54` same flags |
 
-So the four tools-hub comments describing the runtime as FreeBindCraft without PyRosetta are backed by a file in either case — they are correct about *which source*, and correct whichever build is live. They are silent on *which version*, and so is everything else.
+So the four tools-hub comments describing the runtime as FreeBindCraft without PyRosetta are backed by a *build definition* in either case, which is more than a bare assertion. It is less than evidence about the running service. What is established is that both candidate Dockerfiles clone FreeBindCraft. What is **not** established is that the deployed artifact was built from either of them: `shared/pdb_preflight_rules.py:185` says of `kendrew-bindcraft:v7` that it "cannot be inspected from here", and a pushed tag can lag, or diverge from, the workflow that last built it. So the open question is not only *which FreeBindCraft commit* is in the image — it is whether the image is FreeBindCraft at all. Nothing on disk closes that, and no claim about our production service should rest on it.
 
 `llm-proteinDesigner/docker/bindcraft/Dockerfile.modal` (Candidate B), quoted here because §2.2's wrapper reads it:
 
@@ -139,7 +139,7 @@ All in `tools/bindcraft/meta.py` (406 lines) unless noted:
 
 - `PRESET_RUNTIME = {"pilot": {"typical_minutes": "30 to 45", "minutes": (30, 45)}}`
 - preset label "Your target, ~30 min start to first results" (`tools/bindcraft/__init__.py`)
-- `paper_citation="Pacesa et al., Nature 2025"`, `github_url="https://github.com/martinpacesa/BindCraft"`
+- `paper_citation="Pacesa et al., Nature 2025"`, `github_url="https://github.com/martinpacesa/BindCraft"` — note this points at upstream BindCraft, while both candidate builds clone `cytokineking/FreeBindCraft` (§2.1). Whether that is the right link is a product decision, but the two surfaces do not currently agree
 - `seo_faq` — 3 Q&As, one of which says "roughly 20 to 60 minutes"
 - `about` dict — `what_it_is`, `when_to_use`, `prerequisites`, `inputs`, `runtime_table`, `output_summary` (states ipTM 0.75 credible / 0.85 strong)
 - `PILOT` card — "Trial run: 2 trajectories", `num_designs=2`
@@ -150,6 +150,8 @@ All in `tools/bindcraft/meta.py` (406 lines) unless noted:
 - SEO surfaces: `docs/seo/AUDIT-2026-09-25.md`, `docs/MARKETING-SURFACE-REWRITE.md`
 
 **Every string in this subsection is a proposal surface only.** Per the brief, the Website SEO lead (session `local_2ace4d20-8705-46f1-8854-8855905923d0`) owns the marketing surfaces and must be told before any of it ships.
+
+**Provenance warning on this whole inventory.** These are recorded as *the strings that exist today*, not as accurate descriptions. §2.1 establishes that no claim naming the underlying project — "we run FreeBindCraft", "we run BindCraft" — can currently be substantiated against the deployed service. Any string here that names the upstream project is therefore a string to be changed, not a model to copy. The Website SEO lead has independently reached the same conclusion for the marketing pages and is removing project names from them until provenance is settled. Note the licence half of such a claim is separable and does hold: FreeBindCraft's upstream LICENSE is unmodified MIT with no hosting restriction (verified by the Website SEO lead, 2026-09-30); it is the "we run it" half that is unevidenced.
 
 ### 2.9 The reliability record
 
