@@ -291,7 +291,7 @@ def create_app() -> Flask:
         # Blueprint allowlist, not a blanket "any blueprint" exemption: a
         # newly added blueprint is CSRF-enforced unless listed here.
         # platform_api (/api/v1/*) authenticates by bearer token, not cookie.
-        # scout's fetch() POSTs (upload, fetch-pdb, analyze,
+        # scout's token-less POSTs (upload, fetch-pdb, analyze,
         # feasibility/analyze) send no token and are exempt; its handoff
         # form carries csrf_input() and is enforced
         # (tests/test_csrf_protection.py::test_scout_handoff_requires_token).

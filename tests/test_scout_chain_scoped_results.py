@@ -266,7 +266,8 @@ def _upload_two_chain_job(client) -> str:
 
 
 def _login(client) -> None:
-    """Both /scout/feasibility/* routes are @login_required."""
+    """Sign the client in; anon_rate_limit passes a signed-in caller through
+    uncharged (scout/ratelimit.py::anon_rate_limit)."""
     with client.session_transaction() as sess:
         sess["user_email"] = "someone@example.com"
         sess["user_id"] = "u-chain-scope-test"
@@ -676,7 +677,8 @@ class TestAnOutageIsNotFrozenIntoTheJobOnDisk:
     ):
         """The repair must not put an uncapped network call on this route.
 
-        /feasibility/analyze holds no anon_compute_slot, unlike /analyze. On a
+        /feasibility/analyze releases its anon_compute_slot before this
+        lookup, unlike /analyze. On a
         cold worker ``fetch_known_binders`` is a 12 s RCSB search plus a 60 s
         SAbDab summary fetch plus a round of coordinate downloads, against a
         120 s gunicorn timeout and two sync workers -- so reaching for it here

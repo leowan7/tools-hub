@@ -36,8 +36,10 @@ against.
 
 Exposure differs per route and is recorded here so it is not re-litigated:
 ``/scout/progress`` and ``/scout/analyze`` are anonymous (``@anon_rate_limit``
-+ ``@requires_scout_quota``, which passes through when not signed in); the
-three ``/scout/feasibility*`` routes are ``@login_required``.
++ ``@requires_scout_quota``, which passes through when not signed in);
+``/scout/feasibility/progress`` and ``/scout/feasibility/analyze`` are
+anonymous under ``@anon_rate_limit`` alone (scout/routes.py,
+feasibility_progress / feasibility_analyze).
 
     pytest tests/test_scout_error_disclosure.py -v
 """

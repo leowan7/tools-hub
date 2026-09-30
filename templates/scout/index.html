@@ -261,11 +261,6 @@
       </div><!-- /results-section -->
 
   <script>
-    // Whether this visitor is signed in. Epitope Scout itself is anonymous;
-    // only the deeper feasibility page and the design-tool handoff need an
-    // account, so the results table degrades those links rather than the page.
-    var SCOUT_AUTHENTICATED = {{ 'true' if session.get('user_email') else 'false' }};
-
     const PATCH_COLORS = [
       '#ef4444', '#3b82f6', '#22c55e', '#f97316',
       '#a855f7', '#14b8a6', '#eab308', '#ec4899',
@@ -666,16 +661,11 @@
           flagsHtml = '<span class="no-flags">\u2014</span>';
         }
 
-        // Feasibility runs on a separate, deeper page that still needs an
-        // account; anonymous visitors are told so here rather than being
-        // bounced to /login after the click.
         // ``chain`` is the chain the backend scored, NOT the live dropdown: the
         // dropdown stays enabled during a run, so re-reading it here could pair
         // one chain's epitope_id with another chain's id.
         var feasibilityHref = '/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + encodeURIComponent(chain || document.getElementById('chain-select').value);
-        var feasibilityCell = SCOUT_AUTHENTICATED
-          ? '<td><a href="' + feasibilityHref + '" class="feasibility-link">Assess feasibility</a></td>'
-          : '<td><a href="/login?next=' + encodeURIComponent(feasibilityHref) + '" class="feasibility-link">Sign in to assess</a></td>';
+        var feasibilityCell = '<td><a href="' + feasibilityHref + '" class="feasibility-link">Assess feasibility</a></td>';
 
         var tr = document.createElement('tr');
         tr.innerHTML =

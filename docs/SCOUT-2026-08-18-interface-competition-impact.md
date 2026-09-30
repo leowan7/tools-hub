@@ -123,3 +123,7 @@ filesystem paths), and `/feasibility/analyze` catches only `ValueError` and
 `@login_required` (`feasibility_page`, `feasibility_analyze`,
 `feasibility_progress`). Anonymous visitors reach `/scout/analyze`, a different
 path. This bug was never on an anonymous surface.
+
+*2026-09-30: no longer true. The feasibility routes dropped `@login_required`
+and are now anonymous under `@anon_rate_limit` (`scout/routes.py`,
+`feasibility_analyze` and `feasibility_progress`).*
