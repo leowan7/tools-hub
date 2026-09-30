@@ -69,6 +69,35 @@ def test_post_plans_anonymously(client):
     assert "login" not in resp.request.path
 
 
+def test_post_offers_macs_for_a_naive_library(client):
+    """The MACS pre-enrichment round has to be reachable through the route.
+
+    VALID_PLAN is 8 NNK positions on naive material, ~8.5e11 stop-free
+    variants, which is four orders above the ``library_size > 1e8`` MACS
+    trigger in
+    ``tools/library_planner/sort_strategy.py::recommend_sort_rounds``. The
+    route used to
+    hand that test a size already capped at the 1e8 transformation ceiling,
+    so the trigger could never fire and every plan the web tool returned was
+    three FACS rounds.
+
+    ``None%`` catches the other half: a MACS round carries
+    ``gate_percent: None`` (bulk magnetic capture has no sort gate), and
+    templates/library_planner_results.html prints the gate in two places.
+    """
+    resp = client.post("/library-planner/plan", data=dict(VALID_PLAN))
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "MACS" in body
+    assert "Round 1 &mdash; MACS" in body, (
+        "the plan the route rendered does not open on a MACS round"
+    )
+    assert "None%" not in body, (
+        "a MACS round has no sort gate; the results page printed the "
+        "missing gate_percent verbatim"
+    )
+
+
 # --- the trust boundary that makes anonymous access safe ------------------
 # These bound the work an anonymous request can ask for. If any of these
 # stops rejecting, opening the routes stops being safe.

@@ -162,8 +162,10 @@
         {% for r in rounds %}
           <dt>Round {{ r.round }} · {{ r.method }}</dt>
           <dd>
-            {{ r.label_concentration_nm }} nM label, gate
-            {{ r.gate_percent }}%, enrichment {{ r.expected_enrichment }}
+            {{ r.label_concentration_nm }} nM label,
+            {% if r.gate_percent is not none %}gate {{ r.gate_percent }}%
+            {%- else %}bulk magnetic capture, no gate{% endif %},
+            enrichment {{ r.expected_enrichment }}
           </dd>
         {% endfor %}
       </dl>
@@ -219,8 +221,9 @@
         {% for r in rounds %}
           <dt>Round {{ r.round }} &mdash; {{ r.method }} at {{ r.label_concentration_nm }} nM</dt>
           <dd>
-            Gate {{ r.gate_percent }}%, expected enrichment
-            {{ r.expected_enrichment }}. {{ r.notes }}
+            {% if r.gate_percent is not none %}Gate {{ r.gate_percent }}%
+            {%- else %}No sort gate; bulk magnetic capture{% endif %},
+            expected enrichment {{ r.expected_enrichment }}. {{ r.notes }}
           </dd>
         {% endfor %}
       </dl>

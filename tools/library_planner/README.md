@@ -72,7 +72,10 @@ To sample a library of size L with probability p per variant, required reads R s
 
 ### Sort strategy heuristics
 - KD titration log-linear from 10x above goal down to 0.1x goal across 3 to 4 rounds
-- MACS recommended for round 1 when library exceeds 5e7 cells
+- MACS recommended for round 1 when the stop-free library exceeds 1e8
+  variants on naive material, or 5e9 on immunized material; a
+  computational pool never gets one
+  (`sort_strategy.py::recommend_sort_rounds`)
 - FACS gates 0.1 to 1 percent stringency, tighter in later rounds
 - Expected enrichment 50x to 200x per FACS round at steady state
 
