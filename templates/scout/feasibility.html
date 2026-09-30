@@ -203,6 +203,7 @@
               compute each job delivers.
             </p>
             <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.75rem;">
+              {{ csrf_input() }}
               <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
               <input type="hidden" name="scout_epitope_id" id="handoff-epitope-id" value="">
               <input type="hidden" name="target_chain" id="handoff-chain" value="">

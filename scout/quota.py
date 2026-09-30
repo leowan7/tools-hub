@@ -115,9 +115,9 @@ def _resolve_user_id(email: str) -> Optional[str]:
     if client is None:
         return None
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        for user in users:
+        from shared.credits import list_all_auth_users  # noqa: PLC0415
+
+        for user in list_all_auth_users(client):
             candidate = getattr(user, "email", None) or (
                 user.get("email") if isinstance(user, dict) else None
             )

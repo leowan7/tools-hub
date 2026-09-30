@@ -182,3 +182,33 @@ def test_non_allowlisted_blueprint_post_is_enforced(app):
     resp = client.post("/dummy-ui/save", data={})
     assert resp.status_code == 403
     assert b"CSRF" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Scout: the handoff form is enforced; the fetch() POSTs stay exempt
+# (QA 2026-09-30 P2-3)
+# ---------------------------------------------------------------------------
+
+
+def test_scout_handoff_requires_token(app):
+    client = app.test_client()
+    _seed_session(client, with_token=False)
+    resp = client.post("/scout/handoff/tool", data={"tool": "bindcraft"})
+    assert resp.status_code == 403
+    assert b"CSRF" in resp.data
+
+
+def test_scout_handoff_with_token_passes_csrf(app):
+    client = app.test_client()
+    _seed_session(client, with_token=True)
+    resp = client.post(
+        "/scout/handoff/tool", data={"_csrf": _TOKEN, "tool": "bindcraft"}
+    )
+    assert resp.status_code != 403
+
+
+def test_scout_fetch_post_stays_exempt(app):
+    client = app.test_client()
+    _seed_session(client, with_token=False)
+    resp = client.post("/scout/fetch-pdb", data={})
+    assert resp.status_code != 403

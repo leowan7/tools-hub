@@ -288,14 +288,16 @@ def create_app() -> Flask:
 
     def _csrf_request_is_exempt() -> bool:
         """True for requests that must NOT be subject to the web-UI CSRF check."""
-        # Only these two blueprints self-manage CSRF posture: scout_bp (free
-        # tier, owned separately) and platform_api_bp (/api/v1/*, bearer-token
-        # auth — not cookie-driven, so structurally CSRF-immune). This is an
-        # ALLOWLIST, not a blanket "any blueprint" exemption: as the web UI
-        # (login, wallet, tools, jobs, admin) moves into cookie-authenticated
-        # blueprints, those state-changing POSTs MUST stay CSRF-enforced, so a
-        # newly added blueprint is protected by default unless listed here.
-        if request.blueprint in {"scout", "platform_api"}:
+        # Blueprint allowlist, not a blanket "any blueprint" exemption: a
+        # newly added blueprint is CSRF-enforced unless listed here.
+        # platform_api (/api/v1/*) authenticates by bearer token, not cookie.
+        # scout's fetch() POSTs (upload, fetch-pdb, analyze,
+        # feasibility/analyze) send no token and are exempt; its handoff
+        # form carries csrf_input() and is enforced
+        # (tests/test_csrf_protection.py::test_scout_handoff_requires_token).
+        if request.blueprint == "platform_api":
+            return True
+        if request.blueprint == "scout" and request.endpoint != "scout.handoff_to_tool":
             return True
         path = request.path
         # Server-to-server ingress — verified by per-message token/HMAC, no
