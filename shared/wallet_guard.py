@@ -276,9 +276,9 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             # hold row, and with no ``hold_tx_id`` on the job there is nothing
             # for ``shared/jobs.py`` to settle. Placed AFTER preflight so a
             # frozen wallet is still refused above. NOT merged into the hold
-            # call below: ``cushioned_hold_usd`` floors a fixed-container tool
-            # at ``worst_case_gpu_seconds``, so for proteina's validate it
-            # returns $12.5827 regardless of the zero point estimate.
+            # call below: ``cushioned_hold_usd`` floors any tool that sets
+            # ``worst_case_gpu_seconds`` at that figure, so a zero point
+            # estimate on such a tool would still hold money.
             if free_run:
                 g.wallet_estimate_usd = Decimal("0")
                 g.wallet_hold_tx_id = None

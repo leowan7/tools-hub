@@ -131,7 +131,8 @@ PILOT: dict | None = None
 # halves so neither can drift.
 #
 # COST is compute_charge_usd(32, "A100-40GB") - what a reader would be
-# charged, not the raw Modal cost. tests/test_worked_examples.py recomputes it
+# charged, not the raw Modal cost. 32 s prices at $0.0388, under the $0.05
+# minimum charge (shared/wallet_estimates.py MIN_CHARGE_USD), so it shows $0.05. tests/test_worked_examples.py recomputes it
 # from the rate card on every run, so a rate change fails a test instead of
 # leaving a stale price in front of a customer.
 # ---------------------------------------------------------------------------
@@ -198,6 +199,6 @@ EXAMPLE: dict | None = {
         "If instead you are looking at a <em>designed</em> sequence scoring "
         "like this, that is a real failure and the design needs redoing."
     ),
-    "cost_usd": "0.04",
+    "cost_usd": "0.05",
     "runtime": "32 seconds",
 }
