@@ -415,3 +415,15 @@ def test_no_email_money_figure_is_left_on_the_nearest_default():
         "NEAREST and understate about half the time:\n  "
         + "\n  ".join(f"{i}: {t}" for i, t in undirected)
     )
+
+
+def test_record_display_signs_rounds_and_floors_sub_cent():
+    assert cc.display_record_usd(Decimal("-0.9833")) == "−$0.98"
+    assert cc.display_record_usd(Decimal("-15.00")) == "−$15.00"
+    assert cc.display_record_usd(Decimal("0.3168")) == "$0.32"
+    assert cc.display_record_usd(Decimal("4.3650")) == "$4.37"
+    assert cc.display_record_usd(Decimal("0.0020")) == "<$0.01"
+    assert cc.display_record_usd(Decimal("-0.0020")) == "−<$0.01"
+    assert cc.display_record_usd(Decimal("0")) == "$0.00"
+    assert cc.display_record_usd(Decimal("9.9960"), balance=True) == "$9.99"
+    assert cc.display_record_usd(Decimal("-0.0040"), balance=True) == "−$0.01"
