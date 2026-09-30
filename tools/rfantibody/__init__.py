@@ -190,11 +190,12 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~30 min start to first results",
+            label="Your target, ~15 to 60 min for a first batch",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
                 "Pick 1 to 1000 final VHH candidates. Start with a small "
-                "batch (4 designs, ~30 to 60 min) to confirm your target "
+                "batch (4 designs, ~15 to 60 min by target size) to "
+                "confirm your target "
                 "and hotspots, then scale to 100+ once outputs look "
                 "real. Results emailed when run completes; A100-40GB."
             ),
