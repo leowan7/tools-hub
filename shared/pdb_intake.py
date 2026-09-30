@@ -31,6 +31,7 @@ from shared.pdb_preflight import (
     PreflightVerdict,
     preflight_for_tool,
 )
+from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
 from shared.uniprot_lookup import alphafold_api_url
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,28 @@ def _fetch_alphafold_bytes(accession: str) -> Optional[bytes]:
                     accession, pdb.status_code)
         return None
     return pdb.content
+
+
+def job_preflight_for_display(inputs) -> Optional[dict]:
+    """A job's stored ``_preflight`` with the runtime estimate recomputed now.
+
+    tool_submit stores the verdict once, at submit, so the minutes in it are
+    whatever the envelope said that day. Re-deriving them here from the
+    stored target size and the job's own design count puts the result page
+    on the same ``runtime_estimate_min`` the form panel calls. The minutes
+    are dropped when they cannot be re-derived, rather than shown stale.
+    """
+    stored = (inputs or {}).get("_preflight")
+    size = stored.get("size_envelope") if isinstance(stored, dict) else None
+    if not isinstance(size, dict):
+        return stored
+    rules = TOOL_RULES.get(stored.get("tool_slug"))
+    target_aa = size.get("residue_count")
+    num_designs = _parse_preflight_size_params(inputs)[1]
+    minutes = None
+    if rules is not None and isinstance(target_aa, int) and num_designs:
+        minutes = round(runtime_estimate_min(rules, target_aa, num_designs), 1)
+    return {**stored, "size_envelope": {**size, "runtime_estimate_min": minutes}}
 
 
 def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:

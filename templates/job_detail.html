@@ -275,7 +275,7 @@
          visual language as the form-side panel; summary=True hides the
          interactive AlphaFold buttons because the job's input is already
          locked in by this point. #}
-      {% set _preflight = (job.inputs or {}).get('_preflight') %}
+      {% set _preflight = preflight %}
       {% if _preflight %}
         {{ preflight_styles() }}
         <div class="preflight-job-wrap" style="margin-top: 1rem; max-width: 720px;">
