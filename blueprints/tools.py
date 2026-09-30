@@ -1743,6 +1743,21 @@ def tool_preflight(tool: str):
             }, 200)
 
     binder_max_aa, num_designs = _parse_preflight_size_params(request.form)
+    # The form total is not what one container runs. Above
+    # single_container_ceiling the form re-points at the campaign chunker
+    # (templates/tools/_campaign_reroute.html) and _single_container_refusal
+    # rejects a larger single job, so no container ever runs more than the
+    # ceiling -- and the campaign route judges the ceiling PER CHUNK, passing
+    # plan.designs_for_chunk(0) (blueprints/campaigns.py). Judging the form
+    # total here refused runs that route funds: bindcraft at 115 aa / 100
+    # designs is 15.6 h as one job and greys out Run, while the six-design
+    # chunk it actually becomes is accepted. Clamped so the panel judges the
+    # container the submit will create.
+    if num_designs is not None:
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+
+        if adapter.slug in cc.SUPPORTED_TOOLS:
+            num_designs = min(num_designs, cc.single_container_ceiling(adapter.slug))
     verdict = preflight_for_tool(
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,

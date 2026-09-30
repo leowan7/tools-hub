@@ -710,10 +710,25 @@ def preflight_for_tool(
             # 40% of a target it runs happily at 25. Same test
             # max_designs_within_ceiling makes there, so the two lines cannot
             # disagree about which knob to turn.
+            #
+            # The condition is "does the REASON name a count", not "does a
+            # count fit". _check_size_envelope's message branches are
+            # exclusive and over_hard / over_combined win, so a target over
+            # both caps gets the hard-cap message, which names no count --
+            # skipping the clamp there quoted hard_cap_target_aa unchecked and
+            # re-opened exactly the trim-then-refused-again failure the clamp
+            # exists to prevent: bindcraft at 600 aa / 4 designs was told to
+            # keep it at or under 500 residues, which is 340 min against a
+            # 240-minute ceiling. Only the over_runtime branch with a count
+            # that fits names designs, so only that one skips the clamp.
             pinned = rules.size.runtime_fixed_designs
-            size_is_the_lever = bool(pinned) or (
-                max_designs_within_ceiling(rules, size_envelope.residue_count)
-                < 1
+            size_is_the_lever = (
+                bool(pinned)
+                or size_envelope.over_hard_cap
+                or size_envelope.over_combined_cap
+                or max_designs_within_ceiling(
+                    rules, size_envelope.residue_count
+                ) < 1
             )
             if size_is_the_lever:
                 ceiling_aa = largest_target_aa_within_ceiling(

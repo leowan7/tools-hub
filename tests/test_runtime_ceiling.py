@@ -393,3 +393,78 @@ def test_the_panel_posts_the_count_that_now_decides_admission():
     assert posted == {"num_designs", "designs_per_shard"}, posted
     assert _parse_preflight_size_params({"num_designs": "100"})[1] == 100
     assert _parse_preflight_size_params({"designs_per_shard": "7"})[1] == 7
+
+
+def test_every_residue_figure_the_fix_quotes_is_one_that_runs():
+    """The fix line has to name a size that passes the gate it is fixing.
+
+    ``suggested_fix`` ends "keep it at or under {fit_aa} residues", and
+    ``fit_aa`` starts at the hard cap. On a target over the hard cap AND the
+    ceiling, ``_check_size_envelope``'s message branches are exclusive and the
+    hard-cap branch wins, so the reason names no design count -- and a lever
+    gate that only asked "does some count fit at the CURRENT size" skipped the
+    runtime clamp there and quoted the bare hard cap. bindcraft at 600 aa /
+    4 designs was told to keep it at or under 500 residues, which is 340 min
+    against a 240-minute ceiling: trim exactly as instructed, get refused
+    again. This walks the whole grid rather than that one cell.
+    """
+    import re
+
+    from shared.pdb_preflight import preflight_for_tool, runtime_estimate_min
+    from tests.test_pdb_preflight import _chain_pdb
+
+    for slug in ("bindcraft", "boltzgen"):
+        rules = TOOL_RULES[slug]
+        ceiling_min = rules.size.runtime_ceiling_s / 60
+        for target_aa in (115, 300, 500, 600, 900):
+            pdb = _chain_pdb("A", range(1, target_aa + 1))
+            for n in (1, 4, 6, 25, 100):
+                verdict = preflight_for_tool(
+                    slug, pdb, target_chain="A", hotspots=[], num_designs=n,
+                )
+                if verdict.ok:
+                    continue
+                quoted = re.search(
+                    r"at or under (\d+) residues", verdict.suggested_fix or "",
+                )
+                if not quoted:
+                    continue
+                effective = rules.size.runtime_fixed_designs or n
+                named = re.search(r"at most (\d+) design", verdict.reason)
+                if named:
+                    # The reason names the COUNT lever, so the size figure is
+                    # the untightened hard cap and runs at the count named --
+                    # not at the count asked for. What must hold is that the
+                    # two lines do not both move, and that the named count
+                    # really fits at this size.
+                    assert int(quoted.group(1)) == rules.size.hard_cap_target_aa, (
+                        f"{slug} {target_aa} aa / {n}: reason names a count, "
+                        f"fix also tightened the size to {quoted.group(1)}"
+                    )
+                    est = runtime_estimate_min(
+                        rules, target_aa, int(named.group(1)),
+                    )
+                else:
+                    # SIZE is the only lever named, so the size it names has
+                    # to run at the count the user asked for.
+                    est = runtime_estimate_min(
+                        rules, int(quoted.group(1)), effective,
+                    )
+                assert est <= ceiling_min + 0.5, (
+                    f"{slug} {target_aa} aa / {n} designs: the fix points at "
+                    f"a run of {est:.1f} min against a "
+                    f"{ceiling_min:.0f}-minute ceiling -- {verdict.suggested_fix}"
+                )
+
+
+def test_the_count_re_runs_the_panel():
+    """The count is typed AFTER the upload on every form, so the first verdict
+    is the default's. Without a re-run listener the panel stays green at the
+    default while the count the user then types is over the ceiling.
+    """
+    from pathlib import Path
+
+    js = Path("static/js/preflight.js").read_text(encoding="utf-8")
+    at = js.index("for (const inp of [")
+    loop = js[at:js.index("]", at)]
+    assert "designsInput" in loop, loop

@@ -530,7 +530,17 @@
   // whole-upload one. Without a re-run the user reads a refusal for a run they
   // have since narrowed, and the Run button stays greyed out at the value it
   // was disabled on.
-  for (const inp of [chainInput, hotspotInput, contigInput, binderSeqInput]) {
+  //
+  // The design count is here for the same reason and a stronger one: it
+  // decides ADMISSION, and it sits in a separate collapsed section BELOW the
+  // upload on every form, so the first verdict is always the default count's.
+  // Without a re-run the panel stayed green at the default while the count the
+  // user then typed puts the estimate past the ceiling -- the panel
+  // contradicting the gate one click later, which is the defect this whole
+  // change set is about.
+  for (const inp of [
+    chainInput, hotspotInput, contigInput, binderSeqInput, designsInput,
+  ]) {
     if (!inp) continue;
     let t = 0;
     inp.addEventListener("input", () => {
