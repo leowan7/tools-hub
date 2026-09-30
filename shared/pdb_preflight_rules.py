@@ -863,7 +863,10 @@ _PROTEINA = ToolRules(
         # Being wrong-high costs what it always
         # did: a 4-shard first wave (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"]
         # = 4) running to _MAX_SESSION_S = 7200 at ~$12.58 a shard for zero
-        # designs, inside a ~$15/shard hold that covers all of it.
+        # designs. The per-shard hold (cushioned_hold_usd in
+        # shared/wallet_estimates.py) no longer covers that; settle debits the
+        # whole overrun when the balance covers it and Ranomics absorbs it when
+        # the balance does not.
         #
         # WHAT WOULD MOVE IT AGAIN: one completed shard above 415 aa. Not an
         # argument, and not a longer extrapolation from these same points.

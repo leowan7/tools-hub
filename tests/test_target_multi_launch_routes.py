@@ -618,9 +618,11 @@ def test_the_estimate_encodes_money_as_strings(client):
 # held". Now the server ships a *_display string per figure: costs and holds
 # round UP, balances round DOWN, neither can flatter us.
 #
-# rfantibody@20 is the cohort because BOTH its totals have sub-half-cent
-# digits (budget 80.4020, first wave 104.8722), so ceiling and nearest disagree
-# on each. A cohort landing on exact cents would pass this test with the
+# rfantibody@200 is the cohort because BOTH its totals have sub-half-cent
+# digits (budget 174.2049, first wave 227.2244), so ceiling and nearest
+# disagree on each. It was rfantibody@20 until rfantibody's
+# expected_gpu_seconds went 3600 -> 1200; at 20 designs the first wave is now
+# 34.9576, where the two roundings agree. A cohort landing on exact cents would pass this test with the
 # rounding direction reversed. One tool means the row figures are the totals, so
 # the row encoding is covered by the same assertions.
 #
@@ -632,7 +634,7 @@ def test_the_estimate_encodes_money_as_strings(client):
 # unpinned; a design count was searched for first and none exists.
 
 
-_DISPLAY_COHORT = "pace=burst&tool=rfantibody&designs=20&preset=pilot"
+_DISPLAY_COHORT = "pace=burst&tool=rfantibody&designs=200&preset=pilot"
 
 # The cohort that exposed the rows-do-not-sum-to-the-total defect: rows of
 # $2.02 + $5.03 against a total ceiled from the exact sum of $7.04 (the
@@ -682,12 +684,18 @@ _PACE_OBSERVABLE_COHORT = (
 #   this test's precondition and the refusal test's together. The count is
 #   grid-dependent -- it is here to show the search happened, not as a figure
 #   to check against.
-_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody", "pxdesign")
+#
+#   bindcraft+rfantibody+pxdesign left too when rfantibody's
+#   expected_gpu_seconds went down from 3600 (2026-09-30).
+#   rfantibody+pxdesign+boltzgen replaces it, chosen from a re-search of the
+#   same grid under this module's legacy_campaign_widths fixture. Each test's
+#   own precondition asserts that the cohort still diverges.
+_STEADY_DIVERGENT_COHORT_TOOLS = ("rfantibody", "pxdesign", "boltzgen")
 _STEADY_DIVERGENT_DESIGNS = 200
 
 #   The refusal test needs the row sum to differ from the ceiling of the exact
 #   sum at BOTH paces; the same three tools at 100 designs do that.
-_REFUSAL_COHORT = ("bindcraft", "rfantibody", "pxdesign")
+_REFUSAL_COHORT = ("rfantibody", "pxdesign", "boltzgen")
 
 
 def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client):
@@ -709,7 +717,7 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
             != exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
         ), (
             f"{key}={exact} rounds the same way to nearest as to ceiling, so "
-            f"this cohort cannot observe the direction. rfantibody@20 can."
+            f"this cohort cannot observe the direction. rfantibody@200 can."
         )
 
     for key in costs:
@@ -1790,7 +1798,7 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
 
     _login(client)
     t = _target()
-    # bindcraft+rfantibody+pxdesign@100, not rfdiffusion+pxdesign@12. Three
+    # rfantibody+pxdesign+boltzgen@100, not rfdiffusion+pxdesign@12. Three
     # preconditions have to hold simultaneously and the original cohort met
     # none of them:
     #   1. the paces must price differently (at 12 designs one sub-job per tool
@@ -1802,9 +1810,9 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
     # bindcraft's gpu_class was corrected from A100-40GB to the A100-80GB its
     # container runs on; at the new price the two roundings agree on that pair
     # at every design count from 2 to 400 (all 399 checked, zero satisfy the
-    # three). rfdiffusion is added rather than the pair swapped out so the form
-    # params below keep working. For the search grid and its 79 hits see the
-    # note beside _STEADY_DIVERGENT_COHORT_TOOLS. Searched, not guessed.
+    # three). Its successor bindcraft+rfantibody+pxdesign then left when
+    # rfantibody's price was cut to measured runtimes. For the search grid see
+    # the note beside _STEADY_DIVERGENT_COHORT_TOOLS. Searched, not guessed.
     _assert_pace_is_observable_on(_REFUSAL_COHORT, 100)
 
     # The form is passed EXPLICITLY and the plan is built from the same numbers.
@@ -1820,10 +1828,10 @@ def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
     # can tell them apart.
     form = _form(
         tools=list(_REFUSAL_COHORT), pace=pace,
-        bindcraft__designs="100", bindcraft__binder_length_min="50",
-        bindcraft__binder_length_max="100",
         rfantibody__designs="100", rfantibody__cdr_lengths="H1:8,H2:7,H3:10-16",
         pxdesign__designs="100", pxdesign__binder_length="80",
+        boltzgen__designs="100", boltzgen__protocol="nanobody-anything",
+        boltzgen__binder_length_min="50", boltzgen__binder_length_max="100",
     )
     plan = plan_multi_launch(
         [ToolLaunchSpec(tool=tool, preset="pilot", requested_designs=100,

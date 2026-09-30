@@ -53,6 +53,18 @@ logger = logging.getLogger(__name__)
 # not pull in the full wallet module at import time.
 WALLET_MARKUP = Decimal("1.70")
 
+# Smallest amount a paid run is charged or quoted. Leo's number (2026-09-30);
+# before it, a 12 GPU-s A10G run debited $0.0042 and the email's two-decimal
+# line showed "charged $0.00". shared.wallet.compute_charge_usd applies it, so
+# settle and the completion email agree; estimated_cost_for_tool applies it so
+# no quote sits below the charge.
+MIN_CHARGE_USD = Decimal("0.05")
+
+
+def apply_min_charge(usd: Decimal) -> Decimal:
+    """Raise a positive amount to ``MIN_CHARGE_USD``; leave 0 at 0."""
+    return max(usd, MIN_CHARGE_USD) if usd > 0 else usd
+
 # Modal GPU rate card (USD per second). Copied verbatim from
 # :mod:`shared.workspaces` so this module does not depend on the legacy
 # Workspace code. See the comment in :data:`shared.wallet.GPU_USD_PER_SECOND`.
@@ -312,7 +324,34 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "rfantibody": ToolSpec(
         slug="rfantibody",
         gpu_class="A100-40GB",
-        expected_gpu_seconds=3600.0,
+        # Was 3600 s per 2 designs, a pre-measurement bootstrap that quoted
+        # $4.37 and held $6.55 for a run that settled at $0.63
+        # (docs/qa/QA-2026-09-30-functional.md, uncommitted QA note; 1HEW, 2
+        # designs; ~519 GPU-s derived from $0.63 / (0.000714 x 1.70), not
+        # recorded). Measured A100-40GB runs: 474 s for job e29a462d
+        # (docs/VALIDATION-LOG.md, rfantibody pilot row), 13.9 min (~834 s)
+        # for 4 designs at ~115 aa and 2489 s for 4 designs on 1JFF at 412 aa
+        # (both in the rfantibody anchor comment in
+        # shared/pdb_preflight_rules.py; the 2489 s run is job 1 in
+        # docs/CALIBRATION-WEEK2.md).
+        # The price does not see target size, so 1200 s per 2-design baseline
+        # is sized to the largest target preflight admits: runtime_estimate_min
+        # on _RFANTIBODY at hard_cap_target_aa=600 gives 28.7 min for 2 designs
+        # (1722 s), and the 1.5x cushioned hold is 1800 s. A typical ~115 aa
+        # run is over-quoted about 3x as the price of that.
+        # That covers a single run only. A campaign chunk is pinned at 16
+        # designs in a 36000 s container (shared/compute_campaigns.py
+        # _CAMPAIGN_CONTAINER_S / _CHUNK_SIZE_OVERRIDE): it holds $17.48 but a
+        # chunk that runs the whole container can bill ~$43.70, and settle_hold
+        # debits that overrun from a funded balance, as for proteina below.
+        # The old 3600 s figure held $52.44 per chunk, which covered it.
+        # GPU time follows num_designs (backbones); the per-backbone sequence
+        # count is fixed inside the pipeline, so the extra result rows it
+        # produces do not add a scaling term.
+        # Changing this changes the campaign chunk derived from it in
+        # shared/compute_campaigns.py::_chunk_size_for, so rfantibody is
+        # pinned in _CHUNK_SIZE_OVERRIDE there.
+        expected_gpu_seconds=1200.0,
         designs_per_run_baseline=2,
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("13.00"),
@@ -454,37 +493,39 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # jobs; it is a FIXED-container tool (see _FIXED_CONTAINER_TOOLS in
         # compute_campaigns), so the estimate AND the hold price at this baseline
         # (scale 1.0) — one whole container per shard — regardless of how many
-        # designs survive the filter. Bootstrapping at 7200 s (the full 2 h
-        # container the 7200 s Modal session physically enforces) makes the
-        # per-shard estimate ~$12.58 marked-up and the cushioned hold clamp to
-        # base_hard_cap ($15), which sits ABOVE the container's physical max spend
-        # so a shard can never bill more than it held. This deliberately
-        # over-reserves (released as surplus on delivered-only settle) until the
-        # P4/P5 canaries measure real per-shard wall-clock and historical p90
-        # takes over at >=20 runs. designs_per_run_baseline mirrors the 8-design
-        # shard yield pinned in _CHUNK_SIZE_OVERRIDE. One spec covers all 4
-        # presets; per-variant differences live in PRESET_CAPS + container sizing.
+        # designs survive the filter. designs_per_run_baseline mirrors the
+        # 8-design shard yield pinned in _CHUNK_SIZE_OVERRIDE. One spec covers
+        # all 4 presets; per-variant differences live in PRESET_CAPS + container
+        # sizing.
         #
         # CANARY-MEASURED wall-clock (P-2/P-3 @916eaaed, 8-design shard, A100-80GB):
         #   protein_binder 02_PDL1        ~553 s  -> ~$0.97 charge  (65 GB peak VRAM)
         #   ligand_binder  39_7V11_LIGAND ~1343 s -> ~$2.35 charge  (7.3 GB; slower
         #     because LigandMPNN designability runs in evaluate).
-        # Both « the 7200 s cap and « the $15 hold, so the settle refunds most of
-        # the hold. The hold is deliberately NOT lowered: as a fixed-container tool
-        # it charges ACTUAL wall-clock and the hold must stay >= the container's
-        # $12.58 physical-max charge to never under-hold a worst-case shard.
-        # worst_case_gpu_seconds=7200 (=_MAX_SESSION_S in tools/proteina/modal_app.py)
-        # FLOORS the cushioned hold at that $12.58 once historical p90 pulls the
-        # displayed estimate down (>=20 runs): one shard = ONE fixed A100-80GB
-        # container, so the floor does NOT scale with the design count
-        # (worst_case_scales_with_param stays False). The child hold already prices
-        # per shard at baseline (see compute_campaigns.child_hold_usd).
-        expected_gpu_seconds=7200.0,
+        # plus the 2026-09-30 QA run (docs/qa/QA-2026-09-30-functional.md,
+        # uncommitted QA note): protein_binder on 1HEW settled $0.80.
+        # motif_ame has no recorded runtime (unverified).
+        #
+        # This used to be 7200 s, the full session _MAX_SESSION_S in
+        # tools/proteina/modal_app.py, with worst_case_gpu_seconds=7200 flooring
+        # the hold. That quoted $12.58 and held $15 for runs that settled near
+        # $1, so a new user's $5 signup credit could not start the default run.
+        # 1400 s covers the slower measured preset; the 1.5x cushioned hold
+        # (2100 s, $3.67) covers it with margin.
+        #
+        # The worst-case floor is gone on purpose, and this is a known overrun.
+        # A shard that hangs to the 7200 s session still bills up to ~$12.58,
+        # above its $3.67 hold. settle_hold (supabase/migrations/
+        # 0020_wallet_corrections.sql) debits that difference from a funded
+        # balance whenever the balance covers all of it, so a funded customer
+        # pays the full overrun. Only when it does not is the whole difference
+        # booked as absorbed_variance at amount 0, so the balance never goes
+        # negative.
+        expected_gpu_seconds=1400.0,
         designs_per_run_baseline=8,
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("60.00"),
-        worst_case_gpu_seconds=7200.0,
         # ``validate`` is the free pre-flight: run_pipeline.py dispatches it to
         # ``run_validate`` (package import + config + checkpoint checks) and
         # returns before any GPU work, and its ``Preset.description`` promises
@@ -513,16 +554,6 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # with no branch (modal_app.py:246-248, _GPU = "A100-80GB" at :69), so
         # Ranomics still pays for the container (run_pipeline.py's "validate
         # tier" header).
-        # ponytail: ``cushioned_hold_usd`` still returns the
-        # worst_case_gpu_seconds floor ($12.5827) for this preset, because that
-        # floor reads the spec and ignores a zero point estimate. Nothing prices
-        # a validate submit through it -- wallet_guard skips it on the free
-        # branch, and the routes that reach it via ``child_hold_usd`` refuse the
-        # preset first: four independent ``preset == "validate"`` comparisons,
-        # two in blueprints/campaigns.py (the estimate and create paths) and
-        # two in blueprints/targets.py (``_collect_launch_specs`` and the
-        # launch-estimate route). No test under tests/ posts that preset to
-        # either route, so guard the floor itself the day one of them goes.
         # tests/test_free_presets_cost_nothing.py pins the zero estimate, the
         # skipped hold, and the frozen-wallet refusal that survives it.
         tier_gpu_seconds={"validate": 0.0},
@@ -829,7 +860,7 @@ def estimated_cost_for_tool(
     scaled_seconds = _scale_seconds(base_seconds, spec, params)
     rate = Decimal(str(GPU_USD_PER_SECOND.get(spec.gpu_class, DEFAULT_USD_PER_SECOND)))
     raw_usd = Decimal(str(scaled_seconds)) * rate
-    marked_up = raw_usd * WALLET_MARKUP
+    marked_up = apply_min_charge(raw_usd * WALLET_MARKUP)
 
     scaled_cap = compute_hard_cap(tool_slug, params)
     estimate = min(marked_up, scaled_cap)

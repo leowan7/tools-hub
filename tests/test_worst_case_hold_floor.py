@@ -10,9 +10,9 @@ variance.
 ``ToolSpec.worst_case_gpu_seconds`` floors ``cushioned_hold_usd`` at that
 full-session charge. Two container shapes:
 
-* Single-container tools (proteina: one shard = one container; af2: the whole
-  batch folds inside one container; alphafold2: legacy mirror) floor FLAT at one
-  container's cap regardless of the scaling param.
+* Single-container tools (af2: the whole batch folds inside one container;
+  alphafold2: legacy mirror) floor FLAT at one container's cap regardless of
+  the scaling param.
 * Fan-out tools (esmfold2-design: one H100 container PER seed) set
   ``worst_case_scales_with_param=True`` so the single job-level hold scales with
   the container count — a flat floor would cover only one seed and a p90-shrunk
@@ -42,7 +42,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SESSION_CAP_SOURCE = {
     "af2": "af2",
     "alphafold2": "af2",  # historic alias, same container
-    "proteina": "proteina",
     "esmfold2-design": "esmfold2_design",
     "opendde": "opendde",
 }
@@ -286,16 +285,22 @@ def low_p90(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_proteina_hold_floored_at_shard_worst_case(low_p90):
-    # One proteina shard = one A100-80GB container capped at 7200 s. Priced at
-    # the fixed baseline (num_designs=8), so the floor does not scale.
+def test_proteina_has_no_worst_case_floor(low_p90):
+    """proteina dropped its 7200 s floor on 2026-09-30, deliberately.
+
+    The floor held $12.58 against 8-design shards that settle near $0.80
+    (docs/qa/QA-2026-09-30-functional.md, uncommitted QA note), which refused
+    a $5 wallet. A shard that does run to its 7200 s container cap now
+    overruns its hold; settle debits the overrun only while the balance
+    covers it and otherwise books ``absorbed_variance`` at 0 USD
+    (supabase/migrations/0020_wallet_corrections.sql, ``settle_hold``,
+    ``IF v_balance + v_diff >= 0``), so the user's balance cannot go negative.
+    """
     params = {"num_designs": 8, "preset": "pilot"}
+    assert not we.TOOL_SPECS["proteina"].worst_case_gpu_seconds
     hold = we.cushioned_hold_usd(None, "proteina", params)
-    worst = _max_billable("proteina", params, 7200.0, 1)
-    cap = we.compute_hard_cap("proteina", params)
-    assert worst == Decimal("12.5827")  # 7200 s * A100-80GB rate * 1.70
-    assert hold >= worst, f"proteina under-held: {hold} < {worst}"
-    assert hold <= cap
+    assert hold < _max_billable("proteina", params, 7200.0, 1)
+    assert hold <= we.compute_hard_cap("proteina", params)
 
 
 def test_af2_single_fold_hold_floored_at_max_billable(low_p90):
@@ -377,7 +382,6 @@ def test_esmfold2_multi_seed_hold_scales_with_seeds(low_p90, n_seeds):
 
 def test_floor_never_exceeds_hard_cap(low_p90):
     for slug, params in [
-        ("proteina", {"num_designs": 8}),
         ("af2", {}),
         ("af2", {"n_designs_total": 50}),
         ("alphafold2", {}),
@@ -392,18 +396,11 @@ def test_floor_never_exceeds_hard_cap(low_p90):
 def test_bootstrap_holds_unchanged_by_floor(monkeypatch):
     """The floor must never LOWER a hold below its pre-floor bootstrap value.
 
-    Both pinned values below are the HARD CAP, not a cushion/container-max
-    coincidence — the docstring here used to say otherwise for proteina and was
-    wrong: its point estimate is $12.5827, x1.5 is $18.87, and compute_hard_cap
-    clamps that to $15.00 at num_designs=8. The container max is $12.58 and
-    equals neither.
-
     For esmfold2-design the floor has stopped being a no-op at all: 2400 s x 1.5
     is 3600 s, which WAS the container max and is now 5400 s, so the floor
     raises the 1-seed bootstrap hold from $14.79 to the $15.00 cap.
     """
     monkeypatch.setattr(we, "_historical_p90_seconds", lambda slug: None)
-    assert we.cushioned_hold_usd(None, "proteina", {"num_designs": 8}) == Decimal("15.0000")
     # Pinned to the post-floor value this docstring states, not to the pre-floor
     # $14.7920: a >= against the old number passes either way and would not
     # notice the floor ceasing to apply at all.

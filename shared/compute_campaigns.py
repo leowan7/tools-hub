@@ -149,7 +149,7 @@ _LAUNCH_CONCURRENCY_OVERRIDE: Mapping[str, int] = {"proteina": 4}
 # EMPTY as of the bring-your-own-target work. proteina used to be here purely
 # because it shipped no form template, not because a single shard is unviable:
 # one shard IS one self-contained container that yields _CHUNK_SIZE_OVERRIDE
-# (8) designs and holds ~$15 against a $60 per-job cap, which is a perfectly
+# (8) designs and holds ~$3.67 against a $60 per-job cap, which is a perfectly
 # ordinary atomic run. It now has templates/tools/proteina_form.html, so the
 # redirect in blueprints/tools.py has nothing left to protect. Kept as a
 # constant (not deleted) because the routes and tests reference it and a future
@@ -542,7 +542,13 @@ _CAMPAIGN_CONTAINER_S: Mapping[str, int] = {
 # no ('iggm','pilot') PRESET_CAPS row) and would otherwise collapse the chunk to
 # the baseline (1) and mis-size the preview. iggm is NOT fixed-container, so the
 # per-chunk estimate + hold still scale with the 40-design count (num_samples).
-_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24, "proteina": 8, "iggm": 40}
+# rfantibody is pinned at the 16 its 36000 s container gave under the old
+# 3600 s-per-2-design wallet bootstrap. The wallet spec now carries a lower,
+# measured per-design rate (see TOOL_SPECS["rfantibody"]), and deriving the
+# chunk from it would give 48 designs, which is not a size any run has tried.
+_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {
+    "pxdesign": 24, "proteina": 8, "iggm": 40, "rfantibody": 16,
+}
 
 # Tools whose GPU cost is one fixed container per sub-job regardless of the
 # chunk's design count, so BOTH the point estimate and the wallet hold price at

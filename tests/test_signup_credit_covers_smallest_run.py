@@ -45,11 +45,13 @@ NEEDS_TOPUP = {
     "boltzgen",
     "esmfold2-design",
     "opendde",
-    "proteina",
     "pxdesign",
-    "rfantibody",
     "rfdiffusion",
 }
+# proteina and rfantibody left this set on 2026-09-30 when their bootstrap
+# estimates were cut to measured runtimes (TOOL_SPECS in
+# shared/wallet_estimates.py). The copy ("most binder design runs ... need a
+# top-up") still holds: five binder design tools remain here.
 
 
 def _smallest_run_params(spec: we.ToolSpec) -> dict:

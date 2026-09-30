@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from typing import Any, Optional
 
@@ -47,6 +48,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_FROM = "Ranomics Tools <noreply@tools.ranomics.com>"
 DEFAULT_BASE_URL = "https://tools.ranomics.com"
 RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+
+class RecipientRejected(Exception):
+    """Resend refused the "to" address itself (HTTP 422 naming the to field)."""
 
 
 def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
@@ -1321,7 +1326,8 @@ def send_reengagement_email(
 
     Reads the suggestion list off ``candidate.suggestions`` (built by
     the sweep) and the user's balance off ``candidate.balance_usd``.
-    Returns True on confirmed send. Failures are logged but never raise.
+    Returns True on confirmed send. Raises ``RecipientRejected`` when Resend
+    refuses the address; other failures are logged and return False.
     """
     from cron.reengagement import UTM_CAMPAIGN, _with_utm  # noqa: PLC0415
 
@@ -1354,6 +1360,7 @@ def send_reengagement_email(
         text_body=text_body,
         log_tag=f"reengagement user={getattr(candidate, 'user_id', '?')}",
         unsubscribe_link=unsub,
+        raise_on_rejected_recipient=True,
     )
 
 
@@ -2037,8 +2044,12 @@ def _post_resend(
     text_body: Optional[str] = None,
     log_tag: str,
     unsubscribe_link: Optional[str] = None,
+    raise_on_rejected_recipient: bool = False,
 ) -> bool:
     """POST one message to Resend; return True on confirmed send.
+
+    With ``raise_on_rejected_recipient`` a 422 whose message names the ``to``
+    field raises ``RecipientRejected`` instead of returning False.
 
     ``unsubscribe_link`` marks a non-transactional email: it adds the RFC 8058
     List-Unsubscribe headers and an unsubscribe line to the text part (the
@@ -2083,6 +2094,13 @@ def _post_resend(
             "Resend non-2xx for %s: HTTP %d body=%s",
             log_tag, response.status_code, response.text[:200],
         )
+        if raise_on_rejected_recipient and response.status_code == 422:
+            try:
+                message = str((response.json() or {}).get("message", ""))
+            except Exception:
+                message = ""
+            if re.search(r"invalid\W+to\W+field", message, re.IGNORECASE):
+                raise RecipientRejected(message)
         return False
     try:
         resend_id = (response.json() or {}).get("id")

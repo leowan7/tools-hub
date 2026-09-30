@@ -131,9 +131,15 @@ def test_estimate_refuses_the_validate_tier_whatever_its_casing(client, monkeypa
 # printed as "$2.62". The rounding now happens in Decimal on the server: a cost
 # rounds UP, a balance rounds DOWN.
 #
-# rfantibody at 20 designs is the display cohort: 2 sub-jobs, and both the
-# budget (80.4020) and the first wave (104.8722) round differently to nearest
-# than to ceiling, so the direction is observable rather than assumed.
+# pxdesign at 25 designs is the display cohort: 2 sub-jobs, and the per-chunk
+# price (6.2914), the budget (14.4702) and the first wave (18.8742) all round
+# differently to nearest than to ceiling, so the direction is observable rather
+# than assumed.
+#
+# Was rfantibody@20. Lowering rfantibody's expected_gpu_seconds 3600 -> 1200
+# made its per-chunk hold 17.4788, and every multiple of it up to its launch
+# concurrency (DEFAULT_CONCURRENCY_TARGET, 4) lands where ceiling and nearest
+# agree.
 #
 # Was rfdiffusion@24. rfdiffusion can no longer observe the direction at ANY
 # design count from 2 to 149: correcting its expected_gpu_seconds 1200 -> 2775
@@ -161,15 +167,13 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
     from decimal import ROUND_CEILING, ROUND_HALF_EVEN, Decimal
 
     _login(client)
-    data = _estimate_json(client, "tool=rfantibody&requested_designs=20")
+    data = _estimate_json(client, "tool=pxdesign&requested_designs=25")
     assert data["ok"] is True
 
     # Precondition, asserted rather than assumed: if ceiling and nearest agree
     # on a figure, every assertion about it passes with the direction reversed
-    # and pins nothing. Only two of the three keys can observe it -- the
-    # per-chunk price is 34.9574, which is 34.96 either way -- so that is stated
-    # here rather than quietly relied on.
-    for key in ("budget_usd", "first_wave_usd"):
+    # and pins nothing.
+    for key in _COST_KEYS:
         exact = Decimal(data[key])
         assert (
             exact.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
@@ -185,8 +189,8 @@ def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client)
             Decimal("0.01"), rounding=ROUND_CEILING
         )
     # The figure the checkbox refers to, spelled out so the regression is named.
-    assert data["first_wave_usd"] == "104.8722"
-    assert data["first_wave_usd_display"] == "104.88"
+    assert data["first_wave_usd"] == "18.8742"
+    assert data["first_wave_usd_display"] == "18.88"
 
 
 def test_the_estimate_never_overstates_the_balance(client):

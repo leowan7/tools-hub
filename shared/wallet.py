@@ -60,6 +60,7 @@ from functools import wraps
 from typing import Any, Callable, Mapping, Optional
 
 from shared.credits import get_service_client
+from shared.wallet_estimates import apply_min_charge
 from shared.supabase_client import get_supabase_client  # noqa: F401  (re-export OK)
 
 logger = logging.getLogger(__name__)
@@ -308,9 +309,13 @@ def compute_modal_cost_usd(
 
 
 def compute_charge_usd(gpu_seconds: float, gpu_class: Optional[str] = None) -> Decimal:
-    """Customer-facing charge in USD (raw cost times markup)."""
+    """Customer-facing charge in USD: raw cost times markup, raised to
+    ``MIN_CHARGE_USD`` when positive. Zero GPU-seconds stay $0, and refunds go
+    through :func:`release_hold`, which never calls this."""
     raw = compute_modal_cost_usd(gpu_seconds, gpu_class)
-    return (raw * WALLET_MARKUP).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    return apply_min_charge(
+        (raw * WALLET_MARKUP).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    )
 
 
 # ---------------------------------------------------------------------------
