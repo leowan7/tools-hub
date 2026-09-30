@@ -127,7 +127,7 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
         # boltzgen job submitted before the substitution above existed stored
         # ``runtime_estimate_min: None`` AND ``runtime_basis: None``; reviving
         # only the minutes made the panel print "82.4 min for None", because
-        # templates/components/preflight_panel.html:84 interpolates the basis
+        # templates/components/preflight_panel.html interpolates the basis
         # directly and this app sets no Jinja ``finalize`` hook. Same wording
         # as the runtime_basis f-string in shared/pdb_preflight.py's
         # _check_size_envelope, which is where a new job's
@@ -190,7 +190,7 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "over_combined_cap": verdict.size_envelope.over_combined_cap,
             # A refusal reason of its own, and the only one that is ABOUT
             # runtime. ``shared/pdb_preflight.py::_check_size_envelope`` clears
-            # over_soft_warn when it fires (:1987-1991), so a panel keyed on
+            # over_soft_warn when it fires, so a panel keyed on
             # over_soft_warn alone renders a ceiling refusal unhighlighted and
             # with no runtime line. The server-rendered twin reads it at
             # templates/components/preflight_panel.html:172 and :186;

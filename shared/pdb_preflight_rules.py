@@ -139,7 +139,9 @@ class SizeEnvelope:
     # THE WALL-CLOCK THE CONTAINER ACTUALLY DIES AT, in seconds, or None where
     # nobody has read the pipeline that runs this tool. NOT a policy number and
     # NOT ``gpu.modal_client.PRESET_CAPS`` (which is never sent to Modal and has
-    # no value-carrying reader outside campaign chunk sizing): the hardcoded
+    # no value-carrying reader on the request path outside campaign chunk
+    # sizing; ``scripts/calibration/poll_results.py`` also reads the value, for
+    # an offline SLOW_SUCCESS threshold): the hardcoded
     # ``subprocess.run(timeout=...)`` in the sibling repo llm-proteinDesigner
     # that kills the design run, after which the wrapper's catch-all posts a
     # bucket-less FAILED webhook, ``shared/jobs.py::classify_terminal_state``

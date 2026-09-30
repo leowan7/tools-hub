@@ -254,7 +254,7 @@ def test_both_panels_read_the_same_envelope_fields():
     # The flag has to be read in the branch that actually receives a ceiling
     # verdict. A mention anywhere in the file is not enough: the first repair
     # put the whole envelope block in ``renderVerdict``'s ready branch, where
-    # ``shared/pdb_preflight.py:689-708`` guarantees the flag is false, so the
+    # ``shared/pdb_preflight.py::preflight_for_tool`` guarantees the flag is false, so the
     # refusal rendered with no envelope at all while this assertion passed.
     js = Path("static/js/preflight.js").read_text(encoding="utf-8")
     needs_fix_at = js.index('v.kind === "needs_fix"')
@@ -468,3 +468,44 @@ def test_the_count_re_runs_the_panel():
     at = js.index("for (const inp of [")
     loop = js[at:js.index("]", at)]
     assert "designsInput" in loop, loop
+
+
+def test_the_campaign_refusal_quotes_a_size_that_is_then_admitted():
+    """Trim to exactly the number the campaign refusal names and it must run.
+
+    ``size_only_refusal`` is the gate for ``POST /campaigns`` and
+    ``POST /targets/<id>/launch`` -- the routes that spend the money -- and it
+    quotes the same "Narrow the target region to at most N residues" sentence
+    the form route does. The clamp that makes N a size which fits the runtime
+    ceiling lived only in ``preflight_for_tool`` for one commit, so the
+    campaign refusal was measurably self-contradicting: boltzgen at 700 aa said
+    600, and 600 came back "estimated at 7.2 h - past the 110-minute limit".
+
+    The invariant is the round trip, not the number: whatever figure the
+    refusal names, feeding it back in must be admitted. Both callers now route
+    through ``_fit_target_aa``, so neither can drift from it alone.
+    """
+    import re
+
+    from shared import compute_campaigns as cc
+
+    for slug in ("bindcraft", "boltzgen"):
+        rules = TOOL_RULES[slug]
+        n = rules.size.runtime_fixed_designs or cc.single_container_ceiling(slug)
+        for target_aa in (
+            rules.size.hard_cap_target_aa + 200,
+            rules.size.hard_cap_target_aa,
+            rules.size.hard_cap_target_aa // 2,
+        ):
+            msg = size_only_refusal(slug, target_aa, num_designs=n)
+            if msg is None:
+                continue
+            quoted = re.search(r"at most (\d+) residues", msg)
+            if not quoted:
+                continue
+            trimmed = int(quoted.group(1))
+            again = size_only_refusal(slug, trimmed, num_designs=n)
+            assert again is None, (
+                f"{slug} at {target_aa} aa / {n} designs was told to narrow to "
+                f"{trimmed} residues, and {trimmed} is refused too: {again}"
+            )

@@ -691,51 +691,7 @@ def preflight_for_tool(
         or size_envelope.over_combined_cap
         or size_envelope.over_runtime_ceiling
     ):
-        # The residue figure the fix line quotes has to be one that RUNS. The
-        # hard cap alone is not: above the runtime ceiling the binding limit is
-        # smaller, so a boltzgen 500 aa upload was refused with "Targets up to
-        # about 153 residues fit" in the reason and "keep it at or under 600"
-        # in the fix, and a user who trimmed to 600 was refused again. Solved
-        # at the count the estimate was made from, which is the pinned pool
-        # where there is one (same selection as _check_size_envelope).
-        fit_aa = size_envelope.hard_cap_target_aa
-        if size_envelope.over_runtime_ceiling:
-            # Only when TARGET SIZE is the lever. For a per-design tool whose
-            # count can still bring the estimate under the ceiling, the reason
-            # says "Ask for at most N designs against a target this size"
-            # (the over_runtime branch of _check_size_envelope) and a fix
-            # line clamped to the residue inverse
-            # contradicted it -- bindcraft at 115 aa / 100 designs asked for
-            # "at most 25 designs" and then "keep it at or under 46 residues",
-            # 40% of a target it runs happily at 25. Same test
-            # max_designs_within_ceiling makes there, so the two lines cannot
-            # disagree about which knob to turn.
-            #
-            # The condition is "does the REASON name a count", not "does a
-            # count fit". _check_size_envelope's message branches are
-            # exclusive and over_hard / over_combined win, so a target over
-            # both caps gets the hard-cap message, which names no count --
-            # skipping the clamp there quoted hard_cap_target_aa unchecked and
-            # re-opened exactly the trim-then-refused-again failure the clamp
-            # exists to prevent: bindcraft at 600 aa / 4 designs was told to
-            # keep it at or under 500 residues, which is 340 min against a
-            # 240-minute ceiling. Only the over_runtime branch with a count
-            # that fits names designs, so only that one skips the clamp.
-            pinned = rules.size.runtime_fixed_designs
-            size_is_the_lever = (
-                bool(pinned)
-                or size_envelope.over_hard_cap
-                or size_envelope.over_combined_cap
-                or max_designs_within_ceiling(
-                    rules, size_envelope.residue_count
-                ) < 1
-            )
-            if size_is_the_lever:
-                ceiling_aa = largest_target_aa_within_ceiling(
-                    rules, pinned or num_designs,
-                )
-                if ceiling_aa > 0:
-                    fit_aa = min(fit_aa, ceiling_aa)
+        fit_aa = _fit_target_aa(rules, size_envelope, num_designs)
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -2032,6 +1988,58 @@ def _check_size_envelope(
     )
 
 
+def _fit_target_aa(
+    rules: ToolRules,
+    env: SizeEnvelopeStatus,
+    num_designs: Optional[int],
+) -> int:
+    """The residue figure a size refusal may quote: one that actually RUNS.
+
+    The hard cap alone is not. Above the runtime ceiling the binding limit is
+    smaller, so a boltzgen 500 aa upload was refused with "Targets up to about
+    153 residues fit" in the reason and "keep it at or under 600" in the fix,
+    and a user who trimmed to 600 was refused again. Solved at the count the
+    estimate was made from, which is the pinned pool where there is one (same
+    selection as ``_check_size_envelope``).
+
+    Clamped only when TARGET SIZE is the lever. For a per-design tool whose
+    count can still bring the estimate under the ceiling, the reason says "Ask
+    for at most N designs against a target this size" (the ``over_runtime``
+    branch of ``_check_size_envelope``) and clamping the residue figure
+    contradicted it -- bindcraft at 115 aa / 100 designs asked for "at most 25
+    designs" and then "keep it at or under 46 residues", 40% of a target it
+    runs happily at 25. Both lines call ``max_designs_within_ceiling``, so they
+    cannot disagree about which knob to turn.
+
+    The condition is "does the REASON name a count", not "does a count fit".
+    ``_check_size_envelope``'s message branches are exclusive and over_hard /
+    over_combined win, so a target over both caps gets the hard-cap message,
+    which names no count -- skipping the clamp there quoted the bare cap and
+    re-opened exactly the trim-then-refused-again failure this exists to
+    prevent: bindcraft at 600 aa / 4 designs was told to keep it at or under
+    500 residues, which is 340 min against a 240-minute ceiling.
+
+    Shared by ``preflight_for_tool`` and ``size_only_refusal`` because the
+    campaign routes quote the same sentence and are where the money goes; the
+    clamp lived only in the form route for one commit and the campaign refusal
+    was measurably self-contradicting for boltzgen at 700 aa.
+    """
+    fit_aa = env.hard_cap_target_aa
+    if not env.over_runtime_ceiling:
+        return fit_aa
+    pinned = rules.size.runtime_fixed_designs
+    size_is_the_lever = (
+        bool(pinned)
+        or env.over_hard_cap
+        or env.over_combined_cap
+        or max_designs_within_ceiling(rules, env.residue_count) < 1
+    )
+    if not size_is_the_lever:
+        return fit_aa
+    ceiling_aa = largest_target_aa_within_ceiling(rules, pinned or num_designs)
+    return min(fit_aa, ceiling_aa) if ceiling_aa > 0 else fit_aa
+
+
 def size_only_refusal(
     tool_slug: str,
     target_aa: int,
@@ -2089,7 +2097,8 @@ def size_only_refusal(
         return status.hard_fail_message
     fix = (
         f"Narrow the target region to at most "
-        f"{status.hard_cap_target_aa} residues, or pick a smaller target."
+        f"{_fit_target_aa(rules, status, num_designs)} residues, or pick a "
+        f"smaller target."
     )
     return f"{status.hard_fail_message} {fix}"
 

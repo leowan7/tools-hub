@@ -188,7 +188,7 @@
         // (templates/components/preflight_panel.html:73-86): highlight keyed
         // on over_soft_warn alone, and a runtime line with no refusal clause.
         // The other three flags are absent from this condition deliberately --
-        // shared/pdb_preflight.py:689-708 returns NEEDS_FIX whenever any of
+        // shared/pdb_preflight.py::preflight_for_tool returns NEEDS_FIX whenever any of
         // them is set, so none of them can be true on a verdict that reaches
         // this branch. The ceiling refusal renders in the needs_fix branch
         // below. Neither JS block prints the combined-with-binder figures the
@@ -279,7 +279,7 @@
         </p>`;
       }
       // THE CEILING REFUSAL LANDS HERE, not in the ready branch above:
-      // shared/pdb_preflight.py:689-708 returns NEEDS_FIX whenever
+      // shared/pdb_preflight.py::preflight_for_tool returns NEEDS_FIX whenever
       // over_runtime_ceiling is set, so a panel that rendered the envelope
       // only under `kind === "ready"` showed no envelope, no runtime figure
       // and no highlight on the exact verdict the figure explains. Mirrors the
