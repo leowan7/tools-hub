@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Optional
 
-from flask import redirect, render_template, request, session, url_for
+from flask import current_app, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException
+from werkzeug.routing import RequestRedirect
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from shared.supabase_client import get_supabase_client
@@ -694,6 +696,29 @@ def update_password(
         return False, f"Password update failed: {msg}"
 
 
+def _login_next() -> str:
+    """The path login should return the user to after they sign in.
+
+    A POST-only route (POST /tools/<slug>/submit) has no GET handler, so
+    returning there after sign-in is a 405. For a non-GET request, walk up
+    the path to the nearest prefix that answers GET (the tool form), else "/".
+    Login still runs the value through blueprints/auth.py::safe_next.
+    """
+    path = request.path
+    if request.method in ("GET", "HEAD"):
+        return path
+    adapter = current_app.create_url_adapter(request)
+    while path not in ("", "/"):
+        try:
+            adapter.match(path, method="GET")
+            return path
+        except RequestRedirect:
+            return path
+        except HTTPException:
+            path = path.rsplit("/", 1)[0]
+    return "/"
+
+
 def login_required(f):
     """Flask route decorator that enforces authentication.
 
@@ -704,7 +729,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get("user_email"):
-            return redirect(url_for("auth.login", next=request.path))
+            return redirect(url_for("auth.login", next=_login_next()))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -719,7 +744,7 @@ def require_staff(f):
     def decorated_function(*args, **kwargs):
         email = session.get("user_email")
         if not email:
-            return redirect(url_for("auth.login", next=request.path))
+            return redirect(url_for("auth.login", next=_login_next()))
         if email not in STAFF_EMAILS:
             # Staff-only routes return 404 rather than 403 so their
             # existence is not revealed to authenticated non-staff users.

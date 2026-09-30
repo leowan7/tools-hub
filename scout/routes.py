@@ -1382,37 +1382,35 @@ def analyze():
     # scores nothing qualifying used to skip the write and leave the PREVIOUS
     # chain's file for /scout/download — the same job-scoped assumption as the
     # results.csv cache, one file further on.
+    # epitope_id is the pipeline's patch id in every file, the id the page's
+    # "Sign in to assess" links carry. rank is the page's order: 1-3 for the
+    # reported epitopes, blank for patches not reported.
+    ranked_rows = [(rank, e) for rank, e in enumerate(top3, start=1)]
+    reported = {id(e) for e in top3}
+    ranked_rows += [("", e) for e in all_epitopes if id(e) not in reported]
+
+    def _write_ranked(path, columns, rows, flags=True):
+        with path.open("w", newline="") as csv_file:
+            writer = csv_module.DictWriter(csv_file, fieldnames=["rank"] + columns)
+            writer.writeheader()
+            for rank, epitope in rows:
+                row = epitope["_row"].copy()
+                row["rank"] = rank
+                if flags:
+                    row["quality_flags"] = epitope["quality_flags"]
+                writer.writerow(row)
+
     epitopes_annotated_path = job_dir / "epitopes_annotated.csv"
     if top3:
-        with epitopes_annotated_path.open("w", newline="") as csv_file:
-            writer = csv_module.DictWriter(csv_file, fieldnames=CSV_COLUMNS_ANNOTATED)
-            writer.writeheader()
-            for rank, epitope in enumerate(top3, start=1):
-                row = epitope["_row"].copy()
-                row["epitope_id"] = rank
-                row["quality_flags"] = epitope["quality_flags"]
-                writer.writerow(row)
+        _write_ranked(epitopes_annotated_path, CSV_COLUMNS_ANNOTATED, ranked_rows[:len(top3)])
     else:
         _unlink_quietly(epitopes_annotated_path)
 
-    results_annotated_path = job_dir / "results_annotated.csv"
-    with results_annotated_path.open("w", newline="") as csv_file:
-        writer = csv_module.DictWriter(csv_file, fieldnames=CSV_COLUMNS_ANNOTATED)
-        writer.writeheader()
-        for e in all_epitopes:
-            row = e["_row"].copy()
-            row["quality_flags"] = e["quality_flags"]
-            writer.writerow(row)
+    _write_ranked(job_dir / "results_annotated.csv", CSV_COLUMNS_ANNOTATED, ranked_rows)
 
     epitopes_csv_path = job_dir / "epitopes.csv"
     if top3 and fieldnames:
-        with epitopes_csv_path.open("w", newline="") as csv_file:
-            writer = csv_module.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
-            for rank, epitope in enumerate(top3, start=1):
-                row = epitope["_row"].copy()
-                row["epitope_id"] = rank
-                writer.writerow(row)
+        _write_ranked(epitopes_csv_path, fieldnames, ranked_rows[:len(top3)], flags=False)
     else:
         _unlink_quietly(epitopes_csv_path)
 

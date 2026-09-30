@@ -30,10 +30,9 @@ FORM FIELD reaches that field. It does not assert anything about stored
 keys that name no field, and there are many: iggm stores the antibody
 FASTA as ``antibody_fasta`` while the field is ``fasta``, af2 stores
 parsed ``fasta_records`` rather than the pasted text, opendde stores a
-built ``spec``. Cloning those tools loses those values too, but fixing it
-means re-serialising parsed structures back into textareas — a different
-and larger change than making a name lookup work. See the D3 findings in
-the PR description.
+built ``spec``. Those are covered by tests/test_clone_prefill_restore.py,
+which re-validates each cloned form and compares the result with the
+stored inputs.
 """
 
 from __future__ import annotations
