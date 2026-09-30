@@ -78,3 +78,13 @@ def test_systemic_failure_still_exits_one(app, monkeypatch, resp):
     result = app.test_cli_runner().invoke(args=["reengagement:send"])
     assert result.exit_code == 1, result.output
     assert "invalid_recipients=0 errors=1" in result.output
+
+
+def test_every_address_refused_exits_one(app, monkeypatch):
+    monkeypatch.setattr(reengagement, "find_candidates", lambda now=None: [
+        reengagement.Candidate(user_id="u1", email=REFUSED)])
+    _resend(monkeypatch, _Resp(422, {"name": "validation_error",
+                                     "message": MESSAGE_422}))
+    result = app.test_cli_runner().invoke(args=["reengagement:send"])
+    assert result.exit_code == 1, result.output
+    assert "sent=0 skipped_no_suggestions=0 invalid_recipients=1 errors=1" in result.output
