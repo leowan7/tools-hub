@@ -150,7 +150,7 @@ adapter = ToolAdapter(
                 "scale up. A batch whose estimated runtime is over the "
                 "four-hour limit one run is stopped at is refused when you "
                 "submit it, and the refusal names a count that fits — about "
-                "5 trajectories on a 300-residue target, 2 on a 500-residue "
+                "5 trajectories on a 320-residue target, 2 on a 500-residue "
                 "one. A small target is not refused at any count: batches run "
                 "in groups of 6, and 6 trajectories fit the limit up to about "
                 "300 residues. "

@@ -509,3 +509,29 @@ def test_the_campaign_refusal_quotes_a_size_that_is_then_admitted():
                 f"{slug} at {target_aa} aa / {n} designs was told to narrow to "
                 f"{trimmed} residues, and {trimmed} is refused too: {again}"
             )
+
+
+def test_the_preset_copy_quotes_counts_the_ceiling_actually_allows():
+    """Every "N trajectories on an M-residue target" in the copy is measured.
+
+    The copy carried "about 25 trajectories at 115 residues" through a commit
+    in which the container ceiling made that refusal unreachable, and then
+    "5 on a 300-residue target" when 300 aa still admits 6 -- prose drifting
+    from the curve twice in two commits, both caught by a reviewer rather than
+    by a test. This reads the figures back out of the description and asks the
+    inverse.
+    """
+    import re
+
+    from tools.bindcraft import adapter
+
+    rules = TOOL_RULES["bindcraft"]
+    text = " ".join(p.description or "" for p in adapter.presets)
+    pairs = re.findall(r"(\d+) trajectories on a (\d+)-residue", text)
+    assert pairs, text
+    for count, target_aa in pairs:
+        assert max_designs_within_ceiling(rules, int(target_aa)) == int(count), (
+            f"copy says {count} trajectories fit a {target_aa}-residue target; "
+            f"the curve says "
+            f"{max_designs_within_ceiling(rules, int(target_aa))}"
+        )

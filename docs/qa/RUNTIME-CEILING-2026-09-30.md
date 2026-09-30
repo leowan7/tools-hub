@@ -55,7 +55,8 @@ of the five turn out not to bound anything.
   only value-carrying reader on the request path is
   `shared/compute_campaigns.py::_campaign_container_seconds`; offline,
   `scripts/calibration/poll_results.py` reads it for a SLOW_SUCCESS threshold.
-  `gpu/modal_client.py` reads it only to test it against zero. boltzgen's 3600
+  `gpu/modal_client.py` tests it against zero and echoes it in `SubmitResult`
+  as `gpu_seconds_cap`, which no non-test consumer reads. boltzgen's 3600
   sits *below* the 4944 s run that succeeded, so if it had bound anything that
   run would have died.
 * **The Modal function timeout binds nothing either** at 23 h
