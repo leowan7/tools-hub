@@ -2025,6 +2025,19 @@ def _fit_target_aa(
     was measurably self-contradicting for boltzgen at 700 aa.
     """
     fit_aa = env.hard_cap_target_aa
+    if env.combined_aa is not None:
+        # The combined budget binds too, and the target cap alone does not
+        # respect it: bindcraft at 325 aa with a 300 aa binder was told to
+        # narrow to 302 (the target cap's ceiling-clamped value), and 302 + 300
+        # is still over the 600 aa combined budget, so the trimmed
+        # resubmission was refused AGAIN and quoted 500 the second time --
+        # larger than the target they started from. The admissible answer is
+        # the room the binder leaves. Applied in every arm, not just
+        # ``over_combined_cap``: a figure that breaches the combined budget is
+        # wrong to quote whichever flag produced the message.
+        room = env.hard_cap_combined_aa - (env.combined_aa - env.residue_count)
+        if room > 0:
+            fit_aa = min(fit_aa, room)
     if not env.over_runtime_ceiling:
         return fit_aa
     pinned = rules.size.runtime_fixed_designs

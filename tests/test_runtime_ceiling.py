@@ -492,23 +492,33 @@ def test_the_campaign_refusal_quotes_a_size_that_is_then_admitted():
     for slug in ("bindcraft", "boltzgen"):
         rules = TOOL_RULES[slug]
         n = rules.size.runtime_fixed_designs or cc.single_container_ceiling(slug)
-        for target_aa in (
-            rules.size.hard_cap_target_aa + 200,
-            rules.size.hard_cap_target_aa,
-            rules.size.hard_cap_target_aa // 2,
-        ):
-            msg = size_only_refusal(slug, target_aa, num_designs=n)
-            if msg is None:
-                continue
-            quoted = re.search(r"at most (\d+) residues", msg)
-            if not quoted:
-                continue
-            trimmed = int(quoted.group(1))
-            again = size_only_refusal(slug, trimmed, num_designs=n)
-            assert again is None, (
-                f"{slug} at {target_aa} aa / {n} designs was told to narrow to "
-                f"{trimmed} residues, and {trimmed} is refused too: {again}"
-            )
+        seen = 0
+        for target_aa in range(50, rules.size.hard_cap_target_aa + 300, 25):
+            # The binder axis is not optional: the combined budget binds
+            # independently of the target cap, and clamping only against the
+            # cap and the ceiling left every combined-cap refusal quoting a
+            # figure that is refused again. A sweep with binder_max_aa=None
+            # alone has zero violations, which is exactly why it went unseen.
+            for binder_max_aa in (None, 50, 150, 300):
+                msg = size_only_refusal(
+                    slug, target_aa, num_designs=n, binder_max_aa=binder_max_aa,
+                )
+                if msg is None:
+                    continue
+                quoted = re.search(r"at most (\d+) residues", msg)
+                if not quoted:
+                    continue
+                trimmed = int(quoted.group(1))
+                again = size_only_refusal(
+                    slug, trimmed, num_designs=n, binder_max_aa=binder_max_aa,
+                )
+                seen += 1
+                assert again is None, (
+                    f"{slug} at {target_aa} aa / {n} designs / binder "
+                    f"{binder_max_aa}: told to narrow to {trimmed} residues, "
+                    f"and {trimmed} is refused too: {again}"
+                )
+        assert seen > 20, f"{slug}: only {seen} refusals quoted a size"
 
 
 def test_the_preset_copy_quotes_counts_the_ceiling_actually_allows():
