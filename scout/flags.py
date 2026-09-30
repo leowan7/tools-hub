@@ -82,7 +82,8 @@ def compute_quality_flags(
     bfactor_score: float,
     is_functional_site: bool,
     residues_str: str = "",
-    chain_length: int = 0,
+    chain_first: "int | None" = None,
+    chain_last: "int | None" = None,
     is_plddt: bool = False,
 ) -> str:
     """Return pipe-delimited quality flag string for a patch.
@@ -97,7 +98,11 @@ def compute_quality_flags(
         bfactor_score: Normalized, inverted B-factor score (0-1).
         is_functional_site: True if patch overlaps a literature-returned region.
         residues_str: Comma-separated residue string (e.g. "LYS23,ASP24").
-        chain_length: Total residue count of the target chain.
+        chain_first: Lowest residue number in the target chain
+            (ChainInfo.first_resseq). The terminal-patch flag is skipped when
+            this or chain_last is None.
+        chain_last: Highest residue number in the target chain
+            (ChainInfo.last_resseq).
         is_plddt: True if B-factor column contains AlphaFold pLDDT values.
 
     Returns:
@@ -131,14 +136,13 @@ def compute_quality_flags(
     res_names = [name for name, _ in parsed]
     res_nums = [num for _, num in parsed]
 
-    # Terminal patch: >50% of residues within 5 positions of chain ends
-    if res_nums and chain_length > 0:
-        min_resnum = min(res_nums)
-        max_resnum = min_resnum + chain_length - 1
+    # Terminal patch: >50% of residues numbered within 5 of the chain's first
+    # or last residue number. An internal chain break is not a terminus.
+    if res_nums and chain_first is not None and chain_last is not None:
         terminal_count = sum(
             1 for num in res_nums
-            if num <= min_resnum + _TERMINAL_PROXIMITY
-            or num >= max_resnum - _TERMINAL_PROXIMITY
+            if num <= chain_first + _TERMINAL_PROXIMITY
+            or num >= chain_last - _TERMINAL_PROXIMITY
         )
         if terminal_count / len(res_nums) > _TERMINAL_FRACTION:
             flags.append("terminal patch")

@@ -602,14 +602,16 @@ def _client_error(exc: BaseException) -> str:
         return str(exc)
     return _GENERIC_ERROR
 
-# Per-chain residue counts, written at intake, read by /analyze.
+# Per-chain [residue_count, first_resseq, last_resseq], written at intake,
+# read by /analyze.
 _CHAIN_INDEX_NAME = "chains.json"
 
 
 def _save_chain_index(job_dir: Path, result) -> None:
-    """Persist the per-chain residue counts this parse already produced.
+    """Persist the per-chain residue counts and end numbers this parse produced.
 
-    /analyze needs the target chain's residue count to cap patch size, and
+    /analyze needs the target chain's residue count to cap patch size, and its
+    first and last residue numbers for the terminal-patch flag, and
     every intake route has already parsed the whole structure to list its
     chains for the picker. Recomputing it in /analyze meant a second full
     BioPython parse of a file up to the 8 MB anonymous cap — ~0.8 CPU-s — for
@@ -620,18 +622,25 @@ def _save_chain_index(job_dir: Path, result) -> None:
     """
     try:
         (job_dir / _CHAIN_INDEX_NAME).write_text(
-            json.dumps({chain.id: chain.residue_count for chain in result.chains}),
+            json.dumps({
+                chain.id: [chain.residue_count, chain.first_resseq, chain.last_resseq]
+                for chain in result.chains
+            }),
             encoding="utf-8",
         )
     except OSError:
         logger.debug("Could not write chain index for %s", job_dir, exc_info=True)
 
 
-def _chain_residue_count(job_dir: Path, pdb_path: Path, chain_id: str) -> "int | None":
-    """Residue count for ``chain_id``, from the intake index or by parsing.
+def _chain_extent(
+    job_dir: Path, pdb_path: Path, chain_id: str
+) -> "tuple[int, int, int] | None":
+    """(residue_count, first_resseq, last_resseq) for ``chain_id``, from the
+    intake index or by parsing.
 
     The parse is a fallback for job directories created before the index
-    existed — a deploy landing mid-session. It MUST be called from inside the
+    existed, or before it held end numbers (an index value that is a bare
+    count) — a deploy landing mid-session. It MUST be called from inside the
     caller's compute slot: it is a full parse of a caller-chosen structure,
     and running it outside the bound left ~0.8 CPU-s of every anonymous
     analysis unmetered.
@@ -640,16 +649,19 @@ def _chain_residue_count(job_dir: Path, pdb_path: Path, chain_id: str) -> "int |
         index = json.loads(
             (job_dir / _CHAIN_INDEX_NAME).read_text(encoding="utf-8")
         )
-        count = index.get(chain_id)
-        if isinstance(count, int):
-            return count
+        entry = index.get(chain_id)
+        if (
+            isinstance(entry, list) and len(entry) == 3
+            and all(isinstance(n, int) for n in entry)
+        ):
+            return tuple(entry)
     except (OSError, ValueError, AttributeError):
         pass
 
     try:
         for chain in parse_pdb(pdb_path).chains:
             if chain.id == chain_id:
-                return chain.residue_count
+                return (chain.residue_count, chain.first_resseq, chain.last_resseq)
     except Exception:
         logger.debug(
             "Chain residue count unavailable for %s", pdb_path, exc_info=True
@@ -1176,6 +1188,7 @@ def analyze():
 
     known_binders = []
     _chain_total = None
+    _chain_first = _chain_last = None
     with anon_compute_slot(ANON_MAX_CONCURRENT_RUNS) as _slot:
         if not _slot:
             observe_scout_refusal(REASON_BUSY)
@@ -1245,7 +1258,9 @@ def analyze():
         # a full parse of a caller-chosen structure up to the 8 MB cap — ran
         # outside the concurrency bound and was invisible to it. Normally it
         # is now a small JSON read, because intake already knew the answer.
-        _chain_total = _chain_residue_count(job_dir, pdb_path, chain_id)
+        _extent = _chain_extent(job_dir, pdb_path, chain_id)
+        if _extent is not None:
+            _chain_total, _chain_first, _chain_last = _extent
 
     _MIN_COMPOSITE = 0.40
     _MIN_RESI_COUNT = 5
@@ -1362,8 +1377,6 @@ def analyze():
         for row in all_rows
     ) if all_rows else False
 
-    _flag_chain_length = _chain_total or 0
-
     for e in all_epitopes:
         row = e["_row"]
         e["quality_flags"] = compute_quality_flags(
@@ -1373,7 +1386,8 @@ def analyze():
             bfactor_score=float(row.get("bfactor_score", 0)),
             is_functional_site=False,
             residues_str=row.get("residues", ""),
-            chain_length=_flag_chain_length,
+            chain_first=_chain_first,
+            chain_last=_chain_last,
             is_plddt=_is_plddt,
         )
 
