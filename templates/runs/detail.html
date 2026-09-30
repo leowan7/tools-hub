@@ -50,6 +50,9 @@
     </div>
     <span class="rd-badge {{ campaign.status }}" id="rd-status">{{ campaign.status.replace('_',' ') }}</span>
   </div>
+  {% if partial_notice %}
+    <p class="rd-progress-label" style="color: var(--warning, #fbbf24);">{{ partial_notice }}</p>
+  {% endif %}
 
   {# Why the lab handoff sent the user back here. FIVE ways to fail, five
      sentences, because "something went wrong" on a paid intake tells a user

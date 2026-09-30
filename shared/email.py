@@ -40,6 +40,7 @@ from typing import Any, Optional
 import requests
 
 from shared import metric_glossary as _metric_glossary
+from shared.run_notices import run_notices
 from shared.tool_meta import preset_label
 from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
@@ -214,6 +215,7 @@ def _job_complete_template_context(
         "headline":          headline,
         "summary":           _result_summary(job, tone=tone),
         "cost_line":         _cost_breakdown_line(job, tone=tone),
+        "run_notices":       run_notices(job),
         "job_id":            getattr(job, "id", ""),
         "job_preset":        preset_label(getattr(job, "preset", "")),
         "job_created":       (getattr(job, "created_at", "") or "")[:19],
@@ -637,8 +639,6 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
         return ""
     estimate_raw = wallet_ctx.get("estimate_usd")
     try:
-        from decimal import Decimal  # noqa: PLC0415
-
         from shared.wallet import compute_charge_usd  # noqa: PLC0415
         from shared.wallet_estimates import (  # noqa: PLC0415
             compute_hard_cap,
@@ -648,8 +648,9 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
         return ""
     # Must resolve EXACTLY as the settle path does (shared/jobs.py
     # _settle_wallet_hold_for_completed_job), including the job.result probe:
-    # this line recomputes the charge rather than reading the settled ledger
-    # row, so any divergence prints a "charged $X" the wallet never took.
+    # this recomputation is the figure printed whenever the ledger read below
+    # finds no settled hold, so any divergence prints a "charged $X" the wallet
+    # never took.
     reported = wallet_ctx.get("gpu_class")
     if isinstance(job.result, dict):
         candidate = job.result.get("gpu_class") or job.result.get("gpu_sku")
@@ -668,13 +669,27 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
             actual = hard_cap
     except Exception:
         pass
+    # Once settled, the ledger net is what the wallet took; it differs from the
+    # recomputation above when settle_hold absorbed an overrun the balance could
+    # not cover (supabase/migrations/0020_wallet_corrections.sql, absorbed_variance).
+    try:
+        from shared.wallet import job_spend_by_hold  # noqa: PLC0415
+
+        hold = str(wallet_ctx["hold_tx_id"])
+        ledger = job_spend_by_hold(job.user_id, [hold]).get(hold)
+        if ledger and ledger.get("settled"):
+            actual = ledger["usd"]
+    except Exception:
+        pass
+    # Rounded by the same rule as shared.run_notices.overrun_line, so the two
+    # lines in one email print the same figures.
+    from shared.run_notices import to_cents  # noqa: PLC0415
+
     bits = []
-    if estimate_raw:
-        try:
-            bits.append(f"Estimated ${float(Decimal(str(estimate_raw))):.2f}")
-        except Exception:
-            pass
-    bits.append(f"charged ${float(actual):.2f}")
+    estimate = to_cents(estimate_raw) if estimate_raw else None
+    if estimate is not None:
+        bits.append(f"Estimated ${estimate}")
+    bits.append(f"charged ${to_cents(actual)}")
     return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
 
 
