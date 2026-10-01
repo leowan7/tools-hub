@@ -2277,14 +2277,15 @@ def mid_run_monitor_check(
     the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
     is retained for signature compatibility and is no longer used here.
 
-    Side effect: when the job row is still pending or running and the
-    heartbeat reports nonzero GPU seconds, persists
-    ``cumulative_gpu_seconds`` to
-    ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
-    consumed time without waiting for a terminal Modal webhook. The
-    value is a heartbeat-resolution snapshot (last value reported), so
-    a cancel between heartbeats undercharges by at most one interval.
-    The persist is CAS-guarded on status IN (pending, running) so a
+    Side effect: the ``_cas_update`` call below writes
+    ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``. Read
+    the body for the guards on that call rather than a prose
+    restatement of them here.
+    The value written is a heartbeat-resolution snapshot (last value
+    reported), so a cancel bills what the last heartbeat reported and
+    not what the job consumed after it. Heartbeat cadence is set by
+    each tool's pipeline, so the size of that gap is not bounded here.
+    The write is CAS-guarded on status IN (pending, running) so a
     terminal webhook landing between the read and the write wins; the
     heartbeat's older snapshot cannot clobber the authoritative
     settle amount.
