@@ -83,6 +83,11 @@ INFO_REASONS = ("bad_request", "job_expired")
 POLICY_REASONS = (
     "rate_limited",
     "session_rate_limited",
+    # Added 2026-09-30 with the free-tier run cap removal. Same per-session
+    # window as the line above, but the caller already has an account, so it
+    # is NOT a conversion opportunity and the FAIL text below must not read it
+    # as one (scout/ratelimit.py::REASON_SIGNED_IN_LIMITED).
+    "signed_in_rate_limited",
     "no_session",
     "busy",
     "at_capacity",
@@ -295,7 +300,9 @@ def evaluate(
             "- /health stays green through it. Check the per-reason split "
             "above: rate_limited means a whole network hit the shared ceiling, "
             "busy/at_capacity mean the box is under pressure, "
-            "session_rate_limited alone is ordinary over-use."
+            "session_rate_limited alone is ordinary over-use by visitors, and "
+            "signed_in_rate_limited is ordinary over-use by people who already "
+            "have an account - no signup prompt will help them."
         )
         return 1, lines
     lines.append("OK")

@@ -18,20 +18,12 @@
         <p class="subtitle">Identify candidate surface epitopes for binder design. Upload a structure, select a chain, and get ranked patches scored by accessibility, hydrophobic exposure, rigidity, and hot-spot density.</p>
       </div>
 
-      <!-- Quota pill — populated live from /quota via fetch(). Epitope Scout
-           is free; this shows how many of the free runs have been used in the
-           rolling 30-day window, styled as a soft amber notice when the user
-           is at or near the cap. Graceful no-op if Supabase is unreachable. -->
-      <div id="scout-quota-pill" class="scout-quota-pill" hidden>
-        <span id="scout-quota-text"></span>
-      </div>
-
       {% if not session.get('user_email') %}
       <!-- Anonymous notice. Epitope Scout runs without an account so a first
            visit can settle which residues to aim a binder at before signing
            up; say plainly what that costs the visitor (nothing) and how long
            their structure is kept (the cleanup_old_jobs window, one hour). -->
-      <div class="scout-quota-pill">
+      <div class="scout-notice-pill">
         <span>
           Free, no account needed &mdash; load the example or upload your own
           structure. Uploaded files are deleted automatically within an hour.
@@ -40,29 +32,6 @@
         </span>
       </div>
       {% endif %}
-      <script>
-        (function () {
-          fetch('/scout/quota', { credentials: 'same-origin' })
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (q) {
-              if (!q) return;
-              var pill = document.getElementById('scout-quota-pill');
-              var text = document.getElementById('scout-quota-text');
-              if (!pill || !text) return;
-              if (q.unlimited) return;  // no cap in effect, no pill
-              if (q.tier === 'anon') return;  // not signed in, no pill
-              var used = q.runs_used || 0;
-              var cap = q.runs_cap || 3;
-              var remaining = Math.max(0, cap - used);
-              text.textContent = 'You have used ' + used + ' of ' + cap + ' free Scout runs in the last 30 days.';
-              if (remaining <= 1) {
-                pill.classList.add('scout-quota-pill--warn');
-              }
-              pill.hidden = false;
-            })
-            .catch(function () { /* silent fail — quota is a nice-to-have */ });
-        })();
-      </script>
 
       <!-- Input panel — upload, chain select, analyze -->
       <div class="panel">
@@ -261,6 +230,15 @@
       </div><!-- /results-section -->
 
   <script>
+    // Is the person looking at this page signed in? Rendered by the server,
+    // read by appendSigninCta below, which must never offer "Sign in to keep
+    // going" to someone who already has. No refusal reason is one signing in
+    // would help: the only one a signed-in caller can actually reach is the
+    // per-session window, which signing in does not raise (scout/ratelimit.py
+    // module docstring). That is why the suppression lives on the viewer and
+    // not in SIGNIN_HELPS - it holds for reasons they cannot reach either.
+    var SCOUT_SIGNED_IN = {{ 'true' if session.get('user_email') else 'false' }};
+
     const PATCH_COLORS = [
       '#ef4444', '#3b82f6', '#22c55e', '#f97316',
       '#a855f7', '#14b8a6', '#eab308', '#ec4899',
@@ -353,13 +331,6 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ job_id: jobId, chain: chain }),
         });
-        // Free-tier quota exceeded — paywall kicked in. Redirect instead
-        // of rendering a dead error message.
-        if (resp.status === 402) {
-          resetProgress();
-          window.location.href = '/pricing';
-          return;
-        }
         var data = await resp.json();
         if (!resp.ok) {
           resetProgress();
@@ -805,9 +776,14 @@
 
     // Phase 5 - a rate-limit refusal is a conversion moment, not a dead end.
     //
-    // Signing in bypasses BOTH anonymous tiers: scout/ratelimit.py
-    // short-circuits the whole decorator on session['user_email'], so the
-    // offer is honest at the per-IP wall and the per-session one alike.
+    // Signing in helps at BOTH anonymous walls, but not by the same
+    // mechanism, and since 2026-09-30 not by skipping the meter: a signed-in
+    // caller is exempt from the per-IP tier outright, and on the per-session
+    // tier gets a bucket keyed on their own account instead of sharing an
+    // address with strangers (scout/ratelimit.py::anon_rate_limit and
+    // ::_session_key). So the offer is honest at either wall. A caller who is
+    // ALREADY signed in is a different matter and must not be offered it at
+    // all - that is what SCOUT_SIGNED_IN below is for.
     //
     // All three rate-limit reasons are here, INCLUDING no_session. An earlier
     // version of this file used the reason as a proxy for "are cookies
@@ -844,6 +820,12 @@
     };
 
     function signinCanHelp(reason) {
+      // Already signed in? Then there is nothing behind that door. Checked
+      // FIRST and for every reason: whatever signing in lifts, this caller
+      // already has - see SCOUT_SIGNED_IN above. typeof, not a bare read: this
+      // block is extracted and run on its own by
+      // tests/test_scout_refusal_cta.py, where the declaration above is absent.
+      if (typeof SCOUT_SIGNED_IN !== 'undefined' && SCOUT_SIGNED_IN) return false;
       if (!SIGNIN_HELPS[reason]) return false;
       // Signing in stores a session cookie, so without cookies it cannot work
       // and the offer would be a promise the product cannot keep.
@@ -1027,22 +1009,12 @@
       document.getElementById('analyze-error').style.display = 'none';
       document.getElementById('results-section').hidden = true;
 
-      // Pre-flight quota check. EventSource cannot read HTTP 402 cleanly,
-      // so we query /quota first and redirect free-tier users who are at
-      // or over cap before the SSE stream opens. Fail open if /quota
-      // errors out — the /analyze handler enforces the real paywall.
-      fetch('/scout/quota', { credentials: 'same-origin' })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (q) {
-          if (q && !q.unlimited && q.tier !== 'anon' && q.runs_remaining <= 0) {
-            window.location.href = '/pricing';
-            return;
-          }
-          openProgressStream(jobId, chain);
-        })
-        .catch(function () {
-          openProgressStream(jobId, chain);
-        });
+      // Straight to the stream. A pre-flight GET /scout/quota used to run
+      // here to redirect an over-cap free user to /pricing before the SSE
+      // stream opened; there is no per-user cap any more and no /scout/quota
+      // route. A refusal now arrives inside the stream as a
+      // {"stage": "error"} frame, which openProgressStream already renders.
+      openProgressStream(jobId, chain);
     }
 
     // -----------------------------------------------------------------------

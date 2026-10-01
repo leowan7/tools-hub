@@ -113,15 +113,61 @@ def test_every_rate_limit_reason_offers_a_way_forward_when_cookies_work(
 ):
     """The other direction, which the same QC round found broken too.
 
-    ``no_session`` covers any caller with no session id yet — the key is minted
-    lazily by the owner-key helper, not by a successful upload — so it covers a
-    visitor whose cookies are fine and who simply has not uploaded yet. Signing
-    in genuinely lifts the limiter for them — it short-circuits the decorator on
-    session["user_email"] — so suppressing the link denied a working way out.
+    ``no_session`` covers any caller with no session id yet - the key is minted
+    lazily by the owner-key helper, not by a successful upload - so it covers a
+    visitor whose cookies are fine and who simply has not uploaded yet.
+
+    What signing in buys them CHANGED on 2026-09-30. It no longer lifts the
+    window limiter - ``anon_rate_limit`` meters signed-in callers too now - but
+    it still gives them their own session bucket instead of the shared
+    cookie-less one (``scout.ratelimit._session_key``), and it still clears
+    ``busy`` and ``at_capacity`` (``anon_compute_slot``, and the live-job check
+    in ``scout.routes``). So the link is still a way out for an ANONYMOUS
+    visitor; ``test_a_signed_in_visitor_is_never_offered_sign_in`` is what
+    holds the other half, that it is withheld from someone already signed in.
     """
     cta = results[reason + "_cookies_on"]
     assert cta is not None, f"{reason} left the visitor at a dead end"
     assert cta["href"].startswith("/login?next="), cta
+
+
+@needs_node
+@pytest.mark.parametrize(
+    "reason",
+    ["rate_limited", "session_rate_limited", "no_session", "busy", "at_capacity"],
+)
+def test_a_signed_in_visitor_is_never_offered_sign_in(results, reason):
+    """The second lie guard, added 2026-09-30 with the free-tier cap removal.
+
+    Before that date a signed-in caller could reach none of these: the window
+    limiter exempted them outright. Now they can reach one - the per-session
+    window, as ``signed_in_rate_limited`` - so the page can be asked to render
+    a rate-limit refusal to someone already signed in, and "Sign in to keep
+    going" is then both wrong and insulting.
+
+    Keyed on the VIEWER, not the reason, which is why every reason is
+    parametrized here even though a signed-in caller cannot reach four of
+    them: ``rate_limited`` skips them (scout/ratelimit.py, the per-IP
+    exemption), ``busy`` / ``at_capacity`` exempt them (``anon_compute_slot``
+    and ``scout/routes.py::_anon_capacity_error``) and ``no_session`` cannot
+    fire once ``_session_key`` returns a ``user:`` key. The offer is a dead
+    end for all five, so the guard does not have to track which are live.
+    """
+    assert results[reason + "_signed_in"] is None, (
+        f"{reason} offered a sign-in link to someone already signed in"
+    )
+
+
+@needs_node
+def test_the_guard_is_the_flag_and_not_the_reason_list(results):
+    """Negative control for the test above.
+
+    With ``SCOUT_SIGNED_IN`` explicitly false the SAME reason gets the link
+    back, so the suppression is attributable to the flag. Without this, setting
+    ``SIGNIN_HELPS = {}`` would pass the signed-in test for the wrong reason.
+    """
+    cta = results["rate_limited_signed_out"]
+    assert cta is not None and cta["href"].startswith("/login?next="), cta
 
 
 @needs_node
@@ -232,7 +278,9 @@ def test_the_page_script_still_parses(tmp_path):
     handler, not just the refusal path — and the harness would not notice,
     because it only ever extracts and runs one block out of the middle."""
     body = _main_script()
-    # One Jinja expression lives in this script; stub it so node sees only JS.
+    # Jinja expressions live in this script (SCOUT_SIGNED_IN among them); stub
+    # them so node sees only JS. "false" is a valid stand-in for every one of
+    # them today - if that stops being true this needs a real render.
     body = re.sub(r"\{\{.*?\}\}", "false", body)
     path = tmp_path / "page.js"
     path.write_text(body, encoding="utf-8")
