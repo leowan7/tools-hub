@@ -229,8 +229,11 @@ def _fake_transformers(keys_by_class: dict[str, list[str]] | None = None):
 def fake_env(monkeypatch, tmp_path):
     """Install fake ``transformers`` / ``torch`` / ``huggingface_hub``.
 
-    ``raising=False``: the real modules are absent from this interpreter, and
-    ``monkeypatch.delitem`` on an absent key records nothing to undo.
+    ``monkeypatch.setitem`` and nothing else, deliberately: these three keys
+    are ABSENT from ``sys.modules`` in this interpreter, and setitem records
+    that absence and DELETES the key on teardown. A plain assignment would
+    leave a fake ``transformers`` installed for every later test in the
+    session.
     """
 
     def install(index_keys: list[str], keys_by_class=None):
@@ -339,7 +342,9 @@ class TestCheckpointMismatch:
         fake_env([f"esmc.{_T4_KEYS[0]}"] + [f"esmc.{_T5_KEYS[1]}"])
         assert rp._esmc_checkpoint_mismatch()
 
-    def test_an_unreadable_index_is_refused_not_ignored(self, fake_env):
+    def test_an_unreadable_index_is_refused_not_ignored(
+        self, fake_env, monkeypatch
+    ):
         """Fails closed. A missing revision or a network error must not read
         as "the weights are fine" -- that is how this stayed invisible."""
         fake_env(_T4_KEYS)
@@ -349,6 +354,164 @@ class TestCheckpointMismatch:
             raise OSError("404 revision not found")
 
         boom.hf_hub_download = _raise
-        sys.modules["huggingface_hub"] = boom
+        # monkeypatch, not a bare assignment: a raising huggingface_hub left
+        # in sys.modules outlives this test and poisons the session.
+        monkeypatch.setitem(sys.modules, "huggingface_hub", boom)
         detail = rp._esmc_checkpoint_mismatch()
         assert "404 revision not found" in detail, detail
+
+
+# ===========================================================================
+# The refusal has to survive the orchestrator
+# ===========================================================================
+#
+# Found by review-code on this delta, and the reason this class is
+# BEHAVIOURAL where the assertion above it is static: the static one greps
+# for ``_fail_preflight("weights"`` in the source, so it passes whether or
+# not the bucket ever reaches the hub. It did not. ``run_tool`` is a
+# pass-through for ``n_seeds == 1`` (the three prod failures), but for
+# n_seeds >= 2 it fans out and ``_aggregate`` replaced every child error
+# with the bare string "All seeds returned zero designs", which matches no
+# _FAILURE_RULES row. A free, correctly-diagnosed refusal was reported to
+# the customer as "The run stopped for a reason we could not identify."
+
+
+class TestTheBucketSurvivesFanout:
+    """``n_seeds`` is on the form (tools/esmfold2_design/__init__.py), so the
+    multi-seed path is reachable by any user, not just a campaign."""
+
+    @staticmethod
+    def _refusing_child(seed: int) -> dict:
+        """A child that refused in preflight: exit 1, zero designs, bucket."""
+        return {
+            "exit_code": 1,
+            "provider_job_id": f"child-{seed}",
+            "smoke_result": {
+                "status": "FAILED",
+                "tier": "design",
+                "designs_total": 0,
+                "designs_completed": 0,
+                "n_failures": 1,
+                "designs": [],
+                "candidates": [],
+                "error": {
+                    "bucket": "preflight",
+                    "check": "weights",
+                    "detail": f"biohub/ESMC-6B@{rp._ESMC_REVISION} does not match",
+                },
+            },
+        }
+
+    def test_a_multi_seed_refusal_keeps_the_bucket(self):
+        from tools.esmfold2_design.modal_app import _aggregate
+
+        successes = [(s, self._refusing_child(s)) for s in (7, 8)]
+        out = _aggregate(successes, [], {"tier": "design", "job_id": "umb"})
+        err = out["smoke_result"]["error"]
+        assert isinstance(err, dict), f"bucket discarded: {err!r}"
+        assert err["bucket"] == "preflight"
+        assert err["check"] == "weights"
+        assert "does not match" in err["detail"]
+
+    def test_the_generic_string_still_covers_what_it_was_written_for(self):
+        """Children that RAN and produced nothing keep the old message --
+        the fix forwards an error, it does not invent one."""
+        from tools.esmfold2_design.modal_app import _aggregate
+
+        barren = dict(self._refusing_child(1))
+        barren["exit_code"] = 0
+        barren["smoke_result"] = dict(barren["smoke_result"])
+        barren["smoke_result"].pop("error")
+        barren["smoke_result"]["status"] = "COMPLETED"
+        out = _aggregate([(1, barren)], [], {"tier": "design", "job_id": "u"})
+        assert out["smoke_result"]["error"] == "All seeds returned zero designs"
+
+    def test_the_surviving_bucket_reaches_the_customer_as_our_fault(self):
+        """End-to-end over the real seams, no stubs: aggregate -> billing
+        interpreter -> failure class -> page copy."""
+        from gpu.modal_client import _interpret_pipeline_return
+        from shared.jobs import (
+            ToolJob,
+            classify_terminal_state,
+            failure_advice,
+        )
+        from tools.esmfold2_design.modal_app import _aggregate
+
+        out = _aggregate(
+            [(s, self._refusing_child(s)) for s in (0, 1)],
+            [],
+            {"tier": "design", "job_id": "umb"},
+        )
+        interpreted = _interpret_pipeline_return(out)
+        assert interpreted["error_bucket"] == "preflight", interpreted
+
+        assert (
+            classify_terminal_state(status="failed", error=out["smoke_result"]["error"])
+            == "preflight_miss"
+        )
+
+        job = ToolJob.from_row(
+            {
+                "id": "00000000-0000-4000-8000-00000000beef",
+                "user_id": "00000000-0000-4000-8000-00000000cafe",
+                "tool": "esmfold2-design",
+                "preset": "minibinder",
+                "status": "failed",
+                "failure_class": "preflight_miss",
+                "inputs": {},
+                "result": None,
+                "error": interpreted.get("error"),
+                "modal_function_call_id": "fc-x",
+                "job_token": "t" * 64,
+                "gpu_seconds_used": None,
+                "created_at": "2026-09-30T12:00:00Z",
+                "started_at": None,
+                "completed_at": "2026-09-30T12:01:00Z",
+            }
+        )
+        advice = failure_advice(job)
+        assert advice["kind"] == "our_side", advice
+        assert "not because of your input" in advice["cause"], advice
+        # The advice Leo disproved by submitting seed 7 and failing identically.
+        assert "seed" not in advice["fix"].lower(), advice
+
+    def test_the_shared_preflight_sentence_attributes_fault_to_neither_side(self):
+        """One sentence serves checks on BOTH sides, so it can claim neither.
+
+        ``shared/email.py::_result_summary`` renders the failure email from
+        ``failure_notice`` (the failure-CLASS sentence), while the job page
+        renders ``failure_advice`` (the per-CHECK rule) -- except that a
+        check matching no rule falls to ``kind="generic"``, whose cause IS
+        this same class sentence. For those checks it is both surfaces.
+
+        An earlier version of this test asserted that every check routing
+        here is on the ``our_side`` row. That was FALSE and review-claims
+        caught it: mpnn emits ``preflight:fixed_positions`` for "chain 'B'
+        is not in the input PDB" (tools/mpnn/run_pipeline.py:301-305), which
+        genuinely IS the customer's input. So the sentence is pinned the
+        only way it can be -- it must not say their input was rejected
+        (false for ESM-C weights, af2's jax-gpu, mpnn's module) and must not
+        say our side either (false for fixed_positions).
+        """
+        import re
+
+        from shared.jobs import (
+            _ERROR_BUCKET_TO_FAILURE_CLASS,
+            _FAILURE_CLASS_PLAIN_WORDS,
+            _FAILURE_RULES,
+        )
+
+        assert _ERROR_BUCKET_TO_FAILURE_CLASS["preflight"] == "preflight_miss"
+        our_side = next(r for r in _FAILURE_RULES if r[0] == "our_side")
+        # The our-side checks DO reach the rule, which is what makes the
+        # email's old "rejected the input" wrong for them. The input-side
+        # one does NOT reach it, which is why the shared sentence that
+        # serves both cannot be flipped to blame us instead.
+        assert our_side[1].search("preflight:weights — anything")
+        assert not our_side[1].search(
+            "preflight:fixed_positions — chain 'B' is not in the input PDB"
+        ), "fixed_positions is the customer's input; it must not read as ours"
+
+        sentence = _FAILURE_CLASS_PLAIN_WORDS["preflight_miss"]
+        assert not re.search(r"\b(your|the) input\b", sentence, re.I), sentence
+        assert not re.search(r"\bour (side|end)\b", sentence, re.I), sentence

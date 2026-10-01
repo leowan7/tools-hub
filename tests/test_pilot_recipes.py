@@ -288,6 +288,36 @@ class TestPilotPrefillActuallyLands:
         ]
         assert differs, "?pilot=1 changed no tool form at all"
 
+    def test_a_stale_pilot_link_still_serves_a_tool_without_one(self, tools_app):
+        """``?pilot=1`` on a tool whose PILOT is None must render the form.
+
+        Both tests above skip a tool with no pilot (``if not pilot:
+        continue``), so until this one existed NO test loaded that URL. It is
+        a live user path: esmfold2-design's pilot was WITHDRAWN on 2026-09-30
+        (see tools/esmfold2_design/meta.py), and every bookmark, email link
+        and search result minted while it had one still points here. The
+        prefill is gated on ``request.args.get("pilot") and
+        public_ctx.get("pilot")`` (blueprints/tools.py:1284), so the second
+        operand short-circuits -- this test is what proves it, rather than
+        the reading proving it.
+
+        Deliberately NOT keyed on esmfold2-design: that withdrawal is
+        written down as reversible, and a restore should not fail this test
+        on its fixture set instead of on the behaviour under test. af2,
+        colabfold, esmfold and opendde have never had a pilot, so the set
+        does not empty out when esmfold2-design leaves it.
+        """
+        flask_app, slugs = tools_app
+        client = flask_app.test_client()
+        without = [slug for slug, pilot in _pilots(slugs).items() if not pilot]
+        assert without, "no pilot-less tool left to probe; this test is inert"
+        broken = {}
+        for slug in without:
+            resp = client.get(f"/tools/{slug}?pilot=1")
+            if resp.status_code != 200:
+                broken[slug] = resp.status_code
+        assert not broken, broken
+
 
 class TestPilotCardPriceIsDerived:
 

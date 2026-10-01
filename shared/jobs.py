@@ -819,8 +819,39 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     "tool_error":          "The tool hit an error while running and stopped.",
     "infra_crash":         "The run could not be set up, or lost its machine, "
                            "on our side.",
-    "preflight_miss":      "A check on the GPU machine rejected the input "
-                           "before the run began.",
+    # Says what happened and attributes nothing, because the checks that
+    # route here sit on BOTH sides of the fault line and this one sentence
+    # serves all of them. It used to read "rejected the input", which is
+    # false for most: tools/esmfold2_design/run_pipeline.py emits
+    # ``preflight:weights`` for a checkpoint broken on OUR Volume,
+    # tools/af2/run_pipeline.py and tools/colabfold/run_pipeline.py emit
+    # ``preflight:jax-gpu``, tools/mpnn/run_pipeline.py emits
+    # ``preflight:module`` -- all ours. But mpnn also emits
+    # ``preflight:fixed_positions`` for "chain 'B' is not in the input PDB"
+    # (tools/mpnn/run_pipeline.py:301-305), which genuinely IS the
+    # customer's input. So this sentence cannot claim either side, and
+    # attribution belongs to ``failure_advice``, which keys on the check.
+    #
+    # These checks do NOT all reach a _FAILURE_RULES row. Measured by
+    # routing each tool's real detail string through ``failure_advice``:
+    #
+    #   preflight:weights              -> our_side  (the row lists it)
+    #   preflight:jax-gpu "timed out"  -> timeout   (matched on the DETAIL,
+    #                                                not the check)
+    #   preflight:jax-gpu "(exit N)"   -> generic
+    #   preflight:module               -> generic
+    #   preflight:fixed_positions      -> generic
+    #
+    # For the generic three this sentence is the page cause as well as the
+    # email one, and all three carry ``retry_unchanged=True``.
+    #
+    # Two of those are wrong advice, pre-existing and NOT fixed here: a user
+    # whose chain name is wrong is told "Try again with the same settings",
+    # and a jax-gpu timeout -- ours, not theirs -- is told to ask for fewer
+    # designs or crop the target. Both are the same shape as telling someone
+    # to change their seed when the seed cannot matter.
+    "preflight_miss":      "A check on the GPU machine stopped the run "
+                           "before it began.",
     "no_progress_timeout": "The run hit its time limit before it finished.",
     "unclassified":        "The run stopped for a reason we could not identify.",
     "user_cancelled":      "You cancelled this run.",
