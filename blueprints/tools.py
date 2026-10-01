@@ -276,11 +276,9 @@ def _retired_planner_redirect():
     here. The inbound "try the tool" links are reported to be UTM-decorated
     at render by the marketing site's callout component, which would make a
     bare redirect land every one of them on /tools as direct traffic and
-    hide the arrivals this redirect exists to serve; that report is the
-    website lead's measurement of their main on 2026-09-30 and is NOT
-    reproducible from here (the local checkout of that repo predates it and
-    contains no UTM helper at all), so treat it as unverified rather than as
-    something this comment establishes. The second reason needs no other
+    hide the arrivals this redirect exists to serve; that is the website
+    lead's report about another repository, unverified from here, and this
+    comment does not establish it. The second reason needs no other
     repository: tools_comparison in this file reads asked, have and shape
     off request.args itself, so a parameterised link would be truncated on
     arrival whatever the marketing site does.

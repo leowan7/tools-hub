@@ -120,8 +120,9 @@ def test_query_string_is_carried_across(client, method, path, data):
     request.args, so a parameterised catalog link through this path would be
     truncated on arrival. The other is attribution for the marketing site's
     inbound links, which are reported to be UTM-decorated at render; that
-    report is not reproducible from this repo, and the parameters below
-    stand in for it rather than asserting it. Same behaviour as
+    report is about another repository and is unverified from here, and the
+    parameters below stand in for it rather than asserting it. Same
+    behaviour as
     blueprints/tools.py::proteinmpnn_slug_redirect, which carries the query
     string for the same reason.
     """
