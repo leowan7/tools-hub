@@ -567,8 +567,8 @@ class TestPilotCardRendersMarkupNotEntities:
 class TestNoPilotIsANoOp:
     """"Load these settings" must not promise a change it does not make.
 
-    Six of the ten pilots that shipped had params identical to the
-    form's own defaults, so the button loaded settings that were already
+    Six of the ten pilots shipped with params identical to the form's
+    own defaults, so the button loaded settings that were already
     loaded. Two of those (bindcraft, rfantibody) had a genuinely cheaper
     first run available and were retuned to it; proteina gained an
     explicit binder-length window.

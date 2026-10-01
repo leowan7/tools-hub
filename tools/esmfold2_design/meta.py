@@ -232,7 +232,11 @@ about: dict = {
 # n_seeds=1, which IS this form's default configuration. That exact
 # configuration failed three times in prod on 2026-09-30 (job ids
 # a327d5fe, 236797f2, f2e296c7) and each failure burned 32-37 H100
-# seconds against an estimate of about $9.87. Pointing a first-time
+# seconds against an estimate of about $9.87 (shared/wallet_estimates.py
+# ::estimated_cost_for_tool(None, "esmfold2-design", {"preset":
+# "minibinder"}) returns Decimal("9.8614") on this tree; prod carries
+# historical p90 data this checkout does not, so treat it as the order of
+# magnitude, not the invoice). Pointing a first-time
 # visitor at it is what this dict was for, so it comes out until a run
 # of those settings is demonstrated to succeed.
 #
