@@ -237,10 +237,12 @@ about: dict = {
 # "minibinder"}) returns Decimal("9.8614") on this tree; prod carries
 # historical p90 data this checkout does not, so treat it as the order of
 # magnitude, not the invoice). Reported by Leo from the prod job
-# records, which this checkout cannot see: the first two ran the
-# form's defaults, and the third changed only the starting seed --
-# the first thing shared/jobs.py::_NUMERICAL_FIX_SEEDED tells the
-# user to try. It failed the same way. So that advice was wrong for
+# records, which this checkout cannot see: all three ran
+# preset=minibinder and all three were refunded in full, and the
+# third was his own submission on the form's defaults with only the
+# starting seed changed -- the first thing
+# shared/jobs.py::_NUMERICAL_FIX_SEEDED tells the user to try. It
+# failed the same way. So that advice was wrong for
 # this cause, not merely unhelpful:
 # tests/test_esmfold2_design_esmc_pin.py::TestTheBucketSurvivesFanout
 # asserts the fix text no longer mentions the seed. Pointing a
