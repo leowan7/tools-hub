@@ -317,13 +317,30 @@ def create_app() -> Flask:
             return True
         # Retired Library Planner: the handler is a bare 301 to /tools
         # (blueprints/tools.py::library_planner_plan), so it writes nothing,
-        # bills nothing and starts no job. It needs the exemption because the
-        # form that posts here never carried a token -- there is no _csrf
-        # field in templates/library_planner_form.html -- so a stale
-        # bookmarked copy would be answered 403 instead of being handed the
-        # catalog, which is the whole point of keeping the route
-        # (tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt).
-        if path == "/library-planner/plan":
+        # bills nothing and starts no job. It needs the exemption because no
+        # caller can present a usable token any more: the form that posts
+        # here carries csrf_input() (templates/library_planner_form.html) but
+        # is no longer served, since the GET half 301s too. A POST that still
+        # arrives therefore carries either a token baked into a cached copy of
+        # the form, belonging to a session that has since rotated, or no token
+        # at all -- the planner having been anonymous-open, a scripted or
+        # bookmarked hit need not have a session. Both of those answer
+        # 403 without this arm and 301 with it, measured in
+        # tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt.
+        #
+        # Keyed on the endpoint, not the path, so it fails CLOSED: if
+        # /library-planner/plan is ever pointed at a real handler under a new
+        # view name, the exemption stops applying instead of silently shipping
+        # an unguarded write. Pinned by tests/test_csrf_protection.py
+        # ::test_the_path_alone_does_not_exempt_a_real_handler, which
+        # re-points that path at a handler that writes and asserts 403. It is
+        # the only test that fails when this arm is reverted to path keying;
+        # the other 25 in this file and tests/test_library_planner_retired.py
+        # pass either way, which is how review-claims found this sentence
+        # unenforced when it cited
+        # ::test_one_rule_serves_the_path_and_it_is_the_exempted_endpoint
+        # instead -- that one pins only routing, not the keying.
+        if request.endpoint == "tools.library_planner_plan":
             return True
         # /account/api-keys/* already enforce their own per-session CSRF token
         # (FIX HI-03) using a distinct field; leave that working path intact.

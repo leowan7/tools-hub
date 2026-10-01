@@ -227,8 +227,11 @@ def developability_score():
 #
 # The POST is also exempt from the app-wide CSRF guard
 # (app.py::_csrf_request_is_exempt). Without that it answers 403, not
-# 301: enforcement defaults ON and the planner form never carried a
-# token, so a stale bookmarked copy submits none. Measured with
+# 301: enforcement defaults ON, and although the planner form does carry
+# csrf_input(), the form is no longer served -- the GET below 301s -- so
+# no caller can obtain a token matching the current session. A replay
+# from a cached copy presents a rotated token, or none at all if the
+# reader has no session, and both are refused. Measured with
 # CSRF_PROTECT=1 in
 # tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt.
 #
@@ -241,7 +244,11 @@ def developability_score():
 #
 # No historical job row is orphaned by this: planning never wrote one,
 # and a census of public.tool_jobs on 2026-09-30 returned 0 rows for
-# any 'librar*' tool slug out of 278 rows total (14 GPU slugs only).
+# any 'librar*' tool slug. The table's total is not recorded here: it is
+# live and grows, so any figure written down dates itself (it moved
+# between two runs of the census on the same day). The 0 is the load-
+# bearing half, and it is what justified dropping the dead
+# library_planner branch from templates/job_detail.html.
 # ------------------------------------------------------------------
 
 @tools_bp.route("/library-planner", methods=["GET"])

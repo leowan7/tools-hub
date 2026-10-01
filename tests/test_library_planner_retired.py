@@ -44,11 +44,13 @@ VALID_PLAN = {
 def client(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     # Production default, not the suite-wide CSRF_PROTECT=0 that
-    # tests/conftest.py sets. With enforcement off, the POST case below
-    # passes while production answers 403 (app.py::_enforce_csrf defaults
-    # the switch to "1"), so the status codes here would certify a
-    # behaviour the live app never returns. The exemption that makes the
-    # redirect reachable is app.py::_csrf_request_is_exempt.
+    # tests/conftest.py sets (app.py::_enforce_csrf defaults the switch to
+    # "1"). With enforcement off, the anonymous POST below passes whether or
+    # not the path is exempt, so the status codes here would not be the ones
+    # the live app returns. What makes the POST reachable under enforcement
+    # is app.py::_csrf_request_is_exempt; why it needs to be exempt, and the
+    # control showing a non-exempt POST is refused the same way, are in
+    # tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt.
     monkeypatch.setenv("CSRF_PROTECT", "1")
     app = create_app()
     app.config["TESTING"] = True
