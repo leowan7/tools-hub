@@ -276,6 +276,14 @@ class TestPinWiring:
     false: the tool would keep loading ``main`` while the source read as
     pinned."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_pin_records(self, monkeypatch):
+        """Both record lists live at module level and the pin appends to
+        them, so a test that does not reset them reads whatever an
+        earlier test left there."""
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", [])
+        monkeypatch.setattr(rp, "_UNPINNED_ESMC_LOADS", [])
+
     def test_the_esmc_repo_gets_the_revision_positionally_and_by_keyword(
         self, fake_env
     ):
@@ -348,16 +356,48 @@ class TestPinWiring:
         verdict does not describe the weights in memory, and that gets
         a line in the Modal log instead of resurfacing as the same
         unattributable SVD traceback."""
-        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", [])
         with caplog.at_level(logging.WARNING, logger=rp.logger.name):
             rp._warn_if_esmc_was_never_pinned()
-        assert "intercepted NO load" in caplog.text, caplog.text
+        assert "did NOT pin" in caplog.text, caplog.text
         assert rp._ESMC_REVISION in caplog.text
         caplog.clear()
         monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", ["biohub/ESMC-6B"])
         with caplog.at_level(logging.WARNING, logger=rp.logger.name):
             rp._warn_if_esmc_was_never_pinned()
         assert caplog.text == "", caplog.text
+
+    def test_a_partial_divergence_warns_though_one_load_was_pinned(
+        self, monkeypatch, caplog
+    ):
+        """Round-6 review-code, the Low finding on 864eab55.
+
+        There are two ESM-C load sites, so the state that matters is one
+        pinned and one not. The first version of the warning fired only
+        on an EMPTY pinned list, so this state logged
+        "intercepted 1 load(s)" at INFO while the second site resolved
+        ``main`` and the wrong weights sat in memory -- silent in exactly
+        the case it was added for."""
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", ["biohub/ESMC-6B"])
+        monkeypatch.setattr(
+            rp, "_UNPINNED_ESMC_LOADS", ["biohub/ESMC-6B-2025"]
+        )
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            rp._warn_if_esmc_was_never_pinned()
+        assert "did NOT pin" in caplog.text, caplog.text
+        assert "ESMC-6B-2025" in caplog.text, caplog.text
+
+    def test_an_esmc_shaped_id_the_match_rejects_is_recorded(
+        self, fake_env
+    ):
+        """The wrapper has to record the near-miss for the warning above
+        to have anything to read."""
+        mod = fake_env(_T4_KEYS)
+        rp._pin_esmc_revision()
+        mod.PreTrainedModel.from_pretrained("biohub/ESMC-6B-2025")
+        _args, kwargs = mod.PreTrainedModel.calls[-1]
+        assert "revision" not in kwargs, "a near-miss must not be pinned"
+        assert rp._UNPINNED_ESMC_LOADS == ["biohub/ESMC-6B-2025"]
+        assert rp._PINNED_ESMC_LOADS == []
 
     def test_other_repos_are_still_not_pinned(self, fake_env, monkeypatch):
         """The widened match must not start pinning the four ESMFold2
@@ -377,6 +417,14 @@ class TestPinWiring:
             _args, kwargs = mod.PreTrainedModel.calls[-1]
             assert "revision" not in kwargs, other
         assert rp._PINNED_ESMC_LOADS == []
+        # ESMC-600M and the critic read as ESM-C and so are recorded as
+        # near-misses; the ESMFold2 id and the two empties are not ESM-C
+        # at all and are recorded nowhere. Both halves asserted, because
+        # the recording is what the warning reads.
+        assert rp._UNPINNED_ESMC_LOADS == [
+            "biohub/ESMC-600M",
+            "biohub/ESMC-6B-critic",
+        ]
 
     def test_pinning_twice_does_not_stack_wrappers(self, fake_env):
         mod = fake_env(_T4_KEYS)

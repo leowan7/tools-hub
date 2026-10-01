@@ -255,14 +255,25 @@ CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
 _ESMC_REPO = "biohub/ESMC-6B"
 _ESMC_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
 
-# Every repo id the pin below intercepted, in load order. Read by
-# ``_warn_if_esmc_was_never_pinned`` after the designer loads: if the
-# list is empty then no ESM-C load went through the pin, the loader
-# resolved whatever ``main`` points at, and the preflight above
-# validated a revision that was never used. That is the shape a guard
-# takes when it certifies something it did not gate, so it is logged
-# loudly rather than left to be inferred from an SVD traceback.
+# What the pin below saw, in load order: ids it pinned, and ids that
+# looked like ESM-C which it did NOT pin. Both are read by
+# ``_warn_if_esmc_was_never_pinned`` after the designer loads. An empty
+# pinned list means no ESM-C load went through the pin at all, so the
+# loader resolved whatever ``main`` points at and the preflight above
+# validated a revision that was never used -- the shape a guard takes
+# when it certifies something it did not gate.
+#
+# The near-miss list covers the half of that a count cannot see, and the
+# first draft of this did not have it. review-code round 6 named the
+# hole: ``_pin_esmc_revision``'s docstring below says there are TWO
+# ESM-C load sites, so if one is pinned and the other has diverged, the
+# pinned list is non-empty and an any-of check logs "intercepted 1
+# load(s)" at INFO while the wrong weights sit in memory. Recording
+# what the match rejected is what holds; counting what it accepted is
+# not. A falsifier blind to the case it was built for is the same
+# certifies-false shape as the bug it watches.
 _PINNED_ESMC_LOADS: list[str] = []
+_UNPINNED_ESMC_LOADS: list[str] = []
 
 
 def _is_esmc_repo(name: object) -> bool:
@@ -318,6 +329,16 @@ def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
             # caller wins over this pin rather than being silently dropped.
             kwargs.setdefault("revision", revision)
             _PINNED_ESMC_LOADS.append(str(pretrained_model_name_or_path))
+        elif "esmc" in str(pretrained_model_name_or_path or "").casefold():
+            # ESM-C-shaped and not pinned. Could be a different ESM-C
+            # model legitimately -- ESMC-600M and the critic checkpoints
+            # both read this way -- or could be the 6B repo under a
+            # spelling ``_is_esmc_repo`` no longer recognises. Nothing
+            # here can tell those apart, which is why it is recorded for
+            # a human rather than acted on.
+            _UNPINNED_ESMC_LOADS.append(
+                str(pretrained_model_name_or_path)
+            )
         return inner(cls, pretrained_model_name_or_path, *args, **kwargs)
 
     from_pretrained._esmc_pinned = True
@@ -459,7 +480,12 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
 
 
 def _warn_if_esmc_was_never_pinned() -> None:
-    """Log when no ESM-C load went through the pin.
+    """Log when the pin may not describe the weights now in memory.
+
+    Two states warn, not one: nothing was pinned at all, or something
+    ESM-C-shaped was loaded that the pin did not match. The second is
+    the one a hit count misses -- see the comment on
+    ``_UNPINNED_ESMC_LOADS``.
 
     Not a refusal: by the time this can be answered the weights are
     already loaded and a refusal would only waste the load. It exists
@@ -467,7 +493,7 @@ def _warn_if_esmc_was_never_pinned() -> None:
     Modal log, instead of resurfacing as the same unattributable SVD
     traceback this whole change came from.
     """
-    if _PINNED_ESMC_LOADS:
+    if _PINNED_ESMC_LOADS and not _UNPINNED_ESMC_LOADS:
         logger.info(
             "ESM-C pin intercepted %d load(s): %s",
             len(_PINNED_ESMC_LOADS),
@@ -475,7 +501,9 @@ def _warn_if_esmc_was_never_pinned() -> None:
         )
         return
     logger.warning(
-        "ESM-C pin intercepted NO load -- the revision preflight checked (%s) is not necessarily the one in memory. If this run fails in linalg.svd, suspect the pin stopped matching the repo id before suspecting the input.",
+        "ESM-C pin may not describe the weights in memory: it pinned %s and did NOT pin %s. The revision the preflight checked (%s) is only certain for the pinned ones. If this run fails in linalg.svd, suspect the pin stopped matching the repo id before suspecting the input.",
+        _PINNED_ESMC_LOADS or None,
+        _UNPINNED_ESMC_LOADS or None,
         _ESMC_REVISION,
     )
 
