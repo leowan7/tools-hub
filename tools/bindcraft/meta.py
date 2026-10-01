@@ -54,6 +54,10 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 # below is not the judgement call its RFantibody counterpart is.
 paper_citation: str = "Pacesa et al., Nature 2025"
 paper_url: str = "https://www.nature.com/articles/s41586-025-09429-6"
+# The method authors' repo, pinned by
+# tests/test_citations_name_the_right_model.py::REQUIRED_URL_TOKENS. The image
+# this tool runs is not built from it: llm-proteinDesigner's
+# docker/bindcraft/Dockerfile.modal clones the cytokineking/FreeBindCraft fork.
 github_url: str = "https://github.com/martinpacesa/BindCraft"
 
 seo_faq: list[dict] = [

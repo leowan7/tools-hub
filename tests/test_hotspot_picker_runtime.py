@@ -70,9 +70,11 @@ _SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
 # multi_chain_supported=False upstream (a VHH binds one chain).
 #
 # bindcraft is OFF pending verification, not on principle. Its container
-# forwards the token verbatim (docker/bindcraft/run_pipeline.py:426) to a
-# prebuilt image (kendrew-bindcraft:v7) whose parser is not vendored in either
-# repo, and bindcraft is the one binder tool with no smoke tier — the only way
+# forwards the token verbatim (llm-proteinDesigner
+# docker/bindcraft/run_pipeline.py:426) to the Modal FreeBindCraft build
+# (llm-proteinDesigner docker/bindcraft/Dockerfile.modal), which clones
+# FreeBindCraft at build time, so its parser is not vendored in either repo,
+# and bindcraft is the one binder tool with no smoke tier — the only way
 # to test it is a full paid pilot. It is already gated
 # multi_chain_container_ready=False, so the flag buys it the least.
 #

@@ -155,9 +155,9 @@ class ToolSpec:
     worst_case_scales_with_param: bool = False
 
 
-# Per-tool spec table. Mirrors the absolute caps in
-# :data:`shared.wallet.PER_JOB_HARD_CAP_USD`. New tools register by
-# adding an entry here.
+# Per-tool spec table. ``absolute_cap_usd`` is the per-job ceiling that
+# :func:`compute_hard_cap` clamps to. New tools register by adding an
+# entry here.
 TOOL_SPECS: Mapping[str, ToolSpec] = {
     "mpnn": ToolSpec(
         slug="mpnn",

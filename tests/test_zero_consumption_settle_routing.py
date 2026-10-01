@@ -151,10 +151,12 @@ class TestBilledZeroConsumptionSettlesAtZero:
         assert settle.call_args.kwargs["gpu_seconds"] == 0.0
 
     def test_safety_kill_with_zero_gpu_seconds_settles_at_zero(self):
-        """``safety_kill`` fires when the server side overrun monitor
-        kills a runaway job. The user is billed for what consumed; if
-        the kill happened mid heartbeat and the persisted gpu_seconds is
-        still zero, the audit row should be a zero settle not a refund."""
+        """``safety_kill`` is historical: the overrun monitor no longer
+        kills a job (a runaway job warns; see
+        ``shared/jobs.py::mid_run_monitor_check``), and the
+        ``overrun_safety_kill`` bucket is only carried by rows backfilled
+        in migration 0029. Such a row with zero persisted gpu_seconds
+        should still produce a zero settle, not a refund."""
         job = ToolJob.from_row(
             _wallet_row(
                 status="failed",

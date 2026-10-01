@@ -182,6 +182,11 @@ def validate(
                 f"record {header!r} is {len(seq)} aa — max {SEQ_LEN_MAX}."
             )
         non_canonical = set(seq) - CANONICAL_AA
+        if ":" in non_canonical:
+            return None, (
+                f"record {header!r} contains ':'. For a complex, put each "
+                "chain in its own >header record; they are folded together."
+            )
         if non_canonical:
             return None, (
                 f"record {header!r} contains non-canonical residues: "

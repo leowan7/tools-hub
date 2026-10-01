@@ -529,7 +529,8 @@ def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
 #   adapter emits        -> ["A520"]
 #   boltzgen submit gate -> ok=True, dropped=['A520']
 #   payload              -> ships "A520" anyway
-#   container            -> docker/boltzgen/run_pipeline.py raises
+#   container            -> llm-proteinDesigner/docker/boltzgen/run_pipeline.py
+#                           raises
 #
 # Two independent faults, and BOTH have to be fixed for the money to be safe:
 # the attribution has to match, AND a dropped hotspot has to refuse even on a
@@ -1520,7 +1521,8 @@ def test_the_container_cleanup_boltzgen_runs_really_does_drop_that_residue():
     asserts on the copy that always ships with the repo and
     `test_the_normalizer_the_image_mounts_agrees_with_the_vendored_copy`
     below checks the original whenever that checkout is present. The
-    renumber_map is exactly what docker/boltzgen/run_pipeline.py:1083 consults
+    renumber_map is exactly what llm-proteinDesigner
+    docker/boltzgen/run_pipeline.py:1083 consults
     before raising "Hotspot residue(s) ... are not present after structure
     cleanup".
     """

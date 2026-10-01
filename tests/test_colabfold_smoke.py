@@ -126,6 +126,15 @@ class TestValidate:
         assert inputs is None
         assert "non-canonical" in (err or "")
 
+    def test_standalone_colon_refusal_says_use_records(self):
+        form = {
+            "preset": "standalone",
+            "fasta_text": f">ab\n{UBIQUITIN}:{UBIQUITIN}",
+        }
+        inputs, err = cf_mod.validate(form, {})
+        assert inputs is None
+        assert "own >header record" in (err or "")
+
     def test_standalone_rejects_oversized_sequence(self):
         """> 600 aa must be rejected at form validation time."""
         giant = "A" * 700

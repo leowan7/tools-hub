@@ -140,11 +140,9 @@ def validate(
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
     # Tier-collapse PR: raised the per-job cap from 24 to 1000 so users
-    # can run real production campaigns self-serve. The wallet
-    # per-tool hard cap (shared.wallet.PER_JOB_HARD_CAP_USD) remains
-    # the durable spend ceiling -- a 1000-design rfantibody run will
-    # be blocked by the $500 wallet cap before this validator passes
-    # it through unless the user has topped up to cover it.
+    # can run real production campaigns self-serve. The charge ceiling is
+    # TOOL_SPECS["rfantibody"].absolute_cap_usd, applied by
+    # shared/wallet_estimates.py::compute_hard_cap, not this range.
     if num_designs < 1 or num_designs > 1000:
         return None, "Number of designs must be between 1 and 1000."
 

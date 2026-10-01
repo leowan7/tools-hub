@@ -150,8 +150,8 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     # Pilot tier. num_designs is the candidate population BoltzGen generates
     # and refolds (budget then selects the top-N to return). 1000 was the
     # original wave-2 default but ran past the 6600s subprocess timeout in
-    # docker/boltzgen/run_pipeline.py:1407 on A100-40GB. 200 fits comfortably
-    # within the "~15-60 min" pilot description and gives the filter a 4x
+    # llm-proteinDesigner/docker/boltzgen/run_pipeline.py:1407 on A100-40GB.
+    # 200 fits comfortably within the "~15-60 min" pilot description and gives the filter a 4x
     # selectivity ratio against the validate-side budget cap of 50.
     return {
         "job_tier": "pilot",

@@ -929,8 +929,9 @@ def test_single_chain_gap_message_is_unchanged():
 #
 # Two tools stay gated, for DIFFERENT reasons, and the distinction is the whole
 # point of having two flags:
-#   bindcraft   — image limit. Ships from a separate prebuilt image
-#                 (kendrew-bindcraft:v7) that never runs llm-pd's normalizer,
+#   bindcraft   — image limit. Runs from its own image, the Modal
+#                 FreeBindCraft build (docker/bindcraft/Dockerfile.modal in
+#                 llm-proteinDesigner), which never runs llm-pd's normalizer,
 #                 and it is the one binder tool with no smoke tier, so the only
 #                 way to clear it is a full paid pilot. Temporary: "not yet".
 #   rfantibody  — model limit. Builds a VHH against one chain by construction.

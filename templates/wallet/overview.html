@@ -118,9 +118,9 @@
             <strong>${{ display_cost_usd(wallet.auto_reload_threshold_usd if wallet.auto_reload_threshold_usd is not none else 10) }}</strong>
             we charge your saved card
             <strong>${{ display_cost_usd(wallet.auto_reload_amount_usd if wallet.auto_reload_amount_usd is not none else 50) }}</strong>
-            and credit your wallet. Limited to one auto reload per 24 hours and
-            <strong>${{ display_balance_usd(wallet.auto_reload_monthly_cap_usd if wallet.auto_reload_monthly_cap_usd is not none else 1000) }}</strong>
-            per calendar month.
+            and credit your wallet. Auto reload is limited to one charge every
+            24 hours. Your monthly auto reload budget is
+            <strong>${{ display_balance_usd(wallet.auto_reload_monthly_cap_usd if wallet.auto_reload_monthly_cap_usd is not none else 1000) }}</strong>.
           </p>
         {% else %}
           <p class="wallet-section-body">

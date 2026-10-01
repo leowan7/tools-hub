@@ -193,7 +193,8 @@ PILOT: dict | None = {
 #
 # THE 4 -> 20 IS REAL AND IS EXPLAINED ON PURPOSE. The form field is a
 # BACKBONE count: stage 1 diffuses num_designs backbones, then stage 2 runs
-# ProteinMPNN at seqs_per_backbone=5 (docker/rfantibody/run_pipeline.py), so
+# ProteinMPNN at seqs_per_backbone=5
+# (llm-proteinDesigner/docker/rfantibody/run_pipeline.py), so
 # four backbones score twenty candidates. A reader who takes the field at its
 # old wording ("how many candidates to design") would under-estimate both the
 # table length and the bill by five times, so the inputs_used note below

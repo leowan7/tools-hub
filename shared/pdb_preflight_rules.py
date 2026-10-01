@@ -201,9 +201,12 @@ class ToolRules:
         importing that module and executing it against a clean two-chain
         PDB: ``chain="A"`` normalizes, ``chain="A B"`` raises ValueError,
         for rfdiffusion / boltzgen / pxdesign / rfantibody alike. BindCraft
-        ships as a separate prebuilt image (``kendrew-bindcraft:v7``) that
-        cannot be inspected from here, so it is UNVERIFIED rather than
-        known-good and is gated on the same conservative footing.
+        runs from its own image, the Modal FreeBindCraft build
+        (``docker/bindcraft/Dockerfile.modal`` in llm-proteinDesigner), which
+        clones FreeBindCraft unpinned at build time (``git clone --depth 1``
+        in that Dockerfile), so its chain handling cannot be inspected from
+        here. It is UNVERIFIED rather than known-good and is gated on the
+        same conservative footing.
 
     Keeping them separate matters. Collapsing the truth into
     ``multi_chain_supported=False`` for rfdiffusion et al. would encode a
@@ -601,9 +604,9 @@ _BINDCRAFT = ToolRules(
     # pass target_chain straight through to BindCraft's native `chains`
     # setting and needed no code change — but that is a docs read plus a code
     # path, not evidence.
-    # UNVERIFIED, not known-good: bindcraft runs from a separate prebuilt
-    # image (config.runpod_image_bindcraft = kendrew-bindcraft:v7) rather
-    # than llm-pd's normalizer, so its chain handling could not be executed
+    # UNVERIFIED, not known-good: bindcraft runs from its own image (the
+    # Modal FreeBindCraft build, docker/bindcraft/Dockerfile.modal in
+    # llm-proteinDesigner) rather than llm-pd's normalizer, so its chain handling could not be executed
     # from here the way the other four were. Gated on the conservative
     # footing — this restores exactly the pre-change outcome and costs a
     # user only a message, where guessing wrong costs a funded A100 run.

@@ -56,8 +56,8 @@ def score_humanness(sequence: str, chain_type: str = "VH", k: int = 7) -> dict:
 
     The score is the fraction of the input's k-mers that are also present in
     the reference germline pool for the relevant chain type. Higher is more
-    human-like. The spec asks for k=9, but with only 5 germline alleles per
-    chain a 9-mer rarely matches a mutated framework. k=7 is more informative
+    human-like. The spec asks for k=9, but with 3 to 5 germline alleles per
+    chain type a 9-mer rarely matches a mutated framework. k=7 is more informative
     at the prototype germline panel size while preserving specificity above
     chance. Raw overlap is rescaled because no clinical Mab matches germline
     perfectly (CDRs introduce non-germline k-mers).

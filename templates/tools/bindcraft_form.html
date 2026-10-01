@@ -398,12 +398,15 @@
         //
         // Turning it on changes what reaches upstream BindCraft for every
         // single-chain user who clicks, from "25,30" to "A25,A30":
-        // docker/bindcraft/run_pipeline.py:426 joins the tokens verbatim with
+        // llm-proteinDesigner/docker/bindcraft/run_pipeline.py:426 joins the
+        // tokens verbatim with
         // no normalisation. BindCraft's documented format IS chain-specific
         // ("target_hotspot_residues -> ... chain specific `A1-10,B1-20`", see
         // tools/bindcraft/__init__.py), so prefixed is probably MORE correct
-        // than what we send today — but the image is the prebuilt
-        // kendrew-bindcraft:v7, its parser is not vendored in either repo, and
+        // than what we send today — but the image is the Modal FreeBindCraft
+        // build (docker/bindcraft/Dockerfile.modal in llm-proteinDesigner),
+        // which clones FreeBindCraft at build time, so its parser is not
+        // vendored in either repo, and
         // bindcraft is the one binder tool with no smoke tier, so the only way
         // to find out costs a full paid pilot. It is already gated
         // multi_chain_container_ready=False, so the flag buys it the least of
