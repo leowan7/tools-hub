@@ -1,8 +1,9 @@
 """Tool routes (blueprint refactor, Commit 7c -- last money-path step).
 
-developability + library-planner CPU tools, the /tools/<tool> preview/form,
-preflight, tool_submit (the @login_required @idempotent() @requires_wallet
-money stack, unchanged), and the /tools comparison matrix. Lifted verbatim
+developability CPU tool, the retired library-planner redirects, the
+/tools/<tool> preview/form, preflight, tool_submit (the @login_required
+@idempotent() @requires_wallet money stack, unchanged), and the /tools
+comparison matrix. Lifted verbatim
 from ``create_app()``; only ``@flask_app.route`` -> ``@tools_bp.route``, the
 factory-local modal_client -> current_app.modal_client, and self-refs ->
 ``tools.*``. The tool_form preview helpers move in with the routes.
@@ -208,118 +209,110 @@ def developability_score():
         result=result,
     )
 
+# ------------------------------------------------------------------
+# Yeast Display Library Planner — RETIRED 2026-09-30 at Leo's request.
+#
+# Both endpoints stay registered and 301 to /tools. They are not 404ed
+# because "try the tool" callouts in the ranomics.com marketing site link
+# straight at https://tools.ranomics.com/library-planner, and that path
+# answered 200 up to this commit (curl, 2026-09-30). A 301 hands those
+# readers, and any search engine holding the URL, the catalog instead of
+# an error. Treat the redirect as permanent, not a grace period.
+#
+# How many inbound links exist is not verifiable from this repo; their
+# shape is. Measured read-only on 2026-09-30 in the local ranomics.com
+# checkout, which is 93 commits behind its main (last fetched
+# 2026-09-15), so re-grep their main before relying on it: four lines
+# in three files point at this path -- the shared TryToolCallout
+# component's tool-map entry (src/components/TryToolCallout.astro), a
+# launchUrl in src/content/pages/tools/library-planner.mdx, and two
+# hard-coded target="_blank" launch buttons in
+# src/pages/technology/library-planner.astro. Only the first sits in
+# that map, so one edit to the map does NOT drop the inbound links.
+# src/components/layout/Footer.astro, which PageLayout renders on every
+# page, and src/data/navigation.ts both link their own
+# /technology/library-planner page, which is the funnel into those two
+# buttons. A site-wide footer link is the slowest thing on a website to
+# get cleaned up, so this redirect has to keep working indefinitely.
+# The website lead reported 65 lines across 22 files on 2026-09-30;
+# that count is secondhand and is not reproduced here.
+#
+# 301 and not 308 on the POST: a 308 preserves the method and would
+# re-POST a stale bookmarked form to /tools, which is GET-only
+# (tools_comparison, this file) and would answer 405. A 301 is
+# downgraded to GET by browsers, which is the landing we want.
+#
+# The POST is also exempt from the app-wide CSRF guard
+# (app.py::_csrf_request_is_exempt). Without that it answers 403, not
+# 301: enforcement defaults ON, and although the planner form does carry
+# csrf_input(), the form is no longer served -- the GET below 301s -- so
+# no caller can obtain a token matching the current session. A replay
+# from a cached copy presents a rotated token, or none at all if the
+# reader has no session, and both are refused. Measured with
+# CSRF_PROTECT=1 in
+# tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt.
+#
+# tools/library_planner/ and templates/library_planner_*.html are left
+# on disk on purpose: the package is matched by the 'tools/**' deploy
+# trigger (.github/workflows/deploy-modal.yml:79, whose only negations
+# are meta.py, example/** and __init__.py), and that workflow's matrix
+# has no per-path routing, so deleting the package would redeploy all
+# nine GPU Modal apps for a change that touches no GPU code.
+#
+# No historical job row is orphaned by this: planning never wrote one,
+# and a census of public.tool_jobs on 2026-09-30 returned 0 rows for
+# any 'librar*' tool slug. The table's total is not recorded here: it is
+# live and grows, so any figure written down dates itself (it moved
+# between two runs of the census on the same day). The 0 is the load-
+# bearing half, and it is what justified dropping the dead
+# library_planner branch from templates/job_detail.html.
+# ------------------------------------------------------------------
+
+def _retired_planner_redirect():
+    """301 to /tools, carrying the query string across.
+
+    The query string is carried for the same reason as in
+    proteinmpnn_slug_redirect below, and this is its copy. Two reasons
+    here. The inbound "try the tool" links are reported to be UTM-decorated
+    at render by the marketing site's callout component, which would make a
+    bare redirect land every one of them on /tools as direct traffic and
+    hide the arrivals this redirect exists to serve; that is the website
+    lead's report about another repository, unverified from here, and this
+    comment does not establish it. The second reason needs no other
+    repository: tools_comparison in this file reads asked, have and shape
+    off request.args itself, so a parameterised link would be truncated on
+    arrival whatever the marketing site does.
+
+    QUERY_STRING arrives as raw bytes and decoding it strictly raises
+    UnicodeDecodeError on a malformed one, which would 500 instead of
+    redirecting, so substitute U+FFFD. Both halves are pinned by
+    test_query_string_is_carried_across and
+    test_malformed_query_string_still_redirects in
+    tests/test_library_planner_retired.py.
+    """
+    target = url_for("tools.tools_comparison")
+    qs = request.query_string.decode("utf-8", errors="replace")
+    if qs:
+        target = f"{target}?{qs}"
+    return redirect(target, code=301)
+
+
 @tools_bp.route("/library-planner", methods=["GET"])
 def library_planner():
-    """Render the Yeast Display Library Planner input form.
-
-    Open to anonymous visitors, like /developability above. Ten posts on
-    ranomics.com link here from a "try the tool" callout, and while this
-    route was @login_required every one of those readers landed on
-    /login?next=/library-planner instead of the tool.
-
-    There is nothing to gate: planning is pure arithmetic over the posted
-    form with no GPU, no wallet charge, no job row and no storage write.
-    The trust boundary is the input validation in library_planner_plan
-    below and in plan_library (tools/library_planner/planner.py::plan_library).
-    """
-    return render_template(
-        "library_planner_form.html",
-        error=None,
-        form_values=None,
-    )
+    """Permanently redirect the retired Library Planner form to /tools."""
+    return _retired_planner_redirect()
 
 @tools_bp.route("/library-planner/plan", methods=["POST"])
-@idempotent()
 def library_planner_plan():
-    """Validate inputs and render the library planner results page.
+    """Permanently redirect the retired planner submit to /tools.
 
-    Anonymous like its GET: opening the form and then redirecting the
-    submit to login would leave the blog reader at the same wall one
-    click later. Safe to open because this handler spends nothing and
-    persists nothing -- it calls plan_library(), a pure function over
-    the parsed form, and renders a template.
-
-    The bounds below are what keep an anonymous request's cost fixed:
-    positions must parse as an int in 1..40, KD must parse as a float
-    above zero, and coverage falls back to 90% outside (0, 100).
-    plan_library then allowlists scaffold, codon scheme and starting
-    material, raising ValueError into the re-rendered form.
-
-    @idempotent() is retained for signed-in callers; it hands an
-    anonymous request straight to the handler because load_user_context
-    returns None without a session (shared/idempotency.py::idempotent).
+    @idempotent() was dropped with the handler body. The decorator is for
+    routes where a replay costs real money or real work
+    (shared/idempotency.py::idempotent); a redirect costs neither, and
+    keeping it would have let a half-configured ledger 503 a 301.
     """
-    from tools.library_planner import plan_library  # noqa: PLC0415
+    return _retired_planner_redirect()
 
-    raw = {
-        "scaffold": request.form.get("scaffold", "").strip(),
-        "positions": request.form.get("positions", "").strip(),
-        "scheme": request.form.get("scheme", "").strip(),
-        "kd_nm": request.form.get("kd_nm", "").strip(),
-        "starting_material": request.form.get(
-            "starting_material", ""
-        ).strip(),
-        "coverage_pct": request.form.get("coverage_pct", "90").strip(),
-    }
-
-    error = None
-    try:
-        positions = int(raw["positions"])
-    except ValueError:
-        positions = None
-        error = "Diversified positions must be a whole number."
-    try:
-        kd_nm = float(raw["kd_nm"])
-    except ValueError:
-        kd_nm = None
-        if error is None:
-            error = "Target KD must be a number in nanomolar."
-    try:
-        coverage_pct = float(raw["coverage_pct"])
-    except ValueError:
-        coverage_pct = 90.0
-
-    if coverage_pct <= 0 or coverage_pct >= 100:
-        coverage_pct = 90.0
-
-    if error is None and (positions is None or positions < 1):
-        error = "Diversified positions must be at least 1."
-    if error is None and positions is not None and positions > 40:
-        error = (
-            "Diversified positions capped at 40 for this tool. "
-            "For combinatorial libraries beyond 40 positions, please "
-            "reach out to the Ranomics team."
-        )
-    if error is None and (kd_nm is None or kd_nm <= 0):
-        error = "Target KD must be greater than zero."
-
-    if error:
-        return render_template(
-            "library_planner_form.html",
-            error=error,
-            form_values=raw,
-        )
-
-    try:
-        plan = plan_library(
-            scaffold=raw["scaffold"],
-            diversification_positions=positions,
-            diversification_scheme=raw["scheme"],
-            target_kd_nm=kd_nm,
-            starting_material=raw["starting_material"],
-            target_coverage=coverage_pct / 100.0,
-        )
-    except ValueError as exc:
-        return render_template(
-            "library_planner_form.html",
-            error=str(exc),
-            form_values=raw,
-        )
-
-    return render_template(
-        "library_planner_results.html",
-        plan=plan,
-    )
 
 # ------------------------------------------------------------------
 # GPU tool routes — one form/submit pair per registered adapter,
@@ -1743,6 +1736,21 @@ def tool_preflight(tool: str):
             }, 200)
 
     binder_max_aa, num_designs = _parse_preflight_size_params(request.form)
+    # The form total is not what one container runs. Above
+    # single_container_ceiling the form re-points at the campaign chunker
+    # (templates/tools/_campaign_reroute.html) and _single_container_refusal
+    # rejects a larger single job, so no container ever runs more than the
+    # ceiling -- and the campaign route judges the ceiling PER CHUNK, passing
+    # plan.designs_for_chunk(0) (blueprints/campaigns.py). Judging the form
+    # total here refused runs that route funds: bindcraft at 115 aa / 100
+    # designs is 15.6 h as one job and greys out Run, while the six-design
+    # chunk it actually becomes is accepted. Clamped so the panel judges the
+    # container the submit will create.
+    if num_designs is not None:
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+
+        if adapter.slug in cc.SUPPORTED_TOOLS:
+            num_designs = min(num_designs, cc.single_container_ceiling(adapter.slug))
     verdict = preflight_for_tool(
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
@@ -1793,9 +1801,25 @@ def _single_container_refusal(tool: str, inputs: dict):
     return (
         f"{requested_n} designs is more than one GPU container "
         f"runs for {tool} (max {ceiling} per single job). "
+        # No promise of "no per-job ceiling" here. Every piece is still one
+        # container under the same pipeline timeout, so the campaign routes
+        # run the same size gate this branch just failed
+        # (blueprints/campaigns.py::compute_campaign_create and
+        # blueprints/targets.py::_collect_launch_specs, both
+        # calling size_error with plan.designs_for_chunk(0)). A large target
+        # therefore caps the designs per piece there too, and a user sent over
+        # by a promise of no ceiling would read a second refusal instead. What
+        # a campaign lifts is the count one container runs, so that is all this
+        # claims -- not that nothing caps the total. ``plan_chunks`` still
+        # raises above MAX_SUBJOBS_PER_CAMPAIGN sub-jobs
+        # (shared/compute_campaigns.py::MAX_SUBJOBS_PER_CAMPAIGN, 50000), which
+        # no realistic ask reaches but which makes "not capped" false as
+        # written.
         f"Start a full-size run instead: open /campaigns/new. It is "
         f"split into pieces that run on our GPUs and bill as they "
-        f"finish, with no per-job ceiling.",
+        f"finish, so you can ask for far more designs than one job "
+        f"runs -- though each piece is still one container, so a large "
+        f"target limits how many designs fit in a piece.",
         ceiling,
     )
 

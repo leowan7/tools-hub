@@ -40,13 +40,23 @@ does not resolve for them because `tools.base.get()` returns `None`:
 | Epitope Scout | Check if my target is a good one to bind | `scout.index` (`https://scout.ranomics.com` in production) |
 | Binder Developability Scout | See if a binder will hold up in the lab | `/developability` |
 
-The **Yeast Display Library Planner** (`/library-planner`) was
-deliberately delisted from the catalog on 2026-08-17 — its
-`_HARDCODED_TOOLS` entry was dropped, so no tile appears on the homepage
-or `/tools`. The route, its templates, and the `tools/library_planner`
-package are intentionally still live so existing job links and job
-history keep resolving instead of 404ing. Delisted, not removed; do not
-"clean up" the route.
+The **Yeast Display Library Planner** (`/library-planner`) was delisted
+from the catalog on 2026-08-17 (its `_HARDCODED_TOOLS` entry was
+dropped, so no tile appears on the homepage or `/tools`) and **retired**
+on 2026-09-30. Both of its endpoints — `/library-planner` and
+`/library-planner/plan` — now return a 301 to `/tools`
+(`blueprints/tools.py`, asserted by
+`tests/test_library_planner_retired.py`). They are still registered
+rather than 404ed because callouts on ranomics.com link straight at the
+URL; do not turn the 301 into a 404.
+
+The `tools/library_planner` package and the
+`templates/library_planner_*.html` templates are intentionally left on
+disk and are now unreachable from any route. They are kept because
+`tools/**` is a deploy trigger path
+(`.github/workflows/deploy-modal.yml:79`) whose matrix has no per-path
+routing, so deleting the package would redeploy all nine GPU Modal apps
+for a change that touches no GPU code.
 
 ## Architecture
 

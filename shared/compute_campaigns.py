@@ -507,13 +507,23 @@ class ChunkPlan:
         return max(0, min(self.chunk_size, self.requested_designs - start))
 
 
-# bindcraft's 3-designs/chunk pilot sizing (7200s container) is the worst-scaling
-# campaign tool (6667 sub-jobs for 20k designs). Its Modal function allows a 23h
-# session, so campaigns size bindcraft against a much larger container AND pass a
-# matching session budget (see _campaign_session_inputs), cutting its sub-job
-# count ~5x. Kept well under the 23h ceiling; bindcraft streams results per
-# candidate, so a slow chunk that reaches its budget still returns what it made.
-_BINDCRAFT_CAMPAIGN_CONTAINER_S = 36000  # 10h -> 16 designs/chunk at 0.8 util
+# WAS 36000 (10h -> 16 designs/chunk), sized against bindcraft's 23h Modal
+# function timeout on the reasoning that a slow chunk "streams results per
+# candidate, so a slow chunk that reaches its budget still returns what it
+# made". Both halves were wrong, and the pair of them is what made a chunk
+# unfinishable:
+#   * The Modal timeout is not the bound. llm-proteinDesigner origin/master
+#     8632f32, docker/bindcraft/run_pipeline.py, runs the design step under
+#     ``run_command(cmd, timeout=14400)`` on the pilot AND campaign path. A
+#     10h chunk is killed at 4h.
+#   * Nothing is returned when it is. TimeoutExpired is not caught at that
+#     call site, so it reaches the wrapper's catch-all, which posts a FAILED
+#     webhook with no bucket; the Accepted/*.pdb written so far are never
+#     parsed or uploaded. Only the smoke and mini_pilot tiers salvage partial
+#     output.
+# Sized to the real timeout, so a chunk planned at 0.8 utilisation has the
+# pipeline's own kill as its slack rather than a fiction 2.5x past it.
+_BINDCRAFT_CAMPAIGN_CONTAINER_S = 14400  # 4h -> 6 designs/chunk at 0.8 util
 # rfantibody mirrors bindcraft: ranomics-rfantibody-prod's Modal function timeout
 # is 23h (_MAX_SESSION_S=82800), so a 10h chunk (16 designs at 0.8 util) sits well
 # under the ceiling. Its pipeline streams scores only (a chunk is all-or-nothing),
@@ -581,14 +591,20 @@ def _campaign_container_seconds(tool: str, preset: str = "pilot") -> int:
 
 
 def _campaign_session_inputs(tool: str) -> dict:
-    """Extra Modal inputs so a bigger campaign chunk gets a matching session budget.
+    """Extra Modal inputs declaring the session budget a campaign chunk assumes.
 
-    A bindcraft campaign chunk holds ~16 designs (vs the 3/chunk pilot), which
-    needs more than the default 4h ``_total_budget_hours`` or the pipeline stops
-    early; derive the budget from the enlarged container. rfantibody carries the
-    same input for parity (its pipeline currently ignores it and is bounded by
-    the 23h Modal timeout, but a future budget-aware pipeline picks it up free).
-    Other tools keep the default (their chunks are far shorter).
+    ``_total_budget_hours`` reaches the GPU side as the ``TOTAL_BUDGET_HOURS``
+    container env var (llm-proteinDesigner origin/master 8632f32,
+    infrastructure/modal/bindcraft_app.py:94 and boltzgen_app.py:64), but
+    neither pipeline reads it today -- ``grep TOTAL_BUDGET_HOURS`` over both
+    docker/*/run_pipeline.py returns nothing. (A case-insensitive ``budget``
+    does match real code in the boltzgen one, but that is boltzgen's own
+    ``--budget`` design count, unrelated to the session budget.) So this input is
+    advisory: it records what the hub planned the chunk against, and a
+    budget-aware pipeline would pick it up for free. What actually bounds a
+    chunk is the hardcoded ``subprocess`` timeout in the pipeline (see
+    ``_BINDCRAFT_CAMPAIGN_CONTAINER_S``), which is why that constant is now
+    sized to it. Other tools keep the default (their chunks are far shorter).
     """
     override = _CAMPAIGN_CONTAINER_S.get(tool)
     if override is not None:

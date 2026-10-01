@@ -560,7 +560,7 @@ def test_fail_open_when_supabase_unavailable(app, user_ctx):
     every guarded route offline in any environment that never had Supabase set
     up.
 
-    NOT because "the wallet gate refuses". It does not: nine of the ten guarded
+    NOT because "the wallet gate refuses". It does not: eight of the nine guarded
     routes carry no wallet decorator, and the one that does falls THROUGH on a
     null wallet row (`shared/wallet_guard.py::requires_wallet`, its
     `wallet_row is None` arm). `_claim_key`'s own docstring forbids the

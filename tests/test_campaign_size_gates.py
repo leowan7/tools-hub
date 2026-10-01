@@ -595,7 +595,12 @@ _OTHER_TOOLS = {
         {"tool": "boltzgen", "requested_designs": "24", "target_chain": "A",
          "hotspot_residues": "42,88", "binder_length_min": "50",
          "binder_length_max": "100"},
-        800, 200,
+        # 150, not 200, since the runtime-ceiling gate landed: boltzgen folds a
+        # pinned 200-design pool inside a 6600s kill, which its curve overruns
+        # above ~153 aa, so a 200-aa target is now refused for RUNTIME while
+        # still being far below the 600-aa size cap this test is about. See
+        # tests/test_runtime_ceiling.py.
+        800, 150,
     ),
 }
 
@@ -654,3 +659,58 @@ def test_iggm_has_no_rules_entry_so_no_gate_applies():
 
     assert "iggm" not in TOOL_RULES
     assert size_only_refusal("iggm", 5000, binder_max_aa=5000) is None
+# ---------------------------------------------------------------------------
+# F5 -- the runtime ceiling, per CHUNK, on the route that funds the campaign
+# ---------------------------------------------------------------------------
+
+_BINDCRAFT_400 = {
+    "tool": "bindcraft", "target_chain": "A", "hotspot_residues": "42,88",
+    "binder_length_min": "50", "binder_length_max": "100",
+}
+
+
+@pytest.mark.parametrize("branch", ["target", "upload"])
+def test_a_bindcraft_chunk_that_cannot_finish_is_refused(client, branch):
+    """400 aa is INSIDE bindcraft's 500-residue cap, so only the runtime half
+    of the envelope can refuse this, and only if the route hands the gate a
+    design count. A 6-design chunk at 400 aa estimates 6.1 h against the
+    240-minute timeout the pipeline enforces, so every chunk of this campaign
+    would be killed, refunded, and its designs discarded
+    (``docs/qa/RUNTIME-CEILING-2026-09-30.md`` section 2).
+    """
+    _login(client)
+    summary = _summary(400, {"A": (400, 1, 400)})
+    form = dict(_BINDCRAFT_400, requested_designs="24")
+    if branch == "target":
+        resp, spy = _post(client, form, target=_target(chain_summary=summary))
+    else:
+        resp, spy = _post(client, form, upload_summary=summary)
+    assert resp.status_code == 400, _visible(resp)[-500:]
+    assert spy.calls == [], f"{branch} refused only after {spy.calls}"
+    assert "a run stopped there returns nothing" in _visible(resp)
+
+
+@pytest.mark.parametrize("branch", ["target", "upload"])
+def test_a_campaign_smaller_than_one_chunk_is_judged_on_what_it_runs(
+    client, branch,
+):
+    """THE FALSE REFUSAL the nominal chunk size would have caused.
+
+    ``plan_chunks`` sets ``chunk_size`` from a per-tool constant and never
+    clamps it to the request (``shared/compute_campaigns.py::plan_chunks``), so
+    a 1-design bindcraft campaign still reports ``chunk_size == 6``. Gating on
+    that refuses a campaign whose only child runs ONE design -- ~61 min at 400
+    aa, comfortably inside the 240-minute kill -- and the refusal names a lower
+    count that cannot change the estimate, so nothing the user types clears it.
+    The gate reads ``designs_for_chunk(0)``, the largest count any child
+    actually runs, which is why this funds.
+    """
+    _login(client)
+    summary = _summary(400, {"A": (400, 1, 400)})
+    form = dict(_BINDCRAFT_400, requested_designs="1")
+    if branch == "target":
+        resp, spy = _post(client, form, target=_target(chain_summary=summary))
+    else:
+        resp, spy = _post(client, form, upload_summary=summary)
+    assert resp.status_code != 400, _visible(resp)[-500:]
+    assert spy.calls, f"{branch} never reached the money seams"

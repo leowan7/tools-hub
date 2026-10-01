@@ -2528,21 +2528,28 @@ def test_rfdiffusion_baseline_is_not_the_form_default():
         f"PURPOSE; re-read its docstring before relaxing anything here."
     )
 
-    assert TOOL_RULES["boltzgen"].size.runtime_baseline_designs == 100, (
-        "boltzgen inherits SizeEnvelope.runtime_baseline_designs; a change "
-        "to that default silently re-scales its runtime estimate"
+    assert TOOL_RULES["boltzgen"].size.runtime_baseline_designs == 200, (
+        "boltzgen declares runtime_baseline_designs=200 -- the pinned pool "
+        "one container folds, which is the count its single measured run "
+        "(4944 GPU-s, docs/VALIDATION-LOG.md job 758c45e5) was measured at. "
+        "It USED to inherit the 100 default with a base_min that made its "
+        "estimate 14x its real runtime. Moving it re-scales the estimate, "
+        "and that estimate now GATES submissions, so runtime_base_min has "
+        "to move with it; tests/test_runtime_ceiling.py::"
+        "test_boltzgen_runtime_curve_reproduces_its_one_measured_run is "
+        "where the pair is measured."
     )
 
     # Everything above pins a FIELD. This pins that the estimator still
-    # READS it on the tool that only inherits it: rewriting
-    # runtime_estimate_min's design_factor divisor as a literal 100 would
-    # leave every assertion above green while silently re-scaling bindcraft
-    # and rfantibody (4) by 25x and pxdesign and proteina (8) by 12.5x.
+    # READS it: rewriting runtime_estimate_min's design_factor divisor as a
+    # literal 100 would leave every assertion above green while silently
+    # re-scaling bindcraft and rfantibody (4) by 25x, pxdesign and proteina
+    # (8) by 12.5x, and boltzgen (200) by half.
     _boltzgen = TOOL_RULES["boltzgen"]
     _half = _dataclasses.replace(
         _boltzgen,
         size=_dataclasses.replace(
-            _boltzgen.size, runtime_baseline_designs=50
+            _boltzgen.size, runtime_baseline_designs=100
         ),
     )
     _full_est = runtime_estimate_min(_boltzgen, target_aa=412, num_designs=4)
@@ -2793,6 +2800,12 @@ def test_zero_fixed_term_leaves_every_other_envelope_bit_identical():
         if rules.size.runtime_fixed_min:
             continue
         for aa, n in grid:
+            # Mirror the pinned-pool override at the top of
+            # runtime_estimate_min. It replaces the caller's count before any
+            # arithmetic happens, so a reference expression that skipped it
+            # would be testing a different input, not a different
+            # associativity. The subject here is still the fixed term.
+            n = rules.size.runtime_fixed_designs or n
             size_factor = (aa / 120.0) ** rules.size.runtime_alpha
             design_factor = n / rules.size.runtime_baseline_designs
             was = max(
@@ -2806,3 +2819,30 @@ def test_zero_fixed_term_leaves_every_other_envelope_bit_identical():
                 f"runtime_fixed_min is 0.0 here, so the only way this moves "
                 f"is a re-associated product."
             )
+
+
+def test_a_ceiling_refusal_suggests_a_size_that_actually_runs():
+    """The reason and the fix have to name the same limit.
+
+    boltzgen's 600-residue cap is not the binding one: its pinned 200-design
+    pool overruns the 6600 s pipeline timeout above ~153 aa. A 500-residue
+    upload was refused with "Targets up to about 153 residues fit" in the
+    reason and "keep it at or under 600 residues" in the fix, so a user who
+    followed the fix was refused again. The fix now solves the ceiling
+    (``shared/pdb_preflight_rules.py::largest_target_aa_within_ceiling``) and
+    takes whichever limit is smaller.
+    """
+    from shared.pdb_preflight_rules import (
+        TOOL_RULES, largest_target_aa_within_ceiling,
+    )
+
+    rules = TOOL_RULES["boltzgen"]
+    fits = largest_target_aa_within_ceiling(rules)
+    assert 0 < fits < rules.size.hard_cap_target_aa, fits
+    pdb = _chain_pdb("A", list(range(1, 501)))
+    v = preflight_for_tool("boltzgen", pdb, target_chain="A", hotspots=[])
+    assert v.kind is VerdictKind.NEEDS_FIX, v.kind
+    assert v.size_envelope.over_runtime_ceiling
+    assert not v.size_envelope.over_hard_cap
+    assert f"at or under {fits} residues" in v.suggested_fix, v.suggested_fix
+

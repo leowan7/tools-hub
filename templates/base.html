@@ -9,7 +9,7 @@
   {# ``page_description`` lets a route override the default without the
      child template declaring a block — the 14 tool forms all share one
      template shape, so the SEO copy is set in blueprints/tools.py. #}
-  <meta name="description" content="{% block description %}{{ page_description or "Free scientific tools for protein engineers — binder developability, epitope identification, library planning, and AI binder design pipelines from Ranomics." }}{% endblock %}">
+  <meta name="description" content="{% block description %}{{ page_description or "Free scientific tools for protein engineers — binder developability, epitope identification, and AI binder design pipelines from Ranomics." }}{% endblock %}">
   <meta name="robots" content="{% block robots %}index,follow{% endblock %}">
   {% set _page_url = request.url_root.rstrip('/') + request.path %}
   {% block canonical %}<link rel="canonical" href="{{ canonical_url or _page_url }}">{% endblock %}

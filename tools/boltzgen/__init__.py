@@ -186,7 +186,14 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~30 min start to first results",
+            # "~80 min", not the "~30 min" this replaces, which was 2.7x
+            # under the only boltzgen pilot on record: 4944 GPU-s = 82.4 min
+            # at 115 aa (docs/VALIDATION-LOG.md, job 758c45e5). The container
+            # folds a fixed 200-design pool whatever budget the form sends, so
+            # the figure moves with target size only -- and the pipeline stops
+            # the run at 6600 s, which is why the form refuses a target much
+            # over ~150 aa. docs/qa/RUNTIME-CEILING-2026-09-30.md.
+            label="Your target, ~80 min on a small target",
             description=(
                 # No "start small, then scale up": the estimate is flat
                 # at every budget from 1 to 50, so a smaller first batch

@@ -298,9 +298,11 @@ def compute_campaign_create():
     # the CSRF token is session-scoped and reusable, and the POST takes seconds.
     #
     # Every sibling already had it: POST /targets, POST /targets/<id>/launch,
-    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score,
-    # /library-planner/plan. This repo's own docs name this exact failure mode
-    # as a defect, for a route that HAS the decorator.
+    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score.
+    # This repo's own docs name this exact failure mode as a defect, for a
+    # route that HAS the decorator. (/library-planner/plan carried it too
+    # until the planner was retired on 2026-09-30; the decorator went with
+    # the handler body.)
     #
     # Safe to add only because of the hardening in this same branch: the key
     # falls back to a canonical encoding of request.form when _enforce_csrf has
@@ -541,6 +543,21 @@ def compute_campaign_create():
         size_err = target.size_error(
             tool, run_chain, validated.get("_target_segments") or [],
             binder_max_aa=_parse_preflight_size_params(validated)[0],
+            # The per-container design count, so the runtime ceiling is judged
+            # against what one sub-job actually runs, not the campaign total.
+            # Without it a campaign whose every chunk is killed at the pipeline
+            # timeout was funded here: the ceiling gate needs a design count to
+            # estimate from.
+            #
+            # ``designs_for_chunk(0)``, not ``chunk_size``: the nominal chunk is
+            # a per-tool constant that ``plan_chunks`` never clamps to the
+            # request (``shared/compute_campaigns.py::plan_chunks``), so a
+            # 1-design bindcraft campaign has ``chunk_size == 6``. Gating on 6
+            # refuses a run that fits AND names a smaller count that cannot
+            # change the estimate, so no number the user types clears it. Chunk
+            # 0 is the largest any child runs
+            # (``shared/compute_campaigns.py::ChunkPlan.designs_for_chunk``).
+            num_designs=plan.designs_for_chunk(0),
         )
         if size_err:
             return _err(size_err)
@@ -591,6 +608,9 @@ def compute_campaign_create():
                 # applied to one of them leaves the other blind.
                 binder_max_aa=_parse_preflight_size_params(validated)[0],
                 selection_label=_segments_label(upload_segments),
+                # Largest per-container count, same reason and same clamp as
+                # the target-bound branch.
+                num_designs=plan.designs_for_chunk(0),
             )
             if size_err:
                 return _err(size_err)

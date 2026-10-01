@@ -136,6 +136,25 @@ class SizeEnvelope:
     runtime_alpha: float
     runtime_baseline_designs: int = 100
     runtime_fixed_min: float = 0.0
+    # THE WALL-CLOCK THE CONTAINER ACTUALLY DIES AT, in seconds, or None where
+    # nobody has read the pipeline that runs this tool. NOT a policy number and
+    # NOT ``gpu.modal_client.PRESET_CAPS`` (which is never sent to Modal and has
+    # no value-carrying reader on the request path outside campaign chunk
+    # sizing; ``scripts/calibration/poll_results.py`` also reads the value, for
+    # an offline SLOW_SUCCESS threshold): the hardcoded
+    # ``subprocess.run(timeout=...)`` in the sibling repo llm-proteinDesigner
+    # that kills the design run, after which the wrapper's catch-all posts a
+    # bucket-less FAILED webhook, ``shared/jobs.py::classify_terminal_state``
+    # buckets it ``unclassified``, and the hold is refunded in full -- so every
+    # GPU-second spent up to it is absorbed by Ranomics. Values are quoted from
+    # origin/master of that repo at 8632f32, per tool below.
+    runtime_ceiling_s: Optional[int] = None
+    # Design count the CONTAINER runs whatever the form asked for, or None when
+    # the form's own count is what runs. Set only where the wrapper hardcodes a
+    # pool: boltzgen's build_payload pins ``num_designs: 200`` and the form's
+    # ``budget`` only selects how many of that pool come back, so runtime is
+    # flat in budget and an estimate keyed on budget models nothing.
+    runtime_fixed_designs: Optional[int] = None
     # WHERE THE CAP CAME FROM, because the refusal copy must not claim more
     # confidence than the number has.
     #   "literature" — published binder-design work plus (for rfantibody) a
@@ -641,6 +660,15 @@ _BINDCRAFT = ToolRules(
         runtime_baseline_designs=4,  # the form default: ``num_designs`` falls
                                      # back to "4" in
                                      # tools/bindcraft/__init__.py::validate
+        # llm-proteinDesigner origin/master 8632f32,
+        # docker/bindcraft/run_pipeline.py: the pilot/campaign path runs
+        # ``run_command(cmd, timeout=14400, cwd=BINDCRAFT_DIR)``. That call
+        # site catches nothing, so ``subprocess.TimeoutExpired`` reaches the
+        # outer catch-all and every Accepted/*.pdb written so far is dropped.
+        # This is the bound job c43329f3 hit on a 3-design pilot (docs/qa/
+        # RUNTIME-CEILING-2026-09-30.md section 1), NOT the 7200 in
+        # PRESET_CAPS and NOT the 82800 Modal function timeout.
+        runtime_ceiling_s=14400,
         cap_basis="literature",      # Pacesa 2025 default-settings examples
     ),
     gap=GapThresholds(
@@ -664,15 +692,41 @@ _BOLTZGEN = ToolRules(
         hard_cap_target_aa=600,      # Week 2: 400 → 600 (AF3-class headroom)
         soft_warn_target_aa=360,
         hard_cap_combined_aa=700,
-        runtime_base_min=600.0,      # BoltzGen sampling ~5-10 min/design × 100
-        # Not checked against a run. tools/boltzgen/__init__.py::build_payload
-        # pins num_designs=200, and runtime_estimate_min(_BOLTZGEN, 115, 200)
-        # returns 1150 min. The one recorded pilot at that pool
-        # (docs/VALIDATION-LOG.md, boltzgen 2026-05-28, 4ZQK chain A = 115 aa)
-        # ran ~82 min. It does not render today:
-        # shared/pdb_preflight.py::_check_size_envelope estimates only when
-        # num_designs is passed, and the boltzgen form sends none.
-        # Recalibrate from a recorded run before passing one.
+        # RE-ANCHORED (2026-09-30) on the only boltzgen pilot this repo has
+        # measured at the shipped pool: docs/VALIDATION-LOG.md, job 758c45e5
+        # (2026-05-28), 4944 GPU-s = 82.4 min against 4ZQK chain A = 115 aa
+        # with build_payload's num_designs=200. The 600.0 this replaces was
+        # "~5-10 min/design x 100" from nowhere in particular and quoted
+        # 1150 min for that same run, 14x what it took.
+        #   82.4 / (115/120)**1.0 = 85.98 -> 86.0 at the 120 aa anchor.
+        # runtime_baseline_designs is therefore the POOL, 200, not a form
+        # field: see runtime_fixed_designs below. Pinned by
+        # tests/test_runtime_ceiling.py::
+        # test_boltzgen_runtime_curve_reproduces_its_one_measured_run.
+        runtime_base_min=86.0,
+        runtime_baseline_designs=200,
+        # The container runs the 200-design pool whatever ``budget`` the form
+        # sent, so the estimate is keyed on the pool. This is also what makes
+        # the estimate render at all: shared/pdb_preflight.py::
+        # _check_size_envelope estimated only when a caller passed
+        # num_designs, and the boltzgen form sends ``budget`` instead, so this
+        # envelope's runtime numbers reached no surface before.
+        runtime_fixed_designs=200,
+        # llm-proteinDesigner origin/master 8632f32,
+        # docker/boltzgen/run_pipeline.py: ``boltzgen_timeout = max(6600,
+        # 7200 - 1800)`` = 6600, passed to run_command for the boltzgen CLI.
+        # TimeoutExpired is not caught by the surrounding ``except
+        # RuntimeError``, so it reaches the catch-all and the run is refunded
+        # with nothing returned. Both boltzgen losses in docs/qa/
+        # RUNTIME-CEILING-2026-09-30.md section 1 (dd7eaf99, b5707a1d) are
+        # this bound. PRESET_CAPS says 3600 for the same preset,
+        # below even the 4944 s run that SUCCEEDED, and is inert.
+        runtime_ceiling_s=6600,
+        # STILL UNMEASURED, and now load-bearing: with one run at one target
+        # size this exponent carries no size-scaling evidence, and the gate in
+        # shared/pdb_preflight.py::_check_size_envelope refuses on it. At 1.0
+        # the 6600 s ceiling lands at ~153 aa. A second measured size is what
+        # moves it; see docs/qa/RUNTIME-CEILING-2026-09-30.md.
         runtime_alpha=1.0,
         cap_basis="literature",      # AF3-class headroom
     ),
@@ -986,6 +1040,17 @@ def runtime_estimate_min(
         Estimated wall-clock minutes. Floor of 5 to avoid showing
         "1 min" for tiny targets where Modal cold-start dominates.
     """
+    # A pinned pool overrides whatever the caller asked for, HERE rather than
+    # in each caller, because the two surfaces that print this number reached
+    # it by different routes: the form panel via
+    # shared/pdb_preflight.py::_check_size_envelope and the result page via
+    # shared/pdb_intake.py::job_preflight_for_display, which passes the job's own
+    # ``num_designs``. boltzgen's form field is a filter budget over a pool the
+    # container folds at ``runtime_fixed_designs`` regardless, so a per-caller
+    # override showed one visitor 5 min and another 82 min for the same run.
+    # tests/test_result_page_runtime.py::
+    # test_display_minutes_equal_the_form_panel_for_every_tool is the check.
+    num_designs = rules.size.runtime_fixed_designs or num_designs
     if target_aa <= 0 or num_designs <= 0:
         # Degenerate input, not an estimate. The two halves of this guard
         # are NOT equally reachable, and the difference matters enough to
@@ -1026,3 +1091,55 @@ def runtime_estimate_min(
     # check.
     est += rules.size.runtime_fixed_min * size_factor
     return max(5.0, est)
+
+
+def largest_target_aa_within_ceiling(
+    rules: ToolRules, num_designs: Optional[int] = None
+) -> int:
+    """Largest target chain size whose estimate fits ``runtime_ceiling_s``.
+
+    The same inverse as :func:`max_designs_within_ceiling`, solved for target
+    size instead, for the tools whose design count is pinned in the wrapper and
+    so cannot be the thing the user lowers. ``num_designs`` defaults to the
+    pinned count (``runtime_fixed_designs``) and falls back to the envelope's
+    baseline. 0 when the tool declares no ceiling.
+    """
+    env = rules.size
+    n = num_designs or env.runtime_fixed_designs or env.runtime_baseline_designs
+    if not env.runtime_ceiling_s or env.runtime_alpha <= 0 or n <= 0:
+        return 0
+    at_anchor = (
+        env.runtime_base_min * n / env.runtime_baseline_designs
+        + env.runtime_fixed_min
+    )
+    if at_anchor <= 0:
+        return 0
+    ratio = (env.runtime_ceiling_s / 60.0) / at_anchor
+    return max(0, int(120.0 * ratio ** (1.0 / env.runtime_alpha)))
+
+
+def max_designs_within_ceiling(rules: ToolRules, target_aa: int) -> int:
+    """Largest design count whose :func:`runtime_estimate_min` fits the ceiling.
+
+    The inverse of the estimator above, solved for ``num_designs`` at
+    ``runtime_ceiling_s``, so a refusal can name the count that WOULD run
+    instead of only saying no. 0 means no count fits (the fixed term alone
+    already overruns), and 0 is also what a tool with no declared ceiling
+    returns, since there is nothing to solve against.
+
+    0 as well for a tool whose pool is pinned (``runtime_fixed_designs``):
+    :func:`runtime_estimate_min` overrides the caller's count with the pinned
+    one, so no count the user could type changes the runtime and there is no
+    count to recommend. Those tools take the target-size inverse instead --
+    ``shared/pdb_preflight.py::_check_size_envelope`` picks between the two on
+    exactly this field.
+    """
+    env = rules.size
+    if not env.runtime_ceiling_s or target_aa <= 0 or env.runtime_fixed_designs:
+        return 0
+    size_factor = (target_aa / 120.0) ** env.runtime_alpha
+    per_design = env.runtime_base_min * size_factor / env.runtime_baseline_designs
+    if per_design <= 0:
+        return 0
+    budget_min = env.runtime_ceiling_s / 60.0 - env.runtime_fixed_min * size_factor
+    return max(0, int(budget_min / per_design))
