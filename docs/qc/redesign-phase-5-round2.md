@@ -324,8 +324,10 @@ Loaded all four pages anonymously and read the rendered text, not the diff.
 > row no longer describes a live sentence, and its evidence cell no longer
 > enumerates the live set: `esmfold2-design` withdrew its `PILOT` dict
 > (`tools/esmfold2_design/meta.py`, `PILOT: dict | None = None`, reason in
-> the comment above it) because the configuration that card loaded fails
-> deterministically. That is a different reason from the one this row
+> the comment above it): the configuration that card loaded failed three
+> times in prod on 2026-09-30, the third with the seed varied. That cause
+> is patched on the branch named above, and no run of those settings has
+> been made since. It is a different reason from the one this row
 > certifies, which is why `templates/help/getting_started.html` dropped the
 > reason clause instead of extending it -- re-verifying the sentence there
 > no longer needs this row. Do not re-derive the pilot-less set from here:
