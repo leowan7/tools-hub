@@ -2277,7 +2277,8 @@ def mid_run_monitor_check(
     the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
     is retained for signature compatibility and is no longer used here.
 
-    Side effect: on every check, persists ``cumulative_gpu_seconds`` to
+    Side effect: on each check that reports nonzero GPU seconds, persists
+    ``cumulative_gpu_seconds`` to
     ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
     consumed time without waiting for a terminal Modal webhook. The
     value is a heartbeat-resolution snapshot (last value reported), so
