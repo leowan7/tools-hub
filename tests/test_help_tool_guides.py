@@ -301,8 +301,12 @@ def test_getting_started_names_the_pilot_card_cta_that_exists(app):
         if "Load these settings"
         in client.get(f"/tools/{a.slug}").get_data(as_text=True)
     ]
-    # Ten of fourteen carry a pilot; the page says "most", not "every".
-    assert len(with_card) >= 10, f"only {len(with_card)} tools render a pilot card"
+    # Nine of fourteen carry a pilot; the page says "most", not "every".
+    # Was ten until 2026-09-30, when esmfold2-design's was WITHDRAWN: its
+    # recipe was the configuration three prod runs failed on (see
+    # tools/esmfold2_design/meta.py). Lowering a drift alarm is only
+    # legitimate alongside the reason, so the reason is here.
+    assert len(with_card) >= 9, f"only {len(with_card)} tools render a pilot card"
     assert len(with_card) < len(tool_base.all_adapters()), (
         "every tool now has a pilot card — step 3's carve-out for the fast "
         "predictors is stale and should be dropped"
@@ -333,6 +337,8 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
     must be a binder-design tool, or step 4's "covers structure prediction and
     sequence runs" is false. OpenDDE publishes no pilot card, so it cannot show
     up here; tests/test_signup_credit_covers_smallest_run.py covers it by hold.
+    Since 2026-09-30 esmfold2-design is in that same position, for a different
+    reason -- its pilot was withdrawn, not never written.
     """
     import re as _re  # noqa: PLC0415
     from decimal import Decimal  # noqa: PLC0415
@@ -351,7 +357,9 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
         hit = _re.search(r"About <strong>\$([\d,.]+)</strong>", body)
         if hit:
             prices[adapter.slug] = Decimal(hit.group(1).replace(",", ""))
-    assert len(prices) >= 10, f"only {len(prices)} pilot prices found"
+    # Nine, not ten: esmfold2-design's pilot was withdrawn 2026-09-30 (see
+    # the floor in test_getting_started_names_the_pilot_card_cta_that_exists).
+    assert len(prices) >= 9, f"only {len(prices)} pilot prices found"
 
     over = {s: p for s, p in prices.items() if p > SIGNUP_CREDIT_USD}
     assert over, "no pilot costs more than the credit; step 4's top-up line is stale"

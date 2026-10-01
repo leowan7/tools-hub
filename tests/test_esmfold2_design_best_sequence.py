@@ -327,6 +327,14 @@ class TestSingleSeedPipelineWiring:
         monkeypatch.setenv("JOB_ID", "2b917b54")
         monkeypatch.setattr(rp, "_shape_designs", lambda *a, **k: designs)
         monkeypatch.setattr(rp, "_dump_raw_critic_results", lambda *a: None)
+        # The ESM-C weights preflight runs ahead of the designer and needs a
+        # real ``transformers``, which this suite's interpreter does not have.
+        # Stubbed rather than relaxed in production: this rig exists for the
+        # best_sequence pick, and the preflight carries its own coverage in
+        # tests/test_esmfold2_design_esmc_pin.py, including a mutation-proven
+        # assertion that it still runs BEFORE the designer is built.
+        monkeypatch.setattr(rp, "_pin_esmc_revision", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "_esmc_checkpoint_mismatch", lambda *a, **k: "")
         written: dict = {}
         monkeypatch.setattr(rp, "_write_result", written.update)
         assert rp._run() == 0

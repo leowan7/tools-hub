@@ -35,9 +35,25 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 _JID = str(uuid.uuid4())
 _HOLD = {"_wallet": {"hold_tx_id": "tx-hold-stub"}}
 
-# The ``design() raised: `` prefix is verbatim from
-# tools/esmfold2_design/run_pipeline.py:1141, which sets ``error`` to that
-# plain string. The torch text after it is the detail QA 2026-09-30 P0-4
+# The ``design() raised: `` prefix is verbatim from the ``error`` field
+# built in tools/esmfold2_design/run_pipeline.py::_run.
+#
+# Cited by symbol because the ESM-C branch broke the line cite that
+# stood here. It read :1141, which was CORRECT at that branch's base
+# -- ``git cat-file -p 0040ebc1:tools/esmfold2_design/run_pipeline.py``
+# still shows the emitter there, and always will, because that hash
+# is immutable. The branch then inserted several hundred lines above
+# it.
+#
+# This comment has been wrong twice, which is the argument for the
+# form it is in now. It first called the drift pre-existing, letting
+# the branch off for its own breakage. It then gave the emitter's new
+# line number -- and that number was stale by six lines before the
+# commit carrying it had even landed, because the same diff moved the
+# emitter again. So: no current line number here at all. A symbol
+# survives an insertion above it and a line number cannot, and
+# test_code_citations_resolve.py reads only the ``::`` form, so
+# nothing in the suite would have caught either mistake. The torch text after it is the detail QA 2026-09-30 P0-4
 # observed on job a327d5fe and cannot be checked statically. The
 # ``pipeline``/``design`` bucket and check the tests wrap it in are this
 # file's assumption about the poll path, not something that emitter stamps.
@@ -124,8 +140,8 @@ _CASES = [
     ("chain", dict(tool="proteina", error=_poll_error(
         "input", "target_input",
         "chain C is not present in the uploaded target. It contains: A, B"))),
-    # The string QA 2026-09-30 P0-4 saw, verbatim from the emitter at
-    # tools/esmfold2_design/run_pipeline.py:1141.
+    # The string QA 2026-09-30 P0-4 saw, verbatim from the emitter in
+    # tools/esmfold2_design/run_pipeline.py::_run (see the note above).
     ("numerical", dict(tool="esmfold2-design", error=_poll_error(
         "pipeline", "design",
         "design() raised: linalg.svd: (Batch element 0): The algorithm failed "

@@ -151,6 +151,20 @@ _OUTSIDE_THIS_REPO = frozenset(
         # ``llm-proteinDesigner/docker/<tool>/run_pipeline.py``; the ``<tool>``
         # placeholder is what truncates it to a leading slash here.
         "/run_pipeline.py",
+        # The vendored upstream ESM / ESMFold2 sources, which exist only
+        # inside the built esmfold2-design image: ``binder_design.py`` is
+        # copied to /opt from the esm tarball by a .run_commands() layer in
+        # tools/esmfold2_design/modal_app.py, and the two
+        # ``*_esmfold2_*`` modules ship inside the pip-installed ``esm``
+        # package. tools/esmfold2_design/run_pipeline.py cites them because
+        # the 2026-09-30 weights failure can only be explained by naming
+        # them; exempting the path keeps the SYMBOL unchecked, which is the
+        # real cost here and is unavoidable for a file this repo does not
+        # track. ``esm`` is pinned to a git SHA, so these do not move under
+        # us silently.
+        "binder_design.py",
+        "configuration_esmfold2.py",
+        "modeling_esmfold2_common.py",
     }
 )
 
