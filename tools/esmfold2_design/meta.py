@@ -236,11 +236,12 @@ about: dict = {
 # ::estimated_cost_for_tool(None, "esmfold2-design", {"preset":
 # "minibinder"}) returns Decimal("9.8614") on this tree; prod carries
 # historical p90 data this checkout does not, so treat it as the order of
-# magnitude, not the invoice). Two of the three carried the form's
-# default seed. The third changed only the starting seed -- the one
-# knob the numerical failure advice named on 2026-09-30 -- and failed
-# the same way, which is why that advice was wrong for this cause and
-# not merely unhelpful:
+# magnitude, not the invoice). Reported by Leo from the prod job
+# records, which this checkout cannot see: the first two ran the
+# form's defaults, and the third changed only the starting seed --
+# the first thing shared/jobs.py::_NUMERICAL_FIX_SEEDED tells the
+# user to try. It failed the same way. So that advice was wrong for
+# this cause, not merely unhelpful:
 # tests/test_esmfold2_design_esmc_pin.py::TestTheBucketSurvivesFanout
 # asserts the word is gone from the fix text. Pointing a first-time
 # visitor at it is what this dict was for, so it comes out until a run
