@@ -35,9 +35,11 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 _JID = str(uuid.uuid4())
 _HOLD = {"_wallet": {"hold_tx_id": "tx-hold-stub"}}
 
-# The ``design() raised: `` prefix is verbatim from
-# tools/esmfold2_design/run_pipeline.py:1141, which sets ``error`` to that
-# plain string. The torch text after it is the detail QA 2026-09-30 P0-4
+# The ``design() raised: `` prefix is verbatim from the ``error`` field
+# built in tools/esmfold2_design/run_pipeline.py::_run. Cited by symbol:
+# this read :1141 and the emitter was nowhere near it -- the line had
+# drifted before any of the ESM-C work and drifted further during it,
+# and test_code_citations_resolve.py does not cover this comment form. The torch text after it is the detail QA 2026-09-30 P0-4
 # observed on job a327d5fe and cannot be checked statically. The
 # ``pipeline``/``design`` bucket and check the tests wrap it in are this
 # file's assumption about the poll path, not something that emitter stamps.
@@ -124,8 +126,8 @@ _CASES = [
     ("chain", dict(tool="proteina", error=_poll_error(
         "input", "target_input",
         "chain C is not present in the uploaded target. It contains: A, B"))),
-    # The string QA 2026-09-30 P0-4 saw, verbatim from the emitter at
-    # tools/esmfold2_design/run_pipeline.py:1141.
+    # The string QA 2026-09-30 P0-4 saw, verbatim from the emitter in
+    # tools/esmfold2_design/run_pipeline.py::_run (see the note above).
     ("numerical", dict(tool="esmfold2-design", error=_poll_error(
         "pipeline", "design",
         "design() raised: linalg.svd: (Batch element 0): The algorithm failed "

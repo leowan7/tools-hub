@@ -276,6 +276,34 @@ _PINNED_ESMC_LOADS: list[str] = []
 _UNPINNED_ESMC_LOADS: list[str] = []
 
 
+def _looks_like_esmc(name: object) -> bool:
+    """Loose: does this ``from_pretrained`` argument mention ESM-C at all?
+
+    Deliberately laxer than ``_is_esmc_repo`` below, and only ever used
+    to RECORD a near-miss, never to pin. The strict match decides
+    whether to force a revision, where a false positive pins some other
+    model to the 6B checkpoint's sha; this one decides whether to write
+    a log line, where a false positive costs a line and a false
+    negative costs the whole diagnostic. Strict gate, loose alarm.
+
+    Separators are dropped before the test so a rename to ``ESM-C-6B``
+    -- no contiguous "esmc", and how this file's own prose spells the
+    model -- is still recorded. ``/`` is deliberately NOT dropped:
+    fusing path segments would make ``/models/esm/critic`` read as
+    ESM-C. Named by review-code round 7.
+
+    Still open, and this does not close it: a rename that drops the
+    letters themselves (a volume path like ``/models/6b_trunk``) is
+    neither pinned nor recorded, and the run ends on the INFO line. No
+    string test can close that; what would is reading the resolved
+    revision back off the loaded model, which is not available here.
+    """
+    text = str(name or "").casefold()
+    for sep in ("-", "_", ".", " "):
+        text = text.replace(sep, "")
+    return "esmc" in text
+
+
 def _is_esmc_repo(name: object) -> bool:
     """Is this ``from_pretrained`` argument the ESM-C repo?
 
@@ -329,13 +357,25 @@ def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
             # caller wins over this pin rather than being silently dropped.
             kwargs.setdefault("revision", revision)
             _PINNED_ESMC_LOADS.append(str(pretrained_model_name_or_path))
-        elif "esmc" in str(pretrained_model_name_or_path or "").casefold():
-            # ESM-C-shaped and not pinned. Could be a different ESM-C
-            # model legitimately -- ESMC-600M and the critic checkpoints
-            # both read this way -- or could be the 6B repo under a
-            # spelling ``_is_esmc_repo`` no longer recognises. Nothing
-            # here can tell those apart, which is why it is recorded for
-            # a human rather than acted on.
+        elif _looks_like_esmc(pretrained_model_name_or_path):
+            # ESM-C-shaped and not pinned. Either a different ESM-C
+            # model loaded legitimately, or the 6B repo under a spelling
+            # ``_is_esmc_repo`` no longer recognises. Nothing here can
+            # tell those apart, which is why it is recorded for a human
+            # rather than acted on.
+            #
+            # No id this tool is known to load reaches here: the critic
+            # checkpoints are ESMFold2-Experimental-* (see
+            # ``CRITIC_REAL_IPTM`` and the "Fast-base" family described
+            # with it above) and carry no "esmc" at all. An earlier
+            # version of this comment claimed they did, which was wrong;
+            # the only test id that reads as ESM-C without being the 6B
+            # repo is one constructed to exercise the shape. So a
+            # near-miss in production is expected to mean the pin broke,
+            # and the WARNING is not expected on healthy runs.
+            # review-code round 7 raised the opposite risk -- a benign id
+            # landing here every run would train an operator to ignore
+            # the line -- and that is what this paragraph answers.
             _UNPINNED_ESMC_LOADS.append(
                 str(pretrained_model_name_or_path)
             )

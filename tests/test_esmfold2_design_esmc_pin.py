@@ -399,6 +399,31 @@ class TestPinWiring:
         assert rp._UNPINNED_ESMC_LOADS == ["biohub/ESMC-6B-2025"]
         assert rp._PINNED_ESMC_LOADS == []
 
+    def test_a_hyphenated_rename_is_still_recorded(self, fake_env):
+        """review-code round 7, Low 2. The recorder first tested for a
+        contiguous "esmc", so ``ESM-C-6B`` -- which is how this file's
+        own prose spells the model -- was neither pinned nor recorded and
+        the run ended on the INFO line: the round-6 silence, one spelling
+        over. Separators are dropped before the test now."""
+        mod = fake_env(_T4_KEYS)
+        rp._pin_esmc_revision()
+        mod.PreTrainedModel.from_pretrained("biohub/ESM-C-6B")
+        _args, kwargs = mod.PreTrainedModel.calls[-1]
+        assert "revision" not in kwargs, (
+            "the strict match must stay strict -- pinning an unknown rename to the 6B sha is worse than not pinning it"
+        )
+        assert rp._UNPINNED_ESMC_LOADS == ["biohub/ESM-C-6B"]
+
+    def test_a_path_is_not_fused_into_a_false_near_miss(self, fake_env):
+        """Dropping ``/`` as well would make this read as ESM-C. A loose
+        alarm may cost a spurious line, but not on an id with no ESM-C in
+        it at all."""
+        mod = fake_env(_T4_KEYS)
+        rp._pin_esmc_revision()
+        mod.PreTrainedModel.from_pretrained("/models/esm/critic")
+        assert rp._UNPINNED_ESMC_LOADS == []
+        assert rp._PINNED_ESMC_LOADS == []
+
     def test_other_repos_are_still_not_pinned(self, fake_env, monkeypatch):
         """The widened match must not start pinning the four ESMFold2
         critic checkpoints, which are not measured to have moved. The
@@ -417,10 +442,18 @@ class TestPinWiring:
             _args, kwargs = mod.PreTrainedModel.calls[-1]
             assert "revision" not in kwargs, other
         assert rp._PINNED_ESMC_LOADS == []
-        # ESMC-600M and the critic read as ESM-C and so are recorded as
-        # near-misses; the ESMFold2 id and the two empties are not ESM-C
-        # at all and are recorded nowhere. Both halves asserted, because
-        # the recording is what the warning reads.
+        # Both halves asserted, because the recording is what the
+        # warning reads: the two ESMC-prefixed ids land in the near-miss
+        # list, while the ESMFold2 id and the two empties carry no "esmc"
+        # and are recorded nowhere.
+        #
+        # "biohub/ESMC-6B-critic" is CONSTRUCTED -- it exercises the
+        # "reads as ESM-C but is not the 6B repo" shape and has no
+        # production counterpart. The real critic checkpoints are the
+        # ESMFold2-Experimental-* family, which is why the realistic
+        # critic id in this same list is the ESMFold2 one, asserted to
+        # be recorded nowhere. review-code round 7 caught my calling
+        # the critics ESM-C-shaped in an earlier version of this.
         assert rp._UNPINNED_ESMC_LOADS == [
             "biohub/ESMC-600M",
             "biohub/ESMC-6B-critic",
