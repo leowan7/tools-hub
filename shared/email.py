@@ -2617,8 +2617,9 @@ def send_overrun_warning_email(
 
     Trigger: ``mid_run_monitor_check`` in ``shared/jobs.py`` once per
     job. The job keeps running: there is no cost-based kill threshold
-    behind this email (the 2.0x mid-run kill was removed in 3818b4a4),
-    so this warning is the only mid-run signal a runaway input gets.
+    behind this email (the 2.0x mid-run kill was removed in 3818b4a4).
+    ``mid_run_monitor_check`` has 11 returns, ten ``None`` and one
+    ``"warned"``, so sending this email is that function's whole effect.
     """
     email = _resolve_user_email(user_id)
     if not email:
