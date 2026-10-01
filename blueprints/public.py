@@ -203,7 +203,6 @@ def sitemap_xml():
         "/scout/",
         "/prep",
         "/developability",
-        "/library-planner",
         "/showcase",
         "/terms",
         "/privacy",

@@ -13,7 +13,12 @@ from tools import base as tool_base
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
-FREE_PAGES = ("/prep", "/scout/", "/developability", "/library-planner")
+# Three, not four: "/library-planner" was dropped when the Library Planner
+# was retired on 2026-09-30 (blueprints/tools.py::library_planner now 301s).
+# It had to leave this tuple AND blueprints/public.py::sitemap_xml, because
+# test_every_loc_is_a_200 below rejects a redirect in the sitemap and
+# test_free_page_has_webapplication_ld reads JSON-LD off a 200 body.
+FREE_PAGES = ("/prep", "/scout/", "/developability")
 
 
 @pytest.fixture

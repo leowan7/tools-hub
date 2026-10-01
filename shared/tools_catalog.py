@@ -19,11 +19,15 @@ from tools import base as tool_base
 # "tools.developability" when that standalone route moves into the tools
 # blueprint (Commit 7). "scout.index" is already blueprint-qualified.
 #
-# The Yeast Display Library Planner was delisted 2026-08-17 at Leo's
-# request: dropping its entry here removes the tile from both the
-# homepage and /tools. Its route (tools.library_planner), templates, and
-# tools/library_planner package are deliberately left in place so
-# existing job links and job history keep resolving instead of 404ing.
+# The Yeast Display Library Planner was delisted 2026-08-17 and then
+# RETIRED 2026-09-30, both at Leo's request. Dropping its entry here is
+# what removed the tile from the homepage and /tools; the retirement
+# then emptied the tool itself. Its two endpoints now only 301 to /tools
+# (blueprints/tools.py::library_planner, ::library_planner_plan;
+# tests/test_library_planner_retired.py), kept registered rather than
+# 404ed because callouts on ranomics.com still point at the URL. No job
+# history depends on it: planning never wrote a tool_jobs row, and a
+# census on 2026-09-30 found 0 rows for any 'librar*' slug.
 _HARDCODED_TOOLS: tuple[dict, ...] = (
     {
         "slug": "epitope-scout",
