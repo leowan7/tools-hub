@@ -587,7 +587,8 @@
   // (Clear writes it from initTable's click handler), so the count, the lab
   // modal and "Starred only (CSV)" read the result.
   // tests/test_candidate_table_js_contract.py
-  // (test_bulk_selection_runs_under_node) runs both under node.
+  // (test_bulk_selection_runs_under_node) runs starRows and whereTest under
+  // node.
 
   // Stars every row of `table` that passes `test` (every row when `test` is
   // null) and keeps the stars already there. Returns how many it added.
