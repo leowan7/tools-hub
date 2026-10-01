@@ -833,9 +833,17 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     # attribution belongs to ``failure_advice``, which keys on the check.
     #
     # These checks do NOT all reach a _FAILURE_RULES row. Measured by
-    # routing each tool's real detail string through ``failure_advice``:
+    # routing each tool's real detail string through ``failure_advice``
+    # in the shape the POLL path stores (blueprints/jobs.py:945-948: the
+    # flattened ``"preflight:weights -- detail"`` under a ``detail``
+    # key), which is the only shape these nine tools produce -- they
+    # return their terminal payload inline as ``smoke_result`` rather
+    # than through /webhooks/modal, as that call site's own comment says:
     #
-    #   preflight:weights              -> our_side  (the row lists it)
+    #   preflight:weights              -> our_side  (the row lists it;
+    #                                     measured in BOTH shapes, since
+    #                                     the row now spells its
+    #                                     separator as a class)
     #   preflight:jax-gpu "timed out"  -> timeout   (matched on the DETAIL,
     #                                                not the check)
     #   preflight:jax-gpu "(exit N)"   -> generic
@@ -1012,11 +1020,20 @@ _NUMERICAL_FIX = (
 # ``check`` key (gpu/modal_client.py::_stringify_error ->
 # blueprints/jobs.py:943). Both shapes are pinned by
 # tests/test_failed_run_page.py::TestSilentStubIsOurSide.
+#
+# Only three of the checks on the ``our_side`` row below actually spell
+# that separator as a class: ``parser``, ``internal`` and -- added with
+# the ESM-C weights preflight -- ``preflight``. ``input:`` is still
+# colon-only, so an ``input:download`` failure delivered as a raw dict
+# reads as "input download ..." and falls through to ``generic`` instead
+# of ``our_side``. Measured by routing both shapes through
+# ``failure_advice``; the fix text is ``_GENERIC_FIX`` either way, so
+# only the cause sentence is wrong. Pre-existing, and NOT fixed here.
 _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
     ("our_side", re.compile(
         r"^parser[: ]|"
         r"\binternal[: ]unhandled_exception\b|"
-        r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
+        r"\binput:(download|url|smoke_fixture)\b|\bpreflight[: ](env|weights|tmp|torch|cuda|"
         r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
         r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
         r"upload failed for|failed to download input|download failed",

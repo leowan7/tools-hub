@@ -475,6 +475,53 @@ class TestTheBucketSurvivesFanout:
         # The advice Leo disproved by submitting seed 7 and failing identically.
         assert "seed" not in advice["fix"].lower(), advice
 
+    def test_the_weights_refusal_is_our_fault_in_BOTH_stored_shapes(self):
+        """The two live write paths store the bucket/check pair
+        differently, and ``_FAILURE_RULES`` matches the flattened text,
+        so a rule can hold for one shape and miss the other.
+
+        The poll path (blueprints/jobs.py:945-948) stores the flattened
+        ``"preflight:weights -- detail"``; the webhook
+        (webhooks/modal.py:154) stores the raw ``{bucket, check,
+        detail}`` dict, which ``_error_text`` joins as "preflight
+        weights ...". Before the ``preflight[: ]`` class on the
+        ``our_side`` row, only the first matched and the second fell to
+        ``generic`` -- the right fix text with the wrong cause, telling a
+        customer nothing about whose fault a broken checkpoint on our own
+        Volume is. Found by review-claims, measured, then fixed.
+        """
+        from shared.jobs import failure_advice
+
+        from gpu.modal_client import _stringify_error
+
+        raw = {
+            "bucket": "preflight",
+            "check": "weights",
+            "detail": "biohub/ESMC-6B@45b0fa5d does not match ESMCModel",
+        }
+        shapes = {
+            "webhook (raw dict)": raw,
+            "poll (flattened)": {
+                "bucket": "preflight",
+                "detail": _stringify_error(raw),
+            },
+        }
+        for name, stored in shapes.items():
+            job = types.SimpleNamespace(
+                status="failed",
+                error=stored,
+                error_bucket="preflight",
+                failure_class="preflight_miss",
+                inputs={"seed": 7},
+            )
+            advice = failure_advice(job)
+            assert advice["kind"] == "our_side", (name, advice)
+            assert "not because of your input" in advice["cause"], (
+                name,
+                advice,
+            )
+            assert "seed" not in advice["fix"].lower(), (name, advice)
+
     def test_the_shared_preflight_sentence_attributes_fault_to_neither_side(self):
         """One sentence serves checks on BOTH sides, so it can claim neither.
 
