@@ -205,8 +205,12 @@ def _fake_transformers(keys_by_class: dict[str, list[str]] | None = None):
     mod.AutoConfig = types.SimpleNamespace(
         from_pretrained=lambda *a, **k: config
     )
-    # ``__name__``: the real ``AutoModel``/``AutoModelForMaskedLM``
-    # are classes, and run_pipeline's log and refusal messages read it.
+    # ``__name__``: the real ``AutoModel``/``AutoModelForMaskedLM`` are
+    # classes, and the skeleton-failure log line in
+    # ``_esmc_checkpoint_mismatch`` reads it. The refusal message reads
+    # ``model_cls.__name__`` instead, which ``_model_cls`` already
+    # supplies -- so nothing exercised this attribute until the Risk 1
+    # tests reached that log, and the stand-ins got away without it.
     mod.AutoModel = types.SimpleNamespace(
         __name__="AutoModel",
         _model_mapping={
@@ -215,8 +219,6 @@ def _fake_transformers(keys_by_class: dict[str, list[str]] | None = None):
             )
         }
     )
-    # ``__name__``: the real ``AutoModel``/``AutoModelForMaskedLM``
-    # are classes, and run_pipeline's log and refusal messages read it.
     mod.AutoModelForMaskedLM = types.SimpleNamespace(
         __name__="AutoModelForMaskedLM",
         _model_mapping={

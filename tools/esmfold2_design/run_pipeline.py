@@ -342,15 +342,34 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
     ``preflight:weights`` failure. Costs two small file reads and two
     meta-device skeletons -- no GPU, no allocation, no forward pass.
 
-    Fails OPEN. Only the measured key-set comparison returns a refusal;
-    every other failure (hub read, class lookup, meta instantiation)
-    logs and returns "", because none of those paths has coverage here
-    -- torch, transformers and huggingface_hub are all absent from the
-    repo interpreter, so they first execute in production. A check that
-    is insurance against one known break must not become a second,
-    wider outage when it cannot run: refusing on a hub blip would take
-    the tool offline for every user, including those whose weights are
-    fine. Blast radius named by review-code round 4.
+    Fails OPEN on the two arms it can. A failed hub read and a class
+    whose meta skeleton will not build both log and return "". Only the
+    key-set comparison returns a refusal -- the condition the break was
+    diagnosed from, as opposed to the only condition anything here was
+    measured on, which is narrower still (see below).
+
+    NOT every failure, though the first draft of this said so: the three
+    imports sit above the ``try``, and so does the call site in ``_run``,
+    so an ImportError there would escape both and crash ``main`` without
+    writing any result at all. Left alone because it is not reachable:
+    ``_run`` only gets here after ``import binder_design`` succeeded at
+    the guarded import above the call site, and binder_design calls
+    ``ESMCForMaskedLM.from_pretrained`` and ``ESMCModel.from_pretrained``
+    (both named in the pin comment at the top of this file) -- transformers
+    symbols on torch models, with huggingface_hub a transformers
+    dependency. An ImportError here would mean that module imported
+    without the libraries it calls into. Not citable more tightly than
+    that: binder_design.py is planted at /opt by modal_app.py and is not
+    in this repo.
+
+    The reason to fail open at all is that neither of those two arms has
+    coverage here: torch, transformers and huggingface_hub are all
+    absent from the repo interpreter, so they first execute in
+    production. A check that is insurance against one known break must
+    not become a second, wider outage when it cannot run -- refusing on
+    a hub blip would take the tool offline for every user, including
+    those whose weights are fine. Blast radius named by review-code
+    round 4; the overclaim above it by review-claims round 6.
 
     This is the check whose absence let three runs bill H100 time and then
     tell the customer to change their seed. It compares the shard index's key
