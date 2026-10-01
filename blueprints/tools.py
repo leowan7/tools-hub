@@ -217,17 +217,25 @@ def developability_score():
 # straight at https://tools.ranomics.com/library-planner, and that path
 # answered 200 up to this commit (curl, 2026-09-30). A 301 hands those
 # readers, and any search engine holding the URL, the catalog instead of
-# an error. How many callouts there are is not verifiable from this
-# repo. Reported by the website lead on 2026-09-30: ten blog posts plus
-# two pages, twelve link sites in all, every one of them resolving
-# through a single entry in the shared TryToolCallout component's tool
-# map (ranomics.com repo, src/components/TryToolCallout.astro). That
-# single entry is the load-bearing half, not the twelve: one edit there
-# drops every inbound link at once, so this redirect only has to outlive
-# that edit. The count is secondhand -- the only copy of that repo
-# reachable from here is 93 commits behind its main (last fetched
-# 2026-09-15) and shows six posts and no pages -- so re-grep their main
-# rather than quoting twelve from here.
+# an error. Treat the redirect as permanent, not a grace period.
+#
+# How many inbound links exist is not verifiable from this repo; their
+# shape is. Measured read-only on 2026-09-30 in the local ranomics.com
+# checkout, which is 93 commits behind its main (last fetched
+# 2026-09-15), so re-grep their main before relying on it: four lines
+# in three files point at this path -- the shared TryToolCallout
+# component's tool-map entry (src/components/TryToolCallout.astro), a
+# launchUrl in src/content/pages/tools/library-planner.mdx, and two
+# hard-coded target="_blank" launch buttons in
+# src/pages/technology/library-planner.astro. Only the first sits in
+# that map, so one edit to the map does NOT drop the inbound links.
+# src/components/layout/Footer.astro, which PageLayout renders on every
+# page, and src/data/navigation.ts both link their own
+# /technology/library-planner page, which is the funnel into those two
+# buttons. A site-wide footer link is the slowest thing on a website to
+# get cleaned up, so this redirect has to keep working indefinitely.
+# The website lead reported 65 lines across 22 files on 2026-09-30;
+# that count is secondhand and is not reproduced here.
 #
 # 301 and not 308 on the POST: a 308 preserves the method and would
 # re-POST a stale bookmarked form to /tools, which is GET-only
