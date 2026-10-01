@@ -403,6 +403,81 @@ class TestSilentStubIsOurSide:
             assert advice["kind"] != "our_side", error
             assert "not because of your input" not in advice["cause"]
 
+    # Every (bucket, check) pair the ``our_side`` row names, with a detail
+    # chosen to carry NO word from that row's free-text tail
+    # ("download failed", "storage", ...) -- otherwise the tail rescues the
+    # match and the separator under test is never exercised.
+    _BOTH_SHAPES = [
+        ("parser", "stub", "pLDDT array is uniform"),
+        ("internal", "unhandled_exception", "the shard raised"),
+        ("input", "download", "HTTP 503 from the object store"),
+        ("input", "url", "input_presigned_url missing"),
+        ("input", "smoke_fixture", "fixture absent from the image"),
+        ("preflight", "cuda", "no CUDA device visible"),
+        ("preflight", "weights", "checkpoint absent"),
+        ("preflight", "jax-gpu", "JAX/cuDNN cannot init on this pod"),
+        ("preflight", "module", "protein_mpnn_utils.py not found at /opt/x"),
+    ]
+
+    @pytest.mark.parametrize("bucket,check,detail", _BOTH_SHAPES)
+    def test_both_shapes_agree(self, bucket, check, detail):
+        """The poll and webhook spellings must classify identically.
+
+        The webhook stores the raw ``{bucket, check, detail}`` dict
+        (webhooks/modal.py:154) while the poll path pre-flattens the pair
+        into ``detail``. ``shared/jobs.py::_error_text`` rejoins the pair
+        with a colon so the table sees one spelling; before that it joined
+        with a space and the colon-only ``input:`` alternative matched the
+        poll shape alone. Covers ``preflight`` and ``input``, not just
+        ``parser``.
+        """
+        poll = _poll_error(bucket, check, detail)
+        webhook = {"bucket": bucket, "check": check, "detail": detail}
+        got = [failure_advice(_job(error=e)) for e in (poll, webhook)]
+        assert got[0]["kind"] == got[1]["kind"] == "our_side", (bucket, check, got)
+        assert got[0]["fix"] == got[1]["fix"]
+
+    @pytest.mark.parametrize("tool", ["af2", "colabfold"])
+    def test_jax_preflight_timeout_does_not_ask_to_crop(self, tool):
+        """A pod whose JAX/cuDNN will not init is not the user's structure.
+
+        The emitted detail (tools/af2/run_pipeline.py:324-326,
+        tools/colabfold/run_pipeline.py:347-350) contains "timed out", so
+        before ``jax-gpu`` joined the ``our_side`` row the "timeout" rule
+        claimed it and answered "crop the target to the domain you want to
+        bind" -- on two tools that carry ``requires_pdb=False`` and are
+        handed a FASTA, with no structure to crop.
+        """
+        detail = ("JAX GPU preflight timed out after 60s — "
+                  "JAX/cuDNN cannot init on this pod.")
+        advice = failure_advice(_job(
+            tool=tool, error=_poll_error("preflight", "jax-gpu", detail)))
+        assert advice["kind"] == "our_side"
+        assert "crop the target" not in advice["fix"]
+        assert "fewer designs" not in advice["fix"]
+
+    def test_mpnn_missing_module_is_our_side(self):
+        """protein_mpnn_utils.py missing is a broken image, not a bad input."""
+        advice = failure_advice(_job(tool="mpnn", error=_poll_error(
+            "preflight", "module", "protein_mpnn_utils.py not found at /opt/x")))
+        assert advice["kind"] == "our_side"
+
+    def test_fixed_positions_preflight_still_blames_the_input(self):
+        """``preflight`` is matched check by check because the bucket is mixed.
+
+        ``preflight:fixed_positions`` rejects the chain and the positions
+        the USER asked to freeze (tools/mpnn/run_pipeline.py:277-305), so a
+        whole-bucket ``preflight`` match would tell them their own bad
+        request was our fault. Regression guard: this passes before the
+        ``jax-gpu``/``module`` additions too, and is here to pin that they
+        were added check by check rather than by widening the bucket.
+        """
+        advice = failure_advice(_job(tool="mpnn", error=_poll_error(
+            "preflight", "fixed_positions",
+            "chain 'Z' is not in the input PDB (chains: ['A', 'B'])")))
+        assert advice["kind"] != "our_side"
+        assert "not because of your input" not in advice["cause"]
+
 
 def _ledger(usd, settled, held):
     return {"tx-hold-stub": {"usd": Decimal(usd), "settled": settled, "held": Decimal(held)}}

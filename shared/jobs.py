@@ -1012,29 +1012,54 @@ _NUMERICAL_FIX = (
 # ``requires_pdb=False``). Listing the buckets here puts all of them on one
 # cause, which is the accurate one.
 #
-# The bucket/check separator is a character class because the two live write
-# paths store the pair differently: the webhook keeps the raw
-# ``{bucket, check, detail}``
-# dict (webhooks/modal.py:154), which ``_error_text`` joins with a space,
-# while the poll path flattens it to ``"parser:stub — ..."`` and drops the
-# ``check`` key (gpu/modal_client.py::_stringify_error ->
-# blueprints/jobs.py:943). Both shapes are pinned by
-# tests/test_failed_run_page.py::TestSilentStubIsOurSide.
+# Every UNANCHORED rule below spells the bucket/check separator as a plain
+# ``:``, and that is safe on both live write paths. The webhook stores the
+# raw ``{bucket, check, detail}`` dict (webhooks/modal.py:154) and
+# ``_error_text`` rejoins that pair with a colon before any rule sees it
+# (the ``pair`` join in ``_error_text``); the poll path stores no ``check``
+# key at all, but its ``detail`` already opens with the flattened
+# "bucket:check" (gpu/modal_client.py::_stringify_error ->
+# blueprints/jobs.py:945), which an unanchored rule finds just as well.
+# ``tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_both_shapes_agree``
+# pins that the two shapes classify the same for ``parser``, ``internal``,
+# all three ``input`` checks and four of the ``preflight`` ones -- a sample,
+# not the whole row: it carries no ``storage`` or ``modal-submit`` case, and
+# eight ``preflight`` checks are unsampled.
 #
-# Only three of the checks on the ``our_side`` row below actually spell
-# that separator as a class: ``parser``, ``internal`` and -- added with
-# the ESM-C weights preflight -- ``preflight``. ``input:`` is still
-# colon-only, so an ``input:download`` failure delivered as a raw dict
-# reads as "input download ..." and falls through to ``generic`` instead
-# of ``our_side``. Measured by routing both shapes through
-# ``failure_advice``; the fix text is ``_GENERIC_FIX`` either way, so
-# only the cause sentence is wrong. Pre-existing, and NOT fixed here.
+# The ``^parser`` alternative is the one exception and keeps its ``[: ]``
+# class, because it is anchored and so can only read the START of the
+# flattened string. On the poll shape that start is the bare bucket
+# followed by ``_error_text``'s join space -- the colon turns up later,
+# inside the detail, out of the anchor's reach. ``[: ]`` is what accepts
+# both; ``test_sibling_buckets_are_our_side_too`` fails on every ``parser``
+# case without it.
+#
+# ``preflight`` is matched check by check, NOT as a whole bucket, because
+# the bucket is mixed: ``preflight:fixed_positions`` rejects the chain and
+# the 1-indexed positions the USER asked to freeze
+# (tools/mpnn/run_pipeline.py:277-305), so it has to keep falling through
+# to a rule that talks about their input. ``jax-gpu`` (tools/af2 and
+# tools/colabfold run_pipeline.py, "JAX/cuDNN cannot init on this pod")
+# and ``module`` (tools/mpnn/run_pipeline.py:506, protein_mpnn_utils.py
+# missing from the image) are listed because both are faults in the image
+# or the pod. ``jax-gpu`` is why this row changed: its timeout detail
+# reads "JAX GPU preflight timed out after ...", which the "timeout" rule
+# below answered with "crop the target to the domain you want to bind" --
+# advice that is wrong twice over on af2 and colabfold, which carry
+# ``requires_pdb=False`` and take no structure to crop.
+#
+# Deliberately still off this row: ``preflight:rf3``
+# (tools/proteina/run_pipeline.py:4045) is ours -- an operator kill-switch,
+# PROTEINA_RF3=off -- but ``_GENERIC_FIX`` ("try again with the same
+# settings") would be false for it, because a resubmit cannot succeed
+# while the switch is off. It keeps the "generic" cause until it gets
+# advice of its own.
 _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
     ("our_side", re.compile(
         r"^parser[: ]|"
-        r"\binternal[: ]unhandled_exception\b|"
-        r"\binput:(download|url|smoke_fixture)\b|\bpreflight[: ](env|weights|tmp|torch|cuda|"
-        r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
+        r"\binternal:unhandled_exception\b|"
+        r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
+        r"binary|transformers|payload|config|upload_urls_endpoint|jax-gpu|module)\b|"
         r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
         r"upload failed for|failed to download input|download failed",
         re.I),
@@ -1086,13 +1111,47 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
 
 
 def _error_text(job) -> str:  # noqa: ANN001
+    """Flatten a stored job error into the one string ``_FAILURE_RULES`` reads.
+
+    The bucket/check pair is rejoined with a colon so that both live write
+    paths hand the table the SAME spelling. The webhook stores the raw
+    ``{bucket, check, detail}`` dict (webhooks/modal.py:154); the poll path
+    has already flattened the pair into ``detail`` and drops the ``check``
+    key entirely (gpu/modal_client.py::_stringify_error ->
+    blueprints/jobs.py:945). Before this normalisation the webhook shape
+    read "input download ..." with a space, so a rule spelling the
+    separator as a literal colon could not match it.
+
+    This function is the single point both shapes converge on, and
+    ``failure_advice`` below is its only caller, so normalising here is
+    what lets every rule in the table spell the separator ``:`` and stay
+    correct on either path -- including buckets added later, which is not
+    true of a per-bucket character class.
+    ``tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_both_shapes_agree``
+    pins that the two shapes classify identically.
+
+    A dict carrying no ``check`` keeps its bare bucket and grows no stray
+    colon. No in-repo site that builds the error dict as a literal sets a
+    ``check`` -- every one of them is ``{"bucket", "detail"}``; to
+    re-check, ``git grep -n '"bucket":'`` over blueprints/ and shared/.
+    The reuse-preflight failure in ``blueprints/tools.py`` (bucket
+    ``preflight``, detail ``reuse_err``) is one, and is a fault in the
+    user's re-used file that must NOT reach the ``our_side`` rule.
+    ``complete_job`` below hands ``mark_failed`` whatever ``error`` dict
+    its own caller passed, so a ``check`` CAN arrive by that route; that
+    is the shape this join is for.
+    """
     err = getattr(job, "error", None)
-    if isinstance(err, dict):
-        return " ".join(
-            str(err.get(k) or "")
-            for k in ("bucket", "check", "category", "detail", "message")
-        )
-    return str(err or "")
+    if not isinstance(err, dict):
+        return str(err or "")
+    pair = ":".join(
+        p for p in (str(err.get("bucket") or ""), str(err.get("check") or ""))
+        if p
+    )
+    return " ".join(
+        [pair] + [str(err.get(k) or "")
+                  for k in ("category", "detail", "message")]
+    )
 
 
 def _has_pinned_seed(job) -> bool:  # noqa: ANN001
