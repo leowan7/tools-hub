@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import pathlib
 import re
 import sys
@@ -204,14 +205,20 @@ def _fake_transformers(keys_by_class: dict[str, list[str]] | None = None):
     mod.AutoConfig = types.SimpleNamespace(
         from_pretrained=lambda *a, **k: config
     )
+    # ``__name__``: the real ``AutoModel``/``AutoModelForMaskedLM``
+    # are classes, and run_pipeline's log and refusal messages read it.
     mod.AutoModel = types.SimpleNamespace(
+        __name__="AutoModel",
         _model_mapping={
             _Config: _model_cls(
                 "ESMCModel", "esmc", keys_by_class.get("ESMCModel", _T4_KEYS)
             )
         }
     )
+    # ``__name__``: the real ``AutoModel``/``AutoModelForMaskedLM``
+    # are classes, and run_pipeline's log and refusal messages read it.
     mod.AutoModelForMaskedLM = types.SimpleNamespace(
+        __name__="AutoModelForMaskedLM",
         _model_mapping={
             _Config: _model_cls(
                 "ESMCForMaskedLM",
@@ -301,6 +308,74 @@ class TestPinWiring:
         _args, kwargs = mod.PreTrainedModel.calls[-1]
         assert kwargs["revision"] == "deadbeef"
 
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "biohub/ESMC-6B",
+            "biohub/ESMC-6B/",
+            "  biohub/ESMC-6B  ",
+            "BioHub/esmc-6b",
+            "/models/hub/ESMC-6B",
+        ],
+    )
+    def test_the_pin_matches_the_spellings_the_call_sites_can_pass(
+        self, fake_env, monkeypatch, spelling
+    ):
+        """Risk 2, named by review-code round 4.
+
+        The pin used ``== _ESMC_REPO``, but the second load site passes
+        ``model.config.esmc_id`` read out of the ESMFold2 checkpoint's
+        own config JSON -- a string this repo does not control. Any
+        divergence and the pin stops firing, the loader resolves
+        ``main``, and ``_esmc_checkpoint_mismatch`` still returns ""
+        because it validates ``_ESMC_REVISION`` explicitly: a guard
+        certifying a checkpoint it did not gate. Matched on the
+        case-folded last segment instead."""
+        mod = fake_env(_T4_KEYS)
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", [])
+        rp._pin_esmc_revision()
+        mod.PreTrainedModel.from_pretrained(spelling)
+        _args, kwargs = mod.PreTrainedModel.calls[-1]
+        assert kwargs.get("revision") == rp._ESMC_REVISION, spelling
+        assert rp._PINNED_ESMC_LOADS == [spelling]
+
+    def test_a_run_whose_pin_never_fired_says_so(self, monkeypatch, caplog):
+        """Risk 2 cannot be closed by matching harder -- the next
+        divergence is one this repo still does not control. So the
+        falsifier is recorded: no interception means the preflight
+        verdict does not describe the weights in memory, and that gets
+        a line in the Modal log instead of resurfacing as the same
+        unattributable SVD traceback."""
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", [])
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            rp._warn_if_esmc_was_never_pinned()
+        assert "intercepted NO load" in caplog.text, caplog.text
+        assert rp._ESMC_REVISION in caplog.text
+        caplog.clear()
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", ["biohub/ESMC-6B"])
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            rp._warn_if_esmc_was_never_pinned()
+        assert caplog.text == "", caplog.text
+
+    def test_other_repos_are_still_not_pinned(self, fake_env, monkeypatch):
+        """The widened match must not start pinning the four ESMFold2
+        critic checkpoints, which are not measured to have moved. The
+        ``_T4``/``_T5`` story is about ESMC only."""
+        mod = fake_env(_T4_KEYS)
+        monkeypatch.setattr(rp, "_PINNED_ESMC_LOADS", [])
+        rp._pin_esmc_revision()
+        for other in (
+            "biohub/ESMFold2-Experimental-Fast",
+            "biohub/ESMC-600M",
+            "biohub/ESMC-6B-critic",
+            "",
+            None,
+        ):
+            mod.PreTrainedModel.from_pretrained(other)
+            _args, kwargs = mod.PreTrainedModel.calls[-1]
+            assert "revision" not in kwargs, other
+        assert rp._PINNED_ESMC_LOADS == []
+
     def test_pinning_twice_does_not_stack_wrappers(self, fake_env):
         mod = fake_env(_T4_KEYS)
         rp._pin_esmc_revision()
@@ -342,11 +417,21 @@ class TestCheckpointMismatch:
         fake_env([f"esmc.{_T4_KEYS[0]}"] + [f"esmc.{_T5_KEYS[1]}"])
         assert rp._esmc_checkpoint_mismatch()
 
-    def test_an_unreadable_index_is_refused_not_ignored(
-        self, fake_env, monkeypatch
+    def test_an_unreadable_index_proceeds_and_logs(
+        self, fake_env, monkeypatch, caplog
     ):
-        """Fails closed. A missing revision or a network error must not read
-        as "the weights are fine" -- that is how this stayed invisible."""
+        """Fails OPEN, and this test asserts the OPPOSITE of what it
+        asserted when first written.
+
+        It demanded a refusal on an unreadable index. review-code round
+        4 named the blast radius: nothing here exercises the real
+        huggingface_hub, torch or transformers (all three are absent
+        from this interpreter), so the first real execution of that arm
+        is in production, and a refusal there fails EVERY run of the
+        tool -- including the ones whose weights are fine. A hub blip
+        would have been a wider outage than the bug being guarded.
+        So: log, and let the designer load.
+        """
         fake_env(_T4_KEYS)
         boom = types.ModuleType("huggingface_hub")
 
@@ -357,8 +442,34 @@ class TestCheckpointMismatch:
         # monkeypatch, not a bare assignment: a raising huggingface_hub left
         # in sys.modules outlives this test and poisons the session.
         monkeypatch.setitem(sys.modules, "huggingface_hub", boom)
-        detail = rp._esmc_checkpoint_mismatch()
-        assert "404 revision not found" in detail, detail
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            assert rp._esmc_checkpoint_mismatch() == ""
+        assert "404 revision not found" in caplog.text, caplog.text
+
+    def test_an_unbuildable_skeleton_still_checks_the_other_class(
+        self, fake_env, caplog
+    ):
+        """``continue``, not ``return``: a class that cannot be built
+        says nothing about the other one, and the break this exists to
+        catch is visible in either. Here ``AutoModel`` is unresolvable
+        and the transformers-5 layout is still refused through
+        ``AutoModelForMaskedLM``."""
+        mod = fake_env([f'esmc.{k}' for k in _T5_KEYS])
+        mod.AutoModel._model_mapping = {}
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            detail = rp._esmc_checkpoint_mismatch()
+        assert "ESMCForMaskedLM" in detail, detail
+        assert "AutoModel skeleton" in caplog.text, caplog.text
+
+    def test_no_buildable_skeleton_at_all_proceeds(self, fake_env, caplog):
+        """The last word on Risk 1: when the check cannot run at all it
+        stands aside. An un-exercised code path must not be able to
+        take the tool offline for every user."""
+        mod = fake_env([f'esmc.{k}' for k in _T5_KEYS])
+        mod.AutoModel._model_mapping = {}
+        mod.AutoModelForMaskedLM._model_mapping = {}
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            assert rp._esmc_checkpoint_mismatch() == ""
 
 
 # ===========================================================================

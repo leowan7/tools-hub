@@ -255,6 +255,35 @@ CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
 _ESMC_REPO = "biohub/ESMC-6B"
 _ESMC_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
 
+# Every repo id the pin below intercepted, in load order. Read by
+# ``_warn_if_esmc_was_never_pinned`` after the designer loads: if the
+# list is empty then no ESM-C load went through the pin, the loader
+# resolved whatever ``main`` points at, and the preflight above
+# validated a revision that was never used. That is the shape a guard
+# takes when it certifies something it did not gate, so it is logged
+# loudly rather than left to be inferred from an SVD traceback.
+_PINNED_ESMC_LOADS: list[str] = []
+
+
+def _is_esmc_repo(name: object) -> bool:
+    """Is this ``from_pretrained`` argument the ESM-C repo?
+
+    Compared on the case-folded last path segment, not by equality with
+    ``_ESMC_REPO``. The two load sites spell it differently: ``load``
+    uses the ``ESMFold2Design.lm_name`` class attribute while
+    ``_load_hf_model`` passes ``model.config.esmc_id`` read from the
+    ESMFold2 checkpoint's own config JSON, and nothing makes those two
+    strings identical -- a trailing slash, a case difference, or an org
+    rename would all make an ``==`` test quietly stop pinning. Named by
+    review-code; the falsifier is ``_PINNED_ESMC_LOADS`` above.
+    """
+    text = str(name or "").strip().rstrip("/")
+    if not text:
+        return False
+    return text.rsplit("/", 1)[-1].casefold() == (
+        _ESMC_REPO.rsplit("/", 1)[-1].casefold()
+    )
+
 
 def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
     """Make every ``biohub/ESMC-6B`` load resolve one checkpoint revision.
@@ -284,10 +313,11 @@ def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
     inner = PreTrainedModel.from_pretrained.__func__
 
     def from_pretrained(cls, pretrained_model_name_or_path=None, *args, **kwargs):
-        if pretrained_model_name_or_path == _ESMC_REPO:
+        if _is_esmc_repo(pretrained_model_name_or_path):
             # setdefault, not assignment: an explicit revision from a future
             # caller wins over this pin rather than being silently dropped.
             kwargs.setdefault("revision", revision)
+            _PINNED_ESMC_LOADS.append(str(pretrained_model_name_or_path))
         return inner(cls, pretrained_model_name_or_path, *args, **kwargs)
 
     from_pretrained._esmc_pinned = True
@@ -312,6 +342,16 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
     ``preflight:weights`` failure. Costs two small file reads and two
     meta-device skeletons -- no GPU, no allocation, no forward pass.
 
+    Fails OPEN. Only the measured key-set comparison returns a refusal;
+    every other failure (hub read, class lookup, meta instantiation)
+    logs and returns "", because none of those paths has coverage here
+    -- torch, transformers and huggingface_hub are all absent from the
+    repo interpreter, so they first execute in production. A check that
+    is insurance against one known break must not become a second,
+    wider outage when it cannot run: refusing on a hub blip would take
+    the tool offline for every user, including those whose weights are
+    fine. Blast radius named by review-code round 4.
+
     This is the check whose absence let three runs bill H100 time and then
     tell the customer to change their seed. It compares the shard index's key
     NAMES against the key names the installed classes ask for, which is the
@@ -319,10 +359,23 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
     would have caught this particular break but not a rename inside a
     matching version.
 
-    Both the raw and the ``base_model_prefix``-stripped spelling count as a
-    match, because the two classes genuinely differ: measured on the pinned
-    revision, ``ESMCForMaskedLM`` matches all 808 of its keys raw while
-    ``ESMCModel`` matches all 802 of its keys only after stripping ``esmc.``.
+    Both the raw and the ``base_model_prefix``-stripped spelling count as
+    a match, and the disjunction is STRUCTURAL, not measured: the
+    checkpoint stores its tensors under an ``esmc.`` prefix, so a class
+    whose own state dict carries that prefix matches raw while the inner
+    model's does not -- which is what ``base_model_prefix`` exists to
+    express. Demanding one spelling would refuse the working checkpoint.
+
+    What was measured on the container is narrower, and only for
+    ``AutoModel``: 0 missing / 6 unexpected at the pinned revision versus
+    802 / 1048 at ``main`` (table above). That is enough to establish the
+    break and the fix; it is NOT a measurement of this function's own set
+    comparison, because ``from_pretrained`` does its prefix handling
+    internally. The comparison itself is covered by
+    tests/test_esmfold2_design_esmc_pin.py::TestCheckpointMismatch, which
+    uses real key names from both layouts -- a two-key sample of each
+    (``_T4_KEYS`` / ``_T5_KEYS``), enough to exercise the rename pattern,
+    not the full 802.
     """
     import torch  # noqa: PLC0415
     from huggingface_hub import hf_hub_download  # noqa: PLC0415
@@ -340,10 +393,15 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
             have = set(json.load(fh)["weight_map"])
         config = AutoConfig.from_pretrained(_ESMC_REPO, revision=revision)
     except Exception as exc:  # network, missing revision, malformed index
-        return (
-            f"cannot read the {_ESMC_REPO} shard index at revision "
-            f"{revision}: {type(exc).__name__}: {exc}"
+        logger.warning(
+            "ESM-C preflight could not read the %s shard index at %s "
+            "(%s: %s); proceeding without the check",
+            _ESMC_REPO,
+            revision,
+            type(exc).__name__,
+            exc,
         )
+        return ""
 
     for auto_cls in (AutoModel, AutoModelForMaskedLM):
         try:
@@ -351,10 +409,17 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
             with torch.device("meta"):
                 want = set(model_cls(config).state_dict())
         except Exception as exc:
-            return (
-                f"cannot build a {auto_cls.__name__} skeleton for "
-                f"{_ESMC_REPO}: {type(exc).__name__}: {exc}"
+            # ``continue``, not ``return``: a raise building one class'
+            # skeleton says nothing about the other, and the mismatch
+            # this exists to catch shows up in either.
+            logger.warning(
+                "ESM-C preflight could not build a %s skeleton "
+                "(%s: %s); not checking against it",
+                auto_cls.__name__,
+                type(exc).__name__,
+                exc,
             )
+            continue
         prefix = getattr(model_cls, "base_model_prefix", "") or ""
         stripped = {
             k[len(prefix) + 1 :] if prefix and k.startswith(prefix + ".") else k
@@ -373,6 +438,27 @@ def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
             )
     return ""
 
+
+def _warn_if_esmc_was_never_pinned() -> None:
+    """Log when no ESM-C load went through the pin.
+
+    Not a refusal: by the time this can be answered the weights are
+    already loaded and a refusal would only waste the load. It exists
+    so that a pin which silently stopped matching leaves a line in the
+    Modal log, instead of resurfacing as the same unattributable SVD
+    traceback this whole change came from.
+    """
+    if _PINNED_ESMC_LOADS:
+        logger.info(
+            "ESM-C pin intercepted %d load(s): %s",
+            len(_PINNED_ESMC_LOADS),
+            _PINNED_ESMC_LOADS,
+        )
+        return
+    logger.warning(
+        "ESM-C pin intercepted NO load -- the revision preflight checked (%s) is not necessarily the one in memory. If this run fails in linalg.svd, suspect the pin stopped matching the repo id before suspecting the input.",
+        _ESMC_REVISION,
+    )
 
 
 def _fail_preflight(check: str, detail: str, tier: str, job_id: str) -> int:
@@ -1324,6 +1410,7 @@ def _run() -> int:
         # never ran in prod. What IS certain is the trade: six times the
         # documented host-RAM requirement, for no change to any number.
         designer.load(False)
+        _warn_if_esmc_was_never_pinned()
     except Exception as exc:
         logger.error("Failed to load ESMFold2Design: %s\n%s", exc, traceback.format_exc())
         _write_result(
