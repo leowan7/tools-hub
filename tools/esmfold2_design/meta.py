@@ -243,9 +243,10 @@ about: dict = {
 # user to try. It failed the same way. So that advice was wrong for
 # this cause, not merely unhelpful:
 # tests/test_esmfold2_design_esmc_pin.py::TestTheBucketSurvivesFanout
-# asserts the word is gone from the fix text. Pointing a first-time
-# visitor at it is what this dict was for, so it comes out until a run
-# of those settings is demonstrated to succeed.
+# asserts the fix text no longer mentions the seed. Pointing a
+# first-time visitor at this configuration is what the dict was for,
+# so it comes out until a run of those settings is demonstrated to
+# succeed.
 #
 # The cause is fixed in tools/esmfold2_design/run_pipeline.py
 # (``_ESMC_REVISION``), but that fix is not the same thing as a passing
