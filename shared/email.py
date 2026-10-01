@@ -696,8 +696,11 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
 def _handoff_source(campaign) -> Optional[tuple]:  # noqa: ANN001
     """``(label, id)`` of the parent this shortlist was picked on.
 
-    No URL: /targets, /campaigns and /jobs are owner-scoped and 404 for a
-    staff account, so the staff email links the admin page's designs table.
+    No URL: those pages are owner-scoped, so a staff account cannot open
+    them (/jobs and /targets 404 in blueprints/jobs.py::job_detail and
+    blueprints/targets.py::target_detail; /campaigns redirects to its own
+    runs list in blueprints/campaigns.py::compute_campaign_detail). The staff
+    email links the admin page's designs table instead.
 
     Branches on ``submission_source``, not on whichever id happens to be set.
     The ``lab_campaigns_submission_source_shape`` CHECK requires each source to

@@ -66,8 +66,8 @@ def _campaign(**over):
 
 
 def _job_26c1f866():
-    """Stored order design_1, design_2, design_0 (source_rank 0, 1, 2), the
-    order job 26c1f866 holds them in. ``pI`` is not a pLDDT column, so it
+    """Stored order design_1, design_2, design_0 (source_rank 0, 1, 2), so
+    stored index n is not design_n. ``pI`` is not a pLDDT column, so it
     is printed as stored; ``plddt`` is, and is stored 0-1."""
     cands = [
         {"rank": 0, "name": "design_1", "pdb_key": "design_1.pdb",

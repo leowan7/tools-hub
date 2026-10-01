@@ -69,9 +69,11 @@
                constraint and keep the shortlist in candidate_refs. Rendering
                candidate_indices for all three showed ops an empty candidate
                list on every campaign-sourced handoff since 0037 (A84). #}
-            {# /targets, /campaigns and /jobs are owner-scoped to the submitter
-               and 404 for a staff account (A85), so the parent is named here
-               and the link goes to the designs table on this page. #}
+            {# /targets, /campaigns and /jobs are owner-scoped to the submitter,
+               so a staff account cannot open them (A85; see
+               shared/email.py::_handoff_source for where each refuses). The
+               parent is named here and the link goes to the designs table on
+               this page. #}
             <dt style="color:var(--text-secondary);">Source</dt>
             <dd style="margin:0;">
               {% if campaign.submission_source == 'target' and campaign.source_target_id %}
