@@ -1736,6 +1736,21 @@ def tool_preflight(tool: str):
             }, 200)
 
     binder_max_aa, num_designs = _parse_preflight_size_params(request.form)
+    # The form total is not what one container runs. Above
+    # single_container_ceiling the form re-points at the campaign chunker
+    # (templates/tools/_campaign_reroute.html) and _single_container_refusal
+    # rejects a larger single job, so no container ever runs more than the
+    # ceiling -- and the campaign route judges the ceiling PER CHUNK, passing
+    # plan.designs_for_chunk(0) (blueprints/campaigns.py). Judging the form
+    # total here refused runs that route funds: bindcraft at 115 aa / 100
+    # designs is 15.6 h as one job and greys out Run, while the six-design
+    # chunk it actually becomes is accepted. Clamped so the panel judges the
+    # container the submit will create.
+    if num_designs is not None:
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+
+        if adapter.slug in cc.SUPPORTED_TOOLS:
+            num_designs = min(num_designs, cc.single_container_ceiling(adapter.slug))
     verdict = preflight_for_tool(
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
@@ -1786,9 +1801,25 @@ def _single_container_refusal(tool: str, inputs: dict):
     return (
         f"{requested_n} designs is more than one GPU container "
         f"runs for {tool} (max {ceiling} per single job). "
+        # No promise of "no per-job ceiling" here. Every piece is still one
+        # container under the same pipeline timeout, so the campaign routes
+        # run the same size gate this branch just failed
+        # (blueprints/campaigns.py::compute_campaign_create and
+        # blueprints/targets.py::_collect_launch_specs, both
+        # calling size_error with plan.designs_for_chunk(0)). A large target
+        # therefore caps the designs per piece there too, and a user sent over
+        # by a promise of no ceiling would read a second refusal instead. What
+        # a campaign lifts is the count one container runs, so that is all this
+        # claims -- not that nothing caps the total. ``plan_chunks`` still
+        # raises above MAX_SUBJOBS_PER_CAMPAIGN sub-jobs
+        # (shared/compute_campaigns.py::MAX_SUBJOBS_PER_CAMPAIGN, 50000), which
+        # no realistic ask reaches but which makes "not capped" false as
+        # written.
         f"Start a full-size run instead: open /campaigns/new. It is "
         f"split into pieces that run on our GPUs and bill as they "
-        f"finish, with no per-job ceiling.",
+        f"finish, so you can ask for far more designs than one job "
+        f"runs -- though each piece is still one container, so a large "
+        f"target limits how many designs fit in a piece.",
         ceiling,
     )
 

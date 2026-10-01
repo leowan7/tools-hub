@@ -50,6 +50,19 @@
   // other tool's form, and a null appends nothing, so their requests are
   // unchanged byte for byte.
   const contigInput = form.querySelector('input[name="target_input"]');
+  // The design count decides ADMISSION now, not just an advisory number:
+  // _check_size_envelope refuses bindcraft when the count puts the estimate
+  // past runtime_ceiling_s, and bindcraft is the only per-design tool with a
+  // ceiling (``runtime_ceiling_s`` in shared/pdb_preflight_rules.py's
+  // bindcraft ToolRules). The panel used to post no
+  // count at all, so /preflight saw num_designs=None, left the estimate None
+  // and answered "ready" for a 100-trajectory run that submit then refused.
+  // Both names _parse_preflight_size_params reads off a form
+  // (_parse_preflight_size_params in shared/pdb_intake.py); five forms
+  // ship one of them.
+  const designsInput = form.querySelector(
+    '[name="num_designs"], [name="designs_per_shard"]'
+  );
   // boltz2 carries a binder_sequences textarea; we forward the longest
   // binder to the preflight endpoint so the live total-complex size check
   // matches the submit-side gate (which sees the validated sequences).
@@ -171,12 +184,25 @@
       // to the count: a bare residue number is not interpretable, and this is
       // the branch where the user is deciding whether to spend money.
       if (v.size_envelope) {
+        const env2 = v.size_envelope;
+        // Mirrors the READY block of the server twin
+        // (templates/components/preflight_panel.html:73-86): highlight keyed
+        // on over_soft_warn alone, and a runtime line with no refusal clause.
+        // The other three flags are absent from this condition deliberately --
+        // shared/pdb_preflight.py::preflight_for_tool returns NEEDS_FIX whenever any of
+        // them is set, so none of them can be true on a verdict that reaches
+        // this branch. The ceiling refusal renders in the needs_fix branch
+        // below. Neither JS block prints the combined-with-binder figures the
+        // twin does (preflight_panel.html:79-82).
         html += `<div class="preflight-meta${
-          v.size_envelope.over_soft_warn ? " preflight-meta--warn" : ""
+          env2.over_soft_warn ? " preflight-meta--warn" : ""
         }">
-          Size envelope: ${v.size_envelope.residue_count} aa target
-          (cap ${v.size_envelope.hard_cap_target_aa} aa on
-          <code>${escapeHtml(v.size_envelope.gpu || "")}</code>).
+          Size envelope: ${env2.residue_count} aa target
+          ${capPhrase(env2)}
+          ${env2.runtime_estimate_min
+            ? `<br>Estimated runtime: ≈${env2.runtime_estimate_min} min for
+               ${escapeHtml(env2.runtime_basis || "")}.`
+            : ""}
         </div>`;
         if (v.size_envelope.warn_message) {
           html += `<p class="preflight-warn">${
@@ -252,6 +278,41 @@
           ${escapeHtml(v.suggested_fix)}
         </p>`;
       }
+      // THE CEILING REFUSAL LANDS HERE, not in the ready branch above:
+      // shared/pdb_preflight.py::preflight_for_tool returns NEEDS_FIX whenever
+      // over_runtime_ceiling is set, so a panel that rendered the envelope
+      // only under `kind === "ready"` showed no envelope, no runtime figure
+      // and no highlight on the exact verdict the figure explains. Mirrors the
+      // needs_fix block of the server twin
+      // (templates/components/preflight_panel.html:169-193): the same four
+      // flags, always highlighted, the same runtime sentence.
+      // over_runtime_ceiling has to be in the set because
+      // shared/pdb_preflight.py::_check_size_envelope CLEARS over_soft_warn
+      // when the ceiling fires, so a condition keyed on over_soft_warn alone
+      // leaves the one refusal that is ABOUT runtime as the only one with no
+      // runtime line.
+      const envFail = v.size_envelope;
+      if (
+        envFail &&
+        (envFail.over_hard_cap ||
+          envFail.over_combined_cap ||
+          envFail.over_runtime_ceiling ||
+          envFail.over_soft_warn)
+      ) {
+        html += `<div class="preflight-meta preflight-meta--warn">
+          Size envelope: ${envFail.residue_count} aa target
+          ${capPhrase(envFail)}
+          ${envFail.runtime_estimate_min
+            ? `<br>Estimated runtime: ~${envFail.runtime_estimate_min} min for
+               ${escapeHtml(envFail.runtime_basis || "")}${
+                 envFail.over_runtime_ceiling
+                   ? " — past the limit one GPU run is stopped at, which is " +
+                     "why this one is refused."
+                   : " (advisory only, long runs are supported)."
+               }`
+            : ""}
+        </div>`;
+      }
       if (v.alphafold) {
         html += `<div class="preflight-af preflight-af--hard">
           <button type="button"
@@ -315,6 +376,23 @@
       .replace(/'/g, "&#39;");
   }
 
+  // Header cap phrase, shared by both blocks above so they cannot drift apart.
+  // Prints the runtime cap when one binds, because that is the limit a refusal
+  // on this same panel is quoting: boltzgen refuses a 154 aa target while its
+  // memory cap is 600, and printing the 600 here contradicted the refusal on
+  // one screen. Mirrors the Jinja twin's branch in
+  // templates/components/preflight_panel.html.
+  function capPhrase(env) {
+    if (env.runtime_cap_target_aa) {
+      return `(cap ${env.runtime_cap_target_aa} aa at ${
+        escapeHtml(env.runtime_basis || "")
+      } on <code>${escapeHtml(env.gpu || "")}</code>).`;
+    }
+    return `(cap ${env.hard_cap_target_aa} aa on <code>${
+      escapeHtml(env.gpu || "")
+    }</code>).`;
+  }
+
   function maxBinderLen() {
     // Longest binder sequence length, parsed from the boltz2 textarea.
     // FASTA (>name headers) accumulates lines per record; otherwise each
@@ -363,6 +441,8 @@
     if (hotspotInput)
       fd.append("hotspot_residues", hotspotInput.value || "");
     if (contigInput) fd.append("target_input", contigInput.value || "");
+    if (designsInput && designsInput.value)
+      fd.append(designsInput.name, designsInput.value);
   }
 
   function appendBinderFields(fd) {
@@ -466,7 +546,17 @@
   // whole-upload one. Without a re-run the user reads a refusal for a run they
   // have since narrowed, and the Run button stays greyed out at the value it
   // was disabled on.
-  for (const inp of [chainInput, hotspotInput, contigInput, binderSeqInput]) {
+  //
+  // The design count is here for the same reason and a stronger one: it
+  // decides ADMISSION, and it sits in a separate collapsed section BELOW the
+  // upload on every form, so the first verdict is always the default count's.
+  // Without a re-run the panel stayed green at the default while the count the
+  // user then typed puts the estimate past the ceiling -- the panel
+  // contradicting the gate one click later, which is the defect this whole
+  // change set is about.
+  for (const inp of [
+    chainInput, hotspotInput, contigInput, binderSeqInput, designsInput,
+  ]) {
     if (!inp) continue;
     let t = 0;
     inp.addEventListener("input", () => {

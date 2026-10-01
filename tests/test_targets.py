@@ -1348,7 +1348,10 @@ def test_size_error_refuses_an_over_cap_target_for_proteina():
     # nothing.
     _over_500 = [("A", 236, 443), ("B", 236, 442), ("C", 237, 380)]   # 559 aa
     assert t.size_error("proteina", "A B C", _over_500) is not None
-    assert t.size_error("boltzgen", "A B C", _over_500) is None
+    # pxdesign, not boltzgen: its cap is 600 too, but boltzgen now also
+    # declares a runtime ceiling and refuses 559 aa for overrunning it, so it
+    # can no longer play the tool that ACCEPTS this size.
+    assert t.size_error("pxdesign", "A B C", _over_500) is None
     # The whole CH2+CH3 pair — 415 aa, the motivating campaign — now fits.
     assert t.size_error("proteina", "A B", []) is None
     # And narrowed to the smallest canaried window it fits with room to spare.

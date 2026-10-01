@@ -80,11 +80,17 @@ def _pdb(chains: dict) -> bytes:
 
 
 # Non-1 start on both chains, and two different numbering ranges, so a note
-# that quoted the wrong chain's endpoints would fail here. 150 residues each:
-# above every tool's min_target_aa (30) and 300 total, inside boltzgen's cap.
+# that quoted the wrong chain's endpoints would fail here. 70 residues each:
+# above every tool's min_target_aa (30), and 140 total, which is inside
+# boltzgen's size cap AND inside the target size whose 200-design pool still
+# fits the 6600 s timeout its pipeline enforces (~153 aa; see
+# tests/test_runtime_ceiling.py). At 150 each -- 300 total -- boltzgen now
+# refuses the upload for runtime, and a refusal carries no remap block, so
+# these plumbing tests would be asserting against a hard fail.
 _A = list(range(100, 250))
-_B = list(range(500, 650))
-_TWO_CHAIN = _pdb({"A": _A, "B": _B})
+_A_SHORT = list(range(100, 170))
+_B = list(range(500, 570))
+_TWO_CHAIN = _pdb({"A": _A_SHORT, "B": _B})
 
 # One chain, an insertion code in the middle: 140, 140A, 141... Two residues
 # share resSeq 140, so the renumber map can only hold one of them and which
@@ -305,9 +311,9 @@ def test_a_renumbering_tool_states_the_before_and_after_per_chain(client):
     joined = " ".join(notes)
     # The real endpoints of each chain, not a generic "we renumber" sentence.
     assert "your A100 becomes residue 1" in joined
-    assert "your A249 becomes residue 150" in joined
+    assert "your A169 becomes residue 70" in joined
     assert "your B500 becomes residue 1" in joined
-    assert "your B649 becomes residue 150" in joined
+    assert "your B569 becomes residue 70" in joined
 
 
 def test_a_bare_hotspot_is_shown_resolved_to_the_chain_it_lands_on(client):
@@ -323,10 +329,10 @@ def test_a_bare_hotspot_is_shown_resolved_to_the_chain_it_lands_on(client):
     assert body["ok"] is True, body.get("reason")
     pairs = {h["typed"]: h for h in body["remap"]["hotspots"]}
     assert set(pairs) == {"150", "B520"}
-    # 150 is the 51st residue of chain A (100..249).
+    # 150 is the 51st residue of chain A (100..169).
     assert pairs["150"]["means"] == "A51"
     assert "first of the chains you named" in pairs["150"]["why"]
-    # 520 is the 21st residue of chain B (500..649), and B was NOT assumed.
+    # 520 is the 21st residue of chain B (500..569), and B was NOT assumed.
     assert pairs["B520"]["means"] == "B21"
     assert "first of the chains" not in pairs["B520"]["why"]
 
@@ -340,7 +346,7 @@ def test_a_tool_that_preserves_numbering_discloses_only_the_attribution(client):
     body = _preflight(
         client, "proteina", _TWO_CHAIN,
         target_chain="A B", hotspot_residues="150",
-        target_input="A100-249,B500-649",
+        target_input="A100-169,B500-569",
     )
     assert body["ok"] is True, body.get("reason")
     assert body["remap"]["notes"] == []

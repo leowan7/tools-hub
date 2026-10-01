@@ -129,7 +129,31 @@ def _ready_branch() -> str:
     """
     start = _JS.index('if (v.kind === "ready"')
     end = _JS.index('} else if (v.kind === "needs_fix")', start)
-    return _JS[start:end]
+    branch = _JS[start:end]
+    # A field the arm renders THROUGH a helper is still rendered by the arm.
+    # ``capPhrase`` exists so the two headers cannot print different caps, and
+    # moving ``hard_cap_target_aa`` behind it must not read here as the arm
+    # having dropped the cap. Only the helpers this arm actually CALLS are
+    # spliced in, one level deep, so a token sitting in some unrelated function
+    # still cannot answer for this one.
+    for name in sorted(set(re.findall(r"\b([a-z][A-Za-z0-9]*)\(", branch))):
+        if f"function {name}(" in _JS:
+            branch += "\n" + _function_source(name)
+    return branch
+
+
+def _function_source(name: str) -> str:
+    """The text of the top-level ``function name(...)`` declaration."""
+    i = _JS.index(f"function {name}(")
+    depth = 0
+    for k in range(_JS.index("{", i), len(_JS)):
+        if _JS[k] == "{":
+            depth += 1
+        elif _JS[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return _JS[i:k + 1]
+    raise AssertionError(f"function {name} has unbalanced braces")
 
 
 def _guard_before(branch: str, marker: str) -> str:
@@ -1461,3 +1485,47 @@ def test_every_panel_form_really_does_render_that_refusal(slug):
         f"{slug}_form.html no longer disables the button on a failed "
         f"submit-time verdict."
     )
+
+
+def test_the_panel_judges_one_container_not_the_campaign_total(client):
+    """A count above the container ceiling is not a run anyone can submit.
+
+    Above ``single_container_ceiling`` the form re-points at the campaign
+    chunker (``templates/tools/_campaign_reroute.html``) and
+    ``_single_container_refusal`` rejects a larger single job, and the campaign
+    route judges the ceiling PER CHUNK (``plan.designs_for_chunk(0)``). So
+    judging the form total here refused runs the campaign route funds:
+    bindcraft at 115 aa / 100 designs is 15.6 h as one job and greys out Run,
+    while the six-design chunk it actually becomes is accepted. The panel began
+    posting the count at all in the same change set that added the ceiling, so
+    this is the first release where the total could reach the route.
+    """
+    from shared import compute_campaigns as cc
+    from shared.pdb_preflight import _check_size_envelope
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    rules = TOOL_RULES["bindcraft"]
+    ceiling = cc.single_container_ceiling("bindcraft")
+    # The premise: the two counts really do straddle the ceiling at this size,
+    # so a route that judged the total would answer differently. Without this
+    # the assertion below could pass on a tool that has no ceiling at all.
+    assert _check_size_envelope(
+        rules, 115, binder_max_aa=None, num_designs=100,
+    ).over_runtime_ceiling
+    assert not _check_size_envelope(
+        rules, 115, binder_max_aa=None, num_designs=ceiling,
+    ).over_runtime_ceiling
+
+    _login(client)
+    body = _preflight_upload(
+        client, "bindcraft", _pdb({"A": list(range(1, 116))}), "t.pdb",
+        num_designs="100", hotspot_residues="A40,A42",
+    )
+    assert body["ok"] is True, (
+        "the panel refused a 100-design bindcraft request, which is not a "
+        f"single job at all -- it runs as {ceiling}-design chunks: "
+        f"{body.get('reason')!r}"
+    )
+    env = body["size_envelope"]
+    assert not env["over_runtime_ceiling"]
+    assert env["runtime_basis"] == f"{ceiling} designs", env["runtime_basis"]

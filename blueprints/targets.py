@@ -356,6 +356,17 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         size_err = target.size_error(
             tool, run_chain, validated.get("_target_segments") or [],
             binder_max_aa=_parse_preflight_size_params(validated)[0],
+            # The per-container count, so the runtime ceiling is judged against
+            # what one sub-job runs. This route funds a campaign, so the count
+            # to estimate from is the chunk, not the total typed in the form --
+            # same value ``blueprints/campaigns.py`` passes. Without it
+            # ``shared/pdb_preflight.py::_check_size_envelope`` makes no runtime
+            # estimate for a per-design tool and the ceiling half of the
+            # envelope is inert on this route. ``designs_for_chunk(0)`` rather
+            # than ``chunk_size`` for the same reason as there: the nominal
+            # chunk is not clamped to the request, so gating on it refuses a
+            # 1-design campaign that fits.
+            num_designs=plan.designs_for_chunk(0),
         )
         if size_err:
             return None, f"{label}: {size_err}"
