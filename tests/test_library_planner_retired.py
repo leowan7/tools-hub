@@ -5,11 +5,11 @@ and retired on 2026-09-30 at Leo's request. This file replaces
 tests/test_library_planner_anonymous.py, which pinned the opposite property --
 that both routes answered 200 to an anonymous visitor.
 
-Why a 301 and not a 404: twelve "try the tool" callouts on ranomics.com point
-at https://tools.ranomics.com/library-planner (grep the marketing repo's
-``src/content/blog/*.mdx`` for ``tool="library-planner"``), and that path
-answered 200 up to this commit. A 404 would turn every one of those into a
-dead end, so both endpoints stay registered and redirect
+Why a 301 and not a 404: "try the tool" callouts in the ranomics.com marketing
+site link at https://tools.ranomics.com/library-planner (grep that repo for
+``library-planner``; it is a separate repository, so no count is asserted
+here), and that path answered 200 up to this commit. A 404 would turn every
+one of those into a dead end, so both endpoints stay registered and redirect
 (blueprints/tools.py::library_planner, ::library_planner_plan).
 
 The POST redirect is a 301 rather than a 308 on purpose: 308 preserves the
@@ -43,6 +43,13 @@ VALID_PLAN = {
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    # Production default, not the suite-wide CSRF_PROTECT=0 that
+    # tests/conftest.py sets. With enforcement off, the POST case below
+    # passes while production answers 403 (app.py::_enforce_csrf defaults
+    # the switch to "1"), so the status codes here would certify a
+    # behaviour the live app never returns. The exemption that makes the
+    # redirect reachable is app.py::_csrf_request_is_exempt.
+    monkeypatch.setenv("CSRF_PROTECT", "1")
     app = create_app()
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -61,7 +68,7 @@ def test_retired_routes_301_to_tools(client, method, path, data):
     resp = client.open(path, method=method, data=data)
     assert resp.status_code == 301, (
         f"anonymous {method} {path} returned {resp.status_code}, not 301. "
-        "A 404 strands twelve ranomics.com callouts; a 200 means the retired "
+        "A 404 strands the ranomics.com callouts; a 200 means the retired "
         "planner is serving again; a 302 is not the permanent signal search "
         "engines need to move the URL."
     )

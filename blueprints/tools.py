@@ -213,15 +213,24 @@ def developability_score():
 # Yeast Display Library Planner — RETIRED 2026-09-30 at Leo's request.
 #
 # Both endpoints stay registered and 301 to /tools. They are not 404ed
-# because twelve "try the tool" callouts on ranomics.com point straight
-# at https://tools.ranomics.com/library-planner, and that path answered
-# 200 up to this commit (curl, 2026-09-30). A 301 hands those readers,
-# and any search engine holding the URL, the catalog instead of an error.
+# because "try the tool" callouts in the ranomics.com marketing site link
+# straight at https://tools.ranomics.com/library-planner, and that path
+# answered 200 up to this commit (curl, 2026-09-30). A 301 hands those
+# readers, and any search engine holding the URL, the catalog instead of
+# an error. The callouts live in a different repository, so their count
+# is not verifiable from here; grep that repo for 'library-planner'.
 #
 # 301 and not 308 on the POST: a 308 preserves the method and would
 # re-POST a stale bookmarked form to /tools, which is GET-only
 # (tools_comparison, this file) and would answer 405. A 301 is
 # downgraded to GET by browsers, which is the landing we want.
+#
+# The POST is also exempt from the app-wide CSRF guard
+# (app.py::_csrf_request_is_exempt). Without that it answers 403, not
+# 301: enforcement defaults ON and the planner form never carried a
+# token, so a stale bookmarked copy submits none. Measured with
+# CSRF_PROTECT=1 in
+# tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt.
 #
 # tools/library_planner/ and templates/library_planner_*.html are left
 # on disk on purpose: the package is matched by the 'tools/**' deploy

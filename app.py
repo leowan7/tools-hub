@@ -315,6 +315,16 @@ def create_app() -> Flask:
         # Side-effect-free input validation: no DB write, no billing, no job.
         if path.startswith("/tools/") and path.endswith("/preflight"):
             return True
+        # Retired Library Planner: the handler is a bare 301 to /tools
+        # (blueprints/tools.py::library_planner_plan), so it writes nothing,
+        # bills nothing and starts no job. It needs the exemption because the
+        # form that posts here never carried a token -- there is no _csrf
+        # field in templates/library_planner_form.html -- so a stale
+        # bookmarked copy would be answered 403 instead of being handed the
+        # catalog, which is the whole point of keeping the route
+        # (tests/test_csrf_protection.py::test_retired_library_planner_post_is_exempt).
+        if path == "/library-planner/plan":
+            return True
         # /account/api-keys/* already enforce their own per-session CSRF token
         # (FIX HI-03) using a distinct field; leave that working path intact.
         if path.startswith("/account/api-keys"):

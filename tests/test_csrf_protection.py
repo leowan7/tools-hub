@@ -144,6 +144,22 @@ def test_preflight_is_exempt(app):
     assert resp.status_code != 403
 
 
+def test_retired_library_planner_post_is_exempt(app):
+    """The retired planner's POST is a bare 301 and must not 403.
+
+    Its form never carried a token (no ``_csrf`` in
+    templates/library_planner_form.html), so a stale bookmarked copy submits
+    none. Without the exemption in app.py::_csrf_request_is_exempt the
+    redirect that replaced the handler answers 403 and strands the reader,
+    which is measured here with enforcement on -- the rest of the retirement
+    is pinned in tests/test_library_planner_retired.py.
+    """
+    client = app.test_client()
+    resp = client.post("/library-planner/plan", data={"scaffold": "VHH"})
+    assert resp.status_code == 301
+    assert resp.headers["Location"].endswith("/tools")
+
+
 # ---------------------------------------------------------------------------
 # Unmatched routes 404 (not 403) — the guard defers to Flask routing
 # ---------------------------------------------------------------------------

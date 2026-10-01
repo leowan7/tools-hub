@@ -1284,15 +1284,17 @@ def campaigns_submit():
     """Create a lab project from a shortlist. Three parent shapes, one route.
 
     ``@idempotent()`` is NOT applied blanket-wide, so this is a judgment about
-    this route rather than a house style being completed: 9 of the app's 28
-    POST routes carry it, this one included, while `wallet.wallet_checkout`,
+    this route rather than a house style being completed: nine POST routes
+    carry it (grep ``@idempotent()``), this one included, while
+    `wallet.wallet_checkout`,
     `targets.target_archive` and the admin status writes do without. The other
     eight are the run and target lifecycle (`campaigns.compute_campaign_create`,
     `campaigns.compute_campaign_refold`, `jobs.job_refold`, `jobs.job_cancel`,
     `targets.target_create`, `targets.target_launch_submit`, `tools.tool_submit`)
     plus the one synchronous compute tool (`tools.developability_score`).
-    What they share is that a replay costs real money or real work; this one creates a lab project and stages PDBs into a
-    folder Ranomics staff open, which puts it in the same class. The key is
+    What they share is that a replay costs real money or real work; this one
+    creates a lab project and stages PDBs into a folder Ranomics staff open,
+    which puts it in the same class. The key is
     (user, path, exact body), so two genuinely different scoping requests are
     unaffected and only a REPLAY of the identical body is collapsed.
 
