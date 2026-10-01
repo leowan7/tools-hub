@@ -2221,11 +2221,6 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         )
 
 
-# Mid run progress monitoring interval. Modal pipelines emit a heartbeat
-# roughly every 15 minutes; the monitor reads cumulative gpu_seconds from
-# the heartbeat payload and decides whether to issue a soft warning.
-MID_RUN_MONITOR_INTERVAL_MINUTES = 15
-
 # Ratio used by the mid run monitor. The 1.5x warning is non blocking and
 # fires once per job at or above this ratio. The cost-based mid-run kill
 # (and its former 2.0x _MID_RUN_KILL_RATIO threshold) was removed: prepaid
@@ -2265,9 +2260,10 @@ def mid_run_monitor_check(
 ) -> Optional[str]:
     """Inspect a running job's cumulative cost and warn on overrun ratios.
 
-    Called by the Modal heartbeat handler (or a scheduler) every 15
-    minutes for any still-running job that owns a wallet hold. Returns
-    one of:
+    Sole non-test caller: ``webhooks/modal.py::_run_overrun_check``,
+    driven off the inbound Modal heartbeat. There is no scheduler and no
+    fixed interval -- the cadence is whatever each tool's pipeline emits
+    heartbeats at. Returns one of:
 
     * ``None``: no action taken (ratio under the warn threshold, or
       no hold on this job, or the job is no longer running).
@@ -2281,12 +2277,15 @@ def mid_run_monitor_check(
     the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
     is retained for signature compatibility and is no longer used here.
 
-    Side effect: on every check, persists ``cumulative_gpu_seconds`` to
-    ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
-    consumed time without waiting for a terminal Modal webhook. The
-    value is a heartbeat-resolution snapshot (last value reported), so
-    a cancel between heartbeats undercharges by at most one interval.
-    The persist is CAS-guarded on status IN (pending, running) so a
+    Side effect: the ``_cas_update`` call below writes
+    ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``. Read
+    the body for the guards on that call rather than a prose
+    restatement of them here.
+    The value written is a heartbeat-resolution snapshot (last value
+    reported), so a cancel bills what the last heartbeat reported and
+    not what the job consumed after it. Heartbeat cadence is set by
+    each tool's pipeline, so the size of that gap is not bounded here.
+    The write is CAS-guarded on status IN (pending, running) so a
     terminal webhook landing between the read and the write wins; the
     heartbeat's older snapshot cannot clobber the authoritative
     settle amount.
@@ -2300,7 +2299,8 @@ def mid_run_monitor_check(
     # Persist the heartbeat-reported consumption to the row so a cancel
     # between now and the next check can bill against actual GPU spent.
     # Best-effort: a flaky update here does not gate the rest of the
-    # monitor logic (warning + kill still fire from the heartbeat value).
+    # monitor logic: the 1.5x warning below still fires from the
+    # passed-in value. There is no kill step to gate.
     if cumulative_gpu_seconds and cumulative_gpu_seconds > 0:
         try:
             # CAS-guarded: skip the persist if the row terminalised

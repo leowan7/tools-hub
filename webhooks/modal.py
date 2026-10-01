@@ -301,10 +301,10 @@ def _handle_heartbeat() -> Any:
     the pipeline does not waste GPU time on retries. If the body is
     malformed or the job is unknown we log and move on.
 
-    The heartbeat also drives the mid-run cost-overrun safety check. If
-    cumulative GPU cost passes 1.5x the estimate we email a soft
-    warning; past 2x AND the per-tool hard cap we cancel the Modal call
-    and mark the job failed (the hold is then released at zero compute).
+    The heartbeat also drives the mid-run cost-overrun check. If
+    cumulative GPU cost passes 1.5x the estimate we email a soft warning,
+    once per job. There is no cost-based kill: the 2.0x kill was removed
+    in 3818b4a4, so a heartbeat never cancels a run or settles a charge.
     """
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("job_id") or "")
@@ -399,8 +399,10 @@ def _run_overrun_check(job_id: str, cumulative_gpu_seconds: float) -> None:
     """Fire mid_run_monitor_check with a lazily-built ModalClient.
 
     Lazy import keeps gpu.modal_client out of the module-import cycle and
-    means a missing modal package does not break heartbeats — the monitor
-    will just skip the cancel step.
+    means a missing modal package does not break heartbeats:
+    ``shared/jobs.py::mid_run_monitor_check`` never reads ``modal_client``.
+    The argument existed for the cost-based kill, which was removed in
+    3818b4a4, so passing None changes nothing.
     """
     try:
         from gpu.modal_client import ModalClient  # noqa: PLC0415
