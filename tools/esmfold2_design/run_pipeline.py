@@ -297,7 +297,10 @@ def _looks_like_esmc(name: object) -> bool:
     that, so a rename to ``esm.c-6b`` would stop being recorded. It
     would land in the class the next paragraph calls still-open --
     one missing diagnostic line, not a wrong revision -- whereas a
-    fused path segment would cry wolf on every healthy run. ``-``
+    fused path segment would cry wolf on every run whose id has that
+    shape. Neither rate is measured: no id this tool is known to load
+    takes either form, which is the same reason the branch below is
+    not expected to fire at all. ``-``
     named by review-code round 7, ``.`` by round 8, and the recall
     cost weighed by round 9.
 
