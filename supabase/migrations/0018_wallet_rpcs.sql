@@ -127,9 +127,9 @@ END $$;
 -- ---------------------------------------------------------------------------
 --
 -- Full release of a pre-authorized hold. Used when a job is cancelled
--- before any compute runs, when a failed job consumed zero GPU time,
--- or when the mid-run overrun monitor kills a job. Distinct from
--- settle_hold which handles the success path with a known actual cost.
+-- before any compute runs, or when a failed job consumed zero GPU time.
+-- Distinct from settle_hold which handles the success path with a known
+-- actual cost.
 --
 -- Inserts a hold_release row that credits back the original hold amount
 -- in full, links it via parent_tx_id, and updates the wallet balance.
@@ -139,8 +139,13 @@ END $$;
 -- existing for a hold_release or charge row; if the hold has already
 -- been settled (charge or hold_release present), no-op.
 --
--- Used by shared/wallet.py:release_hold, called from shared/jobs.py at
--- cancel paths and the mid-run safety kill.
+-- Used by shared/wallet.py:release_hold. Callers by symbol as of
+-- 2026-10-01: shared/jobs.py::_settle_wallet_hold_for_completed_job (its
+-- refunded-class, zero-consumption-cancel and legacy no-compute arms),
+-- blueprints/tools.py::tool_submit, shared/wallet_guard.py::requires_wallet,
+-- and shared/compute_campaigns.py::_dispatch_chunk. The mid-run overrun
+-- monitor was also a caller when this migration was written; its
+-- cost-based kill was removed in 3818b4a4 and it releases no holds now.
 
 CREATE OR REPLACE FUNCTION public.release_hold(
     p_hold_tx_id bigint,

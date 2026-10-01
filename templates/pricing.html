@@ -70,8 +70,9 @@
         <h3 class="why-card-title">4. Auto reload, optional</h3>
         <p class="why-card-body">
           Save a card to auto reload when balance drops below a threshold.
-          Default off. Limited to one auto reload per 24 hours plus a
-          monthly cap you set, so a runaway loop cannot drain your card.
+          Default off. Limited to one auto reload per 24 hours, so a runaway
+          loop cannot drain your card. You can also set a monthly auto reload
+          budget.
         </p>
       </article>
     </div>
@@ -129,15 +130,17 @@
       <article class="why-card">
         <h3 class="why-card-title">Auto reload limits</h3>
         <p class="why-card-body">
-          Auto reload, when enabled, is limited to one charge every 24 hours
-          plus a user set monthly cap (default $1,000). A compromised
-          account or runaway loop cannot drain your card.
+          Auto reload, when enabled, is limited to one charge every 24 hours.
+          That limit is what stops a compromised account or a runaway loop
+          draining your card. You can also set a monthly auto reload budget:
+          if a reload would take the month past it, auto reload pauses and we
+          email you.
         </p>
       </article>
       <article class="why-card">
         <h3 class="why-card-title">Mid run safety</h3>
         <p class="why-card-body">
-          Long running jobs report progress every 15 minutes. If the actual
+          Long running jobs report their progress as they go. If the actual
           cost runs well past the estimate, you get a warning email so a bad
           input never runs away quietly.
         </p>
@@ -225,8 +228,8 @@
         <p class="why-card-body">
           Yes. Auto reload is opt in and off by default. You set a balance
           threshold and a reload amount. To protect against runaway billing,
-          auto reload is limited to one charge every 24 hours plus a
-          monthly cap you control.
+          auto reload is limited to one charge every 24 hours. You can also
+          set a monthly auto reload budget.
         </p>
       </article>
       <article class="why-card">

@@ -2616,8 +2616,9 @@ def send_overrun_warning_email(
     """Mid run soft warning: cumulative cost exceeded 1.5x the estimate.
 
     Trigger: ``mid_run_monitor_check`` in ``shared/jobs.py`` once per
-    job. The job keeps running but the user gets a heads up so a
-    runaway loop is visible before the hard kill threshold trips.
+    job. The job keeps running: there is no cost-based kill threshold
+    behind this email (the 2.0x mid-run kill was removed in 3818b4a4),
+    so this warning is the only mid-run signal a runaway input gets.
     """
     email = _resolve_user_email(user_id)
     if not email:

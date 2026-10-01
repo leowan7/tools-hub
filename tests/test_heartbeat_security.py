@@ -1,17 +1,32 @@
 """Security regression — the unauthenticated heartbeat cost path.
 
 CSO audit 2026-06-17 H1: ``POST /webhooks/heartbeat`` carries no per-job
-credential. The candidate-injection branch is token-gated, but the
-cost/kill/billing path read ``cumulative_gpu_seconds`` straight from the
-request body and fed it into ``mid_run_monitor_check`` — which can cancel
-the Modal call and settle a billed ``safety_kill`` charge clamped to the
-per-tool hard cap. An attacker who learned a victim's running-job UUID
-could POST ``{"job_id": "<uuid>", "cumulative_gpu_seconds": 999999}`` with
-no creds to cancel the victim's job and inflate their wallet charge.
+credential. The candidate-injection branch is token-gated, but the cost path
+read ``cumulative_gpu_seconds`` straight from the request body and fed it to
+``mid_run_monitor_check``. An attacker who learned a victim's running-job
+UUID could POST ``{"job_id": "<uuid>", "cumulative_gpu_seconds": 999999}``
+with no creds. The original exploit had two halves:
 
-The fix makes the billing/kill decision use a SERVER-SIDE wall-clock
-measurement only (``_elapsed_running_seconds``); the request-body value is
-ignored for billing/kill. These tests lock that in:
+  1. CANCEL + billed kill. GONE, and not because of this fix: the 2.0x
+     cost-based mid-run kill was removed in 3818b4a4 (PR #62).
+     ``mid_run_monitor_check`` now returns only ``None`` or ``"warned"``
+     (``shared/jobs.py``), so no heartbeat can cancel a Modal call or
+     settle a ``safety_kill`` charge whatever the body says.
+  2. INFLATED BILLING FIGURE. STILL LIVE, and this file is what guards it.
+     ``mid_run_monitor_check`` persists its ``cumulative_gpu_seconds``
+     argument to ``tool_jobs.gpu_seconds_used``, and that column is what a
+     user-initiated cancel bills. A body-trusted figure would therefore
+     still overcharge a victim, with no kill involved.
+
+Half 2 is the whole remaining value of the fix, which makes the figure a
+SERVER-SIDE wall-clock measurement (``_elapsed_running_seconds``) and
+ignores the request-body value. Do not treat these tests as guarding a
+removed feature and delete them: measured by mutating the fix to trust the
+body again (2026-10-01), the only assertions that fail are the two on the
+figure itself. Every assertion about cancel / status / failure_class passed
+under that mutation and has been dropped.
+
+These tests lock in:
 
   * a forged huge ``cumulative_gpu_seconds`` reaches the monitor as the
     server wall-clock value, never the body value;
@@ -19,7 +34,7 @@ ignored for billing/kill. These tests lock that in:
     off wall-clock;
   * the benign stage-string update still lands;
   * end-to-end, a forged heartbeat against a job with a live wallet hold
-    cancels nothing and persists no inflated consumed-GPU figure.
+    persists no inflated consumed-GPU figure.
 
 Fakes mirror ``tests/test_modal_webhook_finalize.py``.
 """
@@ -238,14 +253,14 @@ def patched_clients(store):
         yield
 
 
-class TestForgedHeartbeatCannotCancelOrCharge:
-    def test_forged_seconds_with_active_hold_no_cancel_no_inflated_charge(
+class TestForgedHeartbeatCannotInflateTheBilledFigure:
+    def test_forged_seconds_with_active_hold_persists_no_inflated_charge(
         self, patched_clients, store
     ):
         """The exploit payload: huge cumulative_gpu_seconds against a job
-        that owns a live wallet hold. Must NOT cancel the Modal call and
-        must NOT persist an inflated consumed-GPU figure — billing/kill run
-        off wall-clock (~10s), which is far under the kill band."""
+        that owns a live wallet hold. The figure persisted to
+        ``gpu_seconds_used`` — what a later user-initiated cancel bills —
+        must be the server wall-clock value (~10s), never the body value."""
         row = _row(
             status="running",
             started_at=_recent_iso(10),
@@ -259,9 +274,10 @@ class TestForgedHeartbeatCannotCancelOrCharge:
         )
         store.rows[row["id"]] = row
 
-        # Real ModalClient never touched: patch the class so _run_overrun_check
-        # builds a mock whose .cancel we can assert was never invoked.
-        with patch("gpu.modal_client.ModalClient") as ModalClientCls:
+        # Patched only so _run_overrun_check builds a mock instead of a real
+        # ModalClient. Nothing is asserted on it: the monitor has no cancel
+        # step left to call (see the module docstring, half 1).
+        with patch("gpu.modal_client.ModalClient"):
             resp = _client().post(
                 "/webhooks/heartbeat",
                 json={
@@ -272,16 +288,18 @@ class TestForgedHeartbeatCannotCancelOrCharge:
             )
 
         assert resp.status_code == 200
-        # No cancel was issued against the victim's Modal call.
-        ModalClientCls.return_value.cancel.assert_not_called()
 
         stored = store.rows[row["id"]]
-        # Job was not killed.
-        assert stored["status"] == "running"
-        assert stored.get("failure_class") != "safety_kill"
-        # Consumed GPU persisted is the small wall-clock value, never the
-        # forged figure.
-        assert stored["gpu_seconds_used"] != FORGED_SECONDS
+        # THE live assertion. Consumed GPU persisted must track wall-clock,
+        # not the body: this column is what a user-initiated cancel bills, so
+        # a body-trusted figure overcharges the victim. Mutating the handler
+        # to trust the body reds exactly this line (86400 < 600).
+        #
+        # Deliberately not also asserting ``!= FORGED_SECONDS``: that form is
+        # vacuous. ``shared/jobs.py::_safe_gpu_seconds_int`` clamps to
+        # _MAX_GPU_SECONDS (24h), so the forged 999999 is rewritten to 86400
+        # before it is persisted and the inequality holds even under the
+        # exploit. Only the bound below distinguishes the two.
         assert (stored["gpu_seconds_used"] or 0) < 600
 
     def test_benign_stage_update_still_lands(self, patched_clients, store):
