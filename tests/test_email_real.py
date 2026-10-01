@@ -245,7 +245,35 @@ class TestAutoReloadRateLimited:
         _assert_resend_call_shape(mock_resend, "auto_reload_rate_limited")
         body = mock_resend["json"]
         assert "skipped" in body["subject"].lower()
+        assert "once every 24 hours" in body["html"]
+        assert "24 hours after the last one" in body["html"]
         _assert_dash_free(body["html"], "auto_reload_rate_limited")
+
+    def test_renders_the_unreadable_guard_reason(
+        self, env, resolve_email, mock_resend
+    ):
+        """``reason`` replaces every 24h clause, it does not sit beside them.
+
+        The same sender now covers both no-charge guard outcomes, so the body
+        must not tell a user whose guard read failed that we were rate
+        limiting them, nor that they have to wait a day. The whole body is
+        checked for ``24 hour`` rather than one clause's wording, because the
+        template says it twice and in two different phrasings.
+        ``shared.wallet._refuse_auto_reload_unverified`` is the caller that
+        passes this string.
+        """
+        ok = email_mod.send_auto_reload_rate_limited_email(
+            user_id=TEST_USER_ID,
+            reason="a safety check on your account could not be completed",
+        )
+        assert ok is True
+        body = mock_resend["json"]
+        assert (
+            "a safety check on your account could not be completed."
+            in body["html"]
+        )
+        assert "24 hour" not in body["html"].lower()
+        _assert_dash_free(body["html"], "auto_reload_rate_limited_reason")
 
 
 class TestAutoReloadMonthlyCap:
