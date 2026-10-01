@@ -22,9 +22,13 @@ Half 2 is the whole remaining value of the fix, which makes the figure a
 SERVER-SIDE wall-clock measurement (``_elapsed_running_seconds``) and
 ignores the request-body value. Do not treat these tests as guarding a
 removed feature and delete them: measured by mutating the fix to trust the
-body again (2026-10-01), the only assertions that fail are the two on the
-figure itself. Every assertion about cancel / status / failure_class passed
-under that mutation and has been dropped.
+body again (2026-10-01), exactly two assertions in this file fail, and both
+are on the figure -- ``passed_secs != FORGED_SECONDS`` in
+``test_forged_huge_seconds_does_not_reach_monitor``, and the ``< 600``
+bound in ``test_forged_seconds_with_active_hold_persists_no_inflated_charge``.
+The four assertions dropped from that second test (cancel, status,
+failure_class, and ``gpu_seconds_used != FORGED_SECONDS``) all passed
+under the mutation.
 
 These tests lock in:
 
