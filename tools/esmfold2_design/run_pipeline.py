@@ -291,9 +291,15 @@ def _looks_like_esmc(name: object) -> bool:
     spells the model -- is still recorded. NAMESPACE separators are
     deliberately NOT dropped: fusing segments would make
     ``/models/esm/critic`` and ``/models/esm.critic`` both read as
-    ESM-C. No rename spells the model ``ESM.C``, so keeping ``.`` out
-    of the set costs no recall. ``-`` named by review-code round 7,
-    ``.`` by round 8.
+    ESM-C. Excluding them trades a little recall for precision, and
+    the trade is deliberate rather than free: no upstream name known
+    here puts a separator inside the acronym, but nothing enforces
+    that, so a rename to ``esm.c-6b`` would stop being recorded. It
+    would land in the class the next paragraph calls still-open --
+    one missing diagnostic line, not a wrong revision -- whereas a
+    fused path segment would cry wolf on every healthy run. ``-``
+    named by review-code round 7, ``.`` by round 8, and the recall
+    cost weighed by round 9.
 
     Still open, and this does not close it: a rename that drops the
     letters themselves (a volume path like ``/models/6b_trunk``) is

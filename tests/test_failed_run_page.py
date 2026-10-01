@@ -39,14 +39,21 @@ _HOLD = {"_wallet": {"hold_tx_id": "tx-hold-stub"}}
 # built in tools/esmfold2_design/run_pipeline.py::_run.
 #
 # Cited by symbol because the ESM-C branch broke the line cite that
-# stood here. It read :1141, which was CORRECT at that branch's base:
-# ``git cat-file -p 0040ebc1:tools/esmfold2_design/run_pipeline.py``
-# still shows the emitter on 1141. The branch inserted ~400 lines
-# above it and moved it to :1540. An earlier version of this comment
-# called the drift pre-existing, which was wrong and let the branch
-# off for its own breakage. A symbol survives an insertion above it;
-# a line number does not, and test_code_citations_resolve.py reads
-# only the ``::`` form, so nothing would have caught it. The torch text after it is the detail QA 2026-09-30 P0-4
+# stood here. It read :1141, which was CORRECT at that branch's base
+# -- ``git cat-file -p 0040ebc1:tools/esmfold2_design/run_pipeline.py``
+# still shows the emitter there, and always will, because that hash
+# is immutable. The branch then inserted several hundred lines above
+# it.
+#
+# This comment has been wrong twice, which is the argument for the
+# form it is in now. It first called the drift pre-existing, letting
+# the branch off for its own breakage. It then gave the emitter's new
+# line number -- and that number was stale by six lines before the
+# commit carrying it had even landed, because the same diff moved the
+# emitter again. So: no current line number here at all. A symbol
+# survives an insertion above it and a line number cannot, and
+# test_code_citations_resolve.py reads only the ``::`` form, so
+# nothing in the suite would have caught either mistake. The torch text after it is the detail QA 2026-09-30 P0-4
 # observed on job a327d5fe and cannot be checked statically. The
 # ``pipeline``/``design`` bucket and check the tests wrap it in are this
 # file's assumption about the poll path, not something that emitter stamps.
