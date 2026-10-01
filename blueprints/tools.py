@@ -217,8 +217,17 @@ def developability_score():
 # straight at https://tools.ranomics.com/library-planner, and that path
 # answered 200 up to this commit (curl, 2026-09-30). A 301 hands those
 # readers, and any search engine holding the URL, the catalog instead of
-# an error. The callouts live in a different repository, so their count
-# is not verifiable from here; grep that repo for 'library-planner'.
+# an error. How many callouts there are is not verifiable from this
+# repo. Reported by the website lead on 2026-09-30: ten blog posts plus
+# two pages, twelve link sites in all, every one of them resolving
+# through a single entry in the shared TryToolCallout component's tool
+# map (ranomics.com repo, src/components/TryToolCallout.astro). That
+# single entry is the load-bearing half, not the twelve: one edit there
+# drops every inbound link at once, so this redirect only has to outlive
+# that edit. The count is secondhand -- the only copy of that repo
+# reachable from here is 93 commits behind its main (last fetched
+# 2026-09-15) and shows six posts and no pages -- so re-grep their main
+# rather than quoting twelve from here.
 #
 # 301 and not 308 on the POST: a 308 preserves the method and would
 # re-POST a stale bookmarked form to /tools, which is GET-only
