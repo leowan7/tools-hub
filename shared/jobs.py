@@ -1012,29 +1012,54 @@ _NUMERICAL_FIX = (
 # ``requires_pdb=False``). Listing the buckets here puts all of them on one
 # cause, which is the accurate one.
 #
-# The bucket/check separator is a character class because the two live write
-# paths store the pair differently: the webhook keeps the raw
-# ``{bucket, check, detail}``
-# dict (webhooks/modal.py:154), which ``_error_text`` joins with a space,
-# while the poll path flattens it to ``"parser:stub — ..."`` and drops the
-# ``check`` key (gpu/modal_client.py::_stringify_error ->
-# blueprints/jobs.py:943). Both shapes are pinned by
-# tests/test_failed_run_page.py::TestSilentStubIsOurSide.
+# Every UNANCHORED rule below spells the bucket/check separator as a plain
+# ``:``, and that is safe on both live write paths. The webhook stores the
+# raw ``{bucket, check, detail}`` dict (webhooks/modal.py:154) and
+# ``_error_text`` rejoins that pair with a colon before any rule sees it
+# (the ``pair`` join in ``_error_text``); the poll path stores no ``check``
+# key at all, but its ``detail`` already opens with the flattened
+# "bucket:check" (gpu/modal_client.py::_stringify_error ->
+# blueprints/jobs.py:945), which an unanchored rule finds just as well.
+# ``tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_both_shapes_agree``
+# pins that the two shapes classify the same for ``parser``, ``internal``,
+# all three ``input`` checks and four of the ``preflight`` ones -- a sample,
+# not the whole row: it carries no ``storage`` or ``modal-submit`` case, and
+# eight ``preflight`` checks are unsampled.
 #
-# Only three of the checks on the ``our_side`` row below actually spell
-# that separator as a class: ``parser``, ``internal`` and -- added with
-# the ESM-C weights preflight -- ``preflight``. ``input:`` is still
-# colon-only, so an ``input:download`` failure delivered as a raw dict
-# reads as "input download ..." and falls through to ``generic`` instead
-# of ``our_side``. Measured by routing both shapes through
-# ``failure_advice``; the fix text is ``_GENERIC_FIX`` either way, so
-# only the cause sentence is wrong. Pre-existing, and NOT fixed here.
+# The ``^parser`` alternative is the one exception and keeps its ``[: ]``
+# class, because it is anchored and so can only read the START of the
+# flattened string. On the poll shape that start is the bare bucket
+# followed by ``_error_text``'s join space -- the colon turns up later,
+# inside the detail, out of the anchor's reach. ``[: ]`` is what accepts
+# both; ``test_sibling_buckets_are_our_side_too`` fails on every ``parser``
+# case without it.
+#
+# ``preflight`` is matched check by check, NOT as a whole bucket, because
+# the bucket is mixed: ``preflight:fixed_positions`` rejects the chain and
+# the 1-indexed positions the USER asked to freeze
+# (tools/mpnn/run_pipeline.py:277-305), so it has to keep falling through
+# to a rule that talks about their input. ``jax-gpu`` (tools/af2 and
+# tools/colabfold run_pipeline.py, "JAX/cuDNN cannot init on this pod")
+# and ``module`` (tools/mpnn/run_pipeline.py:506, protein_mpnn_utils.py
+# missing from the image) are listed because both are faults in the image
+# or the pod. ``jax-gpu`` is why this row changed: its timeout detail
+# reads "JAX GPU preflight timed out after ...", which the "timeout" rule
+# below answered with "crop the target to the domain you want to bind" --
+# advice that is wrong twice over on af2 and colabfold, which carry
+# ``requires_pdb=False`` and take no structure to crop.
+#
+# Deliberately still off this row: ``preflight:rf3``
+# (tools/proteina/run_pipeline.py:4045) is ours -- an operator kill-switch,
+# PROTEINA_RF3=off -- but ``_GENERIC_FIX`` ("try again with the same
+# settings") would be false for it, because a resubmit cannot succeed
+# while the switch is off. It keeps the "generic" cause until it gets
+# advice of its own.
 _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
     ("our_side", re.compile(
         r"^parser[: ]|"
-        r"\binternal[: ]unhandled_exception\b|"
-        r"\binput:(download|url|smoke_fixture)\b|\bpreflight[: ](env|weights|tmp|torch|cuda|"
-        r"binary|transformers|payload|config|upload_urls_endpoint)\b|"
+        r"\binternal:unhandled_exception\b|"
+        r"\binput:(download|url|smoke_fixture)\b|\bpreflight:(env|weights|tmp|torch|cuda|"
+        r"binary|transformers|payload|config|upload_urls_endpoint|jax-gpu|module)\b|"
         r"\bmodal-submit\b|\bstorage\b|failed to get upload urls|"
         r"upload failed for|failed to download input|download failed",
         re.I),
@@ -1086,13 +1111,47 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
 
 
 def _error_text(job) -> str:  # noqa: ANN001
+    """Flatten a stored job error into the one string ``_FAILURE_RULES`` reads.
+
+    The bucket/check pair is rejoined with a colon so that both live write
+    paths hand the table the SAME spelling. The webhook stores the raw
+    ``{bucket, check, detail}`` dict (webhooks/modal.py:154); the poll path
+    has already flattened the pair into ``detail`` and drops the ``check``
+    key entirely (gpu/modal_client.py::_stringify_error ->
+    blueprints/jobs.py:945). Before this normalisation the webhook shape
+    read "input download ..." with a space, so a rule spelling the
+    separator as a literal colon could not match it.
+
+    This function is the single point both shapes converge on, and
+    ``failure_advice`` below is its only caller, so normalising here is
+    what lets every rule in the table spell the separator ``:`` and stay
+    correct on either path -- including buckets added later, which is not
+    true of a per-bucket character class.
+    ``tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_both_shapes_agree``
+    pins that the two shapes classify identically.
+
+    A dict carrying no ``check`` keeps its bare bucket and grows no stray
+    colon. No in-repo site that builds the error dict as a literal sets a
+    ``check`` -- every one of them is ``{"bucket", "detail"}``; to
+    re-check, ``git grep -n '"bucket":'`` over blueprints/ and shared/.
+    The reuse-preflight failure in ``blueprints/tools.py`` (bucket
+    ``preflight``, detail ``reuse_err``) is one, and is a fault in the
+    user's re-used file that must NOT reach the ``our_side`` rule.
+    ``complete_job`` below hands ``mark_failed`` whatever ``error`` dict
+    its own caller passed, so a ``check`` CAN arrive by that route; that
+    is the shape this join is for.
+    """
     err = getattr(job, "error", None)
-    if isinstance(err, dict):
-        return " ".join(
-            str(err.get(k) or "")
-            for k in ("bucket", "check", "category", "detail", "message")
-        )
-    return str(err or "")
+    if not isinstance(err, dict):
+        return str(err or "")
+    pair = ":".join(
+        p for p in (str(err.get("bucket") or ""), str(err.get("check") or ""))
+        if p
+    )
+    return " ".join(
+        [pair] + [str(err.get(k) or "")
+                  for k in ("category", "detail", "message")]
+    )
 
 
 def _has_pinned_seed(job) -> bool:  # noqa: ANN001
@@ -2221,11 +2280,6 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         )
 
 
-# Mid run progress monitoring interval. Modal pipelines emit a heartbeat
-# roughly every 15 minutes; the monitor reads cumulative gpu_seconds from
-# the heartbeat payload and decides whether to issue a soft warning.
-MID_RUN_MONITOR_INTERVAL_MINUTES = 15
-
 # Ratio used by the mid run monitor. The 1.5x warning is non blocking and
 # fires once per job at or above this ratio. The cost-based mid-run kill
 # (and its former 2.0x _MID_RUN_KILL_RATIO threshold) was removed: prepaid
@@ -2265,9 +2319,10 @@ def mid_run_monitor_check(
 ) -> Optional[str]:
     """Inspect a running job's cumulative cost and warn on overrun ratios.
 
-    Called by the Modal heartbeat handler (or a scheduler) every 15
-    minutes for any still-running job that owns a wallet hold. Returns
-    one of:
+    Sole non-test caller: ``webhooks/modal.py::_run_overrun_check``,
+    driven off the inbound Modal heartbeat. There is no scheduler and no
+    fixed interval -- the cadence is whatever each tool's pipeline emits
+    heartbeats at. Returns one of:
 
     * ``None``: no action taken (ratio under the warn threshold, or
       no hold on this job, or the job is no longer running).
@@ -2281,12 +2336,15 @@ def mid_run_monitor_check(
     the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
     is retained for signature compatibility and is no longer used here.
 
-    Side effect: on every check, persists ``cumulative_gpu_seconds`` to
-    ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
-    consumed time without waiting for a terminal Modal webhook. The
-    value is a heartbeat-resolution snapshot (last value reported), so
-    a cancel between heartbeats undercharges by at most one interval.
-    The persist is CAS-guarded on status IN (pending, running) so a
+    Side effect: the ``_cas_update`` call below writes
+    ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``. Read
+    the body for the guards on that call rather than a prose
+    restatement of them here.
+    The value written is a heartbeat-resolution snapshot (last value
+    reported), so a cancel bills what the last heartbeat reported and
+    not what the job consumed after it. Heartbeat cadence is set by
+    each tool's pipeline, so the size of that gap is not bounded here.
+    The write is CAS-guarded on status IN (pending, running) so a
     terminal webhook landing between the read and the write wins; the
     heartbeat's older snapshot cannot clobber the authoritative
     settle amount.
@@ -2300,7 +2358,8 @@ def mid_run_monitor_check(
     # Persist the heartbeat-reported consumption to the row so a cancel
     # between now and the next check can bill against actual GPU spent.
     # Best-effort: a flaky update here does not gate the rest of the
-    # monitor logic (warning + kill still fire from the heartbeat value).
+    # monitor logic: the 1.5x warning below still fires from the
+    # passed-in value. There is no kill step to gate.
     if cumulative_gpu_seconds and cumulative_gpu_seconds > 0:
         try:
             # CAS-guarded: skip the persist if the row terminalised

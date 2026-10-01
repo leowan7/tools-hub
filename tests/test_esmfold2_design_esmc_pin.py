@@ -681,12 +681,14 @@ class TestTheBucketSurvivesFanout:
         The poll path (blueprints/jobs.py:945-948) stores the flattened
         ``"preflight:weights -- detail"``; the webhook
         (webhooks/modal.py:154) stores the raw ``{bucket, check,
-        detail}`` dict, which ``_error_text`` joins as "preflight
-        weights ...". Before the ``preflight[: ]`` class on the
-        ``our_side`` row, only the first matched and the second fell to
-        ``generic`` -- the right fix text with the wrong cause, telling a
-        customer nothing about whose fault a broken checkpoint on our own
-        Volume is. Found by review-claims, measured, then fixed.
+        detail}`` dict. Once, the webhook shape reached the table as
+        "preflight weights ..." with a space, so only the poll shape
+        matched and the webhook one fell to ``generic`` -- the right fix
+        text with the wrong cause, telling a customer nothing about whose
+        fault a broken checkpoint on our own Volume is. Found by
+        review-claims, measured, then fixed: first by a ``preflight[: ]``
+        class, and now by ``_error_text`` rejoining bucket and check with
+        a colon, so both shapes reach the table spelled the same.
         """
         from shared.jobs import failure_advice
 

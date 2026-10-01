@@ -227,34 +227,115 @@ def test_is_billed_failure_class_matches_refund_policy(fc, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_every_billed_class_is_producible_by_classifier():
-    """Sanity check: every billed class should be reachable via classify().
+# Error-bucket strings that non-test code in this repo actually writes onto
+# a job's ``error`` payload. This is the honest input domain for the two
+# producibility tests below: feeding the classifier
+# ``_ERROR_BUCKET_TO_FAILURE_CLASS.keys()`` makes a mapping entry its own
+# evidence, so a class wired to a bucket nothing emits still measures as
+# producible. Each entry below names its emitter; grep ``"bucket"`` outside
+# tests/ to re-derive the set.
+_BUCKETS_EMITTED_BY_PRODUCTION = (
+    # blueprints/jobs.py::job_status, fallback when a poll reports no
+    # error_bucket of its own.
+    "pipeline",
+    # blueprints/tools.py::tool_submit, blueprints/jobs.py::_spawn_refold_job,
+    # shared/compute_campaigns.py::_dispatch_chunk.
+    "modal-submit",
+    # blueprints/tools.py::tool_submit (input upload failed).
+    "storage",
+    # The docker-side preflight in tools/*/run_pipeline.py, surfaced through
+    # gpu/modal_client.py as error_bucket; also blueprints/tools.py::tool_submit
+    # on the reuse path.
+    "preflight",
+    # shared/jobs.py::mark_cancelled.
+    "cancelled",
+)
 
-    If a class lives in _BILLED_FAILURE_CLASSES but the classifier
-    never emits it, the row will never settle through that path --
-    a sign the class is dead code.
-    """
+# Billed classes with no live emitter, each exempted here for a cited reason.
+# An entry means "this class can still arrive on a row read from the DB, so
+# it keeps its settle policy, but no code path writes it any more."
+#
+#   safety_kill -- the 2.0x cost-based mid-run kill that emitted bucket
+#     ``overrun_safety_kill`` was removed in 3818b4a4 (PR #62). It is NOT dead
+#     data: supabase/migrations/0029_tool_jobs_failure_class.sql backfilled
+#     failure_class='safety_kill' onto the rows that already carried that
+#     bucket, and the 0029 CHECK constraint still admits the value, so
+#     Postgres can serve this string to Python today. (A QA brief also
+#     reports a safety_kill run -- "$3.63 absorbed", job 763247f5, grep it
+#     in docs/qa/RUNTIME-CEILING-2026-09-30.md -- but that file's own
+#     preamble says its figures are the brief's and cannot be re-derived
+#     in-repo, and docs/BINDCRAFT2-SCOPE-2026-09-30.md groups the same
+#     $3.63 under "refunded or absorbed customer price", so do not read it
+#     as money billed to a customer. The exemption rests on the backfill
+#     and the constraint, not on that row.) Dropping it from
+#     _BILLED_FAILURE_CLASSES would send those stored rows down the "Unknown
+#     failure_class" arm of _settle_wallet_hold_for_completed_job, which is a
+#     money-routing change, so the class stays billed and is exempted here.
+_BILLED_CLASSES_WITHOUT_LIVE_EMITTER = frozenset({"safety_kill"})
+
+
+def _producible_classes(extra_buckets: tuple[str, ...] = ()) -> set[str]:
+    """Every failure_class reachable from a bucket production writes."""
     producible = set()
+    buckets = [None, *_BUCKETS_EMITTED_BY_PRODUCTION, *extra_buckets]
     for status in ("succeeded", "cancelled", "timeout", "failed"):
         for result in (None, {"candidates": []}, {"candidates": [1]}):
-            for bucket in [None] + list(_ERROR_BUCKET_TO_FAILURE_CLASS.keys()):
-                err = {"bucket": bucket} if bucket else None
-                v = classify_terminal_state(status=status, error=err, result=result)
+            for bucket in buckets:
+                err = {"bucket": bucket} if bucket is not None else None
+                v = classify_terminal_state(
+                    status=status, error=err, result=result,
+                )
                 if v is not None:
                     producible.add(v)
-    missing = _BILLED_FAILURE_CLASSES - producible
-    assert not missing, f"billed classes never emitted: {missing}"
+    return producible
+
+
+def test_every_billed_class_is_producible_by_classifier():
+    """Every billed class must be reachable from a bucket production EMITS.
+
+    If a class lives in _BILLED_FAILURE_CLASSES but no live code path can
+    produce it, the row will never settle through that path -- a sign the
+    class is dead code. The input domain is deliberately
+    ``_BUCKETS_EMITTED_BY_PRODUCTION`` and not the mapping's own key set:
+    with the key set, adding ``{"never_written": "some_billed_class"}`` to
+    _ERROR_BUCKET_TO_FAILURE_CLASS is sufficient to make that class look
+    producible, which is the exact drift this test is named for.
+
+    Classes that legitimately survive without an emitter (stored rows from a
+    removed feature) are exempted by name in
+    _BILLED_CLASSES_WITHOUT_LIVE_EMITTER with their reason.
+    """
+    producible = _producible_classes()
+    missing = (
+        _BILLED_FAILURE_CLASSES
+        - producible
+        - _BILLED_CLASSES_WITHOUT_LIVE_EMITTER
+    )
+    assert not missing, f"billed classes no live code path emits: {missing}"
+
+
+def test_billed_emitter_exemptions_have_not_gone_stale():
+    """An exempted class that regains an emitter must lose its exemption.
+
+    Keeps _BILLED_CLASSES_WITHOUT_LIVE_EMITTER from silently excusing a
+    class that is live again -- e.g. if a cost-based mid-run kill is ever
+    re-added, ``safety_kill`` becomes producible and must be removed from
+    the exemption set so the test above starts guarding it for real.
+    """
+    revived = _producible_classes() & _BILLED_CLASSES_WITHOUT_LIVE_EMITTER
+    assert not revived, (
+        f"these classes have a live emitter again: {revived}; drop them "
+        f"from _BILLED_CLASSES_WITHOUT_LIVE_EMITTER"
+    )
 
 
 def test_every_refunded_class_is_producible_by_classifier():
-    """Same sanity check for the refunded set."""
-    producible = set()
-    for status in ("succeeded", "cancelled", "timeout", "failed"):
-        for result in (None, {"candidates": []}, {"candidates": [1]}):
-            for bucket in [None] + list(_ERROR_BUCKET_TO_FAILURE_CLASS.keys()) + ["mystery", ""]:
-                err = {"bucket": bucket} if bucket is not None else None
-                v = classify_terminal_state(status=status, error=err, result=result)
-                if v is not None:
-                    producible.add(v)
+    """Same check for the refunded set, over the same honest input domain.
+
+    ``"mystery"`` stands in for any bucket outside the mapping table -- real
+    examples today are proteina's ``internal`` / ``delivery`` / ``validate``
+    -- which must classify as ``unclassified`` and refund.
+    """
+    producible = _producible_classes(extra_buckets=("mystery", ""))
     missing = _REFUNDED_FAILURE_CLASSES - producible
     assert not missing, f"refunded classes never emitted: {missing}"
