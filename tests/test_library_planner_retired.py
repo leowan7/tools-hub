@@ -104,6 +104,62 @@ def test_post_redirect_is_followed_as_a_get(client):
     assert resp.request.method == "GET"
 
 
+@pytest.mark.parametrize(
+    "method, path, data",
+    [
+        ("GET", "/library-planner", None),
+        ("POST", "/library-planner/plan", dict(VALID_PLAN)),
+    ],
+)
+def test_query_string_is_carried_across(client, method, path, data):
+    """Parameters survive the redirect, so an inbound click is attributable.
+
+    A bare redirect would strip them and land every arrival on /tools as
+    direct traffic. Two consequences, one of which needs no other
+    repository: tools_comparison reads ``asked``, ``have`` and ``shape`` off
+    request.args, so a parameterised catalog link through this path would be
+    truncated on arrival. The other is attribution for the marketing site's
+    inbound links, which are reported to be UTM-decorated at render; that
+    report is not reproducible from this repo, and the parameters below
+    stand in for it rather than asserting it. Same behaviour as
+    blueprints/tools.py::proteinmpnn_slug_redirect, which carries the query
+    string for the same reason.
+    """
+    resp = client.open(
+        f"{path}?utm_source=blog&utm_campaign=library-planner&asked=binder",
+        method=method,
+        data=data,
+    )
+
+    assert resp.status_code == 301
+    assert resp.headers["Location"].endswith(
+        "/tools?utm_source=blog&utm_campaign=library-planner&asked=binder"
+    ), (
+        f"{method} {path} redirected to {resp.headers['Location']!r}: the "
+        "query string was dropped, so an inbound click arrives as direct "
+        "traffic and a parameterised catalog link is truncated"
+    )
+
+
+def test_malformed_query_string_still_redirects(client):
+    """A non-UTF-8 byte must not turn the redirect into a 500.
+
+    WSGI hands QUERY_STRING over as a latin-1 str, so a raw 0xFF byte in the
+    request line reaches the redirect undecoded. Strict decoding would raise
+    UnicodeDecodeError inside the view; errors="replace" in
+    blueprints/tools.py::_retired_planner_redirect is what keeps this a 301.
+    Copied from tests/test_tool_slug_redirects.py, which pins the same
+    property on the sibling redirect.
+    """
+    resp = client.get(
+        "/library-planner",
+        environ_overrides={"QUERY_STRING": "utm_source=" + chr(0xFF)},
+    )
+
+    assert resp.status_code == 301
+    assert resp.headers["Location"].startswith("/tools?utm_source=")
+
+
 def test_the_planner_is_no_longer_offered_anywhere_reachable(client):
     """No reachable page links or names the retired tool.
 

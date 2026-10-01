@@ -268,10 +268,41 @@ def developability_score():
 # library_planner branch from templates/job_detail.html.
 # ------------------------------------------------------------------
 
+def _retired_planner_redirect():
+    """301 to /tools, carrying the query string across.
+
+    The query string is carried for the same reason as in
+    proteinmpnn_slug_redirect below, and this is its copy. Two reasons
+    here. The inbound "try the tool" links are reported to be UTM-decorated
+    at render by the marketing site's callout component, which would make a
+    bare redirect land every one of them on /tools as direct traffic and
+    hide the arrivals this redirect exists to serve; that report is the
+    website lead's measurement of their main on 2026-09-30 and is NOT
+    reproducible from here (the local checkout of that repo predates it and
+    contains no UTM helper at all), so treat it as unverified rather than as
+    something this comment establishes. The second reason needs no other
+    repository: tools_comparison in this file reads asked, have and shape
+    off request.args itself, so a parameterised link would be truncated on
+    arrival whatever the marketing site does.
+
+    QUERY_STRING arrives as raw bytes and decoding it strictly raises
+    UnicodeDecodeError on a malformed one, which would 500 instead of
+    redirecting, so substitute U+FFFD. Both halves are pinned by
+    test_query_string_is_carried_across and
+    test_malformed_query_string_still_redirects in
+    tests/test_library_planner_retired.py.
+    """
+    target = url_for("tools.tools_comparison")
+    qs = request.query_string.decode("utf-8", errors="replace")
+    if qs:
+        target = f"{target}?{qs}"
+    return redirect(target, code=301)
+
+
 @tools_bp.route("/library-planner", methods=["GET"])
 def library_planner():
     """Permanently redirect the retired Library Planner form to /tools."""
-    return redirect(url_for("tools.tools_comparison"), code=301)
+    return _retired_planner_redirect()
 
 @tools_bp.route("/library-planner/plan", methods=["POST"])
 def library_planner_plan():
@@ -282,7 +313,7 @@ def library_planner_plan():
     (shared/idempotency.py::idempotent); a redirect costs neither, and
     keeping it would have let a half-configured ledger 503 a 301.
     """
-    return redirect(url_for("tools.tools_comparison"), code=301)
+    return _retired_planner_redirect()
 
 
 # ------------------------------------------------------------------
