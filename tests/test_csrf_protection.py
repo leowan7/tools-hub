@@ -144,6 +144,120 @@ def test_preflight_is_exempt(app):
     assert resp.status_code != 403
 
 
+@pytest.mark.parametrize(
+    "label, session_token, sent_token",
+    [
+        # The planner was anonymous-open, so a reader following a cached copy
+        # of the form has no session token at all.
+        ("anonymous, no token either side", None, None),
+        # A returning reader has a session token, but the one baked into their
+        # cached copy of the form belongs to an older session.
+        ("session rotated since the form was cached", "fresh", "stale"),
+    ],
+)
+def test_retired_library_planner_post_is_exempt(app, label, session_token, sent_token):
+    """The retired planner's POST is a bare 301 and must not 403.
+
+    Its form DOES carry ``csrf_input()``
+    (templates/library_planner_form.html), but the form is no longer served --
+    the GET half 301s as well (blueprints/tools.py::library_planner) -- so no
+    caller can obtain a token matching the current session. Both replay cases
+    below are refused without the exemption in
+    app.py::_csrf_request_is_exempt, which
+    test_a_non_exempt_post_403s_under_the_same_conditions pins as the control.
+    The rest of the retirement lives in tests/test_library_planner_retired.py.
+    """
+    client = app.test_client()
+    if session_token is not None:
+        with client.session_transaction() as sess:
+            sess["_csrf_token"] = session_token
+    data = {"scaffold": "VHH"}
+    if sent_token is not None:
+        data["_csrf"] = sent_token
+    resp = client.post("/library-planner/plan", data=data)
+    assert resp.status_code == 301, f"{label} was answered {resp.status_code}"
+    assert resp.headers["Location"].endswith("/tools")
+
+
+@pytest.mark.parametrize(
+    "session_token, sent_token",
+    [(None, None), ("fresh", "stale")],
+)
+def test_a_non_exempt_post_403s_under_the_same_conditions(
+    app, session_token, sent_token
+):
+    """Control for the exemption above: the same two replay shapes are 403ed.
+
+    Without this, the 301s above could be passing because the guard never
+    fires at all rather than because the path is exempt.
+    """
+    client = app.test_client()
+    if session_token is not None:
+        with client.session_transaction() as sess:
+            sess["_csrf_token"] = session_token
+    data = {"source_job_id": "x"}
+    if sent_token is not None:
+        data["_csrf"] = sent_token
+    assert client.post("/lab-projects/submit", data=data).status_code == 403
+
+
+def test_the_path_alone_does_not_exempt_a_real_handler(app):
+    """Re-point the path at a real handler: the exemption must NOT follow it.
+
+    This is the test that makes the fail-closed claim in
+    app.py::_csrf_request_is_exempt enforced rather than merely intended.
+    review-claims found the gap by reverting the arm to ``path ==
+    "/library-planner/plan"`` and observing that every test in this file and
+    in tests/test_library_planner_retired.py still passed -- the old,
+    path-keyed arm was indistinguishable from the endpoint-keyed one, so a
+    revert to it would have gone unnoticed.
+
+    Here the rule for that path is re-pointed at a handler that writes, which
+    is what a future un-retirement looks like. Keyed on the endpoint, the
+    exemption stops applying and the tokenless POST is refused. Keyed on the
+    path it would still apply, the guard would wave the request through, and
+    the handler below would run -- which is the assertion that fails.
+    """
+    rule = next(r for r in app.url_map.iter_rules() if r.rule == "/library-planner/plan")
+    reached = []
+
+    def _a_real_handler():  # pragma: no cover - CSRF must block it
+        reached.append(True)
+        return "wrote something", 200
+
+    rule.endpoint = "tools.library_planner_plan_v2"
+    app.view_functions["tools.library_planner_plan_v2"] = _a_real_handler
+    # werkzeug indexes rules by endpoint for url_for and consults that index
+    # while matching, so re-pointing the rule alone raises KeyError. Flask
+    # exposes no public way to re-point or remove a rule, hence the private
+    # dict; the alternative is a second create_app() variant in the app
+    # factory purely for this test.
+    app.url_map._rules_by_endpoint.setdefault(rule.endpoint, []).append(rule)
+
+    resp = app.test_client().post("/library-planner/plan", data={"scaffold": "VHH"})
+    assert resp.status_code == 403, (
+        "a real handler on the retired path was CSRF-exempt: the exemption in "
+        "app.py::_csrf_request_is_exempt is keying on the path, not the endpoint"
+    )
+    assert not reached, "the handler ran despite the CSRF guard"
+
+
+def test_one_rule_serves_the_path_and_it_is_the_exempted_endpoint(app):
+    """The exempted endpoint owns that path alone, and is still the redirect.
+
+    Named for what it asserts and nothing more: exactly one rule serves
+    /library-planner/plan, and its endpoint is the one app.py exempts. It was
+    called test_the_exemption_is_keyed_on_the_endpoint, which overclaimed --
+    it passes with the arm keyed on either the path or the endpoint. The
+    keying itself is pinned by
+    test_the_path_alone_does_not_exempt_a_real_handler above. A real handler
+    smuggled in under the same endpoint name would instead be caught by the
+    301 assertion in test_retired_library_planner_post_is_exempt.
+    """
+    rules = [r for r in app.url_map.iter_rules() if r.rule == "/library-planner/plan"]
+    assert [r.endpoint for r in rules] == ["tools.library_planner_plan"]
+
+
 # ---------------------------------------------------------------------------
 # Unmatched routes 404 (not 403) — the guard defers to Flask routing
 # ---------------------------------------------------------------------------

@@ -160,6 +160,18 @@ def _charges(bucket: str, key: str) -> int:
     return entry[1] if entry else 0
 
 
+def _session_charges(user_id: str) -> int:
+    """Hits in the per-session analyze bucket for a SIGNED-IN caller.
+
+    Signed-in keys are namespaced (``scout/ratelimit.py::_USER_KEY_PREFIX``) so
+    they cannot collide with an anonymous id or the cookie-less bucket.
+    """
+    entry = ratelimit._WINDOWS.get(
+        ("scout_analyze:session", ratelimit._USER_KEY_PREFIX + user_id)
+    )
+    return entry[1] if entry else 0
+
+
 def _ip_charges(ip: str = "127.0.0.1") -> int:
     return _charges(IP_BUCKET, ip)
 
@@ -1451,17 +1463,61 @@ class TestTwoTiers:
         frame = json.loads(body.split("data: ", 1)[1])
         assert frame["reason"] == ratelimit.REASON_SESSION_LIMITED, frame
 
-    def test_signed_in_callers_meet_neither_tier(
+    def test_signed_in_callers_meet_THE_SESSION_TIER_ONLY(
         self, client, stub_pipeline, reap_jobs
     ):
+        """Changed on 2026-09-30, deliberately, and this test is the record.
+
+        It used to assert ``_ip_charges() == 0`` and an empty credit ledger for
+        a signed-in caller, because ``anon_rate_limit`` returned early on
+        ``session["user_email"]``. That exemption was the free-tier inversion:
+        the only thing metering a signed-in user was ``scout.quota``'s 3-runs-
+        per-30-days cap, which never applied to an anonymous visitor at all, so
+        signing up was a downgrade. The cap is gone, and a signed-in caller is
+        now charged the per-SESSION tier, keyed on their account.
+
+        Not the per-IP tier, which stays anonymous-only: it is one budget
+        shared by an entire address, so charging identified users against it
+        would let an anonymous stranger behind an institution's NAT lock out a
+        signed-in colleague. Both halves are asserted here, because "is
+        metered" and "is metered by the right tier" fail independently.
+        """
         job_id = client.get("/scout/example").get_json()["job_id"]
         with client.session_transaction() as sess:
             sess["user_email"] = "someone@example.com"
             sess["user_id"] = "u-paid"
         for _ in range(scout_routes.ANON_ANALYZE_LIMIT + 4):
             _analyze(client, job_id)
-        assert _ip_charges() == 0
-        assert not ratelimit._FOLLOWUP
+        assert _session_charges("u-paid") > 0, "a signed-in caller is not metered"
+        assert _ip_charges() == 0, (
+            "a signed-in caller charged the shared per-IP bucket; a stranger "
+            "on the same NAT can now lock them out"
+        )
+
+    def test_a_signed_in_caller_still_pays_one_charge_per_analysis(
+        self, client, stub_pipeline, reap_jobs
+    ):
+        """The pairing credit has to work for them too, not just anonymously.
+
+        Removing the exemption routes signed-in callers through the whole
+        decorator for the first time, including the ``_FOLLOWUP`` branch. If the
+        credit did not apply to them, every signed-in analysis would cost 2 and
+        the session allowance would bite at half the number it advertises.
+
+        Measured on the per-SESSION bucket, which is the one that meters them:
+        the per-IP exemption skips only that tier's ``hit`` and deliberately
+        does NOT return early from the decorator, because the ``PAIR_OPENS``
+        grant sits below it.
+        """
+        job_id = client.get("/scout/example").get_json()["job_id"]
+        with client.session_transaction() as sess:
+            sess["user_email"] = "someone@example.com"
+            sess["user_id"] = "u-paid"
+        before = _session_charges("u-paid")
+        _one_analysis(client, job_id)
+        assert _session_charges("u-paid") == before + 1, (
+            "one signed-in analysis must cost one charge, not two"
+        )
 
 
 # ---------------------------------------------------------------------------

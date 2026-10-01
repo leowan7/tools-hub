@@ -147,7 +147,7 @@ Also in space: Chai Discovery, 310.ai, Profluent, BioLM, Ginkgo Model API, NVIDI
 | [`epitope-scout/`](../../epitope-scout/) | Live on Railway at scout.ranomics.com, CPU, free | 🟢 in production | **v1 subscription tool** |
 | [`tools-hub/`](../) | Flask + Supabase on Railway, shared auth with Scout | 🟢 hub live, tools live | **v1 hub shell** |
 | [`tools-hub/tools/developability/`](../tools/developability/) Developability Scout | CPU scoring engine + web form | 🟢 live at `/developability` | **v1 free CPU tool** |
-| [`tools-hub/tools/library_planner/`](../tools/library_planner/) Library Planner | CPU scoring engine + web form | 🟢 live at `/library-planner` | **v1 free CPU tool** |
+| [`tools-hub/tools/library_planner/`](../tools/library_planner/) Library Planner | CPU scoring engine + web form | ⚪ retired 2026-09-30, route 301s to `/tools`; package left on disk (deploy-trigger path) | **was v1 free CPU tool** |
 | Protein-design pipelines repo **Composite-pipeline Modal apps** | 5 Modal apps deployed, shared `base_image.py`, smoke/mini_pilot tier contract | See next rows per tool | **v1+v2 paid GPU tools** |
 | ↳ BindCraft (`bindcraft_app.py`) | A100-80GB; full `pilot_preset()`, 4h timeout | 🟢 **GREEN** — validated end-to-end, no blockers | **Wave 2** |
 | ↳ RFdiffusion (`rfdiffusion_app.py`) | A100-40GB; smoke + mini_pilot presets | 🟡 **YELLOW** — smoke passes; mini_pilot blocked by JAX XLA JIT cold-start. Commits `064266f` + `97ec005` may have resolved it — re-validate. See `blocker-rfdiffusion.md` in the protein-design pipelines repo. | Wave 2 smoke-tier; Wave 3 full |
@@ -221,7 +221,7 @@ Actual timeouts from Kendrew's pipeline code (unchanged):
 
 | SKU | Price | What you get | Target customer |
 |---|---|---|---|
-| **Free Scout** | $0 | Epitope Scout unlimited + view sample reports + Developability + Library Planner | Lead capture, feasibility check |
+| **Free Scout** | $0 | Epitope Scout unlimited + view sample reports + Developability | Lead capture, feasibility check |
 | **Target Workspace** | $499 / target, 30 days | All design tools on one target, **$100 Modal compute cap** (≈500–2,000 designs), 7-day money-back on first purchase | Academic, seed biotech, modern campaigns |
 | **Target Workspace XL** | $2,499 / target, 30 days | Same + **$500 Modal compute cap** (≈2,500–10,000+ designs), priority GPU queue, 30-min onboarding call | Industrial sweep, pharma exploration |
 

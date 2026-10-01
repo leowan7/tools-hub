@@ -111,6 +111,31 @@ const out = {};
       out[String(reason) + suffix] = ctaOf(els['error-message']);
     });
 });
+// --- a signed-in viewer is never offered sign-in ---------------------------
+// SCOUT_SIGNED_IN is declared by the template ABOVE the extracted block (it
+// carries the one Jinja read), so inside this harness it is simply absent and
+// every case above exercised the anonymous page. Set it here and the same
+// reasons must all stop offering the link: the offer is a dead end for a
+// caller who is already signed in, whether the reason is one they can reach
+// (the per-session window, which signing in does not raise) or one they
+// cannot reach at all.
+['rate_limited', 'session_rate_limited', 'no_session', 'busy', 'at_capacity']
+  .forEach(function (reason) {
+    setCookies(true);
+    globalThis.SCOUT_SIGNED_IN = true;
+    els = resetDom();
+    showError('refused', reason);
+    out[String(reason) + '_signed_in'] = ctaOf(els['error-message']);
+  });
+globalThis.SCOUT_SIGNED_IN = false;
+// ...and with the flag explicitly false the funnel is back, so the guard above
+// is proven to be the flag and not an accident of the reason list.
+setCookies(true);
+els = resetDom();
+showError('refused', 'rate_limited');
+out.rate_limited_signed_out = ctaOf(els['error-message']);
+delete globalThis.SCOUT_SIGNED_IN;
+
 // A browser with no navigator at all must not throw and must not lose the CTA.
 removeNavigator();
 els = resetDom();
