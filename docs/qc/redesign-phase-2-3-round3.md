@@ -365,6 +365,26 @@ both the form default and the field minimum:
 - `<input type="number" name="num_samples" min="1" max="100" value="1">`, PILOT `num_samples: "1"`
 - boltzgen `<input type="number" name="budget" value="4" min="1" max="50">`, PILOT `budget: "4"`
 
+> **[Superseded in two places -- note added 2026-10-01 on branch
+> `fix/esmfold2-esmc-revision-pin`. Nothing above has been edited.]** The
+> price table is untouched and still holds: `esmfold2-design` does scale
+> linearly with `n_seeds`, and that is what this section set out to
+> verify. Two statements around it no longer describe anything live,
+> because `esmfold2-design` withdrew its `PILOT` dict
+> (`tools/esmfold2_design/meta.py`, `PILOT: dict | None = None`, reason in
+> the comment above it) after the configuration that card loaded failed
+> three times in prod on 2026-09-30, the third with the seed varied.
+> First, "their pilots sit at the floor" is now true of `iggm` only --
+> this tool has no pilot to sit anywhere. Second, the `n_seeds` bullet
+> below asserts `PILOT n_seeds: "1"`, and there is no `PILOT` to read it
+> from; the `<input ... value="1">` half of that same bullet is still
+> accurate, since the form default did not change. The heading says
+> VERIFIED and it still is, for the claim it names. Do not re-derive the
+> set of tools that have a pilot card from here:
+> `tests/test_pilot_recipes.py::TestPilotPrefillActuallyLands::test_a_stale_pilot_link_still_serves_a_tool_without_one`
+> enumerates it from the registry at run time, which is the only copy
+> that cannot go stale.
+
 I did not stop at the estimator, because a flat *estimate* is not a flat *bill* —
 the wallet settles on actual Modal cost. I read the source.
 `tools/boltzgen/__init__.py::build_payload` hard-codes `"num_designs": 200` in

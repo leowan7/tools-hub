@@ -9,7 +9,8 @@ this function via ``modal.Function.from_name("ranomics-esmfold2-design-prod",
 "run_tool")`` and calls ``.spawn(payload)``. The function body writes the
 payload to env vars and runs ``run_pipeline.py`` as a subprocess, which
 invokes the gradient-descent loop from the upstream
-``binder_design.py`` (vendored into /opt/ by the Dockerfile). The
+``binder_design.py`` (vendored into /opt/ by the ``.run_commands()``
+layer below -- this app has no Dockerfile, as the PIN block says). The
 wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
@@ -1000,7 +1001,33 @@ def _aggregate(
         "provider_job_id": umbrella_provider_id,
     }
     if designs_completed == 0:
-        smoke_result["error"] = "All seeds returned zero designs"
+        # Forward a child's own error rather than replacing it. The bare
+        # string used to be unconditional, and it threw away the only part
+        # of the failure that routes copy: a child that refuses in preflight
+        # returns ``{"bucket": ..., "check": ..., "detail": ...}``, which
+        # gpu/modal_client.py::_stringify_error flattens to
+        # ``"preflight:weights - ..."`` and shared/jobs.py's first
+        # _FAILURE_RULES row then matches as ``our_side``. Overwritten, it
+        # matched NO rule, so a multi-seed run that refused for free told the
+        # customer "The run stopped for a reason we could not identify. Try
+        # again with the same settings." and classify_terminal_state wrote
+        # ``unclassified`` instead of ``preflight_miss``.
+        #
+        # Dicts first, then strings: a bucketed error is strictly more
+        # useful than a bare one, and children need not agree. The generic
+        # string survives as the fallback for the case it was written for --
+        # every child ran and simply produced nothing.
+        child_errors = [
+            err
+            for _seed, child_ret in successes
+            if (err := ((child_ret or {}).get("smoke_result") or {}).get("error"))
+        ]
+        bucketed = [e for e in child_errors if isinstance(e, dict)]
+        smoke_result["error"] = (
+            bucketed[0]
+            if bucketed
+            else (child_errors[0] if child_errors else "All seeds returned zero designs")
+        )
 
     out = {
         "exit_code": 0 if designs_completed > 0 else 1,

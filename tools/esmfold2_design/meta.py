@@ -222,52 +222,52 @@ about: dict = {
 
 
 # ---------------------------------------------------------------------------
-# PILOT — the guided starter recipe rendered by
-# templates/components/pilot_card.html.
+# PILOT — WITHDRAWN 2026-09-30. ``None`` renders no card at all
+# (templates/components/pilot_card.html wraps the whole macro body in
+# ``{% if pilot %}``). ``None`` is already a shipped state -- af2,
+# colabfold, esmfold and opendde all declare it -- so no template or
+# test path is new here.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# The card's "Load these settings →" button loaded preset=minibinder /
+# n_seeds=1, which IS this form's default configuration. That
+# configuration failed three times in prod on 2026-09-30 (job ids
+# a327d5fe, 236797f2, f2e296c7) and each failure burned 32-37 H100
+# seconds against an estimate of about $9.87 (shared/wallet_estimates.py
+# ::estimated_cost_for_tool(None, "esmfold2-design", {"preset":
+# "minibinder"}) returns Decimal("9.8614") on this tree; prod carries
+# historical p90 data this checkout does not, so treat it as the order of
+# magnitude, not the invoice). Reported by Leo from the prod job
+# records, which this checkout cannot see: all three ran
+# preset=minibinder and all three were refunded in full, and the
+# third was his own submission on the form's defaults with only the
+# starting seed changed -- the first thing
+# shared/jobs.py::_NUMERICAL_FIX_SEEDED tells the user to try. It
+# failed the same way. So that advice was wrong for
+# this cause, not merely unhelpful:
+# tests/test_esmfold2_design_esmc_pin.py::TestTheBucketSurvivesFanout
+# asserts the fix text no longer mentions the seed. Pointing a
+# first-time visitor at this configuration is what the dict was for,
+# so it comes out until a run of those settings is demonstrated to
+# succeed.
 #
-# ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
-# form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
-# actually honours through pre_value()/pre_checked(); a key no field
-# reads is a pre-fill that silently does nothing.
+# The cause is fixed in tools/esmfold2_design/run_pipeline.py
+# (``_ESMC_REVISION``), but that fix is not the same thing as a passing
+# run: no GPU run of these settings has been made since. Restore this
+# dict from git history when one has.
+#
+# When restoring: NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
+# Both are derived at render time (blueprints/tools.py::_pilot_context)
+# from shared.wallet_estimates.estimated_cost_for_tool over ``params``
+# and from the preset runtime map above. A hand-written second rate card
+# drifts off the real one within a month. ``params`` keys are FORM FIELD
+# NAMES — the same dict pre-fills the form via ?pilot=1 and feeds the
+# estimator, and the form posts those same names to
+# /api/wallet/estimate, so the card's price and the form's live price
+# cannot disagree. Only include keys the form actually honours through
+# pre_value()/pre_checked(); a key no field reads is a pre-fill that
+# silently does nothing.
 # ---------------------------------------------------------------------------
-PILOT: dict | None = {
-    "label": "A guided first run",
-    "goal": (
-        "See what a single gradient-design run produces before "
-        "committing to a parallel sweep. One seed is already the "
-        "smallest run this tool offers, so these are the form&rsquo;s "
-        "own defaults &mdash; a guided first run at the tool&rsquo;s "
-        "normal cost, not a cheaper trial."
-    ),
-    "you_need": (
-        "A target sequence &mdash; one of the bundled presets, or a "
-        "single chain of 30 to 800 residues pasted in. No structure "
-        "file required."
-    ),
-    # Identical to the form's defaults, and measured to be unavoidable.
-    # Cost scales on n_seeds (one H100 container per seed) and n_seeds=1
-    # is both the form default and the field minimum, so $9.87 is the
-    # floor. batch_size does not move the price at all — 1, 2 and 3 all
-    # cost $9.87 — so dropping it would return fewer designs for the
-    # same money. Nothing on this form buys a cheaper first run.
-    "params": {
-        "preset": "minibinder",
-        "n_seeds": "1",
-    },
-    "next_step": (
-        "Raise the seed count. Every seed gets its own GPU, so a sweep "
-        "finishes in about the same wall-clock time as one seed and "
-        "costs proportionally more."
-    ),
-}
+PILOT: dict | None = None
 
 
 # ---------------------------------------------------------------------------

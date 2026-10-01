@@ -539,6 +539,25 @@ button carries (not a URL I built):
 
 Ten of ten agree.
 
+> **[Superseded for one row -- note added 2026-10-01 on branch
+> `fix/esmfold2-esmc-revision-pin`. The table above is the snapshot as
+> written; no row has been edited.]** The `esmfold2-design` row describes
+> a card that no longer exists, so its href serves the bare form and the
+> two prices it reconciles are no longer displayed anywhere to disagree.
+> The tool withdrew its `PILOT` dict (`tools/esmfold2_design/meta.py`,
+> `PILOT: dict | None = None`, reason in the comment above it) after the
+> configuration that card loaded failed three times in prod on
+> 2026-09-30, the third with the seed varied. "Ten of ten agree" was
+> measured and correct for the cards that existed when it was written,
+> and the method it used -- re-deriving each price from the href the
+> card's own button carries, rather than from a URL the reviewer built --
+> is the part worth keeping. What it cannot be read as is a current
+> count. Do not re-derive the set of tools that have a pilot card from
+> here:
+> `tests/test_pilot_recipes.py::TestPilotPrefillActuallyLands::test_a_stale_pilot_link_still_serves_a_tool_without_one`
+> enumerates it from the registry at run time, which is the only copy
+> that cannot go stale.
+
 ## 9. The two deliberately-unfixed items — confirmed pre-existing, agree with the call
 
 **boltzgen runtime.** Confirmed on trunk (`git show 66388af:tools/boltzgen/meta.py`)

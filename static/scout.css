@@ -1215,13 +1215,19 @@
 }
 
 /* --------------------------------------------------------------------------
-   Quota pill
-   Moved verbatim from the inline <style> in scout/index.html, whose comment
-   said it was inlined only because style.css was outside that stream's
-   allowlist. Values unchanged — this is a relocation, not a restyle.
+   Notice pill
+   Was ".scout-quota-pill", which styled a run-counter pill as well as the
+   anonymous notice; the counter went with the free-tier run cap on 2026-09-30
+   and the notice is the only remaining user. Renamed rather than kept under
+   the old name so no rule or markup anyone could reinstate is left behind: a
+   grep for "quota" across this file and templates/scout/ turns up only this
+   note and the deletion record in the template. It still hits plenty of
+   Python - scout/quota.py is the surviving ledger writer - so that is a claim
+   about styles and markup, not about the repo.
+   Values unchanged from the inline <style> this was moved out of.
    -------------------------------------------------------------------------- */
 
-.scout-quota-pill {
+.scout-notice-pill {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1233,9 +1239,4 @@
   background: rgba(120, 130, 160, 0.06);
   font-size: 0.85rem;
   color: inherit;
-}
-
-.scout-quota-pill--warn {
-  border-color: rgba(204, 130, 40, 0.45);
-  background: rgba(204, 130, 40, 0.08);
 }

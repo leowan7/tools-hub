@@ -135,7 +135,7 @@ workers = max(1, _int_env("WEB_CONCURRENCY", 2))
 #                    CPU-bound, each holds a thread for the whole SSE stream)
 #               + 2 queued waiters           (ANON_MAX_QUEUED_RUNS — parked on
 #                    a condition variable, consuming no CPU)
-#               + 4 for everything else      (page loads, /scout/quota,
+#               + 4 for everything else      (page loads, /scout/example,
 #                    downloads, /healthz, and signed-in routes, which can
 #                    block up to 30 s on Supabase — which is why this is 4
 #                    and not 1)

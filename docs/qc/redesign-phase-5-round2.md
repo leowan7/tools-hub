@@ -318,6 +318,23 @@ Loaded all four pages anonymously and read the rendered text, not the diff.
 | README "`/scout/`, `/developability`, and `/help` all render for anonymous visitors" | TRUE | all three measured at 200 |
 | README "only submitting a job (and anything under `/jobs` or `/account`) redirects to `/login`" | TRUE | `/account/wallet/topup` returns 302 to `/login?next=...` |
 
+> **[Superseded in one row -- note added 2026-10-01 on branch
+> `fix/esmfold2-esmc-revision-pin`. The table above is the snapshot as
+> written; no row has been edited.]** The "A few tools have no pilot card"
+> row no longer describes a live sentence, and its evidence cell no longer
+> enumerates the live set: `esmfold2-design` withdrew its `PILOT` dict
+> (`tools/esmfold2_design/meta.py`, `PILOT: dict | None = None`, reason in
+> the comment above it): the configuration that card loaded failed three
+> times in prod on 2026-09-30, the third with the seed varied. That cause
+> is patched on the branch named above, and no run of those settings has
+> been made since. It is a different reason from the one this row
+> certifies, which is why `templates/help/getting_started.html` dropped the
+> reason clause instead of extending it -- re-verifying the sentence there
+> no longer needs this row. Do not re-derive the pilot-less set from here:
+> `tests/test_pilot_recipes.py::TestPilotPrefillActuallyLands::test_a_stale_pilot_link_still_serves_a_tool_without_one`
+> enumerates it from the registry at run time, which is the only copy that
+> cannot go stale.
+
 I found **no false claim** on the four help pages or in the README. The five
 the builder says it fixed are all fixed, and the ones it did not touch all hold.
 
