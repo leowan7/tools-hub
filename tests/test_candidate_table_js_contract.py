@@ -1174,7 +1174,7 @@ def _js_section(start: str, end: str) -> str:
 
 def test_bulk_selection_runs_under_node(tmp_path):
     """Select where compares the number as PRINTED, skips a "—" cell, and
-    every bulk action adds to the stars already there.
+    Select all and Select where add to the stars already there.
 
     Runs the shipped storage helpers and the Bulk selection section under
     node against a stub DOM, with a stub sessionStorage. The template half is

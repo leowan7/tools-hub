@@ -583,9 +583,10 @@
 
   // ─── Bulk selection ──────────────────────────────────────────────────────
   //
-  // Selecting is starring: both functions write the store the star toggle
-  // writes, so the count, the lab modal and "Starred only (CSV)" read the
-  // result. tests/test_candidate_table_js_contract.py
+  // Selecting is starring: starRows writes the store the star toggle writes
+  // (Clear writes it from initTable's click handler), so the count, the lab
+  // modal and "Starred only (CSV)" read the result.
+  // tests/test_candidate_table_js_contract.py
   // (test_bulk_selection_runs_under_node) runs both under node.
 
   // Stars every row of `table` that passes `test` (every row when `test` is
