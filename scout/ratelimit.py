@@ -1,15 +1,51 @@
-"""Two-tier fixed-window rate limiting for the anonymous Epitope Scout flow.
+"""Two-tier fixed-window rate limiting for the Epitope Scout flow.
 
 Scout's landing, intake (upload / fetch-pdb / example) and analysis routes
 are reachable without an account so a first-time visitor can decide their
 hotspot residues before signing up. That makes them the only unauthenticated
-*compute* + *upload* surface in the app, so they need their own meter:
-signed-in callers are metered by ``scout.quota`` (3 runs / 30 days on the
-free tier), anonymous callers are metered here.
+*compute* + *upload* surface in the app, so they need their own meter.
 
-Only anonymous requests are limited. A signed-in user is already capped by
-the Supabase-backed quota, and keying a shared lab's NAT address into the
-same bucket would punish paying users for their neighbours.
+THIS IS NOW THE ONLY *RATE* METER ON THE ANALYSIS ROUTES - the ones that
+spend CPU. Not the only refusal: ``anon_compute_slot`` still bounds how many
+anonymous runs may be IN FLIGHT AT ONCE on those same routes
+(scout/routes.py:1182, :1639, :1846, :2048); the exemptions paragraph below
+names it and the one other bound. Until 2026-09-30 a signed-in
+caller skipped these windows entirely and was metered instead by
+``scout.quota``'s 3-runs-per-30-days free-tier cap. That
+cap never applied to anonymous visitors - its decorator passed through when
+``session["user_email"]`` was absent - so signing up made Scout strictly
+worse, and the product's own CTA pushed people into the downgrade. The cap is
+gone (``scout.quota`` is now a ledger writer only) and a signed-in caller is
+now charged the per-session tier, keyed on their account.
+
+THE INTAKE ROUTES ARE THE EXCEPTION, and always were. ``/scout/upload``,
+``/scout/fetch-pdb`` and ``/scout/example`` pass no ``session_limit``
+(scout/routes.py:939, :998, :1091), so with the per-IP tier anonymous-only a
+signed-in caller is charged by nothing on those three. That is exactly what
+they were before 2026-09-30, when the decorator returned early for them;
+removing the run cap neither widened nor narrowed it. Recorded here so the
+paragraph above is not read as a claim about every Scout route - see
+tests/test_scout_anonymous_access.py::test_signed_in_users_are_not_ip_limited,
+whose docstring carries the same caveat.
+
+WHAT A SIGNED-IN CALLER IS AND IS NOT CHARGED. The per-session tier, yes,
+on every route that sets one, keyed SEPARATELY on their account - see
+``_session_key`` - and never pooled into the cookie-less bucket. The per-IP tier, no: that one stays anonymous-
+only, for the reasons given at the exemption itself in ``anon_rate_limit``.
+So signing in is now strictly BETTER than staying anonymous - the same
+per-account allowance, without a shared institutional ceiling on top - which
+is the invariant the 2026-09-30 change exists to establish. It is not a
+number anyone chose for the signed-in tier; it is the existing
+``session_limit`` with the shared tier lifted off.
+
+The other two signed-in exemptions are untouched, and neither is a rate
+window. ``anon_compute_slot`` (below) bounds concurrent anonymous runs on the
+four analysis routes - ONE POOL for the whole process, not a per-caller
+bound, because ``_INFLIGHT`` is a single counter tested against the limit
+with no caller key. The live-job cap in ``_anon_capacity_error``
+(scout/routes.py:439) bounds anonymous LIVE JOBS on the three INTAKE routes
+only - upload, fetch-pdb and example call it (scout/routes.py:962, :1059,
+:1102) and no analysis route does.
 
 The two tiers
 -------------
@@ -182,13 +218,27 @@ ANON_SESSION_KEY = "scout_anon_id"
 # One shared bucket for every caller that presents no anonymous session id.
 _NO_SESSION_KEY = "anon:no-session"
 
+# Namespace for the signed-in tier so a user key can never collide with an
+# anonymous one or with _NO_SESSION_KEY, whatever shape Supabase ids take.
+_USER_KEY_PREFIX = "user:"
+
 
 def _session_key() -> str:
     """Bucket key for the per-session tier.
 
+    A SIGNED-IN caller is keyed on their own user id (or email, the same
+    fallback order ``scout.routes._signed_in_owner_key`` uses), under
+    ``user:``. That branch is load-bearing, not cosmetic:
+    ``scout.routes._current_owner_key`` returns the signed-in key before it
+    ever mints ``scout_anon_id``, so a signed-in session has no anonymous id
+    to key on. Without this branch every signed-in user in the fleet would
+    land in the single shared ``_NO_SESSION_KEY`` bucket together and be
+    refused with "allow cookies" - see
+    tests/test_scout_free_tier_meter.py::test_two_signed_in_users_do_not_share_a_bucket.
+
     Every anonymous caller who has completed an intake carries a random
     ``anon:<uuid4>`` in the SIGNED session cookie, so this key cannot be
-    chosen or forged the way a header can — a caller can throw one away and
+    chosen or forged the way a header can - a caller can throw one away and
     get a fresh one, but only by starting a new session.
 
     Callers presenting no id at all — a direct POST with no cookie, a browser
@@ -199,6 +249,9 @@ def _session_key() -> str:
     Nothing legitimate is lost: without the id such a caller cannot own a job
     directory either, so every analysis it attempts 404s regardless.
     """
+    signed_in = (session.get("user_id") or session.get("user_email") or "").strip()
+    if signed_in:
+        return _USER_KEY_PREFIX + signed_in
     key = session.get(ANON_SESSION_KEY)
     return key if isinstance(key, str) and key else _NO_SESSION_KEY
 
@@ -580,9 +633,15 @@ def anon_compute_slot(
     but only if fewer than ``max_waiting`` callers are already waiting. Past
     that the answer is an immediate False and the caller sheds.
 
-    Signed-in callers always get True without consuming a slot — the paywall
-    already bounds them, and a free-tier visitor must never be able to starve
-    someone who is paying.
+    Signed-in callers always get True without consuming a slot, so nothing
+    this pool bounds ever applies to one. ``_INFLIGHT`` is a single
+    process-wide counter tested with no caller key, so ``limit`` is a pool
+    shared by every anonymous caller in the process, not a per-caller bound.
+    The exemption OUTLIVED the paywall it was first written for: the per-user
+    run cap was removed on 2026-09-30 (see the module docstring) and the
+    session-tier window counter in ``anon_rate_limit`` now meters signed-in
+    callers too, but a window counter does not bound concurrency and this
+    pool does.
 
     Released in a ``finally`` so an exception, or a client that hangs up
     mid-stream (which closes a streaming generator), cannot leak the slot and
@@ -678,8 +737,24 @@ _SESSION_LIMIT_MESSAGE = (
     "in for a free account to keep going, or wait a few minutes."
 )
 
-# ...and callers with NO session id get a third string, because for them the
-# one above is a LIE. Every cookie-less caller shares ``_NO_SESSION_KEY``
+# ...and a SIGNED-IN caller gets its own string, because the one above is a
+# LIE for them in two ways: the allowance is not "the free allowance" (it is
+# the same per-session allowance an anonymous visitor gets - see the module
+# docstring) and "sign in for a free account" is advice they have already
+# taken. Signing in does not raise THIS ceiling, so the only honest call to
+# action is to wait. The front end must not append its sign-in link here
+# either; the page suppresses that from a server-rendered flag rather than
+# from the reason, because no reason is one signing in would help - and the
+# per-IP refusal is not the example to reach for, since that tier skips a
+# signed-in caller and REASON_RATE_LIMITED never reaches one at all.
+# templates/scout/index.html, SCOUT_SIGNED_IN.
+_SIGNED_IN_LIMIT_MESSAGE = (
+    "You have used the Epitope Scout allowance for this session. Wait a few "
+    "minutes and try again."
+)
+
+# ...and callers with NO session id get a fourth string, because for them the
+# per-session one is a LIE. Every cookie-less caller shares ``_NO_SESSION_KEY``
 # (see ``_session_key``), so one sprayer can exhaust that bucket and lock out
 # a visitor whose browser is blocking cookies. That lockout costs them
 # nothing they had — without the id they cannot own a job directory, so every
@@ -715,6 +790,12 @@ _NO_SESSION_MESSAGE = (
 # Do not rename them; add new ones.
 REASON_RATE_LIMITED = "rate_limited"   # per-IP window, this module
 REASON_SESSION_LIMITED = "session_rate_limited"  # per-session window, here
+# Same per-session tier, but the caller already HAS an account, so this one is
+# not a conversion opportunity and must not be counted as one. Added rather
+# than folded into REASON_SESSION_LIMITED because the only consumer that
+# interprets these, scripts/check_refusal_rate.py, reads the reason and not
+# the message.
+REASON_SIGNED_IN_LIMITED = "signed_in_rate_limited"  # per-session, signed in
 REASON_BUSY = "busy"                   # compute slot/queue full, scout.routes
 REASON_AT_CAPACITY = "at_capacity"     # live-job cap, scout.routes
 
@@ -748,8 +829,9 @@ REASON_JOB_EXPIRED = "job_expired"     # job dir reaped or never existed
 
 def _refuse(*, sse: bool, retry_after: int, reason: str, message: str):
     """Build the refusal both tiers share, in the shape the route can carry."""
-    # ONE call site for THREE reasons (rate_limited / session_rate_limited /
-    # no_session), counted here rather than at the two tiers above precisely
+    # ONE call site for FOUR reasons (rate_limited / session_rate_limited /
+    # signed_in_rate_limited / no_session), counted here rather than at the
+    # two tiers above precisely
     # because this is where they already converge — and counted BEFORE the
     # response is built, not inside the SSE generator, since a generator body
     # does not run until the client iterates the response and the refusal has
@@ -794,13 +876,17 @@ def anon_rate_limit(
     pair: str | None = None,
     job_id=None,
 ):
-    """Decorator: meter anonymous calls to this route against both tiers.
+    """Decorator: meter calls to this route against the tiers that apply.
 
-    ``limit`` is the per-IP ceiling and ``session_limit``, when given, the
-    tighter per-session one. Signed-in requests pass straight through
-    (``scout.quota`` meters those). Over-limit anonymous requests get a JSON
-    429 with ``Retry-After`` — the Scout page's fetch handlers already render
-    a non-2xx ``{"error": ...}`` body, so no front-end change is needed.
+    ``limit`` is the per-IP ceiling, charged to ANONYMOUS callers only, and
+    ``session_limit``, when given, the tighter per-session one, charged to
+    everybody. So a signed-in caller is metered here on any route that sets
+    ``session_limit`` and on no other; the blanket pass-through that skipped
+    both tiers was removed on 2026-09-30, and the module docstring names the
+    three routes that leaves uncharged for them. Over-limit requests get a
+    JSON 429 with ``Retry-After`` - the
+    Scout page's fetch handlers already render a non-2xx ``{"error": ...}``
+    body, so no front-end change is needed.
 
     ``sse=True`` is for the EventSource endpoints: ``EventSource`` cannot
     read a 429 body, so those get a 200 ``text/event-stream`` carrying the
@@ -837,8 +923,12 @@ def anon_rate_limit(
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
-            if session.get("user_email"):
-                return f(*args, **kwargs)
+            # Read the session key ONCE, here. Both the refusal message
+            # below and the per-IP exemption further down are decided from
+            # this one value, so the bucket that was charged and the string
+            # returned cannot disagree about who the caller is.
+            session_key = _session_key()
+            signed_in = session_key.startswith(_USER_KEY_PREFIX)
 
             # Derived ONCE, from the single source this route declared, and
             # an empty id never grants or spends. A "" credit would otherwise
@@ -864,7 +954,6 @@ def anon_rate_limit(
             # rotating the cookie skips this tier entirely and lands on the
             # per-IP one, which is the tier that is supposed to stop them.
             if session_limit is not None:
-                session_key = _session_key()
                 allowed, retry_after = hit(
                     bucket + ":session",
                     session_key,
@@ -872,33 +961,64 @@ def anon_rate_limit(
                     window_seconds=window_seconds,
                 )
                 if not allowed:
-                    # One conditional picks BOTH, so the reason and the message
-                    # cannot drift apart into a body that says "allow cookies"
-                    # while telling the front end to render a signup link.
-                    cookieless = session_key == _NO_SESSION_KEY
+                    # The reason and the message are picked from the key that
+                    # was just CHARGED, not from a second session read, so the
+                    # bucket metered and the string returned cannot disagree
+                    # about who the caller is - no body that says "allow
+                    # cookies" while telling the front end to render a signup
+                    # link, and no signup link offered to someone signed in.
+                    if signed_in:
+                        reason = REASON_SIGNED_IN_LIMITED
+                        message = _SIGNED_IN_LIMIT_MESSAGE
+                    elif session_key == _NO_SESSION_KEY:
+                        reason = REASON_NO_SESSION
+                        message = _NO_SESSION_MESSAGE
+                    else:
+                        reason = REASON_SESSION_LIMITED
+                        message = _SESSION_LIMIT_MESSAGE
                     return _refuse(
                         sse=sse,
                         retry_after=retry_after,
-                        reason=(
-                            REASON_NO_SESSION if cookieless
-                            else REASON_SESSION_LIMITED
-                        ),
-                        message=(
-                            _NO_SESSION_MESSAGE if cookieless
-                            else _SESSION_LIMIT_MESSAGE
-                        ),
+                        reason=reason,
+                        message=message,
                     )
 
-            allowed, retry_after = hit(
-                bucket, _client_ip(), limit=limit, window_seconds=window_seconds
-            )
-            if not allowed:
-                return _refuse(
-                    sse=sse,
-                    retry_after=retry_after,
-                    reason=REASON_RATE_LIMITED,
-                    message=_OVER_LIMIT_MESSAGE,
+            # ANONYMOUS CALLERS ONLY. This bucket is ONE budget shared by
+            # every caller on an address, so charging identified users against
+            # it means any stranger behind an institution's NAT can lock out a
+            # signed-in colleague — and one signed-in researcher working
+            # through their own allowance above would spend most of the shared
+            # one. A signed-in caller is already metered, per account, by the
+            # session tier above; it is the cookie-rotating anonymous sprayer
+            # this tier exists to stop, and rotating an ACCOUNT costs a fresh
+            # signup rather than a cleared cookie. (Nothing in this repo gates
+            # login on a CONFIRMED address - blueprints/auth.py::login calls
+            # shared.auth.verify_login, which calls sign_in_with_password with
+            # no such check - so that is a Supabase project setting and not a
+            # property this comment can lean on.)
+            #
+            # Signed-in callers were exempt here before 2026-09-30 too. The
+            # change that removed the free-tier run cap deliberately did NOT
+            # widen this tier to cover them: that would have been a second
+            # way of making an account worse than no account.
+            #
+            # Not an early return, deliberately. The PAIR_OPENS grant below
+            # must still run for a signed-in caller — skipping it would leave
+            # the following POST /scout/analyze with no credit to spend, so
+            # one analysis would cost a signed-in user TWO session charges and
+            # halve the allowance this change exists to equalise. Guarded by
+            # tests/test_scout_free_tier_meter.py::test_a_signed_in_analysis_is_one_charge_not_two.
+            if not signed_in:
+                allowed, retry_after = hit(
+                    bucket, _client_ip(), limit=limit, window_seconds=window_seconds
                 )
+                if not allowed:
+                    return _refuse(
+                        sse=sse,
+                        retry_after=retry_after,
+                        reason=REASON_RATE_LIMITED,
+                        message=_OVER_LIMIT_MESSAGE,
+                    )
 
             # Only a charge that was actually taken AND allowed buys a
             # credit. Granting before the refusal checks would let a refused

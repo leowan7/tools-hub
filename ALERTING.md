@@ -563,6 +563,10 @@ Read the per-reason split the step printed:
   slots open.
 - **`session_rate_limited`** alone — ordinary over-use by individual callers,
   not an incident. This is the intended conversion nudge.
+- **`signed_in_rate_limited`** — the same per-session tier, but the caller
+  already has an account, so it is over-use and *not* a conversion nudge; no
+  signup prompt helps them. Added 2026-09-30 with the removal of the
+  free-tier run cap, when signed-in callers started meeting this tier at all.
 - **`no_session`** — callers arriving without a cookie share one bucket. A
   spike here can mean a bot, or that cookies stopped being set.
 - **`bad_request` / `job_expired`** are printed `(reported only)` and are NOT in

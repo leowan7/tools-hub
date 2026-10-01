@@ -469,6 +469,23 @@ class TestRateLimit:
         )
 
     def test_signed_in_users_are_not_ip_limited(self, client, reap_jobs):
+        """The per-IP tier stays ANONYMOUS-ONLY, including after 2026-09-30.
+
+        Removing the free-tier run cap did not widen this tier to cover
+        signed-in callers, and the reason is this bucket's shape: it is ONE
+        budget shared by every caller on an address. Charging identified users
+        against it would let any anonymous stranger behind an institution's NAT
+        lock out a signed-in colleague, and would make having an account worse
+        than not having one in a second, subtler way than the cap did.
+
+        Intake has no session tier (``upload`` / ``fetch_pdb`` / ``example``
+        pass no ``session_limit``), so a signed-in caller is unmetered on these
+        three routes — exactly as they were before 2026-09-30. What the cap
+        actually governed was ``/scout/analyze`` and ``/scout/progress``, and a
+        signed-in caller IS metered there, by the per-session tier keyed on
+        their account:
+        tests/test_scout_free_tier_meter.py::test_a_signed_in_caller_is_metered_at_all.
+        """
         _login(client)
         statuses = [
             _upload(client, b"garbage\n").status_code
@@ -811,14 +828,38 @@ class TestFeasibilityIsMetered:
         assert done["stage"] == "done"
         assert done["result"]["composite_feasibility"] == 0.6
 
-    def test_signed_in_callers_are_not_charged(
+    def test_signed_in_callers_are_charged_the_session_tier_not_the_ip_one(
         self, client, stub_feasibility, reap_jobs
     ):
+        """Changed on 2026-09-30. It asserted BOTH counters stayed at ``0``.
+
+        Before that date a signed-in caller returned from ``anon_rate_limit``
+        before either tier, metered only by ``scout.quota``'s
+        3-runs-per-30-days cap — which never applied to anonymous visitors, so
+        signing up was a downgrade. The cap is gone and the per-session tier
+        now charges signed-in callers, keyed on their account. The per-IP tier
+        still does not: see
+        ``TestRateLimit::test_signed_in_users_are_not_ip_limited``.
+
+        Two session charges, not one. The paired routes share a charge, but
+        BOTH feasibility routes are unpaired on purpose — each one calls
+        ``run_feasibility_pipeline``, so each is a full run — see the comments
+        on ``feasibility_analyze`` and ``feasibility_progress`` in
+        ``scout/routes.py``. Pinned to an exact number rather than "non-zero"
+        so a signed-in caller quietly costing a different amount from an
+        anonymous one fails here; the anonymous count for the same two calls is
+        held at 1 then 2 by
+        ``test_each_call_is_one_charge_and_grants_no_credit`` above.
+        """
         _login(client)
         job_id = _feasibility_job(client)
+        session_key = ratelimit._USER_KEY_PREFIX + "u-anon-test"
+        before = _hits("scout_analyze:session", session_key)
+        ip_before = _hits("scout_analyze", "127.0.0.1")
         _feas_progress(client, job_id)
         assert _feas_analyze(client, job_id).status_code == 200
-        assert _hits("scout_analyze", "127.0.0.1") == 0
+        assert _hits("scout_analyze:session", session_key) == before + 2
+        assert _hits("scout_analyze", "127.0.0.1") == ip_before
 
     def test_analyze_refuses_when_the_pool_is_full(
         self, client, monkeypatch, stub_feasibility, reap_jobs

@@ -35,8 +35,9 @@ valueerror_from_a_dependency`` injects what that promise was betting
 against.
 
 Exposure differs per route and is recorded here so it is not re-litigated:
-``/scout/progress`` and ``/scout/analyze`` are anonymous (``@anon_rate_limit``
-+ ``@requires_scout_quota``, which passes through when not signed in);
+``/scout/progress`` and ``/scout/analyze`` are anonymous under
+``@anon_rate_limit`` alone (``@requires_scout_quota`` was removed with the
+free-tier run cap on 2026-09-30);
 ``/scout/feasibility/progress`` and ``/scout/feasibility/analyze`` are
 anonymous under ``@anon_rate_limit`` alone (scout/routes.py,
 feasibility_progress / feasibility_analyze).

@@ -6,8 +6,11 @@ owned by tools-hub (``shared.auth`` + ``/pricing``). Everything left in
 this module is Scout-specific: PDB upload, structural scoring, SSE
 progress, feasibility, and the tool handoff.
 
-The free-tier paywall (``scout.quota``) still works because the
-tools-hub Supabase project is the same one Scout always used.
+Scout is free for everyone, signed in or not. There is no per-user run
+cap - it was removed on 2026-09-30 because it metered only signed-in users
+and so made signing up a downgrade; see ``scout.ratelimit``'s module
+docstring for the meter that replaced it and ``scout.quota`` for the run
+ledger that is all that remains of the paywall.
 """
 
 from __future__ import annotations
@@ -44,12 +47,7 @@ from scout.jobs import (
     resolve_owned_job_dir,
 )
 from scout.parser import parse_pdb
-from scout.quota import (
-    FREE_TIER_RUN_CAP,
-    quota_status,
-    record_scout_run,
-    requires_scout_quota,
-)
+from scout.quota import record_scout_run
 from scout.ratelimit import (
     ANON_SESSION_KEY,
     PAIR_CLOSES,
@@ -920,26 +918,17 @@ def _get_binder_overlaps(
 
 
 # ---------------------------------------------------------------------------
-# Landing + quota
+# Landing
 # ---------------------------------------------------------------------------
+
+# GET /scout/quota used to live here. It reported a per-user run cap that no
+# longer exists (removed 2026-09-30, see the module docstring), and its only
+# two callers were both in templates/scout/index.html: the quota pill and a
+# pre-flight check that redirected to /pricing. Both went with it.
 
 @scout_bp.route("/", methods=["GET"])
 def index():
     return render_template("scout/index.html"), 200
-
-
-@scout_bp.route("/quota", methods=["GET"])
-def quota_json():
-    email = session.get("user_email", "")
-    if not email:
-        return jsonify({
-            "tier": "anon",
-            "runs_used": 0,
-            "runs_cap": FREE_TIER_RUN_CAP,
-            "runs_remaining": FREE_TIER_RUN_CAP,
-            "unlimited": False,
-        }), 200
-    return jsonify(quota_status(email)), 200
 
 
 # ---------------------------------------------------------------------------
@@ -1161,7 +1150,6 @@ def example():
     # POST once keyed the credit on one job while the pipeline ran on another.
     job_id=job_id_in_body,
 )
-@requires_scout_quota
 def analyze():
     job_id = job_id_in_body()
     data = request.get_json(silent=True) or {}
@@ -1544,7 +1532,6 @@ def download(job_id):
     # view below calls. No fallback to the body — a GET may carry one.
     job_id=job_id_in_query,
 )
-@requires_scout_quota
 def progress():
     from flask import stream_with_context  # noqa: PLC0415
 

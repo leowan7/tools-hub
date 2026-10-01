@@ -566,7 +566,7 @@ class TestEveryPartialIsExampleSafe:
         # added here.
         NO_PROBE = (
             "/api/", "/scout/example", "/scout/progress",
-            "/scout/feasibility/", "/scout/quota", "/health",
+            "/scout/feasibility/", "/health",
             "/readyz", "/metrics", "/debug/",
         )
         # The skip changes NOTHING about which pages are scanned: most
