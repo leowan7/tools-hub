@@ -1354,10 +1354,11 @@ def campaigns_submit():
     # BOTH ref branches are gated on the parent ALONE, not on
     # `and candidate_refs`. The shortlist bar is one macro
     # (templates/components/candidate_table.html, the .cand-shortlist-bar
-    # block) and its button carries no `disabled` attribute in ANY scope, while
-    # openCampaignModal (static/js/candidate_table.js) has no zero-star guard --
-    # so an empty body is reachable from a target page and from a
-    # compute-campaign page alike. Gated on `and candidate_refs` it falls
+    # block) and its button carries no `disabled` attribute in ANY scope.
+    # openCampaignModal (static/js/candidate_table.js) disables the modal's
+    # submit at zero stars, but only in the browser: a direct POST still sends
+    # an empty body from a target page and from a compute-campaign page
+    # alike. Gated on `and candidate_refs` it falls
     # through both ref branches to the legacy single-job one, which finds no
     # source_job_id and redirects to /jobs: a user who clicked "Send shortlist"
     # lands on an unrelated list. Each ref branch's own empty guard returns them

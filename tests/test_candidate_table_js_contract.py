@@ -1,7 +1,7 @@
 """The contract between static/js/candidate_table.js, the macro that renders
 its DOM, and the server that parses what it posts.
 
-REGISTER ITEM B-3. Two test files DO execute that file under node, and
+REGISTER ITEM B-3. Two other test files DO execute that file under node, and
 neither one retires the searches below. PART 4 of
 tests/test_lab_project_confirmation.py loads the WHOLE shipped script behind
 stubs to drive `window.dropShortlistRefs`; its `document.querySelectorAll`
@@ -12,7 +12,12 @@ tests/test_candidate_table_renumber.py, against a stub DOM, and that one does
 reach three hooks: `contains('cand-row')`, `'.cand-rank-n'` and
 `'.cand-group-row'`. Both stub the DOM rather than render the macro, so both
 see the JS side alone and a template-side rename stays invisible to either,
-and both SKIP where node is off PATH. Every identifier below crosses a
+and both SKIP where node is off PATH. This file's own
+test_bulk_selection_runs_under_node also runs under node and skips without
+it; it slices the sessionStorage helpers and the Bulk selection section, and
+renders the macro to check the Select where options and where the bar sits.
+Every identifier
+below crosses a
 boundary a rename can break on one side only, and four such renames were
 confirmed to survive the entire suite: `.cand-starred-export`, the submit
 listener, the posted key shape, and `shortlist-hint-`. Each one shipped an
@@ -405,8 +410,10 @@ _HOOKS = [
     (r"contains\('viewer-row'\)", "tr.viewer-row, which it moves with it",
      _ALL, _el(tag="tr", cls="viewer-row")),
 
-    # Called from inline onclick in four places, which is the only reason the
-    # shortlist button and the modal's three dismiss controls do anything.
+    # Called from inline onclick in four places in this macro, which is the
+    # only reason the shortlist button and the modal's three dismiss controls
+    # do anything. results_shell.html's lab panel also calls openCampaignModal;
+    # tests/test_results_action_bar.py checks that side.
     # Renaming either side left "Send shortlist to Ranomics lab" a dead button
     # with the whole suite green.
     (r"window\.openCampaignModal\b", "an onclick calling openCampaignModal(",
@@ -457,6 +464,21 @@ _HOOKS = [
     # Tool/Score/Pctile, which carry plain `title` attributes and no icon.
     (r"'\.mtt\[data-tooltip\]'", "span.mtt carrying data-tooltip", _COLUMNAR,
      _el(tag="span", cls="mtt", attr="data-tooltip")),
+    # Bulk selection. The bar renders in every mode; the Select where controls
+    # only where the caller's metric columns are rendered, because the column
+    # they name is a `td[data-col]` the JS reads.
+    (r"'\.cand-bulk-bar'", "div.cand-bulk-bar", _ALL,
+     _el(cls="cand-bulk-bar")),
+    (r"dataset\.bulk\b", "data-bulk on the bulk buttons", _ALL,
+     _el(tag="button", attr="data-bulk")),
+    (r"'\.cand-bulk-note'", "span.cand-bulk-note, the result line", _ALL,
+     _el(cls="cand-bulk-note")),
+    (r"'\.cand-where-col'", "select.cand-where-col", _COLUMNAR,
+     _el(tag="select", cls="cand-where-col")),
+    (r"'\.cand-where-op'", "select.cand-where-op", _COLUMNAR,
+     _el(tag="select", cls="cand-where-op")),
+    (r"'\.cand-where-val'", "input.cand-where-val", _COLUMNAR,
+     _el(tag="input", cls="cand-where-val")),
 ]
 
 _HOOK_IDS = [f"{h[1]} [{'+'.join(h[2])}]" for h in _HOOKS]
@@ -1090,3 +1112,105 @@ def test_the_refusal_names_the_design_it_refused():
     write = re.search(r"dlErr\.textContent\s*=\s*([^;]+);", block)
     assert write, block
     assert "getAttribute('download')" in write.group(1), write.group(1)
+
+
+# ---------------------------------------------------------------------------
+# Bulk selection
+# ---------------------------------------------------------------------------
+
+_BULK_HARNESS = r"""
+const fs = require('fs');
+const data = {};
+const store = {
+  getItem: (k) => (k in data ? data[k] : null),
+  setItem: (k, v) => { data[k] = String(v); },
+};
+const api = new Function('window', 'sessionStorage',
+  fs.readFileSync(process.argv[2], 'utf8')
+  + '\nreturn { starRows, whereTest, loadShortlist, saveShortlist };')({}, store);
+
+function row(idx, cells) {
+  const tr = {
+    querySelector(sel) {
+      const m = sel.match(/^td\[data-col="(.*)"\]$/);
+      return m && m[1] in cells ? { textContent: cells[m[1]] } : null;
+    },
+  };
+  tr.btn = { dataset: { job: 'j', refIdx: String(idx), idx: String(idx) },
+             closest: (s) => (s === 'tr' ? tr : null) };
+  return tr;
+}
+// Row 0's ipTM prints "0.800"; a stored 0.7996 prints that way at %.3f.
+const rows = [
+  row(0, { pLDDT: '88.1', ipTM: '0.800' }),
+  row(1, { pLDDT: '79.9', ipTM: '0.799' }),
+  row(2, { pLDDT: '—', ipTM: '—' }),
+];
+const table = { querySelectorAll: (s) => (s === '.star-btn' ? rows.map((r) => r.btn) : []) };
+const bar = (col, op, val) => {
+  const els = { '.cand-where-col': { value: col }, '.cand-where-op': { value: op },
+                '.cand-where-val': { value: val } };
+  return { querySelector: (s) => els[s] || null };
+};
+const run = (scope, test) => [api.starRows(table, scope, test),
+                              api.loadShortlist(scope).map((r) => r.i)];
+const out = {};
+out.plddt_ge_80 = run('a', api.whereTest(bar('pLDDT', 'ge', '80')));
+out.iptm_ge_printed = run('b', api.whereTest(bar('ipTM', 'ge', '0.8')));
+out.iptm_le_skips_dash = run('c', api.whereTest(bar('ipTM', 'le', '0.8')));
+api.saveShortlist('d', [{ j: 'j', i: 1 }]);
+out.keeps_existing = run('d', api.whereTest(bar('pLDDT', 'ge', '80')));
+api.saveShortlist('e', [{ j: 'j', i: 0 }]);
+out.select_all = run('e', null);
+out.no_number = api.whereTest(bar('pLDDT', 'ge', '')) === null;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _js_section(start: str, end: str) -> str:
+    a = _JS_SOURCE.index(start)
+    return _JS_SOURCE[a:_JS_SOURCE.index(end, a)]
+
+
+def test_bulk_selection_runs_under_node(tmp_path):
+    """Select where compares the number as PRINTED, skips a "—" cell, and
+    every bulk action adds to the stars already there.
+
+    Runs the shipped storage helpers and the Bulk selection section under
+    node against a stub DOM, with a stub sessionStorage. The template half is
+    checked first: each Select where option must name a column the table
+    renders as a `td[data-col]`, and the bar must sit inside the action bar,
+    because initTable looks it up with `wrapEl.querySelector`.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    html = _render(columns=["ipTM", "pLDDT"])
+    picker = html.split('class="cand-where-col', 1)[1].split("</select>", 1)[0]
+    options = re.findall(r'<option value="([^"]+)"', picker)
+    assert options == ["ipTM", "pLDDT"]
+    for col in options:
+        assert f'<td data-col="{col}"' in html, col
+    start = html.rindex("<div", 0, html.index('class="cand-action-bar"'))
+    before_bar = html[start:html.index('class="cand-bulk-bar"')]
+    assert before_bar.count("<div") > before_bar.count("</div>")
+
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH")
+    src = (_js_section("// ─── sessionStorage helpers", "// ─── UI helpers")
+           + _js_section("// ─── Bulk selection", "// ─── Modal"))
+    (tmp_path / "bulk.js").write_text(src, encoding="utf-8")
+    (tmp_path / "harness.cjs").write_text(_BULK_HARNESS, encoding="utf-8")
+    proc = subprocess.run(
+        ["node", str(tmp_path / "harness.cjs"), str(tmp_path / "bulk.js")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["plddt_ge_80"] == [1, [0]]
+    assert out["iptm_ge_printed"] == [1, [0]]
+    assert out["iptm_le_skips_dash"] == [2, [0, 1]]
+    assert out["keeps_existing"] == [1, [1, 0]]
+    assert out["select_all"] == [2, [0, 1, 2]]
+    assert out["no_number"] is True

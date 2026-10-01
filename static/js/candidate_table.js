@@ -24,12 +24,16 @@
  *                                   templates/ or static/. Kept as the read
  *                                   side of the sessionStorage format for
  *                                   console use; delete it and nothing breaks.
- *   window.openCampaignModal(scope)
+ *   window.openCampaignModal(scope, service)
+ *     `service` is optional: a budget_band value ('pilot', 'sprint') the
+ *     modal opens with selected.
  *   window.closeCampaignModal(scope)
- *     Both called ONLY from inline onclick in components/candidate_table.html
- *     -- the shortlist button, and the modal's ×, Cancel and overlay. Renaming
- *     either is a silent break in this repo: nothing here calls them, and
- *     tests/test_candidate_table_js_contract.py is the only thing that looks.
+ *     Called from inline onclick: components/candidate_table.html (the
+ *     shortlist button, and the modal's ×, Cancel and overlay) and, for
+ *     openCampaignModal, the lab panel in components/results_shell.html.
+ *     Renaming either is a silent break: nothing in this file calls them.
+ *     tests/test_candidate_table_js_contract.py and
+ *     tests/test_results_action_bar.py check the names against the markup.
  *   window.dropShortlistRefs(scope, refs)
  *     Called from templates/campaigns/detail.html, which loads this file for
  *     that call alone. `refs` is the [{job_id, index}] list a submitted request
@@ -476,6 +480,31 @@
       updateShortlistUI(scope);
     });
 
+    // Bulk selection bar: Select all, Clear, Select where.
+    var bulk = wrapEl.querySelector('.cand-bulk-bar');
+    if (bulk) {
+      bulk.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-bulk]');
+        if (!btn) return;
+        var how  = btn.dataset.bulk;
+        var note = bulk.querySelector('.cand-bulk-note');
+        var msg;
+        if (how === 'clear') {
+          saveShortlist(scope, []);
+          msg = 'Cleared';
+        } else if (how === 'all') {
+          msg = starRows(table, scope, null) + ' added';
+        } else {
+          var test = whereTest(bulk);
+          msg = test ? starRows(table, scope, test) + ' added'
+                     : 'Enter a number to compare against';
+        }
+        restoreStarState(table, scope);
+        updateShortlistUI(scope);
+        if (note) note.textContent = msg;
+      });
+    }
+
     // 3D viewer expand
     table.addEventListener('click', function (e) {
       var btn = e.target.closest('.view3d-btn');
@@ -552,11 +581,58 @@
     });
   }
 
+  // ─── Bulk selection ──────────────────────────────────────────────────────
+  //
+  // Selecting is starring: both functions write the store the star toggle
+  // writes, so the count, the lab modal and "Starred only (CSV)" read the
+  // result. tests/test_candidate_table_js_contract.py
+  // (test_bulk_selection_runs_under_node) runs both under node.
+
+  // Stars every row of `table` that passes `test` (every row when `test` is
+  // null) and keeps the stars already there. Returns how many it added.
+  function starRows(table, scope, test) {
+    var sl   = loadShortlist(scope);
+    var have = {};
+    sl.forEach(function (r) { have[refKey(r.j, r.i)] = true; });
+    var added = 0;
+    table.querySelectorAll('.star-btn').forEach(function (btn) {
+      if (test && !test(btn.closest('tr'))) return;
+      var r = starRef(btn);
+      var k = refKey(r.j, r.i);
+      if (have[k]) return;
+      have[k] = true;
+      sl.push(r);
+      added++;
+    });
+    saveShortlist(scope, sl);
+    return added;
+  }
+
+  // The "Select where" row test, or null when no number was entered. Parses
+  // the cell's text, the number as printed, so pLDDT is compared on the 0-100
+  // scale the macro prints it on (components/candidate_table.html runs it
+  // through plddt_on_100 before formatting) and a cell printed "0.800"
+  // passes ">= 0.8".
+  // A "—" cell parses to NaN and fails both comparisons.
+  function whereTest(bar) {
+    var col = bar.querySelector('.cand-where-col');
+    var op  = bar.querySelector('.cand-where-op');
+    var val = bar.querySelector('.cand-where-val');
+    var v   = val ? parseFloat(val.value) : NaN;
+    if (!col || !op || isNaN(v)) return null;
+    var ge = op.value === 'ge';
+    return function (row) {
+      var td = row && row.querySelector('td[data-col="' + col.value + '"]');
+      var x  = td ? parseFloat(td.textContent) : NaN;
+      return !isNaN(x) && (ge ? x >= v : x <= v);
+    };
+  }
+
   // ─── Modal ───────────────────────────────────────────────────────────────
 
   window.getShortlist = function (scope) { return loadShortlist(scope); };
 
-  window.openCampaignModal = function (scope) {
+  window.openCampaignModal = function (scope, service) {
     var sl    = loadShortlist(scope);
     var modal = document.getElementById('campaign-modal-' + scope);
     if (!modal) return;
@@ -588,7 +664,7 @@
         // what happened instead.
         list.innerHTML =
           '<li>Nothing starred yet. Close this and star the designs you '
-          + 'want to send.</li>';
+          + 'want to send, or use Select all above the table.</li>';
       } else {
         list.innerHTML = sl.map(function (r) {
           var label = 'Candidate ' + (r.i + 1);
@@ -613,6 +689,12 @@
       submitBtn.title = sl.length === 0
         ? 'Star at least one design to send a shortlist.'
         : '';
+    }
+
+    if (service) {
+      var band = modal.querySelector(
+        'input[name="budget_band"][value="' + service + '"]');
+      if (band) band.checked = true;
     }
 
     modal.style.display = 'flex';

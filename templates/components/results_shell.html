@@ -249,10 +249,13 @@
    Reworded and re-weighted per Phase 5.2. It used to open with "Take it
    further" and carry a `btn-primary`, which made it the loudest control on a
    page whose primary outcome is the download; a results page had two of its
-   three most prominent buttons pointing at sales. Both links are secondary
+   three most prominent buttons pointing at sales. Both controls are secondary
    now, and the copy names this as one option rather than as the next step.
-   The in-product "Send shortlist to Ranomics lab" bar above is the structured
-   route and stays the one that carries a shortlist. #}
+   They open the table's "Send shortlist to Ranomics lab" modal with the
+   programme selected, so the shortlist travels with the request. The modal
+   is not rendered under the worked-example sentinel (the `not is_example`
+   guard on campaign-modal- in components/candidate_table.html), so there
+   they stay links to ranomics.com. #}
 {% if candidates %}
   <div class="panel" style="margin-top: 1rem;">
     <div class="panel-body" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
@@ -271,14 +274,21 @@
           {% else %}
           The designs above are yours to download and take anywhere. If you do
           want them made and measured, Ranomics runs yeast display, mammalian
-          display, BLI and DMS on the same data loop &mdash; either through the
-          shortlist button above, or by reading up first.
+          display, BLI and DMS on the same data loop &mdash; star the designs
+          you want tested, then use the shortlist button above or pick a
+          programme here.
           {% endif %}
         </span>
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+        {% if is_example %}
         <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Test binders in the lab</a>
         <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">AI Binder Sprint</a>
+        {% else %}
+        {% set lab_scope = campaign_id or job_id %}
+        <button type="button" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;" onclick="openCampaignModal('{{ lab_scope }}', 'pilot')">Test binders in the lab</button>
+        <button type="button" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;" onclick="openCampaignModal('{{ lab_scope }}', 'sprint')">AI Binder Sprint</button>
+        {% endif %}
       </div>
     </div>
   </div>
