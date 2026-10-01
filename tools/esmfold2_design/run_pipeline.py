@@ -129,7 +129,9 @@ from typing import Any, Optional
 
 import requests
 
-# /opt is the cookbook tutorial path planted by Dockerfile.modal.
+# /opt is the cookbook tutorial path. This tool has no Dockerfile --
+# modal_app.py builds its image inline with modal.Image.micromamba and
+# plants /opt/binder_design.py in a .run_commands() layer.
 sys.path.insert(0, "/opt")
 
 logging.basicConfig(
@@ -189,6 +191,219 @@ STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 # _warn_if_scores_missing makes a future upstream rename loud in the logs
 # instead of silently zeroing the gate again.
 CRITIC_REAL_IPTM = "ESMFold2-Experimental-Cutoff2025"
+
+
+# ===========================================================================
+# ESM-C 6B checkpoint pin
+# ===========================================================================
+#
+# WHAT BROKE. On 2026-09-30 three prod runs failed identically after 32-37
+# H100 seconds (job ids a327d5fe, 236797f2, f2e296c7), raising
+# ``torch._C._LinAlgError: linalg.svd ... ill-conditioned or has too many
+# repeated singular values (error code: 3)`` out of
+# modeling_esmfold2_common.py::_weighted_rigid_align on the first fold. The
+# SVD was the symptom. The cause is that the ESM-C 6B trunk was running on
+# RANDOMLY INITIALISED weights, so the 3x3 covariance the Kabsch alignment
+# takes an SVD of was NaN.
+#
+# modal_app.py pins the CODE tightly (every pip version, conda build strings,
+# ``esm`` at a git SHA) but the WEIGHTS live outside the image: HF_HOME=/models
+# is the ``ranomics-esmfold2-models`` Modal Volume, and ``biohub/ESMC-6B`` was
+# resolved at ``main``. That repo was re-exported in the transformers-5 state
+# dict layout (``embed_tokens.weight``, ``layers.N.input_layernorm.*``), while
+# the installed transformers is 4.57.6, whose ESMC classes ask for the
+# transformers-4 names (``embed.weight``, ``transformer.blocks.N.attn.*``).
+# Nothing raised: HF reports unmatched keys as a WARNING and initialises them
+# randomly.
+#
+# MEASURED on a CPU-only Modal container against this exact image and Volume,
+# via ``AutoModel.from_pretrained(_ESMC_REPO, revision=...,
+# output_loading_info=True)``:
+#
+#   revision          | missing_keys | unexpected_keys | esmc.embed.weight
+#   ------------------+--------------+-----------------+-------------------
+#   main (af1602ba)   |          802 |            1048 | mean=nan std=nan
+#   45b0fa5d (pinned) |            0 |               6 | mean=-0.00043
+#                     |              | (lm_head.*, not |  std=0.176
+#                     |              |  read by this   |
+#                     |              |  class)         |
+#
+# 45b0fa5d is the revision whose own config.json declares
+# ``transformers_version: 4.57.6`` -- the one this image was built against --
+# and it is ALREADY in the Volume, so pinning it downloads nothing.
+#
+# THE OTHER FLOATING REF, named because the next person needs it. esm's
+# pyproject requires ``transformers @ git+https://github.com/Biohub/
+# transformers.git@main``; the installed artifact's direct_url.json resolves
+# that to commit ef32577f55da19a4989cd7b22e004dc43a4998cb (self-reporting
+# 4.57.6). It is held still only by Modal's pip layer cache, not by a pin.
+#
+# That matters more than it looks, and the direction is counter-intuitive:
+# ``.github/workflows/deploy-modal.yml`` triggers on ``tools/**`` and negates
+# only ``meta.py``, ``example/`` and ``__init__.py``, so EDITING THIS FILE
+# REBUILDS THE IMAGE. The ``pip_install`` spec is unchanged and its layer
+# should be reused from Modal's cache; if that cache entry has been evicted,
+# pip re-resolves ``@main`` and the CODE moves under this checkpoint pin --
+# the same break mirrored. ``_esmc_checkpoint_mismatch`` below does not
+# prevent that. What it does is convert it from a silent, billed numerical
+# failure into a free ``preflight:weights`` refusal that names the cause,
+# which is the only part of this that is actually in our hands.
+#
+# Pinning transformers to that SHA as well is RECOMMENDED and has NOT been
+# done: it changes the image spec, which forces a cache miss rather than
+# risking one, and that needs a GPU validation run to sign off.
+_ESMC_REPO = "biohub/ESMC-6B"
+_ESMC_REVISION = "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a"
+
+
+def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
+    """Make every ``biohub/ESMC-6B`` load resolve one checkpoint revision.
+
+    Upstream never passes ``revision=``, and there are TWO load sites, so one
+    interception point is the only place a single pin reaches both:
+
+      * ``binder_design.py::ESMFold2Design.load`` calls
+        ``ESMCForMaskedLM.from_pretrained(self.lm_name, ...)`` with
+        ``lm_name = "biohub/ESMC-6B"`` (a class attribute);
+      * ``binder_design.py::_load_hf_model`` calls ``model.load_esmc(
+        model.config.esmc_id)``, which calls ``ESMCModel.from_pretrained(
+        path)``; ``esmc_id`` comes from the ESMFold2 checkpoint's own config
+        and defaults to configuration_esmfold2.py::_DEFAULT_ESMC_HF_REPO,
+        the same string.
+
+    Keyed on the repo id, so the four ESMFold2 critic checkpoints this tool
+    also pulls are untouched: only ESMC is pinned, because only ESMC is
+    measured to have moved.
+
+    Idempotent -- re-running it does not stack wrappers.
+    """
+    from transformers import PreTrainedModel  # noqa: PLC0415
+
+    if getattr(PreTrainedModel.from_pretrained, "_esmc_pinned", False):
+        return
+    inner = PreTrainedModel.from_pretrained.__func__
+
+    def from_pretrained(cls, pretrained_model_name_or_path=None, *args, **kwargs):
+        if pretrained_model_name_or_path == _ESMC_REPO:
+            # setdefault, not assignment: an explicit revision from a future
+            # caller wins over this pin rather than being silently dropped.
+            kwargs.setdefault("revision", revision)
+        return inner(cls, pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._esmc_pinned = True
+    PreTrainedModel.from_pretrained = classmethod(from_pretrained)
+    logger.info("Pinned %s to revision %s", _ESMC_REPO, revision)
+
+
+def _transformers_version() -> str:
+    """Installed transformers version, for the mismatch message only."""
+    try:
+        import transformers  # noqa: PLC0415
+
+        return str(transformers.__version__)
+    except Exception:
+        return "(unknown)"
+
+
+def _esmc_checkpoint_mismatch(revision: str = _ESMC_REVISION) -> str:
+    """Does the pinned ESM-C checkpoint match the installed ESMC classes?
+
+    Returns "" when it does, else a one-line detail for a
+    ``preflight:weights`` failure. Costs two small file reads and two
+    meta-device skeletons -- no GPU, no allocation, no forward pass.
+
+    This is the check whose absence let three runs bill H100 time and then
+    tell the customer to change their seed. It compares the shard index's key
+    NAMES against the key names the installed classes ask for, which is the
+    thing that was wrong; a version-string or ``architectures`` comparison
+    would have caught this particular break but not a rename inside a
+    matching version.
+
+    Both the raw and the ``base_model_prefix``-stripped spelling count as a
+    match, because the two classes genuinely differ: measured on the pinned
+    revision, ``ESMCForMaskedLM`` matches all 808 of its keys raw while
+    ``ESMCModel`` matches all 802 of its keys only after stripping ``esmc.``.
+    """
+    import torch  # noqa: PLC0415
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
+    from transformers import (  # noqa: PLC0415
+        AutoConfig,
+        AutoModel,
+        AutoModelForMaskedLM,
+    )
+
+    try:
+        index_path = hf_hub_download(
+            _ESMC_REPO, "model.safetensors.index.json", revision=revision
+        )
+        with open(index_path) as fh:
+            have = set(json.load(fh)["weight_map"])
+        config = AutoConfig.from_pretrained(_ESMC_REPO, revision=revision)
+    except Exception as exc:  # network, missing revision, malformed index
+        return (
+            f"cannot read the {_ESMC_REPO} shard index at revision "
+            f"{revision}: {type(exc).__name__}: {exc}"
+        )
+
+    for auto_cls in (AutoModel, AutoModelForMaskedLM):
+        try:
+            model_cls = auto_cls._model_mapping[type(config)]
+            with torch.device("meta"):
+                want = set(model_cls(config).state_dict())
+        except Exception as exc:
+            return (
+                f"cannot build a {auto_cls.__name__} skeleton for "
+                f"{_ESMC_REPO}: {type(exc).__name__}: {exc}"
+            )
+        prefix = getattr(model_cls, "base_model_prefix", "") or ""
+        stripped = {
+            k[len(prefix) + 1 :] if prefix and k.startswith(prefix + ".") else k
+            for k in have
+        }
+        if not (want <= have or want <= stripped):
+            sample = sorted((want - have) | (want - stripped))[:3]
+            return (
+                f"{_ESMC_REPO}@{revision} does not match "
+                f"{model_cls.__name__} as built by transformers "
+                f"{_transformers_version()}: {len(want - have)} of "
+                f"{len(want)} keys unmatched raw, {len(want - stripped)} "
+                f"unmatched after stripping {prefix!r} (e.g. {sample}). The "
+                f"checkpoint layout and the installed transformers have "
+                f"diverged -- see the pin comment in this file."
+            )
+    return ""
+
+
+
+def _fail_preflight(check: str, detail: str, tier: str, job_id: str) -> int:
+    """Write a FAILED result whose error names a bucket, and return 1.
+
+    The sibling tools' shape (``_fail`` in tools/af2/run_pipeline.py:170).
+    The dict error is what routes the failure: gpu/modal_client.py::
+    _interpret_pipeline_return lifts ``bucket`` into ``error_bucket`` and
+    _stringify_error flattens it to ``"preflight:weights - detail"``, which
+    shared/jobs.py's first ``_FAILURE_RULES`` row matches as ``our_side``.
+    That is deliberate -- a weights mismatch is our fault, and the customer
+    must not be told to change their seed over it.
+
+    ``runtime_seconds`` is deliberately absent: every caller runs before any
+    GPU work, and shared/jobs.py::_charge_workspace_for_completed_job debits
+    the Workspace cap by whatever a FAILED arm reports.
+    """
+    logger.error("pipeline FAILED at preflight/%s: %s", check, detail)
+    _write_result(
+        {
+            "status": "FAILED",
+            "error": {"bucket": "preflight", "check": check, "detail": detail},
+            "tier": tier,
+            "designs_total": 0,
+            "designs_completed": 0,
+            "n_failures": 1,
+            "designs": [],
+            "provider_job_id": job_id,
+        }
+    )
+    return 1
 
 
 def _write_result(payload: dict[str, Any]) -> None:
@@ -1044,8 +1259,9 @@ def _run() -> int:
         batch_size,
     )
 
-    # Import the upstream module. /opt is on sys.path via the top of
-    # this file; binder_design was copied in by the Dockerfile.
+    # Import the upstream module. /opt is on sys.path via the top of this
+    # file; binder_design.py was planted at /opt by modal_app.py's
+    # .run_commands() layer (this tool ships no Dockerfile).
     try:
         import binder_design as bd  # type: ignore
     except Exception as exc:
@@ -1064,6 +1280,15 @@ def _run() -> int:
             }
         )
         return 1
+
+    # Pin the ESM-C checkpoint BEFORE anything loads it, then confirm the
+    # pinned checkpoint actually fits the installed classes. Both are cheap
+    # and both run before the first GPU allocation: the alternative, which is
+    # what shipped, is 35 H100 seconds and an SVD traceback that names
+    # nothing about weights. See the pin comment at the top of this file.
+    _pin_esmc_revision()
+    if mismatch := _esmc_checkpoint_mismatch():
+        return _fail_preflight("weights", mismatch, tier, job_id)
 
     # Direct (non-Modal-wrapped) instantiation. We are already inside the
     # Modal container, so we use ESMFold2Design rather than the
@@ -1252,10 +1477,10 @@ def _run() -> int:
 def main() -> int:
     """Run the pipeline, then archive the work tree on EVERY exit path.
 
-    ``_run`` has five returns — payload parse failure, binder_design import
-    failure, model load failure, design() raising, success — plus anything it
-    raises unexpectedly. A ``finally`` here covers all six without re-indenting
-    the body. There is no rmtree to race: this tool's work tree is a fixed
+    ``_run`` has six returns — payload parse failure, binder_design import
+    failure, the ESM-C weights preflight, model load failure, design()
+    raising, success — plus anything it raises unexpectedly. A ``finally``
+    here covers all seven without re-indenting the body. There is no rmtree to race: this tool's work tree is a fixed
     /tmp path that simply dies with the container the moment this process
     exits, so "before teardown" means "before main returns".
     """

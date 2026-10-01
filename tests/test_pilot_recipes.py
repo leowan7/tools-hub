@@ -537,16 +537,20 @@ class TestPilotCardRendersMarkupNotEntities:
 class TestNoPilotIsANoOp:
     """"Load these settings" must not promise a change it does not make.
 
-    Six of the ten pilots shipped with params identical to the form's
-    own defaults, so the button loaded settings that were already
+    Six of the ten pilots that shipped had params identical to the
+    form's own defaults, so the button loaded settings that were already
     loaded. Two of those (bindcraft, rfantibody) had a genuinely cheaper
     first run available and were retuned to it; proteina gained an
     explicit binder-length window.
 
-    The remaining three (boltzgen, esmfold2-design, iggm) are MEASURED
-    to have no cheaper configuration reachable from their form — the
-    default already is the tool's floor — so this asserts the honest
-    rule rather than an allow-list.
+    Two of the rest (boltzgen, iggm) are MEASURED to have no cheaper
+    configuration reachable from their form — the default already is the
+    tool's floor — so this asserts the honest rule rather than an
+    allow-list. The third, esmfold2-design, was in the same position
+    until its pilot was WITHDRAWN on 2026-09-30: the recipe named the
+    configuration three prod runs failed on, and ``PILOT = None`` means
+    this rule no longer has anything to say about it. Having no cheaper
+    run was never the problem with it.
 
     THE RULE, stated as what is actually computed: if a pilot costs the
     same as the form's own defaults, then driving the scaling parameter
@@ -943,6 +947,12 @@ class TestHotspotDeflection:
         would never be seen — QC demonstrated exactly that: the same new
         requirement was caught when placed early in ``validate()`` and
         missed when placed late.
+
+        esmfold2-design no longer HAS PILOT params (withdrawn
+        2026-09-30), so ``pilots.get()`` hands it None and it is probed
+        on ``PROBE_FORM`` alone. It is still probed, and this test still
+        passes for it — but if that ever changes, the field it wants
+        belongs in ``PROBE_FORM``, not back in a PILOT dict.
 
         A guard cannot be trusted where it cannot see, so this asserts
         the probe is blind NOWHERE: every adapter must either validate

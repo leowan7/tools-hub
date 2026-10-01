@@ -9,7 +9,8 @@ this function via ``modal.Function.from_name("ranomics-esmfold2-design-prod",
 "run_tool")`` and calls ``.spawn(payload)``. The function body writes the
 payload to env vars and runs ``run_pipeline.py`` as a subprocess, which
 invokes the gradient-descent loop from the upstream
-``binder_design.py`` (vendored into /opt/ by the Dockerfile). The
+``binder_design.py`` (vendored into /opt/ by the ``.run_commands()``
+layer below -- this app has no Dockerfile, as the PIN block says). The
 wrapper reads ``/tmp/smoke_results.json`` and returns it inline via
 ``smoke_result``.
 
