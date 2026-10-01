@@ -139,7 +139,9 @@ def test_a_target_row_shows_its_design_count_and_tool_breakdown(client):
     assert "3 designs from 2 jobs" in " ".join(html.split())
     assert "bindcraft (2)" in html
     assert "pxdesign (1)" in html
-    assert f"/targets/{_TID}" in html
+    # Named, not linked: /targets is owner-scoped and 404s for staff.
+    assert f"target {_TID[:8]}" in html
+    assert "/targets/" not in html
 
 
 def test_a_campaign_row_gets_the_same_treatment(client):
@@ -154,7 +156,8 @@ def test_a_campaign_row_gets_the_same_treatment(client):
     html = _render(client, campaign, {"j-bc": _job("j-bc", "bindcraft")})
     assert "4 designs from 1 job" in " ".join(html.split())
     assert "bindcraft (4)" in html
-    assert f"/campaigns/{_CID}" in html
+    assert f"run {_CID[:8]}" in html
+    assert "/campaigns/" not in html
 
 
 def test_a_legacy_single_job_row_still_shows_its_indices(client):
@@ -166,9 +169,9 @@ def test_a_legacy_single_job_row_still_shows_its_indices(client):
         candidate_indices=[0, 2, 5],
     )
     html = _render(client, campaign)
-    assert "0, 2, 5" in html
-    assert "(indices, 0-based)" in html
-    assert "/jobs/j-solo" in html
+    assert "(stored indices 0, 2, 5)" in html
+    assert "3 designs" in html
+    assert "/jobs/" not in html
 
 
 def test_a_design_whose_source_job_cannot_be_read_is_disclosed_not_dropped(client):

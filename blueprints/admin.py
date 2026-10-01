@@ -10,6 +10,7 @@ only by these routes) moves in.
 
 from __future__ import annotations
 
+import functools
 import logging
 
 from flask import (
@@ -118,11 +119,14 @@ def admin_campaign_detail(campaign_id: str):
         if campaign.submission_source == "api"
         else list(STATUSES)
     )
+    # Both views read the same source jobs; cached so each is read once.
+    read_job = functools.cache(get_job)
     return render_template(
         "admin/campaign_detail.html",
         campaign=campaign,
         statuses=statuses,
-        shortlist=_ref_shortlist_view(campaign, get_job),
+        shortlist=_ref_shortlist_view(campaign, read_job),
+        shortlist_tables=_shortlist_tables(_shortlist_by_job(campaign), read_job),
         flash_msg=flash_msg or None,
         flash_kind=flash_kind,
     )
@@ -132,6 +136,45 @@ def admin_campaign_detail(campaign_id: str):
 # a handful of jobs even at hundreds of designs, because refs are deduped by
 # job id before the loop; this only binds on a pathological row.
 _ADMIN_REF_JOB_LOOKUPS = 60
+
+
+def _parse_refs(refs: list) -> tuple[dict, int, int]:
+    """``(by_job, duplicates, malformed)`` for a stored ``candidate_refs``.
+
+    ``by_job`` maps job id -> stored indices in submitted order.
+    """
+    from collections.abc import Mapping  # noqa: PLC0415
+
+    # One pass over the stored list, applying the same (job_id, index) contract
+    # blueprints.lab_projects._parse_candidate_refs writes: a mapping, a
+    # non-empty job_id, an index that coerces to a non-negative int. Anything
+    # else is counted as malformed instead of being handed to ``.get`` -- a
+    # bare string in this column used to raise AttributeError and 500 the whole
+    # fulfilment page (register item A-5).
+    by_job: dict = {}
+    seen: set = set()
+    malformed = 0
+    duplicates = 0
+    for ref in refs:
+        jid = ""
+        idx = -1
+        if isinstance(ref, Mapping):
+            jid = str(ref.get("job_id") or "").strip()
+            try:
+                idx = int(ref.get("index"))
+            except (TypeError, ValueError):
+                idx = -1
+        if not jid or idx < 0:
+            malformed += 1
+            continue
+        if (jid, idx) in seen:
+            # The same physical design named twice. Counting it twice would
+            # tell ops to order it twice (register item A-6).
+            duplicates += 1
+            continue
+        seen.add((jid, idx))
+        by_job.setdefault(jid, []).append(idx)
+    return by_job, duplicates, malformed
 
 
 def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
@@ -166,42 +209,12 @@ def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
     it is the failure this shape exists to avoid (register items A-4 / A-6).
     ``by_job`` is the resolved job-id -> indices map and is not rendered.
     """
-    from collections.abc import Mapping  # noqa: PLC0415
     from shared.jobs import candidate_records  # noqa: PLC0415
 
     refs = list(getattr(campaign, "candidate_refs", None) or [])
     if not refs:
         return None
-
-    # One pass over the stored list, applying the same (job_id, index) contract
-    # blueprints.lab_projects._parse_candidate_refs writes: a mapping, a
-    # non-empty job_id, an index that coerces to a non-negative int. Anything
-    # else is counted as malformed instead of being handed to ``.get`` -- a
-    # bare string in this column used to raise AttributeError and 500 the whole
-    # fulfilment page (register item A-5).
-    by_job: dict = {}
-    seen: set = set()
-    malformed = 0
-    duplicates = 0
-    for ref in refs:
-        jid = ""
-        idx = -1
-        if isinstance(ref, Mapping):
-            jid = str(ref.get("job_id") or "").strip()
-            try:
-                idx = int(ref.get("index"))
-            except (TypeError, ValueError):
-                idx = -1
-        if not jid or idx < 0:
-            malformed += 1
-            continue
-        if (jid, idx) in seen:
-            # The same physical design named twice. Counting it twice would
-            # tell ops to order it twice (register item A-6).
-            duplicates += 1
-            continue
-        seen.add((jid, idx))
-        by_job.setdefault(jid, []).append(idx)
+    by_job, duplicates, malformed = _parse_refs(refs)
 
     looked_up = list(by_job)[:_ADMIN_REF_JOB_LOOKUPS]
     skipped = set(by_job) - set(looked_up)
@@ -256,6 +269,166 @@ def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
         "malformed": malformed,
         "by_job": by_job,
     }
+
+
+def _shortlist_by_job(campaign) -> dict:  # noqa: ANN001
+    """Job id -> the stored indices this lab project's shortlist names.
+
+    ``candidate_refs`` when the row has any (:func:`_parse_refs`), else the
+    'web' shape's ``source_job_id`` + ``candidate_indices``, read with the
+    same rules: non-negative ints, repeats dropped. ``{}`` for an 'api' row.
+    """
+    refs = list(getattr(campaign, "candidate_refs", None) or [])
+    if refs:
+        return _parse_refs(refs)[0]
+    jid = str(getattr(campaign, "source_job_id", None) or "").strip()
+    if not jid:
+        return {}
+    indices: list = []
+    for raw in getattr(campaign, "candidate_indices", None) or []:
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if idx >= 0 and idx not in indices:
+            indices.append(idx)
+    return {jid: indices}
+
+
+def _shortlist_tables(by_job: dict, get_job) -> list:  # noqa: ANN001
+    """One entry per source job for the "Shortlisted designs" panel.
+
+    The cells are :func:`shared.exports.candidate_table` over the job's rows
+    in page order (``page_ordered_records``), the rows the job's CSV writes.
+    A stored index is resolved to its row through ``candidate_records``, the
+    list the shortlist indexes, and ``n`` is that row's position on the
+    customer's page, which can differ when the page re-sorts.
+    """
+    from collections.abc import Mapping  # noqa: PLC0415
+    from shared.exports import _basename, candidate_table  # noqa: PLC0415
+    from shared.jobs import candidate_records, page_ordered_records  # noqa: PLC0415
+
+    tables = []
+    for jid in list(by_job)[:_ADMIN_REF_JOB_LOOKUPS]:
+        job = get_job(jid)
+        if job is None:
+            tables.append({"job_id": jid, "missing": True})
+            continue
+        tool = str(getattr(job, "tool", "") or "")
+        result = getattr(job, "result", None)
+        stored = candidate_records(result)
+        page = page_ordered_records(tool, result)
+        _leading, metrics, rows = candidate_table(page)
+        stored_index = {id(rec): i for i, rec in enumerate(stored)}
+        position = {id(rec): n for n, rec in enumerate(page)}
+
+        def row_view(n: int) -> dict:
+            raw = page[n] if isinstance(page[n], Mapping) else {}
+            name = raw.get("name")
+            row = rows[n]
+            return {
+                "n": n + 1,
+                "name": name if isinstance(name, str) and name
+                else _basename(row["pdb_key"], f"design_{n + 1}"),
+                "cells": [row.get(m) for m in metrics],
+                "sequence": row["sequence"],
+                "stored_index": stored_index.get(id(page[n])),
+                "has_structure": bool(row["pdb_key"] or raw.get("pdb_content_b64")),
+            }
+
+        picked: list = []
+        unmatched: list = []
+        for idx in by_job[jid]:
+            n = position.get(id(stored[idx])) if idx < len(stored) else None
+            if n is None:
+                unmatched.append(idx)
+            else:
+                picked.append(n)
+        chosen = set(picked)
+        tables.append({
+            "job_id": jid,
+            "tool": tool,
+            "metrics": metrics,
+            "shortlisted": [row_view(n) for n in picked],
+            "others": [row_view(n) for n in range(len(page)) if n not in chosen],
+            "unmatched": unmatched,
+        })
+    return tables
+
+
+def _staff_source_job(campaign_id: str, job_id: str):  # noqa: ANN202
+    """The source job a staff download may read for this lab project, or None.
+
+    None for a non-staff session, an unknown project, or a job its shortlist
+    does not name (:func:`_shortlist_by_job`). Read unscoped, as the detail
+    page reads it.
+    """
+    from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+    from shared.campaigns import get_campaign  # noqa: PLC0415
+    from shared.jobs import get_job  # noqa: PLC0415
+    if session.get("user_email", "") not in STAFF_EMAILS:
+        return None
+    campaign = get_campaign(campaign_id)
+    if campaign is None or job_id not in _shortlist_by_job(campaign):
+        return None
+    return get_job(job_id)
+
+
+@admin_bp.route("/admin/lab-projects/<campaign_id>/source/<job_id>/export.csv", methods=["GET"])
+def admin_source_export_csv(campaign_id: str, job_id: str):
+    """The source job's scores CSV, built as ``/jobs/<id>/export.csv`` builds
+    it. That route is owner-scoped, so it 404s for a staff account."""
+    from flask import Response  # noqa: PLC0415
+    from shared.exports import candidates_to_csv, sequences_to_csv  # noqa: PLC0415
+    from shared.jobs import is_candidate_array, page_ordered_records  # noqa: PLC0415
+    job = _staff_source_job(campaign_id, job_id)
+    if job is None:
+        return render_template("404.html"), 404
+    candidates = page_ordered_records(job.tool, job.result)
+    sequences = (job.result or {}).get("sequences")
+    if not candidates and is_candidate_array(sequences):
+        body = sequences_to_csv(sequences)
+    else:
+        body = candidates_to_csv(candidates)
+    return Response(
+        body,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_scores.csv"},
+    )
+
+
+@admin_bp.route(
+    "/admin/lab-projects/<campaign_id>/source/<job_id>/structure/<int:index>",
+    methods=["GET"],
+)
+def admin_source_structure(campaign_id: str, job_id: str, index: int):
+    """One design's structure from the source job, by its STORED index."""
+    from flask import Response  # noqa: PLC0415
+    from werkzeug.utils import secure_filename  # noqa: PLC0415
+    from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
+    from shared import pdb_bfactors  # noqa: PLC0415
+    from shared.exports import _basename, _structure_bytes, export_key  # noqa: PLC0415
+    from shared.jobs import candidate_records  # noqa: PLC0415
+    job = _staff_source_job(campaign_id, job_id)
+    if job is None:
+        return render_template("404.html"), 404
+    stored = candidate_records(job.result)
+    cand = stored[index] if index < len(stored) else None
+    if not isinstance(cand, dict):
+        return render_template("404.html"), 404
+    key = export_key(cand, index)
+    data = _structure_bytes(
+        cand, key, _storage_fetcher(job.user_id, "admin_source_structure"), job_id,
+    )
+    if data is None:
+        return render_template("404.html"), 404
+    filename = secure_filename(_basename(key["pdb_key"], "")) or f"design_{index}.pdb"
+    return Response(
+        pdb_bfactors.bfactors_on_100_bytes(data),
+        mimetype="chemical/x-pdb",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 @admin_bp.route("/admin/lab-projects/<campaign_id>/status", methods=["POST"])
 def admin_campaign_update_status(campaign_id: str):
