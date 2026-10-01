@@ -286,11 +286,14 @@ def _looks_like_esmc(name: object) -> bool:
     a log line, where a false positive costs a line and a false
     negative costs the whole diagnostic. Strict gate, loose alarm.
 
-    Separators are dropped before the test so a rename to ``ESM-C-6B``
-    -- no contiguous "esmc", and how this file's own prose spells the
-    model -- is still recorded. ``/`` is deliberately NOT dropped:
-    fusing path segments would make ``/models/esm/critic`` read as
-    ESM-C. Named by review-code round 7.
+    NAME separators are dropped before the test so a rename to
+    ``ESM-C-6B`` -- no contiguous "esmc", and how this file's own prose
+    spells the model -- is still recorded. NAMESPACE separators are
+    deliberately NOT dropped: fusing segments would make
+    ``/models/esm/critic`` and ``/models/esm.critic`` both read as
+    ESM-C. No rename spells the model ``ESM.C``, so keeping ``.`` out
+    of the set costs no recall. ``-`` named by review-code round 7,
+    ``.`` by round 8.
 
     Still open, and this does not close it: a rename that drops the
     letters themselves (a volume path like ``/models/6b_trunk``) is
@@ -299,7 +302,7 @@ def _looks_like_esmc(name: object) -> bool:
     revision back off the loaded model, which is not available here.
     """
     text = str(name or "").casefold()
-    for sep in ("-", "_", ".", " "):
+    for sep in ("-", "_", " "):
         text = text.replace(sep, "")
     return "esmc" in text
 
@@ -369,10 +372,13 @@ def _pin_esmc_revision(revision: str = _ESMC_REVISION) -> None:
             # ``CRITIC_REAL_IPTM`` and the "Fast-base" family described
             # with it above) and carry no "esmc" at all. An earlier
             # version of this comment claimed they did, which was wrong;
-            # the only test id that reads as ESM-C without being the 6B
-            # repo is one constructed to exercise the shape. So a
-            # near-miss in production is expected to mean the pin broke,
-            # and the WARNING is not expected on healthy runs.
+            # the one critic-shaped id that reads as ESM-C exists only
+            # in the tests, where it was constructed to exercise this
+            # branch. (Other test ids reach here too -- ESMC-600M, and
+            # renames like ESMC-6B-2025 and ESM-C-6B -- which is the
+            # branch working, not a counterexample.) So a near-miss in
+            # production is expected to mean the pin broke, and the
+            # WARNING is not expected on healthy runs.
             # review-code round 7 raised the opposite risk -- a benign id
             # landing here every run would train an operator to ignore
             # the line -- and that is what this paragraph answers.

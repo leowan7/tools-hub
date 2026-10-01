@@ -414,13 +414,17 @@ class TestPinWiring:
         )
         assert rp._UNPINNED_ESMC_LOADS == ["biohub/ESM-C-6B"]
 
-    def test_a_path_is_not_fused_into_a_false_near_miss(self, fake_env):
-        """Dropping ``/`` as well would make this read as ESM-C. A loose
+    @pytest.mark.parametrize(
+        "name", ["/models/esm/critic", "/models/esm.critic"]
+    )
+    def test_a_namespace_separator_is_not_fused(self, fake_env, name):
+        """Dropping these too would make both ids read as ESM-C. A loose
         alarm may cost a spurious line, but not on an id with no ESM-C in
-        it at all."""
+        it at all. The ``/`` case came with the loose matcher; the ``.``
+        case is review-code round 8, which found "." still in the set."""
         mod = fake_env(_T4_KEYS)
         rp._pin_esmc_revision()
-        mod.PreTrainedModel.from_pretrained("/models/esm/critic")
+        mod.PreTrainedModel.from_pretrained(name)
         assert rp._UNPINNED_ESMC_LOADS == []
         assert rp._PINNED_ESMC_LOADS == []
 
