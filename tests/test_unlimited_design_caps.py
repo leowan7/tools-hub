@@ -38,7 +38,9 @@ def test_single_container_ceiling_matches_chunk_size():
     # The ceiling IS the campaign chunk size: above it, a single job needs
     # more than one container and must fan out.
     assert cc.single_container_ceiling("rfdiffusion") == 10
-    assert cc.single_container_ceiling("bindcraft") == 16
+    # 6, not 16: the campaign container is sized to the pipeline's own 14400s
+    # kill (see tests/test_runtime_ceiling.py), not to the 23h Modal session.
+    assert cc.single_container_ceiling("bindcraft") == 6
     assert cc.single_container_ceiling("boltzgen") == cc.BOLTZGEN_DESIGNS_PER_JOB
     for tool in ("rfdiffusion", "bindcraft", "boltzgen"):
         assert cc.single_container_ceiling(tool) == cc._chunk_size_for(tool)

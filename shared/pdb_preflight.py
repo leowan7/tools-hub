@@ -56,6 +56,8 @@ from shared.pdb_preflight_rules import (
     HOTSPOTS_REQUIRED,  # noqa: F401
     TOOL_RULES,
     ToolRules,
+    largest_target_aa_within_ceiling,
+    max_designs_within_ceiling,
     runtime_estimate_min,
 )
 from shared.uniprot_lookup import extract_uniprot_map
@@ -166,11 +168,30 @@ class SizeEnvelopeStatus:
     hard_cap_target_aa: int
     soft_warn_target_aa: int
     hard_cap_combined_aa: int
+    # The size limit that actually binds, when the runtime ceiling bites before
+    # the memory cap above. boltzgen refuses a 154 aa target while its
+    # ``hard_cap_target_aa`` is 600, and both panels printed the 600 in their
+    # header, so the refusal and a cap six times larger than the size it
+    # refused appeared on one screen. None when the memory cap IS the binding
+    # limit: no ceiling declared, no design count to solve at, the ceiling
+    # solves above the cap, it solves to 0 because the fixed term alone already
+    # overruns at any size, or a LARGER limit is what refused this target -- the
+    # memory cap or the combined budget -- in which case the header has to keep
+    # naming the figure that refusal quotes. The panels then print
+    # ``hard_cap_target_aa`` as before. Set from ``largest_target_aa_within_ceiling`` at the count the
+    # container runs, so it moves with the count the way the refusal does.
+    runtime_cap_target_aa: Optional[int] = None
     binder_max_aa: Optional[int] = None
     combined_aa: Optional[int] = None
     over_soft_warn: bool = False
     over_hard_cap: bool = False
     over_combined_cap: bool = False
+    # The estimate overruns the wall-clock the container is killed at
+    # (``SizeEnvelope.runtime_ceiling_s``). A refusal, like the two caps above,
+    # and the successor to the ``over_runtime_cap`` retired by the
+    # tier-collapse PR -- but keyed on a timeout read out of the pipeline that
+    # actually runs, not on a policy view of how long a job may take.
+    over_runtime_ceiling: bool = False
     runtime_estimate_min: Optional[float] = None
     runtime_basis: Optional[str] = None             # e.g. "100 designs"
     # WHAT ``residue_count`` COUNTED. "selection" when a chain/residue contig
@@ -678,7 +699,12 @@ def preflight_for_tool(
         size_basis="selection" if selected_aa is not None else "chains",
         selection_label=selection_label,
     )
-    if size_envelope.over_hard_cap or size_envelope.over_combined_cap:
+    if (
+        size_envelope.over_hard_cap
+        or size_envelope.over_combined_cap
+        or size_envelope.over_runtime_ceiling
+    ):
+        fit_aa = _fit_target_aa(rules, size_envelope, num_designs)
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -698,8 +724,15 @@ def preflight_for_tool(
                     f"Narrow the target region to the part you want to design "
                     f"against — e.g. one domain rather than "
                     f"{size_envelope.selection_label or 'the whole structure'}"
-                    f" — and keep it at or under "
-                    f"{size_envelope.hard_cap_target_aa} residues."
+                    + (
+                        f" — and keep it at or under {fit_aa} residues."
+                        if fit_aa is not None
+                        # ``None`` means the count is the lever and the reason
+                        # above already names the count that fits; a residue
+                        # budget printed here is one this target is already
+                        # under.
+                        else ", or ask for the design count named above."
+                    )
                 )
                 + (
                     " You can also use the AlphaFold model below and trim that "
@@ -1843,13 +1876,27 @@ def _check_size_envelope(
     )
     over_warn = target_aa > env.soft_warn_target_aa
 
+    # The count the CONTAINER runs, which is the only one runtime depends on.
+    # For boltzgen that is the pinned pool rather than the form's ``budget``
+    # (see SizeEnvelope.runtime_fixed_designs), and it is why this tool gets an
+    # estimate at all now: its form passes no num_designs.
+    effective_designs = env.runtime_fixed_designs or num_designs
     runtime_min: Optional[float] = None
     runtime_basis: Optional[str] = None
-    if num_designs is not None and num_designs > 0:
-        runtime_min = runtime_estimate_min(rules, target_aa, num_designs)
+    if effective_designs is not None and effective_designs > 0:
+        runtime_min = runtime_estimate_min(rules, target_aa, effective_designs)
         runtime_basis = (
-            f"{num_designs} design{'s' if num_designs != 1 else ''}"
+            f"{effective_designs} design{'s' if effective_designs != 1 else ''}"
         )
+    # Does the estimate exceed the wall-clock the container is killed at? A run
+    # that does is not a slow run: the kill drops every design it had made and
+    # the hold is refunded, so the GPU time is pure loss to Ranomics (see
+    # SizeEnvelope.runtime_ceiling_s). Refusing beats billing it.
+    over_runtime = bool(
+        env.runtime_ceiling_s
+        and runtime_min is not None
+        and runtime_min * 60.0 > env.runtime_ceiling_s
+    )
 
     warn_msg: Optional[str] = None
     hard_msg: Optional[str] = None
@@ -1888,6 +1935,37 @@ def _check_size_envelope(
             f"{rules.slug.title()}. Either pick a smaller target or "
             f"shorten the max binder length."
         )
+    elif over_runtime:
+        ceiling_min = int(env.runtime_ceiling_s / 60)
+        if env.runtime_fixed_designs:
+            # No user-facing knob shortens this one: the count is pinned inside
+            # the wrapper, so the only lever is target size.
+            fits_aa = largest_target_aa_within_ceiling(rules)
+            hard_msg = (
+                f"{counted}. {rules.slug.title()} runs a fixed batch of "
+                f"{env.runtime_fixed_designs} designs, which at this target "
+                f"size is estimated at {runtime_min / 60:.1f} h — past the "
+                f"{ceiling_min}-minute limit its GPU run is stopped at, and a "
+                f"run stopped there returns nothing. Targets up to about "
+                f"{fits_aa} residues fit. Narrow the region you want to design "
+                f"against, or pick a smaller target."
+            )
+        else:
+            fits_n = max_designs_within_ceiling(rules, target_aa)
+            hard_msg = (
+                f"{counted}, and {runtime_basis} at that size is estimated at "
+                f"{runtime_min / 60:.1f} h — past the {ceiling_min}-minute "
+                f"limit one {rules.slug.title()} GPU run is stopped at, and a "
+                f"run stopped there returns nothing. "
+                + (
+                    f"Ask for at most {fits_n} design"
+                    f"{'s' if fits_n != 1 else ''} against a target this size, "
+                    f"or narrow the region you want to design against."
+                    if fits_n >= 1
+                    else "Narrow the region you want to design against, or "
+                    "pick a smaller target."
+                )
+            )
     elif over_warn and env.cap_basis != "literature":
         # Same rule on the amber branch. For a "measured" cap the soft warn
         # sits exactly where measurement ends, so "has not been measured" is
@@ -1906,14 +1984,40 @@ def _check_size_envelope(
             f"out-of-memory."
         )
 
+    # The cap the header prints. Solved at ``effective_designs`` rather than the
+    # form's count for the same reason the estimate is: for a pinned pool the
+    # form's number does not reach the container.
+    #
+    # Suppressed when a LARGER limit is the one that refused. The chain above is
+    # ordered ``over_hard`` / ``over_combined`` / ``over_runtime``, so a 520 aa
+    # bindcraft target is refused by the 500-residue memory cap even though the
+    # ceiling solves to 396 at 4 designs. Printing the 396 beside a refusal that
+    # quotes 500 is the same two-caps-on-one-screen contradiction this field
+    # exists to remove, inverted -- so the header keeps naming the figure the
+    # refusal names, and takes the runtime cap only where the runtime ceiling is
+    # what binds. On a READY verdict nothing has fired and the runtime cap is
+    # the smaller of the two, which is the one a larger target would hit first.
+    runtime_cap_aa: Optional[int] = None
+    if env.runtime_ceiling_s and effective_designs and not (
+        over_hard or over_combined
+    ):
+        ceiling_aa = largest_target_aa_within_ceiling(rules, effective_designs)
+        if 0 < ceiling_aa < env.hard_cap_target_aa:
+            runtime_cap_aa = ceiling_aa
+
     return SizeEnvelopeStatus(
         residue_count=target_aa,
         hard_cap_target_aa=env.hard_cap_target_aa,
+        runtime_cap_target_aa=runtime_cap_aa,
         soft_warn_target_aa=env.soft_warn_target_aa,
         hard_cap_combined_aa=env.hard_cap_combined_aa,
         binder_max_aa=binder_max_aa,
         combined_aa=combined,
-        over_soft_warn=over_warn and not over_hard and not over_combined,
+        over_soft_warn=(
+            over_warn and not over_hard and not over_combined
+            and not over_runtime
+        ),
+        over_runtime_ceiling=over_runtime,
         over_hard_cap=over_hard,
         over_combined_cap=over_combined and not over_hard,
         runtime_estimate_min=runtime_min,
@@ -1926,12 +2030,86 @@ def _check_size_envelope(
     )
 
 
+def _fit_target_aa(
+    rules: ToolRules,
+    env: SizeEnvelopeStatus,
+    num_designs: Optional[int],
+) -> Optional[int]:
+    """The residue figure a size refusal may quote: one that actually RUNS.
+
+    ``None`` means quote NO residue figure: the count is the lever and any
+    size sentence is wrong here. See the lever paragraph below.
+
+    The hard cap alone is not. Above the runtime ceiling the binding limit is
+    smaller, so a boltzgen 500 aa upload was refused with "Targets up to about
+    153 residues fit" in the reason and "keep it at or under 600" in the fix,
+    and a user who trimmed to 600 was refused again. Solved at the count the
+    estimate was made from, which is the pinned pool where there is one (same
+    selection as ``_check_size_envelope``).
+
+    Clamped only when TARGET SIZE is the lever, and when it is NOT the lever
+    there is no admissible residue figure to quote at all. For a per-design
+    tool whose count can still bring the estimate under the ceiling, the reason
+    says "Ask for at most N designs against a target this size" (the
+    ``over_runtime`` branch of ``_check_size_envelope``); clamping the residue
+    figure contradicted it -- bindcraft at 115 aa / 100 designs asked for "at
+    most 25 designs" and then "keep it at or under 46 residues", 40% of a
+    target it runs happily at 25 -- and leaving the figure UNclamped was just
+    as wrong the other way: bindcraft at 303 aa / 6 designs was told to keep it
+    at or under 500 residues, a budget the target is 197 residues under, so a
+    user who read the fix line changed nothing and was refused identically.
+    Returning ``None`` drops the sentence and leaves the count advice standing
+    alone, which is what the campaign route already did.
+
+    The condition is "does the REASON name a count", not "does a count fit".
+    ``_check_size_envelope``'s message branches are exclusive and over_hard /
+    over_combined win, so a target over both caps gets the hard-cap message,
+    which names no count -- skipping the clamp there quoted the bare cap and
+    re-opened exactly the trim-then-refused-again failure this exists to
+    prevent: bindcraft at 600 aa / 4 designs was told to keep it at or under
+    500 residues, which is 340 min against a 240-minute ceiling.
+
+    Shared by ``preflight_for_tool`` and ``size_only_refusal`` because the
+    campaign routes quote the same sentence and are where the money goes; the
+    clamp lived only in the form route for one commit and the campaign refusal
+    was measurably self-contradicting for boltzgen at 700 aa.
+    """
+    fit_aa = env.hard_cap_target_aa
+    if env.combined_aa is not None:
+        # The combined budget binds too, and the target cap alone does not
+        # respect it: bindcraft at 325 aa with a 300 aa binder was told to
+        # narrow to 302 (the target cap's ceiling-clamped value), and 302 + 300
+        # is still over the 600 aa combined budget, so the trimmed
+        # resubmission was refused AGAIN and quoted 500 the second time --
+        # larger than the target they started from. The admissible answer is
+        # the room the binder leaves. Applied in every arm, not just
+        # ``over_combined_cap``: a figure that breaches the combined budget is
+        # wrong to quote whichever flag produced the message.
+        room = env.hard_cap_combined_aa - (env.combined_aa - env.residue_count)
+        if room > 0:
+            fit_aa = min(fit_aa, room)
+    if not env.over_runtime_ceiling:
+        return fit_aa
+    pinned = rules.size.runtime_fixed_designs
+    size_is_the_lever = (
+        bool(pinned)
+        or env.over_hard_cap
+        or env.over_combined_cap
+        or max_designs_within_ceiling(rules, env.residue_count) < 1
+    )
+    if not size_is_the_lever:
+        return None
+    ceiling_aa = largest_target_aa_within_ceiling(rules, pinned or num_designs)
+    return min(fit_aa, ceiling_aa) if ceiling_aa > 0 else fit_aa
+
+
 def size_only_refusal(
     tool_slug: str,
     target_aa: int,
     *,
     binder_max_aa: Optional[int] = None,
     selection_label: Optional[str] = None,
+    num_designs: Optional[int] = None,
 ) -> Optional[str]:
     """Size verdict alone, as a user-facing string, or None when it fits.
 
@@ -1958,15 +2136,38 @@ def size_only_refusal(
     if rules is None:
         return None
     status = _check_size_envelope(
-        rules, target_aa, binder_max_aa=binder_max_aa, num_designs=None,
+        rules, target_aa, binder_max_aa=binder_max_aa, num_designs=num_designs,
         size_basis="selection" if selection_label else "chains",
         selection_label=selection_label,
     )
-    if not (status.over_hard_cap or status.over_combined_cap):
+    if not (
+        status.over_hard_cap or status.over_combined_cap
+        or status.over_runtime_ceiling
+    ):
         return None
+    if not (status.over_hard_cap or status.over_combined_cap):
+        # A ceiling-only refusal returns on its own: the runtime message
+        # already names the action (a design count, or a target size), and
+        # appending the residue-cap fix below would advise narrowing to a cap
+        # this target is nowhere near.
+        #
+        # Tested BOTH ways because the flags are independent. Over the cap AND
+        # over the ceiling, ``_check_size_envelope``'s elif chain assigns the
+        # CAP message (``shared/pdb_preflight.py::_check_size_envelope``, the
+        # ``over_hard`` branch), so returning early there would have shipped
+        # the cap message with no fix sentence at all -- and for a pinned-pool
+        # tool that happens without any caller passing a count.
+        return status.hard_fail_message
+    fit_aa = _fit_target_aa(rules, status, num_designs)
+    if fit_aa is None:
+        # Unreachable while the early return above owns the ceiling-only arms
+        # (``_fit_target_aa`` returns None only for a ceiling-only refusal), but
+        # the two conditions are written apart and a message reading "at most
+        # None residues" is worse than no fix sentence.
+        return status.hard_fail_message
     fix = (
-        f"Narrow the target region to at most "
-        f"{status.hard_cap_target_aa} residues, or pick a smaller target."
+        f"Narrow the target region to at most {fit_aa} residues, or pick a "
+        f"smaller target."
     )
     return f"{status.hard_fail_message} {fix}"
 
