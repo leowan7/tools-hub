@@ -11,8 +11,8 @@ Hosts Ranomics' free scientific tools as lead magnets under
     /health               — unauthenticated health check
     /developability       — Binder Developability Scout (form)
     /developability/score — Binder Developability Scout (results)
-    /library-planner      — Yeast Display Library Planner (form)
-    /library-planner/plan — Yeast Display Library Planner (results)
+    /library-planner,
+    /library-planner/plan — retired 2026-09-30; both 301 to /tools
 
 Auth helpers live in ``shared.auth``. Tool modules live under
 ``tools/<name>/`` — each one exposes a small stable API that the hub

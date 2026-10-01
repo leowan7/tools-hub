@@ -262,7 +262,7 @@ def _claim_key(
     permanently in an environment that never had Supabase configured.
 
     Do NOT restate that as "the wallet decorator refuses". It does not, twice
-    over: only one of the ten guarded routes carries ``requires_wallet`` at all
+    over: only one of the nine guarded routes carries ``requires_wallet`` at all
     (``blueprints/tools.py::tool_submit``), and the decorator it carries is
     ``shared/wallet_guard.py``'s, which on a null wallet row deliberately falls
     THROUGH to the handler (its ``wallet_row is None`` arm) rather than
@@ -276,12 +276,12 @@ def _claim_key(
     client (shared/credits.py::get_service_client) rather than None, and
     migration 0004 enables RLS on this table with no policies -- so the SELECT
     reads empty and the INSERT is refused, and this refuses with it. The cost is
-    that ``/library-planner/plan`` and, for signed-in callers only,
-    ``/developability/score`` -- which spend nothing -- also 503 in a
-    half-configured dev environment. Signed-in only because that route is
-    deliberately anonymous (blueprints/tools.py::developability_score carries no
-    ``@login_required``) and the decorator hands an anonymous request straight to
-    the handler, so it never reaches this function without a user. The
+    that ``/developability/score`` -- which spends nothing -- also 503s in a
+    half-configured dev environment, for signed-in callers only. Signed-in
+    only because that route is deliberately anonymous
+    (blueprints/tools.py::developability_score carries no ``@login_required``)
+    and the decorator hands an anonymous request straight to the handler, so it
+    never reaches this function without a user. The
     alternative is worse: a PRODUCTION deploy that lost its service-role key
     would fail open on the money routes and silently double-charge every
     double-click, which is exactly the hole this function was rewritten to close.
@@ -300,7 +300,7 @@ def _claim_key(
     the Modal spawn. We cannot tell the two apart from in here, so we answer
     for the one that can cost money. Do NOT write "the wallet gate is working
     in that case" -- for the broad fault it is not, and an earlier version of
-    this paragraph said exactly that and was wrong. Five of the ten guarded
+    this paragraph said exactly that and was wrong. Five of the nine guarded
     routes spend --
     ``compute_campaign_create``, ``compute_campaign_refold``, ``job_refold``,
     ``target_launch_submit``, ``tool_submit`` -- and for those, refusing costs
@@ -308,8 +308,8 @@ def _claim_key(
     that nothing downstream catches. It used to fail open, which made any
     PostgREST blip turn every double-click into two paid launches.
 
-    The other five (``job_cancel``, ``campaigns_submit``, ``target_create``,
-    ``developability_score``, ``library_planner_plan``) pay the refusal without
+    The other four (``job_cancel``, ``campaigns_submit``, ``target_create``,
+    ``developability_score``) pay the refusal without
     the benefit, and ``job_cancel`` is the one that stings: a user cannot STOP
     a running job while the ledger is down. They are guarded anyway because a
     replay of any of them costs real work
@@ -672,7 +672,7 @@ def idempotent(
             ctx = load_user_context()
             if ctx is None:
                 # Anonymous. Either the route is open on purpose (e.g.
-                # tools.library_planner_plan) or @login_required will have
+                # tools.developability_score) or @login_required will have
                 # redirected before this ran; either way the handler decides.
                 return f(*args, **kwargs)
 

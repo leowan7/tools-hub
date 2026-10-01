@@ -1,8 +1,9 @@
 """Tool routes (blueprint refactor, Commit 7c -- last money-path step).
 
-developability + library-planner CPU tools, the /tools/<tool> preview/form,
-preflight, tool_submit (the @login_required @idempotent() @requires_wallet
-money stack, unchanged), and the /tools comparison matrix. Lifted verbatim
+developability CPU tool, the retired library-planner redirects, the
+/tools/<tool> preview/form, preflight, tool_submit (the @login_required
+@idempotent() @requires_wallet money stack, unchanged), and the /tools
+comparison matrix. Lifted verbatim
 from ``create_app()``; only ``@flask_app.route`` -> ``@tools_bp.route``, the
 factory-local modal_client -> current_app.modal_client, and self-refs ->
 ``tools.*``. The tool_form preview helpers move in with the routes.
@@ -208,118 +209,48 @@ def developability_score():
         result=result,
     )
 
+# ------------------------------------------------------------------
+# Yeast Display Library Planner — RETIRED 2026-09-30 at Leo's request.
+#
+# Both endpoints stay registered and 301 to /tools. They are not 404ed
+# because twelve "try the tool" callouts on ranomics.com point straight
+# at https://tools.ranomics.com/library-planner, and that path answered
+# 200 up to this commit (curl, 2026-09-30). A 301 hands those readers,
+# and any search engine holding the URL, the catalog instead of an error.
+#
+# 301 and not 308 on the POST: a 308 preserves the method and would
+# re-POST a stale bookmarked form to /tools, which is GET-only
+# (tools_comparison, this file) and would answer 405. A 301 is
+# downgraded to GET by browsers, which is the landing we want.
+#
+# tools/library_planner/ and templates/library_planner_*.html are left
+# on disk on purpose: the package is matched by the 'tools/**' deploy
+# trigger (.github/workflows/deploy-modal.yml:79, whose only negations
+# are meta.py, example/** and __init__.py), and that workflow's matrix
+# has no per-path routing, so deleting the package would redeploy all
+# nine GPU Modal apps for a change that touches no GPU code.
+#
+# No historical job row is orphaned by this: planning never wrote one,
+# and a census of public.tool_jobs on 2026-09-30 returned 0 rows for
+# any 'librar*' tool slug out of 278 rows total (14 GPU slugs only).
+# ------------------------------------------------------------------
+
 @tools_bp.route("/library-planner", methods=["GET"])
 def library_planner():
-    """Render the Yeast Display Library Planner input form.
-
-    Open to anonymous visitors, like /developability above. Ten posts on
-    ranomics.com link here from a "try the tool" callout, and while this
-    route was @login_required every one of those readers landed on
-    /login?next=/library-planner instead of the tool.
-
-    There is nothing to gate: planning is pure arithmetic over the posted
-    form with no GPU, no wallet charge, no job row and no storage write.
-    The trust boundary is the input validation in library_planner_plan
-    below and in plan_library (tools/library_planner/planner.py::plan_library).
-    """
-    return render_template(
-        "library_planner_form.html",
-        error=None,
-        form_values=None,
-    )
+    """Permanently redirect the retired Library Planner form to /tools."""
+    return redirect(url_for("tools.tools_comparison"), code=301)
 
 @tools_bp.route("/library-planner/plan", methods=["POST"])
-@idempotent()
 def library_planner_plan():
-    """Validate inputs and render the library planner results page.
+    """Permanently redirect the retired planner submit to /tools.
 
-    Anonymous like its GET: opening the form and then redirecting the
-    submit to login would leave the blog reader at the same wall one
-    click later. Safe to open because this handler spends nothing and
-    persists nothing -- it calls plan_library(), a pure function over
-    the parsed form, and renders a template.
-
-    The bounds below are what keep an anonymous request's cost fixed:
-    positions must parse as an int in 1..40, KD must parse as a float
-    above zero, and coverage falls back to 90% outside (0, 100).
-    plan_library then allowlists scaffold, codon scheme and starting
-    material, raising ValueError into the re-rendered form.
-
-    @idempotent() is retained for signed-in callers; it hands an
-    anonymous request straight to the handler because load_user_context
-    returns None without a session (shared/idempotency.py::idempotent).
+    @idempotent() was dropped with the handler body. The decorator is for
+    routes where a replay costs real money or real work
+    (shared/idempotency.py::idempotent); a redirect costs neither, and
+    keeping it would have let a half-configured ledger 503 a 301.
     """
-    from tools.library_planner import plan_library  # noqa: PLC0415
+    return redirect(url_for("tools.tools_comparison"), code=301)
 
-    raw = {
-        "scaffold": request.form.get("scaffold", "").strip(),
-        "positions": request.form.get("positions", "").strip(),
-        "scheme": request.form.get("scheme", "").strip(),
-        "kd_nm": request.form.get("kd_nm", "").strip(),
-        "starting_material": request.form.get(
-            "starting_material", ""
-        ).strip(),
-        "coverage_pct": request.form.get("coverage_pct", "90").strip(),
-    }
-
-    error = None
-    try:
-        positions = int(raw["positions"])
-    except ValueError:
-        positions = None
-        error = "Diversified positions must be a whole number."
-    try:
-        kd_nm = float(raw["kd_nm"])
-    except ValueError:
-        kd_nm = None
-        if error is None:
-            error = "Target KD must be a number in nanomolar."
-    try:
-        coverage_pct = float(raw["coverage_pct"])
-    except ValueError:
-        coverage_pct = 90.0
-
-    if coverage_pct <= 0 or coverage_pct >= 100:
-        coverage_pct = 90.0
-
-    if error is None and (positions is None or positions < 1):
-        error = "Diversified positions must be at least 1."
-    if error is None and positions is not None and positions > 40:
-        error = (
-            "Diversified positions capped at 40 for this tool. "
-            "For combinatorial libraries beyond 40 positions, please "
-            "reach out to the Ranomics team."
-        )
-    if error is None and (kd_nm is None or kd_nm <= 0):
-        error = "Target KD must be greater than zero."
-
-    if error:
-        return render_template(
-            "library_planner_form.html",
-            error=error,
-            form_values=raw,
-        )
-
-    try:
-        plan = plan_library(
-            scaffold=raw["scaffold"],
-            diversification_positions=positions,
-            diversification_scheme=raw["scheme"],
-            target_kd_nm=kd_nm,
-            starting_material=raw["starting_material"],
-            target_coverage=coverage_pct / 100.0,
-        )
-    except ValueError as exc:
-        return render_template(
-            "library_planner_form.html",
-            error=str(exc),
-            form_values=raw,
-        )
-
-    return render_template(
-        "library_planner_results.html",
-        plan=plan,
-    )
 
 # ------------------------------------------------------------------
 # GPU tool routes — one form/submit pair per registered adapter,

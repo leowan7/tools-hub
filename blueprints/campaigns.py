@@ -298,9 +298,11 @@ def compute_campaign_create():
     # the CSRF token is session-scoped and reusable, and the POST takes seconds.
     #
     # Every sibling already had it: POST /targets, POST /targets/<id>/launch,
-    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score,
-    # /library-planner/plan. This repo's own docs name this exact failure mode
-    # as a defect, for a route that HAS the decorator.
+    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score.
+    # This repo's own docs name this exact failure mode as a defect, for a
+    # route that HAS the decorator. (/library-planner/plan carried it too
+    # until the planner was retired on 2026-09-30; the decorator went with
+    # the handler body.)
     #
     # Safe to add only because of the hardening in this same branch: the key
     # falls back to a canonical encoding of request.form when _enforce_csrf has
