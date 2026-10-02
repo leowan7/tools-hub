@@ -332,7 +332,7 @@
         for (var i = 0; i < numbers.length; i++) {
           var n = numbers[i];
           if (n.willValidate && n.offsetParent !== null && !n.validity.valid) {
-            applyNoPrice('Fix the highlighted number.');
+            applyNoPrice('One of the numbers above is not valid.');
             return;
           }
         }
