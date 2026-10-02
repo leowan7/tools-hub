@@ -434,16 +434,28 @@ def _is_metric_value(v) -> bool:
     return False                           # lists/dicts (per-residue contacts)
 
 
-def candidates_to_csv(candidates) -> str:
-    """Provenance columns (:func:`export_key`) + every metric found."""
+def _candidate_sequence(cand: dict) -> str:
+    """The designed sequence a row stores: ``sequence``, else
+    ``binder_sequence``, else ``scores["sequence"]``, else ``""``. Read by the
+    CSV and the FASTA."""
+    scores = cand.get("scores")
+    seq = (cand.get("sequence") or cand.get("binder_sequence")
+           or (scores.get("sequence") if isinstance(scores, dict) else None)
+           or "")
+    return seq if isinstance(seq, str) else ""
+
+
+def candidate_table(candidates) -> tuple[list[str], list[str], list[dict]]:
+    """``(leading, metrics, rows)``: the cells :func:`candidates_to_csv`
+    writes, before they are serialised. One row per candidate, in the order
+    given, each carrying a ``sequence`` key (``""`` when it stores none). Also
+    read by ``blueprints.admin._shortlist_tables`` for the lab-project page."""
     cands = _dict_candidates(candidates)
     keys, leading = _export_keys(cands)
-    all_score_keys = _metric_columns(cands, leading)
-    buf = io.StringIO()
-    writer = csv.DictWriter(
-        buf, fieldnames=leading + all_score_keys, extrasaction="ignore",
-    )
-    writer.writeheader()
+    # "sequence" passed as a leading name so a ``scores["sequence"]`` cannot
+    # add a second column of that name.
+    all_score_keys = _metric_columns(cands, [*leading, "sequence"])
+    rows = []
     for cand, key in zip(cands, keys):
         # Root metrics first, then scores (which win, matching how
         # candidate_metric resolves), then provenance (which wins outright).
@@ -465,7 +477,28 @@ def candidates_to_csv(candidates) -> str:
             # page shows 86.24. Fixing a 100x disagreement and opening a
             # 1e-14 one is not fixing it.
             row[col] = scaled if scaled is None else round(scaled, 2)
-        writer.writerow(row)
+        row["sequence"] = _candidate_sequence(cand)
+        rows.append(row)
+    return leading, all_score_keys, rows
+
+
+def candidates_to_csv(candidates) -> str:
+    """Provenance columns (:func:`export_key`) + every metric found, then
+    ``sequence`` last when any row stores one (:func:`_candidate_sequence`).
+
+    Last so the columns before it keep their positions. The stored field
+    only: rows whose FASTA record is read from the structure file get no
+    sequence here, because this function is not handed ``fetch_bytes``.
+    """
+    leading, metrics, rows = candidate_table(candidates)
+    seq_column = ["sequence"] if any(r["sequence"] for r in rows) else []
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf, fieldnames=leading + metrics + seq_column,
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
     return buf.getvalue()
 
 
@@ -625,7 +658,7 @@ def candidates_to_fasta(
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
         key = export_key(cand, i)
-        seq = cand.get("sequence") or cand.get("binder_sequence") or ""
+        seq = _candidate_sequence(cand)
         if seq:
             records = [("", seq)]
         elif fetch_bytes is not None:
