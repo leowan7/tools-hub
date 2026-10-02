@@ -308,21 +308,6 @@ def display_balance_usd(value) -> str:  # noqa: ANN001
     Rounds DOWN, for the mirror-image reason: a balance rounded up claims funds
     that are not there.
 
-    The asymmetry is visible in a narrow band, and that is deliberate rather
-    than overlooked. With a balance between the exact requirement and the
-    requirement as DISPLAYED, the page shows less available than it shows
-    needed, while the launch is in fact affordable: a $9.1800 balance against a
-    $9.1765 first wave reads "$9.18 available" under "$9.19 to start" and still
-    starts. The button state comes from the server's `affordable` flag, never
-    from comparing the two rendered strings. Erring toward "top up" beats
-    erring toward a hold the balance cannot cover.
-
-    Note the band is wider than the one cent this originally described. The
-    multi-tool panel's displayed requirement is the SUM of its rows' ceilings,
-    not the ceiling of the exact total, so it can sit a few cents above the
-    exact figure the gate uses. Measured across 2- to 7-tool cohorts, the gap
-    reached 2 cents.
-
     All three helpers raise rather than guess on a non-numeric or non-finite
     input. Callers split into two groups with DIFFERENT failure modes, and the
     difference matters:
@@ -344,8 +329,7 @@ def display_balance_usd(value) -> str:  # noqa: ANN001
     Do NOT write that raising here is "not a regression because the previous
     formatting raised on the same inputs". It did not. ``'%.2f' %
     Decimal('NaN')`` returns ``'nan'`` where these raise, and Postgres numeric
-    can hold NaN. That path became fallible, which may well be the right
-    trade, but it is a change and not a no-op.
+    can hold NaN. Raising is a change, not a no-op.
     """
     return _display_usd(value, ROUND_FLOOR)
 

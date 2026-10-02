@@ -1064,11 +1064,13 @@ class TestTopupFromFormGate:
             _login(client)
             return client.get("/account/wallet/topup" + qs)
 
-    def test_tool_shows_the_gate_notice_and_return(self, client):
+    def test_tool_sets_the_return_without_a_notice(self, client):
+        # No estimate on this route, so no claim the balance falls short: a
+        # reload after a top-up would make it false.
         resp = self._get(client, "?tool=bindcraft&need=33.01")
         html = resp.get_data(as_text=True)
         assert 'value="20"' in html  # the minimum; a stale need= is ignored
-        assert "Your balance does not cover this run." in html
+        assert "wallet-topup-gate-notice" not in html
         assert "33.01" not in html and 'value="34"' not in html
         with client.session_transaction() as sess:
             assert sess["wallet_gate_form"] == {"tool": "bindcraft"}

@@ -121,17 +121,29 @@
     <div class="panel wallet-topup-gate-notice">
       <div class="panel-body">
         <p class="wallet-section-body">
-          <strong>Top up to run your job.</strong>
           {% if gate_reason == 'insufficient_balance' %}
-          Your balance does not cover this run.
-          {% endif %}
-          Top up, then
+          <strong>Top up to run your job.</strong>
+          Your balance does not cover this run. Top up, then
           {% if return_tool %}
             <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
           {% else %}
             go back to the form
           {% endif %}
           and run the job once your balance updates.
+          {% elif gate_reason == 'wallet_frozen' %}
+          <strong>Your wallet is on hold.</strong>
+          Contact support to resume.
+          {% else %}
+          <strong>This run is too large for a single job.</strong>
+          A top up does not change that.
+          <a href="/campaigns/new">Run it at full size</a>, or reduce the
+          scale on the
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">{{ return_tool }} form</a>.
+          {% else %}
+            form.
+          {% endif %}
+          {% endif %}
           Nothing is submitted for you.
         </p>
       </div>

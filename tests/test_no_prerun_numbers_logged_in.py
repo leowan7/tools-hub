@@ -120,12 +120,17 @@ def test_topup_page_from_the_gate_link_shows_no_run_figure(all_tools_app):
         resp = client.get("/account/wallet/topup?tool=bindcraft")
     assert resp.status_code == 200
     page = resp.get_data(as_text=True)
-    assert "Your balance does not cover this run." in page
     assert not _figures(flask_app, page, "$5.00", "$10.00", "$1,000.00",
                         *_PRESETS)
 
 
-def test_server_gate_render_shows_no_run_figure(all_tools_app):
+@pytest.mark.parametrize("reason, says", [
+    ("insufficient_balance", "Your balance does not cover this run."),
+    ("per_tool_cap_exceeded", "A top up does not change that."),
+    ("self_serve_ceiling_exceeded", "A top up does not change that."),
+    ("wallet_frozen", "Your wallet is on hold."),
+])
+def test_server_gate_render_shows_no_run_figure(all_tools_app, reason, says):
     flask_app, _slugs = all_tools_app
     from shared.wallet_guard import _render_topup_gate  # noqa: PLC0415
 
@@ -133,9 +138,9 @@ def test_server_gate_render_shows_no_run_figure(all_tools_app):
         "shared.wallet_guard.get_or_create_wallet",
         return_value=_short_wallet(),
     ):
-        page = _render_topup_gate(tool_slug="bindcraft",
-                                  reason="insufficient_balance",
+        page = _render_topup_gate(tool_slug="bindcraft", reason=reason,
                                   form_snapshot={})
-    assert "Your balance does not cover this run." in page
+    assert says in page
+    assert ("Top up to run your job" in page) == (reason == "insufficient_balance")
     assert not _figures(flask_app, page, "$5.00", "$10.00", "$1,000.00",
                         *_PRESETS)

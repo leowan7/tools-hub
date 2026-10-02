@@ -14,8 +14,9 @@
    rule, and the two too-large refusals. The script flips visibility based
    on the live estimate returned by GET /api/wallet/estimate (Agent E).
    The top-up gate reads ``deficit_usd`` only to decide whether to show, and
-   prints the balance and no other figure; nothing in this file reads
-   ``rounded_topup_usd``.
+   prints no figure but the balance and the $20 minimum; nothing in this file
+   reads ``rounded_topup_usd``
+   (tests/test_no_prerun_numbers_logged_in.py).
 
    The estimate endpoint is expected to accept:
 
