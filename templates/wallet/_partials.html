@@ -12,8 +12,10 @@
    The two panels live next to each other above the submit button. The
    estimate panel prints no price or time: it shows the balance, the billing
    rule, and the two too-large refusals. The script flips visibility based
-   on the live estimate returned by GET /api/wallet/estimate (Agent E),
-   which the top-up gate still reads.
+   on the live estimate returned by GET /api/wallet/estimate (Agent E).
+   The top-up gate reads ``deficit_usd`` only to decide whether to show, and
+   prints the balance and no other figure; nothing in this file reads
+   ``rounded_topup_usd``.
 
    The estimate endpoint is expected to accept:
 
@@ -113,26 +115,13 @@
     <div class="wallet-topup-gate-head">
       <span class="wallet-topup-gate-title">Top up to run this job</span>
       <span class="wallet-topup-gate-sub">
-        Starting this job holds the amount below in your wallet while it
-        runs. You are billed for the GPU time it uses and the rest comes back.
+        Your balance does not cover this run. Top up your wallet to run it.
       </span>
     </div>
     <dl class="wallet-topup-gate-figures">
       <div class="wallet-topup-gate-figure">
-        <dt>Estimated cost</dt>
-        <dd data-gate-estimate>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure">
-        <dt>Held to start</dt>
-        <dd data-gate-required>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure">
         <dt>Your balance</dt>
         <dd data-gate-balance>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure wallet-topup-gate-figure-deficit">
-        <dt>You need</dt>
-        <dd data-gate-deficit>$0.00</dd>
       </div>
     </dl>
     <div class="wallet-topup-gate-actions">
@@ -144,7 +133,7 @@
          target="_blank" rel="noopener"
          class="btn-primary wallet-topup-gate-submit"
          data-gate-button>
-        Top up <span data-gate-rounded-amount>$20.00</span>
+        Top up
       </a>
       <span class="wallet-topup-gate-helper">
         Opens checkout in a new tab and keeps this form as it is. Come back
@@ -176,12 +165,7 @@
       var noteEl = panel.querySelector('[data-estimate-note]');
       var noteTextEl = panel.querySelector('[data-estimate-note-text]');
 
-      var gateEstimateEl = gate && gate.querySelector('[data-gate-estimate]');
       var gateBalanceEl = gate && gate.querySelector('[data-gate-balance]');
-      var gateDeficitEl = gate && gate.querySelector('[data-gate-deficit]');
-      var gateRequiredEl = gate && gate.querySelector('[data-gate-required]');
-      var gateRoundedEl = gate && gate.querySelector('[data-gate-rounded-amount]');
-      var gateButton = gate && gate.querySelector('[data-gate-button]');
 
       var submitBtn = form.querySelector('[data-submit-cta], button[type="submit"]:not([data-gate-button])');
 
@@ -201,28 +185,16 @@
         submitBtn.dataset.blockPreflight = '1';
       }
 
-      // Two directions, not one. The top-up gate's figures and the balance
-      // used to go through a single NEAREST rounding, so it printed BELOW the
-      // real estimate on 6 of 13 tool forms (opendde 14.7920 as $14.79, mpnn
-      // 0.0241 as $0.02).
-      //
-      //   cost / required top-up -> UP    (never ask for less than is needed)
-      //   balance                -> DOWN  (never claim headroom that is absent)
-      //
-      // Mirrors display_cost_usd / display_balance_usd on the server. This file
-      // is not one of the two consent templates, so the guard forbidding
-      // arithmetic there does not apply here; these figures are advisory and
-      // the server re-gates every one of them.
-      function _q(v, up) {
+      // The balance rounds DOWN, like display_balance_usd on the server.
+      function _q(v) {
         var n = parseFloat(v);
         if (!isFinite(n)) n = 0;
-        // Strip IEEE754 noise BEFORE rounding directionally: 0.07 * 100 is
-        // 7.000000000000001, and a bare Math.ceil turns $0.07 into $0.08.
+        // Strip IEEE754 noise BEFORE rounding: 0.29 * 100 is
+        // 28.999999999999996, and a bare Math.floor turns $0.29 into $0.28.
         var scaled = Number((n * 100).toFixed(6));
-        return (up ? Math.ceil(scaled) : Math.floor(scaled)) / 100;
+        return Math.floor(scaled) / 100;
       }
-      function fmtUp(v) { return '$' + _q(v, true).toFixed(2); }
-      function fmtDown(v) { return '$' + _q(v, false).toFixed(2); }
+      function fmtDown(v) { return '$' + _q(v).toFixed(2); }
 
       function setHidden(el, hidden) {
         if (!el) return;
@@ -266,16 +238,8 @@
         setNote(data.full_size_run
           ? 'This count runs as a full-size run in ' + data.total_subjobs + ' pieces.'
           : '');
-        var estimate = parseFloat(data.estimate_usd || 0);
         var balance = parseFloat(data.balance_usd || 0);
         var deficit = parseFloat(data.deficit_usd || 0);
-        var rounded = parseFloat(data.rounded_topup_usd || 20);
-        // The hold submit reserves; the deficit is measured against it.
-        var required = parseFloat(data.required_usd);
-        if (!isFinite(required)) required = estimate;
-        // Printed required minus printed balance, so the gate adds up.
-        var shortShown = deficit > 0
-          ? Math.max(_q(required, true) - _q(balance, false), 0.01) : 0;
 
         if (balanceEl) balanceEl.textContent = fmtDown(balance);
 
@@ -286,16 +250,8 @@
 
         var insufficient = deficit > 0 && !ceiling && !hard;
         setHidden(gate, !insufficient);
-        if (insufficient) {
-          if (gateEstimateEl) gateEstimateEl.textContent = fmtUp(estimate);
-          if (gateBalanceEl) gateBalanceEl.textContent = fmtDown(balance);
-          if (gateRequiredEl) gateRequiredEl.textContent = fmtUp(required);
-          if (gateDeficitEl) gateDeficitEl.textContent = fmtUp(shortShown);
-          if (gateRoundedEl) gateRoundedEl.textContent = fmtUp(rounded);
-          if (gateButton) {
-            var href = gateButton.getAttribute('href').split('&need=')[0];
-            gateButton.setAttribute('href', href + '&need=' + fmtUp(shortShown).slice(1));
-          }
+        if (insufficient && gateBalanceEl) {
+          gateBalanceEl.textContent = fmtDown(balance);
         }
 
         if (submitBtn) {

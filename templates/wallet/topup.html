@@ -6,15 +6,12 @@
 
    Expected context (Agent E):
      wallet                  current wallet dict (balance, auto_reload_*)
-     suggested_amounts       list of dicts {value, label, covers}
-                             (fallback to the constant below if absent)
      min_topup_usd           usually Decimal("20.00")
      next_url                optional return path; when present this is a
                              "top up then run the job" gate from a tool form,
                              so the form forwards it through Checkout
-     deficit_usd             optional Decimal; when present this is the
-                             gate flow and the suggested default is the
-                             rounded deficit, not the bare $20
+     gate_reason             optional; when present this is the gate flow
+                             and the page says why the run did not start
      topup_action_url        Agent C's POST endpoint; falls back to a
                              placeholder data-route until Wave 3 wire up
 #}
@@ -98,20 +95,17 @@
     </div>
   {% endif %}
 
-  {# Defensive: not every route passes deficit_usd or min_topup_usd. Treat
-     undefined and none the same way. #}
+  {# Defensive: not every route passes min_topup_usd. Treat undefined and
+     none the same way. #}
   {% set _min_raw = min_topup_usd|default(none, true) %}
   {% set _min = (_min_raw|float) if _min_raw is not none else 20 %}
-  {% set _deficit_raw = deficit_usd|default(none, true) %}
-  {% set _suggested = suggested_amounts or [
-    {'value': 20,   'label': '$20',    'covers': 'First exploration after the signup balance. Sequence design and single folds.'},
-    {'value': 50,   'label': '$50',    'covers': 'One small project. Tens of folds, a single round of MPNN sequence design.'},
-    {'value': 200,  'label': '$200',   'covers': 'Multi target exploration. Several design loops across two or three targets.'},
-    {'value': 500,  'label': '$500',   'covers': 'One full-size run: backbone generation plus design and validation.'},
-    {'value': 2500, 'label': '$2,500', 'covers': 'Production scale. At this level, testing your best designs in our lab is often the next step.'},
+  {% set _suggested = [
+    {'value': 20,   'label': '$20'},
+    {'value': 50,   'label': '$50'},
+    {'value': 200,  'label': '$200'},
+    {'value': 500,  'label': '$500'},
+    {'value': 2500, 'label': '$2,500'},
   ] %}
-  {% set _default_amount = (_deficit_raw|float|round(0, 'ceil')) if _deficit_raw is not none and (_deficit_raw|float) > _min else _min %}
-  {% if _default_amount < _min %}{% set _default_amount = _min %}{% endif %}
 
   <div class="hero">
     <h1>Top up your wallet</h1>
@@ -123,21 +117,15 @@
     </p>
   </div>
 
-  {% if _deficit_raw is not none %}
+  {% if gate_reason %}
     <div class="panel wallet-topup-gate-notice">
       <div class="panel-body">
         <p class="wallet-section-body">
           <strong>Top up to run your job.</strong>
-          {% if shown_short_usd is defined and shown_short_usd is not none %}
-          This job needs <strong>${{ display_cost_usd(estimate_usd) }}</strong>
-          and your balance is <strong>${{ display_balance_usd(balance_usd) }}</strong>,
-          short by <strong>${{ shown_short_usd }}</strong>.
-          {% else %}
-          To start, your job needs
-          <strong>${{ display_cost_usd(_deficit_raw) }}</strong> more than
-          your balance.
+          {% if gate_reason == 'insufficient_balance' %}
+          Your balance does not cover this run.
           {% endif %}
-          Add at least that amount, then
+          Top up, then
           {% if return_tool %}
             <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
           {% else %}
@@ -174,10 +162,9 @@
               <input type="radio"
                      name="amount_preset"
                      value="{{ amt.value }}"
-                     {% if amt.value == _default_amount %}checked{% endif %}
+                     {% if amt.value == _min %}checked{% endif %}
                      data-amount="{{ amt.value }}">
               <span class="wallet-topup-suggested-label">{{ amt.label }}</span>
-              <span class="wallet-topup-suggested-covers">{{ amt.covers }}</span>
             </label>
           {% endfor %}
         </div>
@@ -192,7 +179,7 @@
                    class="field-input"
                    min="{{ '%.0f'|format(_min) }}"
                    step="1"
-                   value="{{ '%.0f'|format(_default_amount) }}"
+                   value="{{ '%.0f'|format(_min) }}"
                    required>
           </div>
           <div class="field-helper">

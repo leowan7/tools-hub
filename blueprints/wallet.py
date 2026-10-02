@@ -28,6 +28,7 @@ from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.wallet import (
     MIN_TOPUP_USD,
+    REASON_INSUFFICIENT,
     SELF_SERVE_CEILING_USD,
     _round_up_topup_amount,
     get_or_create_wallet,
@@ -708,9 +709,9 @@ def topup_complete():
 #   POST /account/wallet/auto-reload    -> save auto reload settings
 #
 # The gate flow lives on the same /account/wallet/topup template via
-# the requires_wallet decorator (see _render_topup_gate above); the
-# standalone topup form below renders the same template with no
-# deficit_usd context.
+# the requires_wallet decorator (shared/wallet_guard.py::_render_topup_gate);
+# the standalone topup form below renders the same template with no
+# gate_reason unless a tool form's gate link sent ?tool=.
 
 @wallet_bp.route("/account/wallet", methods=["GET"])
 @login_required
@@ -788,8 +789,8 @@ def wallet_overview():
 def wallet_topup():
     """Render the standalone wallet top up form.
 
-    The gate flow renders the same template with a ``deficit_usd``
-    and ``next_url`` set; this route renders it bare so the user can
+    The gate flow renders the same template with ``gate_reason`` and
+    ``next_url`` set; this route renders it bare so the user can
     top up manually without coming from a tool gate. ``topup_error``
     is read from the query string so the POST handler can redirect
     here with an inline error.
@@ -802,15 +803,9 @@ def wallet_topup():
     if wallet.get("wallet_frozen"):
         return redirect(url_for("wallet.wallet_overview") + "?wallet_frozen=1")
     topup_error = (request.args.get("topup_error") or "").strip() or None
-    # Arrived from a tool form's gate link: ``need`` presets the amount and
-    # ``tool`` makes the post-checkout page offer "Return to <tool>".
-    need = None
-    try:
-        need = Decimal(request.args.get("need") or "")
-        if not (Decimal("0") < need <= SELF_SERVE_CEILING_USD):
-            need = None
-    except (ArithmeticError, ValueError):
-        need = None
+    # Arrived from a tool form's gate link (templates/wallet/_partials.html::
+    # wallet_topup_gate, shown when the balance is short): ``tool`` shows the
+    # gate notice and makes the post-checkout page offer "Return to <tool>".
     tool = (request.args.get("tool") or "").strip()
     # The adapter registry, not TOOL_SPECS: the latter still carries the
     # historic key "alphafold2" whose adapter registers as "af2"
@@ -827,8 +822,8 @@ def wallet_topup():
         "wallet/topup.html",
         wallet=wallet,
         return_tool=tool or None,
+        gate_reason=REASON_INSUFFICIENT if tool else None,
         min_topup_usd=MIN_TOPUP_USD,
-        deficit_usd=need,
         next_url=None,
         topup_action_url="/account/wallet/checkout",
         topup_error=topup_error,

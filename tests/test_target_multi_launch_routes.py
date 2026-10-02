@@ -684,11 +684,11 @@ _PACE_OBSERVABLE_COHORT = (
 #   figure is a whole multiple of the $5.00 per-chunk cap. A row that lands on
 #   exact cents contributes no rounding error, so it cannot help the row sum
 #   diverge from the ceiling of the exact sum -- with rfdiffusion in the cohort
-#   NO design count from 2 to 400 satisfies this precondition or the refusal
-#   test's. pxdesign replaces it. Re-searched over every 2- and 3-tool
-#   combination of {bindcraft, rfantibody, rfdiffusion, pxdesign, boltzgen} at
-#   designs in {12, 24, 50, 100, 120, 200, 250, 300, 400}: 40 shapes satisfy
-#   this test's precondition and the refusal test's together. The count is
+#   NO design count from 2 to 400 satisfied this precondition or that of a
+#   since-removed refusal test. pxdesign replaces it. Re-searched over every
+#   2- and 3-tool combination of {bindcraft, rfantibody, rfdiffusion,
+#   pxdesign, boltzgen} at designs in {12, 24, 50, 100, 120, 200, 250, 300,
+#   400}: 40 shapes satisfied both preconditions together. The count is
 #   grid-dependent -- it is here to show the search happened, not as a figure
 #   to check against.
 #
@@ -699,10 +699,6 @@ _PACE_OBSERVABLE_COHORT = (
 #   own precondition asserts that the cohort still diverges.
 _STEADY_DIVERGENT_COHORT_TOOLS = ("rfantibody", "pxdesign", "boltzgen")
 _STEADY_DIVERGENT_DESIGNS = 200
-
-#   The refusal test needs the row sum to differ from the ceiling of the exact
-#   sum at BOTH paces; the same three tools at 100 designs do that.
-_REFUSAL_COHORT = ("rfantibody", "pxdesign", "boltzgen")
 
 
 def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client):
@@ -1821,91 +1817,26 @@ def test_the_uncharged_claim_is_derived_and_not_a_literal():
     )
 
 
-@pytest.mark.parametrize("pace", ["burst", "steady"])
-def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
-    """One screen, one hold figure.
 
-    The 400 re-renders the estimate panel, which totals its rows' 2dp displays.
-    ``preauth_message`` used to round the exact total up instead, and those are
-    different numbers (``sum(ceil) >= ceil(sum)``): the sentence said $9.18
-    while the panel above it said $9.19, over a consent line reading "the amount
-    above will be held". Topping up to the sentence's figure gets refused again.
 
-    Measured when this was written: 128 of 240 refused cohorts printed two
-    different holds.
-
-    Red if the route stops passing ``required_display``, or if the panel and the
-    sentence are derived by two different roundings again.
-    """
-    from shared.compute_campaigns import display_total_usd
-    from shared.target_launch import ToolLaunchSpec, plan_multi_launch
-
+def test_the_refusal_sentence_names_no_amount(client):
+    """No pre-run figure: a refused launch says the balance is short and names
+    no amount."""
     _login(client)
-    t = _target()
-    # rfantibody+pxdesign+boltzgen@100, not rfdiffusion+pxdesign@12. Three
-    # preconditions have to hold simultaneously and the original cohort met
-    # none of them:
-    #   1. the paces must price differently (at 12 designs one sub-job per tool
-    #      clamps the first wave and burst == steady, so the pace argument is
-    #      unpinnable -- that mutation stayed green across 257 tests);
-    #   2. the row sum must differ from the ceiling of the exact sum AT BURST;
-    #   3. and the same must hold AT STEADY, or the steady case below is vacuous.
-    # This was the pair bindcraft+rfantibody, which satisfied all three until
-    # bindcraft's gpu_class was corrected from A100-40GB to the A100-80GB its
-    # container runs on; at the new price the two roundings agree on that pair
-    # at every design count from 2 to 400 (all 399 checked, zero satisfy the
-    # three). Its successor bindcraft+rfantibody+pxdesign then left when
-    # rfantibody's price was cut to measured runtimes. For the search grid see
-    # the note beside _STEADY_DIVERGENT_COHORT_TOOLS. Searched, not guessed.
-    _assert_pace_is_observable_on(_REFUSAL_COHORT, 100)
-
-    # The form is passed EXPLICITLY and the plan is built from the same numbers.
-    # The previous version computed rfdiffusion@12 + pxdesign@12 while _form()
-    # posts pxdesign@**24**, so the expected figure came from a cohort the route
-    # never priced. It passed only because those two different cohorts happen to
-    # display the same $9.19. Keep these two in step or the test proves nothing.
-    #
-    # Parametrized over BOTH paces, which is what actually pins the pace
-    # argument. Running burst only, the route's `plan.pace` and a hardcoded
-    # PACE_BURST are the same value, so the mutation swapping one for the other
-    # survived even after this cohort was widened to 200. Only the steady case
-    # can tell them apart.
-    form = _form(
-        tools=list(_REFUSAL_COHORT), pace=pace,
-        rfantibody__designs="100", rfantibody__cdr_lengths="H1:8,H2:7,H3:10-16",
-        pxdesign__designs="100", pxdesign__binder_length="80",
-        boltzgen__designs="100", boltzgen__protocol="nanobody-anything",
-        boltzgen__binder_length_min="50", boltzgen__binder_length_max="100",
-    )
-    plan = plan_multi_launch(
-        [ToolLaunchSpec(tool=tool, preset="pilot", requested_designs=100,
-                        params={}) for tool in _REFUSAL_COHORT],
-        pace,
-    )
-    panel = display_total_usd(r["first_wave_usd_display"] for r in plan.rows())
-    # The precondition. If the two roundings agreed on this cohort the test
-    # would pass with the bug reinstated.
-    from shared.compute_campaigns import display_cost_usd
-    assert panel != display_cost_usd(plan.first_wave_usd), (
-        "this cohort cannot observe the divergence; pick another"
-    )
-
     resp, _ = _launch(
-        client, t, form=form,
+        client, _target(),
         preauth=_preauth(ok=False, reason=PREAUTH_INSUFFICIENT,
-                         balance="1", required=str(plan.first_wave_usd)),
+                         balance="1", required="9.1765"),
     )
     body = resp.get_data(as_text=True)
-    assert f"${panel} to start" in body, f"sentence does not quote {panel}"
-    assert f"${display_cost_usd(plan.first_wave_usd)} to start" not in body
+    assert "does not cover the first batch of these 2 runs. Top up" in body
+    assert "$9.1" not in body
 
 
 def test_the_narrow_alternative_quotes_the_panel_it_produces(client):
-    """"Starting narrow would need $X" is a promise about the next screen.
-
-    Acting on it re-prices at steady pace and prints a panel; that panel totals
-    its rows, so this figure has to be totalled the same way rather than ceiled
-    from the steady exact sum.
+    """The JSON alternative's ``first_wave_usd_display`` is totalled from the
+    steady rows rather than ceiled from the steady exact sum. No page prints
+    it (tests/test_no_prerun_numbers_logged_in.py); the JSON still carries it.
 
     Red if the alternative goes back to ``display_cost_usd`` of the total.
     """
@@ -1964,8 +1895,7 @@ def test_the_pace_helper_reproduces_the_row_sum(client):
 
     ``first_wave_display_at_pace`` exists for callers with no rows in hand, and
     its docstring claims it equals ``display_total_usd`` over ``plan.rows()`` at
-    the plan's own pace. That equality is the whole reason it is safe to use in
-    the refusal sentence, so it is asserted rather than inspected.
+    the plan's own pace, so that equality is asserted rather than inspected.
     """
     from shared.compute_campaigns import display_total_usd
     from shared.target_launch import (
