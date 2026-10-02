@@ -196,6 +196,31 @@ _DESIGNS_PAGE_SORT: dict[str, tuple[str, bool]] = {
 }
 
 
+def _single_fold_record(tool: Optional[str], result: dict) -> list:
+    """An ESMFold single-fold result as a one-row list, else ``[]``.
+
+    That result has no ``candidates`` or ``designs`` array: its fields sit at
+    the root of the dict tools/esmfold/run_pipeline.py ``_run_single`` writes,
+    so without this row its CSV, FASTA and ZIP exports were empty. The row
+    takes the fields named below; the structure goes in as
+    ``pdb_content_b64``, the inline field the ZIP reads. Absent fields are
+    left out rather than written as ``None``.
+    """
+    if tool != "esmfold" or not (result.get("pdb_b64") or result.get("sequence")):
+        return []
+    row = {
+        "name": "esmfold",
+        "pdb_key": "esmfold.pdb" if result.get("pdb_b64") else None,
+        "sequence": result.get("sequence"),
+        "mean_plddt": result.get("mean_plddt"),
+        "ptm": result.get("ptm"),
+        "total_length": result.get("total_length"),
+        "chain_count": result.get("chain_count"),
+        "pdb_content_b64": result.get("pdb_b64"),
+    }
+    return [{k: v for k, v in row.items() if v is not None}]
+
+
 def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
     """:func:`candidate_records` in the order the job page lists them.
 
@@ -205,6 +230,8 @@ def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
     "rank 1" than the page did (QA 2026-09-30 P1-2). An EMPTY ``candidates``
     beside a non-empty ``designs`` is read the page's way too, where
     :func:`candidate_records` would return ``[]``. No row is dropped.
+    An ESMFold single-fold result, which has neither array, is read as the
+    one row :func:`_single_fold_record` builds.
     """
     from shared.ranking import sort_by_number  # noqa: PLC0415
 
@@ -216,7 +243,7 @@ def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
         return list(stored)
     designs = normalized.get("designs")
     if not is_candidate_array(designs):
-        return candidate_records(result)
+        return candidate_records(result) or _single_fold_record(tool, normalized)
     spec = _DESIGNS_PAGE_SORT.get(tool or "")
     if spec is None:
         return list(designs)
@@ -328,6 +355,26 @@ def recovered_total(job, rows) -> int:
     except (AttributeError, KeyError, TypeError, ValueError):
         total = 0
     return max(total, len(display_rows(rows)))
+
+
+def requested_designs(job) -> Optional[int]:
+    """The design count a run's form asked for, or ``None``.
+
+    Read from ``job.inputs`` under the tool's form field as
+    :func:`shared.compute_campaigns.design_param_key` names it. ``None`` when
+    the tool has no such field, or the stored value is not a positive integer.
+    """
+    from shared.compute_campaigns import design_param_key  # noqa: PLC0415
+
+    key = design_param_key(getattr(job, "tool", None) or "")
+    inputs = getattr(job, "inputs", None)
+    if not key or not isinstance(inputs, Mapping):
+        return None
+    try:
+        count = int(inputs.get(key))
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
 
 
 def recovered_columns(rows) -> list:
