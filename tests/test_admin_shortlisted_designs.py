@@ -184,6 +184,59 @@ def test_the_admin_csv_carries_the_sequence(client):
         _SEQ["design_1"], _SEQ["design_2"], _SEQ["design_0"]]
 
 
+def _pdb(chains: dict[str, str]) -> bytes:
+    """One CA atom per residue, so Biopython reads back ``chains``."""
+    lines, n = [], 1
+    for cid, seq in chains.items():
+        for i, aa in enumerate(seq, start=1):
+            three = {"A": "ALA", "C": "CYS", "K": "LYS",
+                     "M": "MET", "W": "TRP"}[aa]
+            lines.append(f"ATOM  {n:5d}  CA  {three} {cid}{i:4d}    "
+                         f"{float(i):8.3f}   0.000   0.000  1.00 90.00"
+                         "           C")
+            n += 1
+        lines.append("TER")
+    return ("\n".join(lines) + "\nEND\n").encode()
+
+
+def _two_chain_job():
+    """A job of the shape this CSV used to lose, plus the bytes each row's
+    ``pdb_key`` fetches: no stored ``sequence``, so the sequences are only in
+    the structure file and the route has to download it."""
+    files = {"d0.pdb": _pdb({"A": "MKWMKW", "B": "MKC"}),
+             "d1.pdb": _pdb({"A": "MKWMKW", "B": "WCA"})}
+    cands = [
+        {"rank": 0, "name": "d0", "pdb_key": "d0.pdb", "scores": {"ipTM": 0.9}},
+        {"rank": 1, "name": "d1", "pdb_key": "d1.pdb", "scores": {"ipTM": 0.8}},
+    ]
+    job = SimpleNamespace(id=_JID, tool="boltzgen", user_id="u-1",
+                          result={"candidates": cands})
+    return job, files
+
+
+def test_the_staff_copy_of_a_job_csv_carries_the_same_sequences(client, monkeypatch):
+    """``/jobs/<id>/export.csv`` is owner-scoped and 404s for staff, so this
+    route is the only way staff read that CSV, and it must not be the stale
+    one. It reads as the job's OWNER: the staff session here is ``someone``
+    (``_client``) and the owner is ``u-1``, so the recorded user_id shows
+    which of the two the route passed to storage."""
+    import blueprints.jobs as jobs_mod
+    job, files = _two_chain_job()
+    seen: list[tuple[str, str, str]] = []
+
+    def fake_download(*, user_id, job_id, filename):
+        seen.append((user_id, job_id, filename))
+        return files[filename]
+
+    monkeypatch.setattr(jobs_mod, "download_output", fake_download)
+    resp = _get(client, _campaign(), {_JID: job}, f"/source/{_JID}/export.csv")
+    assert resp.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(resp.get_data(as_text=True))))
+    assert [(r["sequence_chainA"], r["sequence_chainB"]) for r in rows] == [
+        ("MKWMKW", "MKC"), ("MKWMKW", "WCA")]
+    assert seen == [("u-1", _JID, "d0.pdb"), ("u-1", _JID, "d1.pdb")]
+
+
 def test_a_design_structure_downloads_by_stored_index(client):
     pdb = b"ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 0.88           C\n"
     job = _job_26c1f866()
