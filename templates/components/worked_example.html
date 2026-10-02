@@ -25,9 +25,9 @@ Deliberately NOT reproduced here: the 3D viewer from job_detail.html.
 It pulls artifacts from Supabase storage, which an example has none of.
 A plain download of the input structure from static/example/ instead.
 
-Numbers in the narration are RECORDED FACTS from one specific past run,
-unlike the pilot card above, which derives its price live. The closing
-line labels them that way so the two never read as contradictory.
+Numbers in the narration are recorded facts from one specific past run,
+and the closing line labels them that way. The run's recorded cost and
+runtime are not printed (tests/test_no_prerun_numbers.py).
 
 Usage:
 
@@ -113,11 +113,8 @@ Usage:
         {% endif %}
 
         <p style="color: var(--text-tertiary); font-size: 0.8rem;">
-          Recorded from that one past run
-          {%- if ex.cost_usd %}, which cost ${{ ex.cost_usd }}{% endif %}
-          {%- if ex.runtime %}, and took {{ ex.runtime }}{% endif %}.
-          That is what it did, not a quote for yours &mdash; the estimates
-          on this page are today&rsquo;s numbers for their own settings.
+          Recorded from that one past run. That is what it did, not a
+          prediction for yours.
         </p>
       </div>
     </aside>

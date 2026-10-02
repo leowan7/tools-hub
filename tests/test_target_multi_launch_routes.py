@@ -810,13 +810,12 @@ def test_the_launch_page_puts_each_figure_in_its_own_slot():
     """A right figure under the wrong label is a wrong figure.
 
     Putting `first_wave_usd_display` in the Balance slot, or the budget in
-    "Held to start", left 292 tests green on both consent pages. This is
-    SELECTION, not provenance: statically decidable, simply never checked.
+    "Held to start", left 292 tests green on both consent pages. The page now
+    prints one money slot, the balance. This is SELECTION, not provenance:
+    statically decidable.
     """
     from tests.money_display_guard import assert_money_slots_are_not_crossed
     assert_money_slots_are_not_crossed("templates/targets/launch.html", {
-        "est-budget": "budget_usd_display",
-        "est-firstwave": "first_wave_usd_display",
         "est-balance": "balance_usd_display",
     })
 

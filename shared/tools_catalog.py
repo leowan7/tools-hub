@@ -8,7 +8,7 @@ different blueprints, so the catalog lives in a shared leaf both can import.
 from flask import url_for
 
 from shared.feature_flags import tool_enabled
-from shared.tool_meta import meta_for, runtime_band as runtime_band_for
+from shared.tool_meta import meta_for
 from tools import base as tool_base
 
 # Static taglines for the hardcoded (non-adapter) tools. These two tools
@@ -41,9 +41,6 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
             "and per-dimension feasibility for any target."
         ),
         "category": "Check if my target is a good one to bind",
-        "smoke_runtime": "~30 s",
-        "pilot_runtime": "—",
-        "runtime_band": "~30 s",
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
@@ -64,9 +61,6 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
             "patches, charge balance, isoelectric point)."
         ),
         "category": "See if a binder will hold up in the lab",
-        "smoke_runtime": "<5 s",
-        "pilot_runtime": "—",
-        "runtime_band": "<5 s",
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
@@ -168,10 +162,8 @@ def _build_tools_catalog() -> list[dict]:
         # meta_for(), not a raw-slug import path: package dirs use
         # underscores and ``esmfold2-design`` does not, so interpolating
         # the slug here raised ImportError and silently gave that tool no
-        # runtime band on the homepage catalog. Fifth and last call site.
+        # metadata on the homepage catalog. Fifth and last call site.
         meta = meta_for(adapter.slug)
-
-        runtime_band = runtime_band_for(meta, [p.slug for p in adapter.presets])
 
         display_name = adapter.label.split("—")[0].strip() or adapter.label
         try:
@@ -188,7 +180,6 @@ def _build_tools_catalog() -> list[dict]:
                     meta, "comparison_one_liner", "—"
                 ) if meta is not None else "—",
                 "category": _TOOL_CATEGORIES.get(adapter.slug, "Other"),
-                "runtime_band": runtime_band,
                 "paper_citation": getattr(
                     meta, "paper_citation", "—"
                 ) if meta is not None else "—",

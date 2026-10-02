@@ -398,12 +398,12 @@ def test_the_cheap_tier_cannot_crowd_out_the_expensive_one(patched_client):
 
 
 def test_malformed_rows_fall_back_instead_of_raising(patched_client):
-    """An unexpected row shape must not 500 a public tool page.
+    """An unexpected row shape must fall back, not raise.
 
-    This SELECT is uncached and runs on every /tools/<slug> render, and
-    neither ``estimated_cost_for_tool`` nor ``_pilot_context`` above it has
-    an exception handler. The row loop therefore lives INSIDE the try; moving
-    it out again turns a bad row into a page error instead of a fallback.
+    This SELECT is uncached, and ``estimated_cost_for_tool`` has no
+    exception handler of its own. The row loop therefore lives INSIDE the
+    try; moving it out again raises at every caller that does not wrap the
+    call, instead of falling back.
     """
     spec = TOOL_SPECS["rfdiffusion"]
     params = {"preset": "pilot", "num_designs": 10}

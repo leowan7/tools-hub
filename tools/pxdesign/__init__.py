@@ -7,23 +7,19 @@ model run in initial-guess mode against the target.
 
 Known-good on commit ``5f22eec`` (the cuDNN 9 upgrade). The pilot tier
 accepts a caller-supplied target PDB with hotspot residues and runs
-real-target binder design (8 to 25 min on A100-80GB).
+real-target binder design on A100-80GB.
 
-The runtime band is the span of the three pilot runs on record --
-8.4 min at 2 designs and 7.7 min at 5 (jobs 816fc4a9 and 79228f03 in
-docs/VALIDATION-LOG.md), 23.0 min at 25 (``runtime_minutes`` in
-tools/pxdesign/example/result.json) -- taken to the minute. It describes
-runs that SUCCEEDED; the same log carries a mini_pilot that ran
-75.3 min and then failed.
+Three pilot runs are on record: 8.4 min at 2 designs and 7.7 min at 5
+(jobs 816fc4a9 and 79228f03 in docs/VALIDATION-LOG.md), 23.0 min at 25
+(``runtime_minutes`` in tools/pxdesign/example/result.json). All three
+SUCCEEDED; the same log carries a mini_pilot that ran 75.3 min and then
+failed.
 
-Neither endpoint is attributed to a design count: 5 designs ran FASTER
-than 2, and the smoke runs in the same log took 16.5 to 17.5 min on a
-single design. The band is therefore quoted with the range it was
-measured over, 2 to 25 designs, and nothing finer -- the form accepts
-up to 1000. The asymmetric rounding and the rest of the derivation are
-in the ``preset_runtime_rows`` comment in tools/pxdesign/meta.py. Every
-surface quoting the band is pinned by
-tests/test_pxdesign_runtime_band.py.
+Runtime is not ordered by design count: 5 designs ran FASTER than 2, and
+the smoke runs in the same log took 16.5 to 17.5 min on a single design.
+``_PXDESIGN`` in shared/pdb_preflight_rules.py anchors the runtime
+estimator on job 79228f03 and discloses its residuals against the other
+two.
 """
 
 from __future__ import annotations
@@ -45,7 +41,6 @@ paper_url = _meta.paper_url
 github_url = _meta.github_url
 comparison_one_liner = _meta.comparison_one_liner
 example_output_id = _meta.example_output_id
-preset_runtime_rows = _meta.preset_runtime_rows
 
 
 def validate(
@@ -145,19 +140,18 @@ adapter = ToolAdapter(
     blurb=(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back binders that each carry a real "
-        "AlphaFold2 confidence score against that target. A trial run "
-        "takes 8 to 25 min."
+        "AlphaFold2 confidence score against that target."
     ),
     presets=(
         Preset(
             slug="pilot",
-            label="Trial run on your target, 8 to 25 min",
+            label="Trial run on your target",
             description=(
                 "Real PXDesign run against your uploaded target with "
                 "AF2-IG validation. Up to 24 candidates with real "
                 "ipTM, pLDDT, and pAE scores; results emailed when "
-                "complete (8 to 25 min on A100-80GB, measured at 2 to "
-                "25 designs; allow more above that)."
+                "complete. Runs on A100-80GB, measured at 2 to 25 "
+                "designs; allow more time above that."
             ),
             requires_pdb=True,
             long_running=True,

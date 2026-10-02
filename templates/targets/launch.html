@@ -344,7 +344,7 @@
     </div>
 
     <div class="panel" style="margin-bottom: 1.5rem;" id="estimate-panel">
-      <div class="panel-header"><span class="panel-title">Estimate</span></div>
+      <div class="panel-header"><span class="panel-title">Launch plan</span></div>
       <div class="panel-body">
         <table class="data-table" id="estimate-rows"
                style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
@@ -354,8 +354,6 @@
               <th style="padding: 0.35rem 0;">Designs</th>
               <th style="padding: 0.35rem 0;">Sub-jobs</th>
               <th style="padding: 0.35rem 0;">At once</th>
-              <th style="padding: 0.35rem 0; text-align: right;">Cost</th>
-              <th style="padding: 0.35rem 0; text-align: right;">Held to start</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -363,24 +361,23 @@
 
         <div style="margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 1.5rem;
                     font-family: var(--font-mono); font-size: 0.85rem;">
-          <span>Total cost <strong id="est-budget" style="color: var(--accent-text);">—</strong></span>
-          <span>Held to start <strong id="est-firstwave" style="color: var(--accent-text);">—</strong></span>
           <span>Balance <strong id="est-balance" style="color: var(--accent-text);">—</strong></span>
         </div>
         <p id="est-note" style="margin: 0.85rem 0 0; font-size: 0.85rem;
                                 color: var(--text-secondary);">
-          Pick a tool to see what it costs.
+          Pick a tool to plan the launch.
         </p>
         <p style="margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-tertiary);">
-          "Held to start" is reserved, not spent. You are billed only for
-          compute that actually runs, and the rest is released.
+          Starting holds part of your balance. It is reserved, not spent: you
+          are billed for compute that actually runs, and the rest is
+          released.
         </p>
       </div>
     </div>
 
     <label class="radio-label" style="display: block; margin-bottom: 1rem;">
-      <input type="checkbox" id="confirm-cost"> I understand the amount above
-      will be held against my wallet balance.
+      <input type="checkbox" id="confirm-cost"> I understand part of my
+      wallet balance will be held while these runs go.
     </label>
 
     <button type="submit" class="btn-primary" id="launch-submit" disabled>
@@ -412,11 +409,10 @@
   // matches on the method name, so even naming that method in a comment fails
   // the suite. That is why this paragraph describes it instead of spelling it.
   // A missing field renders "$—" rather than a bare "$", which reads as a
-  // broken zero. Note this is NOT the empty state used elsewhere: the three
-  // totals and clearTotals() both use a bare "—", so a null here is visually
-  // distinct from "no estimate yet" rather than matching it. It cannot happen
-  // today (the endpoint ships a *_display sibling for every money key) and
-  // nothing here disarms the button, so this is legibility, not a guard.
+  // broken zero. Note this is NOT the empty state used elsewhere: the balance
+  // and clearTotals() use a bare "—", so a null here is visually distinct
+  // from "no estimate yet" rather than matching it. Nothing here disarms the
+  // button, so this is legibility, not a guard.
   function money(x) { return x == null ? '$—' : '$' + String(x); }
 
   function panelFor(tool) { return document.getElementById('panel-' + tool); }
@@ -455,28 +451,23 @@
     tbody.innerHTML = '';
     (d.rows || []).forEach(function (r) {
       var tr = document.createElement('tr');
-      [r.tool, r.requested_designs, r.total_subjobs, r.concurrency,
-       money(r.budget_usd_display),
-       money(r.first_wave_usd_display)].forEach(function (v, i) {
+      [r.tool, r.requested_designs, r.total_subjobs, r.concurrency
+      ].forEach(function (v) {
         var td = document.createElement('td');
         td.textContent = v;
         td.style.padding = '0.35rem 0';
         td.style.borderTop = '1px solid var(--border)';
-        if (i >= 4) { td.style.textAlign = 'right'; }
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
     });
-    document.getElementById('est-budget').textContent = money(d.budget_usd_display);
-    document.getElementById('est-firstwave').textContent =
-      money(d.first_wave_usd_display);
     document.getElementById('est-balance').textContent =
       money(d.balance_usd_display);
   }
 
   function clearTotals() {
     tbody.innerHTML = '';
-    ['est-budget', 'est-firstwave', 'est-balance'].forEach(function (id) {
+    ['est-balance'].forEach(function (id) {
       document.getElementById(id).textContent = '—';
     });
   }
@@ -498,7 +489,7 @@
       reqSeq += 1;
       latest = { ok: false, affordable: false };
       clearTotals();
-      setNote('Pick a tool to see what it costs.');
+      setNote('Pick a tool to plan the launch.');
       syncSubmit();
       return;
     }
@@ -541,8 +532,7 @@
             parts.push('These runs cannot start right now.');
           }
         } else {
-          parts.push(money(d.first_wave_usd_display)
-            + ' is held to start; you are billed only for what runs.');
+          parts.push('Ready to launch; you are billed for what runs.');
         }
         if (d.concurrency_note) { parts.push(d.concurrency_note); }
         setNote(parts.join(' '));
@@ -562,17 +552,14 @@
     // Invalidate the consent AND the figures on screen the moment anything
     // changes, BEFORE the 250 ms fetch fires. Without this the tick survives a
     // change of tools, designs or pace and the button stays live against a
-    // figure the user agreed to for a different launch: tick at $3.20, raise
-    // the design count, click, and a much larger first wave is held under the
-    // old consent. The server still gates correctly; what breaks is the
-    // authorization the tick is supposed to record. Consent is per-price.
+    // launch the user agreed to before the change: tick, raise the design
+    // count, click, and a much larger first wave is held under the old
+    // consent. The server still gates correctly; what breaks is the
+    // authorization the tick is supposed to record.
     //
-    // clearTotals() is not decoration. Clearing only the internal `latest`
-    // leaves the PREVIOUS launch's total and held-to-start rendered for the
-    // whole repricing window, and the rendered number is the only price the
-    // user actually reads. Someone who sees the tick vanish naturally re-ticks
-    // while "$3.20" is still on screen, and the next response enables the
-    // button. Blank plus "Repricing..." is the honest state.
+    // clearTotals() clears the PREVIOUS launch's rows and balance, so they
+    // are not on screen for the repricing window. Blank plus "Repricing..."
+    // is the honest state.
     reqSeq += 1;
     latest = { ok: false, affordable: false };
     confirmBox.checked = false;

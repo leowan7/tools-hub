@@ -46,12 +46,12 @@
             <span class="runs-badge {{ item.status }}">{{ item.status.replace('_', ' ') }}</span>
           </div>
           <div class="runs-card-meta">
-            {{ item.tool }} · {{ item.requested_designs }} designs · {{ item.total_subjobs }} sub-jobs · budget ${{ display_cost_usd(item.budget_usd) }}
+            {{ item.tool }} · {{ item.requested_designs }} designs · {{ item.total_subjobs }} sub-jobs
           </div>
         </a>
       {% else %}
         {# Standalone single run — a campaign of one. Kept visually light:
-           no design/budget line, just the run itself. #}
+           no design/sub-job line, just the run itself. #}
         <a href="{{ url_for('jobs.job_detail', job_id=item.id) }}" class="runs-card">
           <div class="runs-card-top">
             <span class="runs-card-name">{{ item.tool }}<span class="runs-kind">single run</span></span>

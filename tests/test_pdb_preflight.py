@@ -1872,8 +1872,8 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
     the row in docs/VALIDATION-LOG.md, and the same run is cited by
     tools/bindcraft/__init__.py::validate.
 
-    Three things are pinned. The FIRST is the anchor; the other two are the
-    ways it rotted or could rot without anything failing.
+    Two things are pinned. The FIRST is the anchor; the second is a way it
+    rotted once already without anything failing.
 
     ``runtime_alpha`` is NOT pinned to 1.5 and cannot be, because the run is a
     single target size only 4.2% off this curve's 120 aa anchor: (115/120)
@@ -1902,18 +1902,7 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
        to 45.0. Both bounds are far clear of the estimator's max(5.0, est)
        floor, so this cannot be satisfied by the floor instead of the anchor.
 
-    2. The estimate at the default design count stays inside the band this
-       tool already advertises. ``PRESET_RUNTIME["pilot"]`` is rendered to
-       users by shared/tools_catalog.py and blueprints/tools.py, so a curve
-       outside it contradicts the page the user read on the way to the form
-       -- which is exactly what the old constants did, quoting 120 min
-       (300 * (120/120)**1.5 * 4/10) under a catalog promising 30 to 45.
-       The band is PARSED, not restated -- the same rule
-       tests/test_proteina_shard_size.py::
-       test_about_runtime_row_names_the_width_it_was_measured_at follows --
-       so moving either surface fails here instead of drifting apart quietly.
-
-    3. ``runtime_baseline_designs`` still equals the form default. It is a
+    2. ``runtime_baseline_designs`` still equals the form default. It is a
        DIVISOR (shared/pdb_preflight_rules.py::runtime_estimate_min), so it
        only reads as "the estimate at the default design count" while it
        tracks whatever ``validate`` falls back to. It stopped tracking once
@@ -1926,7 +1915,6 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
     import re as _re
     from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
     import tools.bindcraft as _bindcraft
-    from tools.bindcraft import meta as _meta
 
     rules = TOOL_RULES["bindcraft"]
 
@@ -1948,9 +1936,7 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
         f"({residual:.0%} out)"
     )
 
-    # (3) The baseline is the validator's own default, read from its source.
-    #     Checked before (2) because (2)'s premise is that this IS the
-    #     default design count.
+    # (2) The baseline is the validator's own default, read from its source.
     src = _inspect.getsource(_bindcraft.validate)
     m = _re.search(r'form\.get\("num_designs"\)\s*or\s*"(\d+)"', src)
     assert m, (
@@ -1965,22 +1951,6 @@ def test_bindcraft_runtime_curve_reproduces_its_one_measured_run():
         f"panel is quoting a runtime for a design count the form never submits"
     )
 
-    # (2) And the default-count estimate sits inside the advertised band.
-    band = str(_meta.PRESET_RUNTIME["pilot"]["typical_minutes"])
-    bounds = [float(x) for x in _re.findall(r"\d+(?:\.\d+)?", band)]
-    assert len(bounds) == 2, (
-        f"PRESET_RUNTIME['pilot']['typical_minutes'] is {band!r}, which is "
-        f"not the two-number range this check assumes"
-    )
-    lo, hi = bounds
-    at_default = runtime_estimate_min(
-        rules, target_aa=120, num_designs=default_designs
-    )
-    assert lo <= at_default <= hi, (
-        f"the preflight panel estimates {at_default:.1f} min for "
-        f"{default_designs} designs while the catalog and About panel "
-        f"advertise '{band} min' for that same default"
-    )
 
 
 def test_pxdesign_runtime_curve_anchors_on_one_run_and_discloses_the_rest():
@@ -2571,29 +2541,24 @@ def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
     decomposition is what ``shared/pdb_preflight_rules.py``'s
     ``_RFDIFFUSION`` envelope encodes -- ``runtime_fixed_min`` is the fixed
     stage and ``runtime_base_min`` the per-design one, both normalised to the
-    estimator's 120 aa pivot. Every number below is READ out of meta.py
-    rather than transcribed, because the whole point of the re-anchor is
-    that this file and that one stop drifting apart: #240 (``b692593``)
-    measured 277.5 s/design, carried it into the chunking and cost path, and
-    left this envelope quoting ~11 min for a job that takes 37.
+    estimator's 120 aa pivot. That split and the job it came from are stated
+    in the ``_RFDIFFUSION`` envelope's own comment in
+    shared/pdb_preflight_rules.py, and the seconds below are read out of
+    that comment rather than transcribed here, because the whole point of
+    the re-anchor is that the constants and the note they came from stop
+    drifting apart: #240 (``b692593``) measured 277.5 s/design, carried it
+    into the chunking and cost path, and left this envelope quoting ~11 min
+    for a job that takes 37.
 
-    FOUR things are pinned, and only the third is the anchor.
+    THREE things are pinned, and only the second is the anchor.
 
-    1. meta.py's split reproduces meta.py's own recorded job. ``700 + 190*8
-       = 2220`` GPU-s for job 25471e07 exactly. If that stops holding, the
-       model this envelope is derived from has moved and the constants below
-       are stale by construction -- catching that HERE is the point, because
-       nothing else in the repo reads that sentence.
+    1. The stated split reproduces the recorded job. ``700 + 190*8 = 2220``
+       GPU-s for job 25471e07 exactly. If that stops holding, the model the
+       constants below are derived from has moved and they are stale by
+       construction -- catching that HERE is the point, because nothing else
+       in the repo reads that sentence.
 
-    2. The two design counts the form page advertises are the two the
-       seconds sentence covers, and the advertised band brackets them. The
-       band is the rounded presentation of the same two numbers (~24.3 min
-       shown as 25, ~37.0 shown inside a 40 ceiling), so it is checked
-       against the seconds it was derived from rather than against the
-       curve: asserting the curve lands inside the rounded text would pin
-       meta.py's rounding as a constraint on the estimator.
-
-    3. The curve reproduces BOTH recorded ends within 5%. It lands 0.014%
+    2. The curve reproduces BOTH recorded ends within 5%. It lands 0.014%
        out at each, because the constants are that same split divided
        through -- so this is ONE anchor expressed twice, NOT two independent
        confirmations, and the band is the +/-5% that
@@ -2609,7 +2574,7 @@ def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
        design counts measure the design axis, not the size axis. Treat size
        scaling as unmeasured for this tool.
 
-    4. All three constants are load-bearing, proved by mutation rather than
+    3. All three constants are load-bearing, proved by mutation rather than
        asserted. A two-term fit has an obvious failure mode a residual check
        alone will not catch: constants that trade off against each other and
        still pass at one point. Moving each in turn must break the fit.
@@ -2618,82 +2583,61 @@ def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
     100 (pinned as a value by
     ``test_rfdiffusion_baseline_is_not_the_form_default``) and
     the form defaults to 4, so the estimate a default submit shows IS one of
-    the two ends pinned here -- which is only true while that default is one
-    of the advertised counts.
+    the two ends pinned here.
     """
     import dataclasses as _dc
     import inspect as _inspect
     import re as _re
 
     from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    import shared.pdb_preflight_rules as _rules_mod
     import tools.rfdiffusion as _rfdiffusion
-    import tools.rfdiffusion.meta as _meta
 
     rules = TOOL_RULES["rfdiffusion"]
 
-    # meta.py's runtime note is a comment, so flow it into plain text before
-    # reading numbers out of it -- the figures wrap across comment lines.
-    _src = _inspect.getsource(_meta)
+    # The split is stated in a comment, so flow the module into plain text
+    # before reading numbers out of it -- the figures wrap across lines.
     _flowed = " ".join(
-        _re.sub(r"^\s*#\s?", "", line) for line in _src.split("\n")
+        _re.sub(r"^\s*#\s?", "", line)
+        for line in _inspect.getsource(_rules_mod).split("\n")
     )
 
     def _one(pattern, what):
         m = _re.search(pattern, _flowed)
         assert m, (
-            f"could not read {what} out of tools/rfdiffusion/meta.py. If that "
-            f"note was reworded, fix this parse rather than deleting the "
-            f"test: the envelope's constants are derived from it and nothing "
-            f"else in the repo reads it."
+            f"could not read {what} out of the _RFDIFFUSION comment in "
+            f"shared/pdb_preflight_rules.py. If that note was reworded, fix "
+            f"this parse rather than deleting the test: the envelope's "
+            f"constants are derived from it and nothing else in the repo "
+            f"reads it."
         )
         return m
 
-    # (1) The split reproduces the recorded job.
+    # (1) The stated split reproduces the recorded job.
     _m = _one(
-        r"fixed ~(\d+) s of diffusion \+ MPNN plus ~(\d+) s per design",
+        r"fixed ~(\d+) s plus ~(\d+) s per design",
         "the fixed + per-design split",
     )
     fixed_s, per_design_s = int(_m.group(1)), int(_m.group(2))
     recorded_s = int(
-        _one(r"ran (\d+)\s+GPU-seconds", "the recorded job").group(1)
-    )
-    four_s = int(
-        _one(r"four designs is ~(\d+) s", "the 4-design figure").group(1)
+        _one(
+            r"= (\d+) GPU-s for job 25471e07", "the recorded job"
+        ).group(1)
     )
     assert fixed_s + per_design_s * 8 == recorded_s, (
-        f"meta.py models the job as {fixed_s} s fixed + {per_design_s} s per "
-        f"design, which puts 8 designs at "
+        f"the comment models the job as {fixed_s} s fixed + {per_design_s} s "
+        f"per design, which puts 8 designs at "
         f"{fixed_s + per_design_s * 8} s against the {recorded_s} GPU-s it "
         f"records for job 25471e07. The envelope below is derived from that "
         f"split, so it is stale the moment the split stops fitting."
     )
-    assert fixed_s + per_design_s * 4 == four_s, (
-        f"the same split puts 4 designs at {fixed_s + per_design_s * 4} s "
-        f"against the {four_s} s meta.py states"
-    )
 
-    # (2) The advertised band is the rounded presentation of those seconds.
-    band = _meta.preset_runtime_rows[0]["runtime"]
-    nums = [int(x) for x in _re.findall(r"\d+", band)]
-    assert len(nums) == 4, (
-        f"preset_runtime_rows[0]['runtime'] is {band!r}, which is not the "
-        f"'LO to HI min (A to B designs)' shape this check assumes"
-    )
-    lo_min, hi_min, lo_designs, hi_designs = nums
-    assert (lo_designs, hi_designs) == (4, 8), (
-        f"the form page advertises {lo_designs} to {hi_designs} designs "
-        f"while the runtime note covers 4 and 8; one of the two moved"
-    )
-    assert lo_min in (four_s // 60, -(-four_s // 60)), (
-        f"the page advertises a {lo_min} min floor while its own note puts "
-        f"4 designs at {four_s / 60.0:.2f} min"
-    )
-    assert hi_min >= -(-recorded_s // 60), (
-        f"the page advertises a {hi_min} min ceiling under the "
-        f"{recorded_s / 60.0:.2f} min its own note records for 8 designs"
-    )
+    # The 4-design end is that same split evaluated at 4, which is why the
+    # two residuals below are ONE anchor expressed twice.
+    lo_designs, hi_designs = 4, 8
+    four_s = fixed_s + per_design_s * lo_designs
 
-    # (3) The curve reproduces both ends. 115 aa is 4ZQK chain A, the target
+    # (2) The curve reproduces both ends. 115 aa is 4ZQK chain A, the target
     #     both runs used.
     def _resid(env, n, measured_s):
         est = runtime_estimate_min(
@@ -2717,7 +2661,7 @@ def test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs():
             f"satisfied by the floor rather than by the anchor"
         )
 
-    # (4) Each constant is load-bearing. Move one, the fit must break at one
+    # (3) Each constant is load-bearing. Move one, the fit must break at one
     #     end or the other -- a two-term model that still passed both ends
     #     after a constant moved would mean the two terms were absorbing each
     #     other and the residuals above proved nothing.

@@ -7,8 +7,6 @@ Parallel to ``tools/mpnn/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
     paper_citation       — short inline citation.
     paper_url            — bioRxiv permalink.
     github_url           — upstream Boltz repository.
@@ -21,32 +19,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-
-# Typical wall-clock per preset. ``typical_minutes`` is rendered as
-# f"{typical_minutes} min" by shared/tool_meta.py::preset_runtime_text;
-# the tool's runtime band is built from ``minutes`` by
-# shared/tool_meta.py::runtime_band.
-#
-# standalone: MEASURED at ~69 s/design marginal (1.15 min), and 81.9 s for a
-# one-design run because the first design runs ~13 s longer. Job
-# gate1-standalone-1789842854, A100-40GB, 2026-09-19, 242-246 aa binders
-# against a 107 aa antigen, n=1 per design — full provenance and caveats in
-# the runtime note in tools/boltz2/__init__.py. "~1.2" is the marginal rate;
-# the about["runtime_table"] row below carries the single-binder figure too,
-# since that cell is not limited to one token. This replaces "<1", which
-# landed in 7390cc2 alongside a "~15 s/design" figure that is ~4.6x off.
-#
-# msa_server: MEASURED at 214 s/design (3.6 min) by Gate 1 Rung B, job
-# gate1-msa_server-1790046491, 2026-09-21 — same image and same three binders
-# as Rung A, 643 s of pipeline runtime for 3 designs. This replaces "~3",
-# which was a launch estimate and read ~19% fast. Unlike standalone this is an
-# AGGREGATE, not a marginal rate: no per-design interval was resolved and the
-# MSA-fetch / GPU-compute split was not measured, so there is no first-design
-# premium to subtract. Same provenance note in tools/boltz2/__init__.py.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "~1.2", "minutes": (1.2, 1.2)},
-    "msa_server": {"typical_minutes": "~3.6", "minutes": (3.6, 3.6)},
-}
 
 paper_citation: str = "Passaro et al., bioRxiv 2025"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.06.14.659707v1"
@@ -132,8 +104,8 @@ about: dict = {
                 "independently against the antigen. 20 to 400 aa per "
                 "binder, and up to 50 binders per run on the "
                 "single-sequence preset. <strong>With MSA the limit is "
-                "16</strong>: that preset is ~3x slower, so a larger batch "
-                "would run past the 60-minute run ceiling and the tail "
+                "16</strong>: that preset is considerably slower, so a "
+                "larger batch would run past the run ceiling and the tail "
                 "would be cut off."
             ),
         },
@@ -144,29 +116,11 @@ about: dict = {
                 "<code>msa: empty</code> mode, the right choice "
                 "for designed sequences. <strong>With MSA</strong> "
                 "fetches MSAs from the public ColabFold MMseqs2 endpoint. "
-                "It is ~3x slower, and on the one comparison we have run "
+                "It is slower, and on the one comparison we have run "
                 "&mdash; three designed antibody binders &mdash; it "
                 "separated the real binder from decoys WORSE, so it is not "
                 "the default. Whether it helps on genuinely natural "
                 "sequences is untested here."
-            ),
-        },
-    ],
-    "runtime_table": [
-        {
-            "preset": "standalone",
-            "typical": (
-                "~1.2 min/design measured; a single binder is ~1.5 min end "
-                "to end, because the first design runs ~13 s slower and the "
-                "container takes ~9 s to start"
-            ),
-        },
-        {
-            "preset": "msa_server",
-            "typical": (
-                "~3.6 min/design measured; ~3x the single-sequence "
-                "default, which also separated decoys better on the one "
-                "head-to-head we have run"
             ),
         },
     ],
@@ -188,16 +142,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -216,7 +165,7 @@ PILOT: dict | None = {
     },
     "next_step": (
         "Paste the rest of your candidate sequences and run them "
-        "together; the cost scales with how many you submit at once."
+        "together; you pay for the GPU time the batch uses."
     ),
 }
 
@@ -249,7 +198,6 @@ PILOT: dict | None = {
 #
 # No cost_usd: this was campaign compute, not a wallet-billed hub job, so
 # there is no per-run dollar figure that would mean anything to a reader.
-# The estimate on the form is the live number for their own inputs.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (

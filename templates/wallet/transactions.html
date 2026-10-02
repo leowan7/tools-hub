@@ -36,16 +36,15 @@
   </div>
 
   {# How holds work. Kills the "double charge" read: a hold is a
-     temporary reservation, not a charge. On completion you are charged
-     only for actual compute and the rest of the hold is returned. #}
+     temporary reservation, not a charge. #}
   <div class="panel wallet-tx-callout">
     <div class="panel-body">
       <p class="wallet-tx-callout-title">A hold is a reservation, not a charge.</p>
       <p class="wallet-tx-callout-body">
-        When a job starts we reserve its estimated cost with a hold. That
-        reservation is not money spent. When the job finishes you are
-        charged only for the compute it actually used, and the rest of the
-        hold is returned to your wallet. For each job the true cost is
+        When a job starts we reserve part of your balance with a hold. That
+        reservation is not money spent. When the job settles you are
+        charged for the compute it used, and any unused part of
+        the hold is returned to your wallet. For each job what you paid is
         shown once, on its settlement row.
       </p>
     </div>
@@ -135,8 +134,14 @@
                     <span class="wallet-tx-tool">{{ tx.tool_slug }}</span>
                   {% endif %}
                   {% if is_reserved %}
-                    {% if ann.settled %}
+                    {% if ann.settled and ann.outcome == 'more_charged' %}
+                      <span class="wallet-tx-hint">reserved for this job; it settled for more than was reserved</span>
+                    {% elif ann.settled and ann.outcome == 'all_returned' %}
+                      <span class="wallet-tx-hint">reserved for this job; all of it was returned when it settled</span>
+                    {% elif ann.settled and ann.outcome == 'part_returned' %}
                       <span class="wallet-tx-hint">reserved for this job; the unused part was returned when it settled</span>
+                    {% elif ann.settled %}
+                      <span class="wallet-tx-hint">reserved for this job; none of it was returned when it settled</span>
                     {% else %}
                       <span class="wallet-tx-hint">reserved (pending settlement); returned when the job settles</span>
                     {% endif %}
@@ -145,7 +150,7 @@
                   {% elif ann and ann.role == 'settlement' and ann.net is not none %}
                     <span class="wallet-tx-net">net for this job {{ display_record_usd(0 - ann.net) }}</span>
                   {% endif %}
-                  {% if tx.notes %}
+                  {% if tx.notes and not ann %}
                     <span class="wallet-tx-note">{{ tx.notes }}</span>
                   {% endif %}
                   {% if tx.job_id %}
@@ -210,13 +215,13 @@
         <dd>Off session charge to your saved card when balance dropped below your threshold.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-hold">hold</span> / reserved</dt>
-        <dd>A temporary reservation at the estimated cost of a job, not a charge. It is returned when the job settles, minus the compute actually used.</dd>
+        <dd>A temporary reservation against your balance when a job starts, not a charge. When the job settles, any unused part is returned.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-hold_release">hold release</span></dt>
         <dd>The unused part of a hold returned to your wallet after settlement.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-charge">charge</span></dt>
-        <dd>Settles a job against its hold. The settlement row shows the net for that job, which equals the actual compute cost.</dd>
+        <dd>Settles a job against its hold. The settlement row shows the net for that job, which is what you paid for it.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-absorbed_variance">absorbed variance</span></dt>
         <dd>Ranomics absorbed cost when actual exceeded the hold and your wallet could not cover it. Tracked for transparency, never debited.</dd>

@@ -192,7 +192,7 @@ def validate(
     if total_len > SEQ_LEN_MAX:
         return None, (
             f"total complex length {total_len} exceeds max {SEQ_LEN_MAX} aa "
-            "for the no-MSA 10-min budget — split into smaller jobs."
+            "for the no-MSA batch budget — split into smaller jobs."
         )
 
     num_recycles = _parse_int(form.get("num_recycles"), 1)
@@ -373,8 +373,8 @@ adapter = ToolAdapter(
     slug="colabfold",
     label="ColabFold",
     blurb=(
-        "Paste a sequence and get a predicted structure back in one to "
-        "two minutes, with per-residue confidence. Trades a little "
+        "Paste a sequence and get a predicted structure back, with "
+        "per-residue confidence. Trades a little "
         "accuracy for speed by skipping the search for related natural "
         "sequences."
     ),
@@ -384,7 +384,7 @@ adapter = ToolAdapter(
             label="Standalone with your FASTA",
             description=(
                 "Paste a FASTA (monomer or multimer up to 600 aa total) "
-                "and get pLDDT, PAE, and pTM/ipTM. 1 to 2 min on "
+                "and get pLDDT, PAE, and pTM/ipTM. Runs on an "
                 "A100-40GB. No MSA, no templates. Pair with D2 AF2 if "
                 "you need the full MSA-backed fold."
             ),
@@ -397,7 +397,7 @@ adapter = ToolAdapter(
                 "records). Each record can be a monomer or a multimer "
                 "(use ``:`` inside a record to break chains). Per-design "
                 "results stream into the job page as folds complete. "
-                "Fast no-MSA tier, 1 to 2 min per fold."
+                "Fast no-MSA tier."
             ),
             long_running=True,
         ),

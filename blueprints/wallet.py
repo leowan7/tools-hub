@@ -65,6 +65,10 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
         role      one of 'hold', 'release', 'settlement'
         settled   True when the hold has at least one settle child
         reserved  the amount the hold reserved (positive), for holds
+        outcome   for holds, what settling did with the reservation, read
+                  from the children's amounts: 'more_charged' (a negative
+                  charge child), 'all_returned' (releases cover the hold),
+                  'part_returned' (some released) or 'none_returned'
         net       group net = SUM(amount_usd) over the lineage, on the
                   settlement row (the charge, or the release when there
                   is no charge); this is negative of the actual cost
@@ -147,12 +151,33 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             if hold_row is not None:
                 reserved = abs(_tx_amount_decimal(hold_row.get("amount_usd")))
 
+            # From the amounts, never the stored notes: settle_hold writes
+            # "estimate matched actual" on the zero-amount charge whenever the
+            # hard cap clamps the actual down to the hold
+            # (supabase/migrations/0020_wallet_corrections.sql:263, v_diff = 0).
+            returned = sum(
+                (_tx_amount_decimal(c.get("amount_usd")) for c in children
+                 if c.get("kind") == "hold_release"),
+                Decimal("0"),
+            )
+            if any(c.get("kind") == "charge"
+                   and _tx_amount_decimal(c.get("amount_usd")) < 0
+                   for c in children):
+                outcome = "more_charged"
+            elif reserved and returned >= reserved:
+                outcome = "all_returned"
+            elif returned > 0:
+                outcome = "part_returned"
+            else:
+                outcome = "none_returned"
+
             # Annotate the hold row.
             if hold_row is not None and hold_row.get("id") is not None:
                 annotations[hold_row["id"]] = {
                     "role": "hold",
                     "settled": settled,
                     "reserved": reserved,
+                    "outcome": outcome,
                 }
 
             # Pick the settlement row that carries the net label: prefer
@@ -305,7 +330,7 @@ def _full_size_estimate(user_id, tool_slug: str, count: int, preset: str):  # no
             "estimate_usd": None,
             "no_estimate_reason": (
                 f"{count} designs cannot start as a full-size run. "
-                "Reduce the count to see a price."
+                "Reduce the count."
             ),
         })
     estimate = plan.budget_usd
@@ -433,7 +458,7 @@ def api_wallet_estimate():
             "ok": True,
             "tool_slug": tool_slug,
             "estimate_usd": None,
-            "no_estimate_reason": "Enter a whole number, 1 or more, to see a price.",
+            "no_estimate_reason": "Enter a whole number, 1 or more.",
         })
 
     # Over the single-container ceiling tool_submit refuses one job

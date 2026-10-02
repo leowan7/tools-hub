@@ -7,8 +7,6 @@ Parallel to ``tools/colabfold/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    - {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
     paper_citation    - short inline citation.
     paper_url         - Science / bioRxiv permalink.
     github_url        - upstream ESM repository.
@@ -21,17 +19,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Typical wall-clock per preset. Used by the About panel runtime table.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "0.5 to 1", "minutes": (0.5, 1)},
-}
-
 paper_citation: str = "Lin et al., Science 2023"
 paper_url: str = "https://www.science.org/doi/10.1126/science.ade2574"
 github_url: str = "https://github.com/facebookresearch/esm"
 comparison_one_liner: str = (
-    "You have one protein sequence and want its 3D shape in about "
-    "30 seconds. No search for relatives, so it works on designed "
+    "You have one protein sequence and want its 3D shape, fast. "
+    "No search for relatives, so it works on designed "
     "or orphan sequences that have no natural family to align "
     "against. One chain only — for complexes use ColabFold or "
     "AlphaFold2."
@@ -44,7 +37,7 @@ example_output_id: Optional[str] = None
 about: dict = {
     "what_it_is": (
         "Predicts the structure of one protein chain from its sequence "
-        "alone, in about 30 seconds. It reads the sequence through a "
+        "alone. It reads the sequence through a "
         "protein language model instead of searching for relatives, so "
         "it still works on designed or orphan sequences that have no "
         "natural family to align against. One chain only — it cannot "
@@ -52,7 +45,7 @@ about: dict = {
     ),
     "when_to_use": [
         (
-            "You want a single-chain fold in well under a minute."
+            "You want a single-chain fold and nothing to configure."
         ),
         (
             "Your sequence is designed, or has no known relatives, so a "
@@ -75,9 +68,6 @@ about: dict = {
                 "are not supported. Use ColabFold or AF2 instead."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "standalone", "typical": "~30 s"},
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT. No PAE (single-sequence "
@@ -161,8 +151,7 @@ EXAMPLE: dict | None = {
             "FASTA (single chain)",
             "304 aa, one chain",
             "Pasted as FASTA. ESMFold reads the sequence alone &mdash; there "
-            "is no MSA step and nothing else to configure, which is why it "
-            "comes back in well under a minute.",
+            "is no MSA step and nothing else to configure.",
         ),
     ],
     "what_came_back": (

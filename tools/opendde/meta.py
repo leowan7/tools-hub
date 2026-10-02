@@ -1,23 +1,12 @@
-"""Static metadata for the OpenDDE tool (About panel, citation, runtime table).
+"""Static metadata for the OpenDDE tool (About panel, citation).
 
 Plain-data module — no adapter import. The About renderer and cost preview read
-these constants. Runtime figures are conservative bootstraps; they are refit from
-the O-1/O-2 benchmark before the flag flips on.
+these constants.
 """
 
 from __future__ import annotations
 
 from typing import Optional
-
-# Keyed by preset slug. Both checkpoints share the same architecture, so runtime
-# is driven by complex size + sampler settings, not by which checkpoint. Figures
-# from the O-1/O-2/O-3 canaries: a single small-complex prediction is ~2-3 min
-# (dominated by a ~1.5 min fixed CUDA/kernel init); more samples/seeds add ~15 s
-# each. Kept conservative (overestimate) for larger inputs.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "general": {"typical_minutes": "~2 to 8", "minutes": (2, 8)},
-    "abag": {"typical_minutes": "~2 to 8", "minutes": (2, 8)},
-}
 
 paper_citation: str = "Aureka AI Research, OpenDDE-Preview, arXiv 2026"
 paper_url: str = "https://arxiv.org/abs/2607.03787"
@@ -99,10 +88,6 @@ about: dict = {
                 "returned is seeds &times; samples."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "general", "typical": "~2 to 8 min"},
-        {"preset": "abag", "typical": "~2 to 8 min"},
     ],
     "output_summary": (
         "A ranked set of predicted complexes (mmCIF/PDB) with the model's own "

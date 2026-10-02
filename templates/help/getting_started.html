@@ -68,15 +68,14 @@
           <a href="{{ url_for('public.index') }}">home page</a> groups the
           tools by that question, and the
           <a href="{{ url_for('tools.tools_comparison') }}">full tool list</a>
-          puts them side by side with typical runtimes.
+          puts them side by side.
         </p>
       </li>
       <li>
         <h2 class="help-step-title">Open the tool page and look at the form</h2>
         <p class="help-step-body">
           You do not need an account to look. The tool page shows the exact
-          inputs the run asks for, and a cost estimate that updates live as
-          you change the settings. Most binder design tools want three
+          inputs the run asks for. Most binder design tools want three
           things: your target structure as a PDB or mmCIF file, which chain
           in that file to aim at, and a few hotspot residues — the specific
           amino acids on the target's surface you want the new binder to
@@ -108,9 +107,8 @@
           no monthly minimum, and a new account starts with
           ${{ signup_credit() }} already in it, enough for many structure
           predictions and sequence runs; most binder design runs cost more
-          than that and need a top-up. Any of it left unspent expires {{ signup_credit_expiry_days }} days after sign-up. Before you confirm you see the estimated cost and what
-          your balance will be afterwards; a hold is placed against the
-          estimate while the job runs and the final charge settles against
+          than that and need a top-up. Any of it left unspent expires {{ signup_credit_expiry_days }} days after sign-up. A hold is placed against
+          your wallet while the job runs and the final charge settles against
           the compute actually used. See
           <a href="{{ url_for('public.pricing') }}">pricing</a> for how holds
           and top-ups work.

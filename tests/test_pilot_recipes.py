@@ -12,10 +12,9 @@ test, and neither is visible by reading the diff:
    the design count and ignored ``pre_fill`` entirely, so this is not
    hypothetical.
 
-2. **A second rate card.** The whole point of deriving the price from
-   ``estimated_cost_for_tool`` is that a hand-written price in meta.py
-   drifts off the real one. The test below fails if a price or a
-   runtime string is ever typed into a PILOT dict.
+2. **A hand-written figure.** The card shows no price or time. The test
+   below fails if a price or a runtime string is ever typed into a PILOT
+   dict.
 """
 
 from __future__ import annotations
@@ -76,93 +75,12 @@ def _estimate(slug: str, params: dict):
     )
 
 
-def _tool_form_region(html: str, slug: str) -> str:
-    """Just the tool's own <form>, not the whole page.
-
-    Every tool form carries ``data-tool-slug="<slug>"``; the page also
-    holds a search box, the wallet top-up form and the campaign panel,
-    and harvesting those would put fields the submit route never sees
-    into the estimate.
-    """
-    m = re.search(
-        rf'<form\b[^>]*\bdata-tool-slug="{re.escape(slug)}"[^>]*>(.*?)</form>',
-        html, re.S,
-    )
-    assert m, f"{slug}: no <form data-tool-slug> on the page"
-    return m.group(1)
-
-
-def _submitted_params(html: str, slug: str) -> dict[str, str]:
-    """Every name/value pair the browser would POST from the tool form.
-
-    This is the input the price guard has to price: the form's own
-    default values with whatever ``?pilot=1`` pre-filled on top, which is
-    literally what "Start this pilot" sends. Pricing ``PILOT["params"]``
-    instead re-estimates the guard's own input and can never fail — see
-    ``TestPilotCardPriceIsDerived``.
-
-    Three rules here exist because a browser follows them and a naive
-    regex does not; each one, missing, is a card-price lie the whole
-    suite would pass:
-
-    * ``disabled`` posts NOTHING, whatever its ``value=`` says. QC
-      disabled pxdesign's ``num_designs`` and the card kept advertising
-      $8.74 for a $17.48 run, with the guard agreeing.
-    * ``<textarea>`` is a submitted control too. No tool's scaling param
-      is one today, so this is the same blind spot before it goes live.
-    * unchecked radios/checkboxes and the non-value button types post
-      nothing either.
-    """
-    region = _tool_form_region(html, slug)
-    out: dict[str, str] = {}
-    for tag in re.findall(r"<input\b[^>]*>", region):
-        name = re.search(r'\bname="([^"]+)"', tag)
-        if not name:
-            continue
-        if re.search(r"\bdisabled\b", tag):
-            continue
-        kind = (re.search(r'\btype="([^"]*)"', tag) or [None, ""])[1] \
-            if re.search(r'\btype="([^"]*)"', tag) else ""
-        if kind in {"radio", "checkbox"} and "checked" not in tag:
-            continue
-        if kind in {"submit", "button", "image", "file", "reset"}:
-            continue
-        val = re.search(r'\bvalue="([^"]*)"', tag)
-        out[name.group(1)] = val.group(1) if val else ""
-    for sel in re.finditer(
-        r'<select\b([^>]*)\bname="([^"]+)"([^>]*)>(.*?)</select>', region, re.S,
-    ):
-        if re.search(r"\bdisabled\b", sel.group(1) + sel.group(3)):
-            continue
-        options = re.findall(r"<option\b[^>]*>", sel.group(4))
-        chosen = next((o for o in options if "selected" in o), None)
-        # No explicit selection: a browser posts the first option.
-        chosen = chosen or (options[0] if options else None)
-        if chosen is None:
-            continue
-        v = re.search(r'\bvalue="([^"]*)"', chosen)
-        if v:
-            out[sel.group(2)] = v.group(1)
-    for ta in re.finditer(
-        r'<textarea\b([^>]*)\bname="([^"]+)"([^>]*)>(.*?)</textarea>',
-        region, re.S,
-    ):
-        if re.search(r"\bdisabled\b", ta.group(1) + ta.group(3)):
-            continue
-        # A textarea's value is its body, not a value= attribute.
-        out[ta.group(2)] = ta.group(4).strip()
-    return out
-
-
 def _pilot_button_href(html: str, slug: str) -> str:
     """Where "Load these settings" ACTUALLY sends the user.
 
-    The guard used to harvest from an ``f"/tools/{slug}?pilot=1"`` it
-    built itself, which prices a page nobody necessarily visits. Drop
-    ``pilot=1`` from ``_pilot_context``'s ``url_for`` and the card keeps
-    advertising the pilot price while the button lands on the form's own
-    defaults — for pxdesign, $8.74 on the card against a $17.48 run —
-    and a self-built URL cannot see it. Read the href off the card.
+    A self-built ``f"/tools/{slug}?pilot=1"`` cannot see a button that
+    lands on the form's own defaults (drop ``pilot=1`` from
+    ``_pilot_context``'s ``url_for``). Read the href off the card.
     """
     m = re.search(
         r'<a\s+href="([^"]+)"[^>]*>\s*Load these settings', html,
@@ -236,7 +154,7 @@ class TestPilotDeclaration:
             assert pilot["params"], f"{slug}: a pilot with no parameters"
 
     def test_no_hand_written_price_or_runtime(self, tools_app):
-        """The whole point is that both are derived. See the module docstring."""
+        """See the module docstring."""
         _, slugs = tools_app
         bad = []
         for slug, pilot in _pilots(slugs).items():
@@ -260,14 +178,14 @@ class TestPilotPrefillActuallyLands:
         for slug, pilot in _pilots(slugs).items():
             if not pilot:
                 continue
-            resp = client.get(f"/tools/{slug}?pilot=1")
-            assert resp.status_code == 200, f"{slug} -> {resp.status_code}"
-            html = resp.get_data(as_text=True)
+            # Whatever the card's own button links to, not a URL this test
+            # builds. See _pilot_button_href.
+            html, href = _pilot_page(client, slug)
             for key, want in pilot["params"].items():
                 got = _posted_value(html, key)
                 if got != want:
                     broken.append(
-                        f"{slug}: ?pilot=1 sets {key}={want!r} but the form "
+                        f"{slug}: {href} sets {key}={want!r} but the form "
                         f"renders {got!r}"
                     )
         assert not broken, broken
@@ -319,140 +237,7 @@ class TestPilotPrefillActuallyLands:
         assert not broken, broken
 
 
-class TestPilotCardPriceIsDerived:
-
-    def test_card_price_equals_the_estimator(self, tools_app):
-        """The card's price must be the price of what the form SUBMITS.
-
-        Priced against ``PILOT["params"]`` this test was tautological:
-        ``_pilot_context`` builds the card's number from exactly that
-        dict, so the assertion re-estimated its own input and could not
-        fail. QC broke it by deleting ``num_designs`` from pxdesign's
-        PILOT — the card then advertised $4.37 for a form that submits
-        a $17.48 run, a 4x understatement on a publicly indexable page,
-        with the whole suite green.
-
-        What a user actually sends when they click through the pilot
-        link is the form's own defaults with the PILOT values pre-filled
-        on top. That is what ``_submitted_params`` reads off the
-        rendered ``?pilot=1`` page, and that is what the card has to
-        agree with. A pilot key that never lands is now a PRICE bug
-        here, not only a pre-fill bug in
-        ``TestPilotPrefillActuallyLands``.
-        """
-        from shared.compute_campaigns import display_cost_usd
-        from shared.wallet_estimates import estimated_cost_for_tool
-
-        flask_app, slugs = tools_app
-        client = flask_app.test_client()
-        checked = 0
-        wrong = []
-        for slug, pilot in _pilots(slugs).items():
-            if not pilot:
-                continue
-            checked += 1
-            # Whatever the card's own button links to — not a URL this
-            # test builds. See _pilot_button_href.
-            html, href = _pilot_page(client, slug)
-            shown = re.search(r"About <strong>\$([0-9.]+)</strong>", html)
-            assert shown, f"{slug}: pilot card rendered no price"
-            submitted = _submitted_params(html, slug)
-            # The form must actually render the fields the estimator
-            # scales on, or "what the form submits" degenerates back to
-            # "what the PILOT dict says" and the hole reopens.
-            assert submitted, f"{slug}: harvested no form fields at all"
-            real = display_cost_usd(
-                estimated_cost_for_tool(None, slug, submitted),
-            )
-            if shown.group(1) != str(real):
-                wrong.append(
-                    f"{slug}: the pilot card advertises ${shown.group(1)} but "
-                    f"the form it links to ({href}) submits a run costing "
-                    f"${real} "
-                    f"(fields: { {k: v for k, v in submitted.items() if v} })"
-                )
-        assert checked >= 5, f"only {checked} pilot cards priced"
-        assert not wrong, wrong
-
-    def test_the_guard_above_is_reading_the_form_and_not_the_pilot_dict(
-        self, tools_app
-    ):
-        """The control. Break the link between the two and it must notice.
-
-        Without this, ``test_card_price_equals_the_estimator`` could
-        quietly go back to pricing ``PILOT["params"]`` — the exact input
-        the card is built from — and stay green forever. pxdesign is the
-        tool the hole was demonstrated on: it scales on ``num_designs``,
-        so a card priced without that key is a real 4x understatement.
-        """
-        from shared.wallet_estimates import estimated_cost_for_tool, get_tool_spec
-
-        flask_app, slugs = tools_app
-        client = flask_app.test_client()
-        pilot = _pilots(slugs)["pxdesign"]
-        html, _href = _pilot_page(client, "pxdesign")
-        submitted = _submitted_params(html, "pxdesign")
-
-        spec = get_tool_spec("pxdesign")
-        assert spec and spec.scaling_param == "num_designs", spec
-        assert submitted.get("num_designs") == pilot["params"].get(
-            "num_designs"
-        ), (
-            "pxdesign's PILOT and the form it links to disagree on "
-            "num_designs, which is the key its price scales on"
-        )
-
-        # Drop the scaling key from the PILOT-shaped input, exactly as
-        # QC's mutation does. The form still renders and still submits
-        # its own default, so the two estimates MUST diverge — if they
-        # do not, the estimator no longer reads this key and the control
-        # needs re-pointing.
-        crippled = {k: v for k, v in pilot["params"].items()
-                    if k != "num_designs"}
-        assert estimated_cost_for_tool(None, "pxdesign", crippled) \
-            != estimated_cost_for_tool(None, "pxdesign", submitted), (
-            "dropping num_designs no longer moves pxdesign's estimate, so "
-            "the mutation the guard above exists to catch is no longer "
-            "detectable — re-point this control at a live scaling param"
-        )
-
-    def test_the_harvest_posts_what_a_browser_would_post(self):
-        """The harvest is the guard's only view of the form. Pin its rules.
-
-        Two of the three are dormant against today's fourteen forms — no
-        tool renders a disabled scaling field or a textarea one — so
-        nothing else in the suite would notice them regressing. A
-        harvest that reads a field the browser never sends is a card
-        price that agrees with itself and lies to the user, which is the
-        whole bug class this file exists for.
-        """
-        html = (
-            '<form data-tool-slug="fake">'
-            '<input type="number" name="live" value="4">'
-            '<input type="number" name="off" value="9" disabled>'
-            '<input type="text" name="blank">'
-            '<input type="checkbox" name="unticked" value="y">'
-            '<input type="checkbox" name="ticked" value="y" checked>'
-            '<input type="submit" name="go" value="Run">'
-            '<select name="picked"><option value="a">a</option>'
-            '<option value="b" selected>b</option></select>'
-            '<select name="first"><option value="c">c</option>'
-            '<option value="d">d</option></select>'
-            '<select name="deadsel" disabled><option value="e">e</option>'
-            "</select>"
-            '<textarea name="notes">  hello  </textarea>'
-            '<textarea name="deadnotes" disabled>bye</textarea>'
-            "</form>"
-        )
-        assert _submitted_params(html, "fake") == {
-            "live": "4",
-            "blank": "",
-            "ticked": "y",
-            "picked": "b",
-            # No explicit selection: a browser posts the first option.
-            "first": "c",
-            "notes": "hello",
-        }
+class TestNoCardWithoutAPilot:
 
     def test_no_card_where_there_is_no_pilot(self, tools_app):
         flask_app, slugs = tools_app
@@ -521,7 +306,7 @@ class TestPilotCardRendersMarkupNotEntities:
     class of prose safe; this asserts the card matches.
 
     Only the three prose fields get the filter. ``url`` is an href, and
-    ``cost_usd`` and ``label`` have no reason to carry markup, so a
+    ``label`` has no reason to carry markup, so a
     future field reading user input must not join that list — see the
     header comment in components/pilot_card.html.
     """
@@ -820,14 +605,15 @@ class TestBudgetDoesNotChangeThePrice:
         # future edit can satisfy the assertion above by deleting the
         # explanation entirely.
         #
-        # "the same estimate", not "the same price". What this repo can
-        # prove is that the quote is flat and that build_payload pins the
-        # pool at 200; the GPU seconds the container actually burns are in
-        # llm-proteinDesigner and users settle at metered actual. The
-        # earlier wording asserted the unmeasurable half as fact.
-        assert "same estimate" in body, (
+        # The POOL, not the price. What this repo can prove is the
+        # assertion above this one: build_payload pins num_designs at 200
+        # for every budget in BUDGETS. The GPU seconds the container
+        # actually burns are in llm-proteinDesigner and users settle at
+        # metered actual, so a flat-cost claim would be the unmeasurable
+        # half asserted as fact.
+        assert "asked for the same 200 either way" in body, (
             "nothing on the boltzgen page tells the visitor that budget "
-            "does not move the estimate"
+            "does not change the size of the search"
         )
 
 
@@ -1255,29 +1041,3 @@ class TestHotspotDeflection:
             card = self._card(client, slug)
             assert "score your target&rsquo;s surface" not in card, slug
             assert "asks for at least one" not in card, slug
-
-
-class TestPilotCardCostParagraph:
-    """The card names what its price is for, the job's cap, and (below the
-    spec baseline) why a smaller trial shows the same figure."""
-
-    def test_rfdiffusion_card_names_the_floor_and_the_cap(self, tools_app):
-        from shared.wallet_estimates import compute_hard_cap, get_tool_spec
-        flask_app, slugs = tools_app
-        assert "rfdiffusion" in slugs
-        pilot = _pilots(slugs)["rfdiffusion"]["params"]
-        baseline = get_tool_spec("rfdiffusion").designs_per_run_baseline
-        assert int(pilot["num_designs"]) < baseline, "no floor to explain"
-        card = _pilot_card_html(flask_app.test_client(), "rfdiffusion")
-        assert f"Any run of up to {baseline}" in card
-        cap = compute_hard_cap("rfdiffusion", dict(pilot))
-        assert f"cap of ${cap:.2f}" in card
-        assert "above or below the estimate" in card
-
-    def test_no_card_promises_the_estimate_is_a_ceiling(self, tools_app):
-        flask_app, slugs = tools_app
-        client = flask_app.test_client()
-        for slug, pilot in _pilots(slugs).items():
-            if pilot:
-                card = _pilot_card_html(client, slug)
-                assert "never more than the estimate" not in card, slug

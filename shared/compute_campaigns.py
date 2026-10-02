@@ -272,7 +272,7 @@ def _quantize_usd(value: Decimal) -> Decimal:
 # It has to happen here rather than in the page. `Number(x).toFixed(2)` rounds
 # to NEAREST, so a $573.6736 hold rendered client-side became "$573.67" -- a
 # figure below the amount actually reserved, printed directly above a checkbox
-# reading "the amount above will be held against my wallet balance". That is the
+# that then read "the amount above will be held against my wallet balance". That is the
 # same understatement `preauth_message` calls out by name for the refusal
 # sentence, and it was left on the number the user actually consents to. Doing
 # it in Decimal also means it is covered by the Python suite; the launch page's

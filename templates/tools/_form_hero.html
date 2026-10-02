@@ -21,12 +21,6 @@
    can use; the blurb keeps the slot for everyone else, so no auth
    state loses its subtitle.
 
-   Nothing is lost by dropping it here: the blurb's runtime figure
-   ("About 30 s per run") is also rendered, for BOTH auth states, by
-   the runtime table and the "Typical runtime" panel in
-   components/about_panel.html, which mpnn_form.html includes with no
-   auth guard.
-
    The `else` branch is deliberately the wider one — an anonymous
    viewer whose slug is missing from _PREVIEW_SEO_PHRASES falls back to
    the blurb rather than to an h1 alone.

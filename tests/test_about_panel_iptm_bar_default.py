@@ -89,17 +89,7 @@ import pytest
 from shared.metric_glossary import GLOSSARY
 from shared.score_legends import SCORE_LEGENDS, get_legend
 
-# Nothing here may consult the real database. A /tools/<slug> render runs
-# _public_tool_context -> _build_public_tool_context -> _pilot_context ->
-# estimated_cost_for_tool -> _historical_p90_seconds, an uncached Supabase
-# SELECT on tool_jobs_p90
-# (shared/wallet_estimates.py::_historical_p90_seconds). Counted on this
-# branch by wrapping those functions: 10 of the 28 pages an _entries call
-# renders reach the SELECT -- the 14 guide pages build no such context at
-# all, and af2, colabfold, esmfold and opendde stop short of it. _entries
-# memoises on the module-scoped app, so its 28 renders happen once for the
-# module:
-# 10 live SELECTs total, not 10 on each of the call sites.
+# Nothing here may consult the real database.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 #: ANY pointer wording. Used where PRESENCE is the question: a tool that

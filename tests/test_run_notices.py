@@ -1,8 +1,8 @@
-"""The overrun and partial-result notices on the results page and completion email.
+"""The partial-result notice on the results page and completion email.
 
-``shared.run_notices`` derives both at render time. The wallet ledger read is
-stubbed at ``shared.wallet.job_spend_by_hold``, which both ``overrun_line`` and
-``shared.email._cost_breakdown_line`` import at call time.
+``shared.run_notices`` derives it at render time. The wallet ledger read is
+stubbed at ``shared.wallet.job_spend_by_hold``, which
+``shared.email._cost_breakdown_line`` imports at call time.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from tests.test_job_complete_email_headline import _bodies, _sent
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 HOLD = "hold-1"
-OVER = "This run used more GPU time than estimated: estimated $1.00, charged $1.40."
 
 
 def _job(*, result=None, inputs=None, status="succeeded", tool="proteina") -> ToolJob:
@@ -62,29 +61,14 @@ def _partial_result(n=3, timed_out=True):
     }
 
 
-def test_charge_over_estimate_shows_line_on_page_helper_and_email(monkeypatch):
+def test_charge_over_estimate_names_no_estimate(monkeypatch):
     _ledger(monkeypatch, "1.40")
     job = _job()
-    assert rn.run_notices(job) == [OVER]
+    assert rn.run_notices(job) == []
     bodies = _bodies(_sent(job))
-    assert OVER in bodies["text"]
-    assert OVER in bodies["html"]
-    # The cost line reads the same settled figure, so the email does not
-    # print two different charges.
-    assert "charged $1.40 (" in bodies["text"]
-
-
-@pytest.mark.parametrize("usd", ["1.00", "0.80", "1.004"])
-def test_charge_at_or_under_estimate_shows_no_line(monkeypatch, usd):
-    _ledger(monkeypatch, usd)
-    job = _job()
-    assert rn.overrun_line(job) == ""
-    assert "more GPU time than estimated" not in _bodies(_sent(job))["text"]
-
-
-def test_unsettled_hold_shows_no_line(monkeypatch):
-    _ledger(monkeypatch, "5.00", settled=False)
-    assert rn.overrun_line(_job()) == ""
+    assert "estimated" not in bodies["text"].lower()
+    assert "estimated" not in bodies["html"].lower()
+    assert "You were charged $1.40 (" in bodies["text"]
 
 
 def test_partial_timeout_result_shows_n_of_m(monkeypatch):
