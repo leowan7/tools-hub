@@ -582,9 +582,9 @@ def test_a_shortlist_inside_the_cap_reports_no_truncation(client):
 # ---------------------------------------------------------------------------
 
 def test_an_empty_campaign_shortlist_returns_to_the_run_not_to_jobs(client):
-    """The dispatcher gate. The shortlist bar's button carries no ``disabled``
-    attribute in any scope and ``openCampaignModal`` has no zero-star guard, so
-    an empty body is reachable from this page. Gated on ``and candidate_refs``
+    """The dispatcher gate. ``openCampaignModal`` disables the modal's submit
+    at zero stars, but only in the browser, so a direct POST still sends an
+    empty body from this page. Gated on ``and candidate_refs``
     it falls through to the legacy single-job arm, finds no ``source_job_id``
     and lands the user on /jobs -- an unrelated list, after they clicked "Send
     shortlist"."""

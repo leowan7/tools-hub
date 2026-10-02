@@ -2434,9 +2434,23 @@ def send_auto_reload_failed_email(
 def send_auto_reload_rate_limited_email(
     *,
     user_id: str,
+    reason: str = "",
     **_extra: Any,
 ) -> bool:
-    """Auto reload skipped due to 24h count rate limit."""
+    """Auto reload skipped by a safety guard; no charge went out.
+
+    ``reason`` is a lowercase clause spliced into the body, and it also
+    switches the body off every mention of the 24h window, because on the
+    unreadable-guard path there is no previous reload to wait a day from.
+
+    No production code calls this by name: ``shared.wallet._send_email_safe``
+    reaches it with a ``getattr`` on this module, so a search for callers
+    finds only the tests, which do call it directly. The one production
+    dispatch is in ``_mail_auto_reload_skipped``, and two paths reach that,
+    both in ``shared.wallet``: the ``rate_limited`` branch of
+    ``auto_reload_if_needed`` omits ``reason`` and gets the 24h wording;
+    ``_refuse_auto_reload_unverified`` passes one.
+    """
     email = _resolve_user_email(user_id)
     if not email:
         logger.info(
@@ -2449,6 +2463,7 @@ def send_auto_reload_rate_limited_email(
     html = _render_template(
         "send_auto_reload_rate_limited.html",
         base_url=base_url,
+        reason=reason,
     )
     return _post_resend(
         to_email=email,

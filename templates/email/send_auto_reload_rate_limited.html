@@ -1,9 +1,12 @@
-{# Auto reload skipped due to 24h count rate limit.
+{# Auto reload skipped by a safety guard; no charge went out.
    Sender: shared.email.send_auto_reload_rate_limited_email
-   Triggered when _maybe_auto_reload finds an auto reload already happened in
-   the last 24 hours.
+   Triggered by shared.wallet.auto_reload_if_needed, on either of its two
+   no-charge guard outcomes: an auto reload already landed in the last 24
+   hours, or a guard could not be read at all
+   (shared.wallet._refuse_auto_reload_unverified).
    Variables:
      base_url    URL prefix (no trailing slash)
+     reason      optional lowercase clause; empty means the 24h limit
 #}
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
             color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
@@ -14,7 +17,10 @@
 
   <p style="margin:0 0 1rem 0;line-height:1.55;">
     Your wallet balance dropped below the auto reload threshold, but we did not
-    charge your card because auto reload is limited to once every 24 hours.
+    charge your card, because
+    {%- if reason %} {{ reason }}.
+    {%- else %} auto reload is limited to once every 24 hours.
+    {%- endif %}
     This is a safety guard against runaway billing.
   </p>
 
@@ -28,7 +34,12 @@
   </p>
 
   <p style="margin:0 0 1rem 0;line-height:1.55;">
+    {%- if reason %}
+    We will try again automatically the next time a job settles on your
+    account. Auto reload is still switched on.
+    {%- else %}
     Your next auto reload will be possible 24 hours after the last one.
+    {%- endif %}
   </p>
 
   <p style="margin:1.5rem 0 0 0;line-height:1.55;">
