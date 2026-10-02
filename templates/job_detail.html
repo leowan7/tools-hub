@@ -646,8 +646,8 @@
                 'data-rank="' + rank + '" ' +
                 'data-pdb-key="' + encodeURIComponent(pdbKey) + '">View 3D</button></td>';
             } else {
-              // A partial arrives from the run's heartbeat, which carries a
-              // pdb_key only when the pipeline sent one
+              // A partial arrives from the run's heartbeat, whose pdb_key is
+              // null unless the pipeline sent one
               // (webhooks/modal.py::_sanitize_candidate).
               btnCell = '<td><span style="color:var(--text-secondary);font-size:.8rem;">3D when finished</span></td>';
             }

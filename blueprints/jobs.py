@@ -909,10 +909,11 @@ def _progress_one_count(progress) -> dict:
     """A copy of a heartbeat ``_progress`` with the design count taken out of
     ``stage``.
 
-    The stage string is written by the tool container, and several embed the
-    count ("Running BindCraft - 0/2 designs"), while the job page prints
-    ``designs_completed`` of ``designs_total`` beside it, so the line showed
-    two counts that could disagree (QA 2026-10-01 F-16). An ``N/M`` is
+    The stage string is written by the tool container, outside this repo for
+    BindCraft, and QA 2026-10-01 F-16 saw it carry the count on the live page
+    ("Running BindCraft - 0/2 designs") beside the page's own
+    ``designs_completed`` of ``designs_total``: two counts that could
+    disagree. An ``N/M`` is
     removed when ``M`` equals ``designs_total``, with a trailing "design(s)"
     and the separator before it. Without a positive ``designs_total`` the
     page prints no ``M`` and the stage is left as written.
