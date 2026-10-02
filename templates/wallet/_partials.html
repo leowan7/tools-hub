@@ -60,8 +60,9 @@
     </div>
     {% endif %}
 
-    {# The server's reason a count cannot run (blueprints/wallet.py,
-       no_estimate_reason). #}
+    {# Written by setNote below: why a count cannot run (the server's
+       no_estimate_reason in blueprints/wallet.py, or a client hint), or that
+       it runs as a full-size run. #}
     <div class="wallet-estimate-row" data-estimate-note hidden>
       <span class="wallet-estimate-helper" data-estimate-note-text></span>
     </div>
@@ -259,10 +260,12 @@
         }
         var countEl = data.count_key && form.elements[data.count_key];
         if (countEl && countEl.type === 'number' && !countEl.value.trim()) {
-          applyNoPrice('');
+          applyNoPrice('Enter a number.');
           return;
         }
-        setNote('');
+        setNote(data.full_size_run
+          ? 'This count runs as a full-size run in ' + data.total_subjobs + ' pieces.'
+          : '');
         var estimate = parseFloat(data.estimate_usd || 0);
         var balance = parseFloat(data.balance_usd || 0);
         var deficit = parseFloat(data.deficit_usd || 0);
@@ -329,7 +332,7 @@
         for (var i = 0; i < numbers.length; i++) {
           var n = numbers[i];
           if (n.willValidate && n.offsetParent !== null && !n.validity.valid) {
-            applyNoPrice('');
+            applyNoPrice('Fix the highlighted number.');
             return;
           }
         }
