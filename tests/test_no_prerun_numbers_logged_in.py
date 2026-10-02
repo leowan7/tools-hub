@@ -124,8 +124,12 @@ def test_topup_page_from_the_gate_link_shows_no_run_figure(all_tools_app):
                         *_PRESETS)
 
 
+# "ok" reaches the gate when the hold fails but the re-preflight allows
+# (shared/wallet_guard.py:283). The balance covers the run then, so no top up
+# is asked for.
 @pytest.mark.parametrize("reason, says", [
     ("insufficient_balance", "Your balance does not cover this run."),
+    ("ok", "Your job did not start."),
     ("per_tool_cap_exceeded", "A top up does not change that."),
     ("self_serve_ceiling_exceeded", "A top up does not change that."),
     ("wallet_frozen", "Your wallet is on hold."),
@@ -142,5 +146,6 @@ def test_server_gate_render_shows_no_run_figure(all_tools_app, reason, says):
                                   form_snapshot={})
     assert says in page
     assert ("Top up to run your job" in page) == (reason == "insufficient_balance")
+    assert ("/campaigns/new" in page) == reason.endswith("_exceeded")
     assert not _figures(flask_app, page, "$5.00", "$10.00", "$1,000.00",
                         *_PRESETS)

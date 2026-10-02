@@ -121,19 +121,7 @@
     <div class="panel wallet-topup-gate-notice">
       <div class="panel-body">
         <p class="wallet-section-body">
-          {% if gate_reason == 'insufficient_balance' %}
-          <strong>Top up to run your job.</strong>
-          Your balance does not cover this run. Top up, then
-          {% if return_tool %}
-            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
-          {% else %}
-            go back to the form
-          {% endif %}
-          and run the job once your balance updates.
-          {% elif gate_reason == 'wallet_frozen' %}
-          <strong>Your wallet is on hold.</strong>
-          Contact support to resume.
-          {% else %}
+          {% if gate_reason in ('per_tool_cap_exceeded', 'self_serve_ceiling_exceeded') %}
           <strong>This run is too large for a single job.</strong>
           A top up does not change that.
           <a href="/campaigns/new">Run it at full size</a>, or reduce the
@@ -143,6 +131,27 @@
           {% else %}
             form.
           {% endif %}
+          {% elif gate_reason == 'wallet_frozen' %}
+          <strong>Your wallet is on hold.</strong>
+          Contact support to resume.
+          {% elif gate_reason == 'insufficient_balance' %}
+          <strong>Top up to run your job.</strong>
+          Your balance does not cover this run. Top up, then
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
+          {% else %}
+            go back to the form
+          {% endif %}
+          and run the job once your balance updates.
+          {% else %}
+          <strong>Your job did not start.</strong>
+          Go back to the
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">{{ return_tool }} form</a>
+          {% else %}
+            form
+          {% endif %}
+          and submit it again. If it fails again, contact support.
           {% endif %}
           Nothing is submitted for you.
         </p>
