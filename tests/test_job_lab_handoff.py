@@ -603,10 +603,9 @@ def test_an_unreadable_job_never_reaches_the_rejection_wording(client):
 # ---------------------------------------------------------------------------
 
 def test_an_empty_shortlist_returns_to_the_job_not_to_jobs(client):
-    """The shortlist bar's button carries no ``disabled`` attribute in any scope
-    and ``openCampaignModal`` has no zero-star guard, so an empty body is
-    reachable from this page by clicking "Send shortlist" with nothing
-    starred."""
+    """``openCampaignModal`` disables the modal's submit at zero stars, but
+    only in the browser, so a direct POST still sends an empty body from
+    this page."""
     resp, h = _submit(client, {_JID: _job()}, form=_no_shortlist())
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith(f"/jobs/{_JID}?handoff=none")
