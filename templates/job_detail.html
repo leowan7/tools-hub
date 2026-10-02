@@ -646,7 +646,10 @@
                 'data-rank="' + rank + '" ' +
                 'data-pdb-key="' + encodeURIComponent(pdbKey) + '">View 3D</button></td>';
             } else {
-              btnCell = '<td><span style="color:var(--text-secondary);">—</span></td>';
+              // A partial arrives from the run's heartbeat, whose pdb_key is
+              // null unless the pipeline sent one
+              // (webhooks/modal.py::_sanitize_candidate).
+              btnCell = '<td><span style="color:var(--text-secondary);font-size:.8rem;">3D when finished</span></td>';
             }
 
             if (existing) {
@@ -707,24 +710,16 @@
         // ── summary + ETA ────────────────────────────────────────────
         function renderSummary(data) {
           if (!liveSummary) return;
-          var prog = data.progress || {};
-          var done = Number(prog.designs_completed) || 0;
-          var total = Number(prog.designs_total) || 0;
           var passed = (data.passed_count === null || data.passed_count === undefined)
             ? null : Number(data.passed_count);
 
-          if (total > 0) {
-            var line = done + ' of ' + total + ' designs complete';
-            if (passed !== null && !isNaN(passed)) {
-              line += ', ' + passed +
-                (data.has_bar ? ' meeting the quality bar so far'
-                              : ' returned so far');
-            }
-            liveSummary.textContent = line;
-          } else if (done > 0) {
-            liveSummary.textContent = done + ' designs complete so far';
+          // The design count is printed once, by renderProgress. Without a
+          // bar, passed_count is the number of streamed rows, a second count
+          // of the same designs, so nothing is printed.
+          if (data.has_bar && passed !== null && !isNaN(passed)) {
+            liveSummary.textContent = passed + ' meeting the quality bar so far';
           } else {
-            liveSummary.textContent = 'Starting run';
+            liveSummary.textContent = '';
           }
         }
 
@@ -767,7 +762,7 @@
               progressBar.classList.remove('jobdetail-indeterminate');
               indeterminate = false;
             }
-            progressText.textContent = '(' + done + '/' + total + ')';
+            progressText.textContent = done + ' of ' + total + ' designs complete';
             progressBar.style.width = Math.min(100, (done / total) * 100) + '%';
           } else {
             // designs_total unknown yet — show an indeterminate bar
@@ -777,7 +772,7 @@
               progressBar.style.width = '30%';
               indeterminate = true;
             }
-            progressText.textContent = '';
+            progressText.textContent = done > 0 ? done + ' designs complete so far' : '';
           }
 
           renderCandidates(data.partial_candidates);
