@@ -1017,9 +1017,9 @@ def _example_teaser(example: dict) -> str:
     return lead
 
 
-# Every runtime key a tools/*/example/result.json carries. The tool page shows
-# no time before a run, so these are dropped before the results partial reads
-# them (tests/test_no_prerun_numbers.py).
+# Runtime keys dropped from a tools/*/example/result.json before the results
+# partial reads it, because the tool page shows no time before a run
+# (tests/test_no_prerun_numbers.py).
 _EXAMPLE_RUNTIME_KEYS = frozenset({
     "runtime_seconds", "runtime_minutes", "gpu_seconds", "wall_clock_seconds",
 })

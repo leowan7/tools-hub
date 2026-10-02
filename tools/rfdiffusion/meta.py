@@ -50,7 +50,7 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one RFdiffusion run cost?",
         "a": (
-            "You pay only for the GPU time your run uses, from your "
+            "You pay for the GPU time your run uses, from your "
             "wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} balance, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
             "days."

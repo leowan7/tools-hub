@@ -165,7 +165,7 @@ PILOT: dict | None = {
     },
     "next_step": (
         "Paste the rest of your candidate sequences and run them "
-        "together; you pay only for the GPU time the batch uses."
+        "together; you pay for the GPU time the batch uses."
     ),
 }
 

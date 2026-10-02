@@ -586,7 +586,7 @@ EXAMPLE: dict | None = {
         "loud and it is caught. It is worth a look at your own output anyway, "
         "because nothing in the tool is checking for it. "
         "One note on price. A run settles on the GPU seconds it actually "
-        "used, not on a flat per-run figure, so you pay only for the GPU "
+        "used, not on a flat per-run figure, so you pay for the GPU "
         "time your run uses."
     ),
     "cost_usd": "6.02",

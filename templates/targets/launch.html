@@ -369,7 +369,7 @@
         </p>
         <p style="margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-tertiary);">
           Starting holds part of your balance. It is reserved, not spent: you
-          are billed only for compute that actually runs, and the rest is
+          are billed for compute that actually runs, and the rest is
           released.
         </p>
       </div>
@@ -532,7 +532,7 @@
             parts.push('These runs cannot start right now.');
           }
         } else {
-          parts.push('Ready to launch; you are billed only for what runs.');
+          parts.push('Ready to launch; you are billed for what runs.');
         }
         if (d.concurrency_note) { parts.push(d.concurrency_note); }
         setNote(parts.join(' '));

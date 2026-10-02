@@ -55,7 +55,7 @@ seo_faq: list[dict] = [
     {
         "q": "How much does an AlphaFold2 multimer run cost?",
         "a": (
-            "You pay only for the GPU time your run uses, from your "
+            "You pay for the GPU time your run uses, from your "
             "wallet. New accounts start with "
             f"{_SIGNUP_CREDIT} of credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
             "days."

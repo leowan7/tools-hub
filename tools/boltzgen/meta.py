@@ -54,7 +54,7 @@ seo_faq: list[dict] = [
         "q": "How long does a BoltzGen trial run take?",
         "a": (
             "Runtime depends on target size and the binder format you "
-            "picked. You pay only for the GPU time your run uses."
+            "picked. You pay for the GPU time your run uses."
         ),
     },
 ]
@@ -386,7 +386,7 @@ EXAMPLE: dict | None = {
         "0.51 &Aring;. "
         "200 designs against a "
         "115-residue target is the heavy end of a trial run. You pay "
-        "only for the GPU time your run uses."
+        "for the GPU time your run uses."
     ),
     "how_to_read_it": (
         "<strong>Refolding RMSD is the column with a real bar on it.</strong> "

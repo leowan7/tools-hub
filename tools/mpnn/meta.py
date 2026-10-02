@@ -43,7 +43,7 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one ProteinMPNN job cost?",
         "a": (
-            "You pay only for the GPU time your run uses, from your "
+            "You pay for the GPU time your run uses, from your "
             "wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} wallet balance, usable for "
             f"{SIGNUP_CREDIT_EXPIRY_DAYS} days."

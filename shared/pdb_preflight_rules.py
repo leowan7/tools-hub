@@ -528,10 +528,10 @@ _RFDIFFUSION = ToolRules(
         # below), and no value of runtime_base_min alone produces a spread
         # under 2x.
         #
-        # The split is a fixed ~700 s plus ~190 s per design, and it
-        # reproduces the one recorded job exactly: 700 + 190*8 = 2220 GPU-s
-        # for job 25471e07
-        # (4ZQK chain A, 115 aa, 8 designs, ~37 min). Both constants below
+        # The split, a fixed ~700 s plus ~190 s per design, is a model, not a
+        # measurement: only its 8-design total is recorded, 700 + 190*8 =
+        # 2220 GPU-s for job 25471e07 (tools/rfdiffusion/example/result.json
+        # "gpu_seconds"; 4ZQK chain A, 115 aa, 8 designs). Both constants below
         # are that split divided by this curve's own size factor at 115 aa,
         # (115/120)^1.2 = 0.95021, which normalises them to the 120-aa pivot
         # the estimator anchors on, with the per-design one carried up to

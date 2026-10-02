@@ -102,7 +102,7 @@ about: dict = {
         {
             "name": "Number of designs",
             "explanation": (
-                "How many candidates to score. You pay only for the GPU "
+                "How many candidates to score. You pay for the GPU "
                 "time your run uses, and runtime does not rise in step "
                 "with the count &mdash; in the runs on record, five "
                 "designs finished faster than two. Nothing above "

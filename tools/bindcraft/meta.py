@@ -63,7 +63,7 @@ seo_faq: list[dict] = [
         "a": (
             "Runtime depends on target size, how many designs you ask "
             "for, and how many candidates pass the internal ipTM filter. "
-            "You pay only for the GPU time your run uses."
+            "You pay for the GPU time your run uses."
         ),
     },
 ]
