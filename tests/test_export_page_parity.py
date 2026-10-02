@@ -353,6 +353,319 @@ ATOM 2 C CA . LYS A 1 2 ? 3.8 0.0 0.0 1.0 90.0 2 A 1
 
 
 # ---------------------------------------------------------------------------
+# The scores CSV's sequence columns
+#
+# Why this section exists, as reported from a live check of the deployed #405
+# on 2026-10-01 and NOT reproduced here: the CSV carried a sequence for
+# esmfold2-design / rfdiffusion / mpnn (which store the field) and an empty
+# one for boltzgen / proteina / rfantibody / iggm, whose FASTA DID carry
+# records -- read from the structure file, which the CSV was not handed.
+# The tests below pin the fix on fixtures, not on that observation.
+# ---------------------------------------------------------------------------
+
+def _chain_rows(per_design: list[dict[str, str]]) -> tuple[dict, dict[str, bytes]]:
+    """A ``candidates`` result, plus the bytes each row's ``pdb_key`` fetches.
+
+    Stored under ``candidates`` and on descending ipTM, so page order is
+    stored order (``page_ordered_records``) and a row's position here is its
+    position in both exports."""
+    files = {f"designs/design_{i}.pdb": _pdb(chains)
+             for i, chains in enumerate(per_design)}
+    return {"candidates": [
+        {"name": f"d{i}", "pdb_key": key, "scores": {"ipTM": 0.9 - 0.1 * i}}
+        for i, key in enumerate(files)]}, files
+
+
+def test_the_csv_writes_one_column_per_chain_of_the_complex(client, monkeypatch):
+    target = "MKWMKW"
+    result, files = _chain_rows([
+        {"A": target, "B": "MKC"},
+        {"A": target, "B": "WCG"},
+        {"A": target, "B": "GKM"},
+    ])
+    job = _wire(monkeypatch, "boltzgen", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    body = client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True)
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert body.splitlines()[0].endswith("sequence_chainA,sequence_chainB")
+    assert [r["sequence_chainB"] for r in rows] == ["MKC", "WCG", "GKM"]
+    # The target repeats, which is what a target echo looks like. It is kept:
+    # no row says which chain is the design, so dropping the constant one
+    # drops a designed chain that a run did not vary (the test below).
+    assert [r["sequence_chainA"] for r in rows] == [target] * 3
+
+
+def test_the_antibody_csv_keeps_a_designed_chain_that_did_not_vary(
+        client, monkeypatch):
+    """An antibody run whose light chain came out identical in every design."""
+    antigen, light = "MKWMKW", "WCG"
+    result, files = _chain_rows([
+        {"A": antigen, "H": "MKC", "L": light},
+        {"A": antigen, "H": "CKM", "L": light},
+    ])
+    job = _wire(monkeypatch, "iggm", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert [k for k in rows[0] if k.startswith("sequence_chain")] == [
+        "sequence_chainA", "sequence_chainH", "sequence_chainL"]
+    assert [(r["sequence_chainH"], r["sequence_chainL"]) for r in rows] == [
+        ("MKC", light), ("CKM", light)]
+
+
+def test_an_unreadable_structure_says_so_instead_of_leaving_blank_cells(
+        client, monkeypatch):
+    """A storage miss on one design, which ``_storage_fetcher`` turns into
+    ``None``. That row cannot be dropped the way the FASTA drops a record --
+    the row IS the design, scores and all -- so blank sequence cells would
+    read as a design that has no sequence, not one whose file could not be
+    read."""
+    from shared.storage import StorageError
+    result, files = _chain_rows([{"A": "MKWMKW", "B": "MKC"},
+                                 {"A": "MKWMKW", "B": "WCG"}])
+    gone = sorted(files)[1]
+
+    def fetch(**kw):
+        if kw["filename"] == gone:
+            raise StorageError("object not found")
+        return files[kw["filename"]]
+
+    job = _wire(monkeypatch, "boltzgen", result, fetch=fetch)
+    body = client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True)
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert rows[0]["sequence_chainB"] == "MKC"
+    assert rows[0]["sequence_note"] == ""
+    assert rows[1]["sequence_chainA"] == rows[1]["sequence_chainB"] == ""
+    assert rows[1]["sequence_note"] == "structure unavailable"
+    # Last, so every column before it keeps its position.
+    assert body.splitlines()[0].endswith(
+        "sequence_chainA,sequence_chainB,sequence_note")
+
+
+def test_a_structure_with_no_readable_chain_says_that_instead(
+        client, monkeypatch):
+    """A poly-GLY backbone downloads and parses without error, and
+    ``structure_chain_sequences`` still returns nothing for it -- it keeps a
+    chain only at two or more distinct residue letters
+    (``test_structure_chain_sequences_skips_placeholder_chains``). Saying
+    "structure unavailable" about a file that was read would be false, so
+    the two causes get two strings."""
+    result, files = _chain_rows([{"A": "GGGGGG"}, {"A": "MKWMKW"}])
+    job = _wire(monkeypatch, "proteina", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert rows[0]["sequence_chainA"] == ""
+    assert rows[0]["sequence_note"] == "no sequence in structure"
+    assert rows[1]["sequence_chainA"] == "MKWMKW"
+    assert rows[1]["sequence_note"] == ""
+
+
+def test_a_row_with_no_structure_at_all_says_so_too(client, monkeypatch):
+    """A row with no ``pdb_key`` and no ``pdb_content_b64`` has nothing to
+    fetch (``_structure_bytes`` needs one of them), so it is settled in its
+    own branch before the read budget and never reaches the no-chains branch
+    after the read: nothing was missing and nothing was unreadable, there was
+    simply nothing to read. In a job where the OTHER rows do carry
+    a structure, they create the chain columns this row would otherwise sit
+    blank in -- the same unexplained blank cell the note exists to prevent."""
+    result, files = _chain_rows([{"A": "MKWMKW"}])
+    result["candidates"].append({"name": "d1", "scores": {"ipTM": 0.5}})
+    job = _wire(monkeypatch, "boltzgen", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert rows[0]["sequence_chainA"] == "MKWMKW"
+    assert rows[0]["sequence_note"] == ""
+    assert rows[1]["sequence_chainA"] == ""
+    assert rows[1]["sequence_note"] == "no structure stored"
+
+
+def test_a_job_past_the_cap_reads_up_to_it_and_notes_the_rest(client, monkeypatch):
+    """One download and one parse per sequence-less row, in series, inside the
+    request. Nothing upstream bounds the row count, and gunicorn kills a
+    request at its ``timeout`` under sync workers, so an uncapped loop trades
+    the CSV for a 502 and takes the worker down with it. Rows past the cap get
+    the reason in the note column -- the one note of the four that says nothing
+    about the row's own structure, which here is perfectly readable."""
+    import shared.exports as exports
+    monkeypatch.setattr(exports, "_MAX_STRUCTURE_READS", 2)
+    result, files = _chain_rows(
+        [{"A": "MKWMKW", "B": c} for c in ("MKC", "WCG", "GKM", "CWA")])
+    reads: list[str] = []
+
+    def fetch(**kw):
+        reads.append(kw["filename"])
+        return files[kw["filename"]]
+
+    job = _wire(monkeypatch, "rfantibody", result, fetch=fetch)
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert len(reads) == 2
+    assert [r["sequence_chainB"] for r in rows] == ["MKC", "WCG", "", ""]
+    capped = "not read: this export reads at most 2 structures"
+    assert [r["sequence_note"] for r in rows] == ["", "", capped, capped]
+    # The note is built from the limit, so the two cannot drift apart.
+    assert str(exports._MAX_STRUCTURE_READS) in rows[2]["sequence_note"]
+
+
+def test_the_read_cap_counts_reads_and_not_rows(client, monkeypatch):
+    """A row the loop settles without reading anything must not spend the
+    budget. Counting rows instead let a job's structureless rows exhaust it
+    before the loop reached a row that HAS a readable structure, which then
+    carried "not read" with nothing read: probed at cap 3 with three
+    structureless rows, zero downloads were attempted and both readable rows
+    were reported unread."""
+    import shared.exports as exports
+    monkeypatch.setattr(exports, "_MAX_STRUCTURE_READS", 2)
+    result, files = _chain_rows(
+        [{"A": "MKWMKW", "B": c} for c in ("MKC", "WCG")])
+    # First, and as many as the cap allows reads, so counting rows spends the
+    # whole budget on them and leaves the two readable rows below unread.
+    result["candidates"] = [
+        {"name": f"n{i}", "scores": {"ipTM": 0.95}} for i in range(3)
+    ] + result["candidates"]
+    reads: list[str] = []
+
+    def fetch(**kw):
+        reads.append(kw["filename"])
+        return files[kw["filename"]]
+
+    job = _wire(monkeypatch, "boltzgen", result, fetch=fetch)
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert len(reads) == 2
+    assert [r["sequence_chainB"] for r in rows] == ["", "", "", "MKC", "WCG"]
+    assert [r["sequence_note"] for r in rows] == (
+        ["no structure stored"] * 3 + ["", ""])
+
+
+def test_the_cap_clears_the_form_caps_its_comment_claims_it_does():
+    """``_MAX_STRUCTURE_READS``' comment says it sits above the design counts
+    boltzgen (``budget`` 50) and iggm can reach, so for those two the cap is
+    unreachable and their CSV is never short a row their FASTA carries. iggm's
+    is the larger of the two, so clearing it clears both."""
+    from shared.exports import _MAX_STRUCTURE_READS
+    from tools.iggm import NUM_SAMPLES_MAX
+    assert NUM_SAMPLES_MAX == 100
+    assert _MAX_STRUCTURE_READS > NUM_SAMPLES_MAX
+
+
+def test_the_csv_and_the_fasta_carry_the_same_chains(client, monkeypatch):
+    """Neither export is told which chain is the design, so both write all
+    of them; a reader diffing the two downloads finds no chain in one and
+    missing from the other."""
+    result, files = _chain_rows([
+        {"A": "MKWMKW", "H": "MKC", "L": "WCG"},
+        {"A": "MKWMKW", "H": "CKM", "L": "WCG"},
+    ])
+    job = _wire(monkeypatch, "iggm", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    csv_body = client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True)
+    fasta = client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+    in_csv = {k[len("sequence_chain"):] for k in
+              csv.DictReader(io.StringIO(csv_body)).fieldnames
+              if k.startswith("sequence_chain")}
+    in_fasta = {line.rsplit("_chain", 1)[1].split()[0]
+                for line in fasta.splitlines() if line.startswith(">")}
+    assert in_csv == in_fasta == {"A", "H", "L"}
+
+
+def test_the_csv_reads_no_more_structures_than_the_fasta(client, monkeypatch):
+    result, files = _chain_rows([{"A": "MKWMKW", "B": "MKC"},
+                                 {"A": "MKWMKW", "B": "WCG"}])
+    result["candidates"][1]["sequence"] = "MKWC"
+    reads: list[str] = []
+
+    def fetch(**kw):
+        reads.append(kw["filename"])
+        return files[kw["filename"]]
+
+    job = _wire(monkeypatch, "boltzgen", result, fetch=fetch)
+    body = client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True)
+    csv_reads, reads[:] = list(reads), []
+    client.get(f"/jobs/{job.id}/export.fasta")
+    # The row storing a sequence is read by neither route.
+    assert csv_reads == reads == ["designs/design_0.pdb"]
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert body.splitlines()[0].endswith(
+        "sequence,sequence_chainA,sequence_chainB")
+    assert rows[1]["sequence"] == "MKWC"
+    assert (rows[1]["sequence_chainA"], rows[1]["sequence_chainB"]) == ("", "")
+
+
+def test_a_blank_chain_id_does_not_put_a_space_in_the_column_name(
+        client, monkeypatch):
+    """A PDB may leave the chain column blank; Biopython reads that as " "."""
+    result, files = _chain_rows([{" ": "MKWC"}])
+    job = _wire(monkeypatch, "boltzgen", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    body = client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True)
+    assert body.splitlines()[0].endswith(",sequence_chain")
+    assert next(csv.DictReader(io.StringIO(body)))["sequence_chain"] == "MKWC"
+
+
+def test_without_a_fetcher_no_structure_is_read_and_no_chain_column_written():
+    """The campaign, target and admin exports pass none."""
+    from shared.exports import candidate_table, candidates_to_csv
+
+    cands = [{"name": "d0", "pdb_key": "designs/design_0.pdb",
+              "scores": {"ipTM": 0.9}}]
+    _leading, _metrics, rows = candidate_table(cands)   # the admin caller
+    assert not [k for k in rows[0] if k.startswith("sequence_chain")]
+    assert "sequence" not in candidates_to_csv(cands).splitlines()[0]
+
+
+def test_a_scores_key_named_like_a_sequence_column_is_not_also_a_metric():
+    """A tool scoring a per-chain quantity could name it ``sequence_chainA``.
+    Discovered as a metric it lands in the row under the name
+    :func:`sequence_columns` owns, which scans the row by prefix -- so the
+    header carried the name twice and ``csv.DictReader`` kept only the last.
+    No tool emits such a key today; this pins the same rule the ``"sequence"``
+    exclusion already applies -- the reserved name wins -- for the names the
+    chain columns take.
+
+    Three cases, because the first version of this guard filtered only the
+    header and only when a fetcher was given, and each of the other two was a
+    real defect: with a fetcher and the chain extracted; without a fetcher at
+    all (the campaign and target exports); and with a fetcher on a row that
+    ends up with a note, where nothing overwrites the metric value and the
+    CSV printed a number where a sequence belongs."""
+    from shared.exports import candidates_to_csv
+
+    cands = [{"name": "d0", "pdb_key": "d0.pdb",
+              "scores": {"ipTM": 0.9, "sequence_chainA": 42,
+                         "sequence_note": 7}}]
+    out = candidates_to_csv(
+        cands, fetch_bytes=lambda j, f: _pdb({"A": "MKWMKW"}),
+        default_job_id="j1",
+    )
+    header = out.splitlines()[0].split(",")
+    assert [h for h in header if header.count(h) > 1] == []
+    assert header.count("sequence_chainA") == 1
+    row = next(csv.DictReader(io.StringIO(out)))
+    assert row["sequence_chainA"] == "MKWMKW"
+
+    # No fetcher: these columns are never written, but sequence_columns still
+    # scans the row, so the name must be gone from the row too.
+    plain = candidates_to_csv(cands)
+    plain_header = plain.splitlines()[0].split(",")
+    assert [h for h in plain_header if plain_header.count(h) > 1] == []
+    assert "42" not in plain
+
+    # A row that gets a note: nothing overwrites the metric value, so only
+    # removing it keeps a number out of the chain column.
+    noted = candidates_to_csv(
+        [{"name": "d1", "pdb_key": "designs/d1.pdb", "scores": {"iptm": 0.9}},
+         {"name": "d2", "scores": {"sequence_chainA": 0.42}}],
+        fetch_bytes=lambda j, f: _pdb({"A": "MKWM"}), default_job_id="j1",
+    )
+    second = list(csv.DictReader(io.StringIO(noted)))[1]
+    assert second["sequence_note"] == "no structure stored"
+    assert second["sequence_chainA"] == ""
+
+
+# ---------------------------------------------------------------------------
 # The FASTA button
 # ---------------------------------------------------------------------------
 

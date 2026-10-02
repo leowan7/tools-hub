@@ -1514,7 +1514,19 @@ def export_csv(job_id: str):
     if not candidates and is_candidate_array(sequences):
         body = sequences_to_csv(sequences)      # mpnn
     else:
-        body = candidates_to_csv(candidates)
+        # fetch_bytes, so a row that stores no sequence field gets its
+        # sequence from the structure here and not just in the FASTA. Same
+        # rows, same bytes, same extractor as export_fasta below. Per ROW,
+        # not per tool: the 2026-10-01 live check named boltzgen, proteina,
+        # rfantibody and iggm as the ones whose CSV column was empty while
+        # their FASTA carried records, but no candidate row in any
+        # tools/*/example/result.json stores a sequence field, so the set
+        # that reads here is wider than those four.
+        body = candidates_to_csv(
+            candidates,
+            fetch_bytes=_storage_fetcher(ctx.user_id, "export_csv"),
+            default_job_id=job_id,
+        )
     return Response(
         body,
         mimetype="text/csv",
