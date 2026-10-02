@@ -7,8 +7,6 @@ Parallel to ``tools/mpnn/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
     paper_citation    — short inline citation.
     paper_url         — Nature Methods / bioRxiv permalink.
     github_url        — upstream ColabFold repository.
@@ -21,16 +19,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Typical wall-clock per preset. Used by the About panel runtime table.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "1 to 2", "minutes": (1, 2)},
-}
-
 paper_citation: str = "Mirdita et al., Nature Methods 2022"
 paper_url: str = "https://www.nature.com/articles/s41592-022-01488-1"
 github_url: str = "https://github.com/sokrypton/ColabFold"
 comparison_one_liner: str = (
-    "You have a sequence and want its 3D shape in a minute or two, "
+    "You have a sequence and want its 3D shape quickly, "
     "trading a little accuracy for speed. It skips the search for "
     "related natural sequences that full AlphaFold2 runs. Use it to "
     "triage a batch; use AlphaFold2 when the answer has to be "
@@ -43,7 +36,7 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "Predicts a structure from a sequence in one to two minutes by "
+        "Predicts a structure from a sequence by "
         "skipping the search for related natural sequences that full "
         "AlphaFold2 runs. Same AlphaFold2 weights, less evidence to "
         "work from — so a little less accurate and a lot faster. Useful "
@@ -53,7 +46,7 @@ about: dict = {
     ),
     "when_to_use": [
         (
-            "You want a structure in a couple of minutes and can live with "
+            "You want a structure quickly and can live with "
             "slightly less accuracy than full AlphaFold2."
         ),
         (
@@ -85,9 +78,6 @@ about: dict = {
                 "speed if your target's fold is well-known."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "standalone", "typical": "1 to 2 min"},
     ],
     # Same bar as af2 and from the same place: shared/score_legends.py
     # ("colabfold", "iptm") sets good 0.6 and excellent 0.75. Stated
@@ -189,7 +179,8 @@ EXAMPLE: dict | None = {
             "Number of recycles",
             "2",
             "How many times the model refines its own answer. More recycles "
-            "let a borderline fold settle and cost proportionally more; 2 is "
+            "let a borderline fold settle and use proportionally more GPU "
+            "time; 2 is "
             "enough to see whether a design is in trouble.",
         ),
     ],

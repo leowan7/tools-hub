@@ -58,7 +58,7 @@ def test_a_tiny_mpnn_run_settles_at_the_minimum_and_the_email_agrees(store):
         gpu_seconds_used=12.0,
     )
     line = _cost_breakdown_line(job, tone="succeeded")
-    assert line == "Estimated $0.05, charged $0.05 (12 GPU-sec on A10G).", line
+    assert line == "You were charged $0.05 (12 GPU-sec on A10G).", line
 
 
 def test_zero_seconds_and_refunds_stay_free(store):

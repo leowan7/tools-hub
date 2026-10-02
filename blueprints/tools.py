@@ -82,12 +82,7 @@ from shared.tools_catalog import (
     group_catalog,
 )
 from shared.wallet import get_or_create_wallet, release_hold as wallet_release_hold
-from shared.tool_meta import meta_for, preset_runtime_text, runtime_band
-from shared.wallet_estimates import (
-    compute_hard_cap,
-    estimated_cost_for_tool,
-    get_tool_spec,
-)
+from shared.tool_meta import meta_for
 from shared.wallet_guard import requires_wallet
 from tools import base as tool_base
 
@@ -633,7 +628,7 @@ def _prerequisite_tool(slug: str) -> dict | None:
         "why": (
             "It scores your target's surface and ranks candidate epitopes, "
             "which is how you decide what to type into Hotspot residues. "
-            "It is free and runs in about 30 seconds."
+            "It is free."
         ),
     }
 
@@ -695,11 +690,6 @@ def _related_tool_cards(slug: str) -> list[dict]:
             "url": url_for("tools.tool_form", tool=related_slug),
         })
     return out
-
-def _runtime_band_for_adapter(adapter, meta) -> str:
-    """The runtime band for ``adapter``; see shared.tool_meta.runtime_band."""
-    return runtime_band(meta, [p.slug for p in adapter.presets])
-
 
 # (stored key, form field, label shown when the stored key is absent).
 # iggm: tools/iggm/__init__.py:334-337 vs templates/tools/iggm_form.html:93,116,122.
@@ -932,19 +922,11 @@ def _as_form_text(value) -> str:
 
 
 def _pilot_context(adapter, meta) -> dict | None:
-    """The guided starter recipe for a tool, with its numbers derived.
+    """The guided starter recipe for a tool, with its links derived.
 
     ``tools/<slug>/meta.py`` declares only the WORDS and the parameter
-    set (``PILOT``); the price and the runtime are computed here from
-    the same two sources the rest of the app already uses —
-    ``shared.wallet_estimates.estimated_cost_for_tool`` and the
-    preset runtime map. A hand-written price in meta.py would be a
-    second rate card and would drift off the real one.
-
-    ``PILOT["params"]`` keys are FORM FIELD NAMES, so the same dict
-    both pre-fills the form (``?pilot=1``) and feeds the estimator —
-    which is what the form's own live estimate posts, so the two
-    numbers cannot disagree.
+    set (``PILOT``). ``PILOT["params"]`` keys are FORM FIELD NAMES, so
+    the same dict pre-fills the form (``?pilot=1``).
 
     Returns None when the tool declares ``PILOT = None`` (the fast
     predictors: a 40-second ESMFold run needs no pilot ceremony).
@@ -952,28 +934,9 @@ def _pilot_context(adapter, meta) -> dict | None:
     pilot = getattr(meta, "PILOT", None)
     if not pilot:
         return None
-    params = dict(pilot.get("params") or {})
-    # A count under the spec's baseline is estimated as the baseline
-    # (shared/wallet_estimates.py::_scale_seconds floors the ratio at 1.0),
-    # so the card says the smaller trial shows the same figure.
-    spec = get_tool_spec(adapter.slug)
-    floor_count = None
-    if spec and spec.scaling_param:
-        try:
-            count = int(params.get(spec.scaling_param))
-        except (TypeError, ValueError):
-            count = None
-        if count is not None and count < spec.designs_per_run_baseline:
-            floor_count = spec.designs_per_run_baseline
     return dict(
         pilot,
-        params=params,
-        cost_usd=estimated_cost_for_tool(None, adapter.slug, params),
-        # What settle can charge at most: the per-job cap, not the estimate
-        # (supabase/migrations/0020_wallet_corrections.sql:188).
-        max_charge_usd=compute_hard_cap(adapter.slug, params),
-        floor_count=floor_count,
-        runtime=preset_runtime_text(meta, str(params.get("preset") or "")),
+        params=dict(pilot.get("params") or {}),
         url=url_for("tools.tool_form", tool=adapter.slug, pilot=1),
         # Rendered by components/pilot_card.html as the "this tool asks
         # for these, and here is where to get them" line. Both flags are
@@ -1025,10 +988,10 @@ def _example_teaser(example: dict) -> str:
     ``components/worked_example.html`` renders in the right rail below
     the form, so this line is what a visitor sees of it before deciding
     to scroll. Every word is taken from ``EXAMPLE``: the first sentence
-    of ``target``, then whichever of ``runtime`` / ``cost_usd`` that
-    example carries.
+    of ``target``. The example's recorded ``runtime`` and ``cost_usd``
+    are left out: the tool page shows no price or time before a run.
     ``tests/test_worked_examples.py::TestTheTeaserComesFromTheExample``
-    fails on a digit in the output that is absent from those three fields.
+    fails on a digit in the output that is absent from ``target``.
 
     ``Markup.striptags`` rather than splitting the raw string because
     ``target`` carries both markup and entities: it unescapes as it
@@ -1051,15 +1014,15 @@ def _example_teaser(example: dict) -> str:
     )
     if sentence_end:
         lead += "."
-    figures = ", ".join(
-        figure
-        for figure in (
-            example.get("runtime"),
-            f"${example['cost_usd']}" if example.get("cost_usd") else None,
-        )
-        if figure
-    )
-    return f"{lead} {figures}.".lstrip() if figures else lead
+    return lead
+
+
+# Every runtime key a tools/*/example/result.json carries. The tool page shows
+# no time before a run, so these are dropped before the results partial reads
+# them (tests/test_no_prerun_numbers.py).
+_EXAMPLE_RUNTIME_KEYS = frozenset({
+    "runtime_seconds", "runtime_minutes", "gpu_seconds", "wall_clock_seconds",
+})
 
 
 def _example_context(adapter, meta) -> dict | None:
@@ -1081,6 +1044,7 @@ def _example_context(adapter, meta) -> dict | None:
             "or unreadable; rendering no worked example", adapter.slug,
         )
         return None
+    result = {k: v for k, v in result.items() if k not in _EXAMPLE_RUNTIME_KEYS}
     return dict(example, result=result, teaser=_example_teaser(example))
 
 def _showcase_note(slug: str) -> dict | None:
@@ -1100,16 +1064,11 @@ def _public_tool_context(adapter) -> dict:
     longer. Two callers build this per render: ``tool_form`` passes it
     into the template, and the ``tool_public_context`` jinja global
     (app.py) rebuilds it inside ``about_panel.html`` because macros are
-    imported without context. Each build runs ``_pilot_context`` ->
-    ``estimated_cost_for_tool`` -> ``_historical_p90_seconds``, which is
-    an uncached Supabase SELECT on ``tool_jobs``. /tools/<slug> is
-    publicly indexable now, so that was two network round trips per
-    crawler hit for one page.
+    imported without context.
 
     ``flask.g`` rather than ``lru_cache`` deliberately: the dict holds
-    ``url_for(..., _external=True)`` breadcrumbs and a live price, so a
-    process-lifetime cache would pin the first request's host into every
-    later response and freeze the estimate against p90 drift.
+    ``url_for(..., _external=True)`` breadcrumbs, so a process-lifetime
+    cache would pin the first request's host into every later response.
     """
     cache = g.setdefault("_public_tool_ctx", {})
     hit = cache.get(adapter.slug)
@@ -1168,7 +1127,6 @@ def _build_public_tool_context(adapter) -> dict:
 
     return {
         "meta": tool_meta,
-        "runtime_band": _runtime_band_for_adapter(adapter, tool_meta),
         "seo_phrase": seo_phrase,
         "seo_long": seo_long,
         "title_phrase": _preview_title_phrase(adapter.slug),

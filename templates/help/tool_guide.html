@@ -116,24 +116,6 @@
           </div>
         {% endif %}
 
-        {% if meta and (meta.runtime_band or (meta.about and meta.about.runtime_table)) %}
-          <div style="margin-top: 1.5rem;">
-            <p class="field-helper" style="margin: 0 0 0.6rem 0;">Typical runtime:</p>
-            {% if meta.runtime_band %}
-              <p style="margin: 0 0 0.6rem 0; color: var(--text-secondary); line-height: 1.6;">{{ meta.runtime_band }}</p>
-            {% endif %}
-            {% if meta.about and meta.about.runtime_table %}
-              <dl style="margin: 0;">
-                {% for row in meta.about.runtime_table %}
-                  <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.6rem;">{{ row.preset }}</dt>
-                  {% if row.typical %}
-                    <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">{{ row.typical }}</dd>
-                  {% endif %}
-                {% endfor %}
-              </dl>
-            {% endif %}
-          </div>
-        {% endif %}
       </div>
     </div>
   </section>

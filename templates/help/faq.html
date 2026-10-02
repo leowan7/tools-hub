@@ -26,7 +26,7 @@
   {"q": "Is there a limit on how many designs I can run?",
    "a": "No. Design count is unlimited and there is no per design charge. Your wallet balance is the only ceiling. A large request becomes a full-size run that drains the wallet as compute is delivered and pauses if the balance runs low, so everything already produced stays downloadable."},
   {"q": "What is a hold versus a final charge?",
-   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. The job is billed for actual GPU minutes consumed, which can come in above or below the estimate but never above the job's cap. Any part of the hold the job does not use returns to your wallet automatically."},
+   "a": "When you submit a job, a hold is placed against your wallet. The job is billed for the GPU time it actually uses. Any part of the hold the job does not use returns to your wallet automatically."},
   {"q": "What happens if I cancel a running job?",
    "a": "Cancellation stops the run but charges for the GPU minutes already consumed. There is no refund for compute we already paid for. A job cancelled before the first heartbeat reports zero GPU consumed settles at zero and the full hold returns to your wallet."},
   {"q": "Are there subscriptions?",
@@ -42,7 +42,7 @@
   {"q": "Can I run a tool to test it first?",
    "a": "Your inputs are validated before any compute runs, so a bad chain ID or a malformed PDB is caught up front rather than after you have paid. Your $" ~ signup_credit() ~ " signup balance, usable for " ~ signup_credit_expiry_days ~ " days after sign-up, covers a first structure prediction or sequence run on your target. Most binder design runs cost more than that and need a top-up."},
   {"q": "How long do runs take?",
-   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools take longer as you request more designs, often a minute or two per design, so a small starter run lands well under an hour while a large full-size run takes longer and bills as its pieces finish. Every tool form shows a typical runtime before you submit."},
+   "a": "It depends on the tool, your target and the scale you pick. Generative tools take longer as you request more designs, and a large full-size run bills as its pieces finish."},
   {"q": "What is a design?",
    "a": "A design is one candidate the tool generates: a backbone — a structure with no sequence decided yet — with a sequence put on it, scored and ranked against the others in the run. A trial run of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
   {"q": "What do the scores mean?",
@@ -114,11 +114,9 @@
       <article class="why-card">
         <h3 class="why-card-title">What is a hold versus a final charge?</h3>
         <p class="why-card-body">
-          When you submit a job, a hold is placed against your wallet for the
-          estimated cost. The job is billed for actual GPU minutes consumed,
-          which can come in above or below the estimate but never above the
-          job&rsquo;s cap. Any part of the hold the job does not use returns to your
-          wallet automatically.
+          When you submit a job, a hold is placed against your wallet. The job
+          is billed for the GPU time it actually uses. Any part of the hold the
+          job does not use returns to your wallet automatically.
         </p>
       </article>
       <article class="why-card">
@@ -215,12 +213,9 @@
       <article class="why-card">
         <h3 class="why-card-title">How long do runs take?</h3>
         <p class="why-card-body">
-          It depends on the tool and the scale you pick. A single ProteinMPNN
-          inference finishes in about a minute. Generative tools take longer
-          as you request more designs, often a minute or two per design, so a
-          small starter run lands well under an hour while a large full-size run
-          takes longer and bills as its pieces finish. Every tool form shows a
-          typical runtime before you submit.
+          It depends on the tool, your target and the scale you pick.
+          Generative tools take longer as you request more designs, and a large
+          full-size run bills as its pieces finish.
         </p>
       </article>
       <article class="why-card">

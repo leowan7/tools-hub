@@ -8,10 +8,6 @@ own ``meta.py`` alongside this one.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
-                         ``typical_minutes`` is a human-readable range (e.g.
-                         ``"15-60"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink for the RFantibody paper.
     github_url        — upstream RosettaCommons repo.
@@ -26,11 +22,6 @@ Shapes
 from __future__ import annotations
 
 from typing import Optional
-
-# Typical wall-clock per preset. Used by the About panel runtime table.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15 to 60", "minutes": (15, 60)},
-}
 
 # THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE, and the publisher
 # is what ties the two together rather than a title match: the Crossref
@@ -111,9 +102,6 @@ about: dict = {
             ),
         },
     ],
-    "runtime_table": [
-        {"preset": "Trial run", "typical": "15 to 60 min"},
-    ],
     "output_summary": (
         "Ranked VHH candidates with pAE, pLDDT, ipAE, and "
         "PDBs downloadable from a run of your own. Filter at pAE &le; 5 / ipAE &le; 6 for "
@@ -129,16 +117,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -255,7 +238,7 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "20 candidates in 14 minutes. <strong>Five meet every bar; fifteen "
+        "20 candidates. <strong>Five meet every bar; fifteen "
         "do not.</strong> Interface pAE runs 3.72 to 17.48 &Aring;, global "
         "pAE 2.68 to 9.84 &Aring;, and pLDDT 87 to 91."
     ),

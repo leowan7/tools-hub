@@ -7,8 +7,6 @@ Parallel to ``tools/bindcraft/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
     paper_citation    — short inline citation.
     paper_url         — bioRxiv / Science permalink.
     github_url        — upstream ProteinMPNN repository.
@@ -28,11 +26,6 @@ from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 # as "$5" here and stayed that way when the grant went to $15.
 _SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
 
-# Typical wall-clock per preset. Used by the About panel runtime table.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "1", "minutes": (1, 1)},
-}
-
 paper_citation: str = "Dauparas et al., Science 2022"
 paper_url: str = "https://www.science.org/doi/10.1126/science.add2187"
 github_url: str = "https://github.com/dauparas/ProteinMPNN"
@@ -42,7 +35,7 @@ seo_faq: list[dict] = [
         "q": "Can I run ProteinMPNN online without a local GPU?",
         "a": (
             "Yes. Upload a backbone PDB and Ranomics Tools runs ProteinMPNN "
-            "on a dedicated GPU in seconds. You get ranked sequence "
+            "on a dedicated GPU. You get ranked sequence "
             "redesigns plus per-position recovery, with no install and no "
             "CUDA setup."
         ),
@@ -50,14 +43,10 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one ProteinMPNN job cost?",
         "a": (
-            "Billing is by the second. The model finishes in under a minute "
-            "on most backbones, so a small ProteinMPNN job costs a few cents "
-            "and the price grows with the sequence count. New accounts "
-            "start with a "
+            "You pay only for the GPU time your run uses, from your "
+            "wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} wallet balance, usable for "
-            f"{SIGNUP_CREDIT_EXPIRY_DAYS} days, which is enough for "
-            "over a dozen runs at the form's default of 50 sequences, and "
-            "over a hundred at 8 or fewer."
+            f"{SIGNUP_CREDIT_EXPIRY_DAYS} days."
         ),
     },
     {
@@ -73,8 +62,8 @@ seo_faq: list[dict] = [
 
 comparison_one_liner: str = (
     "You have a backbone — a 3D shape with no sequence decided yet "
-    "— and need amino-acid sequences that will fold into it. Ranked "
-    "candidates come back in about a minute. To generate the "
+    "— and need amino-acid sequences that will fold into it. You get "
+    "ranked candidates to pick from. To generate the "
     "backbone in the first place, run a binder design tool and feed "
     "its PDB in here."
 )
@@ -153,9 +142,6 @@ about: dict = {
             ),
         },
     ],
-    "runtime_table": [
-        {"preset": "standalone", "typical": "~1 min"},
-    ],
     "output_summary": (
         "Ranked candidate sequences with per-position score and overall "
         "ProteinMPNN recovery, downloadable as FASTA from a run of your own. Pair downstream "
@@ -171,16 +157,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------

@@ -301,8 +301,7 @@ adapter = ToolAdapter(
     blurb=(
         "Upload a backbone — a structure with no sequence decided yet — "
         "and get back candidate sequences that should fold into it, "
-        "each with a score and a native-recovery figure. About a minute per "
-        "run."
+        "each with a score and a native-recovery figure."
     ),
     presets=(
         Preset(
@@ -310,7 +309,7 @@ adapter = ToolAdapter(
             label="Standalone with your backbone",
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
-                "up to 1000 candidate sequences. ~30 to 60 s on A10G-24GB."
+                "up to 1000 candidate sequences. Runs on an A10G-24GB."
             ),
             requires_pdb=True,
         ),

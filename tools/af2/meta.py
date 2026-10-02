@@ -7,9 +7,7 @@ Parallel to ``tools/mpnn/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
-    paper_citation    — short inline citation.
+    paper_citation   — short inline citation.
     paper_url         — Nature permalink.
     github_url        — upstream ColabFold repository (which bundles AF2).
     comparison_one_liner — what you have / what you get, plus
@@ -27,13 +25,6 @@ from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 # data, so it is read from the grant rather than retyped. It was hardcoded
 # as "$5" here and stayed that way when the grant went to $15.
 _SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
-
-# Typical wall-clock per preset. Used by the About panel runtime table.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
-    # dominates for short sequences; fold time scales with length.
-    "standalone": {"typical_minutes": "5 to 10", "minutes": (5, 10)},
-}
 
 paper_citation: str = "Jumper et al., Nature 2021 (AF2); Mirdita et al., Nature Methods 2022 (ColabFold)"
 paper_url: str = "https://www.nature.com/articles/s41586-021-03819-2"
@@ -64,11 +55,10 @@ seo_faq: list[dict] = [
     {
         "q": "How much does an AlphaFold2 multimer run cost?",
         "a": (
-            "Billing is by the second of dedicated GPU time. A typical "
-            "single-complex fold costs a few cents to a dollar from your "
+            "You pay only for the GPU time your run uses, from your "
             "wallet. New accounts start with "
             f"{_SIGNUP_CREDIT} of credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
-            "days, which covers many monomer folds or a handful of multimers."
+            "days."
         ),
     },
 ]
@@ -109,8 +99,8 @@ about: dict = {
             "four chains."
         ),
         (
-            "You can wait 5 to 10 minutes per run for the homolog search "
-            "and three refinement passes."
+            "You can wait for the homolog search and three refinement "
+            "passes each run makes."
         ),
     ],
     "prerequisites": [
@@ -132,9 +122,6 @@ about: dict = {
                 "is faster but trades a small amount of accuracy."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "standalone", "typical": "5 to 10 min"},
     ],
     # The ipTM figures are af2's own bar: shared/score_legends.py
     # ("af2", "iptm") sets good 0.6 and excellent 0.75. Stated

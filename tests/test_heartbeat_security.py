@@ -9,9 +9,9 @@ with no creds. The original exploit had two halves:
 
   1. CANCEL + billed kill. GONE, and not because of this fix: the 2.0x
      cost-based mid-run kill was removed in 3818b4a4 (PR #62).
-     ``mid_run_monitor_check`` now returns only ``None`` or ``"warned"``
-     (``shared/jobs.py``), so no heartbeat can cancel a Modal call or
-     settle a ``safety_kill`` charge whatever the body says.
+     ``mid_run_monitor_check`` (``shared/jobs.py``) only persists GPU
+     seconds; tests/test_jobs.py::TestMidRunMonitorPersists pins that it
+     never settles or releases a hold and leaves the job running.
   2. INFLATED BILLING FIGURE. STILL LIVE, and this file is what guards it.
      ``mid_run_monitor_check`` persists its ``cumulative_gpu_seconds``
      argument to ``tool_jobs.gpu_seconds_used``, and that column is what a
@@ -95,20 +95,20 @@ def _client():
 
 
 # ---------------------------------------------------------------------------
-# Targeted — the value handed to the cost/kill monitor is server wall-clock
+# Targeted — the value handed to the mid-run monitor is server wall-clock
 # ---------------------------------------------------------------------------
 
 
 class TestCostPathIgnoresBodySeconds:
     def test_forged_huge_seconds_does_not_reach_monitor(self):
         """A forged ``cumulative_gpu_seconds`` must never be the figure the
-        overrun monitor bills/kills on — only server wall-clock is."""
+        monitor persists for a cancel to bill — only server wall-clock is."""
         job = _job(started_at=_recent_iso(10))
         expected = modal_webhook._elapsed_running_seconds(job)
 
         with patch.object(modal_webhook, "get_job", return_value=job), patch.object(
             modal_webhook, "_append_heartbeat_state"
-        ), patch.object(modal_webhook, "_run_overrun_check") as spy:
+        ), patch.object(modal_webhook, "_run_mid_run_monitor") as spy:
             resp = _client().post(
                 "/webhooks/heartbeat",
                 json={
@@ -136,7 +136,7 @@ class TestCostPathIgnoresBodySeconds:
 
         with patch.object(modal_webhook, "get_job", return_value=job), patch.object(
             modal_webhook, "_append_heartbeat_state"
-        ), patch.object(modal_webhook, "_run_overrun_check") as spy:
+        ), patch.object(modal_webhook, "_run_mid_run_monitor") as spy:
             resp = _client().post(
                 "/webhooks/heartbeat",
                 json={"job_id": job.id, "stage": "folding"},
@@ -278,18 +278,14 @@ class TestForgedHeartbeatCannotInflateTheBilledFigure:
         )
         store.rows[row["id"]] = row
 
-        # Patched only so _run_overrun_check builds a mock instead of a real
-        # ModalClient. Nothing is asserted on it: the monitor has no cancel
-        # step left to call (see the module docstring, half 1).
-        with patch("gpu.modal_client.ModalClient"):
-            resp = _client().post(
-                "/webhooks/heartbeat",
-                json={
-                    "job_id": row["id"],
-                    "stage": "designing",
-                    "cumulative_gpu_seconds": FORGED_SECONDS,
-                },
-            )
+        resp = _client().post(
+            "/webhooks/heartbeat",
+            json={
+                "job_id": row["id"],
+                "stage": "designing",
+                "cumulative_gpu_seconds": FORGED_SECONDS,
+            },
+        )
 
         assert resp.status_code == 200
 
@@ -312,18 +308,17 @@ class TestForgedHeartbeatCannotInflateTheBilledFigure:
         row = _row(status="running", started_at=_recent_iso(8))
         store.rows[row["id"]] = row
 
-        with patch("gpu.modal_client.ModalClient"):
-            resp = _client().post(
-                "/webhooks/heartbeat",
-                json={
-                    "job_id": row["id"],
-                    "stage": "refolding",
-                    "designs_completed": 7,
-                    "designs_total": 20,
-                    # even with a forged figure, the benign path is unaffected
-                    "cumulative_gpu_seconds": FORGED_SECONDS,
-                },
-            )
+        resp = _client().post(
+            "/webhooks/heartbeat",
+            json={
+                "job_id": row["id"],
+                "stage": "refolding",
+                "designs_completed": 7,
+                "designs_total": 20,
+                # even with a forged figure, the benign path is unaffected
+                "cumulative_gpu_seconds": FORGED_SECONDS,
+            },
+        )
 
         assert resp.status_code == 200
         progress = store.rows[row["id"]]["inputs"].get("_progress")

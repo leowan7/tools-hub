@@ -54,31 +54,6 @@
       font-size: 0.78rem;
       color: var(--text-primary);
     }
-    .esmfold-runtime-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-    }
-    .esmfold-runtime-table th {
-      text-align: left;
-      padding: 0.45rem 0.5rem;
-      font-size: 0.62rem;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-tertiary);
-      background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border);
-    }
-    .esmfold-runtime-table td {
-      padding: 0.45rem 0.5rem;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      font-family: var(--font-mono);
-      font-size: 0.78rem;
-      vertical-align: top;
-    }
-    .esmfold-runtime-table tr:last-child td { border-bottom: none; }
     .esmfold-fasta {
       width: 100%;
       max-width: 560px;
@@ -181,8 +156,7 @@
                 <span class="preset-title">Standalone, one FASTA</span>
                 <span class="preset-desc">
                   Paste a single-chain monomer (10 to 400 aa). One fold,
-                  inline result. ~30 s on A100-40GB once the 3B model is
-                  warm.
+                  inline result. Runs the 3B model on A100-40GB.
                 </span>
               </span>
             </label>
@@ -195,7 +169,7 @@
                 <span class="preset-desc">
                   Fold many monomer sequences in one job, up to 500 records.
                   Per-design results stream into the job page as they
-                  complete. Cost scales linearly with batch size.
+                  complete. GPU time scales linearly with batch size.
                 </span>
               </span>
             </label>

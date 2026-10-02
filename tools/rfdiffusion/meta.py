@@ -50,13 +50,10 @@ seo_faq: list[dict] = [
     {
         "q": "How much does one RFdiffusion run cost?",
         "a": (
-            "Billing is by the second of dedicated GPU time. A trial run "
-            "(~25 minutes on an A100 for four designs) typically clears for "
-            "under a few dollars from your wallet. New accounts start with a "
+            "You pay only for the GPU time your run uses, from your "
+            "wallet. New accounts start with a "
             f"{_SIGNUP_CREDIT} balance, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
-            "days. A run reserves up to that much while it computes, so the "
-            "credit starts one small trial only if none of it has been spent; "
-            "plan to top up for more."
+            "days."
         ),
     },
     {
@@ -86,34 +83,6 @@ comparison_one_liner: str = (
 # Optional reference job id linked from the form page as an example.
 example_output_id: str | None = None
 
-
-# Runtime + cost reference rendered as a table on the form page.
-# Values mirror the ``Preset`` tuples in ``__init__.py`` and the
-# ``PRESET_CAPS`` map in ``gpu/modal_client.py``.
-# MEASURED, not estimated, and re-measured after the September 2026 container
-# update roughly TRIPLED it. Job 25471e07 (4ZQK chain A, 8 designs) ran 2220
-# GPU-seconds / 37 wall-clock minutes; the same shape of job before that update
-# took 804. The AlphaFold re-score now fetches a real MSA for the target
-# instead of folding it single-sequence, and that is where the time goes.
-#
-# Wall-clock and GPU-seconds are ~1:1 here (one GPU, one job), and the run
-# splits into a fixed ~700 s of diffusion + MPNN plus ~190 s per design in AF2.
-# So four designs is ~1460 s (~25 min) and eight is ~2220 s (~37 min), which is
-# the band below.
-#
-# THREE PLACES ON ONE PAGE QUOTE THIS and they must agree -- this row, the
-# "runtime_table" entry in the about-panel below, and the FAQ answer above.
-# tools/boltzgen/meta.py carries the same warning because that page once
-# quoted three different runtimes for one run.
-preset_runtime_rows: tuple[dict[str, object], ...] = (
-    {
-        "slug": "pilot",
-        "label": "Pilot",
-        "runtime": "25 to 40 min (4 to 8 designs)",
-        "minutes": (25, 40),
-        "target": "Your uploaded target",
-    },
-)
 
 
 # Structured about-panel content. Consumed by the shared
@@ -177,11 +146,6 @@ about: dict = {
             ),
         },
     ],
-    "runtime_table": [
-        # Must match preset_runtime_rows above and the cost FAQ. See the
-        # measurement note there.
-        {"preset": "Trial run", "typical": "25 to 40 min (4 to 8 designs)"},
-    ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, i_pAE, and PDBs "
         "downloadable from a run of your own. Aim for at least 1 in 5 "
@@ -198,16 +162,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------

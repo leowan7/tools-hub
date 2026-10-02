@@ -1,10 +1,9 @@
 """Wiring sanity tests for the RFdiffusion tool adapter.
 
 Mirrors the structure of test_pxdesign_* and test_rfantibody_* tests:
-verifies the adapter is registered, the preset list and credits match
-``meta.preset_runtime_rows``, the Kendrew Modal app name resolves
-correctly, and the validate / build_payload functions handle the
-documented form shapes.
+verifies the adapter is registered, the preset list is the one the form
+offers, the Kendrew Modal app name resolves correctly, and the validate /
+build_payload functions handle the documented form shapes.
 
 Run with::
 

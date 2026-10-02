@@ -10,96 +10,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    # Per-shard wall-clock. The campaign fans many shards out in parallel, so
-    # total campaign time depends on the requested design count and the launch
-    # concurrency (4), not on this number alone.
-    #
-    # THE protein_binder BAND IS PER 8-DESIGN SHARD. Not every row here is:
-    # "validate" is a free dry-run that generates no designs at all, and the
-    # 120-minute ceiling on the two untimed variants is the _MAX_SESSION_S
-    # session wall in modal_app.py -- a container property, not a per-design
-    # one.
-    #
-    # 8 is the only shard width the FORM can produce. tools/proteina/
-    # __init__.py locks _SHARD_NSAMPLES=4 x _SHARD_REPLICAS=2, and
-    # _CHUNK_SIZE_OVERRIDE["proteina"] in shared/compute_campaigns.py is a
-    # SECOND, INDEPENDENT literal holding the splitter to the same 8. Neither
-    # derives from the other -- editing the generation profile moves one and
-    # not the other -- which is why tests/test_proteina_shard_size.py
-    # cross-checks them. num_designs buys SHARDS, never a wider one.
-    #
-    # The band was read off three shards of that width. EXAMPLE below records
-    # 3447 s (57 min) for ITS shard, against the 15-minute ceiling here, and
-    # that is not a counter-example: that shard carried 64 designs, eight
-    # times this width, because it came from tools/proteina/shard_driver.py
-    # (NSAMPLES=16, REPLICAS=4) rather than from the form. So this band does
-    # not describe it. HOW RUNTIME SCALES WITH SHARD WIDTH IS NOT ESTABLISHED
-    # HERE: eight of these shards would predict ~4608 s where the one wide
-    # shard on record took 3447, which is a single uncontrolled pair and not
-    # a curve. Widening this band to cover it would describe a run no user of
-    # this tool can launch.
-    #
-    # protein_binder is MEASURED, at three sizes. Paid A100-80GB canary shards
-    # returned 8 designs in 576 s (9.6 min) at 130 aa, 645 s (10.8 min) at
-    # 260 aa and 874 s (14.6 min) at 415 aa. The band below has to CONTAIN the
-    # span it cites, and "~10 to 15" did not — the 130 aa shard, the smallest
-    # and fastest of the three, sits at 9.6 and fell outside its own claimed
-    # range. "~9 to 15" spans all three; the top of it also covers the 500-aa
-    # cap in shared/pdb_preflight_rules.py (_PROTEINA): runtime scales as
-    # (aa/120)^0.34, so a target at the cap comes out at ~14.6 min too — the
-    # curve is nearly flat in target size, and Modal cold-start and GPU
-    # contention matter more than the extra residues.
-    #
-    # THIS COPY HAS BEEN WRONG TWICE, both times in the direction a user plans
-    # against. It shipped as "30 to 120" for all three variants, a placeholder
-    # never re-set, which overstated a real shard by 5-20x. It was then
-    # corrected to "~6" from a 359 s reading at 130 aa. TWO readings exist at
-    # that size and they disagree by ~60%: 359 s and 576 s. Both are recorded
-    # as completed 8-design protein_binder shards at 130 aa; what separates
-    # them is the JAX ALLOCATOR REGIME. The 359 s wall-clock belongs to the
-    # preallocation-ON shard that read 67,570 MB; the three shards this band is
-    # drawn from all ran with preallocation disabled.
-    # shared/pdb_preflight_rules.py::_PROTEINA documents those two regimes as
-    # non-comparable and names allocate-on-demand as a candidate for the gap,
-    # not a diagnosis of it. The 576 s reading is the one taken under the
-    # allocator settings production runs today, so it is the one that describes
-    # what a user's shard will do; the 359 s figure is not used for anything.
-    # Both times the number here was also load-bearing:
-    # shared/pdb_preflight_rules.py anchors its runtime estimator to this
-    # measurement, so an error in a docs constant reaches the preflight panel
-    # looking calibrated.
-    #
-    # ligand_binder and motif_ame have NEVER been timed. Their band is bounded,
-    # not measured: the floor is the smallest complete protein_binder
-    # measurement (9.6 min) and the ceiling is the physical
-    # _MAX_SESSION_S = 7200 s (120 min) session wall in modal_app.py, past
-    # which the shard is killed. Re-set each from its own canary.
-    #
-    # THAT FLOOR ROUNDS DOWN, TO 9, for the same reason protein_binder's does.
-    # It read 10 while protein_binder's read 9 — the same 9.6 min rounded two
-    # different ways in adjacent lines, which had the never-measured presets
-    # claiming a HIGHER floor than the only preset anyone has timed, and
-    # overstated the sentence below by 0.4 min. Rounding down keeps a lower
-    # bound a lower bound; rounding up turns it into a claim.
-    #
-    # AND THE FLOOR IS WEAKER THAN IT LOOKS. This used to read "same container,
-    # same reward stack". The container is the same; the reward stack is NOT.
-    # protein_binder scores on AF2 alone, while RF3 is the SOLE reward for
-    # ligand_binder and is what motif_ame needs too — Dockerfile.modal:219-222
-    # says so outright ("Only ligand_binder (RF3 is its sole reward) and
-    # motif_ame need it; protein_binder scores on AF2 alone"), and
-    # ``reward_attributions`` below splits them the same way. So the floor is
-    # not evidence transferred from a comparable run; it is a lower bound
-    # borrowed from a DIFFERENT scoring path, and there is no reason to think
-    # RF3 scoring is as fast as AF2 scoring. Treat 9 as "cannot plausibly be
-    # quicker than the fastest thing we timed", not as a measurement.
-    "protein_binder": {"typical_minutes": "~9 to 15", "minutes": (9, 15)},
-    "ligand_binder": {"typical_minutes": "9 to 120 (not yet measured)"},
-    "motif_ame": {"typical_minutes": "9 to 120 (not yet measured)"},
-    "validate": {"typical_minutes": "1 to 3", "minutes": (1, 3)},
-}
-
 # THE TOOL IS PROTEINA-COMPLEXA, AND ITS PAPER IS NOT PROTEINA'S. This field
 # once credited `geffner2025proteina`, "Proteina: Scaling Flow-based Protein
 # Structure Generative Models" — an earlier, separate work that this one is
@@ -415,17 +325,6 @@ about: dict = {
             ),
         },
     ],
-    # Kept in lockstep with PRESET_RUNTIME above — see the provenance note
-    # there for what is measured (protein_binder, at 130 / 260 / 415-residue
-    # targets) and what is only bounded by the 7200 s session wall.
-    "runtime_table": [
-        {"preset": "protein_binder",
-         "typical": "~9 to 15 min / 8-design shard "
-                    "(measured at 130-415 residues)"},
-        {"preset": "ligand_binder", "typical": "not yet measured (under 120 min / shard)"},
-        {"preset": "motif_ame", "typical": "not yet measured (under 120 min / shard)"},
-        {"preset": "validate", "typical": "1 to 3 min (free)"},
-    ],
     # NO CLUSTER ID IN THIS SENTENCE. It listed "a structural diversity cluster
     # id" among the outputs until 2026-09-10. Nothing measured has carried one
     # (17,024 of 17,024 null) and no code originates a value; the production
@@ -449,16 +348,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -495,8 +389,9 @@ PILOT: dict | None = {
         "binder_length_max": "100",
     },
     "next_step": (
-        "8 designs is one shard on one GPU, and it costs the same as "
-        "one design would &mdash; a shard is a whole container. Raise "
+        "8 designs is one shard on one GPU, and a shard is a whole "
+        "container &mdash; asking for fewer returns less from the same "
+        "container. Raise "
         "the count and it becomes a full-size run bounded by your "
         "wallet, split into pieces that run on our GPUs and bill as they "
         "finish, with a single ranked list pooled "
@@ -524,8 +419,10 @@ PILOT: dict | None = {
 # and num_designs buys SHARDS, so 64 plans EIGHT of them
 # (shared.compute_campaigns.plan_chunks("proteina", 64).total_subjobs == 8)
 # and the hub pools the result. The payload below is one shard at eight times
-# the product's width, which is why its 3447 s cannot be read against the
-# ~9-15 min band PRESET_RUNTIME quotes: that band describes 8-design shards.
+# the product's width, which is why its 3447 s cannot be read as what a
+# form submission does: every shard the form can launch carries 8 designs.
+# The measured 8-design shard times are tabulated in ``_PROTEINA`` in
+# shared/pdb_preflight_rules.py.
 #
 # KEPT ANYWAY, deliberately. What this example exists to show is a scoring
 # failure mode, and that does not depend on how many designs shared the
@@ -619,9 +516,9 @@ EXAMPLE: dict | None = {
             "is a single 64-design container, because it came from the "
             "internal sweep driver, which widens one shard to 16 samples "
             "with 4 replicas each; the form exposes neither control. That "
-            "width is also why its 57 minutes does not belong against the "
-            "9 to 15 the About panel quotes: that band was measured on "
-            "8-design shards. The settings are reproducible; the "
+            "width is also why how long it ran says nothing about what an "
+            "8-design shard launched from this form does. "
+            "The settings are reproducible; the "
             "single-container shape of the table below is not.",
         ),
         (
@@ -688,10 +585,9 @@ EXAMPLE: dict | None = {
         "That is the reassuring version: on this target the failure mode is "
         "loud and it is caught. It is worth a look at your own output anyway, "
         "because nothing in the tool is checking for it. "
-        "One note on price. This run holds against your wallet at the "
-        "per-run ceiling and settles on the GPU seconds it actually used, "
-        "which is why 57 minutes bills at a small fraction of the hold you "
-        "see at submit. The surplus is released, not spent."
+        "One note on price. A run settles on the GPU seconds it actually "
+        "used, not on a flat per-run figure, so you pay only for the GPU "
+        "time your run uses."
     ),
     "cost_usd": "6.02",
     "runtime": "57 minutes",

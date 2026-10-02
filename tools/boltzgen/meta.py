@@ -7,10 +7,6 @@ contract.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
-                         ``typical_minutes`` is a human-readable range
-                         (e.g. ``"15-60"``).
     paper_citation    — short inline citation.
     paper_url         — bioRxiv permalink for the BoltzGen preprint.
     github_url        — upstream HannesStark/boltzgen repo.
@@ -23,10 +19,6 @@ Shapes
 from __future__ import annotations
 
 from typing import Optional
-
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15 to 60", "minutes": (15, 60)},
-}
 
 paper_citation: str = "Stark et al., bioRxiv 2025"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.11.20.689494v1"
@@ -60,15 +52,9 @@ seo_faq: list[dict] = [
     },
     {
         "q": "How long does a BoltzGen trial run take?",
-        # 15 to 60, matching PRESET_RUNTIME above and the "runtime_table"
-        # entry in ``about`` below. Those two are the derived source: the
-        # runtime band on the tool page and the pilot card both read them.
-        # This answer said 30 to 90 and ``when_to_use`` said 5 to 60, so
-        # the same page quoted three different runtimes for one run.
         "a": (
-            "Trial runs typically finish in 15 to 60 minutes on a "
-            "dedicated A100, depending on target size and the binder "
-            "format you picked. Billing is by the second of GPU time."
+            "Runtime depends on target size and the binder format you "
+            "picked. You pay only for the GPU time your run uses."
         ),
     },
 ]
@@ -122,7 +108,8 @@ about: dict = {
             "whether it folds back to the shape it was designed as."
         ),
         (
-            "You can wait 15 to 60 minutes per run."
+            "You can leave the run to finish rather than needing an "
+            "answer immediately."
         ),
     ],
     "prerequisites": [
@@ -189,21 +176,19 @@ about: dict = {
                 # NOT measured here is the GPU time the container
                 # actually burns — that code lives in
                 # llm-proteinDesigner, and users settle at metered
-                # actual, not at the estimate. So the copy says "the
-                # same estimate", which is checkable here, rather than
-                # "does not change what the run costs", which is a very
-                # likely inference about another repo dressed as a
-                # measurement. Closing it properly is a gpu_seconds
-                # comparison across two budgets on the next real run.
+                # actual. So the copy says the search size does not
+                # change, which is checkable here, rather than "does not
+                # change what the run costs", which is a very likely
+                # inference about another repo dressed as a measurement.
+                # Closing it properly is a gpu_seconds comparison across
+                # two budgets on the next real run.
                 "How many of the ranked candidates come back to you "
                 "(1 to 50). This only chooses how many you receive: "
                 "BoltzGen is asked for the same 200 candidates at every "
-                "setting, so every budget quotes the same estimate."
+                "setting, so the budget does not change the size of the "
+                "search."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "Trial run", "typical": "15 to 60 min"},
     ],
     # "signals self-consistent BINDING" was the refold claim again, in a
     # third place. The refold folds the binder alone, so it says the design
@@ -255,16 +240,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -273,9 +253,9 @@ PILOT: dict | None = {
     "goal": (
         "Check that your target and the face you picked produce designs "
         "at all, on the one model that also handles glycans, modified "
-        "residues and non-canonical chemistry. BoltzGen charges one flat "
-        "price per run, so this is a guided first run at the tool&rsquo;s "
-        "normal cost &mdash; not a cheaper trial."
+        "residues and non-canonical chemistry. This is a guided first "
+        "run with the settings filled in &mdash; the same run the form "
+        "produces on its defaults, not a reduced-scope trial."
     ),
     "you_need": (
         "A structure file for your target (.pdb or .cif), the chain ID, "
@@ -300,7 +280,7 @@ PILOT: dict | None = {
         "only "
         "chooses how many of the candidates are returned to you &mdash; "
         "the run is asked for the same 200 either way &mdash; so raising "
-        "it on a later run quotes the same estimate."
+        "it on a later run buys no bigger search."
     ),
 }
 
@@ -404,11 +384,9 @@ EXAMPLE: dict | None = {
         "is worth paying for. Four of the five also refold to under "
         "1.5 &Aring; of the pose they were designed in, the tightest at "
         "0.51 &Aring;. "
-        "It ran <strong>82 minutes</strong>, past the 15-to-60 range "
-        "quoted higher up this page: 200 designs against a 115-residue "
-        "target is the heavy end of a trial run. The charge follows the "
-        "compute actually used, so it landed just under the estimate "
-        "rather than over."
+        "200 designs against a "
+        "115-residue target is the heavy end of a trial run. You pay "
+        "only for the GPU time your run uses."
     ),
     "how_to_read_it": (
         "<strong>Refolding RMSD is the column with a real bar on it.</strong> "
@@ -432,7 +410,7 @@ EXAMPLE: dict | None = {
     ),
     "what_we_did_next": (
         "Treated all five as failed, because they are, and kept the "
-        "epitope. What 200 designs and 82 minutes bought is the knowledge "
+        "epitope. What 200 designs bought is the knowledge "
         "that the site is reachable &mdash; the generator put binders on "
         "the residues we named &mdash; and that a 50-70 residue budget "
         "produced nothing foldable enough to order. The next run is a "

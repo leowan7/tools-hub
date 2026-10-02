@@ -309,8 +309,6 @@ class TestJobCapped:
         ok = email_mod.send_job_capped_email(
             user_id=TEST_USER_ID,
             tool_slug="bindcraft",
-            attempted_usd=120,
-            cap_usd=100,
         )
         assert ok is True
         _assert_resend_call_shape(mock_resend, "job_capped")
@@ -318,16 +316,15 @@ class TestJobCapped:
         # The human-readable tool label should appear in the subject.
         assert "BindCraft" in body["subject"]
         assert "BindCraft" in body["html"]
-        assert "$120" in body["html"]
-        assert "$100" in body["html"]
+        # A pre-run refusal names no price, estimate or cap.
+        assert "$" not in body["html"]
+        assert "$" not in body["subject"]
         _assert_dash_free(body["html"], "job_capped")
 
     def test_unknown_slug_falls_back(self, env, resolve_email, mock_resend):
         ok = email_mod.send_job_capped_email(
             user_id=TEST_USER_ID,
             tool_slug="future-tool",
-            attempted_usd=1,
-            cap_usd=0,
         )
         assert ok is True
 
@@ -389,8 +386,7 @@ class TestResendContract:
         ("send_low_balance_email",
          {"user_id": TEST_USER_ID, "balance_usd": 2}),
         ("send_job_capped_email",
-         {"user_id": TEST_USER_ID, "tool_slug": "boltzgen",
-          "attempted_usd": 200, "cap_usd": 150}),
+         {"user_id": TEST_USER_ID, "tool_slug": "boltzgen"}),
         ("send_pilot_intro_email",
          {"user_id": TEST_USER_ID, "spent_30d_usd": 1200}),
         ("send_wallet_frozen_email",

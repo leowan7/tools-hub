@@ -194,7 +194,7 @@
             <div style="margin-top: 1rem; padding: 0.85rem 1rem; background: var(--bg-elevated); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); max-width: 560px;">
               <strong style="color: var(--text-primary);">You can close this tab.</strong>
               <div style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.35rem;">
-                This trial run takes 15-60 min on a real GPU. We'll email
+                This run can take a while on a real GPU. We'll email
                 <strong>{{ user_email }}</strong> when results are ready, with a
                 link back to this page.
               </div>
@@ -291,12 +291,12 @@
           <div class="panel-body">
             <p style="margin: 0 0 0.5rem 0;">
               <strong>Want more?</strong>
-              {% if scale_up.offer_text %}{{ scale_up.offer_text }}{% else %}Run {{ scale_up.count }} candidates on the same target{% endif %} &mdash; est. ${{ scale_up.price_display }}.
+              {% if scale_up.offer_text %}{{ scale_up.offer_text }}{% else %}Run {{ scale_up.count }} candidates on the same target{% endif %}.
               {% if scale_up.clamped %}{{ tool_label }} runs up to {{ scale_up.count }} per job.{% endif %}
             </p>
             {% if scale_up.topup_usd > 0 %}
               <p style="margin: 0 0 0.5rem 0;">
-                <a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);"><strong>Top up ${{ scale_up.topup_usd }} to run this</strong></a>
+                <a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);"><strong>Top up your wallet to run this</strong></a>
               </p>
             {% endif %}
             <form method="post" action="{{ url_for('jobs.job_scale_up', job_id=job.id) }}" style="margin: 0;">

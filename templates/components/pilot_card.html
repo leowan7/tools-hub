@@ -1,9 +1,8 @@
 {# pilot_card.html — the named starter recipe for one tool.
 
-A "pilot" is a guided FIRST run on the user's OWN target, with the cost
-and the runtime stated before they commit. It formalises the "start
-with 4-8 designs, then scale" advice that was written as prose in five
-different meta.py files and implemented nowhere.
+A "pilot" is a guided FIRST run on the user's OWN target. It formalises
+the "start with 4-8 designs, then scale" advice that was written as prose
+in five different meta.py files and implemented nowhere.
 
 It is NOT a promise of a discount. Two tools (boltzgen, iggm) bill a
 flat price with no cheaper configuration reachable from their form, so
@@ -17,11 +16,8 @@ true whether or not the params dial anything down.
 
 The dict comes from ``tool_public_context(adapter).pilot``, built by
 ``blueprints/tools.py::_pilot_context``. meta.py declares only the
-words and the parameter set; the PRICE AND THE RUNTIME ARE DERIVED —
-the price from ``estimated_cost_for_tool`` over the same params the
-form itself posts to /api/wallet/estimate, the runtime from the
-existing preset runtime map. Nothing here may hard-code either: a
-second hand-written rate card drifts off the real one within a month.
+words and the parameter set. The card prints no price or time
+(tests/test_no_prerun_numbers.py).
 
 ``pilot`` is None for the fast predictors (esmfold, colabfold, af2),
 and this macro then renders nothing at all.
@@ -37,14 +33,12 @@ author-written prose safe, so this is the convention, not an exception.
 
 The provenance is what makes it safe, and it is worth stating: the
 whole dict is a module-level constant. ``_pilot_context`` builds it as ``dict(meta.PILOT, params=...,
-cost_usd=..., max_charge_usd=..., floor_count=..., runtime=..., url=..., hotspot_help_url=...,
-hotspot_required=..., hotspot_handoff=...)`` — nothing
+url=..., hotspot_help_url=..., hotspot_required=..., hotspot_handoff=...)`` — nothing
 from ``request`` is merged in at any point, and the slug that picks the
 module is already validated by ``_require_tool``. The derived
 fields are deliberately NOT marked safe: ``url`` and
 ``hotspot_help_url`` are hrefs (``url_for`` output belongs escaped in
-an attribute), ``cost_usd`` goes through ``display_cost_usd``, and
-``label`` has no reason to carry markup. If a future field ever reads
+an attribute), and ``label`` has no reason to carry markup. If a future field ever reads
 from the form or the query string, it does not get this filter.
 
 Usage:
@@ -103,23 +97,7 @@ Usage:
         {% endif %}
 
         <h3>What it costs</h3>
-        {# Priced from pilot.params, the settings the button below loads,
-           which can differ from the form's defaults. The runtime comes from
-           the preset's runtime map and describes the preset's default size,
-           not this card's count. #}
-        <p>
-          About <strong>${{ display_cost_usd(pilot.cost_usd) }}</strong>,
-          estimated for the settings the button below loads.
-          {%- if pilot.floor_count %} Any run of up to {{ pilot.floor_count }}
-          designs is estimated as one {{ pilot.floor_count }}-design run, so a
-          smaller trial shows the same figure.{% endif %}
-          {%- if pilot.runtime %} Runs on this preset typically take
-          {{ pilot.runtime }} of GPU time.{% endif %}
-          You are billed for the GPU time the job actually uses, which can
-          come in above or below the estimate but never above this job&rsquo;s
-          cap of ${{ display_cost_usd(pilot.max_charge_usd) }}. If your form
-          holds different settings, its own estimate is the one for your run.
-        </p>
+        <p>You pay only for the GPU time your run uses.</p>
 
         <h3>Then what</h3>
         <p>{{ pilot.next_step|safe }}</p>

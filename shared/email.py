@@ -618,9 +618,9 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
 def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     """One-line cost summary for the completion email. Empty if no wallet ctx.
 
-    Returns strings like ``"Estimated $0.45, charged $0.52 (300 GPU-sec on
+    Returns strings like ``"You were charged $0.52 (300 GPU-sec on
     A100-80GB)."`` -- 300 s at the A100-80GB rate through WALLET_MARKUP is
-    $0.5243. (The figures here used to be arithmetically impossible.)
+    $0.5243. The run's pre-run estimate is not printed.
     The "charged" figure is capped at the per-tool hard cap so absorbed
     variance does not surface here — the user only sees what their wallet
     actually paid.
@@ -637,7 +637,6 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     gpu_seconds = job.gpu_seconds_used or 0
     if gpu_seconds <= 0:
         return ""
-    estimate_raw = wallet_ctx.get("estimate_usd")
     try:
         from shared.wallet import compute_charge_usd  # noqa: PLC0415
         from shared.wallet_estimates import (  # noqa: PLC0415
@@ -681,16 +680,12 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
             actual = ledger["usd"]
     except Exception:
         pass
-    # Rounded by the same rule as shared.run_notices.overrun_line, so the two
-    # lines in one email print the same figures.
     from shared.run_notices import to_cents  # noqa: PLC0415
 
-    bits = []
-    estimate = to_cents(estimate_raw) if estimate_raw else None
-    if estimate is not None:
-        bits.append(f"Estimated ${estimate}")
-    bits.append(f"charged ${to_cents(actual)}")
-    return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
+    return (
+        f"You were charged ${to_cents(actual)} "
+        f"({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
+    )
 
 
 def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: ANN001
@@ -2578,11 +2573,9 @@ def send_job_capped_email(
     *,
     user_id: str,
     tool_slug: str = "",
-    attempted_usd=None,
-    cap_usd=None,
     **_extra: Any,
 ) -> bool:
-    """Submission blocked by per tool hard cap.
+    """Submission blocked by per tool hard cap. Names no amount.
 
     Trigger: ``wallet_preflight`` returns ``job_exceeds_per_tool_cap`` or
     ``job_exceeds_self_serve_ceiling``.
@@ -2599,17 +2592,12 @@ def send_job_capped_email(
         "https://ranomics.com/ranomics-contact?service=binder-pilot"
     )
     subject = (
-        f"Your {label} run was blocked by the per job spend cap"
+        f"Your {label} run is too large to start"
     )
     html = _render_template(
         "send_job_capped.html",
         base_url=base_url,
         tool_label=label,
-        # Compute actually consumed: a COST. These three emails exist to
-        # justify a charge the user did not expect, so quoting it low is the
-        # one thing they must not do.
-        attempted_usd=_money(attempted_usd, "up"),
-        cap_usd=_money(cap_usd, "down"),
         contact_url=contact_url,
     )
     return _post_resend(
@@ -2617,51 +2605,6 @@ def send_job_capped_email(
         subject=subject,
         html_body=html,
         log_tag=f"job_capped user={user_id} tool={tool_slug}",
-    )
-
-
-def send_overrun_warning_email(
-    *,
-    user_id: str,
-    tool_slug: str = "",
-    attempted_usd=None,
-    cap_usd=None,
-    **_extra: Any,
-) -> bool:
-    """Mid run soft warning: cumulative cost exceeded 1.5x the estimate.
-
-    Trigger: ``mid_run_monitor_check`` in ``shared/jobs.py`` once per
-    job. The job keeps running: there is no cost-based kill threshold
-    behind this email (the 2.0x mid-run kill was removed in 3818b4a4).
-    ``mid_run_monitor_check`` returns ``"warned"`` on exactly one path,
-    the one that sends this email.
-    """
-    email = _resolve_user_email(user_id)
-    if not email:
-        logger.info(
-            "send_overrun_warning_email: no email for user %s", user_id
-        )
-        return False
-    label = _label_for_tool(tool_slug)
-    base_url = _base_url()
-    subject = (
-        f"Your {label} run is running above estimate on Ranomics tools"
-    )
-    html = _render_template(
-        "send_overrun_warning.html",
-        base_url=base_url,
-        tool_label=label,
-        # Compute actually consumed: a COST. These three emails exist to
-        # justify a charge the user did not expect, so quoting it low is the
-        # one thing they must not do.
-        attempted_usd=_money(attempted_usd, "up"),
-        cap_usd=_money(cap_usd, "down"),
-    )
-    return _post_resend(
-        to_email=email,
-        subject=subject,
-        html_body=html,
-        log_tag=f"overrun_warning user={user_id} tool={tool_slug}",
     )
 
 
