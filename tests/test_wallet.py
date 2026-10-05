@@ -20,6 +20,7 @@ SQL function.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import sys
 import threading
@@ -1365,44 +1366,61 @@ def test_a_settle_wave_against_a_dead_ledger_mails_once(
     assert len(refusals) == 5, f"5 settles logged {len(refusals)} times"
 
 
-def test_the_two_skip_notices_do_not_share_a_throttle_slot():
-    """A refusal inside a 24h notice's window must still reach the user.
+# (notice, sender, kwargs) for each throttled no-charge auto-reload notice.
+_SKIP_NOTICES = (
+    ("rate_limited", "send_auto_reload_rate_limited_email", {}),
+    (
+        "guard_unavailable", "send_auto_reload_rate_limited_email",
+        {"reason": "a safety check could not be completed"},
+    ),
+    (
+        "monthly_cap", "send_auto_reload_monthly_cap_email",
+        {"total_usd": Decimal("1000"), "cap_usd": Decimal("1000")},
+    ),
+)
 
-    The throttle key carries ``bool(reason)`` for this: with one key per user
-    the first notice to fire would swallow the second for the whole of its
-    own period -- a day, if the ordinary notice got there first -- and the
-    user would be holding the wrong explanation -- told they had already
-    topped up recently when in fact a safety check could not be read, or the
-    reverse. The brief for the refusal is that it be visible to the user, so
-    the suppression that matters is this one, not a duplicate.
 
-    Both orders, because the defect is symmetric. Any non-empty reason will
-    do -- the key reads ``bool(reason)``, not the wording, and the production
+def test_the_skip_notices_do_not_share_a_throttle_slot():
+    """A notice inside another notice's window must still reach the user.
+
+    The throttle key carries the notice for this: with one key per user
+    the first notice to fire would swallow the next for the whole of its
+    own period -- a day, if a 24h notice got there first -- and the user
+    would be holding the wrong explanation -- told they had already topped
+    up recently when in fact a safety check could not be read, or that they
+    are at their monthly cap when they are not, or the reverse. The brief
+    for the refusal is that it be visible to the user, so the suppression
+    that matters is this one, not a duplicate.
+
+    Every ordered pair, because the defect is symmetric. The production
     wording is pinned in ``tests/test_email_real.py``.
     """
-    reason = "a safety check could not be completed"
-    for first, second in (("", reason), (reason, "")):
+    for first, second in itertools.permutations(_SKIP_NOTICES, 2):
         wallet._SKIP_MAIL_SENT.clear()
-        sent: list[dict] = []
+        sent: list[tuple[str, dict]] = []
         with patch.object(
             wallet, "_send_email_safe",
-            side_effect=lambda name, **kw: sent.append(kw),
+            side_effect=lambda name, **kw: sent.append((name, kw)),
         ):
-            wallet._mail_auto_reload_skipped(USER_A, reason=first)
-            wallet._mail_auto_reload_skipped(USER_A, reason=second)
-            # ... and the SAME notice repeated is still throttled.
-            wallet._mail_auto_reload_skipped(USER_A, reason=first)
+            for notice, sender, kwargs in (first, second, first):
+                # The third call repeats the first: still throttled.
+                wallet._mail_auto_reload_skipped(
+                    USER_A, notice, sender, **kwargs
+                )
 
-        reasons = [kw.get("reason", "") for kw in sent]
-        assert reasons == [first, second], (
-            f"{first!r} then {second!r} mailed {reasons!r}"
+        expected = [
+            (sender, {"user_id": USER_A, **kwargs})
+            for _, sender, kwargs in (first, second)
+        ]
+        assert sent == expected, (
+            f"{first[0]} then {second[0]} mailed {sent!r}"
         )
 
 
 def test_each_skip_notice_is_throttled_for_its_own_period():
     """Each notice is suppressed for the period its own wording implies.
 
-    One hour for both would mail the "wait 24 hours" sentence up to 24 times
+    One hour for a 24h notice would mail the same sentence up to 24 times
     inside the single window it describes -- a user whose jobs settle all day
     hits it every hour, which is not far off the per-settle storm the
     throttle exists to stop, and every copy says the same still-true,
@@ -1414,23 +1432,63 @@ def test_each_skip_notice_is_throttled_for_its_own_period():
     clock, so the comparison under test is the production one.
     """
     two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-    reason = "a safety check could not be completed"
+    should_mail = {
+        "rate_limited": False, "guard_unavailable": True, "monthly_cap": False,
+    }
 
-    for notice_reason, should_mail in (("", False), (reason, True)):
+    for notice, sender, kwargs in _SKIP_NOTICES:
         wallet._SKIP_MAIL_SENT.clear()
-        wallet._SKIP_MAIL_SENT[(USER_A, bool(notice_reason))] = two_hours_ago
+        wallet._SKIP_MAIL_SENT[(USER_A, notice)] = two_hours_ago
         sent: list[dict] = []
         with patch.object(
             wallet, "_send_email_safe",
             side_effect=lambda name, **kw: sent.append(kw),
         ):
-            wallet._mail_auto_reload_skipped(USER_A, reason=notice_reason)
+            wallet._mail_auto_reload_skipped(USER_A, notice, sender, **kwargs)
 
-        assert bool(sent) is should_mail, (
-            f"reason={notice_reason!r}, last mailed two hours ago: "
+        assert bool(sent) is should_mail[notice], (
+            f"{notice}, last mailed two hours ago: "
             f"mailed {len(sent)} times, expected "
-            f"{'one' if should_mail else 'none'}"
+            f"{'one' if should_mail[notice] else 'none'}"
         )
+
+
+def test_a_settle_wave_over_the_monthly_cap_mails_once(
+    store, fake_client, email_log, caplog
+):
+    """The monthly-cap branch is reached once per settle and mails once.
+
+    It called the sender directly, unthrottled, so a user over their cap got
+    one identical email per finished job. Every settle still logs.
+    """
+    _seed_auto_reload_ready(store)
+    charges: list[dict] = []
+
+    with caplog.at_level(logging.INFO, logger="shared.wallet"), patch(
+        "shared.wallet._auto_reload_count_24h", return_value=0
+    ), patch(
+        "shared.wallet._auto_reload_total_month", return_value=Decimal("1000")
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        results = [auto_reload_if_needed(USER_A) for _ in range(5)]
+
+    assert results == ["monthly_cap"] * 5
+    assert charges == []
+    assert email_log == [(
+        "send_auto_reload_monthly_cap_email",
+        {
+            "user_id": USER_A,
+            "total_usd": Decimal("1000"),
+            "cap_usd": Decimal("1000"),
+        },
+    )], f"5 settles mailed {email_log!r}"
+    skips = [
+        r for r in caplog.records
+        if "at the monthly auto-reload cap" in r.getMessage()
+    ]
+    assert len(skips) == 5, f"5 settles logged {len(skips)} times"
 
 
 def test_a_settle_wave_inside_the_24h_window_mails_once(
@@ -1441,9 +1499,10 @@ def test_a_settle_wave_inside_the_24h_window_mails_once(
     This path needs no outage: a user who reloaded in the last 24 hours and
     stays below their threshold hits it on every settle, and it mailed the
     same sender unthrottled -- measured at 5 emails for 5 settles before
-    ``_mail_auto_reload_skipped`` existed. Both no-charge branches now route
-    through it (shared/wallet.py: the ``reloads_24h >= 1`` branch and
-    ``_refuse_auto_reload_unverified``), so the sibling two lines away cannot
+    ``_mail_auto_reload_skipped`` existed. All three no-charge notices now
+    route through it (shared/wallet.py: the ``reloads_24h >= 1`` branch,
+    ``_refuse_auto_reload_unverified`` and the monthly-cap branch), so the
+    sibling two lines away cannot
     drift back open on its own.
     """
     _seed_auto_reload_ready(store)
