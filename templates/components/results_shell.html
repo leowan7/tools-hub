@@ -7,7 +7,8 @@
 
 {% macro results_panel(candidates, columns, tool_slug, job_id,
                        clone_url="", tier="", gpu_seconds=None,
-                       send_target_tools=None, campaign_id="", ranked=true) %}
+                       send_target_tools=None, campaign_id="", ranked=true,
+                       requested=None, returned=None, failed=0) %}
 {# ``job_id`` is the literal string "example" only when
    components/worked_example.html is replaying a canned payload on a
    public /tools/<slug> page. Every control keyed on it — the refold
@@ -42,6 +43,15 @@
     {% if tier %}<span class="panel-badge">{{ tier | preset_label }}</span>{% endif %}
   </div>
   <div class="panel-body">
+    {# The one "Returned N / M" line. M is what the run was asked for and
+       renders only when the caller passes it; N is ``returned`` when the
+       caller passes one, else the rows in this panel. #}
+    {% if requested %}
+      <p class="results-returned" style="color:var(--text-secondary);font-size:.9rem;margin:0 0 .85rem;">
+        Returned <strong style="color:var(--text-primary);font-family:var(--font-mono);">{{ returned if returned is not none else candidates | length }} / {{ requested }}</strong>
+        {%- if failed %} <span style="color:#fca5a5;">({{ failed }} failed)</span>{% endif %}
+      </p>
+    {% endif %}
     {% if candidates %}
       {# Populated but nothing reaches the bar. The verdict is DERIVED here,
          at render time, from each design's own measurements against

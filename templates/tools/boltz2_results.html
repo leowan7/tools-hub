@@ -93,15 +93,6 @@
   <div class="panel-body">
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
       <div>
-        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Designs folded</div>
-        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
-          {{ designs_completed }} / {{ designs_total }}
-          {% if n_failures %}
-            <span style="color: #fca5a5; font-size: 0.8rem;">({{ n_failures }} fail)</span>
-          {% endif %}
-        </div>
-      </div>
-      <div>
         <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Antigen length</div>
         <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
           {{ antigen_length or '—' }} aa
@@ -147,7 +138,10 @@
     tier=tier,
     gpu_seconds=runtime_seconds,
     send_target_tools=send_target_tools,
-    ranked=(not output.get('backfilled'))) %}
+    ranked=(not output.get('backfilled')),
+    requested=designs_total,
+    returned=designs_completed,
+    failed=n_failures) %}
   <p class="subtitle">
     Boltz-2 returned no designs. Double-check the antigen chain ID and
     binder sequence inputs, then re-submit. If the issue persists the

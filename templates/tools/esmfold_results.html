@@ -5,7 +5,8 @@
    1. Standalone (single fold) — original output schema from run_pipeline
       `_run_single`: pdb_b64, plddt_per_residue, pae_matrix_b64, ptm,
       mean_plddt, sequence, chain_count, total_length, runtime_seconds.
-      Renders the inline summary panel + per-residue pLDDT spark.
+      Renders an NGL viewer, the inline summary panel + per-residue
+      pLDDT spark.
 
    2. Batch — output schema from `_run_batch`: designs[] (list of
       per-design dicts with rank/name/pdb_key/mean_plddt/ptm/total_length),
@@ -23,6 +24,7 @@
 #}
 
 {% from "components/results_shell.html" import results_panel %}
+{% from "components/ngl_viewer.html" import ngl_viewer %}
 
 {% set output         = job.result or {} %}
 {% set raw_designs    = display_rows(output.get('designs')) %}
@@ -82,15 +84,6 @@
     </div>
     <div class="panel-body">
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin-bottom:0.5rem;">
-        <div>
-          <div style="color:var(--text-tertiary); font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase;">Designs folded</div>
-          <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem;">
-            {{ designs_completed }} / {{ designs_total }}
-            {% if n_failures %}
-              <span style="color:#fca5a5; font-size:0.8rem;">({{ n_failures }} fail)</span>
-            {% endif %}
-          </div>
-        </div>
         {% if runtime %}
           <div>
             <div style="color:var(--text-tertiary); font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase;">Runtime</div>
@@ -115,7 +108,10 @@
       tier='batch',
       gpu_seconds=runtime,
       send_target_tools=send_target_tools,
-      ranked=(not output.get('backfilled'))) %}
+      ranked=(not output.get('backfilled')),
+      requested=designs_total,
+      returned=designs_completed,
+      failed=n_failures) %}
     <p class="subtitle">
       ESMFold returned no completed designs. Confirm every input record
       is a monomer 10-400 aa long with canonical residues, then re-submit.
@@ -130,6 +126,9 @@
     {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
   </div>
   <div class="panel-body">
+    {% if pdb_b64 %}
+      {{ ngl_viewer('esmfold-ngl-viewer', pdb_b64_on_100(pdb_b64)) }}
+    {% endif %}
     {% if plddt %}
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.75rem; margin-bottom:1.25rem;">
         <div>
@@ -222,6 +221,14 @@
              title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">
             Resample sequence with MPNN
           </a>
+        {% endif %}
+        {# Server routes, so not on the worked example, whose job id has
+           nothing stored behind it. They read this result through
+           shared/jobs.page_ordered_records, which builds its one row in
+           _single_fold_record. #}
+        {% if not is_example %}
+          <a href="{{ url_for('jobs.export_csv', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download CSV</a>
+          <a href="{{ url_for('jobs.export_fasta', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download FASTA</a>
         {% endif %}
       </div>
 

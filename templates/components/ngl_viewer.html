@@ -1,0 +1,40 @@
+{# Single-structure NGL viewer, moved out of af2_results.html so the AF2 and
+   ESMFold standalone paths share one copy.
+
+   ``pdb_b64`` is a base64 PDB, decoded in the browser into a Blob, so no
+   second network fetch is made. The cartoon colours by B-factor over
+   [50, 90], i.e. pLDDT on the 0-100 scale; a structure written on 0-1 is
+   passed through ``pdb_b64_on_100`` (shared/pdb_bfactors.py) by the caller. #}
+{% macro ngl_viewer(element_id, pdb_b64) %}
+<div id="{{ element_id }}"
+     data-pdb-b64="{{ pdb_b64 }}"
+     style="width: 100%; height: 420px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+<script src="https://cdn.jsdelivr.net/npm/ngl@2.0.0-dev.40/dist/ngl.js"></script>
+<script>
+  (function () {
+    var el = document.getElementById({{ element_id | tojson }});
+    if (!el || typeof NGL === 'undefined') return;
+    try {
+      var stage = new NGL.Stage(el, { backgroundColor: '#0a0a0a' });
+      window.addEventListener('resize', function () { stage.handleResize(); });
+      var pdbBlob = new Blob(
+        [atob(el.getAttribute('data-pdb-b64'))],
+        { type: 'text/plain' }
+      );
+      stage.loadFile(pdbBlob, { ext: 'pdb' }).then(function (comp) {
+        // Colour by the B-factor column, where a predicted structure
+        // carries pLDDT (shared/pdb_bfactors.py module docstring).
+        comp.addRepresentation('cartoon', {
+          colorScheme: 'bfactor',
+          colorDomain: [50, 90],
+          colorScale: 'rwb',
+          colorReverse: true,
+        });
+        comp.autoView();
+      });
+    } catch (e) {
+      console.warn('NGL viewer init failed:', e);
+    }
+  })();
+</script>
+{% endmacro %}
