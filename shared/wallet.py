@@ -930,58 +930,67 @@ def release_hold(hold_tx_id: str, reason: str = "cancelled_before_run") -> bool:
 # Auto-reload
 # ---------------------------------------------------------------------------
 
-# Last time each user was mailed "auto reload skipped", per notice.
-# Keyed on (user_id, got_a_reason) rather than user_id alone: the two
+# Last time each user was mailed each no-charge auto-reload notice.
+# Keyed on (user_id, notice) rather than user_id alone: the three
 # branches that mail carry different wording, and one key would let the
-# first to fire inside the window suppress the other and leave the user
+# first to fire inside the window suppress another and leave the user
 # holding the wrong explanation. Pinned by
-# tests/test_wallet.py::test_the_two_skip_notices_do_not_share_a_throttle_slot
+# tests/test_wallet.py::test_the_skip_notices_do_not_share_a_throttle_slot
 # ponytail: per-process dict, and the check-then-set below is unlocked, so
 # the ceiling is one mail per notice per worker per period and two settles
 # racing inside one worker can both pass the check. A users-table column with
 # a conditional update would make it exact; the dict turns "one mail per job
 # settle" into that ceiling, which is the part that matters during a wave.
-_SKIP_MAIL_SENT: dict[tuple[str, bool], datetime] = {}
+_SKIP_MAIL_SENT: dict[tuple[str, str], datetime] = {}
 
-# How long each notice stays suppressed, keyed the same way: by whether it
-# carries a reason. The periods differ because the conditions do. The 24h
-# notice describes one that cannot change inside its own window -- dispatch
+# How long each notice stays suppressed. The periods differ because the
+# conditions do. The rate_limited notice
+# describes one that cannot change inside its own window -- dispatch
 # is bounded to one per 24h by ``_claim_auto_reload_dispatch``, whose cutoff
 # is that window -- so re-mailing it inside the window repeats a sentence
 # that is still true and still unactionable; at one hour a user with jobs
 # settling all day gets it ~24 times a day, which is not far off the
 # per-settle storm this throttle exists to stop. The refusal is the opposite
 # case: the unreadable guard behind it can clear and recur, each recurrence
-# is news, and the brief for that notice is that it be visible. Pinned by
+# is news, and the brief for that notice is that it be visible. The
+# monthly_cap notice takes 24h because ``_auto_reload_total_month`` sums the
+# calendar month, so the cap stays reached until the month rolls over or the
+# user changes their cap or reload amount. Pinned by
 # tests/test_wallet.py::test_each_skip_notice_is_throttled_for_its_own_period
-_SKIP_MAIL_EVERY = {False: timedelta(hours=24), True: timedelta(hours=1)}
+_SKIP_MAIL_EVERY = {
+    "rate_limited": timedelta(hours=24),
+    "guard_unavailable": timedelta(hours=1),
+    "monthly_cap": timedelta(hours=24),
+}
 
 
-def _mail_auto_reload_skipped(user_id: str, reason: str = "") -> None:
-    """Mail "auto reload skipped" about once per user per notice period.
+def _mail_auto_reload_skipped(
+    user_id: str, notice: str, sender: str, **kwargs: Any
+) -> None:
+    """Mail a no-charge auto-reload notice about once per user per period.
 
-    Both no-charge guard outcomes in :func:`auto_reload_if_needed` reach the
-    same sender, and both are reached once per job settle: Modal completions
-    arrive in waves, so without this a user below their threshold gets one
-    identical email per settling job.
+    Every notice routed here is reached once per job settle: Modal
+    completions arrive in waves, so without this a user below their
+    threshold gets one identical email per settling job.
 
     Each caller logs on every occurrence, unthrottled, so suppressing the
     mail suppresses no record: :func:`_refuse_auto_reload_unverified` at
-    ERROR, and the ``reloads_24h >= 1`` branch of
-    :func:`auto_reload_if_needed` at INFO. That second log exists because of
-    this throttle -- the per-settle email used to be that branch's only
-    trace. Both are pinned by the two settle-wave tests in
-    ``tests/test_wallet.py`` (``..._against_a_dead_ledger_mails_once`` and
-    ``..._inside_the_24h_window_mails_once``), which assert five log records
+    ERROR, and the ``reloads_24h >= 1`` and monthly-cap branches of
+    :func:`auto_reload_if_needed` at INFO. Those two logs exist because of
+    this throttle -- the per-settle email used to be each branch's only
+    trace. All three are pinned by the settle-wave tests in
+    ``tests/test_wallet.py`` (``..._against_a_dead_ledger_mails_once``,
+    ``..._inside_the_24h_window_mails_once`` and
+    ``..._over_the_monthly_cap_mails_once``), which assert five log records
     against one email.
 
-    ``reason`` is forwarded to the template, which drops its 24h wording when
-    one is given, and it is part of the throttle key, so the refusal notice
-    and the ordinary 24h notice cannot suppress each other, and each gets its
-    own period from ``_SKIP_MAIL_EVERY`` -- 24h for the ordinary notice, an
-    hour for the refusal. The timestamp is recorded before the send and
-    ``_send_email_safe`` swallows delivery failures, so a dead mailer costs
-    the user that period's email; the caller's log is the durable record.
+    ``notice`` is part of the throttle key, so no notice suppresses another
+    (``test_the_skip_notices_do_not_share_a_throttle_slot``), and it picks
+    the period from ``_SKIP_MAIL_EVERY``. ``sender`` and ``kwargs`` go to
+    ``_send_email_safe`` with ``user_id``. The timestamp is recorded before
+    the send and ``_send_email_safe`` swallows delivery failures, so a dead
+    mailer costs the user that period's email; the caller's log is the
+    durable record.
 
     "About" is deliberate: the ceiling is per notice per worker, and the
     check-then-set below is unlocked (see the comment at ``_SKIP_MAIL_SENT``),
@@ -991,16 +1000,12 @@ def _mail_auto_reload_skipped(user_id: str, reason: str = "") -> None:
     this dict.
     """
     now = datetime.now(timezone.utc)
-    key = (user_id, bool(reason))
+    key = (user_id, notice)
     last = _SKIP_MAIL_SENT.get(key)
-    if last is not None and now - last < _SKIP_MAIL_EVERY[key[1]]:
+    if last is not None and now - last < _SKIP_MAIL_EVERY[notice]:
         return
     _SKIP_MAIL_SENT[key] = now
-    _send_email_safe(
-        "send_auto_reload_rate_limited_email",
-        user_id=user_id,
-        reason=reason,
-    )
+    _send_email_safe(sender, user_id=user_id, **kwargs)
 
 
 def _refuse_auto_reload_unverified(user_id: str, guard: str) -> str:
@@ -1026,7 +1031,7 @@ def _refuse_auto_reload_unverified(user_id: str, guard: str) -> str:
         guard, user_id,
     )
     _mail_auto_reload_skipped(
-        user_id,
+        user_id, "guard_unavailable", "send_auto_reload_rate_limited_email",
         reason="a safety check on your account could not be completed",
     )
     return "guard_unavailable"
@@ -1149,14 +1154,16 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
         )
     if reloads_24h >= 1:
         # Logged on every settle, while the email is throttled -- to one a
-        # DAY on this branch, since it passes no reason and so takes the
-        # 24h period in `_SKIP_MAIL_EVERY`. Before the throttle the email
+        # DAY on this branch, the "rate_limited" period in
+        # `_SKIP_MAIL_EVERY`. Before the throttle the email
         # WAS the record of this branch; this line is what replaces it.
         logger.info(
             "auto_reload_if_needed: %s already auto-reloaded in the last 24h;"
             " skipping", user_id,
         )
-        _mail_auto_reload_skipped(user_id)
+        _mail_auto_reload_skipped(
+            user_id, "rate_limited", "send_auto_reload_rate_limited_email"
+        )
         return "rate_limited"
     month_total = _auto_reload_total_month(user_id)
     if month_total is None:
@@ -1185,9 +1192,14 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
         )
         return "no_amount_configured"
     if month_total + reload_amount > monthly_cap:
-        _send_email_safe(
-            "send_auto_reload_monthly_cap_email",
-            user_id=user_id, total_usd=month_total, cap_usd=monthly_cap,
+        logger.info(
+            "auto_reload_if_needed: %s at the monthly auto-reload cap "
+            "(month %s + reload %s > cap %s); skipping",
+            user_id, month_total, reload_amount, monthly_cap,
+        )
+        _mail_auto_reload_skipped(
+            user_id, "monthly_cap", "send_auto_reload_monthly_cap_email",
+            total_usd=month_total, cap_usd=monthly_cap,
         )
         return "monthly_cap"
     # Resolved BEFORE the claim, though it reads like setup. This import has
