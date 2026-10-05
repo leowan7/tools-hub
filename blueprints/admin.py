@@ -377,8 +377,16 @@ def _staff_source_job(campaign_id: str, job_id: str):  # noqa: ANN202
 @admin_bp.route("/admin/lab-projects/<campaign_id>/source/<job_id>/export.csv", methods=["GET"])
 def admin_source_export_csv(campaign_id: str, job_id: str):
     """The source job's scores CSV, built as ``/jobs/<id>/export.csv`` builds
-    it. That route is owner-scoped, so it 404s for a staff account."""
+    it. That route is owner-scoped, so it 404s for a staff account, which
+    makes this the only way staff can read that job's CSV -- so it passes the
+    same ``fetch_bytes``, built from the same factory and scoped to the job's
+    owner rather than the staff viewer. In
+    ``tests/test_admin_shortlisted_designs.py``, the test named
+    test_the_staff_copy_of_a_job_csv_carries_the_same_sequences
+    pins the sequence cells and that owner scoping; it does not compare the
+    whole column set."""
     from flask import Response  # noqa: PLC0415
+    from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
     from shared.exports import candidates_to_csv, sequences_to_csv  # noqa: PLC0415
     from shared.jobs import is_candidate_array, page_ordered_records  # noqa: PLC0415
     job = _staff_source_job(campaign_id, job_id)
@@ -389,7 +397,13 @@ def admin_source_export_csv(campaign_id: str, job_id: str):
     if not candidates and is_candidate_array(sequences):
         body = sequences_to_csv(sequences)
     else:
-        body = candidates_to_csv(candidates)
+        # job.user_id, not the staff viewer: the structure route below reads
+        # the source owner's storage the same way (admin_source_structure).
+        body = candidates_to_csv(
+            candidates,
+            fetch_bytes=_storage_fetcher(job.user_id, "admin_source_export_csv"),
+            default_job_id=job_id,
+        )
     return Response(
         body,
         mimetype="text/csv",
