@@ -225,17 +225,13 @@ def test_the_campaign_page_puts_each_figure_in_its_own_slot():
     """A right figure under the wrong label is a wrong figure.
 
     Crossing budget into the "Held to start" slot left 292 tests green. The
-    budget is always the larger number, so that swap overstates the amount
-    about to be held, directly above the line consenting to it. Unlike the
-    provenance question this is statically decidable -- the assignment names
-    both the destination and the source on one line -- it was just never
-    checked.
+    page now prints one money slot, the balance, and this keeps the budget or
+    the first wave out of it. Unlike the provenance question this is
+    statically decidable -- the assignment names both the destination and the
+    source on one line.
     """
     from tests.money_display_guard import assert_money_slots_are_not_crossed
     assert_money_slots_are_not_crossed("templates/runs/new.html", {
-        "rp-budget": "budget_usd_display",
-        "rp-perchunk": "per_chunk_usd_display",
-        "rp-firstwave": "first_wave_usd_display",
         "rp-balance": "balance_usd_display",
     })
 
@@ -336,53 +332,6 @@ def test_a_bindcraft_campaign_gets_past_preset_validation(client):
     assert "Upload a target PDB" in body
 
 
-def test_the_single_tool_refusal_passes_its_own_display_string():
-    """A SOURCE guard, for the same reason as the multi-tool one.
-
-    ``compute_campaign_create``'s refusal passes ``required_display=`` so the
-    sentence quotes the same string the panel prints. Today that is an
-    EQUIVALENT MUTANT: ``pre.required_usd`` is ``gate_usd`` is ``first_wave``,
-    so the default derives the identical string and deleting the kwarg leaves
-    every behavioural test green. A reviewer confirmed it -- 247 passed with the
-    kwarg removed -- so no assertion on the rendered sentence can pin this.
-
-    That is exactly the argument round 8 accepted for ``nothing_charged`` on the
-    other money route, and then did not apply here, leaving a comment claiming
-    the two are "the same string by construction". They are the same string by
-    coincidence. The construction is this kwarg.
-
-    What it protects: the day ``api_runs_estimate``'s figures become a row sum,
-    as the multi-tool estimate's already are, the default starts rounding the
-    exact total while the panel sums displayed rows, and
-    ``sum(ceil(row)) >= ceil(sum(row))`` puts the sentence a cent BELOW the
-    panel. That is the round-8 defect, and a "this kwarg is just the default"
-    tidy-up re-opens it with CI green.
-
-    Proves the call's shape, not its value. Same limit as its sibling.
-    """
-    import ast
-
-    src = open("blueprints/campaigns.py", encoding="utf-8").read()
-    fn = next(
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "compute_campaign_create"
-    )
-    calls = [
-        node for node in ast.walk(fn)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "preauth_message"
-    ]
-    assert calls, "compute_campaign_create no longer calls preauth_message"
-    for call in calls:
-        args = {kw.arg for kw in call.keywords}
-        assert "required_display" in args, (
-            "preauth_message is called without required_display=. The refusal "
-            "sentence must quote the string the panel prints, not re-derive "
-            "one from the exact figure."
-        )
-
-
 def _campaign_row(budget="4.0202"):
     from decimal import Decimal
     return SimpleNamespace(
@@ -398,29 +347,12 @@ def _campaign_row(budget="4.0202"):
     ("/campaigns/c-1", "detail"),
     ("/campaigns", "list"),
 ])
-def test_the_stored_budget_renders_with_the_servers_rounding(client, path, patches):
-    """The budget a user already authorized must read the same on every screen.
-
-    Both these templates formatted it themselves with ``'%.2f'|format``, which
-    is round-half-even over a float and rounds to NEAREST. Once the estimate
-    panels moved to Decimal ceiling, the SAME campaign printed two different
-    budgets: rfdiffusion's 4.0202 is $4.03 on the panel that took consent and
-    was $4.02 here. 5 of the 7 campaign tools diverge (rfdiffusion, bindcraft,
-    rfantibody, proteina, iggm).
-
-    Neither template is in the launch diff, which is the point: the diff moved
-    the panel and these two were never asked whether they agreed. A display
-    rule's blast radius is every surface that prints the figure.
-
-    Red if either template formats money itself again, or if the
-    ``display_cost_usd`` Jinja global stops being registered.
+def test_the_stored_budget_is_not_printed(client, path, patches):
+    """The launch panel no longer shows the estimated budget, so the run pages
+    must not show it either: "Authorized budget $X" names an amount the user
+    never saw. Red in either rounding if either template prints it again.
     """
-    from shared.compute_campaigns import display_cost_usd
     row = _campaign_row()
-    expected = display_cost_usd(row.budget_usd)
-    assert expected == "4.03" and "%.2f" % float(row.budget_usd) == "4.02", (
-        "fixture no longer distinguishes ceiling from nearest"
-    )
 
     _login(client)
     patches_to_apply = [
@@ -448,10 +380,11 @@ def test_the_stored_budget_renders_with_the_servers_rounding(client, path, patch
 
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert f"${expected}" in body, f"{path} does not print ${expected}"
-    assert "$4.02" not in body, (
-        f"{path} still prints the NEAREST-rounded budget, which understates "
-        f"what the user authorized"
+    assert "4.03" not in body and "4.02" not in body, (
+        f"{path} prints the stored budget"
+    )
+    assert "budget" not in body.lower().replace("unused budget", ""), (
+        f"{path} labels a budget"
     )
 
 
@@ -518,11 +451,10 @@ def _debounced_body(path="templates/runs/new.html"):
     raise AssertionError("debounced() is not brace-balanced")
 
 
-# Both estimate-backed pages take consent above a price, so both need the same
-# invalidation. The first version of these tests covered only the campaign page
-# -- the page A51 was filed against -- and left the multi-tool launch page,
-# whose checkbox reads "the amount above will be held against my wallet
-# balance", pinned by nothing. Deleting its untick was green.
+# Both estimate-backed pages take consent above a launch plan, so both need the
+# same invalidation. The first version of these tests covered only the campaign
+# page -- the page A51 was filed against -- and left the multi-tool launch page
+# pinned by nothing. Deleting its untick was green.
 _CONSENT_PAGES = [
     ("templates/runs/new.html", "confirm.checked = false", "clearFigures()"),
     ("templates/targets/launch.html", "confirmBox.checked = false",

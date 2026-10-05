@@ -7,8 +7,6 @@ Parallel to ``tools/boltz2/meta.py`` etc.
 
 Shapes
 ------
-    PRESET_RUNTIME       — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
     paper_citation       — short inline citation.
     paper_url            — paper PDF / preprint URL.
     github_url           — upstream repo.
@@ -29,30 +27,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-
-# Wall clock is driven by BATCH SIZE, not by the preset, and it grows a little
-# FASTER than in proportion: ~7.1x the wall clock for a 6x batch (3185 s
-# against ~450 s), not 6x. These figures are the default batch of 3 and are
-# INTERPOLATED on the chord between the two endpoints below, not measured --
-# the user-facing strings below say "approx" but cannot carry this caveat, so
-# it lives here. There is no third point, so whether the true batch-3 time
-# falls ABOVE or BELOW that chord is unknown, and it must not be presented as
-# a bound in either direction. (An earlier draft argued the curve was convex,
-# and therefore that the chord errs LONG, from per-step time degrading WITHIN
-# a run: 19.5 s to 22.9 s across the 150 steps at batch_size=6. That runs over
-# STEP INDEX inside one run and says nothing about how wall clock varies with
-# BATCH SIZE, and inferring a shape from two points is the same error this
-# comment corrects two sentences earlier.) The only measured points are
-# batch_size=6 at 3185 s and 3233 s, BOTH ON THE scfv PRESET
-# (docs/VALIDATION-LOG.md); minibinder has never been run, and its row below
-# is the scfv figure reused.
-# The batch-1 anchor (~450 s) is asserted in that file's prose with no run row
-# behind it. The previous "~10"/"~12" came from the falsified "one fixed-length
-# pass" premise that also mis-sized the container ceiling.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "minibinder": {"typical_minutes": "~25 to 30", "minutes": (25, 30)},
-    "scfv": {"typical_minutes": "~25 to 30", "minutes": (25, 30)},
-}
 
 # Candido, S. is sequence="first" in Crossref and the leading author on
 # the bioRxiv record: "Language Modeling Materializes a World Model of
@@ -173,9 +147,9 @@ about: dict = {
                 "16-seed sweep finishes in about the same wall-clock as "
                 "one seed. Results from every seed merge into one "
                 "globally-ranked table. Use this when you need to build "
-                "a candidate library against a target. Cost scales with "
-                "seeds, not with batch size: each seed is a separate "
-                "billable container, and a seed's designs share one."
+                "a candidate library against a target. GPU time scales "
+                "with seeds, not with batch size: each seed is a "
+                "separate container, and a seed's designs share one."
             ),
         },
         {
@@ -183,25 +157,18 @@ about: dict = {
             "explanation": (
                 "Designs produced per gradient run (1 to 6). They share "
                 "one H100 container, so a higher batch adds no container "
-                "&mdash; but billing is on actual GPU time, and a bigger "
-                "batch runs longer: a batch of 6 was measured at about "
-                "53 min on the scFv preset, against an estimated 7 to 8 "
-                "min for a single design, so expect wall-clock AND cost "
-                "to grow with this field a little faster than in "
-                "proportion. (It used to claim a batch of 6 was free of "
-                "both; two production runs and the GPU-seconds bill "
-                "disproved that.) "
+                "&mdash; but you pay for the GPU time your run uses, and "
+                "a bigger batch runs longer: measured wall-clock grew a "
+                "little faster than in proportion to the batch. (It used "
+                "to claim a batch of 6 was free of both; two production "
+                "runs and the GPU-seconds bill disproved that.) "
                 "<strong>Default 3.</strong> Single-design runs often "
                 "return <code>drop</code> after the iPTM and pI gates. "
                 "Bump to 6 for first-pass exploration when you can wait "
-                "the hour; drop to 1 only when you already know the "
-                "target gives clean hits."
+                "for the longer run; drop to 1 only when you already "
+                "know the target gives clean hits."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "minibinder", "typical": "~25-30 min at batch 3; ~53 min at 6"},
-        {"preset": "scfv", "typical": "~25-30 min at batch 3; ~53 min at 6"},
     ],
     "output_summary": (
         "Per-design table with designed sequence, iPTM, distogram iPTM "
@@ -256,16 +223,11 @@ about: dict = {
 # dict from git history when one has.
 #
 # When restoring: NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
-# Both are derived at render time (blueprints/tools.py::_pilot_context)
-# from shared.wallet_estimates.estimated_cost_for_tool over ``params``
-# and from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month. ``params`` keys are FORM FIELD
-# NAMES — the same dict pre-fills the form via ?pilot=1 and feeds the
-# estimator, and the form posts those same names to
-# /api/wallet/estimate, so the card's price and the form's live price
-# cannot disagree. Only include keys the form actually honours through
-# pre_value()/pre_checked(); a key no field reads is a pre-fill that
-# silently does nothing.
+# ``params`` keys are FORM FIELD NAMES — the same dict pre-fills the
+# form via ?pilot=1 and feeds the estimator, and the form posts those
+# same names to /api/wallet/estimate. Only include keys the form
+# actually honours through pre_value()/pre_checked(); a key no field
+# reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
 PILOT: dict | None = None
 

@@ -54,31 +54,6 @@
       font-size: 0.78rem;
       color: var(--text-primary);
     }
-    .colabfold-runtime-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-    }
-    .colabfold-runtime-table th {
-      text-align: left;
-      padding: 0.45rem 0.5rem;
-      font-size: 0.62rem;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-tertiary);
-      background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border);
-    }
-    .colabfold-runtime-table td {
-      padding: 0.45rem 0.5rem;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      font-family: var(--font-mono);
-      font-size: 0.78rem;
-      vertical-align: top;
-    }
-    .colabfold-runtime-table tr:last-child td { border-bottom: none; }
     .colabfold-fasta {
       width: 100%;
       max-width: 560px;
@@ -182,7 +157,7 @@
                 <span class="preset-desc">
                   Paste a FASTA. Multi-record FASTA is treated as one
                   multimer fold (chains joined). Up to 600 aa total.
-                  1 to 2 min on A100-40GB.
+                  Runs on A100-40GB.
                 </span>
               </span>
             </label>

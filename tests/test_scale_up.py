@@ -241,10 +241,10 @@ def _page(client, offer):
     return resp.get_data(as_text=True)
 
 
-def test_card_renders_price_and_button(client):
+def test_card_renders_the_offer_and_button_without_a_price(client):
     html = _page(client, _offer())
-    assert "Run 100 candidates on the same target" in html
-    assert "est. $405.16" in html
+    assert "Run 100 candidates on the same target." in html
+    assert "405.16" not in html and "est." not in html
     assert f'action="/jobs/{_JID}/scale-up"' in html
     assert "Top up $" not in html
     assert "/GPU" not in html and "per GPU" not in html
@@ -263,7 +263,8 @@ def test_card_renders_the_next_step_wording(client):
 
 def test_card_says_top_up_when_short(client):
     html = _page(client, _offer(topup_usd=7))
-    assert "Top up $7 to run this" in html
+    assert "Top up your wallet to run this" in html
+    assert "$7" not in html
 
 
 def test_card_names_the_clamp(client):

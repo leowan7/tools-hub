@@ -7,9 +7,8 @@ tests focus on the higher layer in shared/jobs:
 * ``_settle_wallet_hold_for_completed_job`` on the succeeded path.
 * The same hook on the failed path, both with and without consumed
   GPU time.
-* ``mid_run_monitor_check`` for the 1.5x warning (idempotent) and
-  the 2.0x safety kill (only when projected cost exceeds the
-  parameter scaled hard cap).
+* ``mid_run_monitor_check``, which persists heartbeat GPU seconds
+  and never cancels, fails or settles a running job.
 
 The fake job row carries an ``inputs._wallet`` dict so the settle
 hook has a hold_tx_id to find. Wallet helpers are patched at the
@@ -310,147 +309,60 @@ def _seed_running(rows, **over):
     return job_id
 
 
-class TestMidRunMonitorWarn:
-    def test_below_warn_ratio_returns_none(self, fake_job_store):
-        """A normal still running job at 50% of estimate is a no op."""
+class TestMidRunMonitorPersists:
+    """The monitor's one job is the gpu_seconds_used write a cancel bills."""
+
+    def test_persists_heartbeat_seconds_and_never_kills(
+        self, fake_job_store, monkeypatch,
+    ):
         job_id = _seed_running(fake_job_store)
-        # cumulative cost = 0.5 * estimate. Use very few gpu_seconds.
-        result = jobs_mod.mid_run_monitor_check(job_id, 100.0)
+        cas = MagicMock(return_value=True)
+        monkeypatch.setattr(jobs_mod, "_cas_update", cas)
+        with patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
+            result = jobs_mod.mid_run_monitor_check(job_id, 7000.0)
         assert result is None
-
-    def test_warn_ratio_dispatches_email(self, fake_job_store):
-        job_id = _seed_running(fake_job_store)
-        # 4.40 estimate at A100-40GB, $0.000714/s * 1.7 markup = $0.001214/s
-        # To hit 1.5x = $6.60 we need ~5436 gpu_seconds.
-        with patch("shared.email.send_overrun_warning_email") as warn_email:
-            result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
-        assert result == "warned"
-        warn_email.assert_called_once()
-        # The warning persists the overrun_warned flag so a second
-        # heartbeat at the same ratio does not re-dispatch.
-        row = fake_job_store[job_id]
-        assert row["inputs"]["_wallet"]["overrun_warned"] is True
-
-    def test_warn_is_idempotent(self, fake_job_store):
-        job_id = _seed_running(fake_job_store)
-        # Pre-set the warned flag.
-        fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] = True
-        with patch("shared.email.send_overrun_warning_email") as warn_email:
-            result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
-        # Already warned: no new dispatch and no return label.
-        warn_email.assert_not_called()
-        assert result is None
-
-
-class TestMidRunMonitorNoCostKill:
-    """The cost-based mid-run kill was removed: a runaway-cost job is
-    never terminated mid-run. Spend is bounded by the prepaid wallet +
-    per-job hold and wall-clock by the Modal container hard timeout, so
-    the monitor never cancels Modal, never flips the job to failed, and
-    never settles a hold inline. The terminal path owns settlement.
-    """
-
-    def test_runaway_cost_does_not_kill_or_cancel(self, fake_job_store):
-        """Cumulative cost far above the old 2x kill ratio and any prior
-        hard cap: the monitor must NOT cancel Modal, mark the job failed,
-        or settle a hold. It only warns (never kills)."""
-        job_id = _seed_running(fake_job_store)
-        # baseline params + tiny estimate so the ratio is ~170x, well past
-        # the old kill threshold.
-        fake_job_store[job_id]["inputs"]["num_designs"] = 2
-        fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
-        modal = MagicMock()
-        with patch("shared.email.send_overrun_warning_email"), patch(
-            "shared.wallet.settle_hold"
-        ) as settle, patch("shared.wallet.release_hold") as release:
-            result = jobs_mod.mid_run_monitor_check(
-                job_id, 7000.0, modal_client=modal,
-            )
-        # No kill: never returns "killed".
-        assert result != "killed"
-        # Modal is not cancelled and no terminal/settle side effects fire.
-        modal.cancel.assert_not_called()
+        cas.assert_called_once_with(
+            job_id,
+            {"gpu_seconds_used": 7000},
+            allowed_current=("pending", "running"),
+        )
         settle.assert_not_called()
         release.assert_not_called()
-        # The job stays running; the monitor did not flip it to failed.
         assert fake_job_store[job_id]["status"] == "running"
 
-    def test_runaway_cost_above_old_kill_ratio_still_warns(self, fake_job_store):
-        """A runaway overrun ABOVE the old 2x kill ratio is no longer
-        silent: with the half-open warn band removed the monitor warns
-        once (email sent, "warned" returned) instead of killing. This is
-        the observability gap (F1) the kill removal opened."""
+    def test_persist_failure_is_swallowed(self, fake_job_store, monkeypatch):
         job_id = _seed_running(fake_job_store)
-        # 0.05 estimate; ~7000 gpu_seconds -> ~170x, far above the old 2.0x
-        # kill threshold. Previously this fell through to a silent None
-        # (after the kill), now it must warn.
-        fake_job_store[job_id]["inputs"]["num_designs"] = 2
-        fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
-        modal = MagicMock()
-        with patch("shared.email.send_overrun_warning_email") as warn_email:
-            result = jobs_mod.mid_run_monitor_check(
-                job_id, 7000.0, modal_client=modal,
-            )
-        assert result == "warned"
-        warn_email.assert_called_once()
-        modal.cancel.assert_not_called()
-        assert fake_job_store[job_id]["status"] == "running"
-        # Idempotency flag stashed so a second heartbeat does not re-email.
-        assert (
-            fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] is True
+        monkeypatch.setattr(
+            jobs_mod, "_cas_update", MagicMock(side_effect=RuntimeError("db")),
         )
-
-    def test_runaway_cost_warns_only_once(self, fake_job_store):
-        """The overrun_warned flag makes the (now unbounded) warning fire
-        exactly once even as the ratio keeps climbing, so a persistently
-        runaway job does not spam the user."""
-        job_id = _seed_running(fake_job_store)
-        fake_job_store[job_id]["inputs"]["num_designs"] = 2
-        fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
-        # Already warned on a prior heartbeat.
-        fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] = True
-        with patch("shared.email.send_overrun_warning_email") as warn_email:
-            result = jobs_mod.mid_run_monitor_check(job_id, 9000.0)
-        warn_email.assert_not_called()
-        assert result is None
-
-    def test_warns_at_or_above_warn_ratio(self, fake_job_store):
-        """At ~1.5x estimate (the warn threshold) the warning still fires;
-        that telemetry is unaffected by removing the kill."""
-        job_id = _seed_running(fake_job_store)
-        # 4.40 estimate; ~5500 gpu_seconds -> ~1.5x.
-        modal = MagicMock()
-        with patch("shared.email.send_overrun_warning_email") as warn_email:
-            result = jobs_mod.mid_run_monitor_check(
-                job_id, 5500.0, modal_client=modal,
-            )
-        assert result == "warned"
-        warn_email.assert_called_once()
-        modal.cancel.assert_not_called()
-        assert fake_job_store[job_id]["status"] == "running"
+        assert jobs_mod.mid_run_monitor_check(job_id, 100.0) is None
 
 
 class TestMidRunMonitorNoOps:
-    def test_unknown_job_is_noop(self, fake_job_store):
-        result = jobs_mod.mid_run_monitor_check("no-such-id", 1000.0)
-        assert result is None
+    """No write when the job is gone, terminal, or reports no seconds."""
 
-    def test_already_terminal_is_noop(self, fake_job_store):
+    @pytest.fixture
+    def cas(self, monkeypatch):
+        spy = MagicMock(return_value=True)
+        monkeypatch.setattr(jobs_mod, "_cas_update", spy)
+        return spy
+
+    def test_unknown_job_is_noop(self, fake_job_store, cas):
+        jobs_mod.mid_run_monitor_check("no-such-id", 1000.0)
+        cas.assert_not_called()
+
+    def test_already_terminal_is_noop(self, fake_job_store, cas):
         job_id = _seed_running(fake_job_store)
         fake_job_store[job_id]["status"] = "succeeded"
-        result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
-        assert result is None
+        jobs_mod.mid_run_monitor_check(job_id, 5500.0)
+        cas.assert_not_called()
 
-    def test_no_wallet_ctx_is_noop(self, fake_job_store):
+    def test_zero_cumulative_cost_is_noop(self, fake_job_store, cas):
         job_id = _seed_running(fake_job_store)
-        fake_job_store[job_id]["inputs"].pop("_wallet")
-        result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
-        assert result is None
-
-    def test_zero_cumulative_cost_is_noop(self, fake_job_store):
-        job_id = _seed_running(fake_job_store)
-        result = jobs_mod.mid_run_monitor_check(job_id, 0.0)
-        assert result is None
+        jobs_mod.mid_run_monitor_check(job_id, 0.0)
+        cas.assert_not_called()
 
 
 # ===========================================================================
@@ -599,42 +511,6 @@ def test_safe_gpu_seconds_int_bounds_and_coerces():
     # Absurd values are clamped to the 24h ceiling, never persisted raw.
     assert f(10**12) == jobs_mod._MAX_GPU_SECONDS
     assert f(math.inf) <= jobs_mod._MAX_GPU_SECONDS
-
-
-# ---------------------------------------------------------------------------
-# _stash_wallet_flag re-reads fresh inputs (REVIEW #16 follow-up)
-# ---------------------------------------------------------------------------
-
-
-def test_stash_wallet_flag_merges_onto_fresh_inputs(monkeypatch):
-    # The `job` handed in is a stale snapshot from the top of the
-    # heartbeat handler — it predates the heartbeat's _partial_candidates
-    # append. The flag write must merge onto the CURRENT row, not the
-    # snapshot, or it silently drops the concurrent heartbeat state.
-    stale = ToolJob.from_row(_row(inputs={"_wallet": {}}))
-    fresh = ToolJob.from_row(
-        _row(
-            id=stale.id,
-            inputs={
-                "_wallet": {},
-                "_partial_candidates": [{"pdb_key": "a"}],
-                "_hb_version": 3,
-            },
-        )
-    )
-    monkeypatch.setattr(jobs_mod, "get_job", lambda jid, **k: fresh)
-    captured: dict = {}
-    monkeypatch.setattr(
-        jobs_mod, "update_inputs",
-        lambda jid, inp: captured.update(inp) or True,
-    )
-
-    jobs_mod._stash_wallet_flag(stale, "overrun_warned", True)
-
-    assert captured["_wallet"]["overrun_warned"] is True
-    # Heartbeat state survives (would be dropped if it merged onto `stale`).
-    assert captured["_partial_candidates"] == [{"pdb_key": "a"}]
-    assert captured["_hb_version"] == 3
 
 
 # ---------------------------------------------------------------------------

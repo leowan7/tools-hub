@@ -1933,32 +1933,6 @@ select.form-control { cursor: pointer; }
 }
 .about-panel a:hover { text-decoration: underline; }
 
-.about-runtime-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.82rem;
-}
-.about-runtime-table th {
-  text-align: left;
-  padding: 0.45rem 0.5rem;
-  font-size: 0.62rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border);
-}
-.about-runtime-table td {
-  padding: 0.45rem 0.5rem;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  vertical-align: top;
-}
-.about-runtime-table tr:last-child td { border-bottom: none; }
-
 .cost-preview {
   font-family: var(--font-mono);
   font-size: 0.8rem;

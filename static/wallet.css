@@ -331,12 +331,6 @@
   line-height: 1;
   letter-spacing: -0.01em;
 }
-.wallet-topup-suggested-covers {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
 .wallet-topup-custom {
   display: flex;
   align-items: stretch;
@@ -543,9 +537,6 @@
   font-variant-numeric: tabular-nums;
   font-size: 1.05rem;
   color: var(--warm-white);
-}
-.wallet-topup-gate-figure-deficit dd {
-  color: var(--warning);
 }
 
 .wallet-topup-gate-actions {

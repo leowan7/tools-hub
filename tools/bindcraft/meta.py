@@ -7,14 +7,6 @@ contract. Parallel to ``tools/rfantibody/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str,
-                         "minutes": (low, high)}}.
-                         ``typical_minutes`` is a bare human-readable range
-                         (e.g. ``"30 to 45"``);
-                         shared/tool_meta.py::preset_runtime_text appends
-                         " min", so it carries no unit and no parenthetical.
-                         ``minutes`` holds the same range as numbers, for
-                         shared/tool_meta.py::runtime_band.
     paper_citation    — short inline citation.
     paper_url         — Nature permalink for the BindCraft paper.
     github_url        — upstream repository.
@@ -29,16 +21,6 @@ Shapes
 from __future__ import annotations
 
 from typing import Optional
-
-# Typical wall-clock per preset. BindCraft ships only the ``pilot`` preset,
-# whose runtime scales with the trajectory count rather than sitting on a fixed
-# floor: the quoted range is the ``num_designs`` default of 4
-# (tools/bindcraft/__init__.py::validate, and the pilot preset description at
-# tools/bindcraft/__init__.py::adapter). Larger counts take proportionally
-# longer.
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "30 to 45", "minutes": (30, 45)},
-}
 
 # THE PREPRINT THIS ONCE CITED IS NOW A JOURNAL ARTICLE: Nature 646, 483-492,
 # DOI 10.1038/s41586-025-09429-6. Unlike RFantibody's, this Crossref record
@@ -79,10 +61,9 @@ seo_faq: list[dict] = [
     {
         "q": "How long does a BindCraft trial run take?",
         "a": (
-            "Typical trial runs finish in roughly 20 to 60 minutes on a "
-            "dedicated A100, depending on target size and how many "
-            "candidates pass the internal ipTM filter. Billing is by the "
-            "second so a faster preset costs less."
+            "Runtime depends on target size, how many designs you ask "
+            "for, and how many candidates pass the internal ipTM filter. "
+            "You pay for the GPU time your run uses."
         ),
     },
 ]
@@ -120,9 +101,8 @@ about: dict = {
             "antibody."
         ),
         (
-            "You can wait ~30 to 45 min for a default 4-trajectory batch "
-            "(longer for larger counts), and you would rather see a filtered "
-            "shortlist than every candidate the run generated."
+            "You would rather see a filtered shortlist than every "
+            "candidate the run generated."
         ),
     ],
     "prerequisites": [
@@ -154,13 +134,10 @@ about: dict = {
                 "How many final filtered designs to return (1 to 500). "
                 "Each passes AF2 re-prediction with ipTM and pLDDT above "
                 "the BindCraft default thresholds. Runtime scales with "
-                "the count: start with a 4-trajectory batch (~30 to 45 "
-                "min) to confirm your target and hotspots, then scale up."
+                "the count: start with a 4-trajectory batch to confirm "
+                "your target and hotspots, then scale up."
             ),
         },
-    ],
-    "runtime_table": [
-        {"preset": "Trial run", "typical": "~30 to 45 min for 4 trajectories; scales with count"},
     ],
     # shared/score_legends.py ("bindcraft", "ipTM") sets good 0.75 and
     # excellent 0.85. Stated INCLUSIVELY, which that legend's own
@@ -195,16 +172,11 @@ about: dict = {
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -349,10 +321,8 @@ EXAMPLE: dict | None = {
             "2",
             "Small even for a trial run, and that is this tool rather than "
             "impatience: BindCraft optimises each design individually instead "
-            "of sampling a batch, so two of them cost about what eight cost "
-            "on the diffusion tools. It is also why this run took 20 minutes "
-            "against the ~45 the runtime table above quotes &mdash; that row "
-            "is for the form's default of four.",
+            "of sampling a batch, so each design takes more GPU time than "
+            "on the diffusion tools.",
         ),
     ],
     "what_came_back": (

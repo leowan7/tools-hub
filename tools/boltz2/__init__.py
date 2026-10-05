@@ -346,8 +346,8 @@ def validate(
         )
         if max_binders < MAX_BINDERS:
             msg += (
-                " This preset folds ~3x slower, so a batch that size would "
-                "run past the 60-minute ceiling and the tail would be cut "
+                " This preset folds considerably slower, so a batch that "
+                "size would run past the ceiling and the tail would be cut "
                 "off. Split it into smaller runs, or use the single-sequence "
                 f"preset, which takes up to {MAX_BINDERS}."
             )
@@ -442,8 +442,7 @@ adapter = ToolAdapter(
     blurb=(
         "Paste a designed binder, upload the target it should hit, and "
         "get back the predicted complex plus a 0-to-1 confidence score "
-        "for the contact between them. Just over a minute per design in "
-        "single-sequence mode."
+        "for the contact between them."
     ),
     presets=(
         Preset(
@@ -453,8 +452,7 @@ adapter = ToolAdapter(
                 "YAML ``msa: empty`` per chain. The right choice for "
                 "designed sequences (MPNN, RFantibody, BindCraft, "
                 "BoltzGen, RFdiffusion, PXDesign outputs) where no "
-                "informative MSA exists. ~69 s/design on A100-40GB, "
-                "measured on 242-246 aa binders against a 107 aa antigen."
+                "informative MSA exists. Runs on an A100-40GB."
             ),
             requires_pdb=True,
         ),
@@ -464,8 +462,9 @@ adapter = ToolAdapter(
             description=(
                 "Boltz fetches MSAs from the public ColabFold MMseqs2 "
                 "endpoint at runtime. Intended for natural / near-native "
-                "sequences; ~3.6 min/design including MSA fetch, "
-                "measured. On the one head-to-head we have run it "
+                "sequences; slower than the single-sequence default, "
+                "since it also fetches MSAs. On the one head-to-head we "
+                "have run it "
                 "separated a designed binder from decoys WORSE than the "
                 "single-sequence default, so prefer that unless you know "
                 "your sequence has natural relatives."

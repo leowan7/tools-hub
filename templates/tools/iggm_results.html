@@ -56,12 +56,6 @@
   <div class="panel-body">
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
       <div>
-        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Designs</div>
-        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
-          {{ designs_completed }} / {{ designs_total }}
-        </div>
-      </div>
-      <div>
         <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Antigen</div>
         <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
           chain {{ antigen_chain or '?' }}{% if antigen_length %}, {{ antigen_length }} aa{% endif %}
@@ -103,7 +97,9 @@
     tier=tier,
     gpu_seconds=runtime_seconds,
     send_target_tools=send_target_tools,
-    ranked=(not output.get('backfilled'))) %}
+    ranked=(not output.get('backfilled')),
+    requested=designs_total,
+    returned=designs_completed) %}
   <p class="subtitle">
     IgGM returned no designs. Double-check the antibody FASTA (>H required),
     the antigen chain ID, and the masking (design modes need at least one X),

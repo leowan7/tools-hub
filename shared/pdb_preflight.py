@@ -1936,7 +1936,6 @@ def _check_size_envelope(
             f"shorten the max binder length."
         )
     elif over_runtime:
-        ceiling_min = int(env.runtime_ceiling_s / 60)
         if env.runtime_fixed_designs:
             # No user-facing knob shortens this one: the count is pinned inside
             # the wrapper, so the only lever is target size.
@@ -1944,19 +1943,18 @@ def _check_size_envelope(
             hard_msg = (
                 f"{counted}. {rules.slug.title()} runs a fixed batch of "
                 f"{env.runtime_fixed_designs} designs, which at this target "
-                f"size is estimated at {runtime_min / 60:.1f} h — past the "
-                f"{ceiling_min}-minute limit its GPU run is stopped at, and a "
-                f"run stopped there returns nothing. Targets up to about "
+                f"size is estimated to run past the time limit its GPU run is "
+                f"stopped at, and a run stopped there returns nothing. "
+                f"Targets up to about "
                 f"{fits_aa} residues fit. Narrow the region you want to design "
                 f"against, or pick a smaller target."
             )
         else:
             fits_n = max_designs_within_ceiling(rules, target_aa)
             hard_msg = (
-                f"{counted}, and {runtime_basis} at that size is estimated at "
-                f"{runtime_min / 60:.1f} h — past the {ceiling_min}-minute "
-                f"limit one {rules.slug.title()} GPU run is stopped at, and a "
-                f"run stopped there returns nothing. "
+                f"{counted}, and {runtime_basis} at that size is estimated to "
+                f"run past the time limit one {rules.slug.title()} GPU run is "
+                f"stopped at, and a run stopped there returns nothing. "
                 + (
                     f"Ask for at most {fits_n} design"
                     f"{'s' if fits_n != 1 else ''} against a target this size, "

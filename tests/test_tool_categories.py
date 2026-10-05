@@ -119,8 +119,7 @@ def test_every_adapter_resolves_its_meta_in_the_catalog(monkeypatch):
     blank = sorted(
         e["slug"] for e in catalog
         if e["slug"] in slugs
-        and "—" in (e["runtime_band"], e["comparison_one_liner"],
-                    e["paper_citation"])
+        and "—" in (e["comparison_one_liner"], e["paper_citation"])
     )
     assert not blank, (
         f"catalog entries with no metadata resolved (hyphen-vs-underscore "

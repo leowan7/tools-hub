@@ -1678,8 +1678,6 @@ def _emit_preflight_email(
             "send_job_capped_email",
             user_id=user_id,
             tool_slug=tool_slug,
-            attempted_usd=pre.estimated_cost_usd,
-            cap_usd=pre.hard_cap_usd,
         )
 
 

@@ -427,34 +427,6 @@ def test_the_receipt_quotes_the_rate_the_wallet_charged() -> None:
     assert "on A10G" in reported_line, reported_line
 
 
-def test_the_overrun_monitor_measures_against_the_billed_rate() -> None:
-    """The 1.5x warning compares cumulative cost to the stored estimate.
-
-    Priced at the A100-80GB default instead of the spec, the ratio is wrong by
-    the rate ratio: mpnn would warn ~4.9x too eagerly and the H100 tools 2.35x
-    too late. 3600 H100 seconds is $14.79, just over 1.5x a $9 estimate.
-    """
-    from unittest import mock
-
-    from shared.jobs import mid_run_monitor_check
-
-    job = mock.Mock(
-        id="job-1",
-        tool="opendde",
-        status="running",
-        inputs={"_wallet": {"hold_tx_id": "hold-1", "estimate_usd": "9.00"}},
-        gpu_seconds_used=3600.0,
-    )
-    with mock.patch("shared.jobs.get_job", return_value=job),             mock.patch("shared.jobs._cas_update"),             mock.patch("shared.jobs._send_overrun_warning") as warn,             mock.patch("shared.jobs._stash_wallet_flag"):
-        result = mid_run_monitor_check("job-1", cumulative_gpu_seconds=3600.0)
-
-    assert result == "warned", (
-        "no overrun warning: at the A100-80GB default 3600 s is $6.29, only "
-        "0.70x the $9.00 estimate, so the 1.5x band is never crossed"
-    )
-    assert warn.called
-
-
 # ---------------------------------------------------------------------------
 # prose and user-facing strings -- the class this file did not cover
 # ---------------------------------------------------------------------------

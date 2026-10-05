@@ -279,13 +279,12 @@ def first_wave_at_pace(plan: MultiLaunchPlan, pace: str) -> Decimal:
 
 
 def first_wave_display_at_pace(plan: MultiLaunchPlan, pace: str) -> str:
-    """The 2dp hold the PAGE shows for this plan at ``pace``.
+    """The 2dp first-wave hold for this plan at ``pace``.
 
-    Totals the per-row 2dp displays, which is what the panel prints, rather than
-    rounding the exact total, which is a slightly smaller number. Any figure
-    quoted beside that panel has to be the panel's figure: a refusal sentence
-    naming $9.18 under a panel reading $9.19 sends the user to top up to an
-    amount that is refused again.
+    Totals the per-row 2dp displays rather than rounding the exact total, which
+    is a slightly smaller number. Its one production caller is the launch
+    estimate's steady-pace ``alternative`` (``blueprints/targets.py``), which
+    no page prints (tests/test_no_prerun_numbers_logged_in.py).
 
     At ``pace == plan.pace`` this reproduces ``display_total_usd`` over
     ``plan.rows()`` exactly, because the rows use the same concurrency division.

@@ -621,14 +621,7 @@ def compute_campaign_create():
     first_wave = cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool))
     pre = cc.campaign_preauth(ctx.user_id, plan.budget_usd, first_wave)
     if not pre.ok:
-        # Passed explicitly even though the default derives the same string
-        # today, because "the same by coincidence" is how the multi-tool route
-        # ended up printing $9.18 in this sentence over a $9.19 panel. This page
-        # ships `first_wave_usd_display` from the same helper, so the sentence
-        # and the panel are now the same string by construction.
-        return _err(cc.preauth_message(
-            pre, required_display=cc.display_cost_usd(first_wave),
-        ))
+        return _err(cc.preauth_message(pre))
 
     # 5. Stage the shared target once (when one was provided), then create +
     #    fund + first wave. A proteina curated-task run stages nothing.

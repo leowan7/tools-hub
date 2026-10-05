@@ -10,15 +10,6 @@ from __future__ import annotations
 from typing import Optional
 
 
-PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    # Advisory only; refit from the canary I-* runs before flag-on.
-    "complex_prediction": {"typical_minutes": "~2", "minutes": (2, 2)},
-    "cdr_design": {"typical_minutes": "~3", "minutes": (3, 3)},
-    "fr_design": {"typical_minutes": "~3", "minutes": (3, 3)},
-    "affinity_maturation": {"typical_minutes": "scales with samples x masked positions"},
-    "inverse_design": {"typical_minutes": "~2", "minutes": (2, 2)},
-}
-
 paper_citation: str = "Wang et al., ICLR 2025"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.09.19.613838v1"
 github_url: str = "https://github.com/TencentAI4S/IgGM"
@@ -114,13 +105,6 @@ about: dict = {
             ),
         },
     ],
-    "runtime_table": [
-        {"preset": "complex_prediction", "typical": "~2 min"},
-        {"preset": "cdr_design", "typical": "~3 min"},
-        {"preset": "fr_design", "typical": "~3 min"},
-        {"preset": "affinity_maturation", "typical": "scales with samples x masked positions"},
-        {"preset": "inverse_design", "typical": "~2 min"},
-    ],
     "output_summary": (
         "Per design: the predicted antibody-antigen complex PDB, the designed "
         "sequence, and an epitope-contact count (how many of your chosen "
@@ -146,16 +130,11 @@ examples: list[dict] = []
 # PILOT — the guided starter recipe rendered by
 # templates/components/pilot_card.html.
 #
-# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT. Both are derived
-# at render time (blueprints/tools.py::_pilot_context) from
-# shared.wallet_estimates.estimated_cost_for_tool over ``params`` and
-# from the preset runtime map above. A hand-written second rate card
-# drifts off the real one within a month.
+# NO PRICE AND NO RUNTIME STRING BELONGS IN THIS DICT.
 #
 # ``params`` keys are FORM FIELD NAMES. The same dict pre-fills the
 # form via ?pilot=1 and feeds the estimator, and the form posts those
-# same names to /api/wallet/estimate — so the card's price and the
-# form's live price cannot disagree. Only include keys the form
+# same names to /api/wallet/estimate. Only include keys the form
 # actually honours through pre_value()/pre_checked(); a key no field
 # reads is a pre-fill that silently does nothing.
 # ---------------------------------------------------------------------------
@@ -166,7 +145,7 @@ PILOT: dict | None = {
         "existing antibody on your antigen. A single sample in "
         "prediction mode is already the smallest run IgGM offers, so "
         "these are the form&rsquo;s own defaults &mdash; a guided first "
-        "run at the tool&rsquo;s normal cost, not a cheaper trial."
+        "run, not a reduced-scope trial."
     ),
     "you_need": (
         "Your antigen structure file, and your antibody heavy chain "
@@ -273,7 +252,7 @@ EXAMPLE: dict | None = {
         ),
     ],
     "what_came_back": (
-        "40 designs in 12 minutes, each scored by how many of the nine "
+        "40 designs, each scored by how many of the nine "
         "requested epitope residues it actually contacts. "
         "<strong>Nineteen of the forty reach no part of the "
         "epitope.</strong> Fourteen reach exactly one residue. The rest "

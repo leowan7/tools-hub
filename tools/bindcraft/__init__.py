@@ -124,32 +124,20 @@ adapter = ToolAdapter(
     blurb=(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back new mini-proteins of 50 to 150 residues "
-        "built to grip them, already refolded and filtered. Sessions "
-        "run up to four hours; results are emailed when they finish."
+        "built to grip them, already refolded and filtered. Results "
+        "are emailed when they finish."
     ),
     presets=(
         Preset(
             slug="pilot",
-            # "~40 min", not the "~30 min" this replaces, and it now says
-            # what the number depends on. The one measured bindcraft run is
-            # 1170 GPU-s for 2 trajectories at 115 aa (docs/VALIDATION-LOG.md,
-            # job 1c4d5803), and
-            # shared/pdb_preflight_rules.py::runtime_estimate_min puts 4
-            # trajectories at that size at 37.5 min. That estimator scales
-            # steeply with target size: it puts the same 4-trajectory batch
-            # at 158 min on a 300 aa target. The
-            # form's own estimate panel prints the figure for the target that
-            # was actually uploaded; this sentence only sets expectations
-            # before one is. docs/qa/RUNTIME-CEILING-2026-09-30.md.
-            label="Your target, ~40 min for a small batch on a small target",
+            label="Your target, a small batch on a small target",
             description=(
                 "BindCraft against your uploaded PDB on A100-80GB. "
                 "Pick 1 to 500 trajectories. Start with a small batch "
-                "(4 trajectories, ~40 min on a 115-residue target, longer "
-                "on a bigger one) to confirm your target and hotspots, then "
-                "scale up. A batch whose estimated runtime is over the "
-                "four-hour limit one run is stopped at is refused when you "
-                "submit it, and the refusal names a count that fits — about "
+                "(4 trajectories) to confirm your target and hotspots, "
+                "then scale up. A batch too long for the limit one run "
+                "is stopped at is refused when you submit it, and the "
+                "refusal names a count that fits — about "
                 "5 trajectories on a 320-residue target, 2 on a 500-residue "
                 "one. A small target is not refused at any count: batches run "
                 "in groups of 6, and 6 trajectories fit the limit up to about "

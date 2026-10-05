@@ -65,6 +65,10 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
         role      one of 'hold', 'release', 'settlement'
         settled   True when the hold has at least one settle child
         reserved  the amount the hold reserved (positive), for holds
+        outcome   for holds, what settling did with the reservation, read
+                  from the children's amounts: 'more_charged' (a negative
+                  charge child), 'all_returned' (releases cover the hold),
+                  'part_returned' (some released) or 'none_returned'
         net       group net = SUM(amount_usd) over the lineage, on the
                   settlement row (the charge, or the release when there
                   is no charge); this is negative of the actual cost
@@ -147,12 +151,33 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             if hold_row is not None:
                 reserved = abs(_tx_amount_decimal(hold_row.get("amount_usd")))
 
+            # From the amounts, never the stored notes: settle_hold writes
+            # "estimate matched actual" on the zero-amount charge whenever the
+            # hard cap clamps the actual down to the hold
+            # (supabase/migrations/0020_wallet_corrections.sql:263, v_diff = 0).
+            returned = sum(
+                (_tx_amount_decimal(c.get("amount_usd")) for c in children
+                 if c.get("kind") == "hold_release"),
+                Decimal("0"),
+            )
+            if any(c.get("kind") == "charge"
+                   and _tx_amount_decimal(c.get("amount_usd")) < 0
+                   for c in children):
+                outcome = "more_charged"
+            elif reserved and returned >= reserved:
+                outcome = "all_returned"
+            elif returned > 0:
+                outcome = "part_returned"
+            else:
+                outcome = "none_returned"
+
             # Annotate the hold row.
             if hold_row is not None and hold_row.get("id") is not None:
                 annotations[hold_row["id"]] = {
                     "role": "hold",
                     "settled": settled,
                     "reserved": reserved,
+                    "outcome": outcome,
                 }
 
             # Pick the settlement row that carries the net label: prefer
@@ -305,7 +330,7 @@ def _full_size_estimate(user_id, tool_slug: str, count: int, preset: str):  # no
             "estimate_usd": None,
             "no_estimate_reason": (
                 f"{count} designs cannot start as a full-size run. "
-                "Reduce the count to see a price."
+                "Reduce the count."
             ),
         })
     estimate = plan.budget_usd
@@ -433,7 +458,7 @@ def api_wallet_estimate():
             "ok": True,
             "tool_slug": tool_slug,
             "estimate_usd": None,
-            "no_estimate_reason": "Enter a whole number, 1 or more, to see a price.",
+            "no_estimate_reason": "Enter a whole number, 1 or more.",
         })
 
     # Over the single-container ceiling tool_submit refuses one job
@@ -487,9 +512,9 @@ def api_wallet_estimate():
                 tool_slug, exc_info=True,
             )
 
-    # Derived contract values consumed by templates/wallet/_partials.html.
-    # The Moment 1 estimate panel and the inline Moment 2 gate both
-    # read these flag fields to flip visibility.
+    # Derived contract values. templates/wallet/_partials.html reads
+    # deficit_usd only as the gate's show flag; no page reads rounded_topup_usd
+    # (tests/test_no_prerun_numbers_logged_in.py).
     deficit = max(required - balance, Decimal("0"))
     rounded_topup = _round_up_topup_amount(deficit)
     # Soft warning band: estimate has eaten 80% of the current
@@ -502,8 +527,8 @@ def api_wallet_estimate():
         )
     # Hard block: the estimate is over this tool's per-job cap, which the
     # partial words as "exceeds the ceiling for a single job". A balance
-    # that merely falls short is the deficit, and the partial's top-up
-    # gate shows it only while hard_block is false
+    # that merely falls short has a deficit, and the partial's top-up
+    # gate shows only while hard_block is false
     # (templates/wallet/_partials.html, ``insufficient``).
     hard_block = exceeds_hard_cap
     wallet_frozen = bool((wallet or {}).get("wallet_frozen"))
@@ -683,9 +708,9 @@ def topup_complete():
 #   POST /account/wallet/auto-reload    -> save auto reload settings
 #
 # The gate flow lives on the same /account/wallet/topup template via
-# the requires_wallet decorator (see _render_topup_gate above); the
-# standalone topup form below renders the same template with no
-# deficit_usd context.
+# the requires_wallet decorator (shared/wallet_guard.py::_render_topup_gate);
+# the standalone topup form below renders the same template with no
+# gate_reason.
 
 @wallet_bp.route("/account/wallet", methods=["GET"])
 @login_required
@@ -763,8 +788,8 @@ def wallet_overview():
 def wallet_topup():
     """Render the standalone wallet top up form.
 
-    The gate flow renders the same template with a ``deficit_usd``
-    and ``next_url`` set; this route renders it bare so the user can
+    The gate flow renders the same template with ``gate_reason`` and
+    ``next_url`` set; this route renders it with neither, so the user can
     top up manually without coming from a tool gate. ``topup_error``
     is read from the query string so the POST handler can redirect
     here with an inline error.
@@ -777,15 +802,10 @@ def wallet_topup():
     if wallet.get("wallet_frozen"):
         return redirect(url_for("wallet.wallet_overview") + "?wallet_frozen=1")
     topup_error = (request.args.get("topup_error") or "").strip() or None
-    # Arrived from a tool form's gate link: ``need`` presets the amount and
-    # ``tool`` makes the post-checkout page offer "Return to <tool>".
-    need = None
-    try:
-        need = Decimal(request.args.get("need") or "")
-        if not (Decimal("0") < need <= SELF_SERVE_CEILING_USD):
-            need = None
-    except (ArithmeticError, ValueError):
-        need = None
+    # Arrived from a tool form's gate link (templates/wallet/_partials.html::
+    # wallet_topup_gate): ``tool`` makes the post-checkout page offer "Return
+    # to <tool>". No gate notice: this route has no estimate, so a reload
+    # after a top-up cannot tell whether the balance still falls short.
     tool = (request.args.get("tool") or "").strip()
     # The adapter registry, not TOOL_SPECS: the latter still carries the
     # historic key "alphafold2" whose adapter registers as "af2"
@@ -803,7 +823,6 @@ def wallet_topup():
         wallet=wallet,
         return_tool=tool or None,
         min_topup_usd=MIN_TOPUP_USD,
-        deficit_usd=need,
         next_url=None,
         topup_action_url="/account/wallet/checkout",
         topup_error=topup_error,

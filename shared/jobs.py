@@ -196,6 +196,31 @@ _DESIGNS_PAGE_SORT: dict[str, tuple[str, bool]] = {
 }
 
 
+def _single_fold_record(tool: Optional[str], result: dict) -> list:
+    """An ESMFold single-fold result as a one-row list, else ``[]``.
+
+    That result has no ``candidates`` or ``designs`` array: its fields sit at
+    the root of the dict tools/esmfold/run_pipeline.py ``_run_single`` writes,
+    so without this row its CSV, FASTA and ZIP exports were empty. The row
+    takes the fields named below; the structure goes in as
+    ``pdb_content_b64``, the inline field the ZIP reads. Absent fields are
+    left out rather than written as ``None``.
+    """
+    if tool != "esmfold" or not (result.get("pdb_b64") or result.get("sequence")):
+        return []
+    row = {
+        "name": "esmfold",
+        "pdb_key": "esmfold.pdb" if result.get("pdb_b64") else None,
+        "sequence": result.get("sequence"),
+        "mean_plddt": result.get("mean_plddt"),
+        "ptm": result.get("ptm"),
+        "total_length": result.get("total_length"),
+        "chain_count": result.get("chain_count"),
+        "pdb_content_b64": result.get("pdb_b64"),
+    }
+    return [{k: v for k, v in row.items() if v is not None}]
+
+
 def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
     """:func:`candidate_records` in the order the job page lists them.
 
@@ -205,6 +230,8 @@ def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
     "rank 1" than the page did (QA 2026-09-30 P1-2). An EMPTY ``candidates``
     beside a non-empty ``designs`` is read the page's way too, where
     :func:`candidate_records` would return ``[]``. No row is dropped.
+    An ESMFold single-fold result, which has neither array, is read as the
+    one row :func:`_single_fold_record` builds.
     """
     from shared.ranking import sort_by_number  # noqa: PLC0415
 
@@ -216,7 +243,7 @@ def page_ordered_records(tool: Optional[str], result: Optional[dict]) -> list:
         return list(stored)
     designs = normalized.get("designs")
     if not is_candidate_array(designs):
-        return candidate_records(result)
+        return candidate_records(result) or _single_fold_record(tool, normalized)
     spec = _DESIGNS_PAGE_SORT.get(tool or "")
     if spec is None:
         return list(designs)
@@ -328,6 +355,26 @@ def recovered_total(job, rows) -> int:
     except (AttributeError, KeyError, TypeError, ValueError):
         total = 0
     return max(total, len(display_rows(rows)))
+
+
+def requested_designs(job) -> Optional[int]:
+    """The design count a run's form asked for, or ``None``.
+
+    Read from ``job.inputs`` under the tool's form field as
+    :func:`shared.compute_campaigns.design_param_key` names it. ``None`` when
+    the tool has no such field, or the stored value is not a positive integer.
+    """
+    from shared.compute_campaigns import design_param_key  # noqa: PLC0415
+
+    key = design_param_key(getattr(job, "tool", None) or "")
+    inputs = getattr(job, "inputs", None)
+    if not key or not isinstance(inputs, Mapping):
+        return None
+    try:
+        count = int(inputs.get(key))
+    except (TypeError, ValueError):
+        return None
+    return count if count > 0 else None
 
 
 def recovered_columns(rows) -> list:
@@ -2280,13 +2327,6 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         )
 
 
-# Ratio used by the mid run monitor. The 1.5x warning is non blocking and
-# fires once per job at or above this ratio. The cost-based mid-run kill
-# (and its former 2.0x _MID_RUN_KILL_RATIO threshold) was removed: prepaid
-# wallet + per-job hold bound spend and the Modal container hard timeout
-# bounds wall-clock, so an overrun warns rather than being killed.
-_MID_RUN_WARN_RATIO = 1.5
-
 # Upper bound for a single job's persisted GPU seconds (24h). Guards the
 # billing column against a malformed/NaN/inf heartbeat value being
 # int()-cast into the ledger.
@@ -2311,35 +2351,17 @@ def _safe_gpu_seconds_int(value) -> int:  # noqa: ANN001
     return int(min(f, _MAX_GPU_SECONDS))
 
 
-def mid_run_monitor_check(
-    job_id: str,
-    cumulative_gpu_seconds: float,
-    *,
-    modal_client=None,  # noqa: ANN001 avoid circular import of gpu.modal_client
-) -> Optional[str]:
-    """Inspect a running job's cumulative cost and warn on overrun ratios.
+def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
+    """Persist a running job's heartbeat GPU seconds to the row.
 
-    Sole non-test caller: ``webhooks/modal.py::_run_overrun_check``,
+    Sole non-test caller: ``webhooks/modal.py::_run_mid_run_monitor``,
     driven off the inbound Modal heartbeat. There is no scheduler and no
     fixed interval -- the cadence is whatever each tool's pipeline emits
-    heartbeats at. Returns one of:
+    heartbeats at.
 
-    * ``None``: no action taken (ratio under the warn threshold, or
-      no hold on this job, or the job is no longer running).
-    * ``"warned"``: soft warning email dispatched. Idempotent on the
-      stashed ``_wallet.overrun_warned`` flag in the job inputs.
-
-    The cost-based mid-run kill was removed: spend is bounded by the
-    prepaid wallet + per-job hold, and wall-clock by the Modal container
-    hard timeout, so a job is never terminated mid-run for cost. This
-    check now only issues the soft warning; settlement always happens on
-    the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
-    is retained for signature compatibility and is no longer used here.
-
-    Side effect: the ``_cas_update`` call below writes
-    ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``. Read
-    the body for the guards on that call rather than a prose
-    restatement of them here.
+    The ``_cas_update`` call below writes ``cumulative_gpu_seconds`` to
+    ``tool_jobs.gpu_seconds_used``, which is what a user-initiated cancel
+    bills (``cancel_job`` settles the hold off a fresh read of the row).
     The value written is a heartbeat-resolution snapshot (last value
     reported), so a cancel bills what the last heartbeat reported and
     not what the job consumed after it. Heartbeat cadence is set by
@@ -2347,130 +2369,24 @@ def mid_run_monitor_check(
     The write is CAS-guarded on status IN (pending, running) so a
     terminal webhook landing between the read and the write wins; the
     heartbeat's older snapshot cannot clobber the authoritative
-    settle amount.
+    settle amount (tests/test_cancel_race.py::TestMidRunHeartbeatCasGuard).
     """
     job = get_job(job_id)
-    if job is None:
-        return None
-    if job.status not in {"pending", "running"}:
-        return None
-
-    # Persist the heartbeat-reported consumption to the row so a cancel
-    # between now and the next check can bill against actual GPU spent.
-    # Best-effort: a flaky update here does not gate the rest of the
-    # monitor logic: the 1.5x warning below still fires from the
-    # passed-in value. There is no kill step to gate.
-    if cumulative_gpu_seconds and cumulative_gpu_seconds > 0:
-        try:
-            # CAS-guarded: skip the persist if the row terminalised
-            # between the get_job read above and this write. Without the
-            # guard the heartbeat's older snapshot can clobber the
-            # authoritative gpu_seconds_used the terminal webhook wrote.
-            _cas_update(
-                job_id,
-                {"gpu_seconds_used": _safe_gpu_seconds_int(cumulative_gpu_seconds)},
-                allowed_current=("pending", "running"),
-            )
-        except Exception:
-            logger.warning(
-                "mid_run_monitor_check: gpu_seconds_used persist failed "
-                "for job %s",
-                job_id, exc_info=True,
-            )
-
-    ws_ctx = (job.inputs or {}).get("_wallet") or {}
-    if not isinstance(ws_ctx, dict):
-        return None
-    hold_tx_id = ws_ctx.get("hold_tx_id")
-    if not hold_tx_id:
-        return None
-    estimate_str = ws_ctx.get("estimate_usd")
-    if not estimate_str:
-        return None
-
-    from decimal import Decimal  # noqa: PLC0415
-
-    try:
-        estimate = Decimal(str(estimate_str))
-    except Exception:
-        return None
-    if estimate <= 0:
-        return None
-
-    try:
-        from shared.wallet import compute_charge_usd  # noqa: PLC0415
-    except Exception:
-        logger.warning(
-            "mid_run_monitor_check: wallet import failed for job %s",
-            job_id, exc_info=True,
-        )
-        return None
-
-    from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
-
-    gpu_class: Optional[str] = gpu_class_for_job(job.tool, ws_ctx.get("gpu_class"))
-    cumulative_cost = compute_charge_usd(
-        cumulative_gpu_seconds or 0, gpu_class
-    )
-    if cumulative_cost <= 0:
-        return None
-
-    ratio = cumulative_cost / estimate
-
-    # Soft warning at or above 1.5x estimate. Fires once per job, gated by
-    # the overrun_warned flag, so any overrun (however large) still alerts
-    # the user exactly once. The cost-based mid-run kill was removed (prepaid
-    # wallet + per-job hold bound spend; the Modal container hard timeout
-    # bounds wall-clock), so there is no upper band: a runaway job warns
-    # rather than being silently killed.
-    already_warned = bool(ws_ctx.get("overrun_warned"))
-    if ratio >= _MID_RUN_WARN_RATIO and not already_warned:
-        _send_overrun_warning(job, cumulative_cost, estimate)
-        _stash_wallet_flag(job, "overrun_warned", True)
-        return "warned"
-
-    return None
-
-
-def _stash_wallet_flag(job: "ToolJob", key: str, value) -> None:  # noqa: ANN001
-    """Merge a flag into ``inputs._wallet`` and persist.
-
-    Re-read the row's current inputs first rather than merging onto the
-    (possibly stale) ``job`` snapshot: this whole-blob write is reachable
-    from the same heartbeat request that just ran ``_append_heartbeat_state``,
-    so merging onto a pre-heartbeat snapshot would clobber the freshly
-    written ``_progress`` / ``_partial_candidates`` / ``_hb_version`` that
-    REVIEW #16 protects. This fires at most once per job, so a bounded
-    re-read (not a full CAS) is the proportionate guard.
-    """
-    fresh = get_job(job.id)
-    base = (fresh.inputs if fresh is not None else None) or job.inputs or {}
-    new_inputs = dict(base)
-    wallet_ctx = dict(new_inputs.get("_wallet") or {})
-    wallet_ctx[key] = value
-    new_inputs["_wallet"] = wallet_ctx
-    update_inputs(job.id, new_inputs)
-
-
-def _send_overrun_warning(
-    job: "ToolJob", cumulative_cost, estimate
-) -> None:  # noqa: ANN001
-    """Send the 1.5x soft warning email; best effort, never raises."""
-    # The sender resolves the email via the service role client; passing
-    # user_id keeps the call site decoupled from the auth.users lookup.
-    if not job.user_id:
+    if job is None or job.status not in {"pending", "running"}:
+        return
+    if not cumulative_gpu_seconds or cumulative_gpu_seconds <= 0:
         return
     try:
-        from shared.email import send_overrun_warning_email  # noqa: PLC0415
-        send_overrun_warning_email(
-            user_id=job.user_id,
-            tool_slug=job.tool,
-            attempted_usd=cumulative_cost,
-            cap_usd=estimate,
+        _cas_update(
+            job_id,
+            {"gpu_seconds_used": _safe_gpu_seconds_int(cumulative_gpu_seconds)},
+            allowed_current=("pending", "running"),
         )
     except Exception:
         logger.warning(
-            "overrun warning email failed for job %s", job.id, exc_info=True
+            "mid_run_monitor_check: gpu_seconds_used persist failed "
+            "for job %s",
+            job_id, exc_info=True,
         )
 
 

@@ -3,7 +3,7 @@
 Modal app: ``ranomics-rfantibody-prod``. GPU: A100-40GB.
 
 Pilot tier accepts a caller-uploaded target PDB plus hotspots and runs
-on the webhook flow (~15-60 min on A100-40GB). Only VHH (single-domain
+on the webhook flow on A100-40GB. Only VHH (single-domain
 heavy-chain antibody) scaffolds are supported -- ProteinMPNN below
 only redesigns heavy-chain CDRs.
 """
@@ -190,12 +190,11 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~15 to 60 min for a first batch",
+            label="Your target, a first batch",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
                 "Pick 1 to 1000 final VHH candidates. Start with a small "
-                "batch (4 designs, ~15 to 60 min by target size) to "
-                "confirm your target "
+                "batch (4 designs) to confirm your target "
                 "and hotspots, then scale to 100+ once outputs look "
                 "real. Results emailed when run completes; A100-40GB."
             ),

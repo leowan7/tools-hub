@@ -8,8 +8,9 @@ ipTM / pLDDT / i_pAE statistics from the AF2 model.
 
 Known-good on commit ``d83335c`` (Bug 8 unblock). Pilot tier accepts a
 caller-supplied target PDB plus hotspots and runs on the webhook flow
-(~25 min for four designs, ~40 for eight, on A100-40GB -- see the
-measurement note above ``preset_runtime_rows`` in meta.py).
+on A100-40GB. Runtime splits into a fixed diffusion + MPNN stage plus a
+per-design AF2 re-score; the measured split and the job it came from are
+in ``_RFDIFFUSION`` in shared/pdb_preflight_rules.py.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ paper_url = _meta.paper_url
 github_url = _meta.github_url
 comparison_one_liner = _meta.comparison_one_liner
 example_output_id = _meta.example_output_id
-preset_runtime_rows = _meta.preset_runtime_rows
 
 
 def _parse_binder_length(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[str]]:
@@ -144,17 +144,16 @@ adapter = ToolAdapter(
     blurb=(
         "Upload your target structure, mark the residues you want "
         "gripped, and get back brand-new binders, each carrying a real "
-        "AlphaFold2 confidence score against your target. A trial run "
-        "takes roughly 25 min for four designs, 40 for eight."
+        "AlphaFold2 confidence score against your target."
     ),
     presets=(
         Preset(
             slug="pilot",
-            label="Your target, ~25 min start to first results",
+            label="Your target, a first batch",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
                 "with AF2 multimer validation. Pick 1 to 1000 candidates. "
-                "Start with a small batch (4 designs, ~25 min) to "
+                "Start with a small batch (4 designs) to "
                 "confirm your target and hotspots, then scale to 100+ "
                 "once the small batch looks reasonable. Results emailed "
                 "when complete; A100-40GB."

@@ -54,31 +54,6 @@
       font-size: 0.78rem;
       color: var(--text-primary);
     }
-    .boltzgen-runtime-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-    }
-    .boltzgen-runtime-table th {
-      text-align: left;
-      padding: 0.45rem 0.5rem;
-      font-size: 0.62rem;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-tertiary);
-      background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border);
-    }
-    .boltzgen-runtime-table td {
-      padding: 0.45rem 0.5rem;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      font-family: var(--font-mono);
-      font-size: 0.78rem;
-      vertical-align: top;
-    }
-    .boltzgen-runtime-table tr:last-child td { border-bottom: none; }
 
     /* Hotspot picker — dark editorial, matches BoltzGen panel aesthetic. */
     .hotspot-picker {
@@ -243,8 +218,8 @@
                 Runs against your own target. Upload PDB, optionally pick
                 hotspot residues &mdash; the numbered residues on the patch
                 of your target you want the binder to sit on &mdash; and set
-                binder length. Results emailed
-                (~15 to 60 min on A100-40GB).
+                binder length. Results emailed when the run completes;
+                A100-40GB.
               </p>
             </div>
 
@@ -317,14 +292,14 @@
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               {# No "start small, then scale up" here. BoltzGen refolds the
                  same 200 candidates whatever this is set to, so a low budget
-                 buys nothing back — the estimator is flat at every value from
-                 1 to 50. See tools/boltzgen/meta.py and
+                 buys nothing back — the search size is the same at every
+                 value from 1 to 50. See tools/boltzgen/meta.py and
                  tests/test_pilot_recipes.py::TestBudgetDoesNotChangeThePrice. #}
               First time on this target? 4 is enough to read through while you
               confirm your binder length and protocol, and raising it on a
-              later run returns more candidates against the same estimate.
-              Billed by actual GPU consumed; cancellation does not refund
-              time already used.
+              later run returns more candidates out of the same search.
+              You pay for the GPU time your run uses; cancellation does
+              not refund time already used.
             </div>
           </div>
 

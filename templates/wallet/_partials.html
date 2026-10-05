@@ -9,9 +9,14 @@
        ...
        {{ wallet_partials_script() }}
 
-   The two panels live next to each other above the submit button. Only one
-   is visible at a time. The script flips visibility based on the live
-   estimate returned by GET /api/wallet/estimate (Agent E).
+   The two panels live next to each other above the submit button. The
+   estimate panel prints no price or time: it shows the balance, the billing
+   rule, and the two too-large refusals. The script flips visibility based
+   on the live estimate returned by GET /api/wallet/estimate (Agent E).
+   The top-up gate reads ``deficit_usd`` only to decide whether to show, and
+   prints no figure but the balance and the $20 minimum; nothing in this file
+   reads ``rounded_topup_usd``
+   (tests/test_no_prerun_numbers_logged_in.py).
 
    The estimate endpoint is expected to accept:
 
@@ -45,22 +50,10 @@
        data-estimate-endpoint="{{ endpoint or '/api/wallet/estimate' }}"
        data-initial-balance-usd="{{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}"
        aria-live="polite">
-    <div class="wallet-estimate-row">
-      <span class="wallet-estimate-label">Estimated cost</span>
-      {# A dash until the estimate call answers: a "$0.00" here read as a
-         free run to anyone whose script had not run yet. #}
-      <span class="wallet-estimate-value" data-estimate-cost>&mdash;</span>
-      <span class="wallet-estimate-helper" title="Estimated from your parameters and historical compute time.">
-        based on parameters and historical compute time
-      </span>
-    </div>
     {# ``balance_usd is none`` means "no wallet in play" — the anonymous
-       visitor on a public /tools/<slug> page. The estimate itself is
-       still live — /api/wallet/estimate carries no @login_required and
-       answers an anonymous caller with a real estimate and a NULL
-       balance — but printing "$0.00" as a balance and a negative
-       balance-after would be a lie, so both rows are dropped. The JS
-       null-guards every element it writes. #}
+       visitor on a public /tools/<slug> page. Printing "$0.00" as their
+       balance would be a lie, so the row is dropped. The JS null-guards
+       every element it writes. #}
     {% if balance_usd is not none %}
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Your balance</span>
@@ -68,41 +61,24 @@
         ${{ display_balance_usd(balance_usd) }}
       </span>
     </div>
-    <div class="wallet-estimate-row">
-      <span class="wallet-estimate-label">Balance after this job</span>
-      <span class="wallet-estimate-value" data-estimate-balance-after>
-        ${{ display_balance_usd(balance_usd) }}
-      </span>
-    </div>
     {% endif %}
 
-    {# Burn-down billing notice (tier-collapse PR). Surfaces the
-       consumption-based billing model + the no-refund-on-cancel rule
-       so users see the rule before they submit, not after they cancel
-       and discover the charge. #}
+    {# Written by setNote below: why a count cannot run (the server's
+       no_estimate_reason in blueprints/wallet.py, or a client hint), or that
+       it runs as a full-size run. #}
     <div class="wallet-estimate-row" data-estimate-note hidden>
       <span class="wallet-estimate-helper" data-estimate-note-text></span>
     </div>
-    {# The charge is the GPU time used, clamped to the job's hard cap, not
-       to the estimate (supabase/migrations/0020_wallet_corrections.sql:188). #}
     <div class="wallet-estimate-row wallet-estimate-row--billing-note">
       <span class="wallet-estimate-helper">
-        Billed by actual GPU consumed, which can come in above or below
-        the estimate. Unused hold returns to your wallet automatically.
-        Cancellation does not refund GPU time already used.
+        You pay for the GPU time your run uses. Cancelling does not
+        refund GPU time already used.
       </span>
-    </div>
-
-    {# Soft warning band — visible when estimate is near the scaled hard cap. #}
-    <div class="wallet-estimate-warning" data-estimate-soft-warning hidden>
-      This run is near the per job cost ceiling for this tool. Your wallet
-      hold caps what it can spend, and you get a warning email if compute
-      drifts well past <span data-estimate-cap></span>.
     </div>
 
     {# Hard block — scaled per tool cap exceeded for a single container. #}
     <div class="wallet-estimate-block" data-estimate-hard-block hidden>
-      <strong>Estimate exceeds the ceiling for a single job.</strong>
+      <strong>This run is too large for a single job.</strong>
       Run this at full size to split the request into pieces that run on our
       GPUs and bill as they finish, or reduce the scale parameter.
       <a href="/campaigns/new" class="wallet-estimate-pilot-link">
@@ -112,7 +88,7 @@
 
     {# Self serve ceiling — absolute cap on any single submit. #}
     <div class="wallet-estimate-block wallet-estimate-block-ceiling" data-estimate-ceiling-block hidden>
-      <strong>This estimate is above the single job ceiling.</strong>
+      <strong>This run is above the limit for a single job.</strong>
       Run it at full size instead. A full-size run is wallet bounded and is split
       into pieces that run on our GPUs, with no per job ceiling, so you can design at any scale
       your balance covers.
@@ -140,26 +116,13 @@
     <div class="wallet-topup-gate-head">
       <span class="wallet-topup-gate-title">Top up to run this job</span>
       <span class="wallet-topup-gate-sub">
-        Starting this job holds the amount below in your wallet while it
-        runs. You are billed for the GPU time it uses and the rest comes back.
+        Your balance does not cover this run. Top up your wallet to run it.
       </span>
     </div>
     <dl class="wallet-topup-gate-figures">
       <div class="wallet-topup-gate-figure">
-        <dt>Estimated cost</dt>
-        <dd data-gate-estimate>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure">
-        <dt>Held to start</dt>
-        <dd data-gate-required>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure">
         <dt>Your balance</dt>
         <dd data-gate-balance>$0.00</dd>
-      </div>
-      <div class="wallet-topup-gate-figure wallet-topup-gate-figure-deficit">
-        <dt>You need</dt>
-        <dd data-gate-deficit>$0.00</dd>
       </div>
     </dl>
     <div class="wallet-topup-gate-actions">
@@ -171,7 +134,7 @@
          target="_blank" rel="noopener"
          class="btn-primary wallet-topup-gate-submit"
          data-gate-button>
-        Top up <span data-gate-rounded-amount>$20.00</span>
+        Top up
       </a>
       <span class="wallet-topup-gate-helper">
         Opens checkout in a new tab and keeps this form as it is. Come back
@@ -197,22 +160,13 @@
       var endpoint = panel.dataset.estimateEndpoint || '/api/wallet/estimate';
       var toolSlug = panel.dataset.toolSlug || '';
 
-      var costEl = panel.querySelector('[data-estimate-cost]');
       var balanceEl = panel.querySelector('[data-estimate-balance]');
-      var balanceAfterEl = panel.querySelector('[data-estimate-balance-after]');
-      var softWarnEl = panel.querySelector('[data-estimate-soft-warning]');
-      var softCapEl = panel.querySelector('[data-estimate-cap]');
       var hardBlockEl = panel.querySelector('[data-estimate-hard-block]');
       var ceilingBlockEl = panel.querySelector('[data-estimate-ceiling-block]');
       var noteEl = panel.querySelector('[data-estimate-note]');
       var noteTextEl = panel.querySelector('[data-estimate-note-text]');
 
-      var gateEstimateEl = gate && gate.querySelector('[data-gate-estimate]');
       var gateBalanceEl = gate && gate.querySelector('[data-gate-balance]');
-      var gateDeficitEl = gate && gate.querySelector('[data-gate-deficit]');
-      var gateRequiredEl = gate && gate.querySelector('[data-gate-required]');
-      var gateRoundedEl = gate && gate.querySelector('[data-gate-rounded-amount]');
-      var gateButton = gate && gate.querySelector('[data-gate-button]');
 
       var submitBtn = form.querySelector('[data-submit-cta], button[type="submit"]:not([data-gate-button])');
 
@@ -232,28 +186,16 @@
         submitBtn.dataset.blockPreflight = '1';
       }
 
-      // Three directions, not one. This block renders a cost, two balances, a
-      // cap and a required top-up through what used to be a single NEAREST
-      // rounding, so it printed BELOW the real estimate on 6 of 13 tool forms
-      // (opendde 14.7920 as $14.79, mpnn 0.0241 as $0.02).
-      //
-      //   cost / required top-up -> UP    (never ask for less than is needed)
-      //   balance / cap          -> DOWN  (never claim headroom that is absent)
-      //
-      // Mirrors display_cost_usd / display_balance_usd on the server. This file
-      // is not one of the two consent templates, so the guard forbidding
-      // arithmetic there does not apply here; these figures are advisory and
-      // the server re-gates every one of them.
-      function _q(v, up) {
+      // The balance rounds DOWN, like display_balance_usd on the server.
+      function _q(v) {
         var n = parseFloat(v);
         if (!isFinite(n)) n = 0;
-        // Strip IEEE754 noise BEFORE rounding directionally: 0.07 * 100 is
-        // 7.000000000000001, and a bare Math.ceil turns $0.07 into $0.08.
+        // Strip IEEE754 noise BEFORE rounding: 0.29 * 100 is
+        // 28.999999999999996, and a bare Math.floor turns $0.29 into $0.28.
         var scaled = Number((n * 100).toFixed(6));
-        return (up ? Math.ceil(scaled) : Math.floor(scaled)) / 100;
+        return Math.floor(scaled) / 100;
       }
-      function fmtUp(v) { return '$' + _q(v, true).toFixed(2); }
-      function fmtDown(v) { return '$' + _q(v, false).toFixed(2); }
+      function fmtDown(v) { return '$' + _q(v).toFixed(2); }
 
       function setHidden(el, hidden) {
         if (!el) return;
@@ -266,19 +208,13 @@
         setHidden(noteEl, !text);
       }
 
-      // No price: a count the server refuses (estimate_usd null), an input
-      // the browser marks invalid, or an empty count field, which the
+      // No estimate: a count the server refuses (estimate_usd null), an
+      // input the browser marks invalid, or an empty count field, which the
       // estimator would otherwise price at its baseline.
       function applyNoPrice(reason) {
-        if (costEl) costEl.textContent = '—';
-        if (balanceAfterEl) {
-          balanceAfterEl.textContent = '—';
-          balanceAfterEl.classList.remove('wallet-estimate-value-neg');
-        }
         setNote(reason);
         setHidden(ceilingBlockEl, true);
         setHidden(hardBlockEl, true);
-        setHidden(softWarnEl, true);
         setHidden(gate, true);
         if (submitBtn) {
           delete submitBtn.dataset.blockWallet;
@@ -297,63 +233,26 @@
         }
         var countEl = data.count_key && form.elements[data.count_key];
         if (countEl && countEl.type === 'number' && !countEl.value.trim()) {
-          applyNoPrice('Enter a number to see a price.');
+          applyNoPrice('Enter a number.');
           return;
         }
         setNote(data.full_size_run
-          ? 'This count runs as a full-size run in ' + data.total_subjobs +
-            ' pieces. The estimate is the same total the full-size run page shows.'
+          ? 'This count runs as a full-size run in ' + data.total_subjobs + ' pieces.'
           : '');
-        var estimate = parseFloat(data.estimate_usd || 0);
         var balance = parseFloat(data.balance_usd || 0);
-        var balanceAfter = parseFloat(data.balance_after_usd);
-        if (!isFinite(balanceAfter)) balanceAfter = balance - estimate;
         var deficit = parseFloat(data.deficit_usd || 0);
-        var rounded = parseFloat(data.rounded_topup_usd || 20);
-        var cap = parseFloat(data.scaled_hard_cap_usd || 0);
-        // The hold submit reserves; the deficit is measured against it.
-        var required = parseFloat(data.required_usd);
-        if (!isFinite(required)) required = estimate;
-        // Printed required minus printed balance, so the gate adds up.
-        var shortShown = deficit > 0
-          ? Math.max(_q(required, true) - _q(balance, false), 0.01) : 0;
 
-        if (costEl) costEl.textContent = fmtUp(estimate);
         if (balanceEl) balanceEl.textContent = fmtDown(balance);
-        if (balanceAfterEl) {
-          // Never a negative dollar figure: a short balance reads as the
-          // amount still needed.
-          balanceAfterEl.textContent = deficit > 0
-            ? 'you need ' + fmtUp(shortShown) + ' more'
-            : fmtDown(Math.max(balanceAfter, 0));
-          balanceAfterEl.classList.toggle('wallet-estimate-value-neg', deficit > 0);
-        }
 
         var ceiling = !!data.self_serve_block;
         var hard = !!data.hard_block;
-        var soft = !!data.soft_block && !hard && !ceiling && !(deficit > 0);
         setHidden(ceilingBlockEl, !ceiling);
         setHidden(hardBlockEl, !hard);
-        setHidden(softWarnEl, !soft);
-        // A charge CEILING, not headroom. `cap` is compute_hard_cap: the most
-        // this single job may cost. Understating a ceiling understates the
-        // user's maximum exposure, which is the cost direction. The headroom
-        // argument that puts caps with balances fits a monthly reload cap; it
-        // does not fit a per-job charge ceiling.
-        if (softCapEl && cap) softCapEl.textContent = fmtUp(cap);
 
         var insufficient = deficit > 0 && !ceiling && !hard;
         setHidden(gate, !insufficient);
-        if (insufficient) {
-          if (gateEstimateEl) gateEstimateEl.textContent = fmtUp(estimate);
-          if (gateBalanceEl) gateBalanceEl.textContent = fmtDown(balance);
-          if (gateRequiredEl) gateRequiredEl.textContent = fmtUp(required);
-          if (gateDeficitEl) gateDeficitEl.textContent = fmtUp(shortShown);
-          if (gateRoundedEl) gateRoundedEl.textContent = fmtUp(rounded);
-          if (gateButton) {
-            var href = gateButton.getAttribute('href').split('&need=')[0];
-            gateButton.setAttribute('href', href + '&need=' + fmtUp(shortShown).slice(1));
-          }
+        if (insufficient && gateBalanceEl) {
+          gateBalanceEl.textContent = fmtDown(balance);
         }
 
         if (submitBtn) {
@@ -390,7 +289,7 @@
         for (var i = 0; i < numbers.length; i++) {
           var n = numbers[i];
           if (n.willValidate && n.offsetParent !== null && !n.validity.valid) {
-            applyNoPrice('Fix the highlighted number to see a price.');
+            applyNoPrice('One of the numbers above is not valid.');
             return;
           }
         }

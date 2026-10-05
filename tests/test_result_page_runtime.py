@@ -1,4 +1,5 @@
-"""The result page's "Estimated runtime" comes from the same calculation as the form.
+"""The result page re-derives its preflight snapshot from the same calculation as
+the form, and prints no runtime estimate.
 
 QA 2026-09-29 R4: job 25471e07 (rfdiffusion) showed "≈11.4 min for 8 designs"
 and job ef3f5bd3 (rfantibody) "≈7.6 min for 4 designs", the minutes frozen into
@@ -62,7 +63,7 @@ def test_display_minutes_equal_the_form_panel_for_every_tool(slug, target_aa, nu
 
 
 @pytest.mark.parametrize("slug,target_aa,num_designs,stale", _QA_JOBS)
-def test_result_page_prints_the_current_estimate_not_the_submit_snapshot(
+def test_result_page_prints_no_runtime_estimate(
     client, slug, target_aa, num_designs, stale,  # noqa: F811
 ):
     job = ToolJob.from_row({
@@ -75,10 +76,10 @@ def test_result_page_prints_the_current_estimate_not_the_submit_snapshot(
         "completed_at": None,
     })
     text = _page(client, job)
-    shown = re.search(r"Estimated runtime: ≈([\d.]+) min", text)
-    assert shown, "runtime line missing from the result page"
-    assert float(shown.group(1)) == _form_minutes(slug, target_aa, num_designs)
-    assert float(shown.group(1)) != stale
+    assert "Size envelope:" in text, "preflight panel missing from the result page"
+    assert "Estimated runtime" not in text
+    for minutes in (stale, _form_minutes(slug, target_aa, num_designs)):
+        assert not re.search(rf"{re.escape(str(minutes))} min", text), minutes
 
 
 def test_minutes_are_dropped_when_they_cannot_be_rederived():
