@@ -1000,32 +1000,8 @@ class TestWalletTopupFrozenGuard:
         create_session.assert_not_called()
 
 
-def test_gate_short_by_adds_up_on_the_page():
-    """Cost rounds up, balance rounds down: "short by" is printed cost minus printed balance."""
-    from flask import Flask
-
-    from shared import wallet_guard
-
-    flask_app = Flask(__name__)
-    flask_app.config["SECRET_KEY"] = "k"
-    flask_app.add_url_rule(
-        "/tools/<tool>", endpoint="tools.tool_form", view_func=lambda tool: "form"
-    )
-    estimate, balance = Decimal("12.581"), Decimal("2.009")
-    with flask_app.test_request_context("/"), patch(
-        "shared.wallet_guard.get_or_create_wallet", return_value={}
-    ), patch("shared.wallet_guard.render_template", return_value="") as render:
-        wallet_guard._render_topup_gate(
-            tool_slug="bindcraft", estimate=estimate, balance=balance,
-            deficit=estimate - balance, reason="insufficient_balance",
-            hard_cap=Decimal("100"), form_snapshot={},
-        )
-    # Page reads "needs $12.59, balance $2.00"; the raw deficit would print $10.58.
-    assert render.call_args.kwargs["shown_short_usd"] == Decimal("10.59")
-
-
-def test_guard_prices_a_short_gate_on_the_hold():
-    """Short on the price re-preflights on the hold, so the gate asks for enough to submit."""
+def test_guard_decides_a_short_gate_on_the_hold():
+    """Short on the price re-preflights on the hold, and the gate takes that reason."""
     from flask import Flask
 
     from app import requires_wallet
@@ -1042,7 +1018,10 @@ def test_guard_prices_a_short_gate_on_the_hold():
         "/tools/<tool>", endpoint="tools.tool_form", view_func=lambda tool: "form"
     )
 
+    seen = []
+
     def fake_preflight(_uid, _slug, amount, _params):
+        seen.append(amount)
         return PreflightResult(
             allow=False, reason=REASON_INSUFFICIENT, estimated_cost_usd=amount,
             balance_usd=Decimal("4.99"), deficit_usd=amount - Decimal("4.99"),
@@ -1068,11 +1047,12 @@ def test_guard_prices_a_short_gate_on_the_hold():
             sess["user_id"] = "u-1"
         c.post("/blocked", data={"num_designs": "1"})
     reserve.assert_not_called()
-    assert render.call_args.kwargs["deficit_usd"] == Decimal("3.01")
+    assert seen == [Decimal("6.00"), Decimal("8.00")]
+    assert render.call_args.kwargs["gate_reason"] == REASON_INSUFFICIENT
 
 
 class TestTopupFromFormGate:
-    """The form's gate links here with ``need`` and ``tool``."""
+    """The form's gate links here with ``tool``."""
 
     def _get(self, client, qs):
         with patch(
@@ -1084,11 +1064,14 @@ class TestTopupFromFormGate:
             _login(client)
             return client.get("/account/wallet/topup" + qs)
 
-    def test_need_and_tool_preset_amount_and_return(self, client):
+    def test_tool_sets_the_return_without_a_notice(self, client):
+        # No estimate on this route, so no claim the balance falls short: a
+        # reload after a top-up would make it false.
         resp = self._get(client, "?tool=bindcraft&need=33.01")
         html = resp.get_data(as_text=True)
-        assert 'value="34"' in html  # ceil of the need, above the $20 minimum
-        assert "$33.01" in html
+        assert 'value="20"' in html  # the minimum; a stale need= is ignored
+        assert "wallet-topup-gate-notice" not in html
+        assert "33.01" not in html and 'value="34"' not in html
         with client.session_transaction() as sess:
             assert sess["wallet_gate_form"] == {"tool": "bindcraft"}
 

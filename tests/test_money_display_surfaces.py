@@ -159,11 +159,6 @@ _ALLOWED = {
     # below, which asserts against the CONSTANT rather than against markup --
     # the mistake the auto-reload exemption made.
     ("templates/wallet/topup.html", "|format(_min)"),
-    # A deliberate ceil to whole dollars, and the direction is right: this is
-    # the prefilled top-up amount, a required top-up, which must never be less
-    # than the deficit. The copy two lines down says "We round to whole
-    # dollars at checkout", so the user is told.
-    ("templates/wallet/topup.html", "_default_amount = (_deficit_raw|float|round(0, 'ceil'))"),
 }
 
 

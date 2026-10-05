@@ -1282,7 +1282,7 @@ def test_every_refusal_reason_constant_is_in_the_message_table():
 
 # Every placeholder preauth_message substitutes. A leftover brace means the
 # user was shown template source.
-_PLACEHOLDERS = ("{threshold}", "{subject}", "{pauses}", "{smaller}", "{required}")
+_PLACEHOLDERS = ("{threshold}", "{subject}", "{pauses}", "{smaller}")
 
 
 def _refused(reason, required="1", balance="0", budget="50"):
@@ -1295,67 +1295,23 @@ def _refused(reason, required="1", balance="0", budget="50"):
     )
 
 
-def test_the_required_amount_rounds_up_never_down():
-    """The refusal must name a figure that would actually clear the gate.
-
-    This is the money bug the whole message exists to avoid. The gate holds a
-    4dp Decimal, and "%.2f"/ROUND_HALF_EVEN on 573.6736 names $573.67 -- one
-    third of a cent BELOW the amount that just refused the user. Topping up to
-    exactly the figure in the sentence gets you refused again by the same
-    sentence. A required amount is a ceiling or it is nothing.
-    """
-    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="573.6736"))
-    assert "$573.68" in msg
-    assert "573.67" not in msg
-
-
-def test_the_required_amount_is_never_rounded_up_past_a_whole_cent():
-    """ROUND_CEILING, not "add a cent". An exact 2dp figure must not inflate:
-    quoting more than the gate needs is its own wrong number."""
-    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="573.6700"))
-    assert "$573.67" in msg
-    assert "573.68" not in msg
-
-
-def test_a_zero_required_amount_still_renders_as_money():
-    """Decimal("0") is falsy. Testing `if required` instead of
-    `if required is not None` swaps a real $0.00 gate for the fallback wording,
-    which reads as though the amount were unknown.
-
-    Asserted on the substituted CONTEXT, not on the absence of the fallback
-    phrase: the fallback is the words "the first batch", which the INSUFFICIENT
-    template already contains verbatim ("does not cover the first batch of
-    ..."), so a plain negative substring assertion can never fail here.
-    """
-    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="0"))
-    assert "(about $0.00 to start)" in msg
-
-
-def test_a_missing_required_amount_falls_back_to_words(caplog):
-    """Unreachable from ``campaign_preauth`` (``required_usd`` defaults to
-    ``Decimal("0")``), so this pins the guard, not a live path. Note the
-    fallback reads oddly in this particular template -- "does not cover the
-    first batch of this campaign (about the first batch to start)" -- which is
-    tolerable precisely because nothing in production can produce it.
-
-    The log assertion is what pins the ``is not None`` half. Without it the test
-    passes against ``if True``: ``Decimal(str(None))`` raises InvalidOperation,
-    the coercion guard catches it, and ``shown`` ends up None either way. The
-    difference is that the fallback was CHOSEN rather than recovered from, and
-    the warning is the only place that shows.
-    """
+@pytest.mark.parametrize("count", [1, 7])
+@pytest.mark.parametrize("required", [
+    Decimal("573.6736"), Decimal("0"), 573.6736, None, "abc", float("nan"),
+])
+def test_the_insufficient_refusal_names_no_amount(required, count):
+    """No pre-run figure: the refusal says the balance is short and names no
+    amount, whatever ``required_usd`` holds."""
     pre = SimpleNamespace(
         ok=False, reason=cc.PREAUTH_INSUFFICIENT,
-        balance_usd=Decimal("0"), budget_usd=Decimal("50"), required_usd=None,
+        balance_usd=Decimal("0"), budget_usd=Decimal("50"),
+        required_usd=required,
     )
-    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
-        msg = cc.preauth_message(pre)
-    assert "(about the first batch to start)" in msg
+    msg = cc.preauth_message(pre, count=count)
+    assert "does not cover the first batch" in msg
     assert "$" not in msg
-    assert "unrenderable required_usd" not in caplog.text, (
-        "None reached the Decimal coercion and was recovered by the except "
-        "clause; the `is not None` guard should have skipped it outright"
-    )
+
+
 
 
 @pytest.mark.parametrize("reason", _ALL_REFUSAL_REASONS)
@@ -1520,49 +1476,6 @@ def test_only_the_first_of_two_concurrent_funds_wins(fake_client):
     cid = _seed_campaign(fake_client, status="draft")
     assert cc.fund_campaign(cid) is True
     assert cc.fund_campaign(cid) is False
-
-
-@pytest.mark.parametrize("required,expected", [
-    (573.6736, "$573.68"),          # float
-    (574, "$574.00"),               # int
-    ("573.6736", "$573.68"),        # str
-])
-def test_the_required_amount_survives_a_non_decimal(required, expected):
-    """A refusal must never become a 500.
-
-    `PreauthResult` is a plain frozen dataclass with no coercion, so nothing
-    stops a caller passing a float; `float.quantize` does not exist. This is the
-    one function whose entire job is to explain a refusal to a user, and an
-    AttributeError here replaces "top up $573.68" with an error page. Rounding
-    still goes UP for every input type.
-    """
-    pre = SimpleNamespace(
-        ok=False, reason=cc.PREAUTH_INSUFFICIENT,
-        balance_usd=Decimal("0"), budget_usd=Decimal("50"),
-        required_usd=required,
-    )
-    msg = cc.preauth_message(pre)
-    assert expected in msg
-
-
-@pytest.mark.parametrize("bad", ["abc", float("inf"), float("nan"), None, object()])
-def test_an_unrenderable_required_amount_falls_back_instead_of_500ing(bad):
-    """A refusal must never become an error page.
-
-    `Decimal(str(x))` raises InvalidOperation for a non-numeric string, for inf,
-    and for a huge exponent, and TypeError for an arbitrary object. All of those
-    reach here only through a future caller, but this function's entire job is to
-    explain a refusal, so the failure mode has to be the fallback wording rather
-    than a 500. NaN is included deliberately: it does not raise, it renders, and
-    "about $NaN to start" is not an acceptable thing to show a user.
-    """
-    pre = SimpleNamespace(
-        ok=False, reason=cc.PREAUTH_INSUFFICIENT,
-        balance_usd=Decimal("0"), budget_usd=Decimal("50"), required_usd=bad,
-    )
-    msg = cc.preauth_message(pre)
-    assert "(about the first batch to start)" in msg
-    assert "NaN" not in msg and "$" not in msg
 
 
 # ---------------------------------------------------------------------------

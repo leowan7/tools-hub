@@ -520,11 +520,9 @@
         parts.push(d.total_subjobs + ' sub-job(s) across ' + d.rows.length + ' tool(s).');
         if (!d.affordable) {
           if (d.reason === 'insufficient_balance') {
-            parts.push('Your balance does not cover the '
-              + money(d.first_wave_usd_display) + ' needed to start.');
+            parts.push('Your balance does not cover the first batch.');
             if (d.alternative) {
-              parts.push('Starting narrow would need '
-                + money(d.alternative.first_wave_usd_display) + '.');
+              parts.push('Starting narrow fits your balance.');
             }
           } else if (d.reason === 'verification_required') {
             parts.push('This size needs an approved account.');
