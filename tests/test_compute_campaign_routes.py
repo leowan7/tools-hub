@@ -332,53 +332,6 @@ def test_a_bindcraft_campaign_gets_past_preset_validation(client):
     assert "Upload a target PDB" in body
 
 
-def test_the_single_tool_refusal_passes_its_own_display_string():
-    """A SOURCE guard, for the same reason as the multi-tool one.
-
-    ``compute_campaign_create``'s refusal passes ``required_display=`` so the
-    sentence quotes the same string the panel prints. Today that is an
-    EQUIVALENT MUTANT: ``pre.required_usd`` is ``gate_usd`` is ``first_wave``,
-    so the default derives the identical string and deleting the kwarg leaves
-    every behavioural test green. A reviewer confirmed it -- 247 passed with the
-    kwarg removed -- so no assertion on the rendered sentence can pin this.
-
-    That is exactly the argument round 8 accepted for ``nothing_charged`` on the
-    other money route, and then did not apply here, leaving a comment claiming
-    the two are "the same string by construction". They are the same string by
-    coincidence. The construction is this kwarg.
-
-    What it protects: the day ``api_runs_estimate``'s figures become a row sum,
-    as the multi-tool estimate's already are, the default starts rounding the
-    exact total while the panel sums displayed rows, and
-    ``sum(ceil(row)) >= ceil(sum(row))`` puts the sentence a cent BELOW the
-    panel. That is the round-8 defect, and a "this kwarg is just the default"
-    tidy-up re-opens it with CI green.
-
-    Proves the call's shape, not its value. Same limit as its sibling.
-    """
-    import ast
-
-    src = open("blueprints/campaigns.py", encoding="utf-8").read()
-    fn = next(
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "compute_campaign_create"
-    )
-    calls = [
-        node for node in ast.walk(fn)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "preauth_message"
-    ]
-    assert calls, "compute_campaign_create no longer calls preauth_message"
-    for call in calls:
-        args = {kw.arg for kw in call.keywords}
-        assert "required_display" in args, (
-            "preauth_message is called without required_display=. The refusal "
-            "sentence must quote the string the panel prints, not re-derive "
-            "one from the exact figure."
-        )
-
-
 def _campaign_row(budget="4.0202"):
     from decimal import Decimal
     return SimpleNamespace(

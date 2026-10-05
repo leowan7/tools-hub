@@ -272,9 +272,7 @@ def _quantize_usd(value: Decimal) -> Decimal:
 # It has to happen here rather than in the page. `Number(x).toFixed(2)` rounds
 # to NEAREST, so a $573.6736 hold rendered client-side became "$573.67" -- a
 # figure below the amount actually reserved, printed directly above a checkbox
-# that then read "the amount above will be held against my wallet balance". That is the
-# same understatement `preauth_message` calls out by name for the refusal
-# sentence, and it was left on the number the user actually consents to. Doing
+# that then read "the amount above will be held against my wallet balance". Doing
 # it in Decimal also means it is covered by the Python suite; the launch page's
 # script has no automated coverage at all (A47).
 
@@ -284,9 +282,8 @@ def _display_usd(value, rounding: str) -> str:  # noqa: ANN001
 
     ``is_finite()`` FIRST, and not folded into the ``quantize`` call, because
     quantize does not signal on NaN: ``Decimal("NaN").quantize(...)`` returns NaN
-    happily and renders the literal string "NaN" into the page. That is the same
-    trap ``preauth_message`` documents, and a "$NaN to start" is worse than an
-    error, because the page's failure handling clears the price and DISABLES the
+    happily and renders the literal string "NaN" into the page. A rendered
+    "$NaN" is worse than an error, because the page's failure handling clears the price and DISABLES the
     submit button while a rendered NaN leaves it armed. (Neither failure handler
     unticks the consent box; see ``display_balance_usd``.)
     """
@@ -311,21 +308,6 @@ def display_balance_usd(value) -> str:  # noqa: ANN001
     Rounds DOWN, for the mirror-image reason: a balance rounded up claims funds
     that are not there.
 
-    The asymmetry is visible in a narrow band, and that is deliberate rather
-    than overlooked. With a balance between the exact requirement and the
-    requirement as DISPLAYED, the page shows less available than it shows
-    needed, while the launch is in fact affordable: a $9.1800 balance against a
-    $9.1765 first wave reads "$9.18 available" under "$9.19 to start" and still
-    starts. The button state comes from the server's `affordable` flag, never
-    from comparing the two rendered strings. Erring toward "top up" beats
-    erring toward a hold the balance cannot cover.
-
-    Note the band is wider than the one cent this originally described. The
-    multi-tool panel's displayed requirement is the SUM of its rows' ceilings,
-    not the ceiling of the exact total, so it can sit a few cents above the
-    exact figure the gate uses. Measured across 2- to 7-tool cohorts, the gap
-    reached 2 cents.
-
     All three helpers raise rather than guess on a non-numeric or non-finite
     input. Callers split into two groups with DIFFERENT failure modes, and the
     difference matters:
@@ -337,27 +319,17 @@ def display_balance_usd(value) -> str:  # noqa: ANN001
        submit button, so raising here fails CLOSED. The disabled button is the
        mechanism; do not restate it as unticking the consent box, because
        neither failure handler does that.
-    2. Renders with no submit button to disable: ``compute_campaign_create``'s
-       refusal path, ``target_launch_submit``'s refusal path, and the
-       ``display_cost_usd`` Jinja global that ``runs/detail.html`` and
-       ``runs/list.html`` call on a stored ``budget_usd``. A raise there is a
-       500 on a page, not a blocked spend. No gate depends on it, but it is not
+    2. Renders with no submit button to disable, such as the
+       ``display_cost_usd`` Jinja global that ``wallet/overview.html`` calls on
+       the wallet's stored spend. A raise there is a 500 on a page, not a
+       blocked spend. No gate depends on it, but it is not
        "fail closed" either, and calling it that would be the kind of
        comfortable claim this module has been wrong about before.
-
-    ``first_wave_display_at_pace()`` is in BOTH groups: ``blueprints/targets.py``
-    calls it from the estimate (fails closed) and from ``target_launch_submit``'s
-    refusal (a POST re-render, where a raise is a 500). An earlier version of
-    this paragraph put it in group 1 only, having carefully qualified
-    ``rows()`` one line above and then given its sibling no qualification.
 
     Do NOT write that raising here is "not a regression because the previous
     formatting raised on the same inputs". It did not. ``'%.2f' %
     Decimal('NaN')`` returns ``'nan'`` where these raise, and Postgres numeric
-    can hold NaN; and ``compute_campaign_create``'s predecessor,
-    ``preauth_message(pre)`` with no override, catches inside its own derived
-    branch. Both of those paths became fallible, which may well be the right
-    trade, but it is a change and not a no-op.
+    can hold NaN. Raising is a change, not a no-op.
     """
     return _display_usd(value, ROUND_FLOOR)
 
@@ -455,11 +427,10 @@ def display_total_usd(displays: Iterable[str]) -> str:
 
     Use this for any figure that must reconcile with a panel of rows the reader
     will see -- INCLUDING a panel on a screen they have not reached yet. The
-    steady-pace alternative is the example that matters: "Starting narrow would
-    need $X" is a promise about the panel produced by acting on it, so it is
-    totalled from the steady rows (``first_wave_display_at_pace``), not ceiled
-    from the steady exact sum. Those two differ in 64 of 120 2- to 7-tool
-    cohorts, so picking the wrong one is not theoretical.
+    steady-pace alternative's ``first_wave_usd_display`` is totalled from the
+    steady rows (``first_wave_display_at_pace``), not ceiled from the steady
+    exact sum. Those two differ in 64 of 120 2- to 7-tool cohorts, so picking
+    the wrong one is not theoretical.
 
     An earlier version of this paragraph said the opposite -- that a standalone
     figure is ceiled from its exact value directly -- and it was already false
@@ -1657,18 +1628,15 @@ def campaign_preauth(
 
 
 # User-facing copy for a refused start gate, keyed on PreauthResult.reason.
-# {required} is the FIRST WAVE, the balance needed to START, which under
-# fund-and-drain is smaller than the budget. Say "to start", never "total".
-# Placeholders are bare braces and the literal "$" is written into the message,
-# because the previous "${required}" token INCLUDED the dollar sign in the
-# string being replaced and so rendered "about 9.18 to start" with no currency.
+# PREAUTH_INSUFFICIENT names no amount
+# (tests/test_compute_campaigns.py::test_the_insufficient_refusal_names_no_amount).
 _PREAUTH_MESSAGES: Mapping[str, str] = {
     PREAUTH_NO_WALLET: "Your wallet is unavailable. Try again in a moment.",
     PREAUTH_FROZEN: "Your wallet is on hold. Contact support to resume.",
     PREAUTH_INSUFFICIENT: (
-        "Your balance does not cover the first batch of {subject} "
-        "(about {required} to start). Top up your wallet and try again. "
-        "You only pay for compute that runs, and {pauses} if "
+        "Your balance does not cover the first batch of {subject}. "
+        "Top up your wallet and try again. "
+        "You pay for compute that runs, and {pauses} if "
         "your balance runs low."
     ),
     PREAUTH_VERIFICATION: (
@@ -1682,9 +1650,7 @@ _PREAUTH_MESSAGES: Mapping[str, str] = {
 }
 
 
-def preauth_message(
-    pre: PreauthResult, *, count: int = 1, required_display: Optional[str] = None
-) -> str:
+def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
     """One sentence explaining a refused start gate.
 
     ``count`` is how many runs the gate covered. A multi-tool launch passes one
@@ -1692,19 +1658,6 @@ def preauth_message(
     would misdescribe what was refused and would point the user at the wrong
     remedy: with several tools selected, dropping one is usually cheaper than
     topping up.
-
-    ``required_display`` is the figure the PAGE is showing for the same hold,
-    and callers that render a panel must pass it. Deriving it here instead used
-    to be safe, because both were ``ceil(exact)``. It stopped being safe the
-    moment the multi-tool panel started totalling its rows' 2dp displays, which
-    is a slightly larger number (``sum(ceil) >= ceil(sum)``): the refusal
-    sentence then named $9.18 while the panel above it, on the same 400, said
-    $9.19 and the consent line under it said "the amount above will be held".
-    A user who tops up to the number in the sentence is refused again.
-
-    So there is one displayed hold per screen and the caller owns it. Omitting
-    it falls back to rounding ``pre.required_usd`` up, which is right for a
-    caller with no panel of its own.
     """
     plural = count > 1
     msg = _PREAUTH_MESSAGES.get(
@@ -1712,49 +1665,11 @@ def preauth_message(
         "These runs cannot start right now." if plural
         else "This run cannot start right now.",
     )
-    required = getattr(pre, "required_usd", None)
-    # ROUND_CEILING, not "%.2f". The gate holds a 4dp Decimal, so half-even
-    # rounding names a figure BELOW the one that just refused the user: a
-    # first wave of 573.6736 renders as $573.67, and a wallet topped to
-    # exactly $573.67 is refused again by the same message. A required amount
-    # has to round UP or it is not a ceiling.
-    # Coerced through str() before quantizing, the same way campaign_preauth
-    # coerces its own inputs, and wrapped: PreauthResult is a plain frozen
-    # dataclass with no coercion, so nothing stops a caller passing a float
-    # (no .quantize), a non-numeric string or an inf/NaN (InvalidOperation).
-    # This is the one path whose entire job is to explain a refusal to a user,
-    # so anything unrenderable falls back to the wording rather than becoming a
-    # 500. Every current caller passes a Decimal; the guard is for the next one.
-    shown = None
-    if required_display:
-        # Rendered verbatim. It is already the string on the screen, and
-        # re-deriving it here is exactly how the two came apart. Truthiness, not
-        # `is not None`: an empty string would otherwise render a bare "$", and
-        # falling back to the derived figure is the better of the two wrong
-        # answers.
-        shown = required_display
-    elif required is not None:
-        try:
-            amount = Decimal(str(required))
-            # is_finite() first: NaN does NOT raise here, it quantizes to NaN
-            # and renders as the words "about $NaN to start".
-            if not amount.is_finite():
-                raise ValueError("non-finite")
-            shown = amount.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
-        except (ArithmeticError, TypeError, ValueError):
-            logger.warning(
-                "preauth_message: unrenderable required_usd %r", required,
-            )
-            shown = None
     return (
         msg.replace("{threshold}", f"${VERIFICATION_THRESHOLD_USD}")
            .replace("{subject}", f"these {count} runs" if plural else "this run")
            .replace("{pauses}", "they pause" if plural else "the run pauses")
            .replace("{smaller}", "fewer tools" if plural else "a smaller run")
-           .replace(
-               "{required}",
-               f"${shown}" if shown is not None else "the first batch",
-           )
     )
 
 

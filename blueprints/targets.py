@@ -1234,9 +1234,8 @@ def api_target_launch_estimate(target_id):
                 "pace": PACE_STEADY,
                 "first_wave_usd": str(steady_first_wave),
                 # Totalled from the steady ROWS, not ceiled from the steady
-                # exact sum. "Starting narrow would need $X" is a promise about
-                # the panel the user gets when they act on it, so it has to be
-                # that panel's number.
+                # exact sum. No page prints it
+                # (tests/test_no_prerun_numbers_logged_in.py).
                 "first_wave_usd_display": first_wave_display_at_pace(
                     plan, PACE_STEADY
                 ),
@@ -1266,7 +1265,6 @@ def target_launch_submit(target_id):
     from shared.target_launch import (  # noqa: PLC0415
         PACE_BURST,
         PACE_STEADY,
-        first_wave_display_at_pace,
         plan_multi_launch,
         preauth_multi_launch,
     )
@@ -1332,15 +1330,7 @@ def target_launch_submit(target_id):
 
     pre = preauth_multi_launch(ctx.user_id, plan)
     if not pre.ok:
-        # The re-render carries the estimate panel, which totals its rows' 2dp
-        # displays, so the sentence must quote that same total and not a
-        # separate rounding of the exact figure. Computed only on the refusal
-        # path, because it costs one held-amount lookup per tool.
-        return _err(cc.preauth_message(
-            pre,
-            count=len(specs),
-            required_display=first_wave_display_at_pace(plan, plan.pace),
-        ))
+        return _err(cc.preauth_message(pre, count=len(specs)))
 
     # After the gate, before the first insert. Not earlier, because a group id
     # in scope during validation invites persisting partial state; not later,

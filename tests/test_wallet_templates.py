@@ -198,32 +198,27 @@ class TestWalletTopupTemplate:
         assert "Auto reload" in html
         assert "wallet-topup-form" in html
 
-    def test_gate_flow_with_deficit_shows_top_up_cta(self, app):
-        """Decorator gate render: deficit_usd + next_url present.
-
-        Mirrors what app.py:_render_topup_gate passes. Tests the contract
-        from WAVE2-REVIEW.md section 4.1.
-        """
+    def test_gate_flow_shows_the_notice_without_a_figure(self, app):
+        """Decorator gate render, as shared/wallet_guard.py::_render_topup_gate
+        calls it. A stale ``deficit_usd`` kwarg is passed to show it is not
+        printed."""
         with app.test_request_context("/tools/mpnn"):
             html = render_template(
                 "wallet/topup.html",
                 wallet=_wallet_fixture(balance=2.00),
                 deficit_usd=Decimal("15.50"),
-                estimate_usd=Decimal("17.50"),
-                balance_usd=Decimal("2.00"),
-                hard_cap_usd=Decimal("100.00"),
-                suggested_amount=20,
                 min_topup_usd=Decimal("20.00"),
                 next_url="/tools/mpnn",
+                return_tool="mpnn",
                 gate_reason="insufficient_balance",
                 tool_slug="mpnn",
-                self_serve_ceiling_usd=Decimal("500.00"),
             )
         # Nothing resumes the job after payment, so nothing may promise it.
         assert "Top up and run" not in html
         assert "where you left off" not in html
         assert "Nothing is submitted for you" in html
-        assert "$15.50" in html
+        assert "Your balance does not cover this run." in html
+        assert "15.50" not in html
         assert "Back to the form" in html
 
     def test_form_gate_is_a_link_not_a_submit(self, app):
