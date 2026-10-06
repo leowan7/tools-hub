@@ -1,7 +1,7 @@
 # Live charging: design note (phase 1) and phase 2 decisions
 
 - **Base commit:** `cc85754d`.
-- **Status:** Sections 0-7 are the phase 1 note as written for Leo's approval. Phase 1 made no product code, migration, paid run or settings change. Phase 2 is built on it: see "Decisions (Leo, 2026-10-05)" at the end.
+- **Status:** Sections 0-7 are the phase 1 note as written for Leo's approval. Phase 1 made no product code, migration, paid run or settings change. Phase 2 is built on it: see "Decisions (Leo, 2026-10-05)" at the end. On 2026-10-06 Leo replaced the debit mechanism with option (ii): see "Option (ii) build plan" at the end.
 - **Decision being designed (Leo, 2026-10-01):**
   - A paid run starts whenever the balance is above $0.
   - The cost comes off the balance as the run goes.
@@ -215,7 +215,7 @@ Without a mid-run top-up the customer pays exactly their hold, which is their wh
 - **Refunds.** Refunded classes (infra_crash, tool_error, preflight_miss, no_progress_timeout, unclassified) must reverse the accumulated debits. That is a new refund path.
 - **Readers that change.** Every reader of hold-parented rows changes: `job_spend_by_hold` (`shared/wallet.py:1371-1428`), `run_notices.overrun_line` (`shared/run_notices.py:24-51`), `_failure_money`, and the transactions template lineage (`templates/wallet/transactions.html:100-160`).
 - **Upside.** No whole-balance reservation, so concurrent runs are fine. A mid-run top-up or auto-reload naturally keeps a run alive.
-- **Verdict.** Not for v1.
+- **Verdict.** Not for v1 (2026-10-01). Leo chose it on 2026-10-06: see "Option (ii) build plan".
 
 ### 3.3 Option (iii): extendable hold
 
@@ -373,8 +373,8 @@ Phase 2 is built on option (i′). Citations in this section are by symbol or te
   - Only a row with a Modal call id falls back. A row with neither `started_at` nor a call id is a submit Modal never acknowledged. The stop leaves it to `sweep-stuck`, which times out a pending row older than `STUCK_PENDING_AGE_MINUTES` (default 30; `cron/sweep_stuck_jobs.py::sweep_stuck_jobs`). `::test_rows_the_stop_never_touches`.
 - **A2 covers every tool's single-job cancel**, as built. Leo's decision; see "A2 is fixed" below.
 - **Queue and boot metered while the job page is open** (§2.3, "Cold start before `started_at`"): known, and out of scope for this PR.
-- **D1 and concurrent runs:** on hold. Leo is reconsidering the hold against a per-heartbeat debit. Nothing was changed for it.
-- **`STRIPE_SECRET_KEY` on the cron:** Leo is setting it himself. No setting was changed here.
+- **D1: reversed, later on 2026-10-06.** Leo chose true per-minute deduction, option (ii): nothing set aside, the balance drops while the run goes, and the run stops at $0. See "Option (ii) build plan".
+- **`STRIPE_SECRET_KEY` on the cron:** Leo added it himself. See the Stripe finding below. No setting was changed here.
 
 ### Which tools get live charging
 
@@ -426,7 +426,7 @@ Phase 2 is built on option (i′). Citations in this section are by symbol or te
 
 ### Finding for Leo: Stripe is not set on the cron service
 
-- **The gap.** `railway variables` on `tools-hub-campaigns-tick` lists no `STRIPE_SECRET_KEY`.
+- **The gap (2026-10-05).** `railway variables` on `tools-hub-campaigns-tick` listed no `STRIPE_SECRET_KEY`.
 - **Why it matters.**
   - A stop settles on the cron. The settle calls `auto_reload_if_needed` (`shared/wallet.py::_post_settle_hooks`).
   - That call takes the 24h dispatch claim (`_claim_auto_reload_dispatch`) before it calls Stripe.
@@ -435,10 +435,231 @@ Phase 2 is built on option (i′). Citations in this section are by symbol or te
   - So a user with auto-reload gets no reload and no notice for 24h after a stop.
 - **Same gap elsewhere.** The `sweep-stuck` service has the same gap. It also has no Modal tokens.
 - **Not new.** The cron already settles campaign children through `complete_job` (`shared/compute_campaigns.py::reconcile_campaign_children`). Each child carries its own hold (`child_inputs["_wallet"]` in `shared/compute_campaigns.py`), so a settled child reaches `auto_reload_if_needed` through `shared/wallet.py::settle_hold` and `::_post_settle_hooks`. This is from reading the code; no run has shown it.
-- **Before merge.** Leo is setting `STRIPE_SECRET_KEY` on `tools-hub-campaigns-tick` himself (2026-10-06). Not re-checked here.
+- **Added (2026-10-06).** Leo added `STRIPE_SECRET_KEY` to `tools-hub-campaigns-tick`. The Railway UI lists it and the service redeployed; this is as reported by the hub lead and was not re-checked here. Whether its value matches the web service's is UNVERIFIED. It is off the pre-merge list.
 - **No setting was changed.**
 
 ### Out of scope
 
 - **A1** (user cancels of silent tools settle at $0) is not fixed.
 - **The mail path in `auto_reload_if_needed`** belongs to the monthly-cap throttle PR (#413, merged). Its per-process throttle restarts with each cron run, so a stop that settles on the cron can send one monthly-cap email per stop.
+
+---
+
+## Option (ii) build plan (Leo, 2026-10-06)
+
+**Status: a plan for Leo's approval.** No per-minute code or migration has been written, and no paid run has been made.
+
+Leo reversed D1 on 2026-10-06. The cost will come off the balance while the run goes. Nothing will be set aside, and the run will stop at $0. This replaces option (i′) (§3.1) for the four live tools. PR #416 is not to be merged as it stands; it will be reworked on the same branch. #416 never reached prod, so no stored row carries its `balance_limited` flag and no data needs migrating.
+
+### What stays from #416 and what goes
+
+**Stays:**
+
+- **The live-tool list and its pins.** See "Which tools get live charging" and `shared/wallet_guard.py::live_charging_enabled`.
+- **The stop itself, from `shared/jobs.py::stop_wallet_limited_jobs`.**
+  - Cancel on Modal.
+  - Re-read the row.
+  - Rebuild the finished designs with `job_recovery.reconstruct`.
+  - Finish the run as succeeded and partial, with `stop_reason` = `WALLET_STOP_REASON`.
+  - Only what triggers the stop changes.
+- **The metering clock.** `started_at`, or `created_at` when the row has a Modal call id (Leo, 2026-10-06).
+- **Existing behaviour.**
+  - A2 on every tool's single-job cancel.
+  - D9: campaigns are unchanged.
+  - The stop's errors count in the tick's log line.
+- **The `wallet_empty` refusal** at a balance ≤ $0, and the estimate route's "any balance above $0" (D6).
+- **The copy:** the stopped-at-$0 subtitle, notice and email, the Add funds links, and the `absorbed_variance` hint.
+
+**Goes or changes:**
+
+- **The capped hold goes.** `shared/wallet_guard.py::_reserve_live_hold` and its `min(balance, cap)` hold, its two-attempt retry and `hold_failed` will go. A live run will open a $0 anchor instead (below).
+- **The balance-limited test goes.** Gone: `_wallet.hold_usd`, `_wallet.balance_limited`, and the stop's "cost has reached the hold" test (`shared/jobs.py:1836-1864`). Every live run will be metered, not only balance-limited ones, and a `_wallet.live` flag will mark it.
+- **The `wallet_empty` copy narrows.** Its sentence that funds held for a run still going come back, less what it used, will be true only of cushioned runs. It will be shown only when such a hold is open, or dropped.
+- **D4 and D5 go away.** A top-up during a run will keep it going (below).
+- **Settling a live run changes.** It will call the new `settle_live_run`, not `settle_hold` or `release_hold`.
+
+### Ledger shape
+
+One run will be one lineage under one anchor:
+
+- **Anchor.** A `hold` row of $0.00, written at submit.
+  - `_wallet.hold_tx_id` will point to it.
+  - So the wallet page grouping (`blueprints/wallet.py::_build_tx_lineage_annotations`), `job_spend_by_hold` and `_failure_money` will find the run the way they find a hold today.
+- **Debits.** `run_debit` rows, a new kind.
+  - Each has `parent_tx_id` = the anchor and a negative amount.
+  - There is one for each tick that takes money.
+- **Terminal row.** Written once, by `settle_live_run`. It is one of:
+  - a `charge` for the last part (which can be $0);
+  - a `hold_release` that credits back what was taken, for a refund or an over-take.
+
+  An `absorbed_variance` at $0 is added when the balance did not cover the run.
+- **Settled.** A lineage is settled when it has a child that is not a `run_debit`.
+
+Rejected: one running-total row updated in place. The ledger is append-only, and an updated row's `balance_after_usd` would go stale (§3.2).
+
+### Migration 0045 (Leo applies it to prod before merge)
+
+The file will be `supabase/migrations/0045_live_run_debits.sql`.
+
+Each new function will:
+
+- take `public.user_wallets ... FOR UPDATE`, as `credit_wallet` does (`0018_wallet_rpcs.sql:103`);
+- recompute the balance from the ledger.
+
+What the migration does:
+
+1. **New kind.** `ALTER TYPE public.wallet_tx_kind ADD VALUE IF NOT EXISTS 'run_debit';`, the 0043 pattern (`0043_signup_credit_expiry.sql:31`).
+2. **`open_live_run(p_user_id, p_tool_slug)`.**
+   - Under the lock, refuse a frozen wallet or a balance ≤ $0.
+   - Otherwise write the $0 anchor and return its id.
+   - This closes the gap between today's balance read and the hold.
+3. **`debit_live_run(p_hold_tx_id, p_due_usd, p_gpu_seconds, p_gpu_class)`.** `p_due_usd` is the run's whole cost so far. Under the lock:
+   - If the lineage is settled, do nothing.
+   - Otherwise taken = what the run's `run_debit` rows already took, and step = due − taken.
+   - If step ≤ 0, do nothing.
+   - Otherwise debit min(step, balance) as one `run_debit` row.
+   - Return the amount taken, the amount short and the new balance.
+   - The balance never goes below $0.
+4. **`settle_live_run(p_hold_tx_id, p_final_due_usd, p_gpu_seconds, p_gpu_class, p_failure_reason, p_notes)`.** Once per lineage; a settled lineage is a no-op.
+   - **final ≥ taken:** charge min(final − taken, balance) as `charge`, and record the rest as `absorbed_variance` at $0.
+   - **final < taken:** credit back taken − final as `hold_release`.
+   - A refunded class passes final = 0, which returns everything taken.
+5. **`expire_signup_credit` redefined.**
+   - Its `hold_open` refusal (`0043_signup_credit_expiry.sql:79-90`) treats a hold with any child as closed.
+   - A debit child would therefore let the expiry run while a live run is still debiting.
+   - The new test: a hold is open until it has a child that is not a `run_debit`.
+6. **Spend counts debits.** `wallet_30d_spend` will be redefined to count `run_debit` in net spend. `shared/wallet.py::_net_spend_usd` (its `.in_("kind", ...)` filter) will change the same way.
+7. **Grants.** `EXECUTE` will be granted to the new functions, as 0035 grants `try_hold_for_job`.
+
+**Idempotency needs no key.**
+
+- A debit is a target ("the run has cost $X so far"), not an increment.
+- A repeated or overlapping tick computes the same or a larger target, and takes only the difference.
+
+**UNVERIFIED: how the SQL gets tested before prod.**
+
+- The suite mocks the RPCs.
+- Proving the lock, the no-op paths and the $0 floor needs one of: a real Postgres (a Supabase branch or a local one), or the T1 run Leo re-approves.
+
+### What triggers a debit, and its size
+
+- **The trigger is the `campaigns:tick` cron, every 5 minutes** (`*/5`; "§7 item 10: the cron").
+  - It will handle each live job that is not finished and not a campaign child.
+  - Due = `compute_charge_usd` over the metered seconds, capped at the tool's cap. This is the formula settle uses.
+  - Then it calls `debit_live_run`.
+- **So the balance drops in 5-minute steps, not every minute.**
+  - Railway's cron does not run more often than every 5 minutes. This comes from Railway's documentation and was not checked in this session.
+  - A one-minute step needs a new always-on worker (decision 1).
+- **The heartbeat is not used.**
+  - It is unauthenticated (`webhooks/modal.py::_handle_heartbeat`).
+  - af2 and colabfold are silent through their cold start (§2.2).
+  - A debit there would not stop a run sooner, because the stop runs on the tick.
+- **One step costs at most** $0.36 on A100-40GB (boltz2, colabfold, esmfold) and $0.52 on A100-80GB (af2), in customer dollars (§2.3, the 300 s row).
+
+### Stop at $0, and a top-up mid-run
+
+- **The stop.** When `debit_live_run` comes back short, the balance is $0. The tick will stop the run in the same pass, with the #416 stop path.
+- **The overshoot.** The time past $0 is up to one step plus the cancel latency. Settle will record it as `absorbed_variance`. At Ranomics' own rate (the customer figure ÷ 1.70, §2.1) that is at most about $0.21 (A100-40GB) or $0.31 (A100-80GB) per stop.
+- **A top-up keeps the run going** if it lands before the tick that would come up short. The next debit takes from the new funds. There is no hold to extend.
+- **Auto-reload.**
+  - After each debit, the tick will call `auto_reload_if_needed`, the same call `_post_settle_hooks` makes. Its mail path is not touched.
+  - It fires once the balance falls under the user's threshold.
+  - It only dispatches the Stripe charge (`"triggered"`). The credit lands later, through the Stripe webhook.
+  - So a reload fired in the same tick that comes up short does not save that run (decision 4).
+- **The low-balance email** will fire on the debit that crosses `LOW_BALANCE_EMAIL_THRESHOLD`. It uses the crossing test in `_post_settle_hooks` (`shared/wallet.py:1669`).
+- **Stripe.** The tick will dispatch auto-reloads, so it needs `STRIPE_SECRET_KEY`. See the Stripe finding.
+
+### Races
+
+- **Two live runs on one balance.**
+  - Every debit takes the wallet lock, so the debits queue.
+  - Both runs draw on the same balance.
+  - When the balance reaches $0, each run whose debit then comes up short is stopped in that tick.
+  - The tick will take jobs oldest first, so the older run gets the last cents.
+- **A live run beside a cushioned run.**
+  - The cushioned hold left the balance at submit, so a debit cannot touch it.
+  - When that run settles, anything its hold returns is free for the live run's next debit.
+  - Its `settle_hold` variance debit competes for the same balance under the same lock. This is unchanged (§3.4).
+- **Tick against settle.**
+  - Both take the lock.
+  - A debit after the settle finds the lineage settled and does nothing.
+  - A settle after a debit takes only final − taken.
+  - If a tick took more than the final cost, for example because the tick's clock ran ahead of the clock at completion, the settle credits back the difference.
+- **Tick against a user cancel.**
+  - Both end in `complete_job`. Its status compare-and-set (`allowed_current=_NON_TERMINAL`) lets only one of them finish the row.
+  - `settle_live_run` runs once per lineage.
+  - A failed cancel leaves the run going, and still debiting (A2).
+- **A repeated debit.** No double charge, because the debit is a target (above).
+- **A top-up against a debit.** `credit_wallet` takes the same lock (`0018_wallet_rpcs.sql:103`).
+
+### Refunds
+
+- `_settle_wallet_hold_for_completed_job` will send a live run (`_wallet.live`) to `settle_live_run`.
+- **Refunded classes.** A run that ends in `_REFUNDED_FAILURE_CLASSES` (`shared/jobs.py:760`) passes final = 0. Everything taken comes back as one `hold_release`.
+- **Zero-cost arms.** The zero-consumption cancel and the legacy no-compute arms pass 0 too.
+- **Billed runs** pass the metered cost, capped at the tool's cap.
+
+### Wallet history
+
+**The ledger.** It will hold one `run_debit` per 5-minute step. That is 12 an hour, and at most 48 for a 4-hour af2 run (`_MAX_SESSION_S`, 14400 s). There is no row per minute.
+
+**The wallet page.** It will show one line per run.
+
+- The anchor line reads "<tool> run".
+  - While the run goes, it shows the total so far.
+  - Once settled, it shows the final cost, or "returned in full".
+- The run's debit rows fold under that line and can be expanded.
+- This builds on the existing grouping by `parent_tx_id` (`blueprints/wallet.py::_build_tx_lineage_annotations`).
+- The "Charges" filter (`templates/wallet/transactions.html:82`) will include `run_debit`.
+
+**Readers that change.**
+
+- `job_spend_by_hold`: settled will mean a child that is not a `run_debit`.
+- `_build_tx_lineage_annotations`: a debit is not a settlement, and the outcome reads as charged while it ran.
+- `_failure_money`: the refund sentence will read from the `hold_release`.
+- `_net_spend_usd`: as above.
+
+### The submit check
+
+- **A live tool will be refused when:**
+  - the wallet is frozen;
+  - the balance is ≤ $0 (`wallet_empty`, as now; D6);
+  - the tool cap, the self-serve ceiling or the #398 check refuses it. These stay.
+- **Otherwise it calls `open_live_run`.**
+- **A second live run** is allowed while the first one goes, as long as the balance is above $0. Nothing is set aside.
+- **Ranomics' exposure** is one step for each live run still going when the balance hits $0.
+
+### Tools outside the live set
+
+- **Unchanged:** the cushioned hold, `settle_hold` and `release_hold`.
+- **This covers:** the single-fold tiers of af2, colabfold and esmfold, every other tool, and every campaign child (D9).
+- **One switch.** `live_charging_enabled` decides which path a run takes.
+- **The workspace meter** (`charge_for_job`, called at completion from `shared/jobs.py`; #345) is unchanged for every run.
+
+### Decisions for Leo
+
+1. **How often the balance drops.**
+   - On the cron, the balance drops every 5 minutes, not every minute.
+   - A true one-minute step needs a new always-on service.
+   - Recommendation: every 5 minutes.
+2. **Stop late or stop early.**
+   - The run stops at the first 5-minute check that finds the money gone. So it can run up to about 5 minutes past $0 at Ranomics' cost: at most about 31 cents of real GPU time per stop.
+   - The alternative charges 5 minutes ahead. It stops while a few minutes of the customer's balance are unused, and returns that money at the end.
+   - Recommendation: stop late.
+3. **Several runs at once.**
+   - A second live run is allowed while one goes, as long as the balance is above $0.
+   - Each run can overshoot by one step when the money runs out.
+   - Recommendation: allow it, with no new limit. A grep of `shared/wallet_guard.py`, `shared/jobs.py` and `blueprints/jobs.py` found no per-user limit on running jobs today.
+4. **Auto-reload in the last step.**
+   - If auto-reload fires in the same check that finds the money gone, the run still stops, because the card charge lands a moment later.
+   - The alternative waits one more check before stopping. That costs Ranomics up to one more step if the card fails.
+   - Recommendation: stop. Auto-reload fires when the balance falls under the customer's own threshold, so it usually fires several checks before $0.
+5. **Wallet history.**
+   - One line per run, with the 5-minute debits folded under it.
+   - Recommendation: yes.
+6. **The migration.**
+   - Migration 0045 adds one transaction kind and three wallet functions. It also changes the signup-credit expiry check and the 30-day spend view.
+   - Leo applies it to prod before merge.
+7. **The paid test (T1)**, approved per job:
+   - one boltz2 or batch-tier run stopped at $0;
+   - one run that ends in a refunded failure.
