@@ -259,7 +259,7 @@
       <p class="wallet-section-body" style="margin-bottom: 1rem;">
         Save a card and we will top up automatically when your balance drops
         below a threshold you set. Limited to one charge per 24 hours plus a
-        monthly cap, so a runaway loop cannot drain your card.
+        monthly cap.
       </p>
 
       <form method="POST"
@@ -294,7 +294,7 @@
             <input type="number" id="auto_reload_monthly_cap_usd" name="auto_reload_monthly_cap_usd"
                    class="field-input" min="100" step="0.01" style="max-width: 200px;"
                    value="{{ display_ledger_usd(wallet.auto_reload_monthly_cap_usd if wallet and wallet.auto_reload_monthly_cap_usd is not none else 1000) }}">
-            <div class="field-helper">Your auto reload budget per calendar month.</div>
+            <div class="field-helper">Hard ceiling on auto reload per calendar month.</div>
           </div>
         </div>
         <div style="margin-top: 1rem;">
