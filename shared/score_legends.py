@@ -440,18 +440,22 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     },
     # THIS COLUMN WAS CALLED "SAP" AND IT IS NOT SAP. BindCraft computes no
     # Spatial Aggregation Propensity anywhere: the image installs
-    # FreeBindCraft with --no-pyrosetta (docker/bindcraft/Dockerfile.modal)
-    # and neither scoring path has a SAP term. Both write an apolar/aromatic
-    # share of the binder on 0-1 under ``surface_hydrophobicity``, and the two
-    # are NOT the same quantity -- an AREA fraction on the free path that
-    # ships (hydrophobic-residue SASA / binder monomer SASA,
-    # functions/pr_alternative_utils.py) and a surface-RESIDUE-COUNT fraction
-    # on the PyRosetta path (functions/pyrosetta_utils.py). Same name, same
-    # range, neither one SAP. The container's _METRIC_MAP maps
-    # Average_Surface_Hydrophobicity onto the key "SAP"
-    # (docker/bindcraft/run_pipeline.py), so a 0-1 fraction arrived under a
-    # name whose bars were 10 and 5 and read better-than-excellent by
-    # construction: 0.29 against a bar of 5.
+    # FreeBindCraft with --no-pyrosetta (llm-proteinDesigner's
+    # docker/bindcraft/Dockerfile.modal) and neither scoring path has a SAP
+    # term. Both write an apolar/aromatic share of the binder on 0-1 under
+    # ``surface_hydrophobicity``, and the two are NOT the same quantity -- an
+    # AREA fraction on the free path that ships (hydrophobic-residue SASA /
+    # binder monomer SASA, FreeBindCraft's functions/pr_alternative_utils.py)
+    # and a surface-RESIDUE-COUNT fraction on the PyRosetta path
+    # (FreeBindCraft's functions/pyrosetta_utils.py). Same name, same range,
+    # neither one SAP. The container's _METRIC_MAP USED TO map
+    # Average_Surface_Hydrophobicity onto the key "SAP", so a 0-1 fraction
+    # arrived under a name whose bars were 10 and 5 and read
+    # better-than-excellent by construction: 0.29 against a bar of 5. It now
+    # maps onto surface_hydrophobicity, and says why in its own comment
+    # (``_METRIC_MAP`` in llm-proteinDesigner
+    # docker/bindcraft/run_pipeline.py). Results stored before that change
+    # still carry the old key, which is why this legend keeps reading it.
     #
     # THOSE BARS ARE NOT CHENNAMSETTY'S. This repo's old glossary entry
     # attributed "< 5 favourable; > 10 developability concern" to Chennamsetty
@@ -543,7 +547,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     # under "pAE" is the INTERFACE PAE, not a global one: the container takes
     # the first key present from unscaled_i_pae, unscaled_ipae, unscaled_pae,
     # af2_unscaled_ipae, af2_unscaled_i_pae, af2_ipae, af2_pae, ipae, pae,
-    # i_pae, mean_pae (docker/pxdesign/run_pipeline.py, parse_summary_csv), and
+    # i_pae, mean_pae (llm-proteinDesigner/docker/pxdesign/run_pipeline.py,
+    # parse_summary_csv), and
     # its own comment there says the af2_* forms are the [0,1] NORMALISED
     # shape. So one column arrives on two scales, and a 0-1 reading clears an
     # Angstrom bar unconditionally -- 0.42 would read as better than excellent.
@@ -2194,7 +2199,8 @@ def _resolve(record: object, tool: str, column: str):
 # simply the one that occurs.
 #
 # Whole word, anchored. A substring test on "stub" also fires on "no_stub",
-# "substub" and anything else a container invents, and docker/pxdesign passes
+# "substub" and anything else a container invents, and
+# llm-proteinDesigner/docker/pxdesign passes
 # an ARBITRARY value through from its upstream summary CSV
 # (``filter_status = val``), so the input is not a closed vocabulary.
 _FABRICATED_RE = re.compile(r"\bstub\b", re.IGNORECASE)

@@ -739,7 +739,8 @@ def test_a_value_exactly_on_the_bar_meets_it():
 
 
 def test_a_smoke_stub_marker_is_matched_as_a_whole_word():
-    """docker/pxdesign passes an arbitrary value through from its upstream
+    """llm-proteinDesigner/docker/pxdesign passes an arbitrary value through
+    from its upstream
     summary CSV, so the marker vocabulary is not closed. A substring test on
     "stub" also fires on "no_stub" and "substub"."""
     from shared.score_legends import is_fabricated

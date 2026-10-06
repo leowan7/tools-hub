@@ -191,9 +191,10 @@ GPU_USD_PER_SECOND: Mapping[str, float] = {
 # Fallback rate when the GPU SKU is missing or unknown.
 DEFAULT_USD_PER_SECOND = 0.001028  # A100-80GB rate.
 
-# Absolute per-tool hard caps. The parameter-scaled cap saturates here
-# regardless of the value of the scaling parameter. Kept in sync with
-# :data:`shared.wallet_estimates.TOOL_SPECS` entries.
+# Not the cap billing uses: the parameter-scaled cap saturates at
+# ``TOOL_SPECS[...].absolute_cap_usd`` instead
+# (shared/wallet_estimates.py::compute_hard_cap). colabfold differs: 500 here,
+# 200 in TOOL_SPECS.
 PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     "mpnn":        Decimal("150.00"),
     # ``alphafold2`` retained for backward compat with existing tests +

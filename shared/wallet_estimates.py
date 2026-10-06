@@ -155,9 +155,9 @@ class ToolSpec:
     worst_case_scales_with_param: bool = False
 
 
-# Per-tool spec table. Mirrors the absolute caps in
-# :data:`shared.wallet.PER_JOB_HARD_CAP_USD`. New tools register by
-# adding an entry here.
+# Per-tool spec table. ``absolute_cap_usd`` is the per-job ceiling that
+# :func:`compute_hard_cap` clamps to. New tools register by adding an
+# entry here.
 TOOL_SPECS: Mapping[str, ToolSpec] = {
     "mpnn": ToolSpec(
         slug="mpnn",
@@ -574,12 +574,17 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # This block used to justify that from a FALSE premise — that batch_size
         # 1-6 "runs its designs inside ONE gradient pass at the SAME wall-clock",
         # and that scaling on n_designs_total would UNDER-hold. Wall clock
-        # GROWS with batch size, a little FASTER than in proportion: 3185 s
-        # and 3233 s at batch_size=6 against a ~450 s batch_size=1 figure is
-        # ~7.1x the wall clock for a 6x batch, not 6x (docs/VALIDATION-LOG.md;
-        # that ~450 s anchor is prose there with no run row). Two points fit a
-        # line exactly, so this is a direction, not a fitted shape -- do not
-        # extrapolate it past batch_size=6. And the
+        # GROWS with batch size: 3173 s and 3218 s at batch_size=6 against a
+        # MEASURED 454.3 s mean at batch_size=1 (n=13) is 6.98x and 7.08x the
+        # wall clock for a 6x batch, not 6x (docs/VALIDATION-LOG.md, the
+        # 2026-08-23 17:53 UTC row, backfilled 2026-09-15, which supplied the
+        # batch-1 anchor that used to be prose here). Whether that growth is
+        # FASTER than proportional is UNCONFIRMED and was never measured: the
+        # batch-1 runs are on 109/129 aa targets and both batch-6 runs on a
+        # 185 aa target, so target length is confounded with batch size across
+        # that ratio. Two points in batch size also fit a line exactly, so
+        # this is a direction, not a fitted shape -- do not extrapolate it
+        # past batch_size=6. And the
         # baseline above makes the second backwards. The container COUNT, which
         # is what this spec prices, was never the thing in question. Where the
         # false premise did damage was the container CEILING sized from it: see

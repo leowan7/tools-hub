@@ -202,7 +202,7 @@
             </div>
             {% endcall %}
 
-            {% call form_section("Design", "CDRs {cdr_lengths}, {num_designs#design}") %}
+            {% call form_section("Design", "CDRs {cdr_lengths}, {num_designs#backbone}") %}
             <label for="cdr_lengths" class="label" style="display:block; margin-bottom: 0.4rem;">CDR lengths</label>
             {# pre_value, not a bare value=: rfantibody stores cdr_lengths
                flat in job.inputs, so clone_from carried the key here and
@@ -214,7 +214,7 @@
               CDR length spec (e.g. <code>H1:8,H2:7,H3:10-16</code>). Ranges allowed on H3.
             </div>
 
-            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of backbones (5 candidates each)</label>
             <input type="number" name="num_designs" id="num_designs" min="1" max="1000" {{ pre_value(pre_fill, "num_designs", "4") }}
                    {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
@@ -224,7 +224,7 @@
             {% if single_container_ceiling %}
             <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
                  style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay for compute delivered and unused funds are refunded. Use Start a full-size run below; upload a target file so it carries over.
+              More than {{ single_container_ceiling }} backbones runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay for compute delivered and unused funds are refunded. Use Start a full-size run below; upload a target file so it carries over.
             </div>
             {% endif %}
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">

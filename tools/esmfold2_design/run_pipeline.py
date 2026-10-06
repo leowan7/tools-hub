@@ -110,6 +110,52 @@ TODO (post first prod run, separate PR):
     pass -- so that "iPTM >= 0.75 selects real interfaces" is tested rather
     than assumed. If good scFvs turn out to sit at iPTM ~0.6 there, what
     changes is the scFv leg's NUMBER, not whether the leg exists.
+    ATTEMPTED 2026-09-15, still OPEN. Two orthogonal scorers were tried
+    against 25 archived scFv designs. Read what that set IS before trusting
+    anything below it: the TARGET varies (cd45 12, TIGIT 7, IL-4 6) but the
+    FRAMEWORK does not. All 15 archived runs on the
+    ranomics-esmfold2-design-raw Volume were built on
+    trastuzumab_framework_vhvl, and the 12 cd45 designs ARE the showcase
+    pairing this bullet warns about. So NO pass over archived output can
+    meet the "not that pairing" requirement by itself -- that needs a new
+    design run on a different framework, which costs GPU. Neither scorer
+    settled a bar regardless, for two different reasons:
+      - interface dSASA is too weak to carry a threshold on its own:
+        Spearman rho(iPTM, dSASA) = +0.265 over those n=25, and the WORST
+        design by iPTM (0.102) buries MORE surface (2041 A^2) than a
+        0.931-iPTM design (1975 A^2). The dSASA numbers are internally
+        sound -- rho(dSASA, heavy-atom contacts) = +0.929 -- so this is a
+        real disagreement between the two scores, not a measurement bug.
+        See the 2026-09-15 esmfold2-design row in docs/VALIDATION-LOG.md.
+      - a ColabFold (D3) cofold cannot serve as the scorer at all. D3 puts
+        "--msa-mode single_sequence" in BOTH of its cmd builders --
+        tools/colabfold/run_pipeline.py::run_colabfold and
+        tools/colabfold/run_pipeline.py::_run_colabfold_consolidated --
+        unconditionally,
+        with no job_spec override on either, and without an MSA it cannot
+        fold these chains: folded ALONE, the three NATURAL target proteins
+        (TIGIT, IL-4, cd45 -- sequences no design process touched) came
+        back at pLDDT 39.5-42.6. Its ipTM on the complexes is therefore
+        uninformative in either direction. See the 2026-09-15 colabfold
+        row in docs/VALIDATION-LOG.md.
+    Do NOT reach for D3 as a scorer again. The AF2 wrapper (D2) is the one
+    that fetches real MSAs: both of its cmd builders
+    (tools/af2/run_pipeline.py::run_colabfold and
+    tools/af2/run_pipeline.py::_run_colabfold_consolidated) append that
+    same single_sequence flag only when use_msa is False, and
+    tools/af2/run_pipeline.py::_run_single sets use_msa=False on the smoke
+    tier ONLY, so every other tier folds
+    with MSAs. D2 does fold this system (2026-09-15 af2 row in
+    docs/VALIDATION-LOG.md), and on a 3-point probe it ranked a high-iPTM
+    design (ESMFold2 0.912 -> AF2 ipTM 0.82) above a low-iPTM one
+    (0.102 -> 0.16) and above a decoy pairing cd45 with an IL-4 binder
+    (0.15). Note what that probe is NOT: both cognates came from the
+    verify242-bs6 runs, i.e. the showcase pairing again, and n=3 with every
+    point sitting at an extreme. It shows D2 is a USABLE orthogonal scorer;
+    it does not calibrate anything. The 8-seed sweep this bullet asks for
+    has still not been run, so nothing above licenses moving the
+    STRICT_IPTM or STRICT_CDR_IPTM_PROXY constants defined below, and
+    neither was moved.
 """
 
 from __future__ import annotations
@@ -737,12 +783,18 @@ def _classify(
     interface quantity a minibinder's is, on the same scale. This change
     invents no threshold; it reuses one.
 
-    ON THE EVIDENCE AVAILABLE this leg re-tiers 2 of the 12 designs ever
+    ON THE EVIDENCE AVAILABLE this leg re-tiers 2 of the 25 designs now
     recorded for this tool, both in the run above: 0.618/0.436 strict_pass ->
     drop, and 0.706/0.716 strict_pass -> borderline. The six designs of job
-    ``verify242-bs6-1789012528`` (iPTM 0.794-0.912) are unaffected. Twelve
-    designs on upstream's own showcase pairing is a thin basis for a bar in
-    either direction; what would settle it is in the module TODO.
+    ``verify242-bs6-1789012528`` (iPTM 0.794-0.912) are unaffected, and the
+    13 backfilled on 2026-09-15 (docs/VALIDATION-LOG.md, the 2026-08-23 17:53
+    UTC row) cannot be re-tiered in either direction: their CDR proxy is
+    absent, because they ran under the CRITIC_SCALING_PROXY selector that
+    the comment above CRITIC_REAL_IPTM describes, so this leg has nothing
+    to read on them. Their iPTMs are valid, and 12 of the 13
+    clear STRICT_IPTM. So twelve designs on upstream's own showcase pairing
+    is STILL the whole basis for this bar in either direction, and that is a
+    thin one; what would settle it is in the module TODO.
 
     ONE CONSEQUENCE FOR ``_shape_designs``, WHICH LANDED AS #250 WHILE THIS
     WAS IN REVIEW. An antibody design whose iPTM is absent -- a diverged fold

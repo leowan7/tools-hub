@@ -730,8 +730,10 @@ _OVER_LIMIT_MESSAGE = (
 
 # The per-session refusal says something different on purpose. "This network"
 # is wrong and actively confusing when the caller alone is over the limit —
-# and it is the wrong call to action, because signing in genuinely does fix
-# the session case immediately. Phase 5 turns this string into the funnel.
+# and it is the wrong call to action. Signing in moves the caller to a fresh
+# bucket keyed on their account (``_session_key``), so it lets them keep going
+# now; it does not raise the ceiling, which is the same for both keys.
+# Phase 5 turns this string into the funnel.
 _SESSION_LIMIT_MESSAGE = (
     "You have used the free Epitope Scout allowance for this session. Sign "
     "in for a free account to keep going, or wait a few minutes."

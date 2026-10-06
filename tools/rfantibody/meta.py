@@ -93,7 +93,7 @@ about: dict = {
             ),
         },
         {
-            "name": "Number of designs",
+            "name": "Number of backbones (5 candidates each)",
             "explanation": (
                 "How many backbones to generate. Each gets five "
                 "ProteinMPNN sequences, and every sequence is "
@@ -176,7 +176,8 @@ PILOT: dict | None = {
 #
 # THE 4 -> 20 IS REAL AND IS EXPLAINED ON PURPOSE. The form field is a
 # BACKBONE count: stage 1 diffuses num_designs backbones, then stage 2 runs
-# ProteinMPNN at seqs_per_backbone=5 (docker/rfantibody/run_pipeline.py), so
+# ProteinMPNN at seqs_per_backbone=5
+# (llm-proteinDesigner/docker/rfantibody/run_pipeline.py), so
 # four backbones score twenty candidates. A reader who takes the field at its
 # old wording ("how many candidates to design") would under-estimate both the
 # table length and the bill by five times, so the inputs_used note below
@@ -227,7 +228,7 @@ EXAMPLE: dict | None = {
             "sampling rather than fixing.",
         ),
         (
-            "Number of designs",
+            "Number of backbones (5 candidates each)",
             "4",
             "Four backbones &mdash; and this is the input to understand "
             "before you spend. The field sets the backbone count, not the "

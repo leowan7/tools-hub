@@ -106,8 +106,10 @@ CSV_COLUMNS = [
 #   surface contributes to ΔG upon binder contact. Buried hydrophobics
 #   provide no benefit. (Chothia 1974; Vajda et al. 2018)
 #
-# geometry_score = 0.5 * accessibility + 0.5 * hydrophobicity
-#   Accessibility is INVERTED burial: flat, exposed surfaces score high,
+# geometry_score = accessibility (scout/scoring.py::normalize_burial_scores)
+#   No hydrophobicity term; that lives in hydrophobic_exposure above.
+#   Accessibility is INVERTED burial, min-max normalised across the
+#   target's patches: flat, exposed surfaces score high,
 #   concave pockets score low. De novo binders need physical access to
 #   the epitope — pocketed regions are sterically inaccessible.
 #   (Lo Conte et al. 1999; Lawrence & Colman 1993)

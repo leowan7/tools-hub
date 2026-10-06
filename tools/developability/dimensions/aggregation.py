@@ -1,8 +1,9 @@
 """Aggregation propensity scoring using a simplified Aggrescan a3v approach.
 
 Per-residue a3v values are looked up and smoothed with a short window.
-Aggregation-prone regions (APRs) are runs of five or more consecutive
-residues with positive smoothed a3v. Score decays with APR count.
+Aggregation-prone regions (APRs) are runs of APR_MIN_LENGTH or more
+consecutive residues with positive smoothed a3v whose mean smoothed a3v is
+at least APR_MIN_MEAN_A3V. Score decays with APR count.
 """
 
 from __future__ import annotations
@@ -64,7 +65,8 @@ def _smooth(values: List[float], window: int) -> List[float]:
 
 
 def _find_apr_regions(smoothed: List[float], min_length: int) -> List[dict]:
-    """Identify aggregation-prone regions: runs of positive smoothed a3v.
+    """Candidate APRs: runs of positive smoothed a3v, before the
+    APR_MIN_MEAN_A3V filter that ``score_aggregation`` applies.
 
     Args:
         smoothed: Smoothed per-residue a3v series.
@@ -122,9 +124,8 @@ def score_aggregation(sequence: str) -> dict:
     smoothed = _smooth(raw, SMOOTH_WINDOW)
     all_regions = _find_apr_regions(smoothed, APR_MIN_LENGTH)
 
-    # Keep only regions with strong aggregation signal, weighted by length.
-    # This mirrors how Aggrescan's Hot Spot Area (HSA) weighs mean a3v times
-    # stretch length rather than raw count of any-positive-sign runs.
+    # Drop candidates whose mean a3v is below APR_MIN_MEAN_A3V. The survivors
+    # are counted unweighted; there is no Hot Spot Area length weighting.
     strong_regions = [
         region
         for region in all_regions

@@ -1830,12 +1830,13 @@ def cancel_job(
          the tool_jobs row is the authoritative state and a stray Modal
          run terminates harmlessly once the tools-hub side is terminal).
       3. Mark the job 'cancelled' with failure_class='user_cancelled'.
-      4. Settle the wallet hold against the consumed GPU time persisted
-         by the most recent heartbeat (``mid_run_monitor_check``
-         updates ``gpu_seconds_used`` on every check). The user is
-         charged for actual GPU consumed up to the cancel point and
-         refunded any surplus. Cancellations BEFORE the first heartbeat
-         settle at zero consumption (full refund).
+      4. Settle the wallet hold against the row's ``gpu_seconds_used``.
+         ``mid_run_monitor_check`` writes it from a heartbeat, but not
+         on every check: it returns early for a missing or non-running
+         row and skips a zero value, and the write itself is
+         best-effort. If nothing has written it, the cancel takes the
+         zero-consumption ``release_hold`` path in
+         ``_settle_wallet_hold_for_completed_job``.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
     refusal. Safe to call repeatedly — once the row is terminal, the

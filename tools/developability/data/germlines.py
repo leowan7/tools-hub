@@ -1,13 +1,9 @@
 """Human germline V-gene reference sequences from IMGT.
 
-A minimal set of well-used human heavy and light chain germline V-gene
-sequences used as the reference pool for k-mer based humanness scoring.
-Sequences are framework regions only (CDRs omitted from germline for
-fairer comparison of framework humanness).
-
-For a production-grade tool, replace this inline set with a full IMGT
-germline repertoire (hundreds of IGHV/IGKV/IGLV alleles) or use BioPhi's
-OASis pipeline.
+11 alleles (5 IGHV, 3 IGKV, 3 IGLV), the reference pool for k-mer based
+humanness scoring. Each is the V-gene translation FR1 through FR3, CDR1 and
+CDR2 included. This is not the full IMGT repertoire and there is no OAS
+lookup.
 
 Source: IMGT/GENE-DB, representative alleles.
 """
