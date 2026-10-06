@@ -255,9 +255,13 @@ def _looks_like_cif(pdb_text: str) -> bool:
     ``loop_`` sniffs as CIF here and as PDB there. True only
     declines to rescale, so the bytes come back untouched.
     """
-    # Bounded: a CIF declares itself in its header. ``data_`` is the
-    # first non-blank line and the ``_atom_site.`` loop precedes the
-    # rows. Scanning the whole file put an O(n) pass in front of the
+    # Bounded: a CIF declares itself in its header, but not necessarily
+    # on the first non-blank line -- PXDesign's files open with
+    # Protenix ``#`` licence lines before ``data_rank_1``
+    # (tests/test_export_page_parity.py::_pxdesign_cif), which is why the
+    # marker below is line-anchored and not a prefix. Three lines in, it
+    # is still far inside 16 KB.
+    # Scanning the whole file put an O(n) pass in front of the
     # short-circuit below and halved its benefit on a 671 KB archive
     # member -- the check has to be cheaper than the thing it guards.
     for line in pdb_text[:_CIF_HEADER_BYTES].splitlines():
