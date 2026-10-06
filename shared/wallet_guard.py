@@ -20,16 +20,12 @@ import logging
 from decimal import Decimal
 from functools import wraps
 
-from shared.compute_campaigns import display_balance_usd, display_cost_usd
-
 from flask import g, render_template, request, session, url_for
 
 from shared.credits import load_user_context
 from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
-    SELF_SERVE_CEILING_USD,
-    _round_up_topup_amount,
     get_or_create_wallet,
     release_hold as wallet_release_hold,
     reserve_hold as wallet_reserve_hold,
@@ -77,27 +73,14 @@ def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
 def _render_topup_gate(
     *,
     tool_slug: str,
-    estimate: Decimal,
-    balance: Decimal,
-    deficit: Decimal,
     reason: str,
-    hard_cap: Decimal,
     form_snapshot: dict,
 ):
     """Render the 'Top up and run' gate.
 
-    Reuses ``templates/wallet/topup.html`` which already supports the
-    gate flow via ``next_url`` and ``deficit_usd`` (Agent H may swap
-    in a dedicated topup-and-run template later; the context here is
-    forward compatible with that swap).
+    Reuses ``templates/wallet/topup.html``, which shows the gate notice
+    when ``gate_reason`` is set.
     """
-    suggested = _round_up_topup_amount(deficit)
-    # The gate sentence prints the cost rounded up and the balance rounded
-    # down, so "short by" is their difference as printed: it adds up on the
-    # page and is never below the real deficit.
-    shown_short = Decimal(display_cost_usd(estimate)) - Decimal(
-        display_balance_usd(balance)
-    )
     # Stash the original form on the session so /account/topup-complete
     # can return the user back to the form with values intact. The form
     # snapshot is JSON serializable text only.
@@ -120,12 +103,6 @@ def _render_topup_gate(
     return render_template(
         "wallet/topup.html",
         wallet=wallet,
-        deficit_usd=deficit,
-        estimate_usd=estimate,
-        balance_usd=balance,
-        shown_short_usd=shown_short,
-        hard_cap_usd=hard_cap,
-        suggested_amount=suggested,
         min_topup_usd=MIN_TOPUP_USD,
         next_url=next_url,
         # Same slug as next_url, for the gate paragraph's inline "go back to
@@ -133,7 +110,6 @@ def _render_topup_gate(
         return_tool=tool_slug,
         gate_reason=reason,
         tool_slug=tool_slug,
-        self_serve_ceiling_usd=SELF_SERVE_CEILING_USD,
     )
 
 
@@ -254,8 +230,8 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             )
             if not pre.allow and pre.reason == REASON_INSUFFICIENT and not free_run:
                 # Short on the point estimate means short on the hold too, and
-                # the hold is what must fit (reserve_hold below). Price the
-                # gate on it so the amount it asks for is enough to submit.
+                # the hold is what must fit (reserve_hold below), so the gate's
+                # reason is decided on it.
                 pre = wallet_preflight(
                     user_id, resolved_slug,
                     max(estimate, cushioned_hold_usd(user_id, resolved_slug, params)),
@@ -264,11 +240,7 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             if not pre.allow:
                 return _render_topup_gate(
                     tool_slug=resolved_slug,
-                    estimate=pre.estimated_cost_usd,
-                    balance=pre.balance_usd,
-                    deficit=pre.deficit_usd,
                     reason=pre.reason,
-                    hard_cap=pre.hard_cap_usd,
                     form_snapshot=request.form.to_dict() or {},
                 )
 
@@ -298,22 +270,17 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             if not hold_tx_id:
                 # Lost a concurrent race or fell foul of a SQL guard.
                 # Re-preflight against the HELD (cushioned) amount, not the
-                # point estimate, so the gate shows the real deficit: a
+                # point estimate, so the gate's reason matches the hold: a
                 # balance that covers the estimate but not the cushioned
-                # reservation must still top up the difference. Gating the
-                # fallback on the point estimate would report a $0 deficit
-                # and an "ok" reason, a dead-end where the form will not
-                # submit yet the gate says nothing is owed.
+                # reservation is short. Gating the fallback on the point
+                # estimate would report an "ok" reason, a dead-end where the
+                # form will not submit yet the gate gives no cause.
                 fresh = wallet_preflight(
                     user_id, resolved_slug, hold_amount, params
                 )
                 return _render_topup_gate(
                     tool_slug=resolved_slug,
-                    estimate=fresh.estimated_cost_usd,
-                    balance=fresh.balance_usd,
-                    deficit=fresh.deficit_usd,
                     reason=fresh.reason or REASON_INSUFFICIENT,
-                    hard_cap=fresh.hard_cap_usd,
                     form_snapshot=request.form.to_dict() or {},
                 )
 

@@ -29,20 +29,18 @@ guards above green while a container starts returning a different number of
 designs than the splitter budgeted for.
 
 THE PROSE PINS ARE REGEXES, NOT SUBSTRINGS -- a repair, not a preference. An
-earlier draft pinned four independent substrings ("8", "shards", the runtime,
-the band). A row asserting the exact OPPOSITE ("you get one shard of 64
-designs ... the 57 minutes sits comfortably inside the 9 to 15") satisfied all
-four; so did the original defect's own sentence with a token appended, and so
-did bare keyword salad with no sentence at all. A lone "8" is also satisfied
-by "48 designs" and by "64 designs (8 shards)". Vocabulary is not meaning:
-each pin below matches the SHAPE of the claim it protects. Re-measured after
-the change: all five of those defeating rewrites now fail, as does the shipped
-row judged against a shard width moved to 16.
+earlier draft pinned independent substrings ("8", "shards", the runtime). A
+row asserting the exact OPPOSITE ("you get one shard of 64 designs ...")
+satisfied every one of them; so did the original defect's own sentence with a
+token appended, and so did bare keyword salad with no sentence at all. A lone
+"8" is also satisfied by "48 designs" and by "64 designs (8 shards)".
+Vocabulary is not meaning: each pin below matches the SHAPE of the claim it
+protects.
 
 WHAT THESE PINS STILL CANNOT DO. They require the right claims to be present;
 they cannot forbid a wrong one from being ADDED. A row that states the split
-correctly and then appends "...which is why the 9 to 15 min band does not
-apply to shards at all" passes every assertion here. Nothing short of reading
+correctly and then appends "...so the run below is what one shard of 8 gives
+you" passes every assertion here. Nothing short of reading
 the sentence catches that, and no guard in this file pretends otherwise.
 """
 from __future__ import annotations
@@ -168,7 +166,7 @@ def test_preflight_runtime_baseline_is_the_shard_width():
     ``runtime_baseline_designs=8`` under the comment ``# _SHARD_DESIGNS`` --
     naming a constant that file never imports. runtime_estimate_min divides by
     it (pdb_preflight_rules.py::runtime_estimate_min), so a width change
-    rescales every preflight estimate shown before a run.
+    rescales every preflight estimate.
 
     Its only other guard is a second absolute ``== 8``
     (tests/test_pdb_preflight.py::test_proteina_runtime_scales_per_SHARD_not_per_hundred_designs),
@@ -179,28 +177,6 @@ def test_preflight_runtime_baseline_is_the_shard_width():
     from shared.pdb_preflight_rules import TOOL_RULES
 
     assert TOOL_RULES["proteina"].size.runtime_baseline_designs == _SHARD_DESIGNS
-
-
-def test_about_runtime_row_names_the_width_it_was_measured_at():
-    """A per-shard runtime band is unreadable without the shard's width.
-
-    The band is ~9 to 15 min while the example on the same page records 57
-    minutes for ITS shard; the row said only "min / shard", so the two read as
-    a contradiction rather than as two different widths.
-
-    Matched structurally. A bare ``"8-design" in typical`` was satisfied by a
-    row DENYING the claim ("a 8-design figure was never measured"). The width
-    must also come AFTER the band, because
-    test_proteina_smoke.py::test_about_panel_table_agrees_with_preset_runtime
-    compares the row's LEADING pair of numerals against PRESET_RUNTIME -- a
-    width in front would be read as the band.
-    """
-    row = {r["preset"]: r["typical"] for r in meta.about["runtime_table"]}
-    typical = row["protein_binder"]
-    assert re.search(rf"/ {_SHARD_DESIGNS}-design shard\b", typical)
-    leading = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", typical)][:2]
-    band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
-    assert leading == [float(x) for x in re.findall(r"\d+(?:\.\d+)?", band)]
 
 
 def test_worked_example_says_its_shard_is_not_one_the_form_can_launch():
@@ -223,11 +199,3 @@ def test_worked_example_says_its_shard_is_not_one_the_form_can_launch():
     # ... and the single-container reading denied outright, so a row that
     # merely omits the correction cannot pass by silence.
     assert re.search(rf"not one shard of {payload}\b", why)
-
-    # The runtime reconciliation, derived from the two figures it reconciles,
-    # so moving either one fails here rather than leaving a 57-minute example
-    # sitting under a 9-to-15-minute band.
-    assert meta.EXAMPLE["runtime"] in why
-    band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
-    lo, hi = re.findall(r"\d+(?:\.\d+)?", band)
-    assert f"{lo} to {hi}" in why

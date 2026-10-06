@@ -526,9 +526,6 @@
                   <span class="home-catalog-card-name">{{ tool.name }}</span>
                 </div>
                 <p class="home-catalog-card-tagline">{{ tool.comparison_one_liner if tool.comparison_one_liner and tool.comparison_one_liner != '—' else tool.tagline }}</p>
-                {% if tool.runtime_band and tool.runtime_band != '—' %}
-                  <span class="home-catalog-card-meta">Runtime <strong>{{ tool.runtime_band }}</strong></span>
-                {% endif %}
                 <span class="home-catalog-card-cta">
                   {% if authenticated %}Open tool{% else %}See how it works{% endif %}
                   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -571,8 +568,8 @@
         </span>
         <h3 class="why-card-title">Pay for compute delivered</h3>
         <p class="why-card-body">
-          Every job places a wallet hold against a live estimate, then
-          settles at the actual compute consumed. Whatever the job did not
+          Every job places a wallet hold, then settles at the actual
+          compute consumed. Whatever the job did not
           use returns to your wallet automatically. You pay for compute
           delivered, not compute reserved.
         </p>

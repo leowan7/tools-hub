@@ -186,6 +186,11 @@
    stays live, so the modal opens and shows an empty shortlist rather than
    refusing to respond at all. */
 .cand-shortlist-hint { font-size: .8rem; color: var(--text-tertiary, #6b7683); }
+.cand-bulk-bar { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; font-size: .82rem; color: var(--text-secondary); }
+.cand-bulk-bar .btn-secondary { font-size: .82rem; padding: .3rem .7rem; }
+.cand-where { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.cand-bulk-bar .form-control { display: inline-block; width: auto; font-size: .82rem; padding: .3rem .45rem; }
+.cand-bulk-bar input.form-control { width: 6rem; }
 
 /* Group header row, rendered only under sort_mode='tool'. Reordering rows
    without drawing the boundary asserted a single cross-tool ranking the table
@@ -484,6 +489,34 @@
       Send shortlist to Ranomics lab
     </button>
     <span class="cand-shortlist-hint" id="shortlist-hint-{{ scope }}">Star a design to shortlist it</span>
+  </div>
+  {# Bulk selection. Selecting is starring: static/js/candidate_table.js
+     (initTable, starRows) writes the shortlist the stars write. Select where
+     lists this table's metric columns, and none in multi-tool mode, whose
+     Score column mixes tools' scales (see
+     tests/test_candidate_table_js_contract.py::
+     test_the_multi_tool_target_page_emits_no_column_sort_hook). #}
+  <div class="cand-bulk-bar">
+    <button type="button" class="btn-secondary" data-bulk="all">Select all</button>
+    <button type="button" class="btn-secondary" data-bulk="clear">Clear</button>
+    {% set where_cols = [] if multi_tool else columns | reject('equalto', 'against_bar') | list %}
+    {% if where_cols %}
+    <span class="cand-where">
+      <label for="cand-where-col-{{ scope }}">Select where</label>
+      <select id="cand-where-col-{{ scope }}" class="cand-where-col form-control">
+        {% for col in where_cols %}
+        <option value="{{ col }}">{{ metric_glossary.get(col, {}).get('label', col) }}</option>
+        {% endfor %}
+      </select>
+      <select class="cand-where-op form-control" aria-label="Comparison">
+        <option value="ge">&ge;</option>
+        <option value="le">&le;</option>
+      </select>
+      <input type="number" step="any" class="cand-where-val form-control" aria-label="Value">
+      <button type="button" class="btn-secondary" data-bulk="where">Select</button>
+    </span>
+    {% endif %}
+    <span class="cand-bulk-note" aria-live="polite"></span>
   </div>
 </div>
 {% endif %}

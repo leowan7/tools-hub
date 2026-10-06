@@ -198,32 +198,27 @@ class TestWalletTopupTemplate:
         assert "Auto reload" in html
         assert "wallet-topup-form" in html
 
-    def test_gate_flow_with_deficit_shows_top_up_cta(self, app):
-        """Decorator gate render: deficit_usd + next_url present.
-
-        Mirrors what app.py:_render_topup_gate passes. Tests the contract
-        from WAVE2-REVIEW.md section 4.1.
-        """
+    def test_gate_flow_shows_the_notice_without_a_figure(self, app):
+        """Decorator gate render, as shared/wallet_guard.py::_render_topup_gate
+        calls it. A stale ``deficit_usd`` kwarg is passed to show it is not
+        printed."""
         with app.test_request_context("/tools/mpnn"):
             html = render_template(
                 "wallet/topup.html",
                 wallet=_wallet_fixture(balance=2.00),
                 deficit_usd=Decimal("15.50"),
-                estimate_usd=Decimal("17.50"),
-                balance_usd=Decimal("2.00"),
-                hard_cap_usd=Decimal("100.00"),
-                suggested_amount=20,
                 min_topup_usd=Decimal("20.00"),
                 next_url="/tools/mpnn",
+                return_tool="mpnn",
                 gate_reason="insufficient_balance",
                 tool_slug="mpnn",
-                self_serve_ceiling_usd=Decimal("500.00"),
             )
         # Nothing resumes the job after payment, so nothing may promise it.
         assert "Top up and run" not in html
         assert "where you left off" not in html
         assert "Nothing is submitted for you" in html
-        assert "$15.50" in html
+        assert "Your balance does not cover this run." in html
+        assert "15.50" not in html
         assert "Back to the form" in html
 
     def test_form_gate_is_a_link_not_a_submit(self, app):
@@ -427,7 +422,8 @@ class TestWalletTransactionsTemplate:
         ]
         # Group net = -1.75 + -1.45 = -3.20 => actual 3.20.
         annotations = {
-            "h-1": {"role": "hold", "settled": True, "reserved": Decimal("1.75")},
+            "h-1": {"role": "hold", "settled": True, "reserved": Decimal("1.75"),
+                    "outcome": "more_charged"},
             "c-1": {"role": "settlement", "net": Decimal("-3.20")},
         }
         with app.test_request_context("/account/wallet/transactions"):
@@ -449,6 +445,9 @@ class TestWalletTransactionsTemplate:
         assert "reserved" in html
         # There is exactly one net-for-this-job label (not two charges).
         assert html.count("net for this job") == 1
+        # A variance debit returned nothing.
+        assert "it settled for more than was reserved" in html
+        assert "unused part was returned" not in html
 
     def test_hold_plus_release_surplus_shows_net_and_returned_label(self, app):
         """hold (-2.00) + hold_release (+0.60): net = actual 1.40.
@@ -462,7 +461,8 @@ class TestWalletTransactionsTemplate:
         ]
         # Group net = -2.00 + 0.60 = -1.40 => actual 1.40.
         annotations = {
-            "h-2": {"role": "hold", "settled": True, "reserved": Decimal("2.00")},
+            "h-2": {"role": "hold", "settled": True, "reserved": Decimal("2.00"),
+                    "outcome": "part_returned"},
             "r-1": {"role": "settlement", "net": Decimal("-1.40")},
         }
         with app.test_request_context("/account/wallet/transactions"):
@@ -509,6 +509,66 @@ class TestWalletTransactionsTemplate:
         # A pending hold is not a settled net cost.
         assert "net for this job" not in html
 
+    @pytest.mark.parametrize("children,outcome", [
+        ([("charge", 0)], "none_returned"),
+        ([("charge", -1.45)], "more_charged"),
+        ([("hold_release", 0.60)], "part_returned"),
+        ([("hold_release", 8.00)], "all_returned"),
+        ([("absorbed_variance", 0)], "none_returned"),
+    ])
+    def test_hold_outcome_is_read_from_the_amounts(self, children, outcome):
+        from blueprints.wallet import _build_tx_lineage_annotations
+
+        rows = [dict(self._tx("h-1", "hold", -8.00, 42.00), user_id="u-1")]
+        for i, (kind, amount) in enumerate(children):
+            rows.append(dict(
+                self._tx(f"c-{i}", kind, amount, 42.00, parent_tx_id="h-1"),
+                user_id="u-1",
+            ))
+        annotations = _build_tx_lineage_annotations(
+            _FakeLedgerClient(rows), "u-1", rows,
+        )
+        assert annotations["h-1"]["outcome"] == outcome
+
+    def test_capped_settlement_rows_say_nothing_about_an_estimate(self, app):
+        """F-17: bindcraft job 489a17e0 metered $10.81 and was charged $8.00.
+
+        settle_hold clamps the actual to the hard cap, so the clamped
+        actual equals the hold and it writes a zero-amount charge noted
+        "estimate matched actual" (the v_diff = 0 branch of
+        supabase/migrations/0020_wallet_corrections.sql). Nothing came back,
+        so the reserved row must not say the unused part was returned, and
+        neither row may print the stored note.
+        """
+        from blueprints.wallet import _build_tx_lineage_annotations
+
+        rows = [
+            dict(self._tx("c-9", "charge", 0, 42.00, parent_tx_id="h-9",
+                          notes="estimate matched actual"), user_id="u-1"),
+            dict(self._tx("h-9", "hold", -8.00, 42.00), user_id="u-1"),
+        ]
+        annotations = _build_tx_lineage_annotations(
+            _FakeLedgerClient(rows), "u-1", rows,
+        )
+        with app.test_request_context("/account/wallet/transactions"):
+            html = render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations=annotations,
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=2,
+            )
+        assert "net for this job $8.00" in html
+        assert "none of it was returned when it settled" in html
+        assert "unused part was returned" not in html
+        assert "estimate matched actual" not in html
+        assert "estimat" not in html.lower()
+
     def test_notes_render_regression_note_to_notes(self, app):
         """The column is notes (plural). tx.notes must render.
 
@@ -533,6 +593,35 @@ class TestWalletTransactionsTemplate:
                 total_count=1,
             )
         assert "manual correction by ops" in html
+
+
+class _FakeLedgerClient:
+    """Just enough of the Supabase client for the lineage annotator."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, _name):
+        rows, filters = self._rows, []
+
+        class _Q:
+            def select(self, *_a):
+                return self
+
+            def eq(self, col, val):
+                filters.append(lambda r: r.get(col) == val)
+                return self
+
+            def in_(self, col, vals):
+                filters.append(lambda r: r.get(col) in vals)
+                return self
+
+            def execute(self):
+                class _R:
+                    data = [r for r in rows if all(f(r) for f in filters)]
+                return _R()
+
+        return _Q()
 
 
 # ---------------------------------------------------------------------------

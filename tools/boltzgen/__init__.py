@@ -7,8 +7,8 @@ invokes separately at the fold/refold step. It generates binder backbones
 against a target, then scores each candidate for refolding RMSD, ipTM, and
 pLDDT. The pilot tier accepts a caller-supplied target PDB, optional
 hotspot residues, a configurable binder-length window, and a BoltzGen
-design protocol (mini-protein, nanobody, antibody, or peptide). Runs
-~15-60 min on A100-40GB and emails results on completion.
+design protocol (mini-protein, nanobody, antibody, or peptide). Runs on
+A100-40GB and emails results on completion.
 """
 
 from __future__ import annotations
@@ -151,10 +151,10 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     # and refolds (budget then selects the top-N to return). 1000 was the
     # original wave-2 default but ran past the 6600s subprocess timeout
     # (``boltzgen_timeout`` in ``main``, llm-proteinDesigner
-    # docker/boltzgen/run_pipeline.py) on A100-40GB. 200 gives the
-    # filter a 4x selectivity ratio against the validate-side budget cap of
-    # 50. The one recorded 200-design run took 82.4 min
-    # (tools/boltzgen/example/result.json).
+    # docker/boltzgen/run_pipeline.py) on A100-40GB. 200 fits inside that
+    # timeout (one recorded 200-design run took 82.4 min,
+    # tools/boltzgen/example/result.json) and gives the filter a 4x
+    # selectivity ratio against the validate-side budget cap of 50.
     return {
         "job_tier": "pilot",
         "target_chain": inputs["target_chain"],
@@ -188,24 +188,24 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            # "~80 min", not the "~30 min" this replaces, which was 2.7x
-            # under the only boltzgen pilot on record: 4944 GPU-s = 82.4 min
-            # at 115 aa (docs/VALIDATION-LOG.md, job 758c45e5). The container
-            # folds a fixed 200-design pool whatever budget the form sends, so
-            # the figure moves with target size only -- and the pipeline stops
-            # the run at 6600 s, which is why the form refuses a target much
-            # over ~150 aa. docs/qa/RUNTIME-CEILING-2026-09-30.md.
-            label="Your target, ~80 min on a small target",
+            # The container folds a fixed 200-design pool whatever budget
+            # the form sends, so wall-clock moves with target size only --
+            # and the pipeline stops the run at 6600 s, which is why the
+            # form refuses a target much over ~150 aa.
+            # docs/qa/RUNTIME-CEILING-2026-09-30.md. The only boltzgen
+            # pilot on record is 4944 GPU-s at 115 aa (job 758c45e5,
+            # docs/VALIDATION-LOG.md).
+            label="Your target, a guided first run",
             description=(
-                # No "start small, then scale up": the estimate is flat
-                # at every budget from 1 to 50, so a smaller first batch
-                # returns fewer designs for the same money. Matches the
-                # wording in templates/tools/boltzgen_form.html.
+                # No "start small, then scale up": the search is a fixed
+                # 200-design pool at every budget from 1 to 50, so a
+                # smaller first batch returns fewer designs out of the
+                # same search.
                 "Real BoltzGen run against your uploaded target. Pick "
                 "1 to 50 final candidates with refolding RMSD and ipTM "
                 "scores. 4 is enough to read through while you confirm "
                 "your target and binder length, and raising it on a later "
-                "run returns more candidates against the same estimate. "
+                "run returns more candidates out of the same search. "
                 "Results emailed when complete; A100-40GB."
             ),
             requires_pdb=True,

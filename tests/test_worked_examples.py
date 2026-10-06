@@ -1373,16 +1373,16 @@ class TestExampleNumbersComeFromThePayload:
     }
 
     def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):
-        """``cost_usd`` tells a reader what a run of this tool costs, on a
-        page they can read without signing in, so it has to be the
-        CUSTOMER-facing charge rather than the raw Modal cost. The two
+        """``cost_usd`` records what that run was charged, so it has to be
+        the CUSTOMER-facing charge rather than the raw Modal cost. The two
         differ by shared.wallet.WALLET_MARKUP, and the first pxdesign
         example quoted the raw figure — 41% under what the wallet would
-        actually settle at.
+        actually settle at. It is no longer rendered; calibration comments
+        in shared/pdb_preflight_rules.py still cite it.
 
-        Recomputing it here also ties the page to the rate card: change a
+        Recomputing it here ties the record to the rate card: change a
         tool's ``gpu_class`` in shared/wallet_estimates.py and this fails
-        rather than leaving a stale price in front of a customer."""
+        rather than leaving a stale record."""
         from decimal import Decimal
 
         from shared.wallet import compute_charge_usd
@@ -3225,10 +3225,9 @@ class TestTheTeaserComesFromTheExample:
     def test_no_figure_in_the_teaser_is_invented(self, tools_app):
         """Every number in the teaser traces to a field of EXAMPLE.
 
-        The load-bearing one. ``target`` alone carries residue counts and
-        PDB ids, and ``runtime`` / ``cost_usd`` are the two figures the
-        teaser appends, so a digit outside their union was typed by a
-        person rather than recorded by a run.
+        The load-bearing one. ``target`` carries residue counts and PDB
+        ids, so a digit outside it was typed by a person rather than
+        recorded by a run.
         """
         from blueprints.tools import _example_teaser
 
@@ -3239,13 +3238,7 @@ class TestTheTeaserComesFromTheExample:
             if not example:
                 continue
             teaser = _example_teaser(example)
-            recorded = " ".join(
-                field for field in (
-                    Markup(example["target"]).striptags(),
-                    example.get("runtime"),
-                    example.get("cost_usd"),
-                ) if field
-            )
+            recorded = Markup(example["target"]).striptags()
             for figure in number.findall(teaser):
                 assert figure in recorded, (
                     f"{slug}: the teaser says {figure!r}, which appears in "
@@ -3275,8 +3268,8 @@ class TestTheTeaserComesFromTheExample:
                 f"  teaser: {_example_teaser(example)[:60]!r}"
             )
 
-    def test_both_recorded_figures_reach_the_teaser(self, tools_app):
-        """A figure the example carries is not silently dropped."""
+    def test_no_recorded_price_or_runtime_reaches_the_teaser(self, tools_app):
+        """The tool page shows no price or time before a run."""
         from blueprints.tools import _example_teaser
 
         _, slugs = tools_app
@@ -3284,12 +3277,9 @@ class TestTheTeaserComesFromTheExample:
             if not example:
                 continue
             teaser = _example_teaser(example)
+            assert "$" not in teaser, f"{slug}: {teaser!r}"
             if example.get("runtime"):
-                assert example["runtime"] in teaser, f"{slug}: runtime lost"
-            if example.get("cost_usd"):
-                assert f"${example['cost_usd']}" in teaser, (
-                    f"{slug}: cost_usd lost"
-                )
+                assert example["runtime"] not in teaser, f"{slug}: {teaser!r}"
 
     def test_the_teaser_renders_above_the_panel_it_links_to(self, tools_app):
         """Placement is the whole point, so it is asserted and not assumed.

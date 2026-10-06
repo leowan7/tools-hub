@@ -135,8 +135,49 @@ def test_csv_export_carries_the_metrics_not_just_the_rows(shape):
     value = "0.81" if shape == "candidates" else "0.66"
     assert value in first.split(","), first
     # Bulk and identity fields must never become columns.
-    for banned in ("pdb_content_b64", "sequence", "contacted_residues"):
+    for banned in ("pdb_content_b64", "contacted_residues"):
         assert banned not in header.split(","), header
+    # The stored sequence is the one exception, and it goes last.
+    assert header.split(",")[-1] == "sequence", header
+
+
+def test_csv_carries_a_long_binder_sequence_in_the_last_column():
+    """Job 26c1f866 (esmfold2-design): the CSV had rank..iPTM_proxy and no
+    sequence while the FASTA beside it carried one. Shape copied from
+    tools/esmfold2_design/run_pipeline.py's ``candidates`` list."""
+    binder = "M" + "ACDEFGHIKLMNPQRSTVWY" * 30          # 601 aa
+    cands = [
+        {"rank": 0, "name": "seed0_rank0", "pdb_key": "seed0_design_0_complex.pdb",
+         "designed_sequence": "MAEKV|" + binder, "sequence": binder,
+         "scores": {"ipTM": 0.95, "pI": 4.89, "final_loss": 3.69}},
+        {"rank": 1, "name": "seed1_rank1", "pdb_key": "seed1_design_0_complex.pdb",
+         "binder_sequence": "GSHMK", "scores": {"ipTM": 0.93, "pI": 5.67}},
+        {"rank": 2, "pdb_key": "seed2_design_0_complex.pdb",
+         "scores": {"ipTM": 0.91, "pI": 6.01}},
+    ]
+    text = candidates_to_csv(cands)
+    header = text.splitlines()[0].split(",")
+    assert header[-1] == "sequence"
+    assert header.count("sequence") == 1
+    rows = list(csv.DictReader(io.StringIO(text)))
+    assert [r["sequence"] for r in rows] == [binder, "GSHMK", ""]
+    # The columns before it are the ones the file had without it.
+    no_seq = [{k: v for k, v in c.items() if "sequence" not in k} for c in cands]
+    assert candidates_to_csv(no_seq).splitlines()[0].split(",") == header[:-1]
+
+
+def test_a_sequence_stored_under_scores_still_reaches_the_csv():
+    """Before the sequence column existed, ``scores["sequence"]`` was exported
+    as an ordinary score column. Making ``sequence`` a reserved name must not
+    drop it, or write it as a second ``sequence`` column."""
+    text = candidates_to_csv(
+        [{"rank": 1, "pdb_key": "d0.pdb", "scores": {"ipTM": 0.9, "sequence": "MKVLT"}}]
+    )
+    reader = csv.DictReader(io.StringIO(text))
+    (row,) = reader
+    assert reader.fieldnames.count("sequence") == 1
+    assert row["sequence"] == "MKVLT"
+    assert row["ipTM"] == "0.9"
 
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))
@@ -483,6 +524,7 @@ class TestMalformedCandidateRow:
             "pdb_key": "",
             "source_rank": str(position + 1),
             "iptm": "",
+            "sequence": "",
         }, blank
         for other in (i for i in range(3) if i != position):
             assert f"designs/good_{other}.pdb" in lines[1 + other], lines

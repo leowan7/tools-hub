@@ -172,12 +172,10 @@ class TestAnonymousGetRendersTheRealForm:
     def test_no_balance_rows_and_no_topup_gate(self, client, slug):
         resp = client.get(f"/tools/{slug}")
         body = resp.get_data(as_text=True)
-        assert "data-estimate-cost" in body, "estimate panel must render"
-        # Element-level again: wallet_partials_script() names all three
-        # of these in querySelector/getElementById strings regardless.
+        assert 'id="wallet-estimate-panel"' in body, "estimate panel must render"
+        # Element-level again: wallet_partials_script() names these in
+        # querySelector/getElementById strings regardless.
         assert "value\" data-estimate-balance>" not in body
-        assert "value\" data-estimate-balance-after>" not in body
-        assert "Balance after this job" not in body
         assert '<div class="wallet-topup-gate"' not in body
 
     @pytest.mark.parametrize("slug", PUBLIC_TOOLS)
@@ -241,7 +239,6 @@ class TestSignedInRenderUnchanged:
         assert '<button type="submit"' in body
         assert "Sign in to run this" not in body
         assert "value\" data-estimate-balance>" in body
-        assert "Balance after this job" in body
         assert '<div class="wallet-topup-gate"' in body
 
 

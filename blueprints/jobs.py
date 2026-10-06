@@ -905,6 +905,36 @@ def job_scale_up(job_id: str):
         source_job=job.id,
     ))
 
+def _progress_one_count(progress) -> dict:
+    """A copy of a heartbeat ``_progress`` with the design count taken out of
+    ``stage``.
+
+    The stage string is written by the tool container, outside this repo for
+    BindCraft, and QA 2026-10-01 F-16 saw it carry the count on the live page
+    ("Running BindCraft - 0/2 designs") beside the page's own
+    ``designs_completed`` of ``designs_total``: two counts that could
+    disagree. An ``N/M`` is
+    removed when ``M`` equals ``designs_total``, with a trailing "design(s)"
+    and the separator before it. Without a positive ``designs_total`` the
+    page prints no ``M`` and the stage is left as written.
+    """
+    if not isinstance(progress, dict):
+        return {}
+    out = dict(progress)
+    stage = out.get("stage")
+    try:
+        total = int(out.get("designs_total"))
+    except (TypeError, ValueError):
+        total = 0
+    if isinstance(stage, str) and total > 0:
+        out["stage"] = re.sub(
+            rf"\s*[-\u2013\u2014:,]?\s*\(?\b\d+\s*/\s*{total}\b\)?(?:\s+designs?\b)?",
+            "",
+            stage,
+        ).strip(" -\u2013\u2014:,")
+    return out
+
+
 @jobs_bp.route("/jobs/<job_id>/status.json", methods=["GET"])
 @login_required
 def job_status(job_id: str):
@@ -1025,11 +1055,10 @@ def job_status(job_id: str):
         # settles it is next: the streamed partials
         # carry no pI at all, so the minibinder bar could not be answered even
         # with the mode in hand (``bar_is_answerable`` takes no preset for the
-        # same reason). The template branches on ``has_bar`` and renders
-        # "... returned so far" rather than "... meeting the quality bar so
-        # far" (templates/job_detail.html), so the live line stays honest:
-        # unlike the finished surfaces this class is about, it never presents
-        # a delivered count AS a count of keepers.
+        # same reason). The template branches on ``has_bar`` and prints no
+        # line for this count, where a bar tool gets "... meeting the quality
+        # bar so far" (templates/job_detail.html renderSummary), so the live
+        # line never presents a delivered count AS a count of keepers.
         passed = len(rows)
     elif score_legends.bar_is_answerable(job.tool, rows):
         passed = sum(
@@ -1058,7 +1087,7 @@ def job_status(job_id: str):
             "status": job.status,
             "tool": job.tool,
             "preset": job.preset,
-            "progress": inputs.get("_progress") or {},
+            "progress": _progress_one_count(inputs.get("_progress")),
             "partial_candidates": live,
             "passed_count": passed,
             # Whether that number is "met the bar" or just "delivered".
@@ -1514,7 +1543,19 @@ def export_csv(job_id: str):
     if not candidates and is_candidate_array(sequences):
         body = sequences_to_csv(sequences)      # mpnn
     else:
-        body = candidates_to_csv(candidates)
+        # fetch_bytes, so a row that stores no sequence field gets its
+        # sequence from the structure here and not just in the FASTA. Same
+        # rows, same bytes, same extractor as export_fasta below. Per ROW,
+        # not per tool: the 2026-10-01 live check named boltzgen, proteina,
+        # rfantibody and iggm as the ones whose CSV column was empty while
+        # their FASTA carried records, but no candidate row in any
+        # tools/*/example/result.json stores a sequence field, so the set
+        # that reads here is wider than those four.
+        body = candidates_to_csv(
+            candidates,
+            fetch_bytes=_storage_fetcher(ctx.user_id, "export_csv"),
+            default_job_id=job_id,
+        )
     return Response(
         body,
         mimetype="text/csv",

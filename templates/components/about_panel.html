@@ -8,8 +8,7 @@ Consumes an ``about`` dict with this shape:
         "when_to_use":    list[str],                            # bullets
         "prerequisites":  list[str],                            # bullets
         "inputs":         list[{"name": str, "explanation": str}],
-        "runtime_table":  list[{"preset": str, "typical": str}],
-        "output_summary": str,                                 # 1 sentence; rendered after runtime table
+        "output_summary": str,                                 # 1 sentence
         "paper_url":      str (optional),                       # for the inline <a> in what_it_is
         "paper_citation": str (optional),
         "github_url":     str (optional),
@@ -94,26 +93,6 @@ Usage:
             <li><strong>{{ item.name }}.</strong> {{ item.explanation|safe }}</li>
           {% endfor %}
         </ul>
-      {% endif %}
-
-      {% if about.runtime_table %}
-        <h3>Runtime</h3>
-        <table class="about-runtime-table">
-          <thead>
-            <tr>
-              <th>Preset</th>
-              <th>Typical min</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in about.runtime_table %}
-              <tr>
-                <td>{{ row.preset }}</td>
-                <td>{{ row.typical }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
       {% endif %}
 
       {% if about.output_summary %}
@@ -306,20 +285,6 @@ Usage:
         </dl>
       </div>
     </aside>
-
-    {% if _pub.runtime_band and _pub.runtime_band != '—' %}
-      <aside class="panel about-panel">
-        <div class="panel-header">
-          <span class="panel-title">Typical runtime</span>
-        </div>
-        <div class="panel-body">
-          <p>
-            {{ _pub.runtime_band }} per run on a dedicated GPU. You pay only
-            for the compute a job delivers, drawn from your wallet balance.
-          </p>
-        </div>
-      </aside>
-    {% endif %}
 
     {% if _pub.related_tools %}
       <aside class="panel about-panel">

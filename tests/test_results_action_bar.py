@@ -19,7 +19,7 @@ comments, in the imperative:
 
   "It used to open with 'Take it further' and carry a `btn-primary`, which
    made it the loudest control on a page whose primary outcome is the
-   download ... Both links are secondary now."       results_shell.html
+   download ... Both controls are secondary now."    results_shell.html
 
 Under this repo's house rule a comment is a claim, so each one needs something
 that fails when it stops being true.
@@ -237,12 +237,31 @@ def test_the_wet_lab_panel_carries_no_primary_button():
         "went back to `in`, or to a hardcoded slug list, a missing global "
         "renders both blocks away without raising"
     )
-    assert "Test binders in the lab" in html and "AI Binder Sprint" in html
-    for link in ("Test binders in the lab", "AI Binder Sprint"):
-        idx = html.index(">" + link + "<")
-        tag_start = html.rindex("<a ", 0, idx)
-        assert "btn-secondary" in html[tag_start:idx], link
-        assert "btn-primary" not in html[tag_start:idx], link
+    # Both open the table's lab modal with the programme preselected. The
+    # modal's id is campaign-modal-<scope>, and job-1 is this page's scope.
+    assert 'id="campaign-modal-job-1"' in html
+    for label, service in (("Test binders in the lab", "pilot"),
+                           ("AI Binder Sprint", "sprint")):
+        idx = html.index(">" + label + "<")
+        tag = html[html.rindex("<button ", 0, idx):idx]
+        assert "btn-secondary" in tag, label
+        assert "btn-primary" not in tag, label
+        assert f"openCampaignModal('job-1', '{service}')" in tag, (label, tag)
+
+
+def test_the_worked_example_keeps_the_lab_links():
+    """The example renders no lab modal, so the panel keeps its two links to
+    ranomics.com rather than buttons that would open nothing."""
+    tmpl = _env().from_string(
+        '{% from "components/results_shell.html" import results_panel %}'
+        '{{ results_panel(candidates, ["ipTM"], "bindcraft", "example") }}'
+    )
+    html = tmpl.render(candidates=[_row()])
+    assert "campaign-modal-" not in html
+    assert "openCampaignModal(" not in html
+    for href in ("https://www.ranomics.com/binder-pilot",
+                 "https://www.ranomics.com/ai-binder-sprint"):
+        assert f'<a href="{href}"' in html, href
 
 
 def test_the_blast_radius_this_file_claims_is_real():

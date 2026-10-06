@@ -41,16 +41,14 @@ authenticated. Two consequences follow, both defended here:
     stage string is harmless to spoof. Live ``new_candidate`` injection
     is rendered back to the user, so it is gated behind the per-job
     ``job_token`` shared secret (see below).
-  * The cost-overrun warning must never trust the body. It uses a
-    SERVER-SIDE wall-clock measurement (``_elapsed_running_seconds``)
-    only; the request-body ``cumulative_gpu_seconds`` is ignored. The
-    mid-run monitor no longer kills a job for cost (the cost-based kill
-    was removed; spend is bounded by the prepaid wallet + per-job hold
-    and wall-clock by the Modal container hard timeout), so at worst a
-    forged figure would trigger one spurious overrun-warning email to
-    the victim, never a cancel or a billed charge. Using the server-side
-    value keeps even that inert. If we ever need stronger guarantees,
-    add the token to the heartbeat URL too.
+  * The GPU seconds the mid-run monitor persists must never come from
+    the body: that column is what a user-initiated cancel bills. The
+    handler passes a SERVER-SIDE wall-clock measurement
+    (``_elapsed_running_seconds``) and ignores the request-body
+    ``cumulative_gpu_seconds``
+    (tests/test_heartbeat_security.py::TestCostPathIgnoresBodySeconds).
+    If we ever need stronger guarantees, add the token to the heartbeat
+    URL too.
 
 Idempotency & race safety
 -------------------------
@@ -301,10 +299,8 @@ def _handle_heartbeat() -> Any:
     the pipeline does not waste GPU time on retries. If the body is
     malformed or the job is unknown we log and move on.
 
-    The heartbeat also drives the mid-run cost-overrun check. If
-    cumulative GPU cost passes 1.5x the estimate we email a soft warning,
-    once per job. There is no cost-based kill: the 2.0x kill was removed
-    in 3818b4a4, so a heartbeat never cancels a run or settles a charge.
+    The heartbeat also persists the job's elapsed GPU seconds
+    (``shared/jobs.py::mid_run_monitor_check``), which a later cancel bills.
     """
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("job_id") or "")
@@ -317,7 +313,7 @@ def _handle_heartbeat() -> Any:
 
     # On the first heartbeat, transition pending -> running so the UI
     # knows the pipeline is actually executing (vs. queued in Modal).
-    # Re-fetch so started_at is populated for the overrun monitor below.
+    # Re-fetch so started_at is populated for the mid-run monitor below.
     if job.status == "pending":
         mark_running(job.id)
         fresh = get_job(job_id)
@@ -360,21 +356,13 @@ def _handle_heartbeat() -> Any:
         new_candidate=new_candidate,
     )
 
-    # Cost-overrun warning. The overrun check MUST use a server-side
-    # measurement only. The heartbeat is unauthenticated on this path, so
-    # a client-supplied ``cumulative_gpu_seconds`` is attacker-controlled.
-    # mid_run_monitor_check no longer kills a job for cost (the cost-based
-    # kill was removed); it only emails a one-time overrun warning. Using
-    # the wall-clock value keeps even that inert against a forged figure:
-    # a spoofed heartbeat cannot cancel a victim's job or settle a billed
-    # charge, only (at most) trip a spurious warning off a real elapsed
-    # time. We therefore derive cumulative seconds purely from wall-clock
-    # since started_at and ignore the request-body value entirely. Modal
-    # bills wall-clock on the GPU container, so this is also a fair cost
-    # approximation for the warn threshold.
+    # The heartbeat is unauthenticated on this path, so a client-supplied
+    # ``cumulative_gpu_seconds`` is attacker-controlled. The seconds handed
+    # to the monitor are wall-clock since started_at; the request-body value
+    # is ignored entirely.
     cumulative_secs = _elapsed_running_seconds(job)
     if cumulative_secs > 0:
-        _run_overrun_check(job_id, cumulative_secs)
+        _run_mid_run_monitor(job_id, cumulative_secs)
 
     return jsonify({"status": "ok"})
 
@@ -395,24 +383,10 @@ def _elapsed_running_seconds(job: ToolJob) -> float:
         return 0.0
 
 
-def _run_overrun_check(job_id: str, cumulative_gpu_seconds: float) -> None:
-    """Fire mid_run_monitor_check with a lazily-built ModalClient.
-
-    Lazy import keeps gpu.modal_client out of the module-import cycle and
-    means a missing modal package does not break heartbeats:
-    ``shared/jobs.py::mid_run_monitor_check`` never reads ``modal_client``.
-    The argument existed for the cost-based kill, which was removed in
-    3818b4a4, so passing None changes nothing.
-    """
+def _run_mid_run_monitor(job_id: str, cumulative_gpu_seconds: float) -> None:
+    """Run mid_run_monitor_check; a failure is logged, never raised."""
     try:
-        from gpu.modal_client import ModalClient  # noqa: PLC0415
-        client = ModalClient()
-    except Exception:
-        client = None
-    try:
-        mid_run_monitor_check(
-            job_id, cumulative_gpu_seconds, modal_client=client,
-        )
+        mid_run_monitor_check(job_id, cumulative_gpu_seconds)
     except Exception:
         logger.warning(
             "Mid-run monitor check raised for job %s", job_id, exc_info=True,

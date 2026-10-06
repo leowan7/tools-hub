@@ -374,10 +374,6 @@ class TestMidRunHeartbeatCasGuard:
             inputs={
                 "_wallet": {
                     "hold_tx_id": "hold-heartbeat-cas",
-                    # Large estimate keeps ratio under the warn threshold
-                    # so the function returns None after the heartbeat
-                    # persist instead of falling into the warn or kill
-                    # branches.
                     "estimate_usd": "10000.00",
                     "gpu_class": "A100",
                 },
@@ -414,6 +410,4 @@ class TestMidRunHeartbeatCasGuard:
         # Legacy unconditional _update must NOT be used for this persist;
         # otherwise the terminal value can be clobbered.
         legacy_update.assert_not_called()
-        # With ratio well under the warn threshold the function returns
-        # None after the persist that fizzled.
         assert result is None

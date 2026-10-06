@@ -1,7 +1,7 @@
-"""Customer notices for a finished run: it cost more than estimated, or it stopped early.
+"""Customer notices for a finished run that stopped early.
 
-Both are derived when the page or email renders, from values already on the
-job and in the wallet ledger. Nothing here is stored.
+Derived when the page or email renders, from values already on the job.
+Nothing here is stored.
 """
 from __future__ import annotations
 
@@ -19,36 +19,6 @@ def to_cents(value) -> Optional[Decimal]:  # noqa: ANN001
     if not amount.is_finite():
         return None
     return amount.quantize(_CENT, rounding=ROUND_HALF_UP)
-
-
-def overrun_line(job) -> str:  # noqa: ANN001
-    """The "more GPU time than estimated" line, or "".
-
-    The charge is the settled ledger net for the job's hold
-    (``shared.wallet.job_spend_by_hold``), so it is what the wallet took after
-    the settle clamp, not a recomputation. "" when the hold is unsettled,
-    unreadable, or the charge rounds to no more than the estimate.
-    """
-    wallet = (getattr(job, "inputs", None) or {}).get("_wallet")
-    if not isinstance(wallet, dict):
-        return ""
-    hold = wallet.get("hold_tx_id")
-    estimate = to_cents(wallet.get("estimate_usd"))
-    user_id = getattr(job, "user_id", None)
-    if not hold or estimate is None or not user_id:
-        return ""
-    from shared.wallet import job_spend_by_hold  # noqa: PLC0415
-
-    ledger = job_spend_by_hold(user_id, [str(hold)]).get(str(hold))
-    if not ledger or not ledger.get("settled"):
-        return ""
-    charged = to_cents(ledger.get("usd"))
-    if charged is None or charged <= estimate:
-        return ""
-    return (
-        "This run used more GPU time than estimated: "
-        f"estimated ${estimate}, charged ${charged}."
-    )
 
 
 def _designs(n: int) -> str:
@@ -89,7 +59,7 @@ def partial_line(job) -> str:  # noqa: ANN001
 
 def run_notices(job) -> list[str]:  # noqa: ANN001
     """Every notice that applies to ``job``, in display order."""
-    return [line for line in (overrun_line(job), partial_line(job)) if line]
+    return [line for line in (partial_line(job),) if line]
 
 
 def campaign_partial_line(campaign, delivered: int, partial_chunks: int, timeout_chunks: int) -> str:  # noqa: ANN001

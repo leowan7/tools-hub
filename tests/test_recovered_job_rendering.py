@@ -174,14 +174,14 @@ def test_the_empty_state_matcher_fires_on_a_genuinely_empty_run(tool, flask_app)
     )
 
 
-@pytest.mark.parametrize("tool", ("boltz2", "af2", "colabfold", "esmfold"))
+@pytest.mark.parametrize("tool", DESIGNS_NATIVE)
 def test_the_run_counter_counts_the_rendered_list(tool, flask_app):
     """"Designs folded 0 / 0" over a populated table is its own falsehood.
 
     A recovered result carries no ``designs_total``, so the counter falls back
     to a list length -- it was falling back to ``raw_designs``, the list the
-    page is NOT rendering. Only the four partials that print an N / N counter
-    are covered; iggm and opendde print none.
+    page is NOT rendering. Every partial here prints the counter through
+    results_shell.results_panel's "Returned N / M" line.
     """
     html = _render(flask_app, tool, _recovered())
     assert "0 / 0" not in html, (
@@ -192,7 +192,7 @@ def test_the_run_counter_counts_the_rendered_list(tool, flask_app):
     )
 
 
-@pytest.mark.parametrize("tool", ("boltz2", "af2", "colabfold", "esmfold"))
+@pytest.mark.parametrize("tool", DESIGNS_NATIVE)
 def test_a_lossy_recovery_shows_the_run_total(tool, flask_app):
     """Recovery skips a design whose structure never reached Storage.
 

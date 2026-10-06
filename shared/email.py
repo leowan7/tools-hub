@@ -618,9 +618,9 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
 def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     """One-line cost summary for the completion email. Empty if no wallet ctx.
 
-    Returns strings like ``"Estimated $0.45, charged $0.52 (300 GPU-sec on
+    Returns strings like ``"You were charged $0.52 (300 GPU-sec on
     A100-80GB)."`` -- 300 s at the A100-80GB rate through WALLET_MARKUP is
-    $0.5243. (The figures here used to be arithmetically impossible.)
+    $0.5243. The run's pre-run estimate is not printed.
     The "charged" figure is capped at the per-tool hard cap so absorbed
     variance does not surface here — the user only sees what their wallet
     actually paid.
@@ -637,7 +637,6 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     gpu_seconds = job.gpu_seconds_used or 0
     if gpu_seconds <= 0:
         return ""
-    estimate_raw = wallet_ctx.get("estimate_usd")
     try:
         from shared.wallet import compute_charge_usd  # noqa: PLC0415
         from shared.wallet_estimates import (  # noqa: PLC0415
@@ -681,20 +680,22 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
             actual = ledger["usd"]
     except Exception:
         pass
-    # Rounded by the same rule as shared.run_notices.overrun_line, so the two
-    # lines in one email print the same figures.
     from shared.run_notices import to_cents  # noqa: PLC0415
 
-    bits = []
-    estimate = to_cents(estimate_raw) if estimate_raw else None
-    if estimate is not None:
-        bits.append(f"Estimated ${estimate}")
-    bits.append(f"charged ${to_cents(actual)}")
-    return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
+    return (
+        f"You were charged ${to_cents(actual)} "
+        f"({int(gpu_seconds)} GPU-sec on {gpu_class or 'GPU'})."
+    )
 
 
-def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: ANN001
-    """``(label, url)`` of the results page this shortlist was picked on.
+def _handoff_source(campaign) -> Optional[tuple]:  # noqa: ANN001
+    """``(label, id)`` of the parent this shortlist was picked on.
+
+    No URL: those pages are owner-scoped, so a staff account cannot open
+    them (/jobs and /targets 404 in blueprints/jobs.py::job_detail and
+    blueprints/targets.py::target_detail; /campaigns redirects to its own
+    runs list in blueprints/campaigns.py::compute_campaign_detail). The staff
+    email links the admin page's designs table instead.
 
     Branches on ``submission_source``, not on whichever id happens to be set.
     The ``lab_campaigns_submission_source_shape`` CHECK requires each source to
@@ -711,13 +712,13 @@ def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: A
     source = str(getattr(campaign, "submission_source", "") or "web")
     if source == "target":
         tid = getattr(campaign, "source_target_id", None)
-        return ("Target", f"{base_url}/targets/{tid}") if tid else None
+        return ("Target", tid) if tid else None
     if source == "campaign":
         cid = getattr(campaign, "source_campaign_id", None)
-        return ("Run", f"{base_url}/campaigns/{cid}") if cid else None
+        return ("Run", cid) if cid else None
     if source == "web":
         jid = getattr(campaign, "source_job_id", None)
-        return ("Source job", f"{base_url}/jobs/{jid}") if jid else None
+        return ("Source job", jid) if jid else None
     return None
 
 
@@ -868,7 +869,8 @@ def send_campaign_submitted_emails(
     # the risk is a client that is stricter than a browser rather than a live
     # break. Only this URL can carry a query, so only this one is escaped.
     campaign_href = campaign_url.replace("&", "&amp;")
-    source_link = _handoff_source_link(base_url, campaign)
+    source = _handoff_source(campaign)
+    admin_url = f"{base_url}/admin/lab-projects/{campaign.id}"
     tools_line = _source_tools_line(source_tools)
 
     # Built here rather than inline in the staff table below. An f-string
@@ -882,10 +884,10 @@ def send_campaign_submitted_emails(
         if tools_line else ""
     )
     source_row = ""
-    if source_link:
+    if source:
         source_row = (
-            f"<tr><td {_td}>{source_link[0]}</td>"
-            f'<td><a href="{source_link[1]}">{source_link[1]}</a></td></tr>'
+            f"<tr><td {_td}>{source[0]}</td>"
+            f'<td><a href="{admin_url}#shortlisted-designs">{source[1]}</a></td></tr>'
         )
 
     # Shortlist size. A 'web' row carries candidate_indices; a 'campaign' or
@@ -913,7 +915,7 @@ def send_campaign_submitted_emails(
         # against "a design on this target", the campaign arm against "a child of
         # this compute campaign" -- and this function takes no parameter saying
         # which. A branch on `campaign.submission_source` would need a field this
-        # module reads only through `getattr` (see _handoff_source_link), and its
+        # module reads only through `getattr` (see _handoff_source), and its
         # else-arm would go stale on the next source added.
         _sentences.append(
             f"{dropped} starred design{_plural} could not be matched to a "
@@ -1070,7 +1072,6 @@ def send_campaign_submitted_emails(
 
     # Staff notification
     staff_subject = f"New campaign: {campaign.target_name} from {user_email}"
-    admin_url = f"{base_url}/admin/lab-projects/{campaign.id}"
     staff_html = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
@@ -1113,7 +1114,7 @@ def send_campaign_submitted_emails(
            f"per-request cap\n" if truncated else "")
         + (f"Designs from: {tools_line}\n" if tools_line else "")
         + f"Budget: {campaign.budget_band.title()}\n"
-        + (f"{source_link[0]}: {source_link[1]}\n" if source_link else "")
+        + (f"{source[0]}: {source[1]}\n" if source else "")
         + f"\nReview in admin: {admin_url}\n"
     )
 
@@ -2428,9 +2429,23 @@ def send_auto_reload_failed_email(
 def send_auto_reload_rate_limited_email(
     *,
     user_id: str,
+    reason: str = "",
     **_extra: Any,
 ) -> bool:
-    """Auto reload skipped due to 24h count rate limit."""
+    """Auto reload skipped by a safety guard; no charge went out.
+
+    ``reason`` is a lowercase clause spliced into the body, and it also
+    switches the body off every mention of the 24h window, because on the
+    unreadable-guard path there is no previous reload to wait a day from.
+
+    No production code calls this by name: ``shared.wallet._send_email_safe``
+    reaches it with a ``getattr`` on this module, so a search for callers
+    finds only the tests, which do call it directly. The one production
+    dispatch is in ``_mail_auto_reload_skipped``, and two paths reach that,
+    both in ``shared.wallet``: the ``rate_limited`` branch of
+    ``auto_reload_if_needed`` omits ``reason`` and gets the 24h wording;
+    ``_refuse_auto_reload_unverified`` passes one.
+    """
     email = _resolve_user_email(user_id)
     if not email:
         logger.info(
@@ -2443,6 +2458,7 @@ def send_auto_reload_rate_limited_email(
     html = _render_template(
         "send_auto_reload_rate_limited.html",
         base_url=base_url,
+        reason=reason,
     )
     return _post_resend(
         to_email=email,
@@ -2563,11 +2579,9 @@ def send_job_capped_email(
     *,
     user_id: str,
     tool_slug: str = "",
-    attempted_usd=None,
-    cap_usd=None,
     **_extra: Any,
 ) -> bool:
-    """Submission blocked by per tool hard cap.
+    """Submission blocked by per tool hard cap. Names no amount.
 
     Trigger: ``wallet_preflight`` returns ``job_exceeds_per_tool_cap`` or
     ``job_exceeds_self_serve_ceiling``.
@@ -2584,17 +2598,12 @@ def send_job_capped_email(
         "https://ranomics.com/ranomics-contact?service=binder-pilot"
     )
     subject = (
-        f"Your {label} run was blocked by the per job spend cap"
+        f"Your {label} run is too large to start"
     )
     html = _render_template(
         "send_job_capped.html",
         base_url=base_url,
         tool_label=label,
-        # Compute actually consumed: a COST. These three emails exist to
-        # justify a charge the user did not expect, so quoting it low is the
-        # one thing they must not do.
-        attempted_usd=_money(attempted_usd, "up"),
-        cap_usd=_money(cap_usd, "down"),
         contact_url=contact_url,
     )
     return _post_resend(
@@ -2602,51 +2611,6 @@ def send_job_capped_email(
         subject=subject,
         html_body=html,
         log_tag=f"job_capped user={user_id} tool={tool_slug}",
-    )
-
-
-def send_overrun_warning_email(
-    *,
-    user_id: str,
-    tool_slug: str = "",
-    attempted_usd=None,
-    cap_usd=None,
-    **_extra: Any,
-) -> bool:
-    """Mid run soft warning: cumulative cost exceeded 1.5x the estimate.
-
-    Trigger: ``mid_run_monitor_check`` in ``shared/jobs.py`` once per
-    job. The job keeps running: there is no cost-based kill threshold
-    behind this email (the 2.0x mid-run kill was removed in 3818b4a4).
-    ``mid_run_monitor_check`` returns ``"warned"`` on exactly one path,
-    the one that sends this email.
-    """
-    email = _resolve_user_email(user_id)
-    if not email:
-        logger.info(
-            "send_overrun_warning_email: no email for user %s", user_id
-        )
-        return False
-    label = _label_for_tool(tool_slug)
-    base_url = _base_url()
-    subject = (
-        f"Your {label} run is running above estimate on Ranomics tools"
-    )
-    html = _render_template(
-        "send_overrun_warning.html",
-        base_url=base_url,
-        tool_label=label,
-        # Compute actually consumed: a COST. These three emails exist to
-        # justify a charge the user did not expect, so quoting it low is the
-        # one thing they must not do.
-        attempted_usd=_money(attempted_usd, "up"),
-        cap_usd=_money(cap_usd, "down"),
-    )
-    return _post_resend(
-        to_email=email,
-        subject=subject,
-        html_body=html,
-        log_tag=f"overrun_warning user={user_id} tool={tool_slug}",
     )
 
 

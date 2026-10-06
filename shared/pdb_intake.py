@@ -104,7 +104,10 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
     whatever the envelope said that day. Re-deriving them here from the
     stored target size and the job's own design count puts the result page
     on the same ``runtime_estimate_min`` the form panel calls. The minutes
-    are dropped when they cannot be re-derived, rather than shown stale.
+    are dropped when they cannot be re-derived, rather than kept stale.
+    The result page does not print them
+    (tests/test_result_page_runtime.py::test_result_page_prints_no_runtime_estimate);
+    its cap phrase prints the re-derived ``runtime_cap_target_aa`` and basis.
     """
     stored = (inputs or {}).get("_preflight")
     size = stored.get("size_envelope") if isinstance(stored, dict) else None
@@ -130,7 +133,7 @@ def job_preflight_for_display(inputs) -> Optional[dict]:
         minutes = round(runtime_estimate_min(rules, target_aa, num_designs), 1)
         # The binding cap is re-derived alongside the minutes for the same
         # reason: it is a function of the count, so a stored figure from a
-        # different count would disagree with the minutes printed next to it.
+        # different count would disagree with the minutes derived beside it.
         # A job stored before this key existed carries no value at all.
         # Suppressed when a larger limit is what refused, mirroring
         # ``shared/pdb_preflight.py::_check_size_envelope``: the header has to

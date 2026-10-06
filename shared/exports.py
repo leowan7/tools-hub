@@ -434,16 +434,233 @@ def _is_metric_value(v) -> bool:
     return False                           # lists/dicts (per-residue contacts)
 
 
-def candidates_to_csv(candidates) -> str:
-    """Provenance columns (:func:`export_key`) + every metric found."""
+def _candidate_sequence(cand: dict) -> str:
+    """The designed sequence a row stores: ``sequence``, else
+    ``binder_sequence``, else ``scores["sequence"]``, else ``""``. Read by the
+    CSV and the FASTA."""
+    scores = cand.get("scores")
+    seq = (cand.get("sequence") or cand.get("binder_sequence")
+           or (scores.get("sequence") if isinstance(scores, dict) else None)
+           or "")
+    return seq if isinstance(seq, str) else ""
+
+
+# One column per chain, named by its chain id: "sequence_chainB".
+_SEQ_CHAIN_PREFIX = "sequence_chain"
+# Why a row has no chain columns. One of four strings; see _add_chain_columns.
+_SEQ_NOTE = "sequence_note"
+
+
+def _is_reserved_seq_name(name: str) -> bool:
+    """A column name :func:`sequence_columns` owns, so no metric may use it."""
+    return name == _SEQ_NOTE or name.startswith(_SEQ_CHAIN_PREFIX)
+# Once this many structures have been read, the remaining rows that would need
+# one get a note instead of a read -- counted in reads, not rows. The loop is
+# sequential, and the web tier kills a request at gunicorn's ``timeout`` (120s
+# by default) under sync workers, taking the worker down with it -- see
+# gunicorn.conf.py. Chosen, not computed: per-download latency is unmeasured
+# here, and parse alone measured 0.46s / 2.15s for 50 / 500 rows of a CA-only
+# PDB, so most of the 120s is left for the downloads. Above every row count the
+# 2026-10-01 live check saw (50, 40, 10, 8) and above the two form caps that
+# sit below it -- boltzgen's ``budget`` 50 and iggm's ``num_samples`` 100 -- so
+# for those two it is unreachable. Forms that DO admit more rows than this,
+# each in its tools/<pkg>/__init__.py: bindcraft 500, rfantibody / pxdesign /
+# rfdiffusion 1000, and esmfold's 500-record batch, whose rows are read here
+# like any other: ``_run_batch_folds``'s ``design_entry`` in
+# tools/esmfold/run_pipeline.py carries no sequence field. Not a survey of all
+# 14 tools; those are the ones checked.
+_MAX_STRUCTURE_READS = 200
+
+
+def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
+    """Write each row's per-chain sequence columns, in place.
+
+    Every chain :func:`structure_chain_sequences` returns, which is the whole
+    complex less whatever that extractor skips: the designed chain or chains
+    plus the target they were designed against. It keeps a chain only when
+    the sequence it reads has two or more distinct residue letters, so a
+    poly-GLY placeholder backbone is no column here -- and no record in the
+    FASTA either, both calling the same extractor
+    (tests/test_export_page_parity.py,
+    ``test_structure_chain_sequences_skips_placeholder_chains``). Nothing in a
+    stored row says which is which -- a boltzgen / proteina / rfantibody row
+    carries ``rank``, ``scores``, sometimes a ``name``, and no chain id at all
+    (their ``tools/<pkg>/example/result.json``), and iggm's ``antigen_chain``
+    is the id the FORM supplied, which IgGM's output may have renamed:
+    ``epitope_contacts`` in ``tools/iggm/run_pipeline.py`` works around that
+    by matching the antigen on LENGTH (``tests/test_iggm_smoke.py``,
+    ``test_epitope_contacts_identifies_antigen_by_length``). So does
+    :func:`candidates_to_fasta`, which writes a record per chain for the same
+    reason.
+
+    An earlier draft dropped a chain whose sequence repeated verbatim in
+    every row, on the theory that only the target does that. It also drops a
+    designed chain that a run happened not to vary -- an antibody run whose
+    light chain came out identical across designs -- with no column and no
+    blank cell to show it, while the FASTA for that job still carries it. A
+    redundant target column costs a reader nothing; a missing designed chain
+    is the bug this function exists to fix, so no chain the extractor returns
+    is dropped here and the two downloads carry the same chains, read under
+    the same condition
+    (tests/test_export_page_parity.py,
+    ``test_the_csv_and_the_fasta_carry_the_same_chains``). Not the same NAMES
+    in every case: :func:`candidates_to_fasta` suffixes ``_chain<ID>`` with
+    the id unstripped, so a blank chain id reads ``_chain `` there and
+    ``sequence_chain`` here.
+
+    Reads a row's structure only when the row stores no sequence field --
+    the same condition, and the same :func:`_structure_bytes` call, as the
+    FASTA's structure fallback in :func:`candidates_to_fasta`, so a job's CSV
+    download costs no more storage reads than its FASTA download.
+    tests/test_export_page_parity.py
+    (``test_the_csv_reads_no_more_structures_than_the_fasta``).
+
+    A row left with no chain columns gets a ``sequence_note`` instead of a
+    row of blank cells. The FASTA can drop such a record and leave a visible
+    gap; a CSV row is the design itself and cannot be dropped, so blank cells
+    would read as a design that has no sequence. Four outcomes, four notes,
+    because any one string is false for the other three, and every branch that
+    leaves a row without chain columns writes one, so such a row carries a
+    reason rather than silent blanks (tests in tests/test_export_page_parity.py
+    named after each):
+
+    * "not read: ..." -- the row is past ``_MAX_STRUCTURE_READS``, so this
+      function never looked at its structure. The only one of the four that
+      says nothing about the structure itself, which may be perfectly readable
+      (``test_a_job_past_the_cap_reads_up_to_it_and_notes_the_rest``).
+    * "structure unavailable" -- no bytes to read. A storage miss or a
+      zero-length object, both ``StorageError`` (``shared/storage.py``),
+      caught in ``blueprints/jobs.py``'s ``_storage_fetcher``, which returns
+      ``None``. Also a row with a ``pdb_key`` but no job id to fetch it
+      from, where :func:`_structure_bytes` does not try at all, which is why
+      that case is decided before the cap rather than out of it; both routes
+      here pass ``default_job_id``, so that is a future caller's case
+      (``test_an_unreadable_structure_says_so_instead_of_leaving_blank_cells``).
+    * "no sequence in structure" -- bytes read, extractor returned nothing.
+      Bytes Biopython could not parse, or a structure holding no protein
+      sequence it will take: placeholder chains, or a nucleic-only model,
+      whose residues map to no letter. Nothing in this repo shows one of
+      these tools emitting such a file, so this branch is written for a
+      shape the extractor can return, not for an observed run
+      (``test_a_structure_with_no_readable_chain_says_that_instead``).
+    * "no structure stored" -- the row references no structure at all, so
+      there was nothing to read: no ``pdb_key`` and no ``pdb_content_b64``.
+      Reachable in a job where only some rows carry one, and the rows that
+      do supply the chain columns the rest would otherwise sit blank in
+      (``test_a_row_with_no_structure_at_all_says_so_too``). Costs no read,
+      so it is settled before the cap and spends none of its budget
+      (``test_the_read_cap_counts_reads_and_not_rows``).
+
+    Modelled on the ``provenance`` column in :func:`export_key`: per row, and
+    absent from the file entirely when no row needs it.
+
+    ponytail: one sequential download and one Biopython parse per row, same as
+    the FASTA route it borrows from -- capped at ``_MAX_STRUCTURE_READS`` rows
+    here, uncapped there, which is the older exposure this change did not take
+    on. The cap is a ceiling, not a fix: the upgrade that retires it is parse
+    once per job and cache, or fetch concurrently, in :func:`_structure_bytes`
+    where the two routes meet, and it would lift the FASTA's limit at the same
+    time.
+    """
+    reads = 0
+    for cand, key, row in zip(cands, keys, rows):
+        if row.get("sequence"):
+            continue
+        # Rows :func:`_structure_bytes` would not read anything for are settled
+        # before the budget, not out of it: it returns None without a call when
+        # a row has no inline content and no key, or a key but no job id to
+        # fetch it from. Counting those as reads let a job's structureless rows
+        # exhaust the budget and report rows that DO have a readable structure
+        # as unread (test_the_read_cap_counts_reads_and_not_rows). Predicted,
+        # not observed, so it is exact only up to the decode: inline content
+        # that is present but will not decode passes here and spends a slot on
+        # a call that then makes no request, for a row nothing in this repo
+        # produces. Its note, "structure unavailable", is true either way.
+        if not cand.get("pdb_content_b64") and not (
+                (key.get("source_job") or default_job_id) and key["pdb_key"]):
+            row[_SEQ_NOTE] = ("structure unavailable" if key["pdb_key"]
+                              else "no structure stored")
+            continue
+        if reads >= _MAX_STRUCTURE_READS:
+            row[_SEQ_NOTE] = (
+                f"not read: this export reads at most "
+                f"{_MAX_STRUCTURE_READS} structures")
+            continue
+        reads += 1
+        data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
+        chains = structure_chain_sequences(data) if data else []
+        if not chains:
+            row[_SEQ_NOTE] = ("no sequence in structure" if data
+                              else "structure unavailable")
+            continue
+        for cid, seq in chains:
+            # Stripped: a PDB that leaves the chain column blank parses as
+            # the chain id " ", which would name a column "sequence_chain "
+            # with a trailing space (tests/test_export_page_parity.py,
+            # test_a_blank_chain_id_does_not_put_a_space_in_the_column_name).
+            # ponytail: one blank-ish id per structure. Two of them -- " " and
+            # "" out of the same file -- would name one column and the second
+            # would overwrite the first, dropping a chain the FASTA still
+            # carries, since it does not strip. No structure in this repo
+            # yields a blank-ish id at all (probed over static/ and tests/),
+            # and PDB's chain column is one character wide, so "" needs a
+            # mmCIF this repo has no example of. If one turns up, the fix is a
+            # collision check here, not a second naming rule.
+            row[f"{_SEQ_CHAIN_PREFIX}{cid.strip()}"] = seq
+
+
+def sequence_columns(rows: list[dict]) -> list[str]:
+    """The sequence column names for ``rows``, in the order the CSV writes
+    them: the stored ``sequence`` when any row has one, then one column per
+    chain in chain-id order, then ``sequence_note`` when any row has one."""
+    stored = ["sequence"] if any(r.get("sequence") for r in rows) else []
+    chains = sorted(
+        {k for r in rows for k in r if k.startswith(_SEQ_CHAIN_PREFIX)}
+    )
+    note = [_SEQ_NOTE] if any(r.get(_SEQ_NOTE) for r in rows) else []
+    return stored + chains + note
+
+
+def candidate_table(
+    candidates, *, fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
+    default_job_id: Optional[str] = None,
+) -> tuple[list[str], list[str], list[dict]]:
+    """``(leading, metrics, rows)``: the cells :func:`candidates_to_csv`
+    writes, before they are serialised. One row per candidate, in the order
+    given, each carrying a ``sequence`` key (``""`` when it stores none). Also
+    read by ``blueprints.admin._shortlist_tables`` for the lab-project page.
+
+    ``fetch_bytes`` (with ``default_job_id``) additionally reads the structure
+    of a row that stores no sequence and writes one ``sequence_chain<ID>``
+    key per chain the extractor returns. Not every such row is read: one that
+    references no structure is settled without a read, and one past
+    ``_MAX_STRUCTURE_READS`` is noted instead of read. A row left with no
+    chain columns, read or not, carries a ``sequence_note`` saying why
+    (:func:`_add_chain_columns`). Omitted, no structure is read and no such
+    key is written, which is what the admin caller relies on."""
     cands = _dict_candidates(candidates)
     keys, leading = _export_keys(cands)
-    all_score_keys = _metric_columns(cands, leading)
-    buf = io.StringIO()
-    writer = csv.DictWriter(
-        buf, fieldnames=leading + all_score_keys, extrasaction="ignore",
-    )
-    writer.writeheader()
+    # "sequence" passed as a leading name so a ``scores["sequence"]`` cannot
+    # add a second column of that name.
+    all_score_keys = _metric_columns(cands, [*leading, "sequence"])
+    # Same hazard, same answer, for the names sequence_columns owns: the
+    # reserved name wins. Filtered here rather than passed to _metric_columns
+    # because the chain names are not known until the structures are read.
+    # Unconditional, and it has to reach the ROW as well (below): both halves
+    # were defects in the first version of this guard, which filtered only the
+    # header and only when fetch_bytes was given. Without a fetcher
+    # sequence_columns's prefix scan still found the scores key in the row and
+    # emitted the column twice; with one, row.update(scores) wrote the value
+    # under that name and any row that ends up with a note kept it, printing a
+    # metric number where a chain's sequence belongs. Both reproduced before
+    # fixing; both pinned by test_export_page_parity.py,
+    # test_a_scores_key_named_like_a_sequence_column_is_not_also_a_metric.
+    # So a tool scoring a per-chain quantity under one of these names loses
+    # that column rather than corrupting a sequence cell. Nothing under tools/
+    # emits either name today (no match for "sequence_chain" or
+    # "sequence_note"), so this guards a shape, not an observed run.
+    all_score_keys = [k for k in all_score_keys if not _is_reserved_seq_name(k)]
+    rows = []
     for cand, key in zip(cands, keys):
         # Root metrics first, then scores (which win, matching how
         # candidate_metric resolves), then provenance (which wins outright).
@@ -455,6 +672,10 @@ def candidates_to_csv(candidates) -> str:
         }
         row.update(cand.get("scores") or {})
         row.update(key)
+        # The header filter above cannot stop these two updates from writing a
+        # reserved name back into the row, and sequence_columns scans the row.
+        for name in [k for k in row if _is_reserved_seq_name(k)]:
+            del row[name]
         # Same scale as the page this was downloaded from. Without this
         # the workflow "read the table, export the CSV, filter > 70"
         # returns an empty file for every tool that stores 0-1, with no
@@ -465,7 +686,44 @@ def candidates_to_csv(candidates) -> str:
             # page shows 86.24. Fixing a 100x disagreement and opening a
             # 1e-14 one is not fixing it.
             row[col] = scaled if scaled is None else round(scaled, 2)
-        writer.writerow(row)
+        row["sequence"] = _candidate_sequence(cand)
+        rows.append(row)
+    if fetch_bytes is not None:
+        _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id)
+    return leading, all_score_keys, rows
+
+
+def candidates_to_csv(
+    candidates, *, fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
+    default_job_id: Optional[str] = None,
+) -> str:
+    """Provenance columns (:func:`export_key`) + every metric found, then the
+    sequence columns (:func:`sequence_columns`).
+
+    Sequences last so the columns before them keep their positions.
+
+    Without ``fetch_bytes`` the stored ``sequence`` field is the only source,
+    so a row whose sequence lives in its structure file gets an empty cell.
+    That is what the campaign and target exports pass (``campaigns.py``,
+    ``targets.py``), whose FASTA routes pass none either, and what the admin
+    lab-project PAGE passes (``admin._shortlist_tables``).
+
+    The two routes that download one job's CSV pass a fetcher:
+    ``/jobs/<id>/export.csv`` and the staff copy of it,
+    ``admin_source_export_csv``. Such a row is then read from the same bytes
+    through the same extractor the FASTA fallback uses, one column per chain
+    it returns, or a ``sequence_note`` saying why that row has none.
+    """
+    leading, metrics, rows = candidate_table(
+        candidates, fetch_bytes=fetch_bytes, default_job_id=default_job_id,
+    )
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf, fieldnames=leading + metrics + sequence_columns(rows),
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
     return buf.getvalue()
 
 
@@ -625,7 +883,7 @@ def candidates_to_fasta(
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
         key = export_key(cand, i)
-        seq = cand.get("sequence") or cand.get("binder_sequence") or ""
+        seq = _candidate_sequence(cand)
         if seq:
             records = [("", seq)]
         elif fetch_bytes is not None:

@@ -608,7 +608,6 @@ def recommend(
                 "slug": slug,
                 "name": entry["name"],
                 "reason": reason,
-                "runtime_band": entry.get("runtime_band", "—"),
                 "route": entry.get("route", "#"),
                 "prerequisite": _CROSS_BUCKET_PREREQUISITE.get(
                     (slug, have), prerequisite_line(slug)

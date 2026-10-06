@@ -20,7 +20,6 @@
   .runs-stat { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.85rem; padding: 0.32rem 0; border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06)); }
   .runs-stat .k { color: var(--text-secondary, #b8c0c8); }
   .runs-stat .v { color: var(--text-primary, #fafafa); font-family: var(--font-mono, monospace); }
-  .runs-budget { font-size: 1.5rem; font-family: var(--font-mono, monospace); color: var(--text-primary, #fafafa); margin: 0.6rem 0 0.2rem; }
   .runs-note { font-size: 0.75rem; margin-top: 0.7rem; padding: 0.55rem 0.7rem; border-radius: 6px; }
   .runs-note.warn { background: rgba(232,132,107,0.12); color: #e8846b; }
   .runs-note.ok { background: rgba(43,158,126,0.10); color: #2B9E7E; }
@@ -225,13 +224,10 @@
       </div>
 
       <aside class="runs-panel">
-        <h2>Cost preview</h2>
-        <div class="runs-budget" id="rp-budget">$—</div>
-        <div class="hint" style="margin:0 0 0.6rem;">Estimated total. You pay only for compute that runs; we pause if your balance runs low.</div>
+        <h2>Run plan</h2>
+        <div class="hint" style="margin:0 0 0.6rem;">You pay for compute that runs; we pause if your balance runs low.</div>
         <div class="runs-stat"><span class="k">Designs</span><span class="v" id="rp-designs">—</span></div>
         <div class="runs-stat"><span class="k">Sub-jobs</span><span class="v" id="rp-subjobs">—</span></div>
-        <div class="runs-stat"><span class="k">Per sub-job</span><span class="v" id="rp-perchunk">—</span></div>
-        <div class="runs-stat"><span class="k">Enough to start</span><span class="v" id="rp-firstwave">—</span></div>
         <div class="runs-stat"><span class="k">Your balance</span><span class="v" id="rp-balance">—</span></div>
         <div class="runs-note" id="rp-note" style="display:none;"></div>
         <label class="runs-confirm">
@@ -284,20 +280,15 @@
   // rounds down; a fixed-point rounding call reintroduced here would silently
   // undo that, so a test forbids one anywhere in this file.
   // A missing field renders "$—" rather than a bare "$", which reads as a
-  // broken zero. That matches the empty state of the headline budget slot only
-  // (markup :173, clearFigures()); per-sub-job, first-wave and balance all sit
-  // empty as a bare "—", so a null there is visually distinct rather than
-  // matching. It cannot happen today (the endpoint ships a *_display sibling
-  // for every money key) and nothing here disarms the button, so this is
-  // legibility, not a guard.
+  // broken zero. The balance slot sits empty as a bare "—" (clearFigures()),
+  // so a null there is visually distinct rather than matching. Nothing here
+  // disarms the button, so this is legibility, not a guard.
   function money(x) { return x == null ? '$—' : '$' + String(x); }
 
-  // One clearing path for both failure branches. The earlier version cleared
-  // four of the six figures inline, so a failed estimate left the PREVIOUS
-  // request's first-wave hold and balance on screen beside the consent box.
+  // One clearing path for both failure branches, so a failed estimate does
+  // not leave the PREVIOUS request's balance on screen beside the consent box.
   function clearFigures() {
-    document.getElementById('rp-budget').textContent = '$—';
-    ['rp-designs', 'rp-subjobs', 'rp-perchunk', 'rp-firstwave', 'rp-balance']
+    ['rp-designs', 'rp-subjobs', 'rp-balance']
       .forEach(function (id) { document.getElementById(id).textContent = '—'; });
   }
 
@@ -430,22 +421,19 @@
           syncSubmit();
           return;
         }
-        document.getElementById('rp-budget').textContent = money(d.budget_usd_display);
         document.getElementById('rp-designs').textContent = d.requested_designs;
         document.getElementById('rp-subjobs').textContent = d.total_subjobs;
-        document.getElementById('rp-perchunk').textContent = money(d.per_chunk_usd_display);
-        document.getElementById('rp-firstwave').textContent = money(d.first_wave_usd_display);
         document.getElementById('rp-balance').textContent = money(d.balance_usd_display);
         document.getElementById('rp-confirm-label').textContent =
           'I understand I pay only for compute that runs, and it pauses if my balance runs low.';
         if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
           setNote('warn', 'Runs this large need an approved account. Contact us to raise your limit.');
         } else if (!d.affordable && d.reason === 'insufficient_balance') {
-          setNote('warn', 'Top up ' + money(d.topup_usd_display) + ' to run this. It can start once your balance covers the first batch (' + money(d.first_wave_usd_display) + ').');
+          setNote('warn', 'Your balance does not cover the first batch. Top up your wallet to start this run.');
         } else if (!d.affordable) {
           setNote('warn', 'This run cannot start yet (' + d.reason + ').');
         } else {
-          setNote('ok', 'Ready to run. Starts on ' + money(d.first_wave_usd_display) + '; ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
+          setNote('ok', 'Ready to run. ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
         }
         syncSubmit();
       })
@@ -472,9 +460,8 @@
     // price, so a new price has to take a new tick. (A51.)
     //
     // clearFigures() is not decoration. Clearing only the internal `latest`
-    // leaves the PREVIOUS request's hold and balance rendered for the whole
-    // repricing window, and the rendered number is the only price the user
-    // ever actually sees. Blank plus "Repricing..." is the honest state.
+    // leaves the PREVIOUS request's sub-job count and balance rendered for the
+    // whole repricing window. Blank plus "Repricing..." is the honest state.
     //
     // Order matters: invalidate first, schedule second. Doing it after the
     // setTimeout leaves the same window open.

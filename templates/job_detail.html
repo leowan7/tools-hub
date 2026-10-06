@@ -194,7 +194,7 @@
             <div style="margin-top: 1rem; padding: 0.85rem 1rem; background: var(--bg-elevated); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); max-width: 560px;">
               <strong style="color: var(--text-primary);">You can close this tab.</strong>
               <div style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.35rem;">
-                This run is on a real GPU and can take a while. We'll email
+                This run can take a while on a real GPU. We'll email
                 <strong>{{ user_email }}</strong> when results are ready, with a
                 link back to this page.
               </div>
@@ -291,12 +291,12 @@
           <div class="panel-body">
             <p style="margin: 0 0 0.5rem 0;">
               <strong>Want more?</strong>
-              {% if scale_up.offer_text %}{{ scale_up.offer_text }}{% else %}Run {{ scale_up.count }} candidates on the same target{% endif %} &mdash; est. ${{ scale_up.price_display }}.
+              {% if scale_up.offer_text %}{{ scale_up.offer_text }}{% else %}Run {{ scale_up.count }} candidates on the same target{% endif %}.
               {% if scale_up.clamped %}{{ tool_label }} runs up to {{ scale_up.count }} per job.{% endif %}
             </p>
             {% if scale_up.topup_usd > 0 %}
               <p style="margin: 0 0 0.5rem 0;">
-                <a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);"><strong>Top up ${{ scale_up.topup_usd }} to run this</strong></a>
+                <a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);"><strong>Top up your wallet to run this</strong></a>
               </p>
             {% endif %}
             <form method="post" action="{{ url_for('jobs.job_scale_up', job_id=job.id) }}" style="margin: 0;">
@@ -378,31 +378,31 @@
       {% set _blog_path = '/resource-hub/how-rfdiffusion-works-protein-designers-guide' %}
       {% set _blog_label = 'How RFdiffusion works' %}
     {% elif job.tool == 'bindcraft' %}
-      {% set _blog_path = '/resource-hub/bindcraft-vs-rfdiffusion' %}
+      {% set _blog_path = '/bindcraft-vs-rfdiffusion' %}
       {% set _blog_label = 'BindCraft vs RFdiffusion' %}
     {% elif job.tool == 'rfantibody' %}
-      {% set _blog_path = '/resource-hub/dms-for-antibody-affinity-maturation' %}
+      {% set _blog_path = '/dms-for-antibody-affinity-maturation' %}
       {% set _blog_label = 'DMS for antibody affinity maturation' %}
     {% elif job.tool == 'pxdesign' %}
-      {% set _blog_path = '/resource-hub/de-novo-protein-design-failure-modes' %}
+      {% set _blog_path = '/de-novo-protein-design-failure-modes' %}
       {% set _blog_label = 'De novo protein design failure modes' %}
     {% elif job.tool == 'boltzgen' %}
       {% set _blog_path = '/resource-hub/what-is-de-novo-protein-design' %}
       {% set _blog_label = 'What is de novo protein design' %}
     {% elif job.tool == 'af2' %}
-      {% set _blog_path = '/resource-hub/colabfold-vs-alphafold-when-to-use-which' %}
+      {% set _blog_path = '/colabfold-vs-alphafold-when-to-use-which' %}
       {% set _blog_label = 'ColabFold vs AlphaFold, when to use which' %}
     {% elif job.tool == 'colabfold' %}
-      {% set _blog_path = '/resource-hub/colabfold-batch-triage-binder-designs' %}
+      {% set _blog_path = '/colabfold-batch-triage-binder-designs' %}
       {% set _blog_label = 'Using ColabFold batch to triage binder designs' %}
     {% elif job.tool == 'esmfold' %}
-      {% set _blog_path = '/resource-hub/colabfold-vs-alphafold-when-to-use-which' %}
+      {% set _blog_path = '/colabfold-vs-alphafold-when-to-use-which' %}
       {% set _blog_label = 'ColabFold vs AlphaFold, when to use which' %}
     {% elif job.tool == 'scout' %}
-      {% set _blog_path = '/resource-hub/when-to-use-epitope-scout-vs-a-structural-biologist' %}
+      {% set _blog_path = '/when-to-use-epitope-scout-vs-a-structural-biologist' %}
       {% set _blog_label = 'When to use Epitope Scout vs a structural biologist' %}
     {% elif job.tool == 'developability' %}
-      {% set _blog_path = '/resource-hub/rfdiffusion-developability-check-before-wet-lab' %}
+      {% set _blog_path = '/rfdiffusion-developability-check-before-wet-lab' %}
       {% set _blog_label = 'Developability checks before wet lab' %}
     {% else %}
       {% set _blog_path = '' %}
@@ -646,7 +646,10 @@
                 'data-rank="' + rank + '" ' +
                 'data-pdb-key="' + encodeURIComponent(pdbKey) + '">View 3D</button></td>';
             } else {
-              btnCell = '<td><span style="color:var(--text-secondary);">—</span></td>';
+              // A partial arrives from the run's heartbeat, whose pdb_key is
+              // null unless the pipeline sent one
+              // (webhooks/modal.py::_sanitize_candidate).
+              btnCell = '<td><span style="color:var(--text-secondary);font-size:.8rem;">3D when finished</span></td>';
             }
 
             if (existing) {
@@ -707,24 +710,16 @@
         // ── summary + ETA ────────────────────────────────────────────
         function renderSummary(data) {
           if (!liveSummary) return;
-          var prog = data.progress || {};
-          var done = Number(prog.designs_completed) || 0;
-          var total = Number(prog.designs_total) || 0;
           var passed = (data.passed_count === null || data.passed_count === undefined)
             ? null : Number(data.passed_count);
 
-          if (total > 0) {
-            var line = done + ' of ' + total + ' designs complete';
-            if (passed !== null && !isNaN(passed)) {
-              line += ', ' + passed +
-                (data.has_bar ? ' meeting the quality bar so far'
-                              : ' returned so far');
-            }
-            liveSummary.textContent = line;
-          } else if (done > 0) {
-            liveSummary.textContent = done + ' designs complete so far';
+          // The design count is printed once, by renderProgress. Without a
+          // bar, passed_count is the number of streamed rows, a second count
+          // of the same designs, so nothing is printed.
+          if (data.has_bar && passed !== null && !isNaN(passed)) {
+            liveSummary.textContent = passed + ' meeting the quality bar so far';
           } else {
-            liveSummary.textContent = 'Starting run';
+            liveSummary.textContent = '';
           }
         }
 
@@ -767,7 +762,7 @@
               progressBar.classList.remove('jobdetail-indeterminate');
               indeterminate = false;
             }
-            progressText.textContent = '(' + done + '/' + total + ')';
+            progressText.textContent = done + ' of ' + total + ' designs complete';
             progressBar.style.width = Math.min(100, (done / total) * 100) + '%';
           } else {
             // designs_total unknown yet — show an indeterminate bar
@@ -777,7 +772,7 @@
               progressBar.style.width = '30%';
               indeterminate = true;
             }
-            progressText.textContent = '';
+            progressText.textContent = done > 0 ? done + ' designs complete so far' : '';
           }
 
           renderCandidates(data.partial_candidates);

@@ -391,7 +391,7 @@ adapter = ToolAdapter(
     blurb=(
         "Paste a sequence — one chain or several — and get a predicted "
         "3D structure back with per-residue and per-residue-pair "
-        "confidence scores. About 5 to 10 min per run."
+        "confidence scores."
     ),
     presets=(
         Preset(
@@ -400,7 +400,7 @@ adapter = ToolAdapter(
             description=(
                 "Paste or upload FASTA (single chain or multimer). "
                 "ColabFold MMseqs2 MSA plus AF2. Up to 1500 AA total "
-                "across chains. 5 to 10 min on A100-80GB."
+                "across chains. Runs on an A100-80GB."
             ),
             # FASTA ships inline in the payload, not via PDB upload —
             # leave requires_pdb False.
@@ -414,8 +414,7 @@ adapter = ToolAdapter(
                 "50 records). Each record can be a monomer or a "
                 "multimer (use ``:`` to separate chains inside a record). "
                 "Per-design results stream into the job page as folds "
-                "complete. Slowest of the structure-prediction tools. "
-                "Expect 5 to 10 min per fold."
+                "complete. Slowest of the structure-prediction tools."
             ),
             requires_pdb=False,
             long_running=True,

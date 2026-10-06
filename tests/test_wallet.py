@@ -20,6 +20,8 @@ SQL function.
 
 from __future__ import annotations
 
+import itertools
+import logging
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -426,6 +428,19 @@ def patch_clients(fake_client):
         "shared.wallet_funnel.get_service_client", return_value=fake_client
     ):
         yield fake_client
+
+
+@pytest.fixture(autouse=True)
+def reset_skip_mail_throttle():
+    """Drop the per-user email throttle between tests.
+
+    ``wallet._SKIP_MAIL_SENT`` is module state that outlives a test, so
+    without this one test's skipped auto-reload would suppress the email the
+    next test asserts on.
+    """
+    wallet._SKIP_MAIL_SENT.clear()
+    yield
+    wallet._SKIP_MAIL_SENT.clear()
 
 
 @pytest.fixture
@@ -1152,6 +1167,406 @@ def test_auto_reload_dispatch_claim_fails_closed_on_write_error(store):
 
     with patch("shared.wallet.get_service_client", return_value=_Boom()):
         assert wallet._claim_auto_reload_dispatch(USER_A) is False
+
+
+class _LedgerDownClient:
+    """Fake client whose ``wallet_transactions`` reads raise.
+
+    Narrower than returning ``None`` from ``get_service_client``, and that
+    narrowness is the point: a wholly dead client fails ``_wallet()`` first, so
+    ``auto_reload_if_needed`` returns ``missing_service_client`` and neither
+    guard is ever reached (the same reason
+    ``test_auto_reload_dispatch_claim_fails_closed_on_write_error`` asserts on
+    its helper). This one keeps ``user_wallets`` readable and breaks only the
+    table both guards read, which is the shape of a real partial outage.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def table(self, name: str):
+        if name == "wallet_transactions":
+            raise RuntimeError("supabase unreachable")
+        return self._inner.table(name)
+
+    def rpc(self, name: str, params: dict):
+        return self._inner.rpc(name, params)
+
+
+class _NullDataClient(_LedgerDownClient):
+    """Fake client whose ``wallet_transactions`` reads succeed with no rows.
+
+    Not an empty list -- ``data`` is ``None``, the shape both guards used to
+    collapse to zero with ``or []``. An empty list still means "no reloads"
+    and must stay a pass; only the absent attribute is a refusal.
+    """
+
+    class _NullResult:
+        data = None
+
+    class _NullQuery:
+        def select(self, *a, **k):
+            return self
+
+        eq = gte = lte = order = limit = select
+
+        def execute(self):
+            return _NullDataClient._NullResult()
+
+    def table(self, name: str):
+        if name == "wallet_transactions":
+            return self._NullQuery()
+        return self._inner.table(name)
+
+
+def _seed_auto_reload_ready(store) -> dict:
+    """Seed a wallet that would otherwise auto-reload, and return its row."""
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+        auto_reload_monthly_cap=Decimal("1000.00"),
+    )
+    return next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+
+
+def test_auto_reload_refuses_when_the_24h_count_cannot_be_read(
+    store, fake_client, email_log
+):
+    """An unreadable 24h count must refuse the charge, not permit it.
+
+    ``_auto_reload_count_24h`` used to return 0 both when the ledger said
+    "no reloads" and when the ledger could not be read at all, and 0 is
+    exactly the value that clears the ``>= 1`` gate. So a Supabase blip turned
+    the 24h guard into a pass.
+
+    What that did NOT do is charge twice inside one window:
+    ``_claim_auto_reload_dispatch`` fails closed and still bounded dispatch to
+    one per 24h. The exposure the two fail-open guards actually carried is the
+    monthly cap, which is checked nowhere else -- one charge a day, each one
+    compared against a total that read as 0, walks past the cap over a month.
+    This guard is the cheap pre-check in front of that.
+
+    Asserted on the CARD, not on the return value: ``charges`` must stay
+    empty. The monthly guard is stubbed to a healthy 0 so this test fails on a
+    regression in the 24h read alone -- otherwise the other guard's refusal
+    would keep it green.
+    """
+    wallet_row = _seed_auto_reload_ready(store)
+    before = wallet_row["auto_reload_last_dispatch_at"]
+    charges: list[dict] = []
+
+    with patch(
+        "shared.wallet.get_service_client",
+        return_value=_LedgerDownClient(fake_client),
+    ), patch(
+        "shared.wallet._auto_reload_total_month", return_value=Decimal("0")
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        result = auto_reload_if_needed(USER_A)
+
+    assert charges == [], (
+        "the card was charged while the 24h auto-reload guard was unreadable"
+    )
+    assert result == "guard_unavailable"
+    # Visible, not a silent no-op.
+    assert any(
+        name == "send_auto_reload_rate_limited_email" and kw.get("reason")
+        for name, kw in email_log
+    )
+    # An unreadable ledger says nothing about the card, so neither the
+    # feature nor the user's 24h window is spent on it.
+    assert wallet_row["auto_reload_enabled"] is True
+    assert wallet_row["auto_reload_last_dispatch_at"] == before
+
+
+def test_auto_reload_refuses_when_the_monthly_total_cannot_be_read(
+    store, fake_client, email_log
+):
+    """Same bug, same fix, second site: the monthly cap read.
+
+    ``_auto_reload_total_month`` used to return ``Decimal("0")`` on a failed
+    read, which is indistinguishable from a month with no reloads in it and
+    clears ``month_total + reload_amount > monthly_cap`` for any sane cap. The
+    24h count is stubbed to a healthy 0 here so the refusal under test is the
+    monthly one.
+    """
+    wallet_row = _seed_auto_reload_ready(store)
+    before = wallet_row["auto_reload_last_dispatch_at"]
+    charges: list[dict] = []
+
+    with patch(
+        "shared.wallet.get_service_client",
+        return_value=_LedgerDownClient(fake_client),
+    ), patch(
+        "shared.wallet._auto_reload_count_24h", return_value=0
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        result = auto_reload_if_needed(USER_A)
+
+    assert charges == [], (
+        "the card was charged while the monthly auto-reload cap was unreadable"
+    )
+    assert result == "guard_unavailable"
+    assert any(
+        name == "send_auto_reload_rate_limited_email" and kw.get("reason")
+        for name, kw in email_log
+    )
+    assert wallet_row["auto_reload_enabled"] is True
+    assert wallet_row["auto_reload_last_dispatch_at"] == before
+
+
+def test_a_settle_wave_against_a_dead_ledger_mails_once(
+    store, fake_client, email_log, caplog
+):
+    """The refusal is reached once per job settle, so it must not mail once
+    per settle.
+
+    An outage does not clear between settles: without the throttle in
+    ``wallet._mail_auto_reload_skipped`` a user whose jobs are finishing gets
+    one identical email per settle for the whole outage. Every settle still
+    refuses, and still logs.
+    """
+    _seed_auto_reload_ready(store)
+    charges: list[dict] = []
+
+    with caplog.at_level(logging.ERROR, logger="shared.wallet"), patch(
+        "shared.wallet.get_service_client",
+        return_value=_LedgerDownClient(fake_client),
+    ), patch(
+        "shared.wallet._auto_reload_total_month", return_value=Decimal("0")
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        results = [auto_reload_if_needed(USER_A) for _ in range(5)]
+
+    assert results == ["guard_unavailable"] * 5
+    assert charges == []
+    mails = [
+        kw for name, kw in email_log
+        if name == "send_auto_reload_rate_limited_email"
+    ]
+    assert len(mails) == 1, f"5 settles mailed {len(mails)} times"
+    # The log is what the throttled email stops being: unthrottled, so an
+    # outage lasting many settles is still countable from the logs.
+    refusals = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR and "refusing to auto-reload" in
+        r.getMessage()
+    ]
+    assert len(refusals) == 5, f"5 settles logged {len(refusals)} times"
+
+
+# (notice, sender, kwargs) for each throttled no-charge auto-reload notice.
+_SKIP_NOTICES = (
+    ("rate_limited", "send_auto_reload_rate_limited_email", {}),
+    (
+        "guard_unavailable", "send_auto_reload_rate_limited_email",
+        {"reason": "a safety check could not be completed"},
+    ),
+    (
+        "monthly_cap", "send_auto_reload_monthly_cap_email",
+        {"total_usd": Decimal("1000"), "cap_usd": Decimal("1000")},
+    ),
+)
+
+
+def test_the_skip_notices_do_not_share_a_throttle_slot():
+    """A notice inside another notice's window must still reach the user.
+
+    The throttle key carries the notice for this: with one key per user
+    the first notice to fire would swallow the next for the whole of its
+    own period -- a day, if a 24h notice got there first -- and the user
+    would be holding the wrong explanation -- told they had already topped
+    up recently when in fact a safety check could not be read, or that they
+    are at their monthly cap when they are not, or the reverse. The brief
+    for the refusal is that it be visible to the user, so the suppression
+    that matters is this one, not a duplicate.
+
+    Every ordered pair, because the defect is symmetric. The production
+    wording is pinned in ``tests/test_email_real.py``.
+    """
+    for first, second in itertools.permutations(_SKIP_NOTICES, 2):
+        wallet._SKIP_MAIL_SENT.clear()
+        sent: list[tuple[str, dict]] = []
+        with patch.object(
+            wallet, "_send_email_safe",
+            side_effect=lambda name, **kw: sent.append((name, kw)),
+        ):
+            for notice, sender, kwargs in (first, second, first):
+                # The third call repeats the first: still throttled.
+                wallet._mail_auto_reload_skipped(
+                    USER_A, notice, sender, **kwargs
+                )
+
+        expected = [
+            (sender, {"user_id": USER_A, **kwargs})
+            for _, sender, kwargs in (first, second)
+        ]
+        assert sent == expected, (
+            f"{first[0]} then {second[0]} mailed {sent!r}"
+        )
+
+
+def test_each_skip_notice_is_throttled_for_its_own_period():
+    """Each notice is suppressed for the period its own wording implies.
+
+    One hour for a 24h notice would mail the same sentence up to 24 times
+    inside the single window it describes -- a user whose jobs settle all day
+    hits it every hour, which is not far off the per-settle storm the
+    throttle exists to stop, and every copy says the same still-true,
+    still-unactionable thing. The refusal keeps the shorter period on
+    purpose: the unreadable guard behind it can clear and recur, and a
+    recurrence is something the user needs told again.
+
+    Driven by backdating the stored timestamp rather than by mocking the
+    clock, so the comparison under test is the production one.
+    """
+    two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+    should_mail = {
+        "rate_limited": False, "guard_unavailable": True, "monthly_cap": False,
+    }
+
+    for notice, sender, kwargs in _SKIP_NOTICES:
+        wallet._SKIP_MAIL_SENT.clear()
+        wallet._SKIP_MAIL_SENT[(USER_A, notice)] = two_hours_ago
+        sent: list[dict] = []
+        with patch.object(
+            wallet, "_send_email_safe",
+            side_effect=lambda name, **kw: sent.append(kw),
+        ):
+            wallet._mail_auto_reload_skipped(USER_A, notice, sender, **kwargs)
+
+        assert bool(sent) is should_mail[notice], (
+            f"{notice}, last mailed two hours ago: "
+            f"mailed {len(sent)} times, expected "
+            f"{'one' if should_mail[notice] else 'none'}"
+        )
+
+
+def test_a_settle_wave_over_the_monthly_cap_mails_once(
+    store, fake_client, email_log, caplog
+):
+    """The monthly-cap branch is reached once per settle and mails once.
+
+    It called the sender directly, unthrottled, so a user over their cap got
+    one identical email per finished job. Every settle still logs.
+    """
+    _seed_auto_reload_ready(store)
+    charges: list[dict] = []
+
+    with caplog.at_level(logging.INFO, logger="shared.wallet"), patch(
+        "shared.wallet._auto_reload_count_24h", return_value=0
+    ), patch(
+        "shared.wallet._auto_reload_total_month", return_value=Decimal("1000")
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        results = [auto_reload_if_needed(USER_A) for _ in range(5)]
+
+    assert results == ["monthly_cap"] * 5
+    assert charges == []
+    assert email_log == [(
+        "send_auto_reload_monthly_cap_email",
+        {
+            "user_id": USER_A,
+            "total_usd": Decimal("1000"),
+            "cap_usd": Decimal("1000"),
+        },
+    )], f"5 settles mailed {email_log!r}"
+    skips = [
+        r for r in caplog.records
+        if "at the monthly auto-reload cap" in r.getMessage()
+    ]
+    assert len(skips) == 5, f"5 settles logged {len(skips)} times"
+
+
+def test_a_settle_wave_inside_the_24h_window_mails_once(
+    store, fake_client, email_log, caplog
+):
+    """The ordinary ``rate_limited`` branch is throttled by the same helper.
+
+    This path needs no outage: a user who reloaded in the last 24 hours and
+    stays below their threshold hits it on every settle, and it mailed the
+    same sender unthrottled -- measured at 5 emails for 5 settles before
+    ``_mail_auto_reload_skipped`` existed. All three no-charge notices now
+    route through it (shared/wallet.py: the ``reloads_24h >= 1`` branch,
+    ``_refuse_auto_reload_unverified`` and the monthly-cap branch), so the
+    sibling two lines away cannot
+    drift back open on its own.
+    """
+    _seed_auto_reload_ready(store)
+    charges: list[dict] = []
+
+    with caplog.at_level(logging.INFO, logger="shared.wallet"), patch(
+        "shared.wallet._auto_reload_count_24h", return_value=1
+    ), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        results = [auto_reload_if_needed(USER_A) for _ in range(5)]
+
+    assert results == ["rate_limited"] * 5
+    assert charges == []
+    mails = [
+        kw for name, kw in email_log
+        if name == "send_auto_reload_rate_limited_email"
+    ]
+    assert len(mails) == 1, f"5 settles mailed {len(mails)} times"
+    # Throttling the mail must not take the branch's only trace with it.
+    # This branch had no log line before the throttle: the per-settle email
+    # WAS the record, so the throttle had to bring one.
+    skips = [
+        r for r in caplog.records
+        if "already auto-reloaded in the last 24h" in r.getMessage()
+    ]
+    assert len(skips) == 5, f"5 settles logged {len(skips)} times"
+    # No ``reason`` on this path: the 24h wording in the template is true here
+    # and must stay (tests/test_email_real.py::TestAutoReloadRateLimited).
+    assert not mails[0].get("reason")
+
+
+def test_a_read_with_no_data_attribute_is_unreadable_not_zero(
+    store, fake_client
+):
+    """A successful-looking response carrying no rows at all is a refusal.
+
+    Both guards used to write `len(... or [])` and `sum(... or [])`, which
+    turns a `data`-less response into "no reloads" -- a pass. The sibling
+    write path `_claim_auto_reload_dispatch` already reads the same shape as a
+    failure, so this is the unsafe half of an inconsistent polarity. An empty
+    list is still a legitimate zero and is covered by the tests above, which
+    charge normally through the ordinary fake client.
+    """
+    _seed_auto_reload_ready(store)
+    charges: list[dict] = []
+    null = _NullDataClient(fake_client)
+
+    with patch("shared.wallet.get_service_client", return_value=null), patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=lambda **kw: charges.append(kw),
+    ):
+        result = auto_reload_if_needed(USER_A)
+        # Both guards, separately. The end-to-end refusal above cannot tell
+        # them apart: if the 24h half drifts back to `or []` it passes as
+        # zero, the monthly half still refuses, and `charges` stays empty.
+        # Measured -- reverting the 24h half alone left all 133 green until
+        # this line existed.
+        assert wallet._auto_reload_count_24h(USER_A) is None
+        assert wallet._auto_reload_total_month(USER_A) is None
+
+    assert charges == []
+    assert result == "guard_unavailable"
 
 
 def test_a_missing_billing_module_does_not_burn_the_dispatch_window(store):

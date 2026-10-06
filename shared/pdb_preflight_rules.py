@@ -526,14 +526,18 @@ _RFDIFFUSION = ToolRules(
         # THE ONLY TWO-TERM ENVELOPE IN THIS FILE, and it has to be.
         # rfdiffusion's cost is a fixed diffusion+MPNN stage plus a
         # per-design AF2 re-score, so a purely multiplicative curve cannot
-        # sit on both ends of it at once: meta.py advertises "25 to 40 min
-        # (4 to 8 designs)", a 1.6x spread over a 2x design ratio, and no
-        # value of runtime_base_min alone produces a spread under 2x.
+        # sit on both ends of it at once: 4 and 8 designs are a 2x design
+        # ratio but only a 1.52x runtime ratio (24.33 and 37.00 min, derived
+        # below), and no value of runtime_base_min alone produces a spread
+        # under 2x.
         #
-        # tools/rfdiffusion/meta.py states the split outright -- a fixed
-        # ~700 s plus ~190 s per design -- and that split reproduces the one
-        # job it records exactly: 700 + 190*8 = 2220 GPU-s for job 25471e07
-        # (4ZQK chain A, 115 aa, 8 designs, ~37 min). Both constants below
+        # The split, a fixed ~700 s plus ~190 s per design, is a model, not a
+        # measurement: on the current container only its 8-design total is
+        # recorded, 700 + 190*8 = 2220 GPU-s for job 25471e07
+        # (tools/rfdiffusion/example/result.json "gpu_seconds"), the 4ZQK
+        # chain A, 8-design worked example in tools/rfdiffusion/meta.py
+        # (115 aa). The 804 below is that job shape before the MSA fix.
+        # Both constants below
         # are that split divided by this curve's own size factor at 115 aa,
         # (115/120)^1.2 = 0.95021, which normalises them to the 120-aa pivot
         # the estimator anchors on, with the per-design one carried up to
@@ -541,7 +545,7 @@ _RFDIFFUSION = ToolRules(
         #     fixed = (700/60) / 0.95021       = 12.278  ->  12.28
         #     base  = (190/60) / 0.95021 * 100 = 333.259 ->  333.3
         # At those rounded values the curve returns 24.34 min at 4 designs
-        # and 37.01 at 8, against the 24.33 and 37.00 meta.py records --
+        # and 37.01 at 8, against the 24.33 and 37.00 that split predicts --
         # 0.014% out at both ends, pinned at +/-5% by
         # tests/test_pdb_preflight.py::
         # test_rfdiffusion_runtime_curve_reproduces_both_recorded_runs.
@@ -552,8 +556,7 @@ _RFDIFFUSION = ToolRules(
         # llm-proteinDesigner#23 made the AF2 re-score fetch a real MSA for
         # the target instead of folding it single-sequence, multiplying the
         # run by 2.76x: job 25471e07 went 804 -> 2220 GPU-s on the same job
-        # shape (tools/rfdiffusion/meta.py, runtime header above
-        # preset_runtime_rows). #240 (b692593) carried that 277.5 s/design
+        # shape. #240 (b692593) carried that 277.5 s/design
         # measurement into the chunking and cost path but did not touch this
         # file -- `git show b692593 -- <this file>` is empty -- so the panel
         # quoted ~11 min for the 8-design run that actually takes 37, a
@@ -633,21 +636,14 @@ _BINDCRAFT = ToolRules(
         # (docs/CALIBRATION-WEEK2.md, "Observed results") was CANCELLED at
         # 2717 s on a 412 aa target, so it timed a cancellation, not a run.
         #
-        # One point, but not the only constraint, and that is what makes
-        # this a correction rather than a guess: the tool already SHIPS the
-        # same rate on another surface. ``PRESET_RUNTIME["pilot"]
-        # ["typical_minutes"]`` in tools/bindcraft/meta.py reads "30 to 45",
-        # tied there to the ``num_designs`` default of 4 -- 7.5 to 11.25
-        # min/design, which brackets the measured ~10 -- and
-        # shared/tools_catalog.py and blueprints/tools.py render it to the
-        # user. The OLD constants put those same 4 designs at 120 min
-        # (300 * (120/120)**1.5 * 4/10), 2.7x the top of the band this
-        # tool's own page promises, because a published ~30
-        # min/TRAJECTORY rate was being applied per DESIGN.
+        # One point, but not the only constraint. The OLD constants put
+        # those same 4 designs at 120 min (300 * (120/120)**1.5 * 4/10),
+        # 3x the ~40 min the measured ~10 min/design gives for 4, because a
+        # published ~30 min/TRAJECTORY rate was being applied per DESIGN.
         #
         # 40.0 is rounded DOWN from the 41.6 that run solves for. The
-        # residual, the band containment and the baseline-vs-validator match
-        # are all pinned by tests/test_pdb_preflight.py::
+        # residual and the baseline-vs-validator match are both pinned by
+        # tests/test_pdb_preflight.py::
         # test_bindcraft_runtime_curve_reproduces_its_one_measured_run.
         runtime_base_min=40.0,       # 4 designs × ~10 min at the 120 aa anchor
         runtime_alpha=1.5,           # UNCHANGED, and still unmeasured: one run
@@ -805,15 +801,6 @@ _PXDESIGN = ToolRules(
         #     and no base fixes it; see runtime_alpha below.
         # Both are far smaller than what they replace: at 300.0 the same two
         # runs were quoted 745% and 20675% high.
-        #
-        # RECONCILED SEPARATELY, and still not this curve's business: the
-        # catalog used to advertise a "30 to 60 min" pilot run, which all
-        # three runs above finished below. It now reads "8 to 25 min" on
-        # every surface, moved on its own evidence in commit 8a20c46 and
-        # pinned by tests/test_pxdesign_runtime_band.py. That band is
-        # advertised copy for one preset; this is a per-request cost gate
-        # over the whole input domain, so the two are allowed to diverge
-        # and the residuals above are where they do.
         runtime_base_min=11.2,       # job 79228f03 solved at the 120 aa anchor
         runtime_alpha=1.3,           # UNCHANGED and still unmeasured. The
                                      # three runs cannot calibrate it: their

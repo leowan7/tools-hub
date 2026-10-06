@@ -339,12 +339,15 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
     up here; tests/test_signup_credit_covers_smallest_run.py covers it by hold.
     Since 2026-09-30 esmfold2-design is in that same position, for a different
     reason -- its pilot was withdrawn, not never written.
-    """
-    import re as _re  # noqa: PLC0415
-    from decimal import Decimal  # noqa: PLC0415
 
+    The pilot card no longer prints its price (tests/test_no_prerun_numbers.py),
+    so each pilot is priced here by the estimator over the settings its button
+    loads, which is what the card used to print.
+    """
+    from shared.tool_meta import meta_for  # noqa: PLC0415
     from shared.tools_catalog import _TOOL_CATEGORIES  # noqa: PLC0415
     from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+    from shared.wallet_estimates import estimated_cost_for_tool  # noqa: PLC0415
 
     client = app.test_client()
     assert "signup_credit()" not in client.get(
@@ -353,10 +356,11 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
 
     prices = {}
     for adapter in tool_base.all_adapters():
-        body = client.get(f"/tools/{adapter.slug}").get_data(as_text=True)
-        hit = _re.search(r"About <strong>\$([\d,.]+)</strong>", body)
-        if hit:
-            prices[adapter.slug] = Decimal(hit.group(1).replace(",", ""))
+        pilot = getattr(meta_for(adapter.slug), "PILOT", None)
+        if pilot:
+            prices[adapter.slug] = estimated_cost_for_tool(
+                None, adapter.slug, dict(pilot.get("params") or {})
+            )
     # Nine, not ten: esmfold2-design's pilot was withdrawn 2026-09-30 (see
     # the floor in test_getting_started_names_the_pilot_card_cta_that_exists).
     assert len(prices) >= 9, f"only {len(prices)} pilot prices found"

@@ -245,7 +245,35 @@ class TestAutoReloadRateLimited:
         _assert_resend_call_shape(mock_resend, "auto_reload_rate_limited")
         body = mock_resend["json"]
         assert "skipped" in body["subject"].lower()
+        assert "once every 24 hours" in body["html"]
+        assert "24 hours after the last one" in body["html"]
         _assert_dash_free(body["html"], "auto_reload_rate_limited")
+
+    def test_renders_the_unreadable_guard_reason(
+        self, env, resolve_email, mock_resend
+    ):
+        """``reason`` replaces every 24h clause, it does not sit beside them.
+
+        The same sender now covers both no-charge guard outcomes, so the body
+        must not tell a user whose guard read failed that we were rate
+        limiting them, nor that they have to wait a day. The whole body is
+        checked for ``24 hour`` rather than one clause's wording, because the
+        template says it twice and in two different phrasings.
+        ``shared.wallet._refuse_auto_reload_unverified`` is the caller that
+        passes this string.
+        """
+        ok = email_mod.send_auto_reload_rate_limited_email(
+            user_id=TEST_USER_ID,
+            reason="a safety check on your account could not be completed",
+        )
+        assert ok is True
+        body = mock_resend["json"]
+        assert (
+            "a safety check on your account could not be completed."
+            in body["html"]
+        )
+        assert "24 hour" not in body["html"].lower()
+        _assert_dash_free(body["html"], "auto_reload_rate_limited_reason")
 
 
 class TestAutoReloadMonthlyCap:
@@ -281,8 +309,6 @@ class TestJobCapped:
         ok = email_mod.send_job_capped_email(
             user_id=TEST_USER_ID,
             tool_slug="bindcraft",
-            attempted_usd=120,
-            cap_usd=100,
         )
         assert ok is True
         _assert_resend_call_shape(mock_resend, "job_capped")
@@ -290,16 +316,15 @@ class TestJobCapped:
         # The human-readable tool label should appear in the subject.
         assert "BindCraft" in body["subject"]
         assert "BindCraft" in body["html"]
-        assert "$120" in body["html"]
-        assert "$100" in body["html"]
+        # A pre-run refusal names no price, estimate or cap.
+        assert "$" not in body["html"]
+        assert "$" not in body["subject"]
         _assert_dash_free(body["html"], "job_capped")
 
     def test_unknown_slug_falls_back(self, env, resolve_email, mock_resend):
         ok = email_mod.send_job_capped_email(
             user_id=TEST_USER_ID,
             tool_slug="future-tool",
-            attempted_usd=1,
-            cap_usd=0,
         )
         assert ok is True
 
@@ -361,8 +386,7 @@ class TestResendContract:
         ("send_low_balance_email",
          {"user_id": TEST_USER_ID, "balance_usd": 2}),
         ("send_job_capped_email",
-         {"user_id": TEST_USER_ID, "tool_slug": "boltzgen",
-          "attempted_usd": 200, "cap_usd": 150}),
+         {"user_id": TEST_USER_ID, "tool_slug": "boltzgen"}),
         ("send_pilot_intro_email",
          {"user_id": TEST_USER_ID, "spent_30d_usd": 1200}),
         ("send_wallet_frozen_email",

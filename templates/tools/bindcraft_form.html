@@ -48,30 +48,6 @@
       margin: 0;
     }
     .bindcraft-about-section li { margin-bottom: 0.25rem; }
-    .bindcraft-runtime-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-    }
-    .bindcraft-runtime-table th,
-    .bindcraft-runtime-table td {
-      padding: 0.4rem 0.45rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .bindcraft-runtime-table th {
-      color: var(--text-tertiary);
-      font-weight: 500;
-      font-size: 0.72rem;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-    .bindcraft-runtime-table td { color: var(--text-secondary); }
-    .bindcraft-runtime-table td.bindcraft-runtime-slug {
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 0.78rem;
-    }
 
     /* Hotspot picker — dark editorial, matches BindCraft panel aesthetic. */
     .hotspot-picker {
@@ -161,8 +137,8 @@
 
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
-      <strong>A 4-design BindCraft trial run takes ~30 to 45 min on A100-80GB;
-      larger counts take proportionally longer.</strong>
+      <strong>BindCraft runs on A100-80GB; larger design counts take
+      proportionally longer.</strong>
       Results are emailed on completion; you can close this tab.
     </div>
   </div>
@@ -317,16 +293,16 @@
           {% if single_container_ceiling %}
           <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
                style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-            More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay only for compute delivered and unused funds are refunded, and the estimate above is for that full-size run. Use Start a full-size run below; upload a target file so it carries over.
+            More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay for compute delivered and unused funds are refunded. Use Start a full-size run below; upload a target file so it carries over.
           </div>
           {% endif %}
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            First time on this target? Start with 4 designs (~30 to 45 min) to
+            First time on this target? Start with 4 designs to
             confirm your hotspots and binder length range, then scale to
             100+ once the small batch looks reasonable. BindCraft
-            optimises each design individually (~10 min each) so larger
-            runs take days. Billed by actual GPU consumed; cancellation
-            does not refund time already used.
+            optimises each design individually, so larger
+            runs take considerably longer. You pay for the GPU time
+            your run uses; cancellation does not refund time already used.
           </div>
           {% endcall %}
 

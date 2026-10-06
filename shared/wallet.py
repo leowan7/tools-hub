@@ -931,6 +931,112 @@ def release_hold(hold_tx_id: str, reason: str = "cancelled_before_run") -> bool:
 # Auto-reload
 # ---------------------------------------------------------------------------
 
+# Last time each user was mailed each no-charge auto-reload notice.
+# Keyed on (user_id, notice) rather than user_id alone: the three
+# branches that mail carry different wording, and one key would let the
+# first to fire inside the window suppress another and leave the user
+# holding the wrong explanation. Pinned by
+# tests/test_wallet.py::test_the_skip_notices_do_not_share_a_throttle_slot
+# ponytail: per-process dict, and the check-then-set below is unlocked, so
+# the ceiling is one mail per notice per worker per period and two settles
+# racing inside one worker can both pass the check. A users-table column with
+# a conditional update would make it exact; the dict turns "one mail per job
+# settle" into that ceiling, which is the part that matters during a wave.
+_SKIP_MAIL_SENT: dict[tuple[str, str], datetime] = {}
+
+# How long each notice stays suppressed. The periods differ because the
+# conditions do. The rate_limited notice
+# describes one that cannot change inside its own window -- dispatch
+# is bounded to one per 24h by ``_claim_auto_reload_dispatch``, whose cutoff
+# is that window -- so re-mailing it inside the window repeats a sentence
+# that is still true and still unactionable; at one hour a user with jobs
+# settling all day gets it ~24 times a day, which is not far off the
+# per-settle storm this throttle exists to stop. The refusal is the opposite
+# case: the unreadable guard behind it can clear and recur, each recurrence
+# is news, and the brief for that notice is that it be visible. The
+# monthly_cap notice takes 24h because ``_auto_reload_total_month`` sums the
+# calendar month, so the cap stays reached until the month rolls over or the
+# user changes their cap or reload amount. Pinned by
+# tests/test_wallet.py::test_each_skip_notice_is_throttled_for_its_own_period
+_SKIP_MAIL_EVERY = {
+    "rate_limited": timedelta(hours=24),
+    "guard_unavailable": timedelta(hours=1),
+    "monthly_cap": timedelta(hours=24),
+}
+
+
+def _mail_auto_reload_skipped(
+    user_id: str, notice: str, sender: str, **kwargs: Any
+) -> None:
+    """Mail a no-charge auto-reload notice about once per user per period.
+
+    Every notice routed here is reached once per job settle: Modal
+    completions arrive in waves, so without this a user below their
+    threshold gets one identical email per settling job.
+
+    Each caller logs on every occurrence, unthrottled, so suppressing the
+    mail suppresses no record: :func:`_refuse_auto_reload_unverified` at
+    ERROR, and the ``reloads_24h >= 1`` and monthly-cap branches of
+    :func:`auto_reload_if_needed` at INFO. Those two logs exist because of
+    this throttle -- the per-settle email used to be each branch's only
+    trace. All three are pinned by the settle-wave tests in
+    ``tests/test_wallet.py`` (``..._against_a_dead_ledger_mails_once``,
+    ``..._inside_the_24h_window_mails_once`` and
+    ``..._over_the_monthly_cap_mails_once``), which assert five log records
+    against one email.
+
+    ``notice`` is part of the throttle key, so no notice suppresses another
+    (``test_the_skip_notices_do_not_share_a_throttle_slot``), and it picks
+    the period from ``_SKIP_MAIL_EVERY``. ``sender`` and ``kwargs`` go to
+    ``_send_email_safe`` with ``user_id``. The timestamp is recorded before
+    the send and ``_send_email_safe`` swallows delivery failures, so a dead
+    mailer costs the user that period's email; the caller's log is the
+    durable record.
+
+    "About" is deliberate: the ceiling is per notice per worker, and the
+    check-then-set below is unlocked (see the comment at ``_SKIP_MAIL_SENT``),
+    so a wave can still yield one mail per worker and two settles racing
+    inside one worker can yield two. The sequential case is what the tests
+    pin. Either way the cost is a duplicate notification: no money path reads
+    this dict.
+    """
+    now = datetime.now(timezone.utc)
+    key = (user_id, notice)
+    last = _SKIP_MAIL_SENT.get(key)
+    if last is not None and now - last < _SKIP_MAIL_EVERY[notice]:
+        return
+    _SKIP_MAIL_SENT[key] = now
+    _send_email_safe(sender, user_id=user_id, **kwargs)
+
+
+def _refuse_auto_reload_unverified(user_id: str, guard: str) -> str:
+    """Refuse an auto-reload whose safety guard could not be read.
+
+    Both pre-charge guards -- :func:`_auto_reload_count_24h` and
+    :func:`_auto_reload_total_month` -- return ``None`` on an unreadable
+    ledger, and this is where that ``None`` becomes a refusal instead of a
+    pass. It returns before the dispatch claim and before the Stripe call, so
+    nothing is charged and no 24h window is burned.
+
+    Auto-reload is deliberately left ENABLED: an unreadable ledger says
+    nothing about the user's card, so disabling here (as the
+    ``no_payment_method`` and permanent-Stripe-failure branches do) would make
+    a Supabase blip cost the user a manual re-enable.
+
+    Every refusal is logged at ERROR; the email is throttled by
+    :func:`_mail_auto_reload_skipped`.
+    """
+    logger.error(
+        "auto_reload_if_needed: could not read %s for %s; refusing to "
+        "auto-reload rather than charge past a limit it cannot verify.",
+        guard, user_id,
+    )
+    _mail_auto_reload_skipped(
+        user_id, "guard_unavailable", "send_auto_reload_rate_limited_email",
+        reason="a safety check on your account could not be completed",
+    )
+    return "guard_unavailable"
+
 
 def auto_reload_if_needed(user_id: str) -> Optional[str]:
     """Fire an off-session top-up if the user qualifies.
@@ -946,6 +1052,9 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     * ``"rate_limited"`` (a reload already landed, or a charge was already
       dispatched, within the last 24h)
     * ``"monthly_cap"`` (current-month total plus reload would exceed cap)
+    * ``"guard_unavailable"`` (a pre-charge guard could not be read, so the
+      user could not be shown to be under both limits; see
+      :func:`_refuse_auto_reload_unverified`)
     * ``"triggered"`` (off-session PaymentIntent dispatched)
     * ``"stripe_error"`` (the off-session charge failed; on a permanent
       failure such as a declined or unusable card, auto-reload is
@@ -1039,10 +1148,29 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             user_id=user_id, reason="no_payment_method",
         )
         return "no_payment_method"
-    if _auto_reload_count_24h(user_id) >= 1:
-        _send_email_safe("send_auto_reload_rate_limited_email", user_id=user_id)
+    reloads_24h = _auto_reload_count_24h(user_id)
+    if reloads_24h is None:
+        return _refuse_auto_reload_unverified(
+            user_id, "the 24h auto-reload count"
+        )
+    if reloads_24h >= 1:
+        # Logged on every settle, while the email is throttled -- to one a
+        # DAY on this branch, the "rate_limited" period in
+        # `_SKIP_MAIL_EVERY`. Before the throttle the email
+        # WAS the record of this branch; this line is what replaces it.
+        logger.info(
+            "auto_reload_if_needed: %s already auto-reloaded in the last 24h;"
+            " skipping", user_id,
+        )
+        _mail_auto_reload_skipped(
+            user_id, "rate_limited", "send_auto_reload_rate_limited_email"
+        )
         return "rate_limited"
     month_total = _auto_reload_total_month(user_id)
+    if month_total is None:
+        return _refuse_auto_reload_unverified(
+            user_id, "this month's auto-reload total"
+        )
     reload_amount = Decimal(str(wallet.get("auto_reload_amount_usd") or 0))
     monthly_cap = Decimal(
         str(wallet.get("auto_reload_monthly_cap_usd")
@@ -1065,9 +1193,14 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
         )
         return "no_amount_configured"
     if month_total + reload_amount > monthly_cap:
-        _send_email_safe(
-            "send_auto_reload_monthly_cap_email",
-            user_id=user_id, total_usd=month_total, cap_usd=monthly_cap,
+        logger.info(
+            "auto_reload_if_needed: %s at the monthly auto-reload cap "
+            "(month %s + reload %s > cap %s); skipping",
+            user_id, month_total, reload_amount, monthly_cap,
+        )
+        _mail_auto_reload_skipped(
+            user_id, "monthly_cap", "send_auto_reload_monthly_cap_email",
+            total_usd=month_total, cap_usd=monthly_cap,
         )
         return "monthly_cap"
     # Resolved BEFORE the claim, though it reads like setup. This import has
@@ -1372,11 +1505,24 @@ def _spent_today_usd(user_id: str) -> Decimal:
     return _net_spend_usd(user_id, start_of_day)
 
 
-def _auto_reload_count_24h(user_id: str) -> int:
-    """How many auto-reload credits have been recorded in the last 24h."""
+def _auto_reload_count_24h(user_id: str) -> Optional[int]:
+    """How many auto-reload credits have been recorded in the last 24h.
+
+    ``None`` means the ledger could not be read. It is a separate value from
+    ``0`` on purpose: every integer this returns is a number the caller
+    compares against a limit, and the smallest of them -- ``0`` -- reads as
+    permission to charge. Returning ``0`` for an unreadable ledger, which is
+    what this did before, turned a Supabase blip into a pass on a money guard.
+
+    The refusal lives in the caller, not here:
+    :func:`auto_reload_if_needed` routes ``None`` to
+    :func:`_refuse_auto_reload_unverified`, and
+    ``tests/test_wallet.py::test_auto_reload_refuses_when_the_24h_count_cannot_be_read``
+    is what fails if that route is removed.
+    """
     client = get_service_client()
     if client is None:
-        return 0
+        return None
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
         response = (
@@ -1387,12 +1533,15 @@ def _auto_reload_count_24h(user_id: str) -> int:
             .gte("created_at", cutoff.isoformat())
             .execute()
         )
-        return len(list(getattr(response, "data", None) or []))
+        rows = getattr(response, "data", None)
+        if rows is None:
+            return None
+        return len(list(rows))
     except Exception:
         logger.warning(
             "auto_reload_count_24h failed for %s", user_id, exc_info=True
         )
-        return 0
+        return None
 
 
 def _claim_auto_reload_dispatch(user_id: str) -> bool:
@@ -1456,11 +1605,23 @@ def _claim_auto_reload_dispatch(user_id: str) -> bool:
         return False
 
 
-def _auto_reload_total_month(user_id: str) -> Decimal:
-    """Sum of auto-reload credits in the current calendar month (UTC)."""
+def _auto_reload_total_month(user_id: str) -> Optional[Decimal]:
+    """Sum of auto-reload credits in the current calendar month (UTC).
+
+    ``None`` means the ledger could not be read, and is not interchangeable
+    with ``Decimal("0")`` for the same reason as in
+    :func:`_auto_reload_count_24h`: the caller's only use of this number is
+    ``month_total + reload_amount > monthly_cap``, and the lowest total it can
+    return is the one most likely to clear that comparison. A failed read used
+    to be indistinguishable from a month with no reloads in it.
+
+    The refusal lives in the caller:
+    ``tests/test_wallet.py::test_auto_reload_refuses_when_the_monthly_total_cannot_be_read``
+    is what fails if it is removed.
+    """
     client = get_service_client()
     if client is None:
-        return Decimal("0")
+        return None
     now = datetime.now(timezone.utc)
     month_start = now.replace(
         day=1, hour=0, minute=0, second=0, microsecond=0
@@ -1474,13 +1635,18 @@ def _auto_reload_total_month(user_id: str) -> Decimal:
             .gte("created_at", month_start.isoformat())
             .execute()
         )
-        rows = list(getattr(response, "data", None) or [])
-        return sum(Decimal(str(r.get("amount_usd") or 0)) for r in rows)
+        rows = getattr(response, "data", None)
+        if rows is None:
+            return None
+        return sum(
+            (Decimal(str(r.get("amount_usd") or 0)) for r in rows),
+            Decimal("0"),
+        )
     except Exception:
         logger.warning(
             "auto_reload_total_month failed for %s", user_id, exc_info=True
         )
-        return Decimal("0")
+        return None
 
 
 def _post_settle_hooks(
@@ -1525,8 +1691,6 @@ def _emit_preflight_email(
             "send_job_capped_email",
             user_id=user_id,
             tool_slug=tool_slug,
-            attempted_usd=pre.estimated_cost_usd,
-            cap_usd=pre.hard_cap_usd,
         )
 
 

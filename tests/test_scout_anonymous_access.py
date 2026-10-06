@@ -1,9 +1,7 @@
 """Epitope Scout is reachable without an account — and safely.
 
-Seven binder-design tool pages show a "Start here first" panel
-(``templates/components/about_panel.html``) whose body, set in
-``blueprints/tools.py::_prerequisite_tool``, says "It is free and runs in
-about 30 seconds." That promise is only true
+Seven binder-design tool pages tell a first-time visitor to start here
+first, and that it is free. That promise is only true
 if ``/scout`` renders, loads the 1HEW example, accepts an upload and scores
 a chain for someone who has never signed in.
 
