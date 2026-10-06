@@ -806,8 +806,8 @@ def preflight_for_tool(
     #               the token verbatim, so the run is already paid for by the
     #               time anything notices: proteina's in-container
     #               ``missing_hotspots`` guard refuses it with the A100 hot,
-    #               and boltzgen raises at llm-proteinDesigner
-    #               ``docker/boltzgen/run_pipeline.py:1083`` ("Hotspot
+    #               and boltzgen raises in ``build_yaml_spec`` (llm-proteinDesigner
+    #               ``docker/boltzgen/run_pipeline.py``) ("Hotspot
     #               residue(s) ... are not present after structure cleanup").
     #               HARD FAIL FOR EVERY TOOL, ``hotspots_required`` or not:
     #               that flag answers "does this tool need a hotspot at all",

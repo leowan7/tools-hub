@@ -1521,8 +1521,8 @@ def test_the_container_cleanup_boltzgen_runs_really_does_drop_that_residue():
     asserts on the copy that always ships with the repo and
     `test_the_normalizer_the_image_mounts_agrees_with_the_vendored_copy`
     below checks the original whenever that checkout is present. The
-    renumber_map is exactly what llm-proteinDesigner
-    docker/boltzgen/run_pipeline.py:1083 consults
+    renumber_map is exactly what ``build_yaml_spec`` (llm-proteinDesigner
+    docker/boltzgen/run_pipeline.py) consults
     before raising "Hotspot residue(s) ... are not present after structure
     cleanup".
     """

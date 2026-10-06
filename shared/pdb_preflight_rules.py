@@ -233,8 +233,8 @@ class ToolRules:
     hotspot cannot be mapped afterwards. Executed against a synthetic chain
     whose residue 30 carries N/CA/C and no O: ``normalize_for_boltzgen`` and
     ``normalize_for_pxdesign`` both return a ``renumber_map`` with no
-    ``("A", 30)``, and llm-proteinDesigner's
-    ``docker/boltzgen/run_pipeline.py:1083`` raises ``"Hotspot residue(s) ...
+    ``("A", 30)``, and ``build_yaml_spec`` in llm-proteinDesigner's
+    ``docker/boltzgen/run_pipeline.py`` raises ``"Hotspot residue(s) ...
     are not present after structure cleanup"`` on exactly that condition —
     after the wallet hold, with the GPU running.
 
