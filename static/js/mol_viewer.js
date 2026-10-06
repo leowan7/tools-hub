@@ -93,20 +93,23 @@
     }
   }
 
-  // Sniff the structure format from the payload. Every tool's PDB
-  // endpoint serves PDB text today, but a few upstream pipelines can
-  // hand back mmCIF. Parsing mmCIF through the 'pdb' reader yields a
+  // Sniff the structure format from the payload. Not every tool's PDB
+  // endpoint serves PDB text: PXDesign stores mmCIF whose ``data_`` line
+  // follows ``#`` comment lines and whose ``_atom_site.`` loop starts past
+  // the 4000-character window below (tests/test_export_page_parity.py,
+  // test_the_3d_viewer_sniffs_a_pxdesign_cif_as_mmcif). Parsing mmCIF
+  // through the 'pdb' reader yields a
   // zero-atom structure — a blank canvas with only the corner axis
   // gizmo — so detect the format and give Mol* the right parser.
   // Conservative: default to 'pdb', switch only on an unambiguous mmCIF
-  // signal (a leading ``data_`` block header or a line-anchored
-  // ``_atom_site.`` loop tag), so a normal PDB is never misclassified.
+  // signal (a ``data_`` block header or an ``_atom_site.`` loop tag),
+  // so a normal PDB is never misclassified.
   // Both signals are anchored to the start of a line: mmCIF emits them
   // there, and this rules out a false positive from the token appearing
   // mid-line inside a PDB REMARK/TITLE record.
   function detectFormat(text) {
     var head = (text || '').slice(0, 4000);
-    if (/^\s*data_\S/.test(head) || /(^|\n)\s*_atom_site\./.test(head)) {
+    if (/(^|\n)\s*data_\S/.test(head) || /(^|\n)\s*_atom_site\./.test(head)) {
       return 'mmcif';
     }
     return 'pdb';
