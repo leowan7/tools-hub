@@ -93,7 +93,7 @@ about: dict = {
             ),
         },
         {
-            "name": "Number of designs",
+            "name": "Number of backbones (5 candidates each)",
             "explanation": (
                 "How many backbones to generate. Each gets five "
                 "ProteinMPNN sequences, and every sequence is "
@@ -228,7 +228,7 @@ EXAMPLE: dict | None = {
             "sampling rather than fixing.",
         ),
         (
-            "Number of designs",
+            "Number of backbones (5 candidates each)",
             "4",
             "Four backbones &mdash; and this is the input to understand "
             "before you spend. The field sets the backbone count, not the "
