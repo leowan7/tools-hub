@@ -25,6 +25,7 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional
 
 from shared import score_legends
@@ -1789,6 +1790,129 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     return "timed_out"
 
 
+WALLET_STOP_REASON = "wallet_empty"
+
+
+def _parse_ts(value) -> Optional[datetime]:  # noqa: ANN001
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = None) -> dict:  # noqa: ANN001
+    """Stop balance-limited runs whose wall-clock cost since ``started_at``
+    (or ``created_at``, below) has reached their hold.
+
+    Live charging, option (i') in docs/design/LIVE-CHARGING-2026-10-01.md.
+    Called once per ``campaigns:tick`` (cron/tick_campaigns.py). Campaign
+    sub-jobs are skipped. A run with no ``started_at`` is metered from
+    ``created_at`` when it has a Modal call id, and skipped when it has
+    none, which leaves a submit Modal never acknowledged to ``sweep-stuck``
+    (tests/test_live_charging.py::test_run_with_no_heartbeat_is_metered_from_created_at,
+    ::test_rows_the_stop_never_touches). A run with a Modal
+    call id is cancelled first; when the cancel raises or returns
+    ``ok: False`` the job is left running for the next tick. The run is then
+    re-read and finished as a succeeded, partial run built by
+    ``job_recovery.reconstruct``.
+    """
+    from shared.job_recovery import reconstruct  # noqa: PLC0415
+    from shared.wallet import compute_charge_usd  # noqa: PLC0415
+    from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
+
+    summary: dict = {"stopped": 0, "cancel_failed": 0, "errors": []}
+    client = get_service_client()
+    if client is None:
+        summary["errors"].append("no service client")
+        return summary
+    try:
+        rows = (
+            client.table(_TABLE)
+            .select("*")
+            .in_("status", list(_NON_TERMINAL))
+            .eq("inputs->_wallet->>balance_limited", "true")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        logger.warning("wallet stop: candidate query failed", exc_info=True)
+        summary["errors"].append("query failed")
+        return summary
+
+    now = now or datetime.now(timezone.utc)
+    for row in rows:
+        try:
+            job = ToolJob.from_row(row)
+            ws = (job.inputs or {}).get("_wallet") or {}
+            if job.campaign_id or not isinstance(ws, dict):
+                continue
+            if ws.get("balance_limited") is not True or ws.get("hold_usd") is None:
+                continue
+            started = _parse_ts(
+                job.started_at or (job.modal_function_call_id and job.created_at)
+            )
+            if started is None:
+                continue
+            elapsed = max(0, int((now - started).total_seconds()))
+            cost = compute_charge_usd(
+                elapsed, gpu_class_for_job(job.tool, ws.get("gpu_class"))
+            )
+            if cost < Decimal(str(ws["hold_usd"])):
+                continue
+            if job.modal_function_call_id:
+                if modal_client is None:
+                    from gpu.modal_client import ModalClient  # noqa: PLC0415
+
+                    modal_client = ModalClient()
+                try:
+                    cancelled = modal_client.cancel(job.modal_function_call_id)
+                except Exception:
+                    logger.warning(
+                        "wallet stop: Modal cancel raised for job %s", job.id,
+                        exc_info=True,
+                    )
+                    cancelled = {"ok": False}
+                if isinstance(cancelled, dict) and cancelled.get("ok") is False:
+                    logger.warning(
+                        "wallet stop: Modal cancel failed for job %s (%s); "
+                        "left running.", job.id, cancelled.get("error"),
+                    )
+                    summary["cancel_failed"] += 1
+                    continue
+            job = get_job(job.id) or job
+            try:
+                candidates = reconstruct(job)
+            except Exception:
+                logger.warning(
+                    "wallet stop: reconstruct raised for job %s", job.id,
+                    exc_info=True,
+                )
+                candidates = []
+            fresh = complete_job(
+                job.id,
+                terminal_status="succeeded",
+                result={
+                    "candidates": candidates,
+                    "candidate_count": len(candidates),
+                    "partial": True,
+                    "stop_reason": WALLET_STOP_REASON,
+                },
+                gpu_seconds_used=elapsed,
+            )
+            if fresh is not None and (fresh.result or {}).get("stop_reason") == WALLET_STOP_REASON:
+                summary["stopped"] += 1
+        except Exception as exc:
+            logger.warning(
+                "wallet stop: raised for job %s", row.get("id"), exc_info=True,
+            )
+            summary["errors"].append(f"{row.get('id')}:{exc}")
+    return summary
+
+
 def mark_cancelled(
     job_id: str,
     *,
@@ -1821,14 +1945,17 @@ def cancel_job(
     *,
     user_id: str,
     modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
+    leave_running_if_cancel_fails: bool = True,
 ) -> tuple[Optional["ToolJob"], Optional[str]]:
     """Cancel a pending/running job. Owner-scoped; bills consumed GPU.
 
     Flow:
       1. Owner-scope fetch; reject if missing or already terminal.
-      2. Best-effort Modal FunctionCall cancel (non-fatal if Modal flakes —
-         the tool_jobs row is the authoritative state and a stray Modal
-         run terminates harmlessly once the tools-hub side is terminal).
+      2. Modal FunctionCall cancel. If it raises or returns ``ok: False``
+         the row is left as it was and ``(None, "modal_cancel_failed")`` is
+         returned. With ``leave_running_if_cancel_fails=False``
+         (``shared.compute_campaigns.cancel_campaign``) the job is
+         cancelled here anyway, as before live charging.
       3. Mark the job 'cancelled' with failure_class='user_cancelled'.
       4. Settle the wallet hold against the row's ``gpu_seconds_used``.
          ``mid_run_monitor_check`` writes it from a heartbeat, but not
@@ -1850,12 +1977,20 @@ def cancel_job(
 
     if job.modal_function_call_id:
         try:
-            modal_client.cancel(job.modal_function_call_id)
+            cancelled = modal_client.cancel(job.modal_function_call_id)
         except Exception:
+            logger.warning("Modal cancel raised for job %s", job_id, exc_info=True)
+            cancelled = {"ok": False}
+        if isinstance(cancelled, dict) and cancelled.get("ok") is False:
+            if leave_running_if_cancel_fails:
+                logger.warning(
+                    "Modal cancel failed for job %s (%s); job left running.",
+                    job_id, cancelled.get("error"),
+                )
+                return None, "modal_cancel_failed"
             logger.warning(
-                "Modal cancel raised for job %s; proceeding with local cancel.",
-                job_id,
-                exc_info=True,
+                "Modal cancel failed for job %s (%s); cancelling locally.",
+                job_id, cancelled.get("error"),
             )
 
     # Compare-and-swap the terminal transition. If this returns False the

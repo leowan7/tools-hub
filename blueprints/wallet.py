@@ -39,6 +39,7 @@ from shared.wallet_estimates import (
     estimated_cost_for_tool,
     TOOL_SPECS,
 )
+from shared.wallet_guard import live_charging_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -497,13 +498,17 @@ def api_wallet_estimate():
     exceeds_self_serve = estimate > SELF_SERVE_CEILING_USD
     exceeds_hard_cap = estimate > hard_cap
 
-    # What submit actually needs in the wallet: requires_wallet reserves
-    # ``cushioned_hold_usd`` for any paid run and reserve_hold refuses a
-    # balance below it (shared/wallet_guard.py). A free run reserves nothing.
-    # The deficit is measured against this, so the form shows the gate for a
-    # balance that covers the price but not the hold.
+    # What submit actually needs in the wallet (shared/wallet_guard.py): a
+    # live-charging tool needs any balance above $0 (_reserve_live_hold); any
+    # other paid run needs ``cushioned_hold_usd``, which reserve_hold refuses
+    # a balance below. A free run reserves nothing. The deficit is measured
+    # against this, so the form shows the gate for a balance that covers the
+    # price but not the hold.
     required = estimate
-    if user_id and estimate > 0 and not exceeds_hard_cap and not exceeds_self_serve:
+    if (user_id and estimate > 0 and not exceeds_hard_cap and not exceeds_self_serve
+            and live_charging_enabled(tool_slug, params)):
+        required = Decimal("0") if balance > 0 else estimate
+    elif user_id and estimate > 0 and not exceeds_hard_cap and not exceeds_self_serve:
         try:
             required = max(estimate, cushioned_hold_usd(user_id, tool_slug, params))
         except Exception:  # noqa: BLE001

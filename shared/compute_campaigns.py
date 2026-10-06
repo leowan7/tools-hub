@@ -2677,7 +2677,8 @@ def cancel_campaign(campaign_id: str, user_id: str) -> bool:
     mc = ModalClient()
     for r in rows:
         try:
-            cancel_job(str(r["id"]), user_id=user_id, modal_client=mc)
+            cancel_job(str(r["id"]), user_id=user_id, modal_client=mc,
+                       leave_running_if_cancel_fails=False)
         except Exception:
             logger.warning(
                 "cancel_campaign: cancel_job raised for child %s", r.get("id"),

@@ -63,6 +63,17 @@ def tick_campaigns() -> dict:
         return summary
 
     try:
+        from shared.jobs import stop_wallet_limited_jobs  # noqa: PLC0415
+
+        summary["wallet_stop"] = stop_wallet_limited_jobs()
+        summary["errors"].extend(
+            f"wallet stop: {err}" for err in summary["wallet_stop"]["errors"]
+        )
+    except Exception:
+        logger.warning("tick_campaigns: wallet stop check failed", exc_info=True)
+        summary["errors"].append("wallet stop check failed")
+
+    try:
         rows = (
             client.table("compute_campaigns")
             .select("id,user_id")
