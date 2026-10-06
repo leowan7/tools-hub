@@ -24,12 +24,16 @@ from __future__ import annotations
 import base64
 import csv
 import io
+import logging
+import re
 import zipfile
 from collections.abc import Mapping
 from typing import Callable, Optional
 
 from shared import metric_glossary as _metric_glossary
 from shared import pdb_bfactors as _pdb_bfactors
+
+logger = logging.getLogger(__name__)
 
 
 def _dict_candidates(candidates) -> list:
@@ -447,7 +451,7 @@ def _candidate_sequence(cand: dict) -> str:
 
 # One column per chain, named by its chain id: "sequence_chainB".
 _SEQ_CHAIN_PREFIX = "sequence_chain"
-# Why a row has no chain columns. One of four strings; see _add_chain_columns.
+# Why a row has no chain columns. One of five strings; see _add_chain_columns.
 _SEQ_NOTE = "sequence_note"
 
 
@@ -518,14 +522,14 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     A row left with no chain columns gets a ``sequence_note`` instead of a
     row of blank cells. The FASTA can drop such a record and leave a visible
     gap; a CSV row is the design itself and cannot be dropped, so blank cells
-    would read as a design that has no sequence. Four outcomes, four notes,
-    because any one string is false for the other three, and every branch that
+    would read as a design that has no sequence. Five outcomes, five notes,
+    because any one string is false for the other four, and every branch that
     leaves a row without chain columns writes one, so such a row carries a
     reason rather than silent blanks (tests in tests/test_export_page_parity.py
     named after each):
 
     * "not read: ..." -- the row is past ``_MAX_STRUCTURE_READS``, so this
-      function never looked at its structure. The only one of the four that
+      function never looked at its structure. The only one of the five that
       says nothing about the structure itself, which may be perfectly readable
       (``test_a_job_past_the_cap_reads_up_to_it_and_notes_the_rest``).
     * "structure unavailable" -- no bytes to read. A storage miss or a
@@ -536,12 +540,15 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
       that case is decided before the cap rather than out of it; both routes
       here pass ``default_job_id``, so that is a future caller's case
       (``test_an_unreadable_structure_says_so_instead_of_leaving_blank_cells``).
-    * "no sequence in structure" -- bytes read, extractor returned nothing.
-      Bytes Biopython could not parse, or a structure holding no protein
-      sequence it will take: placeholder chains, or a nucleic-only model,
-      whose residues map to no letter. Nothing in this repo shows one of
-      these tools emitting such a file, so this branch is written for a
-      shape the extractor can return, not for an observed run
+    * "structure did not parse" -- bytes read, extractor returned ``None``:
+      Biopython raised or found no model in them
+      (``test_a_structure_that_does_not_parse_says_so_in_the_csv``).
+    * "no sequence in structure" -- bytes parsed, extractor returned ``[]``:
+      a structure holding no protein sequence it will take, placeholder
+      chains, or a nucleic-only model, whose residues map to no letter.
+      Nothing in this repo shows one of these tools emitting such a file, so
+      this branch is written for a shape the extractor can return, not for
+      an observed run
       (``test_a_structure_with_no_readable_chain_says_that_instead``).
     * "no structure stored" -- the row references no structure at all, so
       there was nothing to read: no ``pdb_key`` and no ``pdb_content_b64``.
@@ -590,8 +597,9 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
         data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
         chains = structure_chain_sequences(data) if data else []
         if not chains:
-            row[_SEQ_NOTE] = ("no sequence in structure" if data
-                              else "structure unavailable")
+            row[_SEQ_NOTE] = ("structure unavailable" if not data
+                              else "structure did not parse" if chains is None
+                              else "no sequence in structure")
             continue
         for cid, seq in chains:
             # Stripped: a PDB that leaves the chain column blank parses as
@@ -783,25 +791,42 @@ def _structure_bytes(cand: dict, key: dict, fetch_bytes, default_job_id) -> Opti
     return data
 
 
-def structure_chain_sequences(data: bytes) -> list[tuple[str, str]]:
+def structure_chain_sequences(data: bytes) -> Optional[list[tuple[str, str]]]:
     """``[(chain_id, sequence), ...]`` for the first model of PDB or mmCIF
     bytes, protein residues only (modified residues mapped by Biopython's
-    extended 3-to-1 table; waters and ligands skipped). ``[]`` on anything
-    that does not parse -- a FASTA fallback, never a reason to fail the file.
+    extended 3-to-1 table; waters and ligands skipped). ``[]`` when the
+    bytes parse but no chain qualifies; ``None``, logged, when the decode or
+    the parse raises or the parse yields no model, so a caller can say "did
+    not parse" rather than "no sequence" (tests/test_export_page_parity.py,
+    ``test_a_structure_that_does_not_parse_is_none_not_an_empty_list``).
+    Those exceptions are caught here, not raised: this is a fallback, not a
+    reason to fail the download.
+
+    mmCIF is a file with a line starting ``data_``, not one whose first
+    characters are ``data_``: PXDesign's files open with ``#`` lines before
+    it, and PDBParser handed mmCIF returns a structure with no model without
+    raising (``test_structure_chain_sequences_reads_a_pxdesign_cif``). Not
+    :func:`shared.pdb_bfactors._looks_like_cif`, which also takes ``loop_``
+    and would hand MMCIFParser a PDB it refuses
+    (``test_a_pdb_with_a_loop_line_is_still_read_as_pdb``).
     """
     from Bio.Data.PDBData import protein_letters_3to1_extended  # noqa: PLC0415
     from Bio.PDB import MMCIFParser, PDBParser  # noqa: PLC0415
 
     try:
         text = data.decode("utf-8", errors="replace")
-        parser = (MMCIFParser(QUIET=True) if text.lstrip().startswith("data_")
+        parser = (MMCIFParser(QUIET=True) if re.search(r"^\s*data_\S", text, re.M)
                   else PDBParser(QUIET=True))
-        structure = parser.get_structure("s", io.StringIO(text))
-        model = next(iter(structure), None)
-    except Exception:  # noqa: BLE001 -- see docstring
-        return []
+        model = next(iter(parser.get_structure("s", io.StringIO(text))), None)
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        # The type only: a parser message can quote the file's own text.
+        logger.warning("structure did not parse: %s", type(exc).__name__)
+        return None
+    if model is None:
+        logger.warning("structure did not parse: no model in %d bytes", len(data))
+        return None
     out: list[tuple[str, str]] = []
-    for chain in model or []:
+    for chain in model:
         seq = "".join(
             protein_letters_3to1_extended.get(res.get_resname().strip(), "")
             for res in chain
@@ -822,7 +847,11 @@ def candidates_to_fasta(
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
     output arrives as a separate ``sequences`` list (seq + score + recovery).
     Returns ``""`` when there is nothing to write (caller supplies the empty
-    message so the download still names sensibly).
+    message so the download still names sensibly) -- unless a structure it
+    read did not parse, when it returns one ``#`` line saying how many, so
+    the job route's "No sequences found" stub does not stand in for a file
+    the parser refused (tests/test_export_page_parity.py,
+    ``test_fasta_storage_miss_and_unparseable_bytes_fall_back_to_the_note``).
 
     ``tool`` / ``preset`` NAME THE RUN when every row came from one. They are
     NOT the only source: a row carrying its own ``_source_tool`` is judged
@@ -880,6 +909,7 @@ def candidates_to_fasta(
     from shared.score_legends import judge, verdict_text  # noqa: PLC0415
 
     lines: list[str] = []
+    unparsed = 0
     cands = _dict_candidates(candidates)
     for i, cand in enumerate(cands):
         key = export_key(cand, i)
@@ -888,10 +918,9 @@ def candidates_to_fasta(
             records = [("", seq)]
         elif fetch_bytes is not None:
             data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
-            records = [
-                (f"_chain{cid}", chain_seq)
-                for cid, chain_seq in (structure_chain_sequences(data) if data else [])
-            ]
+            chains = structure_chain_sequences(data) if data else []
+            unparsed += chains is None
+            records = [(f"_chain{cid}", chain_seq) for cid, chain_seq in chains or []]
         else:
             records = []
         if not records:
@@ -941,7 +970,8 @@ def candidates_to_fasta(
         for start in range(0, len(seq), 80):
             lines.append(seq[start:start + 80])
     if not lines:
-        return ""
+        return (f"# No sequence read: {unparsed} stored structure(s) did not parse.\n"
+                if unparsed else "")
     return "\n".join(lines) + "\n"
 
 

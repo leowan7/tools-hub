@@ -309,8 +309,8 @@ def test_fasta_storage_miss_and_unparseable_bytes_fall_back_to_the_note(client, 
         f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
     job = _wire(monkeypatch, "af2", {"designs": [{"pdb_key": "a.pdb"}]},
                 fetch=lambda **_kw: b"not a structure")
-    assert "No sequences found" in client.get(
-        f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+    assert client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True) == (
+        "# No sequence read: 1 stored structure(s) did not parse.\n")
 
 
 def test_structure_chain_sequences_skips_placeholder_chains():
@@ -349,7 +349,131 @@ ATOM 1 C CA . GLY A 1 1 ? 0.0 0.0 0.0 1.0 90.0 1 A 1
 ATOM 2 C CA . LYS A 1 2 ? 3.8 0.0 0.0 1.0 90.0 2 A 1
 """
     assert structure_chain_sequences(cif) == [("A", "GK")]
-    assert structure_chain_sequences(b"") == []
+    assert structure_chain_sequences(b"") is None
+
+
+_THREE = {"A": "ALA", "C": "CYS", "G": "GLY", "K": "LYS", "M": "MET", "W": "TRP"}
+
+
+def _pxdesign_cif(chains: dict[str, str]) -> bytes:
+    """mmCIF laid out like PXDesign's real output (prod job 211eca08,
+    ``designs/design_001.cif``): Protenix's ``#`` licence lines BEFORE
+    ``data_``, more than 4000 characters of other categories before
+    ``_atom_site``, then ``_atom_site`` in Protenix's column order, trailing
+    space on each tag, chain ids ``A0`` / ``B0``. CA atoms only."""
+    head = [
+        "# By using this file you agree to the legally binding terms of use"
+        " found at https://protenix-server.com/terms-of-service",
+        "# Version: 0.1",
+        "data_rank_1",
+        "#",
+        "loop_",
+        "_chem_comp_bond.pdbx_ordinal ",
+        "_chem_comp_bond.comp_id ",
+        "_chem_comp_bond.atom_id_1 ",
+        "_chem_comp_bond.atom_id_2 ",
+        *(f"{n} ALA N CA" for n in range(1, 500)),
+        "#",
+        "loop_",
+        *(f"_atom_site.{tag} " for tag in (
+            "group_PDB", "type_symbol", "label_atom_id", "label_alt_id",
+            "label_comp_id", "label_asym_id", "label_entity_id",
+            "label_seq_id", "pdbx_PDB_ins_code", "auth_seq_id",
+            "auth_comp_id", "auth_asym_id", "auth_atom_id",
+            "B_iso_or_equiv", "occupancy", "Cartn_x", "Cartn_y", "Cartn_z",
+            "pdbx_PDB_model_num", "id")),
+    ]
+    rows, n = [], 1
+    for entity, (cid, seq) in enumerate(chains.items(), start=1):
+        for i, aa in enumerate(seq, start=1):
+            res = _THREE[aa]
+            rows.append(f"ATOM C CA . {res} {cid} {entity} {i} . {i} {res} "
+                        f"{cid} CA 0.0 1.0 {3.8 * n:.3f} 0.0 0.0 1 {n}")
+            n += 1
+    return ("\n".join(head + rows + ["#"]) + "\n").encode()
+
+
+def test_structure_chain_sequences_reads_a_pxdesign_cif():
+    """Prod job 211eca08's FASTA was the "No sequences found" stub (reported
+    from production 2026-10-05, not reproducible from this repo). The old
+    sniff, ``lstrip().startswith("data_")``, sent this file to PDBParser
+    because of the ``#`` lines, and PDBParser returned a structure with no
+    model without raising."""
+    from shared.exports import structure_chain_sequences
+
+    cif = _pxdesign_cif({"A0": "KMKWCG", "B0": "MKWCMK"})
+    assert structure_chain_sequences(cif) == [("A0", "KMKWCG"), ("B0", "MKWCMK")]
+
+
+def test_a_structure_that_does_not_parse_is_none_not_an_empty_list():
+    from shared.exports import structure_chain_sequences
+
+    assert structure_chain_sequences(b"not a structure") is None
+    assert structure_chain_sequences(_pdb({"A": "GGGG"})) == []
+
+
+def test_a_pdb_with_a_loop_line_is_still_read_as_pdb():
+    """Only a ``data_`` line sends bytes to MMCIFParser, which refuses a file
+    without one. ``pdb_bfactors._looks_like_cif`` also takes ``loop_``."""
+    from shared.exports import structure_chain_sequences
+
+    pdb = b"loop_ a remark\n" + _pdb({"A": "MKWC"})
+    assert structure_chain_sequences(pdb) == [("A", "MKWC")]
+
+
+def test_pxdesign_exports_carry_the_binder_read_from_its_cif(client, monkeypatch):
+    target = "KMKWCGKMKW"
+    binders = ["MKWCMK", "WCMKGK"]
+    files = {f"designs/design_00{i}.cif": _pxdesign_cif({"A0": target, "B0": b})
+             for i, b in enumerate(binders, start=1)}
+    result = {"candidates": [
+        {"rank": i, "pdb_key": key, "scores": {"ipTM": 0.9 - 0.1 * i}}
+        for i, key in enumerate(files, start=1)]}
+    job = _wire(monkeypatch, "pxdesign", result,
+                fetch=lambda **kw: files[kw["filename"]])
+
+    lines = client.get(f"/jobs/{job.id}/export.fasta").get_data(
+        as_text=True).splitlines()
+    assert [lines[i + 1] for i, ln in enumerate(lines)
+            if ln.startswith(">") and "_chainB0" in ln.split()[0]] == binders
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert [r["sequence_chainB0"] for r in rows] == binders
+    assert [r["sequence_chainA0"] for r in rows] == [target, target]
+
+
+def test_a_structure_that_does_not_parse_says_so_in_the_csv(client, monkeypatch):
+    result, files = _chain_rows([{"A": "MKWMKW"}, {"A": "MKWMKW"}])
+    files["designs/design_0.pdb"] = b"not a structure"
+    job = _wire(monkeypatch, "proteina", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    rows = list(csv.DictReader(io.StringIO(
+        client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
+    assert rows[0]["sequence_chainA"] == ""
+    assert rows[0]["sequence_note"] == "structure did not parse"
+    assert rows[1]["sequence_chainA"] == "MKWMKW"
+
+
+def test_the_3d_viewer_sniffs_a_pxdesign_cif_as_mmcif():
+    """``detectFormat`` in static/js/mol_viewer.js, run under node on the
+    same fixture: the View 3D button fetches the stored CIF and hands Mol*
+    whatever format this returns."""
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node is not on PATH")
+    src = (Path(__file__).resolve().parents[1] / "static/js/mol_viewer.js"
+           ).read_text(encoding="utf-8")
+    fn = re.search(r"function detectFormat\(text\) \{.*?\n  \}\n", src, re.S)
+    script = fn.group(0) + (
+        "const t = require('fs').readFileSync(0, 'utf8');"
+        "process.stdout.write(detectFormat(t));")
+    for data, want in ((_pxdesign_cif({"A0": "MKWC"}), "mmcif"),
+                       (_pdb({"A": "MKWC"}), "pdb")):
+        out = subprocess.run(["node", "-e", script], input=data,
+                             capture_output=True, timeout=30, check=True)
+        assert out.stdout.decode() == want
 
 
 # ---------------------------------------------------------------------------
