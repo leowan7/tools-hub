@@ -789,9 +789,9 @@ def _classify(
     ``verify242-bs6-1789012528`` (iPTM 0.794-0.912) are unaffected, and the
     13 backfilled on 2026-09-15 (docs/VALIDATION-LOG.md, the 2026-08-23 17:53
     UTC row) cannot be re-tiered in either direction: their CDR proxy is
-    absent -- the CRITIC_SCALING_PROXY selector described above
-    CRITIC_REAL_IPTM -- so this
-    leg has nothing to read on them. Their iPTMs are valid, and 12 of the 13
+    absent, because they ran under the CRITIC_SCALING_PROXY selector that
+    the comment above CRITIC_REAL_IPTM describes, so this leg has nothing
+    to read on them. Their iPTMs are valid, and 12 of the 13
     clear STRICT_IPTM. So twelve designs on upstream's own showcase pairing
     is STILL the whole basis for this bar in either direction, and that is a
     thin one; what would settle it is in the module TODO.

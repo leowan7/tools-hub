@@ -184,8 +184,9 @@ def validate(
         non_canonical = set(seq) - CANONICAL_AA
         if ":" in non_canonical:
             return None, (
-                f"record {header!r} contains ':'. For a complex, put each "
-                "chain in its own >header record; they are folded together."
+                f"record {header!r} contains ':'. Split it into one "
+                ">header record per chain; they are folded together as a "
+                "complex."
             )
         if non_canonical:
             return None, (

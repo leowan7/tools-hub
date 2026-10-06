@@ -448,11 +448,14 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
     # binder monomer SASA, FreeBindCraft's functions/pr_alternative_utils.py)
     # and a surface-RESIDUE-COUNT fraction on the PyRosetta path
     # (FreeBindCraft's functions/pyrosetta_utils.py). Same name, same range,
-    # neither one SAP. The container's _METRIC_MAP maps
-    # Average_Surface_Hydrophobicity onto the key "SAP"
-    # (llm-proteinDesigner/docker/bindcraft/run_pipeline.py), so a 0-1
-    # fraction arrived under a name whose bars were 10 and 5 and read
-    # better-than-excellent by construction: 0.29 against a bar of 5.
+    # neither one SAP. The container's _METRIC_MAP USED TO map
+    # Average_Surface_Hydrophobicity onto the key "SAP", so a 0-1 fraction
+    # arrived under a name whose bars were 10 and 5 and read
+    # better-than-excellent by construction: 0.29 against a bar of 5. It now
+    # maps onto surface_hydrophobicity, and says why in its own comment
+    # (``_METRIC_MAP`` in llm-proteinDesigner
+    # docker/bindcraft/run_pipeline.py). Results stored before that change
+    # still carry the old key, which is why this legend keeps reading it.
     #
     # THOSE BARS ARE NOT CHENNAMSETTY'S. This repo's old glossary entry
     # attributed "< 5 favourable; > 10 developability concern" to Chennamsetty

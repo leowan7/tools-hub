@@ -133,7 +133,7 @@ class TestValidate:
         }
         inputs, err = cf_mod.validate(form, {})
         assert inputs is None
-        assert "own >header record" in (err or "")
+        assert ">header record per chain" in (err or "")
 
     def test_standalone_rejects_oversized_sequence(self):
         """> 600 aa must be rejected at form validation time."""
