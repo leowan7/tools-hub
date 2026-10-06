@@ -150,6 +150,9 @@
                   {% elif ann and ann.role == 'settlement' and ann.net is not none %}
                     <span class="wallet-tx-net">net for this job {{ display_record_usd(0 - ann.net) }}</span>
                   {% endif %}
+                  {% if tx.kind == 'absorbed_variance' %}
+                    <span class="wallet-tx-hint">Your balance did not cover all of this job's GPU time. Ranomics covered the rest, and you were not charged for it.</span>
+                  {% endif %}
                   {% if tx.notes and not ann %}
                     <span class="wallet-tx-note">{{ tx.notes }}</span>
                   {% endif %}

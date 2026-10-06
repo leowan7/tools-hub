@@ -40,7 +40,7 @@ from typing import Any, Optional
 import requests
 
 from shared import metric_glossary as _metric_glossary
-from shared.run_notices import run_notices
+from shared.run_notices import run_notices, stopped_for_balance
 from shared.tool_meta import preset_label
 from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
@@ -69,7 +69,11 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
     job_url = f"{base_url}/jobs/{job.id}"
     tone = _result_tone(job)
     tool = _tool_label(job.tool)
-    subject = f"Your {tool} run is done"
+    subject = (
+        f"Your {tool} run stopped: your wallet balance reached $0"
+        if stopped_for_balance(job)
+        else f"Your {tool} run is done"
+    )
 
     ctx = _job_complete_template_context(
         job=job, base_url=base_url, job_url=job_url, tone=tone, tool=tool,
@@ -157,13 +161,17 @@ def _empty_noun(job) -> str:  # noqa: ANN001
     """What an "empty" run failed to produce, for the headline.
 
     All three headline tables interpolate this — the live template context
-    below plus the ``_render_html``/``_render_text`` fallbacks — so the
-    delivered subject line and the two fallbacks cannot drift apart.
+    below plus the ``_render_html``/``_render_text`` fallbacks. A run
+    stopped for balance (``stopped_for_balance``) is the exception: the
+    subject and the live headline say it stopped, and the fallbacks do not.
 
     The branches below are the same ones ``_result_summary`` takes for
-    tone "empty", in the same order, so the headline and the summary
-    under it always name the same missing thing — a fold tool has no
+    tone "empty" after its ``stopped_for_balance`` return, in the same
+    order, so for a run not stopped for balance the headline and the
+    summary under it name the same missing thing — a fold tool has no
     candidates to have produced none of, and neither does ProteinMPNN.
+    A stopped run's summary says it stopped, so under a fallback headline
+    the two differ.
     test_headline_and_summary_name_the_same_thing walks both functions
     over one payload list and fails if they diverge.
 
@@ -202,6 +210,8 @@ def _job_complete_template_context(
         "empty":     f"Your {tool} run finished with {_empty_noun(job)}",
         "failed":    f"Your {tool} run failed",
     }[tone]
+    if stopped_for_balance(job):
+        headline = f"Your {tool} run stopped: your wallet balance reached $0"
     (top_score_label, top_score_value, top_score_caption, top_pdb_key,
      top_score_verdict, top_position) = _top_candidate_summary(
         job=job, tone=tone,
@@ -216,6 +226,7 @@ def _job_complete_template_context(
         "summary":           _result_summary(job, tone=tone),
         "cost_line":         _cost_breakdown_line(job, tone=tone),
         "run_notices":       run_notices(job),
+        "topup_url":         f"{base_url}/account/wallet/topup" if stopped_for_balance(job) else "",
         "job_id":            getattr(job, "id", ""),
         "job_preset":        preset_label(getattr(job, "preset", "")),
         "job_created":       (getattr(job, "created_at", "") or "")[:19],
@@ -1667,6 +1678,8 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         )
 
     if tone == "empty":
+        if stopped_for_balance(job):
+            return "The run stopped before any design finished."
         result = job.result or {}
         if not result or not isinstance(result, dict):
             # Nothing to read, so remediation advice would be a guess. The

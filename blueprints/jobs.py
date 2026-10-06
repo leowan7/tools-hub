@@ -51,7 +51,7 @@ from shared.jobs import (
     timeout_stuck_job,
 )
 from shared.pdb_intake import job_preflight_for_display
-from shared.run_notices import run_notices
+from shared.run_notices import run_notices, stopped_for_balance
 from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
@@ -781,6 +781,7 @@ def job_detail(job_id: str):
         failure_money=_failure_money(ctx.user_id, job),
         preflight=job_preflight_for_display(job.inputs),
         run_notices=run_notices(job),
+        stopped_for_balance=stopped_for_balance(job),
     )
 
 
@@ -1384,8 +1385,12 @@ def job_refold(job_id: str):
 def job_cancel(job_id: str):
     """User-initiated cancel of a pending/running job.
 
-    Best-effort Modal cancel, wallet hold released, row transitions
-    to status='cancelled'. Safe to call repeatedly — terminal jobs
+    A job with a Modal call has it cancelled first. If that cancel fails
+    the job is left running (``shared.jobs.cancel_job``;
+    tests/test_live_charging.py::test_failed_user_cancel_leaves_the_job_running)
+    and the ``code = 404 if ... else 409`` line below answers 409
+    ``modal_cancel_failed``. Otherwise the wallet hold is settled and the
+    row transitions to status='cancelled'. Safe to call repeatedly — terminal jobs
     return an error_code without mutating state.
     """
     ctx = load_user_context()

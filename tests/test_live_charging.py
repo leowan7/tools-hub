@@ -771,3 +771,145 @@ def test_tick_carries_on_when_the_stop_check_raises():
     summary = _tick(MagicMock(side_effect=RuntimeError("boom")))
     assert "wallet stop check failed" in summary["errors"]
     assert "reconciled" in summary
+
+
+# ---------------------------------------------------------------------------
+# What a stopped run tells the user
+# ---------------------------------------------------------------------------
+
+STOP_HEAD = "This run stopped when your wallet balance reached $0"
+
+
+def _finished(n, *, stop_reason=jobs_mod.WALLET_STOP_REASON, status="succeeded"):
+    from tests.test_run_notices import _job
+
+    result = {
+        "candidates": [{"rank": i + 1, "sequence": "ACDE", "scores": {}} for i in range(n)],
+        "candidate_count": n,
+        "partial": True,
+    }
+    if stop_reason:
+        result["stop_reason"] = stop_reason
+    return _job(result=result, status=status, tool="boltz2")
+
+
+def test_stop_line_counts_the_finished_designs():
+    from shared.run_notices import run_notices
+
+    assert run_notices(_finished(2)) == [
+        f"{STOP_HEAD}, after 2 designs. The finished designs are in your "
+        "results and downloads. Add funds to run again."
+    ]
+
+
+def test_stop_line_with_no_design_says_none_finished():
+    from shared.run_notices import partial_line
+
+    assert partial_line(_finished(0)) == (
+        f"{STOP_HEAD}, before any design finished. Add funds to run again."
+    )
+
+
+def test_other_partial_runs_keep_their_line():
+    from shared.run_notices import partial_line, stopped_for_balance
+
+    job = _finished(2, stop_reason=None)
+    assert not stopped_for_balance(job)
+    assert partial_line(job) == "This run stopped early after 2 designs."
+
+
+def test_unfinished_run_with_a_stop_reason_gets_no_stop_copy():
+    from shared.run_notices import partial_line, stopped_for_balance
+
+    job = _finished(2, status="running")
+    assert not stopped_for_balance(job)
+    assert partial_line(job) == ""
+
+
+@pytest.fixture
+def job_client(monkeypatch):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    from app import create_app
+
+    flask_app = create_app()
+    flask_app.config["TESTING"] = True
+    return flask_app.test_client()
+
+
+def _page_text(client, job):
+    from tests.test_failed_run_refund_copy import _page
+
+    with patch("shared.jobs.resolve_user_email_and_meta",
+               return_value=("u@example.com", {})):
+        return _page(client, job)
+
+
+def test_job_page_says_a_stopped_run_stopped(job_client):
+    text = _page_text(job_client, _finished(2))
+    assert "Stopped: your wallet balance reached $0. Add funds" in text
+    assert "Completed in" not in text
+    assert f"{STOP_HEAD}, after 2 designs." in text
+
+
+def test_job_page_keeps_the_completed_line_for_other_runs(job_client):
+    text = _page_text(job_client, _finished(2, stop_reason=None))
+    assert "Completed in 600 GPU-seconds." in text
+    assert "wallet balance reached $0" not in text
+
+
+def _mail(monkeypatch, job):
+    from tests.test_job_complete_email_headline import _bodies, _sent
+
+    monkeypatch.setattr("shared.wallet.job_spend_by_hold", lambda user_id, holds: {})
+    payload = _sent(job)
+    return payload, _bodies(payload)
+
+
+def test_email_for_a_stopped_run_says_so_and_links_to_top_up(monkeypatch):
+    payload, bodies = _mail(monkeypatch, _finished(2))
+    assert payload["subject"].endswith("run stopped: your wallet balance reached $0")
+    assert "run stopped: your wallet balance reached $0" in bodies["html"]
+    assert f"{STOP_HEAD}, after 2 designs." in bodies["text"]
+    assert "Add funds: " in bodies["text"]
+    assert "/account/wallet/topup" in payload["text"]
+    assert '/account/wallet/topup"' in payload["html"]
+    assert "Add funds" in bodies["html"]
+
+
+def test_email_for_a_stopped_run_with_no_design(monkeypatch):
+    _payload, bodies = _mail(monkeypatch, _finished(0))
+    assert "The run stopped before any design finished." in bodies["text"]
+    assert "The run stopped before any design finished." in bodies["html"]
+
+
+def test_email_for_other_runs_has_no_stop_copy(monkeypatch):
+    payload, bodies = _mail(monkeypatch, _finished(2, stop_reason=None))
+    assert payload["subject"].endswith("run is done")
+    assert "wallet balance reached $0" not in bodies["text"] + bodies["html"]
+    assert "/account/wallet/topup" not in payload["text"] + payload["html"]
+
+
+def test_wallet_history_explains_an_absorbed_row(monkeypatch):
+    from flask import render_template
+
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    from app import create_app
+
+    app = create_app()
+    hint = "Ranomics covered the rest, and you were not charged for it."
+    rows = [{"id": f"tx-{kind}", "kind": kind, "amount_usd": Decimal(amount),
+             "balance_after_usd": Decimal("0"), "created_at": "2026-10-05T12:00:00Z",
+             "tool_slug": "boltz2", "job_id": "job-1", "notes": None,
+             "stripe_event_id": None}
+            for kind, amount in (("absorbed_variance", "0"), ("charge", "-0.30"))]
+    with app.test_request_context("/account/wallet/transactions"):
+        both = render_template("wallet/transactions.html", wallet={"balance_usd": 0},
+                               transactions=rows, filter_kind=None, page=1,
+                               page_size=50, has_next=False, has_prev=False,
+                               total_count=2, tx_annotations={})
+        charge_only = render_template("wallet/transactions.html", wallet={"balance_usd": 0},
+                                      transactions=rows[1:], filter_kind=None, page=1,
+                                      page_size=50, has_next=False, has_prev=False,
+                                      total_count=1, tx_annotations={})
+    assert both.count(hint) == 1
+    assert hint not in charge_only

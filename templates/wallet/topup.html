@@ -131,6 +131,17 @@
           {% else %}
             form.
           {% endif %}
+          {% elif gate_reason == 'wallet_empty' %}
+          <strong>No funds are free in your wallet.</strong>
+          If a run of yours is still going, the funds held for it come back,
+          less what it used, when it finishes. Add funds to start this run. You pay for the GPU time your run
+          uses, and a run stops if your balance reaches $0. Top up, then
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the {{ return_tool }} form</a>
+          {% else %}
+            go back to the form
+          {% endif %}
+          and run the job once your balance updates.
           {% elif gate_reason == 'wallet_frozen' %}
           <strong>Your wallet is on hold.</strong>
           Contact support to resume.
