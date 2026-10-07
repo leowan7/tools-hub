@@ -25,7 +25,6 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any, Optional
 
 from shared import score_legends
@@ -1803,27 +1802,30 @@ def _parse_ts(value) -> Optional[datetime]:  # noqa: ANN001
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = None) -> dict:  # noqa: ANN001
-    """Stop balance-limited runs whose wall-clock cost since ``started_at``
-    (or ``created_at``, below) has reached their hold.
+def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dict:  # noqa: ANN001
+    """Take what each live run owes so far, and stop a run the balance no
+    longer covers.
 
-    Live charging, option (i') in docs/design/LIVE-CHARGING-2026-10-01.md.
-    Called once per ``campaigns:tick`` (cron/tick_campaigns.py). Campaign
-    sub-jobs are skipped. A run with no ``started_at`` is metered from
-    ``created_at`` when it has a Modal call id, and skipped when it has
-    none, which leaves a submit Modal never acknowledged to ``sweep-stuck``
+    Live charging, option (ii) in docs/design/LIVE-CHARGING-2026-10-01.md.
+    Called once per ``campaigns:tick`` (cron/tick_campaigns.py), oldest run
+    first. Campaign sub-jobs are skipped. A run with no ``started_at`` is
+    metered from ``created_at`` when it has a Modal call id, and skipped when
+    it has none, which leaves a submit Modal never acknowledged to
+    ``sweep-stuck``
     (tests/test_live_charging.py::test_run_with_no_heartbeat_is_metered_from_created_at,
-    ::test_rows_the_stop_never_touches). A run with a Modal
-    call id is cancelled first; when the cancel raises or returns
-    ``ok: False`` the job is left running for the next tick. The run is then
-    re-read and finished as a succeeded, partial run built by
-    ``job_recovery.reconstruct``.
+    ::test_rows_the_meter_never_touches). ``shared.wallet.live_due_usd`` over
+    the seconds since then is what the run owes; ``debit_live_run`` takes
+    what it owes less what it has taken, as far as the balance goes. When
+    that comes back short, the run is stopped: a run with a Modal call id is
+    cancelled first, and when the cancel raises or returns ``ok: False`` the
+    job is left running for the next tick. The run is then re-read and
+    finished as a succeeded, partial run built by ``job_recovery.reconstruct``.
     """
     from shared.job_recovery import reconstruct  # noqa: PLC0415
-    from shared.wallet import compute_charge_usd  # noqa: PLC0415
+    from shared.wallet import debit_live_run, live_due_usd  # noqa: PLC0415
     from shared.wallet_estimates import gpu_class_for_job  # noqa: PLC0415
 
-    summary: dict = {"stopped": 0, "cancel_failed": 0, "errors": []}
+    summary: dict = {"debited": 0, "stopped": 0, "cancel_failed": 0, "errors": []}
     client = get_service_client()
     if client is None:
         summary["errors"].append("no service client")
@@ -1833,13 +1835,14 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
             client.table(_TABLE)
             .select("*")
             .in_("status", list(_NON_TERMINAL))
-            .eq("inputs->_wallet->>balance_limited", "true")
+            .eq("inputs->_wallet->>live", "true")
+            .order("created_at")
             .execute()
             .data
             or []
         )
     except Exception:
-        logger.warning("wallet stop: candidate query failed", exc_info=True)
+        logger.warning("live meter: candidate query failed", exc_info=True)
         summary["errors"].append("query failed")
         return summary
 
@@ -1850,7 +1853,7 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
             ws = (job.inputs or {}).get("_wallet") or {}
             if job.campaign_id or not isinstance(ws, dict):
                 continue
-            if ws.get("balance_limited") is not True or ws.get("hold_usd") is None:
+            if ws.get("live") is not True or not ws.get("hold_tx_id"):
                 continue
             started = _parse_ts(
                 job.started_at or (job.modal_function_call_id and job.created_at)
@@ -1858,10 +1861,22 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
             if started is None:
                 continue
             elapsed = max(0, int((now - started).total_seconds()))
-            cost = compute_charge_usd(
-                elapsed, gpu_class_for_job(job.tool, ws.get("gpu_class"))
+            gpu_class = gpu_class_for_job(job.tool, ws.get("gpu_class"))
+            params = {
+                k: v for k, v in (job.inputs or {}).items()
+                if isinstance(k, str) and not k.startswith("_")
+            }
+            debit = debit_live_run(
+                ws["hold_tx_id"], job.user_id,
+                live_due_usd(job.tool, elapsed, gpu_class, params),
+                elapsed, gpu_class,
             )
-            if cost < Decimal(str(ws["hold_usd"])):
+            if debit is None:
+                summary["errors"].append(f"{job.id}:debit failed")
+                continue
+            if debit["debited"] > 0:
+                summary["debited"] += 1
+            if debit["settled"] or debit["short"] <= 0:
                 continue
             if job.modal_function_call_id:
                 if modal_client is None:
@@ -1872,13 +1887,13 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
                     cancelled = modal_client.cancel(job.modal_function_call_id)
                 except Exception:
                     logger.warning(
-                        "wallet stop: Modal cancel raised for job %s", job.id,
+                        "live meter: Modal cancel raised for job %s", job.id,
                         exc_info=True,
                     )
                     cancelled = {"ok": False}
                 if isinstance(cancelled, dict) and cancelled.get("ok") is False:
                     logger.warning(
-                        "wallet stop: Modal cancel failed for job %s (%s); "
+                        "live meter: Modal cancel failed for job %s (%s); "
                         "left running.", job.id, cancelled.get("error"),
                     )
                     summary["cancel_failed"] += 1
@@ -1888,7 +1903,7 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
                 candidates = reconstruct(job)
             except Exception:
                 logger.warning(
-                    "wallet stop: reconstruct raised for job %s", job.id,
+                    "live meter: reconstruct raised for job %s", job.id,
                     exc_info=True,
                 )
                 candidates = []
@@ -1907,7 +1922,7 @@ def stop_wallet_limited_jobs(*, modal_client=None, now: Optional[datetime] = Non
                 summary["stopped"] += 1
         except Exception as exc:
             logger.warning(
-                "wallet stop: raised for job %s", row.get("id"), exc_info=True,
+                "live meter: raised for job %s", row.get("id"), exc_info=True,
             )
             summary["errors"].append(f"{row.get('id')}:{exc}")
     return summary
@@ -2323,6 +2338,10 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
       back to the legacy heuristic: refund if gpu_seconds <= 0, else
       settle.
 
+    A live run (``inputs._wallet.live``) takes the same routes through
+    ``shared.wallet.settle_live_run``: a refund closes it at $0 and a
+    billed class at its metered cost.
+
     Idempotent. The underlying SQL functions both no-op on a second
     call against the same hold id.
     """
@@ -2378,6 +2397,20 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
             job.id, exc_info=True,
         )
         return
+
+    if ws_ctx.get("live") is True:
+        from shared.wallet import settle_live_run  # noqa: PLC0415
+
+        def release_hold(hold_tx_id, reason=None):  # noqa: ANN001, ANN202
+            return settle_live_run(
+                hold_tx_id, gpu_seconds, gpu_class, params,
+                failure_reason=reason, refund=True,
+            )
+
+        def settle_hold(hold_tx_id, gpu_seconds, gpu_class, params=None, failure_reason=None):  # noqa: ANN001, ANN202
+            return settle_live_run(
+                hold_tx_id, gpu_seconds, gpu_class, params, failure_reason,
+            )
 
     # ----- Classifier-driven routing (post-0029 rows) -------------------
     if job.failure_class is not None:

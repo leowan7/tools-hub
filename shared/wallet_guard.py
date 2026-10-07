@@ -5,8 +5,8 @@ leaf module so the ``tools`` blueprint (which owns ``/tools/<tool>/submit``)
 can import ``requires_wallet`` at module scope instead of ``from app import``
 — the keystone that lets that route leave ``app.py`` without an import cycle.
 
-The decorator places a hold (min(balance, cap) on a live-charging tier, a
-cushioned hold otherwise), stashes ``g.wallet_hold_tx_id`` for the
+The decorator opens a $0 live-run anchor on a live-charging tier and places a
+cushioned hold otherwise, stashes ``g.wallet_hold_tx_id`` for the
 handler, and auto-releases the hold on any early-return or exception before the
 wrapped view sets ``g.wallet_hold_consumed = True``. That behaviour was
 byte-identical to the previous in-``app`` definition until a zero estimate
@@ -28,12 +28,12 @@ from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
     get_or_create_wallet,
+    open_live_run,
     release_hold as wallet_release_hold,
     reserve_hold as wallet_reserve_hold,
     wallet_preflight,
 )
 from shared.wallet_estimates import (
-    compute_hard_cap,
     cushioned_hold_usd,
     estimated_cost_for_tool,
 )
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 REASON_WALLET_EMPTY = "wallet_empty"
 
-# Live charging (docs/design/LIVE-CHARGING-2026-10-01.md, option (i')) is on
+# Live charging (docs/design/LIVE-CHARGING-2026-10-01.md, option (ii)) is on
 # only for the tiers that upload each design mid-run, so a hub-side stop keeps
 # the designs already finished. Pinned by
 # tests/test_live_charging.py::test_live_tools_upload_each_design_mid_run and
@@ -63,25 +63,6 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 def _balance(user_id: str) -> Decimal:
     wallet = get_or_create_wallet(user_id) or {}
     return Decimal(str(wallet.get("balance_usd") or 0))
-
-
-def _reserve_live_hold(user_id: str, tool_slug: str, params: dict, balance: Decimal):
-    """Hold min(balance, cap); on a NULL hold re-read the balance and retry once.
-
-    Returns (hold_tx_id, hold_usd, cap, reason). ``reason`` is set only when
-    no hold landed.
-    """
-    cap = compute_hard_cap(tool_slug, params)
-    for attempt in range(2):
-        if attempt:
-            balance = _balance(user_id)
-        if balance <= 0:
-            return None, None, cap, REASON_WALLET_EMPTY
-        hold = min(balance, cap)
-        hold_tx_id = wallet_reserve_hold(user_id, tool_slug, None, hold, params)
-        if hold_tx_id:
-            return hold_tx_id, hold, cap, None
-    return None, None, cap, "hold_failed"
 
 
 def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
@@ -309,17 +290,18 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                 return f(*args, **kwargs)
 
             if live:
-                hold_tx_id, hold_usd, cap, live_reason = _reserve_live_hold(
-                    user_id, resolved_slug, params, pre.balance_usd
+                hold_tx_id = (
+                    open_live_run(user_id, resolved_slug)
+                    if pre.balance_usd > 0 else None
                 )
                 if not hold_tx_id:
+                    empty = pre.balance_usd <= 0 or _balance(user_id) <= 0
                     return _render_topup_gate(
                         tool_slug=resolved_slug,
-                        reason=live_reason,
+                        reason=REASON_WALLET_EMPTY if empty else "hold_failed",
                         form_snapshot=request.form.to_dict() or {},
                     )
-                g.wallet_hold_usd = hold_usd
-                g.wallet_balance_limited = hold_usd < cap
+                g.wallet_live = True
             else:
                 # Reserve a cushioned hold (usually covers actual, so settle
                 # releases surplus) while ``estimate`` stays the point estimate

@@ -27,7 +27,7 @@ def _designs(n: int) -> str:
 
 def stopped_for_balance(job) -> bool:  # noqa: ANN001
     """True for a succeeded run the live-charging stop finished
-    (shared/jobs.py::stop_wallet_limited_jobs)."""
+    (shared/jobs.py::meter_live_runs)."""
     from shared.jobs import WALLET_STOP_REASON  # noqa: PLC0415
 
     result = getattr(job, "result", None)
@@ -43,7 +43,7 @@ def partial_line(job) -> str:  # noqa: ANN001
 
     Only a succeeded job whose result carries ``partial`` gets a line
     (tools/proteina/run_pipeline.py sets it when the search exits nonzero after
-    scoring designs; shared/jobs.py::stop_wallet_limited_jobs sets it with
+    scoring designs; shared/jobs.py::meter_live_runs sets it with
     ``stop_reason``). A run stopped for balance (``stopped_for_balance``) says
     its wallet balance reached $0, after N designs or before any finished.
     Otherwise "time limit" is said when ``search.status`` is "timeout", and

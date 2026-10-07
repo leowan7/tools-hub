@@ -2305,11 +2305,8 @@ def tool_submit(tool: str):
             wallet_ctx["hold_tx_id"] = hold_tx_id
         if wallet_estimate is not None:
             wallet_ctx["estimate_usd"] = str(wallet_estimate)
-        if (hold_usd := getattr(g, "wallet_hold_usd", None)) is not None:
-            wallet_ctx["hold_usd"] = str(hold_usd)
-            wallet_ctx["balance_limited"] = bool(
-                getattr(g, "wallet_balance_limited", False)
-            )
+        if getattr(g, "wallet_live", False):
+            wallet_ctx["live"] = True
         wallet_ctx["tool_slug"] = adapter.slug
         inputs["_wallet"] = wallet_ctx
 

@@ -63,8 +63,13 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
     compute cost.
 
     Annotation shape per row id:
-        role      one of 'hold', 'release', 'settlement'
-        settled   True when the hold has at least one settle child
+        role      one of 'hold', 'release', 'settlement', and for a live run
+                  (a $0 hold anchor, supabase/migrations/0045_live_run_debits.sql)
+                  'run' on the anchor and 'debit' on each run_debit child
+        settled   True when the hold has at least one child that is not a
+                  run_debit
+        taken     on a run, what its run_debit children took (positive)
+        debits    on a run, its run_debit children, oldest first
         reserved  the amount the hold reserved (positive), for holds
         outcome   for holds, what settling did with the reservation, read
                   from the children's amounts: 'more_charged' (a negative
@@ -134,8 +139,12 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
                 groups[parent]["children"].append(r)
 
         for hid, grp in groups.items():
-            children = grp["children"]
             hold_row = grp["hold"]
+            debits = sorted(
+                (c for c in grp["children"] if c.get("kind") == "run_debit"),
+                key=lambda c: (str(c.get("created_at") or ""), str(c.get("id"))),
+            )
+            children = [c for c in grp["children"] if c.get("kind") != "run_debit"]
             settled = len(children) > 0
 
             # Group net = SUM(amount_usd) over the hold and all children.
@@ -144,7 +153,7 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             if hold_row is not None:
                 net += _tx_amount_decimal(hold_row.get("amount_usd"))
                 have_net = True
-            for c in children:
+            for c in children + debits:
                 net += _tx_amount_decimal(c.get("amount_usd"))
                 have_net = True
 
@@ -172,8 +181,25 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             else:
                 outcome = "none_returned"
 
+            for d in debits:
+                if d.get("id") is not None:
+                    annotations[d["id"]] = {"role": "debit"}
+
             # Annotate the hold row.
-            if hold_row is not None and hold_row.get("id") is not None:
+            if hold_row is not None and hold_row.get("id") is not None and (
+                debits or reserved == 0
+            ):
+                annotations[hold_row["id"]] = {
+                    "role": "run",
+                    "settled": settled,
+                    "taken": -sum(
+                        (_tx_amount_decimal(d.get("amount_usd")) for d in debits),
+                        Decimal("0"),
+                    ),
+                    "net": net,
+                    "debits": debits,
+                }
+            elif hold_row is not None and hold_row.get("id") is not None:
                 annotations[hold_row["id"]] = {
                     "role": "hold",
                     "settled": settled,
@@ -499,7 +525,7 @@ def api_wallet_estimate():
     exceeds_hard_cap = estimate > hard_cap
 
     # What submit actually needs in the wallet (shared/wallet_guard.py): a
-    # live-charging tool needs any balance above $0 (_reserve_live_hold); any
+    # live-charging tool needs any balance above $0 (``open_live_run``); any
     # other paid run needs ``cushioned_hold_usd``, which reserve_hold refuses
     # a balance below. A free run reserves nothing. The deficit is measured
     # against this, so the form shows the gate for a balance that covers the
@@ -933,8 +959,12 @@ def wallet_transactions():
                 .select("*", count="exact")
                 .eq("user_id", ctx.user_id)
             )
-            if filter_kind:
+            if filter_kind == "charge":
+                query = query.in_("kind", ["charge", "run_debit"])
+            elif filter_kind:
                 query = query.eq("kind", filter_kind)
+            else:
+                query = query.neq("kind", "run_debit")
             # Pull one extra row so we can tell whether a next page
             # exists without a second count query.
             response = (

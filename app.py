@@ -1127,7 +1127,7 @@ def create_app() -> Flask:
         print(
             f"campaigns:tick driven={summary['driven']} "
             f"errors={len(summary['errors'])} "
-            f"wallet_stop={summary.get('wallet_stop')}",
+            f"live_meter={summary.get('live_meter')}",
             flush=True,
         )
         for err in summary["errors"]:

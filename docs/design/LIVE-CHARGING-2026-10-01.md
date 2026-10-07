@@ -1,7 +1,7 @@
 # Live charging: design note (phase 1) and phase 2 decisions
 
 - **Base commit:** `cc85754d`.
-- **Status:** Sections 0-7 are the phase 1 note as written for Leo's approval. Phase 1 made no product code, migration, paid run or settings change. Phase 2 is built on it: see "Decisions (Leo, 2026-10-05)" at the end. On 2026-10-06 Leo replaced the debit mechanism with option (ii): see "Option (ii) build plan" at the end.
+- **Status:** Sections 0-7 are the phase 1 note as written for Leo's approval. Phase 1 made no product code, migration, paid run or settings change. Phase 2 is built on it: see "Decisions (Leo, 2026-10-05)" at the end. On 2026-10-06 Leo replaced the debit mechanism with option (ii): see "Option (ii) build plan" at the end. Option (ii) removed some option (i′) code that the earlier sections cite by name (`_reserve_live_hold`, `stop_wallet_limited_jobs` and their tests); those names exist at commit `3bd13826`.
 - **Decision being designed (Leo, 2026-10-01):**
   - A paid run starts whenever the balance is above $0.
   - The cost comes off the balance as the run goes.
@@ -351,7 +351,7 @@ As planned in phase 1: this was to start only after Leo approved **and** the no-
 
 ## Decisions (Leo, 2026-10-05)
 
-Phase 2 is built on option (i′). Citations in this section are by symbol or test name at the phase 2 branch, not against `cc85754d`.
+Phase 2 was first built on option (i′). Citations in this section, down to "Out of scope", are by symbol or test name at commit `3bd13826`, the last option (i′) commit on the phase 2 branch, not against `cc85754d`. Option (ii) removed several of them; see "What was built" at the end.
 
 ### Answers to §7
 
@@ -447,7 +447,7 @@ Phase 2 is built on option (i′). Citations in this section are by symbol or te
 
 ## Option (ii) build plan (Leo, 2026-10-06)
 
-**Status: a plan for Leo's approval.** No per-minute code or migration has been written, and no paid run has been made.
+**Status: built on `claude/live-charging-phase1` (PR #416), not merged and not deployed.** Leo approved the plan on 2026-10-06 (decisions 1 to 7 below). Migration 0045 is not applied to prod, and no paid run has been made. Where the build departs from this plan, "What was built" at the end of this section says so.
 
 Leo reversed D1 on 2026-10-06. The cost will come off the balance while the run goes. Nothing will be set aside, and the run will stop at $0. This replaces option (i′) (§3.1) for the four live tools. PR #416 is not to be merged as it stands; it will be reworked on the same branch. #416 never reached prod, so no stored row carries its `balance_limited` flag and no data needs migrating.
 
@@ -536,10 +536,10 @@ What the migration does:
 - A debit is a target ("the run has cost $X so far"), not an increment.
 - A repeated or overlapping tick computes the same or a larger target, and takes only the difference.
 
-**UNVERIFIED: how the SQL gets tested before prod.**
+**How the SQL gets tested before prod.**
 
 - The suite mocks the RPCs.
-- Proving the lock, the no-op paths and the $0 floor needs one of: a real Postgres (a Supabase branch or a local one), or the T1 run Leo re-approves.
+- `scripts/check_live_charging_local_pg.py` drives the three functions, the expiry and the view on the local Supabase stack. It does not apply the migration: run it after `supabase db reset --local`. It exits before any call when the API host is not 127.0.0.1 or localhost. Results are under "What was built".
 
 ### What triggers a debit, and its size
 
@@ -663,3 +663,27 @@ What the migration does:
 7. **The paid test (T1)**, approved per job:
    - one boltz2 or batch-tier run stopped at $0;
    - one run that ends in a refunded failure.
+
+### What was built (2026-10-06)
+
+Where the build departs from the plan above:
+
+- **`settle_live_run` takes no `p_notes`.** The SQL writes its own note on each closing row (`supabase/migrations/0045_live_run_debits.sql`, `settle_live_run`).
+- **The view compares `kind::text`.** An enum value added in a transaction cannot be used as an enum literal in that same transaction, and the SQL editor and the CLI run the file as one (the header of 0045).
+- **One function meters and stops.** `shared/jobs.py::meter_live_runs` replaces `stop_wallet_limited_jobs`. Each tick it debits every live run, oldest first, and stops a run whose debit came back short. The stop path itself is the #416 one.
+- **The Python `debit_live_run` takes the user id.** It runs `_post_settle_hooks` (auto-reload, low-balance email) for the amount a debit took, without a second read (`shared/wallet.py::debit_live_run`).
+- **`hold_failed` stays.** When `open_live_run` returns no anchor and a re-read balance is still above $0, the gate reason is `hold_failed`, shown with the generic "Your job did not start" copy (`shared/wallet_guard.py::requires_wallet`; `templates/wallet/topup.html`).
+- **The `wallet_empty` copy dropped** its sentence about funds held for a run still going (`templates/wallet/topup.html`).
+- **Wallet history.**
+  - The terminal row stays its own line, annotated as the settlement or release is today.
+  - The unfiltered history leaves `run_debit` rows out; the "Charges" filter shows `charge` and `run_debit` (`blueprints/wallet.py::wallet_transactions`).
+  - An anchor with no debits reads as a run, so an unused anchor shows a "run" line and a $0 release row.
+
+**Local Postgres results** (`scripts/check_live_charging_local_pg.py` on the local stack at migration 0045, 2026-10-06):
+
+- 60 of 60 checks pass.
+- Three mutants of the SQL were each caught:
+  - the debit as an increment instead of a target: 15 checks fail;
+  - the expiry without its `run_debit` exclusion: 3 fail;
+  - `debit_live_run` without the wallet lock, with a pause between its reads and its insert: 10 fail. One race left the ledger summing to -3.0 against a balance of 7.5.
+- A scratch script applied each mutated 0045 to the local database, ran the harness, then re-applied the real file. The mutants are not in the harness.

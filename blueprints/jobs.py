@@ -522,12 +522,18 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         ledger = spend.get(_hold_id(job)) if _hold_id(job) else None
         if ledger is not None:
             usd = max(ledger["usd"], 0)
-            # Settled: rendered as the wallet page renders a ledger row
-            # (templates/wallet/transactions.html, display_record_usd). Reserved:
-            # round up, as the unsettled line on the failed-run page does.
-            spend_text = display_record_usd(usd) if ledger["settled"] else "$" + display_cost_usd(usd)
+            wallet = _inputs(job).get("_wallet")
+            live = isinstance(wallet, dict) and wallet.get("live") is True
+            # Settled, or taken so far by a live run: rendered as the wallet
+            # page renders a ledger row (templates/wallet/transactions.html,
+            # display_record_usd). Reserved: round up, as the unsettled line
+            # on the failed-run page does.
+            spend_text = (
+                display_record_usd(usd) if ledger["settled"] or live
+                else "$" + display_cost_usd(usd)
+            )
             if not ledger["settled"]:
-                spend_note = "reserved"
+                spend_note = "so far" if live else "reserved"
             elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
                 # A released hold nets zero, and "$0.00 refunded" reads as a
                 # refund that failed. The job page says the same thing in
@@ -805,16 +811,21 @@ def _failure_money(user_id: str, job) -> "str | None":  # noqa: ANN001
     if ledger is None:
         return None
 
-    usd, held = max(ledger["usd"], 0), ledger.get("held") or 0
+    live = wallet.get("live") is True
+    usd = max(ledger["usd"], 0)
+    held = (ledger.get("taken") if live else ledger.get("held")) or 0
     if not ledger["settled"]:
+        if live:
+            return f"{_usd(usd)} has been taken for this run so far; it has not been settled yet."
         return f"${display_cost_usd(usd)} is still on hold for this run and has not been settled yet."
+    pot = f"{_usd(held)} taken while this run went" if live else f"{_usd(held)} hold"
     if usd == 0:
         if held > 0:
-            return f"The {_usd(held)} hold was returned to your wallet in full. You were not charged for this run."
+            return f"The {pot} was returned to your wallet in full. You were not charged for this run."
         return "You were not charged for this run."
     if _usd(held) != _usd(usd) and held > usd:
         return (f"You were charged {_usd(usd)} for the GPU time this run used. "
-                f"The rest of the {_usd(held)} hold was returned to your wallet.")
+                f"The rest of the {pot} was returned to your wallet.")
     return f"You were charged {_usd(usd)} for the GPU time this run used."
 
 

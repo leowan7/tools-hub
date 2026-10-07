@@ -1,4 +1,4 @@
-"""Live charging, option (i') of docs/design/LIVE-CHARGING-2026-10-01.md."""
+"""Live charging, option (ii) of docs/design/LIVE-CHARGING-2026-10-01.md."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from shared.wallet import (
     REASON_SELF_SERVE_CEILING,
     REASON_WALLET_FROZEN,
     PreflightResult,
-    compute_charge_usd,
+    live_due_usd,
 )
 from shared.wallet_estimates import TOOL_SPECS, compute_hard_cap, gpu_class_for_job
 from shared.wallet_guard import REASON_WALLET_EMPTY, live_charging_enabled
@@ -93,12 +93,12 @@ def test_enabled_tools_are_priced_tools():
 
 
 # ---------------------------------------------------------------------------
-# requires_wallet: hold = min(balance, cap); the empty-wallet refusal at balance <= $0
+# requires_wallet: a $0 anchor on a live tier; the empty-wallet refusal at balance <= $0
 # ---------------------------------------------------------------------------
 
 
 def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
-          reason=None, reserve=None, cushion=Decimal("1.23")):
+          reason=None, open_run=None, consume=True, cushion=Decimal("1.23")):
     """POST through requires_wallet with the wallet layer faked."""
     from flask import Flask, g
 
@@ -110,9 +110,8 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
     @requires_wallet(tool_slug=slug)
     def handler():
         seen["hold_tx_id"] = g.wallet_hold_tx_id
-        seen["hold_usd"] = getattr(g, "wallet_hold_usd", None)
-        seen["limited"] = getattr(g, "wallet_balance_limited", None)
-        g.wallet_hold_consumed = True
+        seen["live"] = getattr(g, "wallet_live", False)
+        g.wallet_hold_consumed = consume
         return "RAN"
 
     app = Flask(__name__)
@@ -129,7 +128,8 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
             hard_cap_usd=Decimal("999"),
         )
 
-    reserve_mock = MagicMock(side_effect=reserve or (lambda *a: "tx-1"))
+    open_mock = MagicMock(side_effect=open_run or (lambda *a: "anchor-1"))
+    reserve_mock = MagicMock(return_value="tx-1")
     with app.test_client() as c, patch(
         "shared.wallet_guard.estimated_cost_for_tool", return_value=estimate,
     ), patch(
@@ -140,43 +140,33 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
     ), patch(
         "shared.wallet_guard.cushioned_hold_usd", return_value=cushion,
     ), patch(
+        "shared.wallet_guard.open_live_run", open_mock,
+    ), patch(
         "shared.wallet_guard.wallet_reserve_hold", reserve_mock,
     ), patch(
         "shared.wallet_guard.wallet_release_hold",
-    ), patch(
+    ) as release, patch(
         "shared.wallet_guard.render_template", return_value="GATE",
     ) as render:
         with c.session_transaction() as sess:
             sess["user_id"] = "u-1"
         body = c.post("/x", data=form).get_data(as_text=True)
     gate = render.call_args.kwargs.get("gate_reason") if render.called else None
-    return SimpleNamespace(body=body, seen=seen, reserve=reserve_mock, gate=gate, state=state)
+    return SimpleNamespace(body=body, seen=seen, open=open_mock, reserve=reserve_mock,
+                           release=release, gate=gate)
 
 
-def _amounts(reserve_mock):
-    return [call.args[3] for call in reserve_mock.call_args_list]
+LIVE_FORMS = [("boltz2", {}), ("af2", {"preset": "batch"}),
+              ("colabfold", {"preset": "batch"}), ("esmfold", {"preset": "batch"})]
 
 
-@pytest.mark.parametrize("slug,form", [
-    ("boltz2", {}),
-    ("af2", {"preset": "batch"}),
-    ("colabfold", {"preset": "batch"}),
-    ("esmfold", {"preset": "batch"}),
-])
-def test_balance_under_the_cap_holds_the_whole_balance(slug, form):
-    cap = compute_hard_cap(slug, {k: v for k, v in form.items()})
-    balance = (cap / 3).quantize(Decimal("0.01"))
-    r = _post(slug, form, balance=balance)
+@pytest.mark.parametrize("slug,form", LIVE_FORMS)
+def test_live_run_opens_an_anchor_on_any_balance_above_zero(slug, form):
+    r = _post(slug, form, balance="0.01")
     assert r.body == "RAN"
-    assert _amounts(r.reserve) == [balance]
-    assert r.seen == {"hold_tx_id": "tx-1", "hold_usd": balance, "limited": True}
-
-
-def test_balance_over_the_cap_holds_the_cap():
-    cap = compute_hard_cap("boltz2", {})
-    r = _post("boltz2", {}, balance=cap + 50)
-    assert _amounts(r.reserve) == [cap]
-    assert r.seen == {"hold_tx_id": "tx-1", "hold_usd": cap, "limited": False}
+    r.open.assert_called_once_with("u-1", slug)
+    r.reserve.assert_not_called()
+    assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
 
 
 @pytest.mark.parametrize("balance", ["0", "0.00"])
@@ -184,49 +174,34 @@ def test_empty_wallet_is_refused(balance):
     r = _post("boltz2", {}, balance=balance)
     assert r.body == "GATE"
     assert r.gate == REASON_WALLET_EMPTY
-    r.reserve.assert_not_called()
+    r.open.assert_not_called()
 
 
-def test_null_hold_retries_once_on_a_fresh_balance():
-    state = {"balance": Decimal("0.30")}
-
-    def reserve(*_a):
-        if len(r_calls) == 0:
-            r_calls.append(1)
-            state["balance"] = Decimal("0.10")
-            return None
-        return "tx-2"
-
-    r_calls: list = []
-    r = _post("boltz2", {}, state=state, reserve=reserve)
-    assert _amounts(r.reserve) == [Decimal("0.30"), Decimal("0.10")]
-    assert r.seen["hold_tx_id"] == "tx-2"
-    assert r.seen["hold_usd"] == Decimal("0.10")
-
-
-def test_two_null_holds_show_the_retry_gate():
-    r = _post("boltz2", {}, balance="0.30", reserve=lambda *_a: None)
-    assert r.body == "GATE"
+def test_failed_open_shows_the_retry_gate():
+    r = _post("boltz2", {}, balance="0.30", open_run=lambda *_a: None)
     assert r.gate == "hold_failed"
-    assert len(_amounts(r.reserve)) == 2
 
 
-def test_null_hold_then_empty_wallet_is_refused_as_empty():
+def test_failed_open_on_an_emptied_wallet_is_refused_as_empty():
     state = {"balance": Decimal("0.30")}
 
-    def reserve(*_a):
+    def open_run(*_a):
         state["balance"] = Decimal("0")
 
-    r = _post("boltz2", {}, state=state, reserve=reserve)
-    assert r.gate == REASON_WALLET_EMPTY
-    assert len(_amounts(r.reserve)) == 1
+    assert _post("boltz2", {}, state=state, open_run=open_run).gate == REASON_WALLET_EMPTY
+
+
+def test_unused_anchor_is_released_on_an_early_return():
+    r = _post("boltz2", {}, balance="5", consume=False)
+    assert r.body == "RAN"
+    assert r.release.call_args.args[0] == "anchor-1"
 
 
 @pytest.mark.parametrize("why", [REASON_WALLET_FROZEN, REASON_PER_TOOL_CAP, REASON_SELF_SERVE_CEILING])
 def test_live_tools_keep_the_other_refusals(why):
     r = _post("boltz2", {}, balance="50", reason=why)
     assert r.gate == why
-    r.reserve.assert_not_called()
+    r.open.assert_not_called()
 
 
 @pytest.mark.parametrize("slug,form", [("af2", {"preset": "standalone"}), ("bindcraft", {})])
@@ -237,22 +212,29 @@ def test_other_tools_keep_the_cushioned_hold(slug, form):
 
     ok = _post(slug, form, balance="50")
     assert ok.body == "RAN"
-    assert _amounts(ok.reserve) == [Decimal("1.23")]
-    assert ok.seen["hold_usd"] is None
+    assert ok.reserve.call_args.args[3] == Decimal("1.23")
+    ok.open.assert_not_called()
+    assert ok.seen == {"hold_tx_id": "tx-1", "live": False}
 
 
 def test_free_run_takes_no_hold():
     r = _post("boltz2", {}, balance="0", estimate=Decimal("0"))
     assert r.body == "RAN"
+    r.open.assert_not_called()
     r.reserve.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Submit route: the hold size reaches the job row
+# Submit route: the live mark reaches the job row
 # ---------------------------------------------------------------------------
 
 
-def test_submit_stashes_hold_and_balance_limited(monkeypatch):
+@pytest.mark.parametrize("preset,allow,wallet", [
+    ("batch", False, {"hold_tx_id": "anchor-1", "estimate_usd": "2.00", "live": True,
+                      "tool_slug": "af2"}),
+    ("standalone", True, {"hold_tx_id": "tx-1", "estimate_usd": "2.00", "tool_slug": "af2"}),
+])
+def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     monkeypatch.setenv("FLAG_TOOL_AF2", "on")
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     from app import create_app
@@ -261,11 +243,12 @@ def test_submit_stashes_hold_and_balance_limited(monkeypatch):
     flask_app.config["TESTING"] = True
     ctx = SimpleNamespace(user_id="u-test", tier="free", balance=100, email="u@example.com")
     monkeypatch.setattr("blueprints.tools.load_user_context", lambda: ctx)
-    fake_job = SimpleNamespace(id="job-1", user_id="u-test", tool="af2", preset="batch",
+    fake_job = SimpleNamespace(id="job-1", user_id="u-test", tool="af2", preset=preset,
                                job_token="t" * 64, inputs={})
-    short = PreflightResult(allow=False, reason=REASON_INSUFFICIENT,
-                            estimated_cost_usd=Decimal("2.00"), balance_usd=Decimal("0.30"),
-                            deficit_usd=Decimal("1.70"), hard_cap_usd=Decimal("999"))
+    pre = PreflightResult(allow=allow, reason=REASON_OK if allow else REASON_INSUFFICIENT,
+                          estimated_cost_usd=Decimal("2.00"), balance_usd=Decimal("0.30"),
+                          deficit_usd=Decimal("0") if allow else Decimal("1.70"),
+                          hard_cap_usd=Decimal("999"))
     with patch("blueprints.tools.create_job", return_value=fake_job) as create_job, patch(
         "blueprints.tools.set_modal_call",
     ), patch("gpu.modal_client.ModalClient.submit",
@@ -273,7 +256,9 @@ def test_submit_stashes_hold_and_balance_limited(monkeypatch):
         "shared.wallet_guard.estimated_cost_for_tool", return_value=Decimal("2.00"),
     ), patch("shared.wallet_guard.get_or_create_wallet",
              return_value={"balance_usd": Decimal("0.30")}), patch(
-        "shared.wallet_guard.wallet_preflight", return_value=short,
+        "shared.wallet_guard.wallet_preflight", return_value=pre,
+    ), patch("shared.wallet_guard.cushioned_hold_usd", return_value=Decimal("0.25")), patch(
+        "shared.wallet_guard.open_live_run", return_value="anchor-1",
     ), patch("shared.wallet_guard.wallet_reserve_hold", return_value="tx-1"), patch(
         "shared.wallet_guard.wallet_release_hold",
     ):
@@ -281,15 +266,11 @@ def test_submit_stashes_hold_and_balance_limited(monkeypatch):
         with client.session_transaction() as sess:
             sess["user_email"] = "u@example.com"
             sess["user_id"] = "u-test"
-        client.post("/tools/af2/submit", data={
-            "preset": "batch",
-            "sequences": ">a\nMKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTL\n",
-        }, content_type="multipart/form-data")
+        fasta = ">a\nMKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQTL\n"
+        client.post("/tools/af2/submit", data={"preset": preset, "sequences": fasta, "fasta": fasta},
+                    content_type="multipart/form-data")
     create_job.assert_called_once()
-    assert create_job.call_args.kwargs["inputs"]["_wallet"] == {
-        "hold_tx_id": "tx-1", "estimate_usd": "2.00", "hold_usd": "0.30",
-        "balance_limited": True, "tool_slug": "af2",
-    }
+    assert create_job.call_args.kwargs["inputs"]["_wallet"] == wallet
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +305,7 @@ def test_estimate_deficit_matches_the_guard(monkeypatch, tool, params, balance, 
 
 
 # ---------------------------------------------------------------------------
-# Stop check (campaigns:tick) over an in-memory tool_jobs table
+# The meter (campaigns:tick) over an in-memory tool_jobs table
 # ---------------------------------------------------------------------------
 
 
@@ -343,6 +324,7 @@ def _col(row, col):
 class _Query:
     def __init__(self, store, payload=None):
         self.store, self.payload, self.filters, self.one = store, payload, [], False
+        self.order_by = None
 
     def select(self, *_a):
         return self
@@ -358,6 +340,10 @@ class _Query:
         self.filters.append((col, lambda v: v in vals))
         return self
 
+    def order(self, col):
+        self.order_by = col
+        return self
+
     def single(self):
         self.one = True
         return self
@@ -365,6 +351,8 @@ class _Query:
     def execute(self):
         hits = [r for r in self.store.rows.values()
                 if all(test(_col(r, c)) for c, test in self.filters)]
+        if self.order_by:
+            hits.sort(key=lambda r: r[self.order_by])
         if self.payload is not None:
             for r in hits:
                 r.update(self.payload)
@@ -382,7 +370,25 @@ class _Jobs:
         return SimpleNamespace(table=lambda _name: _Query(self))
 
 
-HOLD = Decimal("0.30")
+class _Wallet:
+    """debit_live_run as supabase/migrations/0045_live_run_debits.sql writes it:
+    take due less taken, as far as the balance goes (the SQL itself is proven
+    by scripts/check_live_charging_local_pg.py)."""
+
+    def __init__(self, balance):
+        self.balance, self.taken, self.calls = Decimal(balance), {}, []
+
+    def debit(self, hold_tx_id, user_id, due, gpu_seconds, gpu_class):
+        self.calls.append((hold_tx_id, user_id, due, gpu_seconds, gpu_class))
+        target = due - self.taken.get(hold_tx_id, Decimal("0"))
+        take = min(max(target, Decimal("0")), self.balance)
+        self.balance -= take
+        self.taken[hold_tx_id] = self.taken.get(hold_tx_id, Decimal("0")) + take
+        return {"settled": False, "debited": take, "taken": self.taken[hold_tx_id],
+                "short": max(target - take, Decimal("0")), "balance_after": self.balance}
+
+
+GPU = gpu_class_for_job("boltz2", None)
 
 
 def _job_row(job_id="job-1", wallet=None, **over):
@@ -394,23 +400,21 @@ def _job_row(job_id="job-1", wallet=None, **over):
         "started_at": NOW.isoformat(), "completed_at": None,
         "campaign_id": None, "failure_class": None,
         "inputs": {"_wallet": wallet if wallet is not None else {
-            "hold_tx_id": "hold-1", "hold_usd": str(HOLD),
-            "balance_limited": True, "tool_slug": "boltz2",
+            "hold_tx_id": "hold-1", "estimate_usd": "2.00", "live": True,
+            "tool_slug": "boltz2",
         }},
     }
     row.update(over)
     return row
 
 
-def _seconds_to_spend(hold, tool="boltz2"):
-    gpu = gpu_class_for_job(tool, None)
-    t = 1
-    while compute_charge_usd(t, gpu) < hold:
-        t += 1
-    return t
+def _due(seconds, tool="boltz2"):
+    return live_due_usd(tool, seconds, gpu_class_for_job(tool, None), {})
 
 
-def _stop(store, elapsed, *, cancel=None, candidates=(), reconstruct_exc=None):
+def _meter(store, elapsed, *, wallet=None, debit=None, cancel=None, candidates=(),
+           reconstruct_exc=None):
+    wallet = wallet if wallet is not None else _Wallet("0")
     modal = MagicMock()
     modal.cancel.side_effect = cancel or (lambda _fc: {"ok": True, "error": None})
     rec = MagicMock(side_effect=reconstruct_exc, return_value=list(candidates))
@@ -418,33 +422,57 @@ def _stop(store, elapsed, *, cancel=None, candidates=(), reconstruct_exc=None):
          patch.object(jobs_mod, "_charge_workspace_for_completed_job"), \
          patch.object(jobs_mod, "_send_completion_email") as email, \
          patch("shared.job_recovery.reconstruct", rec), \
-         patch("shared.wallet.settle_hold") as settle, \
+         patch("shared.wallet.debit_live_run", debit or wallet.debit), \
+         patch("shared.wallet.settle_live_run") as settle, \
+         patch("shared.wallet.settle_hold") as settle_hold, \
          patch("shared.wallet.release_hold") as release:
-        summary = jobs_mod.stop_wallet_limited_jobs(
+        summary = jobs_mod.meter_live_runs(
             modal_client=modal, now=NOW + timedelta(seconds=elapsed),
         )
-    return SimpleNamespace(summary=summary, modal=modal, settle=settle,
-                           release=release, email=email, rec=rec)
+    return SimpleNamespace(summary=summary, modal=modal, settle=settle, wallet=wallet,
+                           settle_hold=settle_hold, release=release, email=email, rec=rec)
 
 
 DESIGNS = [{"name": "d1", "pdb_key": "designs/d1.pdb"},
            {"name": "d2", "pdb_key": "designs/d2.pdb"}]
 
 
-def test_run_keeps_going_while_its_cost_is_under_the_hold():
-    store = _Jobs(_job_row())
-    r = _stop(store, _seconds_to_spend(HOLD) - 1, candidates=DESIGNS)
-    assert r.summary["stopped"] == 0
+def test_meter_takes_what_the_run_owes_so_far():
+    store, wallet = _Jobs(_job_row()), _Wallet("50")
+    first = _meter(store, 60, wallet=wallet)
+    assert first.summary == {"debited": 1, "stopped": 0, "cancel_failed": 0, "errors": []}
+    assert wallet.calls == [("hold-1", "u-1", _due(60), 60, GPU)]
+    assert wallet.taken["hold-1"] == _due(60) > 0
+
+    _meter(store, 120, wallet=wallet)
+    assert wallet.taken["hold-1"] == _due(120)
+    assert wallet.balance == Decimal("50") - _due(120)
     assert store.rows["job-1"]["status"] == "running"
-    r.modal.cancel.assert_not_called()
+    first.modal.cancel.assert_not_called()
 
 
-def test_run_stops_when_its_cost_reaches_the_hold():
-    store = _Jobs(_job_row())
-    t = _seconds_to_spend(HOLD)
-    r = _stop(store, t, candidates=DESIGNS)
+def test_tick_with_nothing_new_due_debits_nothing():
+    store, wallet = _Jobs(_job_row()), _Wallet("50")
+    _meter(store, 60, wallet=wallet)
+    assert _meter(store, 60, wallet=wallet).summary["debited"] == 0
+
+
+def test_meter_prices_the_run_on_its_own_params():
+    inputs = {"num_samples": 7, "_partial_candidates": [], "_wallet": _job_row()["inputs"]["_wallet"]}
+    store = _Jobs(_job_row(inputs=inputs))
+    with patch("shared.wallet.live_due_usd", return_value=Decimal("0.01")) as due:
+        _meter(store, 60, wallet=_Wallet("50"))
+    due.assert_called_once_with("boltz2", 60, GPU, {"num_samples": 7})
+
+
+def test_run_stops_when_the_balance_runs_short():
+    store, wallet = _Jobs(_job_row()), _Wallet("0.05")
+    t = 300
+    assert _due(t) > Decimal("0.05")
+    r = _meter(store, t, wallet=wallet, candidates=DESIGNS)
     row = store.rows["job-1"]
-    assert r.summary["stopped"] == 1
+    assert r.summary == {"debited": 1, "stopped": 1, "cancel_failed": 0, "errors": []}
+    assert wallet.balance == 0
     r.modal.cancel.assert_called_once_with("fc-1")
     assert row["status"] == "succeeded"
     assert row["failure_class"] == "succeeded"
@@ -453,53 +481,48 @@ def test_run_stops_when_its_cost_reaches_the_hold():
     assert row["result"]["stop_reason"] == jobs_mod.WALLET_STOP_REASON
     assert [c["name"] for c in row["result"]["candidates"]] == ["d1", "d2"]
     r.settle.assert_called_once()
-    assert r.settle.call_args.args == ("hold-1",)
-    assert r.settle.call_args.kwargs["gpu_seconds"] == t
+    assert r.settle.call_args.args[:3] == ("hold-1", t, GPU)
+    assert not r.settle.call_args.kwargs.get("refund")
+    r.settle_hold.assert_not_called()
     r.release.assert_not_called()
     r.email.assert_called_once()
 
 
-def test_run_stops_when_its_cost_equals_the_hold_exactly():
-    t = 600
-    exact = compute_charge_usd(t, gpu_class_for_job("boltz2", None))
-    store = _Jobs(_job_row(wallet={
-        "hold_tx_id": "hold-1", "hold_usd": str(exact),
-        "balance_limited": True, "tool_slug": "boltz2",
-    }))
-    r = _stop(store, t, candidates=DESIGNS)
-    assert r.summary["stopped"] == 1
-    assert store.rows["job-1"]["status"] == "succeeded"
+def test_debit_that_exactly_empties_the_wallet_keeps_the_run_going():
+    store, wallet = _Jobs(_job_row()), _Wallet(str(_due(60)))
+    r = _meter(store, 60, wallet=wallet)
+    assert wallet.balance == 0
+    assert r.summary["stopped"] == 0
+    assert store.rows["job-1"]["status"] == "running"
+    assert _meter(store, 120, wallet=wallet).summary["stopped"] == 1
 
 
 def test_stop_before_any_design_finished_is_billed_as_no_yield():
     store = _Jobs(_job_row())
-    r = _stop(store, _seconds_to_spend(HOLD))
+    r = _meter(store, 60)
     assert store.rows["job-1"]["failure_class"] == "completed_no_yield"
     r.settle.assert_called_once()
-    r.release.assert_not_called()
+    assert not r.settle.call_args.kwargs.get("refund")
 
 
 def test_reconstruct_error_still_stops_the_run():
     store = _Jobs(_job_row())
-    r = _stop(store, _seconds_to_spend(HOLD), reconstruct_exc=RuntimeError("storage"))
+    r = _meter(store, 60, reconstruct_exc=RuntimeError("storage"))
     assert r.summary["stopped"] == 1
     assert store.rows["job-1"]["failure_class"] == "completed_no_yield"
 
 
 @pytest.mark.parametrize("status", ["pending", "running"])
 def test_run_with_no_heartbeat_is_metered_from_created_at(status):
-    t = _seconds_to_spend(HOLD)
-    under = _Jobs(_job_row(status=status, started_at=None, created_at=NOW.isoformat()))
-    assert _stop(under, t - 1, candidates=DESIGNS).summary["stopped"] == 0
-    assert under.rows["job-1"]["status"] == status
-
-    store = _Jobs(_job_row(status=status, started_at=None, created_at=NOW.isoformat()))
-    r = _stop(store, t, candidates=DESIGNS)
+    store = _Jobs(_job_row(status=status, started_at=None,
+                           created_at=(NOW - timedelta(seconds=100)).isoformat()))
+    r = _meter(store, 20, candidates=DESIGNS)
     row = store.rows["job-1"]
+    assert r.wallet.calls[0][3] == 120
     assert r.summary["stopped"] == 1
     r.modal.cancel.assert_called_once_with("fc-1")
     assert row["status"] == "succeeded"
-    assert row["gpu_seconds_used"] == t
+    assert row["gpu_seconds_used"] == 120
 
 
 def _raise(_fc):
@@ -509,8 +532,8 @@ def _raise(_fc):
 @pytest.mark.parametrize("cancel", [lambda _fc: {"ok": False, "error": "x"}, _raise])
 def test_failed_modal_cancel_leaves_the_run_going(cancel):
     store = _Jobs(_job_row())
-    r = _stop(store, _seconds_to_spend(HOLD), cancel=cancel, candidates=DESIGNS)
-    assert r.summary == {"stopped": 0, "cancel_failed": 1, "errors": []}
+    r = _meter(store, 60, cancel=cancel, candidates=DESIGNS)
+    assert r.summary == {"debited": 0, "stopped": 0, "cancel_failed": 1, "errors": []}
     assert store.rows["job-1"]["status"] == "running"
     r.settle.assert_not_called()
 
@@ -524,30 +547,59 @@ def test_stop_rebuilds_from_the_row_as_it_is_after_the_cancel():
         row["inputs"] = {**row["inputs"], "_partial_candidates": [late]}
         return {"ok": True, "error": None}
 
-    r = _stop(store, _seconds_to_spend(HOLD), cancel=cancel, candidates=DESIGNS)
+    r = _meter(store, 60, cancel=cancel, candidates=DESIGNS)
     assert r.rec.call_args.args[0].inputs["_partial_candidates"] == [late]
 
 
 def test_run_with_no_modal_call_stops_without_a_cancel():
     store = _Jobs(_job_row(modal_function_call_id=None))
-    r = _stop(store, _seconds_to_spend(HOLD), candidates=DESIGNS)
+    r = _meter(store, 60, candidates=DESIGNS)
     assert r.summary["stopped"] == 1
+    r.modal.cancel.assert_not_called()
+
+
+def test_meter_pays_the_oldest_run_first():
+    newer = _job_row("job-new", created_at="2026-10-02T00:00:00+00:00",
+                     modal_function_call_id="fc-new",
+                     wallet={"hold_tx_id": "hold-new", "live": True})
+    older = _job_row("job-old", created_at="2026-10-01T00:00:00+00:00",
+                     modal_function_call_id="fc-old",
+                     wallet={"hold_tx_id": "hold-old", "live": True})
+    store, wallet = _Jobs(newer, older), _Wallet(str(_due(60)))
+    r = _meter(store, 60, wallet=wallet, candidates=DESIGNS)
+    assert [c[0] for c in wallet.calls] == ["hold-old", "hold-new"]
+    assert store.rows["job-old"]["status"] == "running"
+    assert store.rows["job-new"]["status"] == "succeeded"
+    r.modal.cancel.assert_called_once_with("fc-new")
+
+
+@pytest.mark.parametrize("debit,errors", [
+    ({"settled": True, "debited": Decimal("0"), "taken": Decimal("0.30"),
+      "short": Decimal("1"), "balance_after": Decimal("0")}, []),
+    (None, ["job-1:debit failed"]),
+])
+def test_settled_or_failed_debit_leaves_the_run_alone(debit, errors):
+    store = _Jobs(_job_row())
+    r = _meter(store, 60, debit=MagicMock(return_value=debit), candidates=DESIGNS)
+    assert r.summary == {"debited": 0, "stopped": 0, "cancel_failed": 0, "errors": errors}
+    assert store.rows["job-1"]["status"] == "running"
     r.modal.cancel.assert_not_called()
 
 
 @pytest.mark.parametrize("over", [
     {"campaign_id": "camp-1"},
-    {"wallet": {"hold_tx_id": "hold-1", "hold_usd": "0.30", "balance_limited": "true"}},
-    {"wallet": {"hold_tx_id": "hold-1", "balance_limited": True}},
-    {"wallet": {"hold_tx_id": "hold-1", "hold_usd": "0.30", "balance_limited": False}},
+    {"wallet": {"hold_tx_id": "hold-1", "live": "true"}},
+    {"wallet": {"hold_tx_id": "hold-1", "live": False}},
     {"wallet": {"hold_tx_id": "hold-1", "estimate_usd": "2.00"}},
+    {"wallet": {"live": True}},
     {"status": "pending", "started_at": None, "modal_function_call_id": None},
 ])
-def test_rows_the_stop_never_touches(over):
+def test_rows_the_meter_never_touches(over):
     store = _Jobs(_job_row(**over))
     status = store.rows["job-1"]["status"]
-    r = _stop(store, 10 * 86400, candidates=DESIGNS)
-    assert r.summary == {"stopped": 0, "cancel_failed": 0, "errors": []}
+    r = _meter(store, 10 * 86400, candidates=DESIGNS)
+    assert r.summary == {"debited": 0, "stopped": 0, "cancel_failed": 0, "errors": []}
+    assert r.wallet.calls == []
     assert store.rows["job-1"]["status"] == status
     r.modal.cancel.assert_not_called()
 
@@ -559,7 +611,7 @@ def test_webhook_that_lands_during_the_cancel_wins():
         store.rows["job-1"].update(status="succeeded", result={"candidates": DESIGNS})
         return {"ok": True, "error": None}
 
-    r = _stop(store, _seconds_to_spend(HOLD), cancel=webhook_first, candidates=DESIGNS[:1])
+    r = _meter(store, 60, cancel=webhook_first, candidates=DESIGNS[:1])
     assert r.summary["stopped"] == 0
     assert "stop_reason" not in store.rows["job-1"]["result"]
     r.settle.assert_not_called()
@@ -576,12 +628,10 @@ def test_failed_user_cancel_leaves_the_job_running(cancel):
     modal = MagicMock()
     modal.cancel.side_effect = cancel
     with patch.object(jobs_mod, "get_service_client", store.client), \
-         patch("shared.wallet.release_hold") as release, \
-         patch("shared.wallet.settle_hold") as settle:
+         patch("shared.wallet.settle_live_run") as settle:
         job, err = jobs_mod.cancel_job("job-1", user_id="u-1", modal_client=modal)
     assert (job, err) == (None, "modal_cancel_failed")
     assert store.rows["job-1"]["status"] == "running"
-    release.assert_not_called()
     settle.assert_not_called()
 
 
@@ -599,178 +649,321 @@ def test_campaign_child_is_cancelled_locally_when_modal_cancel_fails(cancel):
 
 
 # ---------------------------------------------------------------------------
-# Ledger: the stop settles through the real settle_hold into a mirror of
-# supabase/migrations/0020_wallet_corrections.sql::settle_hold
+# A finished live run settles through settle_live_run
 # ---------------------------------------------------------------------------
 
 
-class _Ledger:
-    def __init__(self, balance):
-        self.rows = [{"id": "t0", "kind": "topup", "amount_usd": Decimal(balance)}]
-        self.lowest = self.balance()
+@pytest.mark.parametrize("failure_class,seconds,refund", [
+    ("succeeded", 120, False),
+    ("completed_no_yield", 120, False),
+    ("user_cancelled", 120, False),
+    ("user_cancelled", 0, True),
+    ("infra_crash", 120, True),
+    ("no_progress_timeout", 120, True),
+])
+def test_live_run_settles_through_settle_live_run(failure_class, seconds, refund):
+    from shared.jobs import ToolJob, _settle_wallet_hold_for_completed_job
 
-    def balance(self):
-        return sum(r["amount_usd"] for r in self.rows)
-
-    def add(self, row):
-        self.rows.append(row)
-        self.lowest = min(self.lowest, self.balance())
-
-    def hold(self, amount):
-        assert self.balance() >= amount
-        self.add({"id": "hold-1", "user_id": "u-1", "kind": "hold", "amount_usd": -amount,
-                  "estimated_cost_usd": amount, "tool_slug": "boltz2"})
-
-    def settle(self, p):
-        hold = next(r for r in self.rows if r["id"] == p["p_hold_tx_id"])
-        if any(r.get("parent_tx_id") == hold["id"] for r in self.rows):
-            return
-        actual = min(Decimal(str(p["p_actual_usd"])), Decimal(str(p["p_hard_cap_usd"])))
-        diff = hold["estimated_cost_usd"] - actual
-        if diff > 0:
-            kind, amount = "hold_release", diff
-        elif diff < 0 and self.balance() + diff >= 0:
-            kind, amount = "charge", diff
-        elif diff < 0:
-            kind, amount = "absorbed_variance", Decimal("0")
-        else:
-            kind, amount = "charge", Decimal("0")
-        self.add({"id": f"s{len(self.rows)}", "kind": kind, "amount_usd": amount,
-                  "estimated_cost_usd": abs(diff), "parent_tx_id": hold["id"]})
-
-    def client(self):
-        ledger = self
-
-        class _Sel:
-            def select(self, *_a):
-                return self
-
-            def eq(self, _col, val):
-                self.id = val
-                return self
-
-            def maybe_single(self):
-                return self
-
-            def execute(self):
-                return SimpleNamespace(
-                    data=next((dict(r) for r in ledger.rows if r["id"] == self.id), None))
-
-        class _Rpc:
-            def __init__(self, name, params):
-                assert name == "settle_hold"
-                self.params = params
-
-            def execute(self):
-                ledger.settle(self.params)
-
-        return SimpleNamespace(table=lambda _name: _Sel(), rpc=_Rpc)
+    status = {"succeeded": "succeeded", "completed_no_yield": "succeeded",
+              "user_cancelled": "cancelled"}.get(failure_class, "failed")
+    job = ToolJob.from_row(_job_row(status=status, failure_class=failure_class,
+                                    gpu_seconds_used=seconds))
+    with patch("shared.wallet.settle_live_run") as settle, \
+         patch("shared.wallet.settle_hold") as settle_hold, \
+         patch("shared.wallet.release_hold") as release:
+        _settle_wallet_hold_for_completed_job(job)
+    settle.assert_called_once()
+    assert settle.call_args.args[:3] == ("hold-1", seconds, GPU)
+    assert bool(settle.call_args.kwargs.get("refund")) is refund
+    settle_hold.assert_not_called()
+    release.assert_not_called()
 
 
-def test_sql_mirror_matches_the_migrations():
-    mig = ROOT / "supabase" / "migrations"
-    settle = (mig / "0020_wallet_corrections.sql").read_text(encoding="utf-8")
-    for line in ("v_capped_actual := LEAST(p_actual_usd, p_hard_cap_usd);",
-                 "v_diff := v_estimate - v_capped_actual;",
-                 "IF v_diff > 0 THEN",
-                 "IF v_balance + v_diff >= 0 THEN",
-                 "SELECT v_user_id, 'absorbed_variance', 0, v_balance,",
-                 "WHERE parent_tx_id = p_hold_tx_id"):
-        assert line in settle
-    hold = (mig / "0035_phase2_remove_daily_cap.sql").read_text(encoding="utf-8")
-    assert "IF v_balance < p_amount_usd THEN" in hold
-    assert "(p_user_id, 'hold', -p_amount_usd, v_balance - p_amount_usd," in hold
-    assert "p_tool_slug, p_job_id, p_amount_usd)" in hold
-    for fn, latest in (("settle_hold", "0020_wallet_corrections.sql"),
-                       ("try_hold_for_job", "0035_phase2_remove_daily_cap.sql")):
-        defs = sorted(p.name for p in mig.glob("*.sql")
-                      if f"FUNCTION public.{fn}(" in p.read_text(encoding="utf-8"))
-        assert defs[-1] == latest
+def test_held_run_still_settles_through_settle_hold():
+    from shared.jobs import ToolJob, _settle_wallet_hold_for_completed_job
 
-
-def _stop_and_settle(ledger, elapsed):
-    store = _Jobs(_job_row())
-    modal = MagicMock()
-    modal.cancel.return_value = {"ok": True, "error": None}
-    with patch.object(jobs_mod, "get_service_client", store.client), \
-         patch.object(jobs_mod, "_charge_workspace_for_completed_job"), \
-         patch.object(jobs_mod, "_send_completion_email"), \
-         patch("shared.job_recovery.reconstruct", return_value=DESIGNS), \
-         patch("shared.wallet.get_service_client", ledger.client), \
-         patch("shared.wallet._wallet", return_value=None), \
-         patch("shared.wallet._post_settle_hooks"):
-        summary = jobs_mod.stop_wallet_limited_jobs(
-            modal_client=modal, now=NOW + timedelta(seconds=elapsed),
-        )
-    assert summary["stopped"] == 1
-    actual = compute_charge_usd(elapsed, gpu_class_for_job("boltz2", None))
-    assert actual > HOLD
-    return min(actual, compute_hard_cap("boltz2", {})) - HOLD
-
-
-def test_late_stop_charges_the_hold_and_absorbs_the_rest():
-    ledger = _Ledger("0.30")
-    ledger.hold(HOLD)
-    owed = _stop_and_settle(ledger, _seconds_to_spend(HOLD) + 120)
-    assert [r["kind"] for r in ledger.rows] == ["topup", "hold", "absorbed_variance"]
-    assert ledger.rows[-1]["amount_usd"] == 0
-    assert ledger.rows[-1]["estimated_cost_usd"] == owed
-    assert ledger.balance() == 0
-    assert ledger.lowest == 0
-
-
-def test_overshoot_after_a_mid_run_top_up_comes_out_of_the_top_up():
-    ledger = _Ledger("0.30")
-    ledger.hold(HOLD)
-    ledger.add({"id": "t1", "kind": "topup", "amount_usd": Decimal("20")})
-    owed = _stop_and_settle(ledger, _seconds_to_spend(HOLD) + 120)
-    assert ledger.rows[-1]["kind"] == "charge"
-    assert ledger.balance() == Decimal("20") - owed
-    assert ledger.lowest >= 0
-
-
-def test_overshoot_bigger_than_the_top_up_is_absorbed_whole():
-    ledger = _Ledger("0.30")
-    ledger.hold(HOLD)
-    ledger.add({"id": "t1", "kind": "topup", "amount_usd": Decimal("0.01")})
-    assert _stop_and_settle(ledger, _seconds_to_spend(HOLD) + 600) > Decimal("0.01")
-    assert ledger.rows[-1]["kind"] == "absorbed_variance"
-    assert ledger.balance() == Decimal("0.01")
+    job = ToolJob.from_row(_job_row(
+        status="succeeded", failure_class="succeeded", gpu_seconds_used=120,
+        wallet={"hold_tx_id": "hold-1", "estimate_usd": "2.00", "tool_slug": "boltz2"},
+    ))
+    with patch("shared.wallet.settle_live_run") as settle, \
+         patch("shared.wallet.settle_hold") as settle_hold:
+        _settle_wallet_hold_for_completed_job(job)
+    settle.assert_not_called()
+    settle_hold.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# campaigns:tick runs the stop check
+# shared.wallet's live calls
 # ---------------------------------------------------------------------------
 
 
-def _tick(stop):
+@pytest.mark.parametrize("data,expected", [
+    ("a-1", "a-1"), (["a-1"], "a-1"), ([], None), (None, None),
+])
+def test_open_live_run_returns_the_anchor_id(data, expected):
+    from shared import wallet as wallet_mod
+
+    with patch.object(wallet_mod, "_rpc_data", return_value=data) as rpc:
+        assert wallet_mod.open_live_run("u-1", "boltz2") == expected
+    rpc.assert_called_once_with("open_live_run", {"p_user_id": "u-1", "p_tool_slug": "boltz2"})
+
+
+@pytest.mark.parametrize("debited,hooked", [("0.25", True), ("0", False)])
+def test_debit_runs_the_settle_hooks_only_when_it_took_money(debited, hooked):
+    from shared import wallet as wallet_mod
+
+    data = {"settled": False, "debited": debited, "taken": "0.25", "short": "0",
+            "balance_after": "4.75"}
+    with patch.object(wallet_mod, "_rpc_data", return_value=data) as rpc, \
+         patch.object(wallet_mod, "_post_settle_hooks") as hooks:
+        out = wallet_mod.debit_live_run("hold-1", "u-1", Decimal("0.25"), 60, GPU)
+    assert rpc.call_args.args[1] == {"p_hold_tx_id": "hold-1", "p_due_usd": "0.25",
+                                     "p_gpu_seconds": 60.0, "p_gpu_class": GPU}
+    assert out == {"settled": False, "debited": Decimal(debited), "taken": Decimal("0.25"),
+                   "short": Decimal("0"), "balance_after": Decimal("4.75")}
+    if hooked:
+        hooks.assert_called_once_with("u-1", {"balance_usd": Decimal("4.75")}, Decimal("0.25"))
+    else:
+        hooks.assert_not_called()
+
+
+def test_debit_that_failed_returns_none():
+    from shared import wallet as wallet_mod
+
+    with patch.object(wallet_mod, "_rpc_data", return_value=None):
+        assert wallet_mod.debit_live_run("hold-1", "u-1", Decimal("1"), 60, GPU) is None
+
+
+@pytest.mark.parametrize("refund", [False, True])
+def test_settle_live_run_closes_at_the_metered_cost_or_zero(refund):
+    from shared import wallet as wallet_mod
+
+    client = MagicMock()
+    (client.table.return_value.select.return_value.eq.return_value
+     .maybe_single.return_value.execute.return_value) = SimpleNamespace(
+        data={"user_id": "u-1", "tool_slug": "boltz2"})
+    data = {"settled_before": False, "final": "0", "taken": "0.40", "charged": "0.10",
+            "released": "0", "absorbed": "0", "balance_after": "3"}
+    with patch.object(wallet_mod, "get_service_client", return_value=client), \
+         patch.object(wallet_mod, "_rpc_data", return_value=data) as rpc, \
+         patch.object(wallet_mod, "_post_settle_hooks") as hooks:
+        wallet_mod.settle_live_run("hold-1", 120, GPU, {}, "failed", refund=refund)
+    args = rpc.call_args.args[1]
+    assert args["p_final_due_usd"] == ("0" if refund else str(_due(120)))
+    assert args["p_failure_reason"] == "failed"
+    hooks.assert_called_once_with("u-1", {"balance_usd": Decimal("3")}, Decimal("0.10"))
+
+
+def test_live_due_is_clamped_at_the_tool_cap():
+    cap = compute_hard_cap("boltz2", {})
+    assert _due(60) < cap
+    assert _due(10 * 86400) == cap
+
+
+# ---------------------------------------------------------------------------
+# campaigns:tick runs the meter
+# ---------------------------------------------------------------------------
+
+
+def _tick(meter):
     from cron.tick_campaigns import tick_campaigns
 
     client = MagicMock()
     client.table.return_value.select.return_value.in_.return_value.execute.return_value.data = []
     with patch("shared.credits.get_service_client", return_value=client), \
-         patch("shared.jobs.stop_wallet_limited_jobs", stop), \
+         patch("shared.jobs.meter_live_runs", meter), \
          patch("shared.compute_campaigns.sweep_paused_campaigns", return_value={}):
         return tick_campaigns()
 
 
-def test_tick_runs_the_stop_check():
-    stop = MagicMock(return_value={"stopped": 1, "cancel_failed": 0, "errors": []})
-    summary = _tick(stop)
-    stop.assert_called_once_with()
-    assert summary["wallet_stop"]["stopped"] == 1
+def test_tick_runs_the_meter():
+    out = {"debited": 2, "stopped": 1, "cancel_failed": 0, "errors": []}
+    meter = MagicMock(return_value=out)
+    summary = _tick(meter)
+    meter.assert_called_once_with()
+    assert summary["live_meter"] == out
 
 
-def test_tick_counts_the_stop_check_errors():
-    stop = MagicMock(return_value={"stopped": 0, "cancel_failed": 0, "errors": ["job-1:boom"]})
-    summary = _tick(stop)
-    assert "wallet stop: job-1:boom" in summary["errors"]
+def test_tick_counts_the_meter_errors():
+    meter = MagicMock(return_value={"debited": 0, "stopped": 0, "cancel_failed": 0,
+                                    "errors": ["job-1:boom"]})
+    assert "live meter: job-1:boom" in _tick(meter)["errors"]
 
 
-def test_tick_carries_on_when_the_stop_check_raises():
+def test_tick_carries_on_when_the_meter_raises():
     summary = _tick(MagicMock(side_effect=RuntimeError("boom")))
-    assert "wallet stop check failed" in summary["errors"]
+    assert "live meter failed" in summary["errors"]
     assert "reconciled" in summary
+
+
+# ---------------------------------------------------------------------------
+# Wallet history: one line per run, its debits folded under it
+# ---------------------------------------------------------------------------
+
+
+def _tx(tx_id, kind, amount, *, parent=None, at="2026-10-05T12:00:00+00:00"):
+    return {"id": tx_id, "user_id": "u-1", "kind": kind, "amount_usd": Decimal(amount),
+            "balance_after_usd": Decimal("1"), "created_at": at, "tool_slug": "boltz2",
+            "job_id": None, "parent_tx_id": parent, "notes": None, "stripe_event_id": None}
+
+
+def _run_rows(*closing):
+    return [
+        _tx("h-1", "hold", "0"),
+        _tx("d-2", "run_debit", "-0.10", parent="h-1", at="2026-10-05T12:10:00+00:00"),
+        _tx("d-1", "run_debit", "-0.10", parent="h-1", at="2026-10-05T12:05:00+00:00"),
+        *closing,
+    ]
+
+
+def _annotate(rows):
+    from blueprints.wallet import _build_tx_lineage_annotations
+    from tests.test_wallet_templates import _FakeLedgerClient
+
+    return _build_tx_lineage_annotations(_FakeLedgerClient(rows), "u-1", rows)
+
+
+def test_running_run_is_one_line_with_its_debits_oldest_first():
+    ann = _annotate(_run_rows())
+    run = ann["h-1"]
+    assert (run["role"], run["settled"], run["taken"], run["net"]) == (
+        "run", False, Decimal("0.20"), Decimal("-0.20"))
+    assert [d["id"] for d in run["debits"]] == ["d-1", "d-2"]
+    assert ann["d-1"] == ann["d-2"] == {"role": "debit"}
+
+
+@pytest.mark.parametrize("closing,net", [
+    (_tx("r-1", "hold_release", "0.05", parent="h-1"), Decimal("-0.15")),
+    (_tx("c-1", "charge", "-0.03", parent="h-1"), Decimal("-0.23")),
+    (_tx("c-1", "charge", "0", parent="h-1"), Decimal("-0.20")),
+])
+def test_closed_run_nets_its_debits_and_closing_row(closing, net):
+    run = _annotate(_run_rows(closing))["h-1"]
+    assert (run["role"], run["settled"], run["net"]) == ("run", True, net)
+
+
+def test_unused_anchor_reads_as_a_run():
+    ann = _annotate([_tx("h-1", "hold", "0"), _tx("r-1", "hold_release", "0", parent="h-1")])
+    assert ann["h-1"]["role"] == "run"
+    assert ann["h-1"]["debits"] == []
+
+
+def _history(rows, annotations):
+    from flask import render_template
+
+    from app import create_app
+
+    app = create_app()
+    with app.test_request_context("/account/wallet/transactions"):
+        return render_template("wallet/transactions.html", wallet={"balance_usd": 0},
+                               transactions=rows, filter_kind=None, page=1,
+                               page_size=50, has_next=False, has_prev=False,
+                               total_count=len(rows), tx_annotations=annotations)
+
+
+@pytest.mark.parametrize("closing,hint", [
+    ((), "charged as it runs; $0.20 so far"),
+    ((_tx("r-1", "hold_release", "0.05", parent="h-1"),), "charged as it ran; it closed at $0.15"),
+    ((_tx("r-1", "hold_release", "0.20", parent="h-1"),),
+     "charged as it ran; all of it was returned when it closed"),
+])
+def test_history_says_what_a_run_cost(monkeypatch, closing, hint):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    rows = _run_rows(*closing)
+    page = [r for r in rows if r["kind"] != "run_debit"]
+    html = _history(page, _annotate(rows))
+    assert hint in html
+    assert "2 charges while it ran" in html
+    assert html.index("12:05") < html.index("12:10")
+
+
+def test_history_explains_a_debit_row_when_charges_are_filtered(monkeypatch):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    rows = _run_rows()
+    assert "taken from your balance while the run went" in _history(rows[1:], _annotate(rows))
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.calls.append((name, args))
+            if name == "execute":
+                return SimpleNamespace(data=[], count=0)
+            return self
+        return call
+
+
+@pytest.mark.parametrize("kind,expected", [
+    (None, ("neq", ("kind", "run_debit"))),
+    ("charge", ("in_", ("kind", ["charge", "run_debit"]))),
+    ("topup", ("eq", ("kind", "topup"))),
+])
+def test_history_filter_hides_debits_unless_charges_are_asked_for(monkeypatch, kind, expected):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    from app import create_app
+
+    app = create_app()
+    app.config["TESTING"] = True
+    client, rec = app.test_client(), _Recorder()
+    with client.session_transaction() as sess:
+        sess["user_email"] = "u@example.com"
+    with patch("blueprints.wallet.load_user_context",
+               return_value=SimpleNamespace(user_id="u-1")), \
+         patch("blueprints.wallet.get_or_create_wallet", return_value={"balance_usd": 0}), \
+         patch("shared.credits.get_service_client", return_value=rec):
+        resp = client.get("/account/wallet/transactions",
+                          query_string={"kind": kind} if kind else {})
+    assert resp.status_code == 200
+    kind_calls = [c for c in rec.calls if c[0] in ("eq", "neq", "in_") and c[1][0] == "kind"]
+    assert kind_calls == [expected]
+
+
+# ---------------------------------------------------------------------------
+# Jobs table and failed-run page: a live run's money reads as taken so far
+# ---------------------------------------------------------------------------
+
+
+def _spend(usd, settled, *, held="0", taken="0"):
+    return {"hold-1": {"usd": Decimal(usd), "settled": settled,
+                       "held": Decimal(held), "taken": Decimal(taken)}}
+
+
+def _job(live, status="running", **over):
+    wallet = {"hold_tx_id": "hold-1", **({"live": True} if live else {})}
+    return SimpleNamespace(id="job-1", status=status, started_at=None, completed_at=None,
+                           failure_class=None, inputs={"_wallet": wallet}, **over)
+
+
+@pytest.mark.parametrize("live,text,note", [(True, "$0.20", "so far"), (False, "$0.21", "reserved")])
+def test_jobs_table_names_a_live_run_s_spend_so_far(live, text, note):
+    from blueprints.jobs import _jobs_table_cells
+
+    with patch("shared.wallet.job_spend_by_hold", return_value=_spend("0.203", False)):
+        cell = _jobs_table_cells([_job(live)], "u-1", NOW)["job-1"]
+    assert (cell["spend"], cell["spend_note"]) == (text, note)
+
+
+@pytest.mark.parametrize("live,spend,line", [
+    (True, _spend("0.20", False, taken="0.20"),
+     "$0.20 has been taken for this run so far; it has not been settled yet."),
+    (True, _spend("0", True, taken="0.20"),
+     "The $0.20 taken while this run went was returned to your wallet in full. "
+     "You were not charged for this run."),
+    (True, _spend("0.15", True, taken="0.20"),
+     "You were charged $0.15 for the GPU time this run used. "
+     "The rest of the $0.20 taken while this run went was returned to your wallet."),
+    (False, _spend("0", True, held="2.00"),
+     "The $2.00 hold was returned to your wallet in full. You were not charged for this run."),
+])
+def test_failed_live_run_says_what_was_taken(live, spend, line):
+    from blueprints.jobs import _failure_money
+
+    with patch("shared.wallet.job_spend_by_hold", return_value=spend):
+        assert _failure_money("u-1", _job(live, status="failed")) == line
 
 
 # ---------------------------------------------------------------------------

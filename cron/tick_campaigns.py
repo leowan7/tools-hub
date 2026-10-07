@@ -63,15 +63,15 @@ def tick_campaigns() -> dict:
         return summary
 
     try:
-        from shared.jobs import stop_wallet_limited_jobs  # noqa: PLC0415
+        from shared.jobs import meter_live_runs  # noqa: PLC0415
 
-        summary["wallet_stop"] = stop_wallet_limited_jobs()
+        summary["live_meter"] = meter_live_runs()
         summary["errors"].extend(
-            f"wallet stop: {err}" for err in summary["wallet_stop"]["errors"]
+            f"live meter: {err}" for err in summary["live_meter"]["errors"]
         )
     except Exception:
-        logger.warning("tick_campaigns: wallet stop check failed", exc_info=True)
-        summary["errors"].append("wallet stop check failed")
+        logger.warning("tick_campaigns: live meter failed", exc_info=True)
+        summary["errors"].append("live meter failed")
 
     try:
         rows = (
