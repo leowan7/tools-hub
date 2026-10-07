@@ -63,6 +63,17 @@ def tick_campaigns() -> dict:
         return summary
 
     try:
+        from shared.jobs import meter_live_runs  # noqa: PLC0415
+
+        summary["live_meter"] = meter_live_runs()
+        summary["errors"].extend(
+            f"live meter: {err}" for err in summary["live_meter"]["errors"]
+        )
+    except Exception:
+        logger.warning("tick_campaigns: live meter failed", exc_info=True)
+        summary["errors"].append("live meter failed")
+
+    try:
         rows = (
             client.table("compute_campaigns")
             .select("id,user_id")

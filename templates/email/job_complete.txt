@@ -21,6 +21,9 @@ Top design: {{ top_score_label }} {{ top_score_value }}{% if top_pdb_key %} ({{ 
 View results: {{ job_url }}
 {%- else -%}
 View job details: {{ job_url }}
+{%- endif %}{% if topup_url %}
+
+Add funds: {{ topup_url }}
 {%- endif %}
 
 {% if next_step_url and next_step_label -%}
