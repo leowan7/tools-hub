@@ -7,12 +7,20 @@ dashboard. Lifted verbatim from ``create_app()``; only ``@flask_app.route``
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
-from urllib.parse import urlsplit
+import secrets
+from datetime import datetime, timezone
+from urllib.parse import urlencode, urlsplit
 
+import requests
 from flask import (
     Blueprint,
+    abort,
     redirect,
     render_template,
     request,
@@ -106,6 +114,31 @@ def safe_next(value: str | None, fallback: str = "/") -> str:
     return value
 
 
+def _client_ip() -> str | None:
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote_addr)
+
+
+def _start_session(email: str, user_id: str | None, props: dict | None = None) -> None:
+    """Sign the browser in and log a ``login`` user_event."""
+    session["user_email"] = email
+    if user_id:
+        session["user_id"] = user_id
+    try:
+        from shared.events import log_event  # noqa: PLC0415
+        log_event(
+            event_type="login",
+            user_id=user_id,
+            session_id=session.get("anon_session_id"),
+            path=request.path,
+            props=props,
+            ip=_client_ip(),
+            user_agent=request.headers.get("User-Agent"),
+        )
+    except Exception:
+        logger.warning("login event log failed", exc_info=True)
+
+
 # ------------------------------------------------------------------
 # Auth routes
 # ------------------------------------------------------------------
@@ -135,22 +168,7 @@ def login():
 
     success, error_msg, user_id = verify_login(email, password)
     if success:
-        session["user_email"] = email
-        if user_id:
-            session["user_id"] = user_id
-        try:
-            from shared.events import log_event  # noqa: PLC0415
-            log_event(
-                event_type="login",
-                user_id=user_id,
-                session_id=session.get("anon_session_id"),
-                path="/login",
-                ip=(request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                    or request.remote_addr),
-                user_agent=request.headers.get("User-Agent"),
-            )
-        except Exception:
-            logger.warning("login event log failed", exc_info=True)
+        _start_session(email, user_id)
         return redirect(next_url)
 
     return render_template(
@@ -359,6 +377,198 @@ def signup():
             "to get started."
         ),
     )
+
+# ------------------------------------------------------------------
+# Continue with Google: OAuth 2.0 authorization code flow with PKCE.
+# Supabase's own Google provider is not used because new-user signups
+# are switched off in the Supabase dashboard; new accounts are created
+# with the service-role admin API, as /signup does.
+# ------------------------------------------------------------------
+
+_GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+_GOOGLE_FAILED = "Google sign-in did not complete. Please try again."
+_GOOGLE_UNAVAILABLE = "Sign-in is unavailable right now. Please try again shortly."
+
+
+def _google_credentials() -> tuple[str, str] | None:
+    """(client_id, client_secret), or None when either env var is unset."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    return (client_id, client_secret) if client_id and client_secret else None
+
+
+def _google_redirect_uri() -> str:
+    base = os.environ.get("PUBLIC_BASE_URL", "https://tools.ranomics.com").rstrip("/")
+    return base + url_for("auth.google_callback")
+
+
+@auth_bp.context_processor
+def _google_signin_flag() -> dict:
+    return {"google_signin_enabled": _google_credentials() is not None}
+
+
+def _is_banned(user: dict) -> bool:
+    """True while ``banned_until`` is in the future. Unparseable counts as banned."""
+    raw = user.get("banned_until")
+    if not raw:
+        return False
+    try:
+        until = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return True
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return until > datetime.now(timezone.utc)
+
+
+def _google_refused(message: str, next_url: str):
+    return render_template(
+        "login.html", mode="signin", error=message, email=None, next=next_url
+    )
+
+
+@auth_bp.route("/auth/google")
+def google_start():
+    """Send the browser to Google's account chooser."""
+    creds = _google_credentials()
+    if creds is None:
+        abort(404)
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(64)
+    session["google_oauth"] = {
+        "state": state,
+        "verifier": verifier,
+        "next": safe_next(request.args.get("next")),
+    }
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    params = {
+        "client_id": creds[0],
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "prompt": "select_account",
+    }
+    return redirect(f"{_GOOGLE_AUTH_URL}?{urlencode(params)}")
+
+
+@auth_bp.route("/auth/google/callback")
+def google_callback():
+    """Finish Google sign-in: sign in the account with that email, or create one."""
+    creds = _google_credentials()
+    if creds is None:
+        abort(404)
+    pending = session.pop("google_oauth", None) or {}
+    next_url = safe_next(pending.get("next"))
+    code = request.args.get("code")
+    if (
+        not code
+        or not pending.get("state")
+        or not hmac.compare_digest(request.args.get("state", ""), pending["state"])
+    ):
+        return _google_refused(_GOOGLE_FAILED, next_url)
+
+    try:
+        response = requests.post(
+            _GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": creds[0],
+                "client_secret": creds[1],
+                "redirect_uri": _google_redirect_uri(),
+                "grant_type": "authorization_code",
+                "code_verifier": pending["verifier"],
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        # The ID token's signature is not checked: it was received directly
+        # from Google's token endpoint over HTTPS, which Google's OpenID
+        # Connect guide allows ("Obtain user information from the ID token").
+        payload = response.json()["id_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except Exception:
+        logger.warning("Google token exchange failed", exc_info=True)
+        return _google_refused(_GOOGLE_FAILED, next_url)
+
+    if claims.get("aud") != creds[0] or claims.get("iss") not in _GOOGLE_ISSUERS:
+        return _google_refused(_GOOGLE_FAILED, next_url)
+    email = (claims.get("email") or "").strip().lower()
+    if not email or claims.get("email_verified") not in (True, "true"):
+        return _google_refused(
+            "Google has not verified the email on that account, so it can't "
+            "be used to sign in.",
+            next_url,
+        )
+
+    from shared.auth import find_auth_user_by_email, register_google_user  # noqa: PLC0415
+    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.events import EVENTS, emit, log_event, log_signup_rejection  # noqa: PLC0415
+
+    client = get_service_client()
+    if client is None:
+        return _google_refused(_GOOGLE_UNAVAILABLE, next_url)
+    try:
+        user = find_auth_user_by_email(client, email)
+    except Exception:
+        logger.warning("Google sign-in: auth user lookup failed", exc_info=True)
+        return _google_refused(_GOOGLE_UNAVAILABLE, next_url)
+
+    if user is not None:
+        # An existing password account is signed in by its verified Google
+        # email (intended). Password login refuses a banned user; so does this.
+        if _is_banned(user):
+            return _google_refused("This account can't sign in.", next_url)
+        _start_session(user.get("email") or email, user["id"], {"method": "google"})
+        return redirect(next_url)
+
+    ip = _client_ip()
+    user_agent = request.headers.get("User-Agent")
+    result = register_google_user(email, ip=ip, user_agent=user_agent)
+    if not result.success:
+        if result.rejection_reason:
+            log_signup_rejection(
+                email=email, reason=result.rejection_reason, ip=ip, user_agent=user_agent
+            )
+        log_event(
+            event_type="signup_failed",
+            session_id=session.get("anon_session_id"),
+            path=request.path,
+            props={
+                "reason": result.failure_code or "unknown",
+                "method": "google",
+                "email": email[:320],
+                "email_domain": email.rsplit("@", 1)[-1],
+            },
+            ip=ip,
+            user_agent=user_agent,
+        )
+        return _google_refused(result.error_message, next_url)
+
+    props = {
+        "domain_class": result.classification,
+        "signup_quality": result.signup_quality,
+        "method": "google",
+    }
+    log_event(
+        event_type="signup_completed",
+        user_id=result.user_id,
+        session_id=session.get("anon_session_id"),
+        path=request.path,
+        props=props,
+        ip=ip,
+        user_agent=user_agent,
+    )
+    emit(EVENTS.SIGNUP_COMPLETE, user_id=result.user_id, properties=props)
+    _start_session(email, result.user_id, {"method": "google"})
+    return redirect(next_url)
+
 
 @auth_bp.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():

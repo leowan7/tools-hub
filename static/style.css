@@ -1087,6 +1087,48 @@ body.auth-page {
   line-height: 1.5;
 }
 
+/* Google's dark-theme sign-in button colours. */
+.btn-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  background: #131314;
+  color: #E3E3E3;
+  border: 1px solid #8E918F;
+  border-radius: 8px;
+  padding: 0.75rem 1.4rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+.btn-google:hover { background: #1F1F21; color: #E3E3E3; }
+
+.auth-terms-note {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-top: 0.5rem;
+  line-height: 1.5;
+}
+.auth-terms-note a { color: var(--text-primary); }
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.1rem 0;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
 /* --------------------------------------------------------------------------
    Developability Scout — form
    -------------------------------------------------------------------------- */
