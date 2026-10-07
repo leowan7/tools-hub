@@ -402,7 +402,7 @@ def _job_row(job_id="job-1", wallet=None, **over):
         "inputs": {"_wallet": wallet if wallet is not None else {
             "hold_tx_id": "hold-1", "estimate_usd": "2.00", "live": True,
             "tool_slug": "boltz2",
-        }},
+        }, "_progress": {"stage": "folding"}},
     }
     row.update(over)
     return row
@@ -458,7 +458,7 @@ def test_tick_with_nothing_new_due_debits_nothing():
 
 
 def test_meter_prices_the_run_on_its_own_params():
-    inputs = {"num_samples": 7, "_partial_candidates": [], "_wallet": _job_row()["inputs"]["_wallet"]}
+    inputs = {"num_samples": 7, "_partial_candidates": [], **_job_row()["inputs"]}
     store = _Jobs(_job_row(inputs=inputs))
     with patch("shared.wallet.live_due_usd", return_value=Decimal("0.01")) as due:
         _meter(store, 60, wallet=_Wallet("50"))
@@ -512,17 +512,59 @@ def test_reconstruct_error_still_stops_the_run():
     assert store.rows["job-1"]["failure_class"] == "completed_no_yield"
 
 
-@pytest.mark.parametrize("status", ["pending", "running"])
-def test_run_with_no_heartbeat_is_metered_from_created_at(status):
-    store = _Jobs(_job_row(status=status, started_at=None,
-                           created_at=(NOW - timedelta(seconds=100)).isoformat()))
-    r = _meter(store, 20, candidates=DESIGNS)
-    row = store.rows["job-1"]
-    assert r.wallet.calls[0][3] == 120
-    assert r.summary["stopped"] == 1
-    r.modal.cancel.assert_called_once_with("fc-1")
-    assert row["status"] == "succeeded"
-    assert row["gpu_seconds_used"] == 120
+@pytest.mark.parametrize("over", [
+    {"status": "pending", "started_at": None},
+    {"started_at": (NOW - timedelta(hours=1)).isoformat()},
+])
+def test_run_before_its_first_heartbeat_is_not_metered(over):
+    inputs = {"_wallet": _job_row()["inputs"]["_wallet"]}
+    store = _Jobs(_job_row(inputs=inputs, **over))
+    r = _meter(store, 60, candidates=DESIGNS)
+    assert r.summary == {"debited": 0, "stopped": 0, "cancel_failed": 0, "errors": []}
+    assert r.wallet.calls == []
+    assert store.rows["job-1"]["status"] == over.get("status", "running")
+    r.modal.cancel.assert_not_called()
+
+
+def _heartbeat(store, at):
+    from flask import Flask
+
+    from webhooks import modal as modal_webhook
+
+    app = Flask(__name__)
+    modal_webhook.register_modal_webhooks(app)
+
+    def progress(**kw):
+        store.rows[kw["job_id"]]["inputs"]["_progress"] = {"stage": kw["stage"]}
+
+    with patch.object(jobs_mod, "get_service_client", store.client), \
+         patch.object(jobs_mod, "_now_iso", return_value=at.isoformat()), \
+         patch.object(modal_webhook, "_append_heartbeat_state", side_effect=progress), \
+         patch.object(modal_webhook, "_run_mid_run_monitor"):
+        resp = app.test_client().post(
+            "/webhooks/heartbeat", json={"job_id": "job-1", "stage": "folding"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("page_open", [False, True])
+def test_debits_start_at_the_first_heartbeat_whether_or_not_the_page_is_open(page_open):
+    inputs = {"_wallet": _job_row()["inputs"]["_wallet"]}
+    store = _Jobs(_job_row(status="pending", started_at=None, inputs=inputs,
+                           created_at=(NOW - timedelta(seconds=600)).isoformat()))
+    if page_open:
+        with patch.object(jobs_mod, "get_service_client", store.client), \
+             patch.object(jobs_mod, "_now_iso",
+                          return_value=(NOW - timedelta(seconds=590)).isoformat()):
+            assert jobs_mod.mark_running("job-1")
+    wallet = _Wallet("50")
+    _meter(store, -300, wallet=wallet)
+    assert wallet.calls == []
+    _heartbeat(store, NOW)
+    _heartbeat(store, NOW + timedelta(seconds=30))
+    _meter(store, 60, wallet=wallet)
+    assert [(c[2], c[3]) for c in wallet.calls] == [(_due(60), 60)]
+    assert store.rows["job-1"]["status"] == "running"
 
 
 def _raise(_fc):
