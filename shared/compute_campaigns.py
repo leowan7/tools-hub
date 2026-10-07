@@ -2244,7 +2244,9 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
                            "failed", "cancelled"):
         return 0
 
-    entry_status = campaign.status  # funded | running | paused_insufficient_funds
+    # funded | running | completing | paused_insufficient_funds -- the
+    # statuses the early return above lets through.
+    entry_status = campaign.status
 
     total = campaign.total_subjobs
     dispatched = _count_children(campaign_id)
@@ -2312,10 +2314,9 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
             # would log an error every tick and leave the row in "running" for
             # good -- _maybe_finalize needs every chunk dispatched, and
             # sweep_paused_campaigns only looks at paused_insufficient_funds.
-            # The states are the ones _maybe_finalize CASes from (:2410), which
-            # are also the ones the cron drives
-            # (cron/tick_campaigns.py::_ACTIVE_STATES), so no state this guard
-            # is reachable in is left behind.
+            # The states are the ones _maybe_finalize CASes from, which are
+            # also the ones cron/tick_campaigns.py::_ACTIVE_STATES drives, so
+            # no state this guard is reachable in is left behind.
             _finalize_undispatchable(
                 campaign_id,
                 ("funded", "running", "completing", "paused_insufficient_funds"),

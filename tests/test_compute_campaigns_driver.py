@@ -364,10 +364,10 @@ def test_drive_finalizes_a_campaign_whose_preset_the_tool_retired(
     the finalize the campaign sits in its entry state for ever.
 
     Every state the guard is reachable in is covered, because the finalize CASes
-    from a fixed set: ``drive_campaign`` returns early only on the terminal
-    statuses, and ``cron/tick_campaigns.py::_ACTIVE_STATES`` drives all four of
-    these. Nothing writes "completing" today, so that case is a pin, not a
-    reproduction.
+    from a fixed set: ``drive_campaign`` returns early on the terminal statuses
+    and on ``draft``, which leaves exactly these four, and
+    ``cron/tick_campaigns.py::_ACTIVE_STATES`` drives all four. Nothing writes
+    "completing" today, so that case is a pin, not a reproduction.
     """
     client, state = driver_env
     row = _seed_campaign(client, total_subjobs=2, requested=24, tool="iggm",
