@@ -262,7 +262,7 @@ def test_iggm_option_shown_in_form_when_on(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_chunk_skips_a_retired_preset():
+def test_dispatch_chunk_refuses_a_retired_preset():
     """A campaign funded before a preset was retired stops dispatching.
 
     ``drive_campaign`` resumes a stored row and never re-runs
@@ -295,7 +295,7 @@ def test_dispatch_chunk_skips_a_retired_preset():
             patch("shared.wallet.reserve_hold", return_value=7) as hold, \
             patch("shared.wallet.release_hold"), \
             patch("shared.jobs.create_job", return_value=None) as mk:
-        assert _dispatch_chunk(campaign, 0) == "skipped"
+        assert _dispatch_chunk(campaign, 0) == "unsupported"
     assert not sign.called
     assert not hold.called
     assert not mk.called

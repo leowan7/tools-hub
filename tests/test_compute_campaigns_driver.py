@@ -345,6 +345,55 @@ def test_drive_finalizes_all_failed(driver_env):
     assert _campaign_status(client) == "failed"
 
 
+def test_drive_finalizes_a_campaign_whose_preset_the_tool_retired(driver_env):
+    """A funded campaign whose mode has been retired closes out, not stalls.
+
+    ``drive_campaign`` resumes a stored row and never re-runs
+    ``adapter.validate``, so the refusal in ``tools/iggm/__init__.py::validate``
+    cannot reach these chunks -- the guard in
+    ``shared/compute_campaigns.py::_dispatch_chunk`` is what stops them. A
+    retired preset is permanent, so the row has to reach a terminal state on
+    this same pass: the admission loop breaks on every retryable outcome,
+    ``_maybe_finalize`` cannot fire while a chunk is undispatched, and
+    ``sweep_paused_campaigns`` only looks at paused_insufficient_funds. Without
+    the finalize the campaign sits in its entry state for ever.
+    """
+    client, state = driver_env
+    row = _seed_campaign(client, total_subjobs=2, requested=24, tool="iggm")
+    row["preset"] = "inverse_design"
+
+    assert drive_campaign("camp-1") == 0
+
+    assert _children(client) == []
+    assert state["holds"] == []
+    assert state["released"] == []
+    # Nothing was ever delivered, so cancelled rather than partial.
+    assert _campaign_status(client) == "cancelled"
+
+
+def test_retired_preset_finalizes_as_partial_when_a_chunk_delivered(driver_env):
+    # The other side of the finalize: a campaign that delivered before the
+    # preset was retired must not read as a cancellation. The delivered child is
+    # written straight into the store, the way the finalize tests above simulate
+    # a terminal writer; dispatching one for real would need iggm-shaped params
+    # that _seed_campaign does not carry.
+    client, state = driver_env
+    row = _seed_campaign(client, total_subjobs=2, requested=24, tool="iggm")
+    row["preset"] = "inverse_design"
+    client.store["tool_jobs"].append({
+        "id": "job-0-1", "user_id": "user-1", "tool": "iggm",
+        "preset": "inverse_design", "status": "succeeded", "campaign_id": "camp-1",
+        "chunk_index": 0, "attempt": 1, "gpu_seconds_used": 10,
+        "failure_class": None,
+    })
+
+    drive_campaign("camp-1")
+
+    assert len(_children(client)) == 1  # chunk 1 was never dispatched
+    assert state["holds"] == []
+    assert _campaign_status(client) == "completed_with_failures"
+
+
 def test_dispatch_resyncs_frontier_on_concurrent_duplicate(driver_env, monkeypatch):
     """A concurrent driver claiming the frontier index: create_job returns None,
     the hold is released, and the driver resyncs the frontier (count advanced)
