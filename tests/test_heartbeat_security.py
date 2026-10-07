@@ -72,7 +72,7 @@ def _job(**over) -> SimpleNamespace:
         tool="boltzgen",
         preset="pilot",
         status="running",
-        inputs={},
+        inputs={"_progress": {"stage": "folding"}},
         result=None,
         error=None,
         modal_function_call_id="fc-stub-abc",
@@ -273,7 +273,8 @@ class TestForgedHeartbeatCannotInflateTheBilledFigure:
                     "hold_tx_id": "tx-123",
                     "estimate_usd": "0.50",
                     "gpu_class": "A100",
-                }
+                },
+                "_progress": {"stage": "folding"},
             },
         )
         store.rows[row["id"]] = row

@@ -37,8 +37,8 @@ LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
 # ---------------------------------------------------------------------------
 
 
-def _upload_sites(tool: str) -> list[tuple[tuple[str, ...], bool]]:
-    """(enclosing function chain, inside a loop) for every upload_pdb call."""
+def _upload_sites(tool: str, callee: str = "upload_pdb") -> list[tuple[tuple[str, ...], bool]]:
+    """(enclosing function chain, inside a loop) for every ``callee`` call."""
     path = ROOT / "tools" / tool / "run_pipeline.py"
     sites: list = []
 
@@ -47,7 +47,7 @@ def _upload_sites(tool: str) -> list[tuple[tuple[str, ...], bool]]:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 walk(child, funcs + (child.name,), False)
                 continue
-            if isinstance(child, ast.Call) and getattr(child.func, "id", None) == "upload_pdb":
+            if isinstance(child, ast.Call) and getattr(child.func, "id", None) == callee:
                 sites.append((funcs, in_loop))
             walk(child, funcs, in_loop or isinstance(child, (ast.For, ast.While)))
 
@@ -67,6 +67,11 @@ def test_live_tools_upload_each_design_mid_run(tool, chain, needs_loop):
     for funcs, in_loop in sites:
         assert funcs == chain
         assert in_loop or not needs_loop
+
+
+@pytest.mark.parametrize("tool", sorted(LIVE))
+def test_live_tools_send_a_heartbeat(tool):
+    assert _upload_sites(tool, "send_heartbeat")
 
 
 @pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
