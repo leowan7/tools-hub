@@ -100,16 +100,18 @@
            what the proteina adapter reads. refreshTool() unhides that row for
            proteina and swaps the binder-tool defaults for upstream's 60-120. #}
         <!-- IgGM antibody-design fields. Disabled off-iggm so they never post to
-             another tool (disabled controls are not submitted). affinity_maturation
-             is intentionally absent — it is single-run only (rejected on the
-             campaign route). -->
+             another tool (disabled controls are not submitted).
+             affinity_maturation and inverse_design are intentionally absent:
+             tools/iggm/__init__.py::validate refuses both
+             (_SEQUENCE_ONLY_PRESETS), and
+             blueprints/campaigns.py::campaign_preset_refusal refuses them
+             ahead of that for this route. -->
         <div class="runs-field" id="iggm-preset-field" style="display:none;">
           <label for="iggm_preset">Design mode</label>
           <select id="iggm_preset" name="preset" disabled>
             <option value="cdr_design" {% if pre_fill.get('preset')=='cdr_design' %}selected{% endif %}>CDR design (mask positions with X)</option>
             <option value="complex_prediction" {% if pre_fill.get('preset')=='complex_prediction' %}selected{% endif %}>Antibody-antigen complex prediction</option>
             <option value="fr_design" {% if pre_fill.get('preset')=='fr_design' %}selected{% endif %}>Framework redesign / humanization</option>
-            <option value="inverse_design" {% if pre_fill.get('preset')=='inverse_design' %}selected{% endif %}>Inverse design (sequence from structure)</option>
           </select>
           <div class="hint">Which IgGM mode to run across the whole run.</div>
         </div>

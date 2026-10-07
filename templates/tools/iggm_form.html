@@ -132,7 +132,12 @@
             regardless of the PDB's residue numbering.
           </div>
 
-          {# ---- affinity maturation only: wild-type reference ---- #}
+          {# ---- affinity maturation only: wild-type reference ----
+             Hidden with no way to reveal it while that preset is refused
+             (tools/iggm/__init__.py::_SEQUENCE_ONLY_PRESETS); a hidden
+             textarea posts an empty string, which validate ignores for the
+             three offered presets. Kept so the field returns with the
+             preset. #}
           <div data-iggm-maturation hidden>
             <label for="fasta_origin" class="label" style="display:block; margin-bottom: 0.4rem;">Wild-type reference (for maturation)</label>
             <textarea name="fasta_origin" id="fasta_origin" spellcheck="false"
@@ -211,14 +216,17 @@
       var HINTS = {
         complex_prediction: 'Masking is optional in this mode.',
         cdr_design: 'Mark the CDR positions to redesign with X (e.g. all of CDR-H3).',
-        fr_design: 'Mark the framework positions to redesign with X.',
-        affinity_maturation: 'Mark positions to diversify with X; provide the wild-type below.',
-        inverse_design: 'Mask the positions whose sequence you want recovered with X.'
+        fr_design: 'Mark the framework positions to redesign with X.'
       };
       function sync() {
         var checked = document.querySelector('input[name="preset"]:checked');
         var preset = checked ? checked.value : 'complex_prediction';
         if (maturation) {
+          // The affinity_maturation arm is unreachable while that preset is
+          // refused: it has no Preset row in adapter.presets -- the refusal
+          // constant does not remove one -- so this form renders no radio
+          // carrying the value. Kept so the wild-type field comes back with
+          // the preset.
           if (preset === 'affinity_maturation') maturation.removeAttribute('hidden');
           else maturation.setAttribute('hidden', '');
         }

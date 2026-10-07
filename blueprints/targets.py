@@ -119,10 +119,20 @@ _DEFAULT_VARIANT_PRESET = {
 # single-tool create route too; repeated here because this route does not go
 # through it.
 _REFUSED_PRESETS = {
+    # Both of these are refused outright by tools/iggm/__init__.py::validate
+    # (``_SEQUENCE_ONLY_PRESETS``), which this route would reach through its
+    # own ``adapter.validate`` call -- except that a retired preset has no
+    # Preset row, so the membership check answers first. Same sentence
+    # either way. The previous copy named
+    # the campaign shape and sent the user to "the single-run IgGM form", which
+    # refuses it too.
     ("iggm", "affinity_maturation"): (
-        "affinity maturation is not available as a full-size run (it runs one "
-        "design per masked position, so the delivered count stops matching "
-        "the chunk size). Use the single-run IgGM form."
+        "this mode is switched off for now: at the IgGM version we run it "
+        "writes sequences only, and results need a structure."
+    ),
+    ("iggm", "inverse_design"): (
+        "this mode is switched off for now: at the IgGM version we run it "
+        "writes sequences only, and results need a structure."
     ),
     # NOT "the ligand variant needs a small-molecule SDF, and this target is
     # a protein structure", which is what this said. That names the target's
@@ -245,6 +255,13 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         label = _tool_label(adapter)
 
         preset = _resolve_preset(tool, form)
+        # Ahead of the membership check: a preset the adapter has retired has
+        # no Preset row, so from there it looks like a typo and would collect
+        # the bare "unknown preset" instead of the sentence saying what
+        # happened.
+        refusal = _REFUSED_PRESETS.get((tool, preset))
+        if refusal:
+            return None, f"{label}: {refusal}"
         if adapter.preset_for(preset) is None:
             return None, f"{label}: unknown preset for this tool."
         if preset == "validate":
@@ -252,9 +269,6 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
                 f"{label}: the validate tier is a free pre-flight, not a "
                 "paid run."
             )
-        refusal = _REFUSED_PRESETS.get((tool, preset))
-        if refusal:
-            return None, f"{label}: {refusal}"
 
         raw_designs = (form.get(f"{tool}__designs") or "").strip()
         try:
@@ -1150,13 +1164,13 @@ def api_target_launch_estimate(target_id):
         ):
             return jsonify({"ok": False, "error": "That tool is not available."})
         label = _tool_label(adapter)
+        refusal = _REFUSED_PRESETS.get((tool, preset))
+        if refusal:
+            return jsonify({"ok": False, "error": f"{label}: {refusal}"})
         if adapter.preset_for(preset) is None or preset == "validate":
             return jsonify(
                 {"ok": False, "error": f"{label}: unknown preset for this tool."}
             )
-        refusal = _REFUSED_PRESETS.get((tool, preset))
-        if refusal:
-            return jsonify({"ok": False, "error": f"{label}: {refusal}"})
         try:
             count = int(raw_designs)
         except ValueError:

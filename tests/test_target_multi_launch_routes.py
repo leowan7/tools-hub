@@ -1698,25 +1698,28 @@ def test_a_flag_gated_tool_cannot_be_launched_by_crafting_the_post(
     assert "Unknown tool." in resp.get_data(as_text=True)
 
 
-def test_iggm_affinity_maturation_is_refused_on_the_launch_path(client):
-    """Its delivered count expands per masked position, which breaks the
-    delivered-equals-chunk-size invariant every campaign hold assumes."""
+@pytest.mark.parametrize("preset", ["affinity_maturation", "inverse_design"])
+def test_iggm_sequence_only_presets_are_refused_on_the_launch_path(client, preset):
+    """At the IgGM version pinned here neither writes a PDB, so a run would
+    burn its whole GPU allocation and deliver nothing
+    (tools/iggm/__init__.py::_SEQUENCE_ONLY_PRESETS)."""
     _login(client)
     t = _target()
     with patch.dict("os.environ", {"FLAG_TOOL_IGGM": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["iggm"], iggm__designs="40",
-            iggm__preset="affinity_maturation",
+            iggm__preset=preset,
             iggm__epitope="42,88", iggm__fasta=">H\nQVQLVESGGGL" + "A" * 90,
         ))
     assert resp.status_code == 400
     assert rec.calls == []
     # The status code alone does not discriminate: this payload ALSO fails the
-    # adapter's own mask check, so deleting the campaign-level refusal would
-    # leave the test green on a different error. Assert the reason.
+    # adapter's own mask check, and a retired preset has no Preset row so the
+    # membership check would answer "unknown preset" -- either would leave the
+    # test green on a different error. Assert the reason.
     body = resp.get_data(as_text=True)
-    assert "not available as a full-size run" in body
-    assert "single-run IgGM form" in body
+    assert "switched off for now" in body
+    assert "unknown preset" not in body
 
 
 def test_proteina_ligand_binder_is_refused_against_a_protein_target(client):

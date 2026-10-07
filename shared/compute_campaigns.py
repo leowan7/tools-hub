@@ -76,9 +76,14 @@ SUPPORTED_TOOLS: tuple[str, ...] = (
     # design.py itself (random.seed(time.time()) + un-fixed torch RNG) so
     # shards diverge. num_samples scales the shard count. LINEAR (not
     # fixed-container); its campaign preset is the design VARIANT, like
-    # proteina. Ships behind FLAG_TOOL_IGGM (off). affinity_maturation is
-    # EXCLUDED from campaigns in blueprints/campaigns.py (its delivered count
-    # = num_samples * n_masked breaks the count==chunk invariant).
+    # proteina. Ships behind FLAG_TOOL_IGGM (off). affinity_maturation and
+    # inverse_design are EXCLUDED from campaigns by
+    # blueprints/campaigns.py::campaign_preset_refusal, by
+    # blueprints/targets.py::_REFUSED_PRESETS on the launch and estimate
+    # routes, and by tools/iggm/__init__.py::validate on the atomic submit
+    # and the API. Maturation had its own
+    # campaign-shape reason first: its delivered count = num_samples *
+    # n_masked breaks the count==chunk invariant.
     "iggm",
 )
 

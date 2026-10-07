@@ -745,6 +745,13 @@ def _clone_missing(adapter, prior_inputs: dict, pre_fill: dict, pdb_source) -> l
     preset = next(
         (p for p in adapter.presets if p.slug == prior_inputs.get("preset")), None
     )
+    # A preset the tool has since retired. ``pre_checked`` leaves the whole
+    # radio group unchecked when the pre-filled value matches no option
+    # (templates/tools/_prefill.html::pre_checked), so without this line the form
+    # posts no preset and ``validate`` silently falls back to its default --
+    # the user clones a run and gets a different mode with no warning.
+    if prior_inputs.get("preset") and preset is None:
+        missing.append("Design mode (the mode this run used is no longer offered)")
     if pdb_source is None and _needs_pdb(adapter, preset, prior_inputs):
         missing.append("Structure file (upload it again)")
     return missing

@@ -54,7 +54,7 @@ def test_iggm_registered_for_campaigns():
 
 def test_iggm_plan_chunks_sizes_to_40():
     for preset in ("cdr_design", "complex_prediction", "fr_design",
-                   "inverse_design", "pilot"):  # 'pilot' = the estimate default
+                   "pilot"):  # 'pilot' = the estimate default
         plan = cc.plan_chunks("iggm", 120, preset)
         assert plan.chunk_size == 40, preset
         assert plan.total_subjobs == 3, preset
@@ -202,17 +202,21 @@ def test_iggm_estimate_ok_when_on(client, monkeypatch):
     assert float(data["budget_usd"]) > 0
 
 
-def test_iggm_campaign_rejects_affinity_maturation(client, monkeypatch):
+@pytest.mark.parametrize("preset", ["affinity_maturation", "inverse_design"])
+def test_iggm_campaign_rejects_sequence_only_presets(client, monkeypatch, preset):
     monkeypatch.setenv("FLAG_TOOL_IGGM", "on")
     _login(client)
     with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.post("/campaigns", data={
             "tool": "iggm",
-            "preset": "affinity_maturation",
+            "preset": preset,
             "requested_designs": "120",
         })
     assert resp.status_code == 400
-    assert "Affinity maturation is not available as a full-size run" in resp.get_data(as_text=True)
+    # blueprints/campaigns.py::campaign_preset_refusal runs ahead of both the
+    # preset_for membership check and adapter.validate, so this route answers
+    # with the sentence rather than "Unknown preset for this tool."
+    assert "This mode is switched off for now" in resp.get_data(as_text=True)
 
 
 def test_iggm_campaign_rejects_missing_epitope(client, monkeypatch):

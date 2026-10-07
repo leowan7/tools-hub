@@ -2,11 +2,12 @@
 
 Runs fully offline — no Modal, no Supabase, no GPU. Covers:
 
-1. Adapter registration (slug, 5 presets, requires_pdb, templates).
+1. Adapter registration (slug, 3 offered presets, requires_pdb, templates).
 2. ``validate()`` accepts well-formed inputs per preset and rejects every
    known malformed case (missing >H, stray >A, no-mask design preset,
    maturation without / with mismatched wild-type, bad epitope, oversized
-   chain, out-of-range num_samples).
+   chain, out-of-range num_samples), and refuses the two sequence-only
+   presets before any of their own checks run.
 3. ``build_payload()`` job_spec shape.
 4. The correctness-critical epitope conversion + antigen extraction in
    ``run_pipeline`` against a synthetic PDB with NON-1-based numbering and
@@ -44,6 +45,21 @@ LIGHT = (
 HEAVY_MASKED = HEAVY[:-12] + "XXXXX" + HEAVY[-7:]
 
 
+@pytest.fixture
+def allow_sequence_only(monkeypatch):
+    """Lift the sequence-only refusal so the validation BEHIND it stays tested.
+
+    ``validate`` refuses affinity_maturation and inverse_design before any of
+    their own checks run (``ig._SEQUENCE_ONLY_PRESETS``). Without this fixture
+    the tests below would pass on the refusal string and stop exercising the
+    thing each one is named after -- ``test_maturation_without_origin`` only
+    asserts ``err is not None``, which the refusal satisfies. Requesting the
+    fixture is also how you tell which tests below only hold with the gate
+    lifted.
+    """
+    monkeypatch.setattr(ig, "_SEQUENCE_ONLY_PRESETS", frozenset())
+
+
 # ---------------------------------------------------------------------------
 # 1. Registration
 # ---------------------------------------------------------------------------
@@ -58,8 +74,21 @@ class TestAdapterRegistration:
         a = get_adapter("iggm")
         assert [p.slug for p in a.presets] == [
             "complex_prediction", "cdr_design", "fr_design",
-            "affinity_maturation", "inverse_design",
         ]
+
+    def test_sequence_only_presets_are_known_but_not_offered(self):
+        """The refused pair keeps its run_task mapping and loses its Preset.
+
+        Dropping them from ``_PRESET_RUN_TASK`` too would make a cloned or
+        API-posted job fall through to the unknown-preset path and get the bare
+        "Pick a preset." instead of the sentence explaining the switch-off.
+        """
+        a = get_adapter("iggm")
+        offered = {p.slug for p in a.presets}
+        assert ig._SEQUENCE_ONLY_PRESETS == {
+            "affinity_maturation", "inverse_design"}
+        assert not (offered & ig._SEQUENCE_ONLY_PRESETS)
+        assert ig._SEQUENCE_ONLY_PRESETS <= set(ig._PRESET_RUN_TASK)
 
     def test_requires_pdb(self):
         a = get_adapter("iggm")
@@ -75,6 +104,81 @@ class TestAdapterRegistration:
 # ---------------------------------------------------------------------------
 # 2. validate()
 # ---------------------------------------------------------------------------
+
+
+class TestSequenceOnlyRefusal:
+    """The two presets IgGM runs but this pipeline cannot deliver.
+
+    These runs used to reach the GPU, burn their whole allocation, produce no
+    PDB and fail in ``collect_design_pdbs`` -- so the customer got a generic
+    error and nothing back while Ranomics paid for the GPU. The gate sits in
+    ``validate``, ahead of any dispatch.
+    """
+
+    def _v(self, preset):
+        return ig.validate(
+            {"preset": preset, "fasta": f">H\n{HEAVY_MASKED}",
+             "fasta_origin": f">H\n{HEAVY}", "target_chain": "A",
+             "epitope": "7 8 9"}, {})
+
+    def test_refuses_affinity_maturation(self):
+        inp, err = self._v("affinity_maturation")
+        assert inp is None
+        assert err and "switched off" in err and "structure" in err
+
+    def test_refuses_inverse_design(self):
+        inp, err = self._v("inverse_design")
+        assert inp is None
+        assert err and "switched off" in err and "structure" in err
+
+    def test_unknown_preset_still_gets_the_generic_message(self):
+        """The refusal must not swallow the unknown-slug path."""
+        _, err = self._v("no_such_preset")
+        assert err and "switched off" not in err
+
+    def test_refusal_precedes_every_other_check(self):
+        """Posted with nothing else valid, the refusal is still what comes back.
+
+        No FASTA parse, no epitope parse and no mask count can fail first and
+        hand back a different sentence, so the user always learns the real
+        reason instead of a complaint about the inputs.
+        """
+        for preset in ("affinity_maturation", "inverse_design"):
+            _, err = ig.validate({"preset": preset}, {})
+            assert err and "switched off" in err
+
+    @pytest.mark.parametrize(
+        "preset", ["affinity_maturation", "inverse_design"])
+    def test_cloning_an_old_job_says_the_mode_is_gone(self, preset):
+        """A job stored before the refusal must say so, not silently re-aim.
+
+        ``pre_checked`` leaves the radio group unchecked when the stored value
+        matches no option (templates/tools/_prefill.html::pre_checked), so the
+        cloned form would post no preset and ``validate`` would fall back to
+        complex_prediction -- a different mode, no warning. The notice comes
+        from ``blueprints/tools.py::_clone_missing``.
+        """
+        from blueprints.tools import _clone_missing
+
+        missing = _clone_missing(
+            get_adapter("iggm"),
+            {"preset": preset, "antibody_fasta": f">H\n{HEAVY_MASKED}"},
+            {"preset": preset},
+            None,
+        )
+        assert any("Design mode" in m for m in missing), missing
+
+    def test_cloning_a_still_offered_preset_says_nothing_about_the_mode(self):
+        """The notice is specific to a retired preset, not every clone."""
+        from blueprints.tools import _clone_missing
+
+        missing = _clone_missing(
+            get_adapter("iggm"),
+            {"preset": "cdr_design"},
+            {"preset": "cdr_design"},
+            {"token": "job:abc", "label": "x", "filename": "x.pdb"},
+        )
+        assert not any("Design mode" in m for m in missing), missing
 
 
 class TestValidateAccept:
@@ -99,7 +203,7 @@ class TestValidateAccept:
              "target_chain": "A", "epitope": "7 8 9"}, {})
         assert err is None and inp["run_task"] == "design"
 
-    def test_affinity_maturation(self):
+    def test_affinity_maturation(self, allow_sequence_only):
         inp, err = ig.validate(
             {"preset": "affinity_maturation", "fasta": f">H\n{HEAVY_MASKED}",
              "fasta_origin": f">H\n{HEAVY}", "target_chain": "A",
@@ -139,25 +243,25 @@ class TestValidateReject:
         _, err = self._v(preset="cdr_design", fasta=f">H\n{HEAVY}")
         assert err and "X" in err
 
-    def test_maturation_without_origin(self):
+    def test_maturation_without_origin(self, allow_sequence_only):
         _, err = self._v(preset="affinity_maturation",
                          fasta=f">H\n{HEAVY_MASKED}", num_samples="10")
         assert err is not None
 
-    def test_maturation_without_mask(self):
+    def test_maturation_without_mask(self, allow_sequence_only):
         # No X in the design FASTA: maturation has nothing to diversify.
         _, err = self._v(preset="affinity_maturation", fasta=f">H\n{HEAVY}",
                          fasta_origin=f">H\n{HEAVY}", num_samples="10")
         assert err and "X" in err
 
-    def test_maturation_over_pass_cap(self):
+    def test_maturation_over_pass_cap(self, allow_sequence_only):
         # 5 masked positions x 25 samples = 125 passes > 100-per-run limit.
         # (25 <= NUM_SAMPLES_MAX, so only the product cap can reject this.)
         _, err = self._v(preset="affinity_maturation", fasta=f">H\n{HEAVY_MASKED}",
                          fasta_origin=f">H\n{HEAVY}", num_samples="25")
         assert err and "100" in err
 
-    def test_maturation_huge_mask_advice(self):
+    def test_maturation_huge_mask_advice(self, allow_sequence_only):
         # 51 masked positions: even the 2-sample minimum = 102 > 100, so no
         # sample count works. The message must advise masking fewer positions,
         # not an impossible sample count.
@@ -166,12 +270,12 @@ class TestValidateReject:
                          fasta_origin=f">H\n{HEAVY}", num_samples="2")
         assert err and "mask at most" in err
 
-    def test_maturation_length_mismatch(self):
+    def test_maturation_length_mismatch(self, allow_sequence_only):
         _, err = self._v(preset="affinity_maturation", fasta=f">H\n{HEAVY_MASKED}",
                          fasta_origin=f">H\n{HEAVY[:-1]}", num_samples="10")
         assert err and "length" in err.lower()
 
-    def test_maturation_origin_with_x(self):
+    def test_maturation_origin_with_x(self, allow_sequence_only):
         _, err = self._v(preset="affinity_maturation", fasta=f">H\n{HEAVY_MASKED}",
                          fasta_origin=f">H\n{HEAVY_MASKED}", num_samples="10")
         assert err and "X" in err
@@ -223,7 +327,7 @@ class TestValidateReject:
 class TestBuildPayload:
     def test_shape(self):
         inp, err = ig.validate(
-            {"preset": "inverse_design", "fasta": f">H\n{HEAVY}\n>L\n{LIGHT}",
+            {"preset": "complex_prediction", "fasta": f">H\n{HEAVY}\n>L\n{LIGHT}",
              "target_chain": "B", "epitope": "7 8 9"}, {})
         assert err is None
         bp = ig.build_payload(inp, "https://example/presigned")
@@ -493,12 +597,14 @@ class TestFormRenders:
         # Posts to the blueprint-qualified endpoint, not the pre-refactor name.
         assert 'action="/tools/iggm/submit"' in body
 
-        # All five run_task modes are offered.
-        for preset in (
-            "complex_prediction", "cdr_design", "fr_design",
-            "affinity_maturation", "inverse_design",
-        ):
+        # The three deliverable run_task modes are offered.
+        for preset in ("complex_prediction", "cdr_design", "fr_design"):
             assert f'name="preset" value="{preset}"' in body
+
+        # ...and the two refused ones are not clickable anywhere on the page,
+        # so nobody reaches the refusal by filling the form in.
+        for preset in ("affinity_maturation", "inverse_design"):
+            assert f'value="{preset}"' not in body
 
         # The inputs that map onto IgGM's design.py flags.
         for field in (
