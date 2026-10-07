@@ -578,6 +578,141 @@ def register_user(
     )
 
 
+_FILTER_PAGE = 1000
+
+
+def find_auth_user_by_email(client, email: str) -> Optional[dict]:  # noqa: ANN001
+    """Return the auth user whose email equals ``email``, or None.
+
+    GoTrue's ``/admin/users?filter=`` narrows server-side (``email LIKE
+    %filter% OR full_name ILIKE %filter%`` in supabase/auth
+    internal/models/user.go FindUsersInAudience), so this reads only the
+    users that match the address rather than every user. The exact match
+    is done here. supabase-py's ``list_users`` does not pass ``filter``, hence the
+    client's own ``_request``. Raises on a transport or API error.
+    """
+    from httpx import QueryParams  # noqa: PLC0415
+
+    target = email.strip().lower()
+    page = 1
+    while True:
+        response = client.auth.admin._request(
+            "GET",
+            "admin/users",
+            query=QueryParams(filter=target, page=page, per_page=_FILTER_PAGE),
+        )
+        users = response.json().get("users") or []
+        for user in users:
+            if (user.get("email") or "").lower() == target:
+                return user
+        if len(users) < _FILTER_PAGE:
+            return None
+        page += 1
+
+
+def register_google_user(
+    email: str,
+    *,
+    ip: Optional[str],
+    user_agent: Optional[str],
+) -> SignupResult:
+    """Create a password-less account for an email Google has verified.
+
+    Keeps register_user's invalid / disposable refusal. Skips honeypot,
+    timing and the personal-email purpose note (Leo, 2026-10-06).
+    """
+    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.email_domain import (  # noqa: PLC0415
+        EmailClass,
+        classify_email,
+        signup_quality_for,
+    )
+
+    classification = classify_email(email)
+    if classification in (EmailClass.INVALID, EmailClass.DISPOSABLE):
+        return SignupResult(
+            success=False,
+            error_message=(
+                "We can't accept signups from temporary email services. "
+                "Please use your work, school, or personal email."
+                if classification == EmailClass.DISPOSABLE
+                else "Please enter a valid email address."
+            ),
+            rejection_reason=classification.value,
+            failure_code=classification.value,
+            classification=classification.value,
+        )
+
+    client = get_service_client()
+    if client is None:
+        return SignupResult(
+            success=False,
+            error_message="Authentication service is not configured.",
+            failure_code="service_misconfigured",
+            classification=classification.value,
+        )
+    try:
+        # google_linked lets blueprints/auth.py google_callback sign this
+        # account in directly next time.
+        response = client.auth.admin.create_user(
+            {
+                "email": email,
+                "email_confirm": True,
+                "app_metadata": {"google_linked": True},
+            }
+        )
+        user_id = getattr(getattr(response, "user", None), "id", None)
+    except Exception as exc:
+        low = str(exc).lower()
+        # Same test as register_user. Reached when find_auth_user_by_email
+        # missed an existing row, e.g. two first sign-ins racing.
+        if "already registered" in low or "already exists" in low or "duplicate" in low:
+            return SignupResult(
+                success=False,
+                error_message=(
+                    "An account with this email already exists. Try Continue with "
+                    "Google again, or sign in with your password."
+                ),
+                failure_code="existing_account",
+                classification=classification.value,
+            )
+        logger.warning("Supabase create_user failed for a Google sign-up", exc_info=True)
+        user_id = None
+    if not user_id:
+        return SignupResult(
+            success=False,
+            error_message="Registration failed. Please try again.",
+            failure_code="auth_error",
+            classification=classification.value,
+        )
+
+    # signup_quality_for(PERSONAL, None) returns "business" (its last line,
+    # shared/email_domain.py), which would mislabel a gmail sign-up.
+    quality = (
+        "personal"
+        if classification == EmailClass.PERSONAL
+        else signup_quality_for(classification, None)
+    )
+    try:
+        _insert_user_profile(
+            user_id=user_id,
+            domain_class=classification.value,
+            signup_quality=quality,
+            purpose=None,
+            ip=ip,
+            user_agent=user_agent,
+        )
+    except Exception:
+        logger.warning("Failed to insert user_profiles row for %s", email, exc_info=True)
+
+    return SignupResult(
+        success=True,
+        user_id=user_id,
+        classification=classification.value,
+        signup_quality=quality,
+    )
+
+
 def _insert_user_profile(
     *,
     user_id: str,
