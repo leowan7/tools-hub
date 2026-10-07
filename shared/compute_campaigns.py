@@ -1937,6 +1937,22 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         logger.error("campaign %s: no adapter for %s", campaign.id, campaign.tool)
         return "skipped"
 
+    # A preset the tool has retired since this campaign was funded.
+    # ``drive_campaign`` resumes a funded or running row and never re-runs
+    # ``adapter.validate``, so without this a campaign created before a
+    # retirement keeps launching containers for a mode the tool will not
+    # deliver. It cannot fire on a campaign created while the preset still
+    # existed: ``blueprints/campaigns.py::compute_campaign_create`` resolves the
+    # slug against this same adapter and refuses an unresolvable one before it
+    # persists the row. "skipped" is the missing-adapter guard's answer above:
+    # no job row, no hold, and the frontier does not move.
+    if adapter.preset_for(campaign.preset) is None:
+        logger.error(
+            "campaign %s: %s no longer offers preset %s; not dispatching",
+            campaign.id, campaign.tool, campaign.preset,
+        )
+        return "skipped"
+
     design_count = campaign.designs_for_chunk(chunk_index)
     if design_count <= 0:
         return "skipped"

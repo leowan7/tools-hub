@@ -255,3 +255,58 @@ def test_iggm_option_shown_in_form_when_on(client, monkeypatch):
         resp = client.get("/campaigns/new")
     assert resp.status_code == 200
     assert '<option value="iggm"' in resp.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# The driver's own preset check (retirement safety net)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_chunk_skips_a_retired_preset():
+    """A campaign funded before a preset was retired stops dispatching.
+
+    ``drive_campaign`` resumes a stored row and never re-runs
+    ``adapter.validate``, so the refusal in ``tools/iggm/__init__.py::validate``
+    cannot reach these children: the campaign was already paid for. The guard
+    in ``shared/compute_campaigns.py::_dispatch_chunk`` is what stops them. The
+    params here are a complete set, so with the guard deleted this chunk runs
+    all the way through the presign and ``reserve_hold`` into ``create_job``
+    and answers "duplicate" instead -- measured, by deleting it and re-running.
+    """
+    from decimal import Decimal  # noqa: PLC0415
+    from shared.compute_campaigns import (  # noqa: PLC0415
+        ComputeCampaign, _dispatch_chunk,
+    )
+
+    campaign = ComputeCampaign(
+        id="c-iggm-1", user_id="u-1", tool="iggm", preset="inverse_design",
+        status="running", requested_designs=40, chunk_size=40, total_subjobs=1,
+        concurrency_target=1, max_attempts=2,
+        budget_usd=Decimal("50"), reserved_usd=Decimal("0"),
+        spent_usd=Decimal("0"), refunded_usd=Decimal("0"),
+        params=_campaign_inputs(preset="inverse_design", num_samples=1),
+        target_storage_path="u-1/target-abc/ag.pdb",
+        target_id="t-1",
+    )
+    # _dispatch_chunk imports these inside the function body, so they have to
+    # be patched at their source modules.
+    with patch("shared.storage.presigned_input_url",
+               return_value="https://signed") as sign, \
+            patch("shared.wallet.reserve_hold", return_value=7) as hold, \
+            patch("shared.wallet.release_hold"), \
+            patch("shared.jobs.create_job", return_value=None) as mk:
+        assert _dispatch_chunk(campaign, 0) == "skipped"
+    assert not sign.called
+    assert not hold.called
+    assert not mk.called
+
+
+def test_dispatch_guard_passes_every_offered_preset():
+    # The other half of the guard: it must refuse ONLY a retired slug. Every
+    # preset the form still offers has to resolve, or the driver would skip
+    # every chunk of every live iggm campaign instead.
+    cc._ensure_adapters()
+    from tools.base import get as tool_get  # noqa: PLC0415
+    adapter = tool_get("iggm")
+    for preset in ("complex_prediction", "cdr_design", "fr_design"):
+        assert adapter.preset_for(preset) is not None, preset

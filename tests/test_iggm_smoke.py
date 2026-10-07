@@ -613,6 +613,26 @@ class TestFormRenders:
         ):
             assert f'name="{field}"' in body
 
+    def test_preset_radios_are_required(self, app_with_iggm_flag, monkeypatch):
+        """The mode group is ``required``, so a clone cannot post no mode.
+
+        ``templates/tools/_prefill.html::pre_checked`` leaves the whole group
+        unchecked when the pre-filled value matches no option -- which is what a
+        clone of a run whose mode has since been retired hands it. Without
+        ``required`` that form submits with no preset key at all and
+        ``tools/iggm/__init__.py::validate`` applies its silent default, so the
+        user pays for a mode they never chose.
+        """
+        _patch_user_ctx(monkeypatch)
+        client = app_with_iggm_flag.test_client()
+        _login_session(client)
+
+        body = client.get("/tools/iggm").get_data(as_text=True)
+        for preset in ("complex_prediction", "cdr_design", "fr_design"):
+            assert (
+                f'name="preset" value="{preset}" data-iggm-preset required' in body
+            ), preset
+
     def test_form_404s_when_flag_off(self, app_with_iggm_flag, monkeypatch):
         """With the flag removed the route must 404 — launch-gate contract."""
         monkeypatch.delenv("FLAG_TOOL_IGGM", raising=False)
