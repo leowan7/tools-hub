@@ -652,8 +652,14 @@ def register_google_user(
             classification=classification.value,
         )
     try:
+        # google_linked lets blueprints/auth.py google_callback sign this
+        # account in directly next time.
         response = client.auth.admin.create_user(
-            {"email": email, "email_confirm": True}
+            {
+                "email": email,
+                "email_confirm": True,
+                "app_metadata": {"google_linked": True},
+            }
         )
         user_id = getattr(getattr(response, "user", None), "id", None)
     except Exception:

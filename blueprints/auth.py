@@ -168,6 +168,11 @@ def login():
 
     success, error_msg, user_id = verify_login(email, password)
     if success:
+        # Set by google_callback when Google's verified email matched this
+        # account: the password now proves ownership, so connect Google.
+        link = session.pop("google_link", None)
+        if link and user_id and link.get("user_id") == user_id:
+            _mark_google_linked(user_id)
         _start_session(email, user_id)
         return redirect(next_url)
 
@@ -380,9 +385,9 @@ def signup():
 
 # ------------------------------------------------------------------
 # Continue with Google: OAuth 2.0 authorization code flow with PKCE.
-# Supabase's own Google provider is not used because new-user signups
-# are switched off in the Supabase dashboard; new accounts are created
-# with the service-role admin API, as /signup does.
+# Supabase's own Google provider is not used because "Allow new users to
+# sign up" is off in the Supabase dashboard (docs/SESSION-HANDOFF-2026-05-13.md);
+# new accounts are created with the service-role admin API, as /signup does.
 # ------------------------------------------------------------------
 
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -421,6 +426,18 @@ def _is_banned(user: dict) -> bool:
     if until.tzinfo is None:
         until = until.replace(tzinfo=timezone.utc)
     return until > datetime.now(timezone.utc)
+
+
+def _mark_google_linked(user_id: str) -> None:
+    """Set ``app_metadata.google_linked`` so Google signs this account in directly."""
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    try:
+        get_service_client().auth.admin.update_user_by_id(
+            user_id, {"app_metadata": {"google_linked": True}}
+        )
+    except Exception:
+        logger.warning("could not record google_linked for %s", user_id, exc_info=True)
 
 
 def _google_refused(message: str, next_url: str):
@@ -521,12 +538,30 @@ def google_callback():
         return _google_refused(_GOOGLE_UNAVAILABLE, next_url)
 
     if user is not None:
-        # An existing password account is signed in by its verified Google
-        # email (intended). Password login refuses a banned user; so does this.
+        # GoTrue's password grant refuses a banned user inside verify_login;
+        # this path never calls it, so it checks banned_until itself.
         if _is_banned(user):
             return _google_refused("This account can't sign in.", next_url)
-        _start_session(user.get("email") or email, user["id"], {"method": "google"})
-        return redirect(next_url)
+        if (user.get("app_metadata") or {}).get("google_linked"):
+            _start_session(user.get("email") or email, user["id"], {"method": "google"})
+            return redirect(next_url)
+        # /signup creates accounts pre-confirmed without proving the address
+        # (register_user passes email_confirm=True), so anyone could have
+        # registered this email with their own password. Ask for that password
+        # once; login() connects Google when it succeeds.
+        session["google_link"] = {"user_id": user["id"]}
+        return render_template(
+            "login.html",
+            mode="signin",
+            error=None,
+            email=user.get("email") or email,
+            next=next_url,
+            success_msg=(
+                "You already have an account with this email. Sign in with its "
+                "password once to connect Google; after that, Continue with "
+                "Google signs you straight in."
+            ),
+        )
 
     ip = _client_ip()
     user_agent = request.headers.get("User-Agent")

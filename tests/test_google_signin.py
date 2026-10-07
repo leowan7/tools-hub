@@ -7,6 +7,7 @@ lookup / creation helpers are all mocked; nothing leaves the process.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -14,11 +15,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from shared.auth import SignupResult, find_auth_user_by_email
+from shared.auth import SignupResult, find_auth_user_by_email, register_google_user
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 CLIENT_ID = "test-client.apps.googleusercontent.com"
+LINKED = {"id": "old-1", "email": "ada@example.org", "app_metadata": {"google_linked": True}}
 
 
 @pytest.fixture
@@ -50,8 +52,8 @@ def _id_token(**overrides) -> str:
     return f"e30.{body}.sig"
 
 
-def _start(client, next_value=None) -> str:
-    """Hit /auth/google and return the state it sent to Google."""
+def _start(client, next_value=None) -> tuple[str, str]:
+    """Hit /auth/google and return the (state, code_challenge) it sent to Google."""
     query = {"next": next_value} if next_value else {}
     resp = client.get("/auth/google", query_string=query)
     assert resp.status_code == 302
@@ -63,7 +65,7 @@ def _start(client, next_value=None) -> str:
     assert params["redirect_uri"] == ["https://tools.example.test/auth/google/callback"]
     assert params["code_challenge_method"] == ["S256"]
     assert params["scope"] == ["openid email profile"]
-    return params["state"][0]
+    return params["state"][0], params["code_challenge"][0]
 
 
 def _callback(client, state, *, id_token=None, user=None, register=None):
@@ -84,7 +86,7 @@ def _event_types(mocks) -> list[str]:
 
 
 def test_new_user_is_created_and_signed_in(client):
-    state = _start(client)
+    state, challenge = _start(client)
     created = SignupResult(
         success=True, user_id="new-1", classification="personal", signup_quality="personal"
     )
@@ -93,8 +95,10 @@ def test_new_user_is_created_and_signed_in(client):
     assert resp.status_code == 302 and resp.headers["Location"] == "/"
     mocks.register.assert_called_once()
     assert mocks.register.call_args.args == ("ada@example.org",)
-    # The PKCE verifier from the start step went to Google's token endpoint.
-    assert mocks.post.call_args.kwargs["data"]["code_verifier"]
+    # The verifier sent to the token endpoint is the one behind the challenge.
+    verifier = mocks.post.call_args.kwargs["data"]["code_verifier"]
+    digest = hashlib.sha256(verifier.encode()).digest()
+    assert base64.urlsafe_b64encode(digest).rstrip(b"=").decode() == challenge
     assert _event_types(mocks) == ["signup_completed", "login"]
     assert mocks.log_event.call_args_list[0].kwargs["props"]["method"] == "google"
     assert mocks.emit.call_args.kwargs["properties"]["method"] == "google"
@@ -104,9 +108,9 @@ def test_new_user_is_created_and_signed_in(client):
         assert "google_oauth" not in sess
 
 
-def test_existing_user_is_signed_in(client):
-    state = _start(client)
-    resp, mocks = _callback(client, state, user={"id": "old-1", "email": "ada@example.org"})
+def test_linked_user_is_signed_in(client):
+    state, _ = _start(client)
+    resp, mocks = _callback(client, state, user=LINKED)
 
     assert resp.status_code == 302
     mocks.register.assert_not_called()
@@ -116,11 +120,42 @@ def test_existing_user_is_signed_in(client):
         assert sess["user_id"] == "old-1"
 
 
+def test_unlinked_account_needs_its_password_once(client):
+    """A matching email alone does not sign in: /signup never proves the address."""
+    state, _ = _start(client, next_value="/tools")
+    resp, _ = _callback(client, state, user={"id": "old-1", "email": "ada@example.org"})
+    assert resp.status_code == 200 and b"Sign in with its" in resp.data
+    with client.session_transaction() as sess:
+        assert "user_id" not in sess
+
+    service = MagicMock()
+    with patch("shared.auth.verify_login", return_value=(True, None, "old-1")), \
+            patch("shared.credits.get_service_client", return_value=service):
+        resp = client.post(
+            "/login", data={"email": "ada@example.org", "password": "pw", "next": "/tools"}
+        )
+    assert resp.headers["Location"] == "/tools"
+    service.auth.admin.update_user_by_id.assert_called_once_with(
+        "old-1", {"app_metadata": {"google_linked": True}}
+    )
+    with client.session_transaction() as sess:
+        assert sess["user_id"] == "old-1" and "google_link" not in sess
+
+
+def test_password_login_to_another_account_does_not_link(client):
+    state, _ = _start(client)
+    _callback(client, state, user={"id": "old-1", "email": "ada@example.org"})
+    service = MagicMock()
+    with patch("shared.auth.verify_login", return_value=(True, None, "other-2")), \
+            patch("shared.credits.get_service_client", return_value=service):
+        client.post("/login", data={"email": "bob@example.org", "password": "pw"})
+    service.auth.admin.update_user_by_id.assert_not_called()
+
+
 def test_banned_user_is_refused(client):
-    state = _start(client)
+    state, _ = _start(client)
     resp, _ = _callback(
-        client, state,
-        user={"id": "old-1", "email": "ada@example.org", "banned_until": "2999-01-01T00:00:00Z"},
+        client, state, user={**LINKED, "banned_until": "2999-01-01T00:00:00Z"}
     )
     assert resp.status_code == 200 and b"can&#39;t sign in" in resp.data
     with client.session_transaction() as sess:
@@ -128,7 +163,7 @@ def test_banned_user_is_refused(client):
 
 
 def test_unverified_email_is_refused(client):
-    state = _start(client)
+    state, _ = _start(client)
     resp, mocks = _callback(client, state, id_token=_id_token(email_verified=False))
 
     assert resp.status_code == 200 and b"has not verified" in resp.data
@@ -139,7 +174,7 @@ def test_unverified_email_is_refused(client):
 
 def test_state_mismatch_is_refused(client):
     _start(client)
-    resp, mocks = _callback(client, "forged", user={"id": "old-1", "email": "ada@example.org"})
+    resp, mocks = _callback(client, "forged", user=LINKED)
 
     assert resp.status_code == 200 and b"did not complete" in resp.data
     mocks.post.assert_not_called()
@@ -148,14 +183,14 @@ def test_state_mismatch_is_refused(client):
 
 
 def test_next_survives_the_round_trip(client):
-    state = _start(client, next_value="/tools/bindcraft?x=1")
-    resp, _ = _callback(client, state, user={"id": "old-1", "email": "ada@example.org"})
+    state, _ = _start(client, next_value="/tools/bindcraft?x=1")
+    resp, _ = _callback(client, state, user=LINKED)
     assert resp.headers["Location"] == "/tools/bindcraft?x=1"
 
 
 def test_offsite_next_falls_back(client):
-    state = _start(client, next_value="//evil.example")
-    resp, _ = _callback(client, state, user={"id": "old-1", "email": "ada@example.org"})
+    state, _ = _start(client, next_value="//evil.example")
+    resp, _ = _callback(client, state, user=LINKED)
     assert resp.headers["Location"] == "/"
 
 
@@ -170,6 +205,18 @@ def test_hidden_and_404_without_env(monkeypatch, client):
     assert b"Continue with Google" not in client.get("/signup").data
     assert client.get("/auth/google").status_code == 404
     assert client.get("/auth/google/callback").status_code == 404
+
+
+def test_google_account_is_created_linked():
+    service = MagicMock()
+    service.auth.admin.create_user.return_value = SimpleNamespace(user=SimpleNamespace(id="u1"))
+    with patch("shared.credits.get_service_client", return_value=service), \
+            patch("shared.auth._insert_user_profile") as profile:
+        result = register_google_user("ada@gmail.com", ip=None, user_agent=None)
+    assert result.success and result.signup_quality == "personal"
+    payload = service.auth.admin.create_user.call_args.args[0]
+    assert payload["app_metadata"] == {"google_linked": True} and "password" not in payload
+    assert profile.call_args.kwargs["purpose"] is None
 
 
 def test_lookup_matches_exactly_and_pages():
