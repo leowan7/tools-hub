@@ -13,15 +13,17 @@
 --     'hold_release' crediting back what the debits took above the final cost.
 -- A lineage is settled once it has a child that is not a 'run_debit'.
 --
--- Every function below takes the user_wallets row lock before reading the
+-- Every function below takes the user_wallets row lock before summing the
 -- ledger, as credit_wallet does (0018_wallet_rpcs.sql), and recomputes the
--- balance from the ledger.
+-- balance from the ledger. debit_live_run and settle_live_run read the anchor
+-- row first, to find the user to lock.
 --
 -- The view compares kind::text, not the enum: the SQL editor and the supabase
 -- CLI run this file as one transaction, and an enum value added in a
 -- transaction cannot be used as an enum literal in that same transaction.
--- scripts/check_live_charging_local_pg.py applies this file to a local
--- Postgres and exercises every function.
+-- scripts/check_live_charging_local_pg.py exercises every function on the
+-- local Supabase stack; it does not apply this file (run
+-- `supabase db reset --local` first).
 --
 -- Apply via the Supabase SQL editor IMMEDIATELY BEFORE deploying the matching
 -- app change.
@@ -194,7 +196,7 @@ BEGIN
             'balance_after', v_balance);
     END IF;
 
-    IF v_final >= v_taken THEN
+    IF v_final > 0 AND v_final >= v_taken THEN
         v_rest := v_final - v_taken;
         v_charge := GREATEST(LEAST(v_rest, v_balance), 0);
         v_absorbed := v_rest - v_charge;
@@ -234,7 +236,9 @@ BEGIN
             (v_hold.user_id, 'hold_release', v_released, v_balance + v_released,
              v_hold.tool_slug, v_hold.job_id, p_gpu_seconds, p_gpu_class,
              p_hold_tx_id, p_failure_reason,
-             'live run: returned what the debits took above the final cost');
+             CASE WHEN v_released = 0
+                  THEN 'live run: closed with nothing taken and nothing owed'
+                  ELSE 'live run: returned what the debits took above the final cost' END);
         v_balance := v_balance + v_released;
     END IF;
 

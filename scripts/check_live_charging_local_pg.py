@@ -281,6 +281,16 @@ def scenario_refund() -> None:
     view = SVC.table("wallet_30d_spend").select("spent_usd_30d").eq("user_id", uid).single().execute().data
     check("a refunded run spends 0 in the 30-day view", D(str(view["spent_usd_30d"])) == 0, view)
     invariant(uid, "refund")
+    uid3 = new_user("10")
+    anchor3 = wallet.open_live_run(uid3, "af2")
+    r = wallet.settle_live_run(anchor3, 0, "A10G", {}, failure_reason="preflight", refund=True)
+    closers = children(anchor3)
+    check("a refund with nothing taken writes one $0 'hold_release' and no 'charge'",
+          r["charged"] == 0 and [(c["kind"], D(str(c["amount_usd"])), c["notes"]) for c in closers]
+          == [("hold_release", D("0"), "live run: closed with nothing taken and nothing owed")], closers)
+    view = SVC.table("wallet_30d_spend").select("charges_30d").eq("user_id", uid3).single().execute().data
+    check("it adds no charge to the 30-day view", view["charges_30d"] == 0, view)
+    invariant(uid3, "refund, nothing taken")
     uid2 = new_user("10")
     anchor2 = wallet.open_live_run(uid2, "colabfold")
     want = wallet.live_due_usd("colabfold", 600, "A10G", {})

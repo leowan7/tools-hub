@@ -435,7 +435,7 @@ Phase 2 was first built on option (i′). Citations in this section, down to "Ou
   - So a user with auto-reload gets no reload and no notice for 24h after a stop.
 - **Same gap elsewhere.** The `sweep-stuck` service has the same gap. It also has no Modal tokens.
 - **Not new.** The cron already settles campaign children through `complete_job` (`shared/compute_campaigns.py::reconcile_campaign_children`). Each child carries its own hold (`child_inputs["_wallet"]` in `shared/compute_campaigns.py`), so a settled child reaches `auto_reload_if_needed` through `shared/wallet.py::settle_hold` and `::_post_settle_hooks`. This is from reading the code; no run has shown it.
-- **Added (2026-10-06).** Leo added `STRIPE_SECRET_KEY` to `tools-hub-campaigns-tick`. The Railway UI lists it and the service redeployed; this is as reported by the hub lead and was not re-checked here. Whether its value matches the web service's is UNVERIFIED. It is off the pre-merge list.
+- **Added (2026-10-06).** Leo added `STRIPE_SECRET_KEY` to `tools-hub-campaigns-tick`. The hub lead reported that the Railway UI lists it and that the service redeployed. A read-only `railway variables --service tools-hub-campaigns-tick --json`, names only, on 2026-10-06 lists the name; the redeploy was not re-checked. Whether its value matches the web service's is UNVERIFIED. It is off the pre-merge list.
 - **No setting was changed.**
 
 ### Out of scope
@@ -669,6 +669,7 @@ What the migration does:
 Where the build departs from the plan above:
 
 - **`settle_live_run` takes no `p_notes`.** The SQL writes its own note on each closing row (`supabase/migrations/0045_live_run_debits.sql`, `settle_live_run`).
+- **A $0 final with nothing taken closes as a $0 `hold_release`, not a $0 `charge`.** A run refunded before its first debit therefore adds no charge to the 30-day view (`settle_live_run`'s `v_final > 0` test; `scripts/check_live_charging_local_pg.py`, "a refund with nothing taken writes one $0 'hold_release' and no 'charge'").
 - **The view compares `kind::text`.** An enum value added in a transaction cannot be used as an enum literal in that same transaction, and the SQL editor and the CLI run the file as one (the header of 0045).
 - **One function meters and stops.** `shared/jobs.py::meter_live_runs` replaces `stop_wallet_limited_jobs`. Each tick it debits every live run, oldest first, and stops a run whose debit came back short. The stop path itself is the #416 one.
 - **The Python `debit_live_run` takes the user id.** It runs `_post_settle_hooks` (auto-reload, low-balance email) for the amount a debit took, without a second read (`shared/wallet.py::debit_live_run`).
@@ -681,9 +682,10 @@ Where the build departs from the plan above:
 
 **Local Postgres results** (`scripts/check_live_charging_local_pg.py` on the local stack at migration 0045, 2026-10-06):
 
-- 60 of 60 checks pass.
-- Three mutants of the SQL were each caught:
+- 63 of 63 checks pass.
+- Four mutants of the SQL were each caught:
   - the debit as an increment instead of a target: 15 checks fail;
   - the expiry without its `run_debit` exclusion: 3 fail;
   - `debit_live_run` without the wallet lock, with a pause between its reads and its insert: 10 fail. One race left the ledger summing to -3.0 against a balance of 7.5.
+  - `settle_live_run` without its `v_final > 0` test, so a refund with nothing taken writes a $0 `charge`: 2 fail.
 - A scratch script applied each mutated 0045 to the local database, ran the harness, then re-applied the real file. The mutants are not in the harness.

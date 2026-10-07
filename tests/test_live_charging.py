@@ -261,7 +261,7 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
         "shared.wallet_guard.open_live_run", return_value="anchor-1",
     ), patch("shared.wallet_guard.wallet_reserve_hold", return_value="tx-1"), patch(
         "shared.wallet_guard.wallet_release_hold",
-    ):
+    ), patch("shared.idempotency.get_service_client", return_value=None):
         client = flask_app.test_client()
         with client.session_transaction() as sess:
             sess["user_email"] = "u@example.com"
