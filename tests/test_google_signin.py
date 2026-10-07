@@ -182,6 +182,13 @@ def test_state_mismatch_is_refused(client):
         assert "user_id" not in sess
 
 
+def test_non_ascii_state_is_refused_not_a_500(client):
+    _start(client)
+    resp, mocks = _callback(client, "ü", user=LINKED)
+    assert resp.status_code == 200 and b"did not complete" in resp.data
+    mocks.post.assert_not_called()
+
+
 def test_next_survives_the_round_trip(client):
     state, _ = _start(client, next_value="/tools/bindcraft?x=1")
     resp, _ = _callback(client, state, user=LINKED)
@@ -217,6 +224,14 @@ def test_google_account_is_created_linked():
     payload = service.auth.admin.create_user.call_args.args[0]
     assert payload["app_metadata"] == {"google_linked": True} and "password" not in payload
     assert profile.call_args.kwargs["purpose"] is None
+
+
+def test_create_race_says_the_account_exists():
+    service = MagicMock()
+    service.auth.admin.create_user.side_effect = Exception("User already registered")
+    with patch("shared.credits.get_service_client", return_value=service):
+        result = register_google_user("ada@gmail.com", ip=None, user_agent=None)
+    assert not result.success and result.failure_code == "existing_account"
 
 
 def test_lookup_matches_exactly_and_pages():

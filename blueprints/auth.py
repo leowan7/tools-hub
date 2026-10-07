@@ -487,7 +487,9 @@ def google_callback():
     if (
         not code
         or not pending.get("state")
-        or not hmac.compare_digest(request.args.get("state", ""), pending["state"])
+        or not hmac.compare_digest(
+            request.args.get("state", "").encode(), pending["state"].encode()
+        )
     ):
         return _google_refused(_GOOGLE_FAILED, next_url)
 
@@ -538,8 +540,8 @@ def google_callback():
         return _google_refused(_GOOGLE_UNAVAILABLE, next_url)
 
     if user is not None:
-        # GoTrue's password grant refuses a banned user inside verify_login;
-        # this path never calls it, so it checks banned_until itself.
+        # This path never calls verify_login (the password grant), so it
+        # checks banned_until itself.
         if _is_banned(user):
             return _google_refused("This account can't sign in.", next_url)
         if (user.get("app_metadata") or {}).get("google_linked"):

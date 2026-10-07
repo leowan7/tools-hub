@@ -636,7 +636,7 @@ def register_google_user(
                 "We can't accept signups from temporary email services. "
                 "Please use your work, school, or personal email."
                 if classification == EmailClass.DISPOSABLE
-                else "Please use a valid email address."
+                else "Please enter a valid email address."
             ),
             rejection_reason=classification.value,
             failure_code=classification.value,
@@ -662,7 +662,20 @@ def register_google_user(
             }
         )
         user_id = getattr(getattr(response, "user", None), "id", None)
-    except Exception:
+    except Exception as exc:
+        low = str(exc).lower()
+        # Same test as register_user. Reached when find_auth_user_by_email
+        # missed an existing row, e.g. two first sign-ins racing.
+        if "already registered" in low or "already exists" in low or "duplicate" in low:
+            return SignupResult(
+                success=False,
+                error_message=(
+                    "An account with this email already exists. Try Continue with "
+                    "Google again, or sign in with your password."
+                ),
+                failure_code="existing_account",
+                classification=classification.value,
+            )
         logger.warning("Supabase create_user failed for a Google sign-up", exc_info=True)
         user_id = None
     if not user_id:
