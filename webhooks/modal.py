@@ -311,11 +311,14 @@ def _handle_heartbeat() -> Any:
     if job is None:
         return jsonify({"status": "ignored", "reason": "unknown job"}), 200
 
-    # On the first heartbeat, transition pending -> running so the UI
-    # knows the pipeline is actually executing (vs. queued in Modal).
-    # Re-fetch so started_at is populated for the mid-run monitor below.
-    if job.status == "pending":
-        mark_running(job.id)
+    # The first heartbeat (no ``inputs._progress`` yet) stamps started_at,
+    # also on a row a status poll already moved to running: the poll reports
+    # running for a call still queued or booting
+    # (gpu/modal_client.py::ModalClient.poll). Re-fetch so started_at is
+    # populated for the mid-run monitor below.
+    first_beat = "_progress" not in (job.inputs or {})
+    if job.status == "pending" or (job.status == "running" and first_beat):
+        mark_running(job.id, allowed_current=("pending", "running"))
         fresh = get_job(job_id)
         if fresh is not None:
             job = fresh

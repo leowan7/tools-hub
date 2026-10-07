@@ -246,8 +246,8 @@
             </div>
           </div>
         {% elif job.status == 'succeeded' %}
-          <p class="subtitle" style="color: var(--success, #4ade80);">
-            Completed in {{ job.gpu_seconds_used or '—' }} GPU-seconds.
+          <p class="subtitle" style="color: {% if stopped_for_balance %}var(--warning, #fbbf24){% else %}var(--success, #4ade80){% endif %};">
+            {% if stopped_for_balance %}Stopped: your wallet balance reached $0. <a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);">Add funds</a>{% else %}Completed in {{ job.gpu_seconds_used or '—' }} GPU-seconds.{% endif %}
           </p>
         {% elif job.status == 'failed' %}
           <p class="subtitle" style="color: var(--danger, #f87171);">

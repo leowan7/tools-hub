@@ -159,6 +159,17 @@
     </a>
   </p>
 
+  {% if topup_url %}
+    <p style="margin:0 0 1.5rem 0;">
+      <a href="{{ topup_url }}"
+         style="display:inline-block;padding:10px 18px;background:#ffffff;
+                color:#2B9E7E;text-decoration:none;border:1px solid #2B9E7E;
+                border-radius:6px;font-weight:600;">
+        Add funds
+      </a>
+    </p>
+  {% endif %}
+
   {% if next_step_url and next_step_label %}
     <p style="margin:1.25rem 0 0 0;font-size:14px;line-height:1.55;">
       Natural next step: validate the top design with an orthogonal predictor.

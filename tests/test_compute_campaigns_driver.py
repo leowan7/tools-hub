@@ -527,12 +527,13 @@ def test_cancel_campaign(driver_env, monkeypatch):
     import shared.jobs as j
     monkeypatch.setattr(
         j, "cancel_job",
-        lambda job_id, *, user_id, modal_client: (cancelled.append(job_id), (None, None))[1],
+        lambda job_id, *, user_id, modal_client, leave_running_if_cancel_fails: (
+            cancelled.append((job_id, leave_running_if_cancel_fails)), (None, None))[1],
     )
     ok = cancel_campaign("camp-1", "user-1")
     assert ok is True
     assert _campaign_status(client) == "cancelled"
-    assert set(cancelled) == {"j0", "j1"}
+    assert set(cancelled) == {("j0", False), ("j1", False)}
 
 
 # ---------------------------------------------------------------------------
