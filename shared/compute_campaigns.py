@@ -2312,8 +2312,13 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
             # would log an error every tick and leave the row in "running" for
             # good -- _maybe_finalize needs every chunk dispatched, and
             # sweep_paused_campaigns only looks at paused_insufficient_funds.
+            # The states are the ones _maybe_finalize CASes from (:2410), which
+            # are also the ones the cron drives
+            # (cron/tick_campaigns.py::_ACTIVE_STATES), so no state this guard
+            # is reachable in is left behind.
             _finalize_undispatchable(
-                campaign_id, ("funded", "running", "paused_insufficient_funds"),
+                campaign_id,
+                ("funded", "running", "completing", "paused_insufficient_funds"),
             )
             return launched_count
         else:  # "skipped": transient, no row created; retry this index later.

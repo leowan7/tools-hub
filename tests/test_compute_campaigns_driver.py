@@ -345,7 +345,12 @@ def test_drive_finalizes_all_failed(driver_env):
     assert _campaign_status(client) == "failed"
 
 
-def test_drive_finalizes_a_campaign_whose_preset_the_tool_retired(driver_env):
+@pytest.mark.parametrize(
+    "status", ["funded", "running", "completing", "paused_insufficient_funds"]
+)
+def test_drive_finalizes_a_campaign_whose_preset_the_tool_retired(
+    driver_env, status
+):
     """A funded campaign whose mode has been retired closes out, not stalls.
 
     ``drive_campaign`` resumes a stored row and never re-runs
@@ -357,9 +362,16 @@ def test_drive_finalizes_a_campaign_whose_preset_the_tool_retired(driver_env):
     ``_maybe_finalize`` cannot fire while a chunk is undispatched, and
     ``sweep_paused_campaigns`` only looks at paused_insufficient_funds. Without
     the finalize the campaign sits in its entry state for ever.
+
+    Every state the guard is reachable in is covered, because the finalize CASes
+    from a fixed set: ``drive_campaign`` returns early only on the terminal
+    statuses, and ``cron/tick_campaigns.py::_ACTIVE_STATES`` drives all four of
+    these. Nothing writes "completing" today, so that case is a pin, not a
+    reproduction.
     """
     client, state = driver_env
-    row = _seed_campaign(client, total_subjobs=2, requested=24, tool="iggm")
+    row = _seed_campaign(client, total_subjobs=2, requested=24, tool="iggm",
+                         status=status)
     row["preset"] = "inverse_design"
 
     assert drive_campaign("camp-1") == 0
