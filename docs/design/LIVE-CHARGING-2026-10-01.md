@@ -155,7 +155,7 @@ Unknowns behind these figures:
 
 - **Tick interval: UNVERIFIED.** `cron/tick_campaigns.py:15` says "~60-90s". The schedule itself lives in Railway, outside the repo (`blueprints/targets.py:1457-1461`, filed as A46).
 - **Cancel latency: UNVERIFIED.** The call is bounded by `_bounded_modal_call` (`gpu/modal_client.py:602-628`). How fast Modal then stops the container is unmeasured.
-- **Cold start before `started_at`.** Time before `started_at` is not metered. The first heartbeat sets it, and so does a status poll: `blueprints/jobs.py::job_status` calls `mark_running` when the poll says `running`, and `ModalClient.poll` says `running` for any call that has not returned, queued or booting included (`gpu/modal_client.py`, the `except TimeoutError` branch). With the job page closed, the stop is late by the container boot and the extra is absorbed. With it open, queue and boot are metered and the stop is early by that much. When `started_at` is not set, the check falls back to `created_at` (in phase 2, only for a row with a Modal call id; see "Leo, 2026-10-06"). That makes the stop early by the queue and boot time.
+- **Cold start before `started_at`.** Time before `started_at` is not metered. The first heartbeat sets it, and so does a status poll: `blueprints/jobs.py::job_status` calls `mark_running` when the poll says `running`, and `ModalClient.poll` says `running` for any call that has not returned, queued or booting included (`gpu/modal_client.py`, the `except TimeoutError` branch). With the job page closed, the stop is late by the container boot and the extra is absorbed. With it open, queue and boot are metered and the stop is early by that much. When `started_at` is not set, the check falls back to `created_at` (in phase 2, only for a row with a Modal call id; see "Leo, 2026-10-06"). That makes the stop early by the queue and boot time. Superseded on 2026-10-07: see "Metering clock: the first heartbeat (2026-10-07)" at the end.
 
 ---
 
@@ -371,8 +371,9 @@ Phase 2 was first built on option (i′). Citations in this section, down to "Ou
 - **`created_at` fallback: built.** A run with no `started_at` is metered from `created_at` (`shared/jobs.py::stop_wallet_limited_jobs`; `::test_run_with_no_heartbeat_is_metered_from_created_at`). A run that has `started_at` is metered from it as before (`::test_run_keeps_going_while_its_cost_is_under_the_hold`, whose row has a `created_at` days earlier).
   - The trade-off Leo accepted: `created_at` includes Modal queue time and container boot, so such a run can be stopped, and charged its whole hold, before its first design. With a small balance on a cold af2 batch container that is likely.
   - Only a row with a Modal call id falls back. A row with neither `started_at` nor a call id is a submit Modal never acknowledged. The stop leaves it to `sweep-stuck`, which times out a pending row older than `STUCK_PENDING_AGE_MINUTES` (default 30; `cron/sweep_stuck_jobs.py::sweep_stuck_jobs`). `::test_rows_the_stop_never_touches`.
+  - Removed on 2026-10-07. Superseded on 2026-10-07: see "Metering clock: the first heartbeat (2026-10-07)" at the end.
 - **A2 covers every tool's single-job cancel**, as built. Leo's decision; see "A2 is fixed" below.
-- **Queue and boot metered while the job page is open** (§2.3, "Cold start before `started_at`"): known, and out of scope for this PR.
+- **Queue and boot metered while the job page is open** (§2.3, "Cold start before `started_at`"): known, and out of scope for this PR. Superseded on 2026-10-07: see "Metering clock: the first heartbeat (2026-10-07)" at the end.
 - **D1: reversed, later on 2026-10-06.** Leo chose true per-minute deduction, option (ii): nothing set aside, the balance drops while the run goes, and the run stops at $0. See "Option (ii) build plan".
 - **`STRIPE_SECRET_KEY` on the cron:** Leo added it himself. See the Stripe finding below. No setting was changed here.
 
@@ -462,7 +463,7 @@ Leo reversed D1 on 2026-10-06. The cost will come off the balance while the run 
   - Rebuild the finished designs with `job_recovery.reconstruct`.
   - Finish the run as succeeded and partial, with `stop_reason` = `WALLET_STOP_REASON`.
   - Only what triggers the stop changes.
-- **The metering clock.** `started_at`, or `created_at` when the row has a Modal call id (Leo, 2026-10-06).
+- **The metering clock.** `started_at`, or `created_at` when the row has a Modal call id (Leo, 2026-10-06). Superseded on 2026-10-07: see "Metering clock: the first heartbeat (2026-10-07)" at the end.
 - **Existing behaviour.**
   - A2 on every tool's single-job cancel.
   - D9: campaigns are unchanged.
@@ -689,3 +690,16 @@ Where the build departs from the plan above:
   - `debit_live_run` without the wallet lock, with a pause between its reads and its insert: 10 fail. One race left the ledger summing to -3.0 against a balance of 7.5.
   - `settle_live_run` without its `v_final > 0` test, so a refund with nothing taken writes a $0 `charge`: 2 fail.
 - A scratch script applied each mutated 0045 to the local database, ran the harness, then re-applied the real file. The mutants are not in the harness.
+
+### Metering clock: the first heartbeat (2026-10-07)
+
+The meter now starts every live run at one moment, the first heartbeat, whether or not the job page is open. This replaces the `created_at` fallback (Leo, 2026-10-06) and closes "Queue and boot metered while the job page is open".
+
+- **Why the page mattered.** `ModalClient.poll` reports `running` for any call that has not returned, queued or booting included (`gpu/modal_client.py`, the `except TimeoutError` branch). `blueprints/jobs.py::job_status` then calls `mark_running`, which stamped `started_at` at queue time on a run whose page was open.
+- **The first heartbeat stamps `started_at`.** A heartbeat that finds no `inputs._progress` restamps `started_at`, also on a row the poll already moved to running (`webhooks/modal.py::_handle_heartbeat`). The poll still moves the row to running.
+- **The meter waits for it.** A run is debited and stopped only once `inputs._progress` is written (`shared/jobs.py::meter_live_runs`). Before that it is neither, so a stop never bills queue or boot, and a run is never stopped with 0 designs for its time in the queue (`tests/test_live_charging.py::test_run_before_its_first_heartbeat_is_not_metered`, `::test_debits_start_at_the_first_heartbeat_whether_or_not_the_page_is_open`).
+- **The trade-off.** A live run whose heartbeats are all lost is never debited while it runs. It settles once at the end: on its own runtime when it finishes (`shared/jobs.py::complete_job` reads `runtime_seconds` from the result), clamped to the tool's cap (`shared/wallet.py::live_due_usd`), and what the balance does not cover is absorbed (`settle_live_run` in `supabase/migrations/0045_live_run_debits.sql`).
+- **A cancel bills from the same moment.** The heartbeat hands the mid-run monitor the seconds since `started_at` (`webhooks/modal.py::_elapsed_running_seconds`), so those seconds now start at the first heartbeat too.
+- **Side effects.**
+  - The jobs table shows a running job's runtime as now minus `started_at` (`blueprints/jobs.py::_jobs_table_cells`), so on a page-open run it restarts from zero at the first heartbeat. The job page's time-remaining estimate also reads `started_at` (`renderEta` in `templates/job_detail.html`).
+  - `sweep-stuck` times out a running row by `started_at` (`cron/sweep_stuck_jobs.py::sweep_stuck_jobs`), so a page-open run gets its queue and boot time back before it is timed out.

@@ -1611,15 +1611,20 @@ def set_modal_call(job_id: str, function_call_id: str) -> bool:
 _NON_TERMINAL: tuple[str, ...] = ("pending", "running")
 
 
-def mark_running(job_id: str) -> bool:
-    """Transition pending -> running. No-op if already past pending."""
+def mark_running(
+    job_id: str, *, allowed_current: tuple[str, ...] = ("pending",),
+) -> bool:
+    """Move the row to running with ``started_at`` now, from ``allowed_current``.
+
+    The default is a no-op once the row is past pending.
+    """
     return _cas_update(
         job_id,
         {
             "status": "running",
             "started_at": _now_iso(),
         },
-        allowed_current=("pending",),
+        allowed_current=allowed_current,
     )
 
 
@@ -1808,13 +1813,15 @@ def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dic
 
     Live charging, option (ii) in docs/design/LIVE-CHARGING-2026-10-01.md.
     Called once per ``campaigns:tick`` (cron/tick_campaigns.py), oldest run
-    first. Campaign sub-jobs are skipped. A run with no ``started_at`` is
-    metered from ``created_at`` when it has a Modal call id, and skipped when
-    it has none, which leaves a submit Modal never acknowledged to
-    ``sweep-stuck``
-    (tests/test_live_charging.py::test_run_with_no_heartbeat_is_metered_from_created_at,
-    ::test_rows_the_meter_never_touches). ``shared.wallet.live_due_usd`` over
-    the seconds since then is what the run owes; ``debit_live_run`` takes
+    first. Campaign sub-jobs are skipped. A run is metered from
+    ``started_at`` only once a heartbeat has written ``inputs._progress``;
+    the first heartbeat stamps ``started_at``
+    (webhooks/modal.py::_handle_heartbeat). Until then the run is not
+    debited and not stopped, so queue and boot are never billed, whether or
+    not a status poll has already moved the row to running
+    (tests/test_live_charging.py::test_run_before_its_first_heartbeat_is_not_metered).
+    ``shared.wallet.live_due_usd`` over the seconds since ``started_at`` is
+    what the run owes; ``debit_live_run`` takes
     what it owes less what it has taken, as far as the balance goes. When
     that comes back short, the run is stopped: a run with a Modal call id is
     cancelled first, and when the cancel raises or returns ``ok: False`` the
@@ -1855,9 +1862,9 @@ def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dic
                 continue
             if ws.get("live") is not True or not ws.get("hold_tx_id"):
                 continue
-            started = _parse_ts(
-                job.started_at or (job.modal_function_call_id and job.created_at)
-            )
+            if "_progress" not in (job.inputs or {}):
+                continue
+            started = _parse_ts(job.started_at)
             if started is None:
                 continue
             elapsed = max(0, int((now - started).total_seconds()))
