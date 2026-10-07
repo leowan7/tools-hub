@@ -489,8 +489,8 @@ One run will be one lineage under one anchor:
   - Each has `parent_tx_id` = the anchor and a negative amount.
   - There is one for each tick that takes money.
 - **Terminal row.** Written once, by `settle_live_run`. It is one of:
-  - a `charge` for the last part (which can be $0);
-  - a `hold_release` that credits back what was taken, for a refund or an over-take.
+  - a `charge` for the last part (which can be $0), when the final cost is above $0 and at least what was taken;
+  - otherwise a `hold_release` that credits back what was taken above the final cost, for a refund or an over-take. It is $0 when the final cost is $0 and nothing was taken.
 
   An `absorbed_variance` at $0 is added when the balance did not cover the run.
 - **Settled.** A lineage is settled when it has a child that is not a `run_debit`.
@@ -566,7 +566,7 @@ What the migration does:
   - It fires once the balance falls under the user's threshold.
   - It only dispatches the Stripe charge (`"triggered"`). The credit lands later, through the Stripe webhook.
   - So a reload fired in the same tick that comes up short does not save that run (decision 4).
-- **The low-balance email** will fire on the debit that crosses `LOW_BALANCE_EMAIL_THRESHOLD`. It uses the crossing test in `_post_settle_hooks` (`shared/wallet.py:1669`).
+- **The low-balance email** will fire on the debit that crosses `LOW_BALANCE_EMAIL_THRESHOLD`. It uses the crossing test in `shared/wallet.py::_post_settle_hooks`.
 - **Stripe.** The tick will dispatch auto-reloads, so it needs `STRIPE_SECRET_KEY`. See the Stripe finding.
 
 ### Races
@@ -586,7 +586,7 @@ What the migration does:
   - A settle after a debit takes only final − taken.
   - If a tick took more than the final cost, for example because the tick's clock ran ahead of the clock at completion, the settle credits back the difference.
 - **Tick against a user cancel.**
-  - Both end in `complete_job`. Its status compare-and-set (`allowed_current=_NON_TERMINAL`) lets only one of them finish the row.
+  - The tick ends in `complete_job` and a user cancel in `cancel_job`. Each takes the terminal status with a compare-and-set from `_NON_TERMINAL` (`complete_job`; `cancel_job` → `mark_cancelled`), so only one of them finishes the row.
   - `settle_live_run` runs once per lineage.
   - A failed cancel leaves the run going, and still debiting (A2).
 - **A repeated debit.** No double charge, because the debit is a target (above).
@@ -595,7 +595,7 @@ What the migration does:
 ### Refunds
 
 - `_settle_wallet_hold_for_completed_job` will send a live run (`_wallet.live`) to `settle_live_run`.
-- **Refunded classes.** A run that ends in `_REFUNDED_FAILURE_CLASSES` (`shared/jobs.py:760`) passes final = 0. Everything taken comes back as one `hold_release`.
+- **Refunded classes.** A run that ends in a class in `shared/jobs.py::_REFUNDED_FAILURE_CLASSES` passes final = 0. Everything taken comes back as one `hold_release`.
 - **Zero-cost arms.** The zero-consumption cancel and the legacy no-compute arms pass 0 too.
 - **Billed runs** pass the metered cost, capped at the tool's cap.
 

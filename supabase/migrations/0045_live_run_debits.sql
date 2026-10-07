@@ -8,9 +8,10 @@
 --   * one 'run_debit' row (new kind, negative amount) per tick that takes money,
 --     written by debit_live_run with parent_tx_id = the anchor;
 --   * one terminal row written by settle_live_run: a 'charge' (can be 0) when
---     the final cost is at least what the debits took, plus an
---     'absorbed_variance' at 0 when the balance did not cover it; or a
---     'hold_release' crediting back what the debits took above the final cost.
+--     the final cost is above 0 and at least what the debits took, plus an
+--     'absorbed_variance' at 0 when the balance did not cover it; otherwise a
+--     'hold_release' crediting back what the debits took above the final cost
+--     (0 when the final cost is 0 and nothing was taken).
 -- A lineage is settled once it has a child that is not a 'run_debit'.
 --
 -- Every function below takes the user_wallets row lock before summing the
