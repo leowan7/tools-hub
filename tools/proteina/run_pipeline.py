@@ -3485,16 +3485,21 @@ DESIGN_SUBPROCESS_TIMEOUT_S = _design_timeout_s()
 # which no measurement in this repo covers FOR PROTEINA (other tools carry
 # one — gpu/modal_client.py:297, :232 — proteina does not), so the figure
 # above is a floor rather than an estimate. Leo approved roughly
-# 10-20% more GPU per run for this on 2026-10-08, and the floor lands either
-# side of that band depending on the plan, so the direction matters: against
-# that 673 s run one extra chunk is 54.8/673 = +8.1%, which is BELOW the band
-# and not the bottom of it; two extra is +16.3%, inside it; and the three
-# extra a 4-chunk plan pays is +24.4%, ABOVE it. A hub shard plans 2 chunks,
-# so every hub run sits below the band on this floor; only the 64-design
-# ``shard_driver`` path plans 4. Leo ruled on 2026-10-08 to ship as built and
-# accept the 4-chunk overhead on that path. Whatever the unmeasured model
-# load really costs is added on top of each of those figures, which is the
-# only thing that could take a hub run above the band.
+# 10-20% more GPU per run for this on 2026-10-08 (both of his decisions named
+# in this block reached this session relayed by the hub lead, and nothing here
+# verified them independently), and the floor lands either side of that band
+# depending on the plan, so the direction matters: against that 673 s run one
+# extra chunk is 54.8/673 = +8.1%, which is BELOW the band and not the bottom
+# of it; two extra is +16.3%, inside it; and the three extra a 4-chunk plan
+# pays is +24.4%, ABOVE it. A hub shard plans 2 chunks, so every hub run sits
+# below the band on this floor; only the 64-design ``shard_driver`` path plans
+# 4. Leo ruled on 2026-10-08 to ship as built and accept the 4-chunk overhead
+# on that path. Every figure above counts the 54.8 s fixed cost and NOTHING
+# ELSE, so each is a floor: a per-invocation model load this repo does not
+# measure for proteina is added on top, and so is any other per-chunk overhead
+# nothing here measures either (the output isolation move, process start,
+# config parse). A hub run is therefore below the band on this floor alone and
+# can still land inside or above it.
 #
 # THE DEFAULT IS TWO CHUNKS FOR A HUB SHARD, which is pinned at nsamples=4 x
 # replicas=2 (``tools/proteina/__init__.py`` _SHARD_NSAMPLES/_SHARD_REPLICAS,
