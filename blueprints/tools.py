@@ -841,17 +841,21 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
     # A ColabFold multimer is stored as ONE record, headers joined on "_" and
     # chains on ":" (tools/colabfold/__init__.py:226-227), and validate()
     # refuses ":" in a pasted record (tools/colabfold/__init__.py:185). Split
-    # it back into one record per chain. The header is split into chain names
-    # only when it has exactly the n-1 underscores the join added; with any
-    # other count the original names cannot be told apart, so the chains get
-    # the parser's default names (:93) and the resubmitted header can differ.
+    # it back into one record per chain. The header is split at its first n-1
+    # underscores, so the pieces re-join to it and the clone resubmits the same
+    # fasta_text, unless the parser (:93) strips or renames a blank piece. A
+    # header with fewer underscores gets that parser's default names.
+    # ponytail: a chain name holding "_" is shown cut at the wrong underscore
+    # (">heavy" / ">chain_light_chain"), because the stored row no longer says
+    # which underscores the join added. Storing the names in validate() is the
+    # upgrade; until then exact inputs win over readable labels.
     # Overwritten, not setdefault: stored key and field share one name.
     # tests/test_clone_prefill_restore.py::test_colabfold_multimer_clone_resubmits
     if slug == "colabfold" and isinstance(pre_fill.get("fasta_text"), str):
         header, _, seq = pre_fill["fasta_text"].partition("\n")
         chains = "".join(seq.split()).split(":")
         if header.startswith(">") and len(chains) > 1:
-            names = header[1:].split("_")
+            names = header[1:].split("_", len(chains) - 1)
             if len(names) != len(chains):
                 names = [f"chain_{i + 1}" for i in range(len(chains))]
             pre_fill["fasta_text"] = "\n".join(
