@@ -5,7 +5,8 @@ leaf module so the ``tools`` blueprint (which owns ``/tools/<tool>/submit``)
 can import ``requires_wallet`` at module scope instead of ``from app import``
 — the keystone that lets that route leave ``app.py`` without an import cycle.
 
-The decorator places a cushioned hold, stashes ``g.wallet_hold_tx_id`` for the
+The decorator opens a $0 live-run anchor on a live-charging tier and places a
+cushioned hold otherwise, stashes ``g.wallet_hold_tx_id`` for the
 handler, and auto-releases the hold on any early-return or exception before the
 wrapped view sets ``g.wallet_hold_consumed = True``. That behaviour was
 byte-identical to the previous in-``app`` definition until a zero estimate
@@ -27,13 +28,41 @@ from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
     get_or_create_wallet,
+    open_live_run,
     release_hold as wallet_release_hold,
     reserve_hold as wallet_reserve_hold,
     wallet_preflight,
 )
-from shared.wallet_estimates import cushioned_hold_usd, estimated_cost_for_tool
+from shared.wallet_estimates import (
+    cushioned_hold_usd,
+    estimated_cost_for_tool,
+)
 
 logger = logging.getLogger(__name__)
+
+REASON_WALLET_EMPTY = "wallet_empty"
+
+# Live charging (docs/design/LIVE-CHARGING-2026-10-01.md, option (ii)) is on
+# only for the tiers that upload each design mid-run, so a hub-side stop keeps
+# the designs already finished. Pinned by
+# tests/test_live_charging.py::test_live_tools_upload_each_design_mid_run and
+# ::test_batch_records_reach_the_container_only_on_the_batch_preset.
+_LIVE_ALL_PRESETS = frozenset({"boltz2"})
+_LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
+
+
+def live_charging_enabled(tool_slug: str, params: dict) -> bool:
+    if tool_slug in _LIVE_ALL_PRESETS:
+        return True
+    return (
+        tool_slug in _LIVE_BATCH_ONLY
+        and str(params.get("preset") or "").strip() == "batch"
+    )
+
+
+def _balance(user_id: str) -> Decimal:
+    wallet = get_or_create_wallet(user_id) or {}
+    return Decimal(str(wallet.get("balance_usd") or 0))
 
 
 def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
@@ -228,7 +257,9 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             pre = wallet_preflight(
                 user_id, resolved_slug, estimate, params
             )
-            if not pre.allow and pre.reason == REASON_INSUFFICIENT and not free_run:
+            live = not free_run and live_charging_enabled(resolved_slug, params)
+            if (not pre.allow and pre.reason == REASON_INSUFFICIENT
+                    and not free_run and not live):
                 # Short on the point estimate means short on the hold too, and
                 # the hold is what must fit (reserve_hold below), so the gate's
                 # reason is decided on it.
@@ -237,7 +268,7 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                     max(estimate, cushioned_hold_usd(user_id, resolved_slug, params)),
                     params,
                 )
-            if not pre.allow:
+            if not pre.allow and not (live and pre.reason == REASON_INSUFFICIENT):
                 return _render_topup_gate(
                     tool_slug=resolved_slug,
                     reason=pre.reason,
@@ -258,31 +289,45 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                 g.wallet_tool_slug = resolved_slug
                 return f(*args, **kwargs)
 
-            # Reserve a cushioned hold (usually covers actual, so settle
-            # releases surplus) while ``estimate`` stays the point estimate
-            # shown to the user and stored as the job's forecast price. The
-            # cushion is clamped to the per-tool hard cap, so it never trips
-            # the preflight/SQL cap guards.
-            hold_amount = cushioned_hold_usd(user_id, resolved_slug, params)
-            hold_tx_id = wallet_reserve_hold(
-                user_id, resolved_slug, None, hold_amount, params
-            )
-            if not hold_tx_id:
-                # Lost a concurrent race or fell foul of a SQL guard.
-                # Re-preflight against the HELD (cushioned) amount, not the
-                # point estimate, so the gate's reason matches the hold: a
-                # balance that covers the estimate but not the cushioned
-                # reservation is short. Gating the fallback on the point
-                # estimate would report an "ok" reason, a dead-end where the
-                # form will not submit yet the gate gives no cause.
-                fresh = wallet_preflight(
-                    user_id, resolved_slug, hold_amount, params
+            if live:
+                hold_tx_id = (
+                    open_live_run(user_id, resolved_slug)
+                    if pre.balance_usd > 0 else None
                 )
-                return _render_topup_gate(
-                    tool_slug=resolved_slug,
-                    reason=fresh.reason or REASON_INSUFFICIENT,
-                    form_snapshot=request.form.to_dict() or {},
+                if not hold_tx_id:
+                    empty = pre.balance_usd <= 0 or _balance(user_id) <= 0
+                    return _render_topup_gate(
+                        tool_slug=resolved_slug,
+                        reason=REASON_WALLET_EMPTY if empty else "hold_failed",
+                        form_snapshot=request.form.to_dict() or {},
+                    )
+                g.wallet_live = True
+            else:
+                # Reserve a cushioned hold (usually covers actual, so settle
+                # releases surplus) while ``estimate`` stays the point estimate
+                # shown to the user and stored as the job's forecast price. The
+                # cushion is clamped to the per-tool hard cap, so it never trips
+                # the preflight/SQL cap guards.
+                hold_amount = cushioned_hold_usd(user_id, resolved_slug, params)
+                hold_tx_id = wallet_reserve_hold(
+                    user_id, resolved_slug, None, hold_amount, params
                 )
+                if not hold_tx_id:
+                    # Lost a concurrent race or fell foul of a SQL guard.
+                    # Re-preflight against the HELD (cushioned) amount, not the
+                    # point estimate, so the gate's reason matches the hold: a
+                    # balance that covers the estimate but not the cushioned
+                    # reservation is short. Gating the fallback on the point
+                    # estimate would report an "ok" reason, a dead-end where the
+                    # form will not submit yet the gate gives no cause.
+                    fresh = wallet_preflight(
+                        user_id, resolved_slug, hold_amount, params
+                    )
+                    return _render_topup_gate(
+                        tool_slug=resolved_slug,
+                        reason=fresh.reason or REASON_INSUFFICIENT,
+                        form_snapshot=request.form.to_dict() or {},
+                    )
 
             g.wallet_estimate_usd = estimate
             g.wallet_hold_tx_id = hold_tx_id

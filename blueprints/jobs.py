@@ -51,7 +51,7 @@ from shared.jobs import (
     timeout_stuck_job,
 )
 from shared.pdb_intake import job_preflight_for_display
-from shared.run_notices import run_notices
+from shared.run_notices import run_notices, stopped_for_balance
 from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
@@ -522,12 +522,18 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         ledger = spend.get(_hold_id(job)) if _hold_id(job) else None
         if ledger is not None:
             usd = max(ledger["usd"], 0)
-            # Settled: rendered as the wallet page renders a ledger row
-            # (templates/wallet/transactions.html, display_record_usd). Reserved:
-            # round up, as the unsettled line on the failed-run page does.
-            spend_text = display_record_usd(usd) if ledger["settled"] else "$" + display_cost_usd(usd)
+            wallet = _inputs(job).get("_wallet")
+            live = isinstance(wallet, dict) and wallet.get("live") is True
+            # Settled, or taken so far by a live run: rendered as the wallet
+            # page renders a ledger row (templates/wallet/transactions.html,
+            # display_record_usd). Reserved: round up, as the unsettled line
+            # on the failed-run page does.
+            spend_text = (
+                display_record_usd(usd) if ledger["settled"] or live
+                else "$" + display_cost_usd(usd)
+            )
             if not ledger["settled"]:
-                spend_note = "reserved"
+                spend_note = "so far" if live else "reserved"
             elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
                 # A released hold nets zero, and "$0.00 refunded" reads as a
                 # refund that failed. The job page says the same thing in
@@ -781,6 +787,7 @@ def job_detail(job_id: str):
         failure_money=_failure_money(ctx.user_id, job),
         preflight=job_preflight_for_display(job.inputs),
         run_notices=run_notices(job),
+        stopped_for_balance=stopped_for_balance(job),
     )
 
 
@@ -804,16 +811,21 @@ def _failure_money(user_id: str, job) -> "str | None":  # noqa: ANN001
     if ledger is None:
         return None
 
-    usd, held = max(ledger["usd"], 0), ledger.get("held") or 0
+    live = wallet.get("live") is True
+    usd = max(ledger["usd"], 0)
+    held = (ledger.get("taken") if live else ledger.get("held")) or 0
     if not ledger["settled"]:
+        if live:
+            return f"{_usd(usd)} has been taken for this run so far; it has not been settled yet."
         return f"${display_cost_usd(usd)} is still on hold for this run and has not been settled yet."
+    pot = f"{_usd(held)} taken while this run went" if live else f"{_usd(held)} hold"
     if usd == 0:
         if held > 0:
-            return f"The {_usd(held)} hold was returned to your wallet in full. You were not charged for this run."
+            return f"The {pot} was returned to your wallet in full. You were not charged for this run."
         return "You were not charged for this run."
     if _usd(held) != _usd(usd) and held > usd:
         return (f"You were charged {_usd(usd)} for the GPU time this run used. "
-                f"The rest of the {_usd(held)} hold was returned to your wallet.")
+                f"The rest of the {pot} was returned to your wallet.")
     return f"You were charged {_usd(usd)} for the GPU time this run used."
 
 
@@ -1384,8 +1396,12 @@ def job_refold(job_id: str):
 def job_cancel(job_id: str):
     """User-initiated cancel of a pending/running job.
 
-    Best-effort Modal cancel, wallet hold released, row transitions
-    to status='cancelled'. Safe to call repeatedly — terminal jobs
+    A job with a Modal call has it cancelled first. If that cancel fails
+    the job is left running (``shared.jobs.cancel_job``;
+    tests/test_live_charging.py::test_failed_user_cancel_leaves_the_job_running)
+    and the ``code = 404 if ... else 409`` line below answers 409
+    ``modal_cancel_failed``. Otherwise the wallet hold is settled and the
+    row transitions to status='cancelled'. Safe to call repeatedly — terminal jobs
     return an error_code without mutating state.
     """
     ctx = load_user_context()

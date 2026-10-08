@@ -28,9 +28,8 @@ about: dict = {
     "what_it_is": (
         "Takes an antibody or nanobody and an antigen and does whatever "
         "you need to the pair: redesign the binding loops (the CDRs), "
-        "rebuild or humanise the framework around them, raise affinity "
-        "from a wild-type starting point, recover a sequence from a "
-        "structure, or simply predict how the two dock. All of it is "
+        "rebuild or humanise the framework around them, or simply predict "
+        "how the two dock. All of it is "
         "aimed at the epitope you name, and all of it comes out of one "
         "model rather than a chain of them. IgGM, Wang et al., "
         "<em>ICLR</em> 2025."
@@ -42,8 +41,8 @@ about: dict = {
             "and epitope."
         ),
         (
-            "You want to humanise a framework, or push affinity up from a "
-            "wild-type reference."
+            "You want to humanise a framework, or rebuild it against a new "
+            "antigen."
         ),
         (
             "You want to see how an antibody sits on its antigen before "
@@ -99,9 +98,7 @@ about: dict = {
             "explanation": (
                 "<strong>Complex prediction</strong> folds the complex; "
                 "<strong>CDR design</strong> / <strong>framework redesign</strong> "
-                "redesign masked (X) positions; <strong>affinity maturation</strong> "
-                "generates improved variants from a wild-type reference; "
-                "<strong>inverse design</strong> recovers sequence from the backbone."
+                "redesign masked (X) positions."
             ),
         },
     ],

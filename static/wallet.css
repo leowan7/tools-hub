@@ -179,6 +179,7 @@
   border-color: rgba(43, 158, 126, 0.3);
 }
 .wallet-tx-kind-charge,
+.wallet-tx-kind-run_debit,
 .wallet-tx-kind-refund,
 .wallet-tx-kind-signup_credit_expiry,
 .wallet-tx-kind-absorbed_variance {

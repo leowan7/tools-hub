@@ -110,6 +110,7 @@
             {% for tx in transactions %}
               {% set ann = tx_annotations.get(tx.id) if tx_annotations else none %}
               {% set is_reserved = ann and ann.role == 'hold' %}
+              {% set is_run = ann and ann.role == 'run' %}
               <tr class="{% if is_reserved %}wallet-tx-row-reserved{% endif %}">
                 <td class="wallet-tx-when">
                   {% if tx.created_at %}
@@ -123,6 +124,8 @@
                 <td>
                   {% if is_reserved %}
                     <span class="wallet-tx-kind wallet-tx-kind-hold">reserved</span>
+                  {% elif is_run %}
+                    <span class="wallet-tx-kind wallet-tx-kind-charge">run</span>
                   {% elif ann and ann.role == 'release' %}
                     <span class="wallet-tx-kind wallet-tx-kind-hold_release">reservation returned</span>
                   {% else %}
@@ -145,10 +148,33 @@
                     {% else %}
                       <span class="wallet-tx-hint">reserved (pending settlement); returned when the job settles</span>
                     {% endif %}
+                  {% elif is_run %}
+                    {% if not ann.settled %}
+                      <span class="wallet-tx-hint">charged as it runs; {{ display_record_usd(ann.taken) }} so far</span>
+                    {% elif ann.taken > 0 and ann.net == 0 %}
+                      <span class="wallet-tx-hint">charged as it ran; all of it was returned when it closed</span>
+                    {% else %}
+                      <span class="wallet-tx-hint">charged as it ran; it closed at {{ display_record_usd(0 - ann.net) }}</span>
+                    {% endif %}
+                    {% if ann.debits %}
+                      <details class="wallet-tx-debits">
+                        <summary>{{ ann.debits|length }} {{ 'charge' if ann.debits|length == 1 else 'charges' }} while it ran</summary>
+                        <ul>
+                          {% for d in ann.debits %}
+                            <li>{{ (d.created_at|string)[:16].replace('T', ' ') }}: {{ display_record_usd(d.amount_usd) }}</li>
+                          {% endfor %}
+                        </ul>
+                      </details>
+                    {% endif %}
+                  {% elif ann and ann.role == 'debit' %}
+                    <span class="wallet-tx-hint">taken from your balance while the run went</span>
                   {% elif ann and ann.role == 'release' %}
                     <span class="wallet-tx-hint">unused part of the hold returned to your wallet</span>
                   {% elif ann and ann.role == 'settlement' and ann.net is not none %}
                     <span class="wallet-tx-net">net for this job {{ display_record_usd(0 - ann.net) }}</span>
+                  {% endif %}
+                  {% if tx.kind == 'absorbed_variance' %}
+                    <span class="wallet-tx-hint">Your balance did not cover all of this job's GPU time. Ranomics covered the rest, and you were not charged for it.</span>
                   {% endif %}
                   {% if tx.notes and not ann %}
                     <span class="wallet-tx-note">{{ tx.notes }}</span>
@@ -219,6 +245,9 @@
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-hold_release">hold release</span></dt>
         <dd>The unused part of a hold returned to your wallet after settlement.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-charge">run</span> / run debit</dt>
+        <dd>A job charged as it runs. Its GPU time is taken from your balance every few minutes while it runs, and each of those charges is listed under the run. When it finishes, anything taken beyond its final cost is returned. It stops if your balance reaches $0.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-charge">charge</span></dt>
         <dd>Settles a job against its hold. The settlement row shows the net for that job, which is what you paid for it.</dd>

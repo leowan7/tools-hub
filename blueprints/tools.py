@@ -745,6 +745,13 @@ def _clone_missing(adapter, prior_inputs: dict, pre_fill: dict, pdb_source) -> l
     preset = next(
         (p for p in adapter.presets if p.slug == prior_inputs.get("preset")), None
     )
+    # A preset the tool has since retired. ``pre_checked`` leaves the whole
+    # radio group unchecked when the pre-filled value matches no option
+    # (templates/tools/_prefill.html::pre_checked), so without this line the form
+    # posts no preset and ``validate`` silently falls back to its default --
+    # the user clones a run and gets a different mode with no warning.
+    if prior_inputs.get("preset") and preset is None:
+        missing.append("Design mode (the mode this run used is no longer offered)")
     if pdb_source is None and _needs_pdb(adapter, preset, prior_inputs):
         missing.append("Structure file (upload it again)")
     return missing
@@ -838,6 +845,29 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
         for box, lines in boxes.items():
             pre_fill.setdefault(box, "\n".join(lines))
         del pre_fill["spec"]
+    # A ColabFold multimer is stored as ONE record, headers joined on "_" and
+    # chains on ":" (tools/colabfold/__init__.py:226-227), and validate()
+    # refuses ":" in a pasted record (tools/colabfold/__init__.py:185). Split
+    # it back into one record per chain. The header is split at its first n-1
+    # underscores, so the pieces re-join to it and the clone resubmits the same
+    # fasta_text, unless the parser (:93) strips or renames a blank piece. A
+    # header with fewer underscores gets that parser's default names.
+    # ponytail: a chain name holding "_" is shown cut at the wrong underscore
+    # (">heavy" / ">chain_light_chain"), because the stored row no longer says
+    # which underscores the join added. Storing the names in validate() is the
+    # upgrade; until then exact inputs win over readable labels.
+    # Overwritten, not setdefault: stored key and field share one name.
+    # tests/test_clone_prefill_restore.py::test_colabfold_multimer_clone_resubmits
+    if slug == "colabfold" and isinstance(pre_fill.get("fasta_text"), str):
+        header, _, seq = pre_fill["fasta_text"].partition("\n")
+        chains = "".join(seq.split()).split(":")
+        if header.startswith(">") and len(chains) > 1:
+            names = header[1:].split("_", len(chains) - 1)
+            if len(names) != len(chains):
+                names = [f"chain_{i + 1}" for i in range(len(chains))]
+            pre_fill["fasta_text"] = "\n".join(
+                f">{name}\n{chain}" for name, chain in zip(names, chains)
+            )
 
     # Every remaining list becomes text. LAST, so the shape-specific
     # rules above still see the structure they were written against.
@@ -2305,6 +2335,8 @@ def tool_submit(tool: str):
             wallet_ctx["hold_tx_id"] = hold_tx_id
         if wallet_estimate is not None:
             wallet_ctx["estimate_usd"] = str(wallet_estimate)
+        if getattr(g, "wallet_live", False):
+            wallet_ctx["live"] = True
         wallet_ctx["tool_slug"] = adapter.slug
         inputs["_wallet"] = wallet_ctx
 

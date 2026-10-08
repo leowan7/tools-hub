@@ -516,7 +516,10 @@ def _ledger_rows(client, user_id: str) -> list[dict]:
 
 
 def _has_open_hold(rows: list[Mapping]) -> bool:
-    parents = {r.get("parent_tx_id") for r in rows if r.get("parent_tx_id") is not None}
+    parents = {
+        r.get("parent_tx_id") for r in rows
+        if r.get("parent_tx_id") is not None and r.get("kind") != "run_debit"
+    }
     return any(r.get("kind") == "hold" and r.get("id") not in parents for r in rows)
 
 
@@ -902,6 +905,127 @@ def settle_hold(
 
 # Alias kept for compatibility with the plan's wording.
 settle_job = settle_hold
+
+
+# ---------------------------------------------------------------------------
+# Live runs (supabase/migrations/0045_live_run_debits.sql): a $0 anchor at
+# submit, a run_debit per tick that takes money, one closing row at settle.
+# ---------------------------------------------------------------------------
+
+
+def _rpc_data(name: str, args: dict) -> Any:
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        return getattr(client.rpc(name, args).execute(), "data", None)
+    except Exception:
+        logger.error("%s RPC failed: %s", name, args, exc_info=True)
+        return None
+
+
+def open_live_run(user_id: str, tool_slug: str) -> Optional[str]:
+    """The new anchor's id, or None when the SQL refused or the call failed."""
+    data = _rpc_data("open_live_run", {"p_user_id": user_id, "p_tool_slug": tool_slug})
+    if isinstance(data, list):
+        data = data[0] if data else None
+    return str(data) if data is not None else None
+
+
+def live_due_usd(
+    tool_slug: str,
+    gpu_seconds: float,
+    gpu_class: Optional[str],
+    params: Optional[Mapping[str, object]] = None,
+) -> Decimal:
+    """What a live run owes for ``gpu_seconds``, clamped to the tool's cap as settle_hold clamps."""
+    from .wallet_estimates import compute_hard_cap  # noqa: PLC0415
+
+    return min(
+        compute_charge_usd(gpu_seconds, gpu_class),
+        compute_hard_cap(tool_slug, dict(params or {})),
+    )
+
+
+def _decimals(data: Mapping, keys: tuple) -> dict:
+    return {k: Decimal(str(data.get(k) or 0)) for k in keys}
+
+
+def debit_live_run(
+    hold_tx_id: str,
+    user_id: str,
+    due_usd: Decimal,
+    gpu_seconds: float,
+    gpu_class: Optional[str],
+) -> Optional[dict]:
+    """Bring what the run has taken up to ``due_usd``, as far as the balance goes.
+
+    Returns ``{"settled", "debited", "taken", "short", "balance_after"}``
+    from the SQL, or None when the call failed or the anchor is unknown. A
+    debit that took money runs the post-settle hooks for that amount.
+    """
+    data = _rpc_data("debit_live_run", {
+        "p_hold_tx_id": hold_tx_id,
+        "p_due_usd": str(due_usd),
+        "p_gpu_seconds": float(gpu_seconds or 0),
+        "p_gpu_class": gpu_class,
+    })
+    if not isinstance(data, Mapping):
+        return None
+    out = _decimals(data, ("debited", "taken", "short", "balance_after"))
+    out["settled"] = data.get("settled") is True
+    if out["debited"] > 0:
+        _post_settle_hooks(user_id, {"balance_usd": out["balance_after"]}, out["debited"])
+    return out
+
+
+def settle_live_run(
+    hold_tx_id: str,
+    gpu_seconds: float,
+    gpu_class: Optional[str],
+    params: Optional[Mapping[str, object]] = None,
+    failure_reason: Optional[str] = None,
+    refund: bool = False,
+) -> Optional[dict]:
+    """Close a live run at its final cost, or at $0 when ``refund``.
+
+    Returns the SQL's ``{"settled_before", "final", "taken", "charged",
+    "released", "absorbed", "balance_after"}``, or None on a failure.
+    """
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        hold = getattr(
+            client.table("wallet_transactions")
+            .select("user_id,tool_slug")
+            .eq("id", hold_tx_id)
+            .maybe_single()
+            .execute(),
+            "data", None,
+        )
+    except Exception:
+        logger.error("settle_live_run: anchor lookup failed id=%s", hold_tx_id, exc_info=True)
+        return None
+    if not hold:
+        logger.error("settle_live_run: anchor not found id=%s", hold_tx_id)
+        return None
+    final = Decimal("0") if refund else live_due_usd(
+        hold.get("tool_slug") or "", gpu_seconds, gpu_class, params,
+    )
+    data = _rpc_data("settle_live_run", {
+        "p_hold_tx_id": hold_tx_id,
+        "p_final_due_usd": str(final),
+        "p_gpu_seconds": float(gpu_seconds or 0),
+        "p_gpu_class": gpu_class,
+        "p_failure_reason": failure_reason,
+    })
+    if not isinstance(data, Mapping):
+        return None
+    out = _decimals(data, ("final", "taken", "charged", "released", "absorbed", "balance_after"))
+    out["settled_before"] = data.get("settled_before") is True
+    _post_settle_hooks(hold.get("user_id"), {"balance_usd": out["balance_after"]}, out["charged"])
+    return out
 
 
 def release_hold(hold_tx_id: str, reason: str = "cancelled_before_run") -> bool:
@@ -1382,14 +1506,16 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
 
 
 def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[dict]]:
-    """What the ledger has taken for each hold: ``{hold_id: {"usd", "settled"}}``.
+    """What the ledger has taken for each hold: ``{hold_id: {"usd", "settled", "held", "taken"}}``.
 
     ``usd`` is minus the sum of ``amount_usd`` over the hold and every row
     whose ``parent_tx_id`` is that hold, the same group net the wallet page
     annotates (``blueprints/wallet.py::_build_tx_lineage_annotations``). ``settled`` is
-    whether any such child row exists; without one, ``usd`` is the amount
-    still reserved. ``held`` is minus the hold row's own amount (zero when
-    that row was not returned). A hold whose rows carry an unreadable amount maps to
+    whether any such child row other than a ``run_debit`` exists; without one,
+    ``usd`` is the amount still reserved, or for a live run the amount taken so
+    far. ``held`` is minus the hold row's own amount (zero when that row was
+    not returned, and zero for a live run's anchor). ``taken`` is what the
+    hold's ``run_debit`` rows took. A hold whose rows carry an unreadable amount maps to
     ``None``; a hold the ledger returned no row for is absent. A failed
     lookup returns ``{}``.
     """
@@ -1402,7 +1528,7 @@ def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[d
         for column in ("id", "parent_tx_id"):
             resp = (
                 client.table("wallet_transactions")
-                .select("id,parent_tx_id,amount_usd")
+                .select("id,parent_tx_id,amount_usd,kind")
                 .eq("user_id", user_id)
                 .in_(column, ids)
                 .execute()
@@ -1431,10 +1557,13 @@ def job_spend_by_hold(user_id: str, hold_ids: list[str]) -> dict[str, Optional[d
             out[key] = None
             continue
         entry = out.setdefault(
-            key, {"usd": Decimal("0"), "settled": False, "held": Decimal("0")},
+            key,
+            {"usd": Decimal("0"), "settled": False, "held": Decimal("0"), "taken": Decimal("0")},
         )
         entry["usd"] -= amount
-        if parent is not None:
+        if r.get("kind") == "run_debit":
+            entry["taken"] -= amount
+        elif parent is not None:
             entry["settled"] = True
         else:
             entry["held"] = -amount
@@ -1451,11 +1580,12 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
 
     Net spend nets each job's settlement against its hold::
 
-        spend = sum(|hold|) - sum(|hold_release|) + sum(|charge|)
+        spend = sum(|hold|) - sum(|hold_release|) + sum(|charge|) + sum(|run_debit|)
 
     ``hold`` rows commit the per-job estimate; ``hold_release`` rows
     return surplus (or the whole hold on a cancel-before-run);
-    ``charge`` rows debit a true-up overrun. ``absorbed_variance`` is
+    ``charge`` rows debit a true-up overrun; ``run_debit`` rows are what a
+    live run took while it ran. ``absorbed_variance`` is
     excluded because Ranomics, not the user, paid it.
 
     Absolute values are used so the figure is correct regardless of the
@@ -1474,7 +1604,7 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
             client.table("wallet_transactions")
             .select("kind,amount_usd")
             .eq("user_id", user_id)
-            .in_("kind", ["hold", "hold_release", "charge"])
+            .in_("kind", ["hold", "hold_release", "charge", "run_debit"])
             .gte("created_at", since.isoformat())
             .execute()
         )
@@ -1492,7 +1622,7 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
             holds += amount
         elif kind == "hold_release":
             releases += amount
-        elif kind == "charge":
+        elif kind in ("charge", "run_debit"):
             charges += amount
     return max(Decimal("0"), holds - releases + charges)
 
