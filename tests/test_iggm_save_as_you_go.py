@@ -16,15 +16,23 @@ What streaming buys, and what it does not:
   ``designs_completed`` 0 -- so a kill there always read incomplete. The
   post-run upload loop did already send real counts, so a kill in that short
   window could already read complete; what changes is that the snapshot now
-  reaches N/N while ``design.py`` is still running, which is where Modal
-  timeouts land. Pinned below by
+  reaches N/N while ``design.py`` is still running. That the GPU phase is
+  where a Modal timeout lands is an inference from it being nearly the whole
+  wall clock; nothing in this repo records where real iggm timeouts fell.
+  Pinned below by
   ``test_the_last_mid_run_beat_reads_as_complete``.
 * A run that produces fewer designs than planned reads incomplete while it
   runs and complete once the final sweep has measured it, because only that
   last sweep knows the real total. Pinned by
   ``test_a_short_run_reads_complete_only_once_it_is_measured``.
-* A non-zero ``design.py`` exit still delivers nothing to the customer. See
-  the comment on that branch in tools/iggm/run_pipeline.py.
+* A non-zero ``design.py`` exit delivers the designs the sweeps already
+  uploaded, on a run that is refunded in full. The RESULT carries none of them,
+  but ``blueprints/jobs.py::job_status`` returns ``inputs._partial_candidates``
+  with no terminal-status guard and ``job_candidate_pdb`` serves the bytes on
+  ownership alone, while bucket "run" is unmapped in
+  ``shared/jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS`` and so refunds. Whether a
+  refunded run should deliver them is a money question open with Leo; see the
+  comment on that branch in tools/iggm/run_pipeline.py.
 
 Runs fully offline: ``subprocess.Popen`` and ``requests.post`` are patched on
 the pipeline module and ``upload_one`` is a stub, so no design.py, no GPU and

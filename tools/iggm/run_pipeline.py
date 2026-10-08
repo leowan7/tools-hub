@@ -447,8 +447,11 @@ def run_iggm(
     on this thread, between waits, so no two sweeps overlap and a slow callback
     only delays the next poll. It can still catch a design mid-write -- that is
     what the stability gate in ``sweep_designs`` is for. A callback that raises
-    is logged and the run continues; a design the sweep could not take is
-    picked up by the final sweep in ``main``.
+    is logged and the run continues. A design the sweep could not READ, or
+    that has not finished writing, is picked up by the final sweep in ``main``.
+    A design whose UPLOAD failed is not: ``sweep_designs`` marks it taken and
+    spends its rank before it sees the failure, which
+    ``test_a_failed_upload_spends_its_rank_and_the_run_goes_on`` pins.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
