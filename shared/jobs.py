@@ -23,7 +23,7 @@ import logging
 import re
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -1986,6 +1986,9 @@ def cancel_job(
          best-effort. If nothing has written it, the cancel takes the
          zero-consumption ``release_hold`` path in
          ``_settle_wallet_hold_for_completed_job``.
+      5. If the Modal cancel in step 2 succeeded, attach the designs that
+         already finished (``_keep_cancelled_designs``). The row stays
+         ``cancelled``.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
     refusal. Safe to call repeatedly — once the row is terminal, the
@@ -1997,13 +2000,15 @@ def cancel_job(
     if job.status in TERMINAL_STATUSES:
         return None, f"already_{job.status}"
 
+    modal_cancelled = False
     if job.modal_function_call_id:
         try:
             cancelled = modal_client.cancel(job.modal_function_call_id)
         except Exception:
             logger.warning("Modal cancel raised for job %s", job_id, exc_info=True)
             cancelled = {"ok": False}
-        if isinstance(cancelled, dict) and cancelled.get("ok") is False:
+        modal_cancelled = not (isinstance(cancelled, dict) and cancelled.get("ok") is False)
+        if not modal_cancelled:
             if leave_running_if_cancel_fails:
                 logger.warning(
                     "Modal cancel failed for job %s (%s); job left running.",
@@ -2042,9 +2047,41 @@ def cancel_job(
     fresh = get_job(job_id, user_id=user_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
+        if modal_cancelled:
+            fresh = _keep_cancelled_designs(fresh)
         if fresh.campaign_id:
             _drive_campaign_after_terminal(fresh)
     return fresh, None
+
+
+def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
+    """Attach the designs a cancelled run already finished as a partial result.
+
+    The rebuild is ``meter_live_runs``'s (``job_recovery.reconstruct``).
+    ``cancel_job`` calls this after the settle, so the settle reads the row
+    as it did before this step existed
+    (tests/test_cancel_keeps_designs.py::test_keeping_designs_does_not_change_the_settle).
+    The write is ``{"result": ...}`` through ``_cas_update`` on status
+    ``cancelled``. A rebuild that raises or finds nothing writes nothing
+    (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels).
+    """
+    from shared.job_recovery import reconstruct  # noqa: PLC0415
+
+    try:
+        candidates = reconstruct(job)
+    except Exception:
+        logger.warning("cancel_job: reconstruct raised for job %s", job.id, exc_info=True)
+        return job
+    if not candidates:
+        return job
+    result = _slim_result_for_persist({
+        "candidates": candidates,
+        "candidate_count": len(candidates),
+        "partial": True,
+    })
+    if not _cas_update(job.id, {"result": result}, allowed_current=("cancelled",)):
+        return job
+    return replace(job, result=result)
 
 
 # ---------------------------------------------------------------------------

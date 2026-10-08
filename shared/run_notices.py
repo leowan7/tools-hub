@@ -79,9 +79,33 @@ def partial_line(job) -> str:  # noqa: ANN001
     return f"{head} after {_designs(n)}."
 
 
+def cancelled_with_designs(job) -> bool:  # noqa: ANN001
+    """True for a cancelled run that kept finished designs
+    (shared/jobs.py::_keep_cancelled_designs). The job page shows its results."""
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
+    result = getattr(job, "result", None)
+    return (
+        getattr(job, "status", None) == "cancelled"
+        and isinstance(result, dict)
+        and bool(result.get("partial"))
+        and bool(candidate_records(result))
+    )
+
+
+def cancelled_kept_line(job) -> str:  # noqa: ANN001
+    """The "Cancelled, N designs kept" line, or ""."""
+    if not cancelled_with_designs(job):
+        return ""
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
+    n = len(candidate_records(job.result))
+    return f"Cancelled, {_designs(n)} kept. They are in your results and downloads."
+
+
 def run_notices(job) -> list[str]:  # noqa: ANN001
     """Every notice that applies to ``job``, in display order."""
-    return [line for line in (partial_line(job),) if line]
+    return [line for line in (partial_line(job), cancelled_kept_line(job)) if line]
 
 
 def campaign_partial_line(campaign, delivered: int, partial_chunks: int, timeout_chunks: int) -> str:  # noqa: ANN001

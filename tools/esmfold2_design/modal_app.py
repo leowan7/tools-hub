@@ -699,6 +699,10 @@ def run_tool(payload: Any) -> dict:
     job_spec = (payload or {}).get("job_spec", {}) or {}
     n_seeds = max(1, int(job_spec.get("n_seeds") or 1))
     start_seed = int(job_spec.get("seed") or 0)
+    # Stride for the per-child rank_offset below. Each child is handed the
+    # FULL batch_size (see the spawn loop), so batch_size ranks per child is
+    # exactly enough to keep the streamed ranks disjoint.
+    batch_size = max(1, int(job_spec.get("batch_size") or 1))
     job_id = str(payload.get("job_id", "")) if isinstance(payload, dict) else ""
 
     print(
@@ -763,6 +767,12 @@ def run_tool(payload: Any) -> dict:
             cp.setdefault("job_spec", {})
             cp["job_spec"]["seed"] = seed
             cp["job_spec"]["pdb_prefix"] = f"seed{seed}_"
+            # pdb_prefix's counterpart for the live page. The children all
+            # enumerate their designs from 0 and the live table keys its rows
+            # on rank alone, so without this every seed's rank 0 would
+            # overwrite one row (run_pipeline.py::_shape_designs' docstring).
+            # Streamed ranks only -- _aggregate re-ranks the manifest below.
+            cp["job_spec"]["rank_offset"] = i * batch_size
             cp["job_spec"]["n_seeds"] = 1
             call = _run_one_seed.spawn(cp)
             children.append((seed, call))
@@ -877,6 +887,7 @@ def _aggregate(
     designs_total = 0
     designs_completed = 0
     inner_failures = 0
+    upload_failures = 0
 
     for seed, child_ret in successes:
         smoke = (child_ret or {}).get("smoke_result") or {}
@@ -897,6 +908,7 @@ def _aggregate(
         designs_total += int(smoke.get("designs_total") or 0)
         designs_completed += int(smoke.get("designs_completed") or 0)
         inner_failures += int(smoke.get("n_failures") or 0)
+        upload_failures += int(smoke.get("n_upload_failures") or 0)
         child_runtime = int(smoke.get("runtime_seconds") or 0)
         total_gpu_seconds += child_runtime
         wall_clock_seconds = max(wall_clock_seconds, child_runtime)
@@ -989,6 +1001,10 @@ def _aggregate(
         "designs_total": designs_total,
         "designs_completed": designs_completed,
         "n_failures": n_failures_total,
+        # Summed over the children, like n_failures, and kept separate from it
+        # for the reason run_pipeline.py's summary gives: a design whose PDB
+        # upload failed is still a returned design.
+        "n_upload_failures": upload_failures,
         "best_sequence": best_seq,
         "designs": all_designs,
         "candidates": all_candidates,

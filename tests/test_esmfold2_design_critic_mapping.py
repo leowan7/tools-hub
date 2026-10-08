@@ -272,7 +272,9 @@ def stub_pdb(monkeypatch):
         run_pipeline,
         "_save_complex_pdb",
         lambda complex_obj, name, *a, **kw: (
-            None if complex_obj is None else f"{complex_obj}_complex.pdb"
+            (None, False)
+            if complex_obj is None
+            else (f"{complex_obj}_complex.pdb", True)
         ),
     )
 
@@ -319,7 +321,8 @@ def test_a_blank_row_must_not_discard_a_real_score_and_invert_the_ranking(
 def test_the_salvaged_row_keeps_its_complex_and_final_loss(stub_pdb):
     """``complex`` and ``final_loss`` are dropped by the same rule.
 
-    No complex means ``_save_complex_pdb`` returns None, which means no PDB
+    No complex means ``_save_complex_pdb`` returns a None pdb_key, which
+    means no PDB
     written, nothing to download and no NGL viewer for the run's best design.
     Stubbed rather than written: the real function targets /tmp/results and
     this assertion is about which row the complex came from, not about file IO.
@@ -470,7 +473,8 @@ def test_a_scored_row_replaces_a_scoreless_incumbent_WHOLESALE(stub_pdb):
     # The winner had no complex, so there is no PDB. The incumbent's
     # "divergedfold" is gone with the rest of its row, NOT salvaged underneath
     # the winner's numbers. Named rather than object() on purpose: the real
-    # _save_complex_pdb returns None for any complex it cannot serialise, so
+    # _save_complex_pdb returns a None pdb_key for any complex it cannot
+    # serialise, so
     # with a bare object() this assertion passes whether or not the salvage
     # happened, and the stub keys the pdb_key off the complex so it cannot.
     assert design["pdb_key"] is None
