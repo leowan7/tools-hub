@@ -10,7 +10,10 @@ returns this file inline via the function return value — see
 Environment variables (set by ``modal_app.py``):
 
     JOB_PAYLOAD     JSON: job_spec + input_presigned_url + upload_urls_endpoint + tier
-    WEBHOOK_URL     URL to POST results to (unused at launch; see TODO)
+    WEBHOOK_URL     Hub webhook base. The result still comes home inline via
+                    the Modal return value; this file reads WEBHOOK_URL only
+                    to derive ``/webhooks/heartbeat`` (``_heartbeat_url``) for
+                    the per-design candidate stream in ``_shape_designs``.
     JOB_ID          tool_jobs row id (used for log prefixing)
     JOB_TOKEN       Job-specific auth token
     JOB_TIER        ``minibinder`` | ``scfv``
@@ -39,6 +42,7 @@ Output shape (``/tmp/smoke_results.json``)::
       "designs_total": 1,
       "designs_completed": 1,
       "n_failures": 0,
+      "n_upload_failures": 0,
       "trajectory_steps": 150,
       "best_sequence": "AEKV...",
       "designs": [
@@ -97,7 +101,16 @@ exit path, and ``modal_app.py`` parks that archive on the
 ``ranomics-esmfold2-design-raw`` Volume. See ``_archive_raw`` for why.
 
 TODO (post first prod run, separate PR):
-  - Send heartbeats with ``new_candidate`` events for the live UI.
+  - Stage/progress heartbeats. ``_shape_designs`` now streams one
+    ``new_candidate`` beat per design (see ``send_heartbeat``), which is what
+    puts rows on the live page and leaves a partial behind for
+    ``shared/job_recovery.py::reconstruct``. What is still absent is a beat
+    at the START of the run and real ``designs_completed`` /
+    ``designs_total`` counts: both are deliberate, because a child of the
+    multi-seed fan-out knows neither its ordinal nor the umbrella total
+    (``modal_app.py::run_tool`` gives every child ``n_seeds = 1`` and the
+    full ``batch_size``), so any per-seed count it sent would be read by
+    ``shared/job_recovery.py::_completion_signal`` as the whole job's.
   - Calibrate STRICT_IPTM / STRICT_CDR_IPTM_PROXY thresholds against
     the first 8-seed PD-L1 sweep instead of the conservative defaults.
     STILL OPEN, and the scFv iPTM leg added on 2026-09-10 does not close it:
@@ -172,6 +185,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -665,8 +679,45 @@ def _parse_job_payload() -> tuple[dict[str, Any], str, str, dict[str, Any]]:
 
 
 # ===========================================================================
-# Upload helpers (mirror tools/boltz2/run_pipeline.py exactly)
+# Heartbeat + upload helpers (mirror tools/boltz2/run_pipeline.py exactly)
 # ===========================================================================
+
+
+def _heartbeat_url(webhook_url: str) -> str:
+    """Derive the /webhooks/heartbeat URL from the main webhook URL."""
+    parsed = urlparse(webhook_url)
+    return urlunparse(parsed._replace(path="/webhooks/heartbeat"))
+
+
+def send_heartbeat(
+    webhook_url: str,
+    job_id: str,
+    stage: str,
+    designs_completed: int = 0,
+    designs_total: int = 0,
+    new_candidate: dict | None = None,
+) -> None:
+    """Fire-and-forget heartbeat. Never raises — the run survives a flaky
+    webhook hop. Copied from ``tools/boltz2/run_pipeline.py::send_heartbeat``;
+    the token is read from the environment there too, and
+    ``modal_app.py::_build_run_env`` sets JOB_TOKEN in every child's env.
+    """
+    if not webhook_url:
+        return
+    body = {
+        "job_id": job_id,
+        "stage": stage,
+        "designs_completed": int(designs_completed),
+        "designs_total": int(designs_total),
+    }
+    if isinstance(new_candidate, dict):
+        body["new_candidate"] = new_candidate
+        body["job_token"] = os.environ.get("JOB_TOKEN", "")
+    try:
+        resp = requests.post(_heartbeat_url(webhook_url), json=body, timeout=10)
+        logger.debug("Heartbeat sent: %s (HTTP %d)", stage, resp.status_code)
+    except Exception as exc:
+        logger.warning("Heartbeat failed (%s): %s", stage, exc)
 
 
 def request_upload_urls(
@@ -900,17 +951,27 @@ def _save_complex_pdb(
     name: str,
     upload_endpoint: str = "",
     job_token: str = "",
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]:
     """Write a ProteinComplex out as a PDB file under PDB_OUTPUT_DIR and,
     if ``upload_endpoint`` is set, also stream the PDB bytes to the hub
     via a presigned PUT URL (mirrors tools/boltz2/run_pipeline.py).
 
-    Returns the relative pdb_key for the smoke-results manifest. The key
-    matches the Storage path the hub serves at
-    ``/api/jobs/<job_id>/pdb/<pdb_key>``.
+    Returns ``(pdb_key, stored)``. ``pdb_key`` is the relative key for the
+    smoke-results manifest, matching the Storage path the hub serves at
+    ``/api/jobs/<job_id>/pdb/<pdb_key>``; it is None on the same two paths
+    as before (no complex in the bucket, or the serialise/write raising).
+
+    ``stored`` is True only when the bytes actually reached hub Storage, so
+    it is False when no ``upload_endpoint`` was supplied — a caller that
+    wants to count FAILED uploads has to test ``upload_endpoint`` itself.
+    The manifest key is deliberately still returned for a failed upload
+    (unchanged behaviour); ``stored`` exists so the per-design heartbeat in
+    ``_shape_designs`` can withhold the key it streams, because the live
+    page turns a streamed pdb_key straight into a "View 3D" button
+    (``templates/job_detail.html``) against bytes that are not there.
     """
     if complex_obj is None:
-        return None
+        return None, False
     PDB_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     key = f"{name}_complex.pdb"
     path = PDB_OUTPUT_DIR / key
@@ -919,19 +980,26 @@ def _save_complex_pdb(
         path.write_text(pdb_text)
     except Exception as exc:
         logger.warning("Failed to write %s: %s", path, exc)
-        return None
+        return None, False
 
-    if upload_endpoint:
-        try:
-            urls = request_upload_urls(upload_endpoint, job_token, [key])
-            upload_pdb(urls[key], pdb_text.encode("utf-8"))
-            logger.info("Uploaded %s to hub via presigned URL", key)
-        except Exception as exc:
-            logger.warning(
-                "Upload of %s failed (%s) — inline /tmp copy preserved", key, exc,
-            )
+    if not upload_endpoint:
+        return key, False
 
-    return key
+    try:
+        urls = request_upload_urls(upload_endpoint, job_token, [key])
+        upload_pdb(urls[key], pdb_text.encode("utf-8"))
+        logger.info("Uploaded %s to hub via presigned URL", key)
+    except Exception as exc:
+        # Not fatal: the designed sequence is the deliverable and it survives
+        # in the manifest without its structure. That structure goes home only
+        # inside ``_archive_raw``'s tarball on the raw Volume, not as anything
+        # the hub can serve: this file emits no inline pdb_content_b64 for
+        # ``_slim_result_for_persist``'s ``failed_uploads`` convention to keep
+        # (shared/jobs.py).
+        logger.warning("Upload of %s failed: %s", key, exc)
+        return key, False
+
+    return key, True
 
 
 def _finite(value: Any) -> Optional[float]:
@@ -1040,6 +1108,10 @@ def _shape_designs(
     upload_endpoint: str = "",
     job_token: str = "",
     pdb_prefix: str = "",
+    webhook_url: str = "",
+    job_id: str = "",
+    rank_offset: int = 0,
+    upload_failures: Optional[list] = None,
 ) -> list[dict]:
     """Collapse the per-critic results into one row per design.
 
@@ -1056,6 +1128,39 @@ def _shape_designs(
     pipeline with a different seed) don't collide in the per-job
     Storage namespace. The orchestrator sets it to ``seed{N}_`` per
     child; single-seed runs leave it empty.
+
+    SAVE AS YOU GO. With ``webhook_url`` set, each design is streamed to
+    ``/webhooks/heartbeat`` as it is shaped, right after its upload. That is
+    what puts a row on the live job page before the run ends, and it is the
+    only thing that leaves ``inputs._partial_candidates`` behind for
+    ``shared/job_recovery.py::reconstruct`` to rebuild a stopped run from.
+    Three things about the payload, each forced by a consumer:
+
+    * The counts are omitted. ``send_heartbeat``'s defaults send 0/0, which
+      every ``_progress`` reader treats as "no count to show"
+      (``blueprints/jobs.py::_jobs_table_cells`` and ``_progress_one_count``
+      both gate on ``designs_total > 0``,
+      the live page draws its ``jobdetail-indeterminate`` bar instead of a
+      percentage, and ``shared/job_recovery.py::_completion_signal`` returns
+      "unknown" rather than vetoing a clean exit). A fan-out child cannot
+      send anything better: it is given ``n_seeds = 1`` and the full
+      ``batch_size``, so its own "3 of 6" would be read as the whole job's.
+    * ``new_candidate`` is FLAT. ``webhooks/modal.py::_sanitize_candidate``
+      reads short keys off the top level and drops anything else, so a
+      nested ``scores`` dict would arrive empty. It also requires an int
+      ``rank`` and returns None without one.
+    * ``rank_offset`` is added to the streamed rank only. The live table keys
+      its rows on rank alone (``renderedRanks`` / ``data-rank`` /
+      ``live-viewer-row-<rank>`` in templates/job_detail.html), so without
+      an offset every seed's rank 0 would overwrite one row and share a DOM
+      id. ``modal_app.py::run_tool`` sets it per child. The manifest rank
+      below is left within-seed, because ``modal_app.py::_aggregate``
+      re-ranks the concatenation globally.
+
+    ``upload_failures``, when a list is passed, collects the pdb_key of every
+    design whose upload was attempted and failed. ``_run`` reports the length
+    as ``n_upload_failures``; it is NOT folded into ``n_failures``, which
+    counts convergence (see the summary comment in ``_run``).
     """
     by_sequence: dict[str, dict] = {}
     for row in critic_results:
@@ -1159,9 +1264,16 @@ def _shape_designs(
         name = f"{pdb_prefix}design_{rank}"
         binder_seq = _extract_binder_sequence(seq)
         pi = None if is_antibody else _isoelectric_point(binder_seq)
-        pdb_key = _save_complex_pdb(
+        pdb_key, pdb_stored = _save_complex_pdb(
             bucket["complex"], name, upload_endpoint, job_token,
         )
+        if (
+            upload_failures is not None
+            and upload_endpoint
+            and pdb_key
+            and not pdb_stored
+        ):
+            upload_failures.append(pdb_key)
         filter_status = _classify(
             is_antibody,
             bucket["iptm"],
@@ -1193,6 +1305,18 @@ def _shape_designs(
                 "scores": scores,
                 **scores,
             }
+        )
+        send_heartbeat(
+            webhook_url,
+            job_id,
+            "folding",
+            new_candidate={
+                "rank": rank_offset + rank,
+                "name": name,
+                "pdb_key": pdb_key if pdb_stored else None,
+                "iptm": bucket["iptm"],
+                "filter_status": filter_status,
+            },
         )
 
     # Sort by iPTM desc with None at the bottom. The sentinel has to be
@@ -1468,6 +1592,7 @@ def _run() -> int:
 
     upload_endpoint = payload.get("upload_urls_endpoint", "")
     job_token = payload.get("job_token", "") or os.environ.get("JOB_TOKEN", "")
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
     if not upload_endpoint:
         logger.warning(
             "upload_urls_endpoint missing from payload — per-design PDBs "
@@ -1486,6 +1611,9 @@ def _run() -> int:
     # so each child run uses a unique Storage key for its PDB output;
     # single-seed runs receive an empty string and behave as before.
     pdb_prefix = str(job_spec.get("pdb_prefix", "") or "")
+    # Same source and same reason as pdb_prefix, for the rank the heartbeat
+    # streams instead of the filename. See _shape_designs' docstring.
+    rank_offset = int(job_spec.get("rank_offset", 0) or 0)
 
     logger.info(
         "ESMFold2 design start: job=%s tier=%s preset=%s target=%s "
@@ -1619,12 +1747,17 @@ def _run() -> int:
     # keys per design; _archive_raw carries the file home with the tree.
     _dump_raw_critic_results(critic_results)
 
+    upload_failures: list[str] = []
     designs = _shape_designs(
         critic_results or [],
         is_antibody,
         upload_endpoint,
         job_token,
         pdb_prefix=pdb_prefix,
+        webhook_url=webhook_url,
+        job_id=job_id,
+        rank_offset=rank_offset,
+        upload_failures=upload_failures,
     )
     best_design = _pick_best(designs)
     runtime = int(time.time() - start)
@@ -1689,6 +1822,19 @@ def _run() -> int:
         "designs_total": batch_size,
         "designs_completed": len(designs),
         "n_failures": max(0, batch_size - len(designs)),
+        # A SECOND counter, not a contribution to n_failures above. That one
+        # is derived from len(designs) and counts CONVERGENCE (two batch
+        # elements landing on one designed_sequence); a design whose upload
+        # failed is still in ``designs``, so adding it there would push
+        # designs_completed + n_failures past designs_total. boltz2 needs only
+        # one counter because it drops a design it could not upload
+        # (tools/boltz2/run_pipeline.py: ``n_failures += 1; continue``); here
+        # the designed sequence is the deliverable and survives without its
+        # structure. Not rendered by
+        # templates/tools/esmfold2_design_results.html, which passes neither
+        # FAILURE count to its template (it passes the two batch counts);
+        # this is for the result JSON and the logs.
+        "n_upload_failures": len(upload_failures),
         "trajectory_steps": len(trajectory) if trajectory is not None else None,
         # NOT ``best_seq`` from design(): upstream returns its own top pick
         # with no knowledge of our strict-pass gate. It survives only as the
@@ -1712,6 +1858,12 @@ def _run() -> int:
         runtime,
         sum(1 for d in designs if d.get("filter_status") == "strict_pass"),
     )
+    if upload_failures:
+        logger.warning(
+            "%d design PDB(s) did not reach hub Storage: %s",
+            len(upload_failures),
+            ", ".join(upload_failures),
+        )
     return 0
 
 

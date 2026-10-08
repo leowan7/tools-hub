@@ -52,7 +52,8 @@ HOW THE ALL-KEYLESS RESULT ARISES (``_shape_designs`` in
 tools/esmfold2_design/run_pipeline.py). Claims in this paragraph are about
 that function's own control flow; WHICH critic rows it is handed is
 upstream and unread -- see the next paragraph. ``_save_complex_pdb``
-returns None whenever the bucket's ``complex`` is None, because the call
+returns a None pdb_key (it returns ``(pdb_key, stored)``) whenever the
+bucket's ``complex`` is None, because the call
 hands it ``bucket["complex"]`` directly; and that field has exactly one
 writer besides its initialiser, inside the ``critic_name ==
 CRITIC_REAL_IPTM and (not _claimed or ...)`` gate.
@@ -113,7 +114,8 @@ count against what the shipped macro rendered rather than against a literal.
 THE PARTIAL IS LIVE TOO, BY THE SAME MECHANISM. #261 called it "the REACHABLE
 residue" on a proteina argument that does not hold, and the count fix replaced
 that with "no in-repo producer named for either" -- which does not survive the
-census above. ``_save_complex_pdb`` returns None on TWO paths: the bucket
+census above. ``_save_complex_pdb`` returns a None pdb_key on TWO paths: the
+bucket
 holding no complex, and ``to_pdb_string()`` or ``write_text()`` raising, which
 is logged as a warning and swallowed. Both are evaluated once per design, so a
 run where some designs keep their coordinates and others do not is an ordinary

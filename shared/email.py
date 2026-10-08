@@ -1786,9 +1786,9 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     #
     # Live, not defensive. tools/esmfold2_design/run_pipeline.py appends
     # one row per designed sequence with
-    # ``pdb_key = _save_complex_pdb(...)`` and no ``continue``, and that
-    # returns None both when the bucket holds no complex and when the
-    # PDB write raises. The second is per-design, so it produces the
+    # ``pdb_key, pdb_stored = _save_complex_pdb(...)`` and no ``continue``,
+    # and that key is None both when the bucket holds no complex and when
+    # the PDB write raises. The second is per-design, so it produces the
     # mixed shape as readily as the empty one, and the file never writes
     # pdb_content_b64 at all. Pinned by
     # test_the_live_esmfold2_design_shape_is_not_promised_a_download and
