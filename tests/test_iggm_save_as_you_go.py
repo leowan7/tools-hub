@@ -196,8 +196,11 @@ def test_the_final_sweep_takes_a_new_file_at_once(tmp_path, beats):
 
 
 def test_a_design_is_uploaded_once_however_many_sweeps_pass(tmp_path, beats):
-    """The minting side passes no upsert option, so re-signing a key already
-    in the bucket is refused: a second upload of one design would fail."""
+    """The minting side passes no upsert option (presigned_output_put_url in
+    shared/storage.py), so re-signing a key already in the bucket should be
+    refused -- that refusal is read from the minting code, not observed against
+    a live bucket. What this test pins is the half that does not depend on it:
+    the sweep never attempts the second upload."""
     out = tmp_path / "out"
     out.mkdir()
     _write(out / "design_0.pdb")
@@ -518,3 +521,25 @@ def test_the_final_sweep_beats_even_when_it_takes_nothing(tmp_path, beats):
     assert "new_candidate" not in beats[-1], "and re-delivered no design"
     assert (beats[-1]["designs_completed"], beats[-1]["designs_total"]) == (1, 1)
     assert _signal(beats) == "complete", "1 of a measured 1 is complete"
+
+
+def test_an_unreadable_design_is_dropped_by_the_final_sweep(tmp_path, beats):
+    """The other half of test_a_design_that_cannot_be_read_is_left_for_a_later_
+    sweep: on the FINAL sweep there is no later sweep, so an undecodable design
+    is dropped and the run still completes. At base this file failed the whole
+    run -- read_text and epitope_contacts sat outside the upload's try -- so one
+    corrupt output flipped a run from refunded to billed with fewer designs. The
+    gap is recorded: the final beat's total counts the file that was dropped."""
+    out = tmp_path / "out"
+    out.mkdir()
+    _write(out / "design_0.pdb")
+    _write(out / "design_1.pdb")
+    stream = new_design_stream()
+    calls: list[tuple[str, int]] = []
+
+    _sweep(out, stream, _taker(calls, raise_on=("design_1.pdb",)),
+           require_stable=False, total=5)
+
+    assert [d["name"] for d in stream["designs"]] == ["000_design_0"]
+    assert (beats[-1]["designs_completed"], beats[-1]["designs_total"]) == (1, 2)
+    assert _signal(beats) == "incomplete", "one of two globbed designs landed"

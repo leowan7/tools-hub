@@ -560,6 +560,15 @@ def _looks_complete(path: Path, expected_chains: int) -> bool:
     to repeat, as the size does, which costs a second poll interval per
     design; the window needs a multi-second stall inside one ``write``, so it
     is left open on purpose.
+
+    Second ceiling: ``expected_chains`` counts the chains the run SUBMITTED
+    while this counts DISTINCT ids. The form validates the antigen chain id for
+    length only (``tools/iggm/__init__.py``) and antibody headers are ``H`` plus
+    an optional ``L`` (``_parse_antibody_fasta``), so a job whose antigen chain
+    is itself named ``H`` or ``L`` collides with an antibody record and the
+    output can never show as many ids as were submitted. No design is then taken
+    mid-run. That job loses streaming, not designs: the final sweep applies no
+    gate and still delivers every one of them.
     """
     try:
         return len(_parse_pdb_chains(path.read_text())) >= max(expected_chains, 2)
@@ -620,6 +629,17 @@ def sweep_designs(
     # snapshot short, and shared/job_recovery.py::_completion_signal reads that
     # snapshot to decide whether a killed container is finalized succeeded, so
     # designs already in Storage would be discarded rather than delivered.
+    #
+    # The converse is the price of that, and it is a billing direction against
+    # the customer: once these beats reach N/N, "complete" no longer implies the
+    # pipeline did not crash. A run that wrote every design and then exited
+    # nonzero in a trailing stage, whose FAILED webhook was then lost, reaches
+    # recover_stuck_job_result with progress "complete" and exit_verdict
+    # "unknown" -- which that gate accepts, since it vetoes only "failed" -- and
+    # is billed as succeeded. No in-container fix exists: a lost webhook loses
+    # any marker _fail could send. It is the inseparable converse of the
+    # container-kill recovery above, and it is open with Leo alongside the
+    # refund question on the rc != 0 branch in ``main``.
     designs_total = planned_total if require_stable else len(paths)
     for path in paths:
         key = str(path)
@@ -640,8 +660,15 @@ def sweep_designs(
         try:
             entry = upload_one(path, rank)
         except Exception as exc:
-            # Left untaken on purpose: reading or scoring it failed, which a
-            # later sweep may not. No upload was attempted, so no key is spent.
+            # Mid-run this is a retry: no upload was attempted, so no key is
+            # spent and a later sweep reoffers the rank. The FINAL sweep has no
+            # later sweep, so the design is dropped and the run still COMPLETES
+            # -- at base read_text and epitope_contacts sat outside the upload's
+            # try, so one undecodable output failed the whole run and refunded
+            # it. The gap is recorded rather than silent: the final sweep's
+            # designs_total counts this file, so the closing snapshot reads
+            # completed < total. Pinned by
+            # test_an_unreadable_design_is_dropped_by_the_final_sweep.
             logger.warning("design %s: not readable this sweep (%s)", path.name, exc)
             continue
         stream["taken"].add(key)
@@ -800,15 +827,26 @@ def main() -> None:
                 on_poll=lambda: _sweep(True),
             )
             if rc != 0:
-                # Designs the sweeps already uploaded are NOT surfaced here:
-                # _fail writes no "designs" key, and
-                # shared/job_recovery.py::recover_stuck_job_result refuses to
-                # rebuild a run whose pipeline exited failed. Whether
-                # a failed run should deliver them is a money question -- bucket
-                # "run" refunds today (tools/iggm/__init__.py:118-127) -- and is
-                # open with Leo, so this branch is unchanged. The mid-flight
-                # case streaming DOES fix is the container kill; see the header
-                # of tests/test_iggm_save_as_you_go.py.
+                # The RESULT carries none of them: _fail writes no "designs"
+                # key, and shared/job_recovery.py::recover_stuck_job_result
+                # vetoes a failed pipeline exit. That is not the same as the
+                # customer being unable to reach them, which is what an earlier
+                # version of this comment implied. Designs the sweeps uploaded
+                # stay in Storage, the heartbeats left them in
+                # inputs._partial_candidates, and blueprints/jobs.py::job_status
+                # returns those with no terminal-status guard (its own comment
+                # says so) while job_candidate_pdb serves the bytes on ownership
+                # alone. Meanwhile bucket "run" is unmapped in
+                # shared/jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS, so the class
+                # is "unclassified", which _REFUNDED_FAILURE_CLASSES refunds in
+                # full. A failed run is therefore refunded with its streamed
+                # designs still listed and downloadable -- the shape
+                # esmfold2_design has streamed since #418, widened to iggm
+                # rather than invented here. Whether that should be
+                # delivered-and-refunded or delivered-and-billed is a money
+                # question open with Leo, so this branch is unchanged. The
+                # mid-flight case streaming DOES fix is the container kill; see
+                # the header of tests/test_iggm_save_as_you_go.py.
                 _fail("run", "design.py", f"IgGM design.py exited with code {rc}")
 
             design_pdbs = collect_design_pdbs(out_dir)
