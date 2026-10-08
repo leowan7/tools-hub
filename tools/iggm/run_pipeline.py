@@ -7,6 +7,12 @@ presigned PUT URLs, emits ``new_candidate`` heartbeats, and writes the
 final summary to ``/tmp/smoke_results.json``. The Modal wrapper returns
 that file inline (see ``tools/iggm/modal_app.py``).
 
+SAVE AS YOU GO: the design PDBs are uploaded and streamed one at a time
+while ``design.py`` is still running, not in one burst after it exits.
+``run_iggm`` polls the child process and calls ``sweep_designs`` between
+polls. See ``sweep_designs`` for what makes that sound, and for the two
+upstream details it depends on.
+
 Two things this pipeline is responsible for that the adapter cannot do
 (it has no PDB at validate time), both correctness-critical:
 
@@ -32,6 +38,7 @@ antibody contacts the requested epitope, which end-to-end validates items
 
 from __future__ import annotations
 
+import functools
 import glob
 import json
 import logging
@@ -41,6 +48,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -429,8 +437,19 @@ def run_iggm(
     max_antigen_size: int,
     num_samples: int,
     fasta_origin_path: Path | None,
+    on_poll: Callable[[], None] | None = None,
+    poll_seconds: float = 5.0,
 ) -> int:
-    """Run one ``design.py``. stdout/stderr live-stream to Modal logs."""
+    """Run one ``design.py``. stdout/stderr live-stream to Modal logs.
+
+    ``on_poll`` is called every ``poll_seconds`` while the child is alive, and
+    is what uploads each finished design mid-run (``sweep_designs``). It runs
+    on this thread, between waits, so no two sweeps overlap and a slow callback
+    only delays the next poll. It can still catch a design mid-write -- that is
+    what the stability gate in ``sweep_designs`` is for. A callback that raises
+    is logged and the run continues; a design the sweep could not take is
+    picked up by the final sweep in ``main``.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "python", "-u", "design.py",
@@ -448,14 +467,213 @@ def run_iggm(
     if fasta_origin_path is not None:
         cmd += ["--fasta_origin", str(fasta_origin_path)]
     logger.info("iggm cmd: %s", " ".join(cmd))
-    result = subprocess.run(
-        cmd, cwd=IGGM_DIR, stdout=sys.stdout, stderr=sys.stderr, check=False
-    )
-    return result.returncode
+    proc = subprocess.Popen(cmd, cwd=IGGM_DIR, stdout=sys.stdout, stderr=sys.stderr)
+    while True:
+        try:
+            return proc.wait(timeout=poll_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+        if on_poll is not None:
+            try:
+                on_poll()
+            except Exception as exc:
+                logger.warning("design sweep raised (%s); the run continues", exc)
 
 
 def collect_design_pdbs(out_dir: Path) -> list[Path]:
     return [Path(p) for p in sorted(glob.glob(f"{out_dir}/**/*.pdb", recursive=True))]
+
+
+def _upload_design(
+    pdb_path: Path,
+    rank: int,
+    *,
+    antigen_length: int,
+    epitope_positions: list[int],
+    antigen_chain: str,
+    upload_endpoint: str,
+    job_token: str,
+) -> dict | None:
+    """Upload one finished design and build its manifest entry, or return None
+    if the upload failed (the run keeps its other designs, as it always has).
+
+    The key is index-prefixed so per-sample outputs that share a basename
+    (e.g. sample_0/pred.pdb, sample_1/pred.pdb) don't collide in storage. It is
+    computed once, here, and never recomputed afterwards: the minting side
+    passes no upsert option (``presigned_output_put_url`` in shared/storage.py),
+    so re-signing a key already in the bucket is refused and a design cannot be
+    renumbered once its bytes are up. That refusal is read from the minting
+    code; it has not been observed against a live bucket.
+    """
+    pdb_text = pdb_path.read_text()
+    contacts = epitope_contacts(pdb_text, antigen_length, epitope_positions)
+    uniq = f"{rank:03d}_{pdb_path.stem}"
+    pdb_key = f"{uniq}.pdb"
+    try:
+        urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+        upload_file(urls[pdb_key], pdb_text.encode("utf-8"), "chemical/x-pdb")
+    except Exception as exc:
+        logger.warning("design %s: upload failed (%s) — skipping", pdb_key, exc)
+        return None
+    return {
+        "rank": rank,
+        "name": uniq,
+        "pdb_key": pdb_key,
+        "n_epitope_contacts": contacts["n_contacted"],
+        "n_epitope": contacts["n_epitope"],
+        "contacted_positions": contacts["contacted"],
+        "antigen_chain": antigen_chain,
+    }
+
+
+def new_design_stream() -> dict[str, Any]:
+    """Sweep state: the files already taken, their last-seen sizes, the entries
+    delivered so far, and the next rank to hand out."""
+    return {"taken": set(), "sizes": {}, "designs": [], "next_rank": 0}
+
+
+def _looks_complete(path: Path, expected_chains: int) -> bool:
+    """Whether a design PDB holds the whole complex, not just its first chains.
+
+    A size that repeated across two polls is not proof the file is finished:
+    upstream writes one chunk per chain into a single handle, so a flush that
+    stalls longer than a poll interval can leave the earlier chains complete
+    and nothing after them. ``epitope_contacts`` does not raise on that -- its
+    under-two-chain branch returns ``n_contacted`` 0 (see that function) -- so
+    taking such a file would deliver a design asserting zero epitope contacts,
+    the headline per-design number, with no error anywhere.
+
+    ``expected_chains`` is what this run submitted: the antibody records plus
+    the antigen. Upstream folds that as ``H:A`` or ``H:L:A``
+    (``IgGM/deploy/ab_design.py:58``) with the antigen LAST -- ``write_fasta``
+    writes that order because IgGM reads ``ids[-1]`` as the antigen -- so a
+    file short of the count is one whose MISSING chain can be the antigen. Two
+    chains is therefore enough for a nanobody and one short for an H+L run,
+    where it would deliver an antibody-only PDB as an antigen complex.
+
+    Ceiling: this proves every chain arrived, not that the last one is whole,
+    so a stall truncating the final chain still gets through and its contact
+    count is computed against a short antigen. That same shape can still move
+    ``epitope_contacts``' antigen pick onto an antibody chain, since it picks
+    by closest length and a truncated antigen can be nearer in length to H or
+    L than to the submitted antigen. Closing it needs a chain count that has
+    to repeat, as the size does, which costs a second poll interval per
+    design; the window needs a multi-second stall inside one ``write``, so it
+    is left open on purpose.
+    """
+    try:
+        return len(_parse_pdb_chains(path.read_text())) >= max(expected_chains, 2)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def sweep_designs(
+    out_dir: Path,
+    stream: dict[str, Any],
+    upload_one: Callable[[Path, int], dict | None],
+    *,
+    require_stable: bool,
+    webhook_url: str = "",
+    job_id: str = "",
+    planned_total: int = 0,
+    expected_chains: int = 0,
+) -> None:
+    """Upload and stream every finished design not taken by an earlier sweep.
+
+    Called on a timer while ``design.py`` runs, then once more after it exits.
+    Two upstream facts decide the design of this function, both read at the
+    pinned ``IGGM_SHA`` (see tools/iggm/Dockerfile.modal):
+
+    * Each sample is written inside its own ``infer_pdb`` call (upstream
+      ``design.py`` loops one call per sample over per-sample output paths),
+      which is the whole reason a mid-run sweep finds anything.
+    * Upstream shuffles its sample queue (``random.shuffle(batches)`` in
+      ``design.py``), so files appear in RANDOM order, not sample order.
+      Ranks here are therefore completion order to within one poll interval:
+      this loops ``collect_design_pdbs``, which sorts, so designs that go
+      stable in the SAME sweep are ranked by path. They are not quality ranks
+      for any preset -- sample order was no more meaningful -- and the live
+      table keys its rows on rank alone (templates/job_detail.html), so each
+      has to be unique and fixed at upload time.
+
+    ``require_stable`` guards a half-written file: upstream writes the PDB
+    straight to its final path (``PdbParser.save_multimer`` called at
+    ``IgGM/deploy/base_designer.py:264``), not to a temp file it renames, so a
+    sweep during the run can see one mid-write. A file is taken only once its
+    size is unchanged since the previous sweep, which costs one poll interval
+    per design. The ceiling, and its one shape: ``save_multimer`` opens the
+    path once and writes inside that single handle
+    (``IgGM/protein/parser/pdb_parser.py:161``), one chunk per chain with only
+    in-memory formatting between them, so a sweep reads short only if a flush
+    stalls longer than a whole poll interval; ``_looks_complete`` rejects the
+    damaging shape of that stall. After ``design.py`` exits nothing is being
+    written, so the final sweep passes False, takes the rest at once, and
+    carries the measured total rather than the planned one -- beating it even
+    if it took nothing, since that beat is the snapshot's last word.
+    """
+    paths = collect_design_pdbs(out_dir)
+    # Mid-run the produced total is not knowable, so those beats carry the
+    # plan. Once design.py has exited this glob IS the produced total -- the
+    # same call ``main`` makes, with nothing written in between -- so the final
+    # sweep beats that instead, agreeing with ``main``'s closing heartbeat. A
+    # run that produced fewer designs than planned would otherwise leave the
+    # snapshot short, and shared/job_recovery.py::_completion_signal reads that
+    # snapshot to decide whether a killed container is finalized succeeded, so
+    # designs already in Storage would be discarded rather than delivered.
+    designs_total = planned_total if require_stable else len(paths)
+    for path in paths:
+        key = str(path)
+        if key in stream["taken"]:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size == 0:
+            continue
+        if require_stable and stream["sizes"].get(key) != size:
+            stream["sizes"][key] = size
+            continue
+        if require_stable and not _looks_complete(path, expected_chains):
+            continue
+        rank = stream["next_rank"]
+        try:
+            entry = upload_one(path, rank)
+        except Exception as exc:
+            # Left untaken on purpose: reading or scoring it failed, which a
+            # later sweep may not. No upload was attempted, so no key is spent.
+            logger.warning("design %s: not readable this sweep (%s)", path.name, exc)
+            continue
+        stream["taken"].add(key)
+        stream["next_rank"] = rank + 1
+        if entry is None:
+            continue
+        stream["designs"].append(entry)
+        send_heartbeat(
+            webhook_url,
+            job_id,
+            stage="designing",
+            designs_completed=len(stream["designs"]),
+            designs_total=designs_total,
+            new_candidate=entry,
+        )
+    if not require_stable:
+        # The loop above beats only on a design it TOOK, so a final sweep that
+        # took nothing -- every design already streamed -- would leave the last
+        # mid-run beat as the snapshot's final word, and that one carries the
+        # plan. A run that produced fewer designs than planned then reads
+        # incomplete to shared/job_recovery.py::_completion_signal, which
+        # refuses to rebuild it, discarding designs already in Storage: the
+        # exact loss streaming exists to prevent. Beating the measured total
+        # here unconditionally leaves the same figures as ``main``'s closing
+        # heartbeat. No ``new_candidate``, so this cannot re-deliver a design.
+        send_heartbeat(
+            webhook_url,
+            job_id,
+            stage="designing",
+            designs_completed=len(stream["designs"]),
+            designs_total=designs_total,
+        )
 
 
 def collect_artifacts(out_dir: Path) -> list[Path]:
@@ -556,11 +774,41 @@ def main() -> None:
             send_heartbeat(webhook_url, job_id, stage="designing", designs_total=total_passes)
 
             out_dir = workdir / "out"
+            # ---- run design.py, uploading each design as it lands ----
+            stream = new_design_stream()
+            upload_one = functools.partial(
+                _upload_design,
+                antigen_length=n_res,
+                epitope_positions=epitope_positions,
+                antigen_chain=antigen_chain,
+                upload_endpoint=upload_endpoint,
+                job_token=job_token,
+            )
+
+            def _sweep(require_stable: bool) -> None:
+                sweep_designs(
+                    out_dir, stream, upload_one,
+                    require_stable=require_stable,
+                    webhook_url=webhook_url, job_id=job_id,
+                    planned_total=total_passes,
+                    expected_chains=len(antibody) + 1,
+                )
+
             rc = run_iggm(
                 design_fasta, antigen_pdb, out_dir, run_task, epitope_positions,
                 max_antigen_size, num_samples, fasta_origin_path,
+                on_poll=lambda: _sweep(True),
             )
             if rc != 0:
+                # Designs the sweeps already uploaded are NOT surfaced here:
+                # _fail writes no "designs" key, and
+                # shared/job_recovery.py::recover_stuck_job_result refuses to
+                # rebuild a run whose pipeline exited failed. Whether
+                # a failed run should deliver them is a money question -- bucket
+                # "run" refunds today (tools/iggm/__init__.py:118-127) -- and is
+                # open with Leo, so this branch is unchanged. The mid-flight
+                # case streaming DOES fix is the container kill; see the header
+                # of tests/test_iggm_save_as_you_go.py.
                 _fail("run", "design.py", f"IgGM design.py exited with code {rc}")
 
             design_pdbs = collect_design_pdbs(out_dir)
@@ -570,36 +818,12 @@ def main() -> None:
                     runtime_seconds=int(time.time() - start),
                 )
 
-            # ---- upload designs + compute epitope-contact QC per design ----
-            designs_out: list[dict] = []
-            for i, pdb_path in enumerate(design_pdbs):
-                pdb_text = pdb_path.read_text()
-                contacts = epitope_contacts(pdb_text, n_res, epitope_positions)
-                # Index-prefix the key so per-sample outputs that share a basename
-                # (e.g. sample_0/pred.pdb, sample_1/pred.pdb) don't collide in storage.
-                uniq = f"{i:03d}_{pdb_path.stem}"
-                pdb_key = f"{uniq}.pdb"
-                try:
-                    urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                    upload_file(urls[pdb_key], pdb_text.encode("utf-8"), "chemical/x-pdb")
-                except Exception as exc:
-                    logger.warning("design %s: upload failed (%s) — skipping", pdb_key, exc)
-                    continue
-                entry = {
-                    "rank": i,
-                    "name": uniq,
-                    "pdb_key": pdb_key,
-                    "n_epitope_contacts": contacts["n_contacted"],
-                    "n_epitope": contacts["n_epitope"],
-                    "contacted_positions": contacts["contacted"],
-                    "antigen_chain": antigen_chain,
-                }
-                designs_out.append(entry)
-                send_heartbeat(
-                    webhook_url, job_id, stage="designing",
-                    designs_completed=len(designs_out), designs_total=len(design_pdbs),
-                    new_candidate=entry,
-                )
+            # design.py has exited, so nothing is still being written: take
+            # whatever the timed sweeps did not, with no stability wait. That
+            # sweep measures its own total rather than using the plan; see
+            # ``sweep_designs``.
+            _sweep(False)
+            designs_out = stream["designs"]
 
             # Before the artifact uploads, so a run that delivers no design
             # uploads no artifacts to Storage for a failed job.
