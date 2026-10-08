@@ -29,6 +29,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import time
 
 import pytest
 
@@ -118,9 +120,17 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
         # The bytes themselves, so a test can assert on content.
         calls.append(("put", url, data))
 
+    # ONE SEARCH INVOCATION, PINNED. ``parse_designs`` is stubbed to return the
+    # same ``rows`` whatever directory it is handed, so a two-chunk plan would
+    # deliver each fixture row twice under two ranks — a fiction no real search
+    # produces, since each chunk draws its own designs. The chunked path has its
+    # own tests (``TestChunkedSearch``); every test driving THIS helper is about
+    # the delivery loop, which is unchanged by chunking.
+    monkeypatch.setenv("PROTEINA_SEARCH_CHUNK_DESIGNS", "8")
     monkeypatch.setattr(
         rp, "run_streaming",
-        lambda cmd, wd: (calls.append(("search", tuple(cmd))) or 0))
+        lambda cmd, wd, timeout=None: (
+            calls.append(("search", tuple(cmd))) or 0))
     monkeypatch.setattr(rp, "parse_designs", lambda run_dir: rows)
     # break_read points at a path that was never written, so read_bytes raises
     # inside the same try the upload pair lives in — the inline path's only
@@ -183,10 +193,12 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
     return json.loads(result_file.read_text()), calls
 
 
-def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
+def _drive_real_parser(tmp_path, monkeypatch, *, rows=(), endpoint="",
                        break_upload_for=(), search_rc=0, write_outputs=True,
                        extra_files=None, expect_exit=False, cap_bytes=None,
-                       job_spec_extra=None, search_raises=None):
+                       job_spec_extra=None, search_raises=None,
+                       chunk_rows=None, chunk_rcs=(), chunk_designs=None,
+                       chunk_delay=0.0, design_timeout_s=None):
     """Drive ``main()`` with the REAL ``parse_designs`` and ``find_pdb_for``.
 
     ``_drive_design_loop`` above stubs both, which is right for the delivery
@@ -232,6 +244,22 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
     ``subprocess.TimeoutExpired`` reaches main() without waiting for a real
     subprocess.
 
+    ``chunk_rows`` is ONE ``rows`` list PER SEARCH INVOCATION, which is what
+    makes the chunked search testable: a real chunk draws its own designs, so
+    each list must name different ones, and a fake that re-emits one list would
+    assert a fiction. Setting it also lifts the single-invocation pin below and
+    records a ``("search", cmd, timeout)`` call per chunk so a test can see the
+    seed, the run name and the timeout each one was given. ``chunk_rcs`` is the
+    matching exit codes (default: ``search_rc`` for every chunk), and
+    ``chunk_designs`` sets ``PROTEINA_SEARCH_CHUNK_DESIGNS``.
+
+    ``chunk_delay`` sleeps that many seconds inside each fake search and
+    ``design_timeout_s`` sets ``PROTEINA_DESIGN_TIMEOUT_S``. Together they are
+    what makes the SHARED deadline observable: the chunk loop grants each
+    invocation whatever is left of one budget, so without real elapsed time
+    between two calls the two timeouts can read as equal on a coarse
+    ``time.monotonic``.
+
     Returns ``(result_dict, calls)``.
     """
     home = tmp_path / "proteina"
@@ -242,10 +270,19 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
 
     calls: list[tuple] = []
 
-    def fake_design(cmd, work_dir):
+    def fake_design(cmd, work_dir, timeout=None):
         # What `complexa design` leaves behind: the per-design PDBs and the
         # reward CSV. Written from inside run_streaming because main() wipes
         # and recreates ./inference immediately before calling it.
+        if chunk_rows is not None:
+            call = sum(1 for c in calls if c[0] == "search")
+            calls.append(("search", tuple(cmd), timeout))
+            batch = chunk_rows[call]
+            rc = chunk_rcs[call] if call < len(chunk_rcs) else search_rc
+        else:
+            batch, rc = rows, search_rc
+        if chunk_delay:
+            time.sleep(chunk_delay)
         for rel, blob in (extra_files or {}).items():
             dest = run_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -253,7 +290,7 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
         if not write_outputs:
             if search_raises is not None:
                 raise search_raises
-            return search_rc
+            return rc
         # BOTH pLDDT spellings, complementary, exactly as a real reward CSV
         # writes them: af2folding_plddt is the AfDesign LOSS (1 - pLDDT) and
         # af2folding_plddt_log is the metric. The fixture used to write only
@@ -266,7 +303,7 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
                   "af2folding_plddt,af2folding_plddt_log,af2folding_rmsd,"
                   "metadata_tag")
         lines = [header]
-        for name, reward, body in rows:
+        for name, reward, body in batch:
             pdb = run_dir / f"{name}.pdb"
             if body is not None:
                 pdb.write_bytes(body)
@@ -278,9 +315,11 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
             # in a late stage has already written its reward CSV, which is the
             # whole reason banking partial work is worth doing.
             raise search_raises
-        return search_rc
+        return rc
 
-    broken_bodies = [body for name, _reward, body in rows
+    broken_bodies = [body
+                     for batch in (chunk_rows or [rows])
+                     for name, _reward, body in batch
                      if body is not None and name in break_upload_for]
 
     def fake_request_upload_urls(ep, token, filenames):
@@ -292,6 +331,14 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
             raise RuntimeError("PUT failed: HTTP 500")
         calls.append(("put", url, data))
 
+    # ONE SEARCH INVOCATION UNLESS THE TEST ASKS FOR MORE, for the reason given
+    # in _drive_design_loop: without ``chunk_rows``, ``fake_design`` writes the
+    # same fixture rows every time it is called, so a two-chunk plan would
+    # deliver each of them twice.
+    monkeypatch.setenv(
+        "PROTEINA_SEARCH_CHUNK_DESIGNS",
+        str(chunk_designs) if chunk_designs is not None
+        else ("4" if chunk_rows is not None else "8"))
     monkeypatch.setattr(rp, "run_streaming", fake_design)
     monkeypatch.setattr(rp, "archive_raw_outputs", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -300,7 +347,18 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
             ("heartbeat", kw.get("stage"), kw.get("new_candidate"))))
     monkeypatch.setattr(rp, "request_upload_urls", fake_request_upload_urls)
     monkeypatch.setattr(rp, "upload_pdb", fake_upload_pdb)
-    monkeypatch.setattr(rp, "build_design_cmd", lambda **k: ["true"])
+
+    def fake_build_design_cmd(**kw):
+        # Recorded only for the chunked tests, which assert on the SEED and the
+        # RUN NAME each invocation was given — the two fields that stop two
+        # chunks of one config from redrawing the same designs. Unconditional
+        # recording would insert an entry into ``calls`` for every other test
+        # in this file.
+        if chunk_rows is not None:
+            calls.append(("cmd", kw))
+        return ["true"]
+
+    monkeypatch.setattr(rp, "build_design_cmd", fake_build_design_cmd)
     monkeypatch.setattr(rp, "shard_seed", lambda job_id: 1)
     if cap_bytes is not None:
         monkeypatch.setattr(rp, "INLINE_PDB_TOTAL_CAP_BYTES", cap_bytes)
@@ -330,6 +388,8 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
     monkeypatch.delenv("JOB_TOKEN", raising=False)
     monkeypatch.delenv("PROTEINA_INLINE_PDBS", raising=False)
     monkeypatch.delenv("PROTEINA_DESIGN_TIMEOUT_S", raising=False)
+    if design_timeout_s is not None:
+        monkeypatch.setenv("PROTEINA_DESIGN_TIMEOUT_S", str(design_timeout_s))
 
     if expect_exit:
         with pytest.raises(SystemExit) as exc:
@@ -3495,6 +3555,9 @@ class TestTheDesignSubprocessHasItsOwnDeadline:
             "'exited 124' is a number nobody can act on")
         assert "6600" in data["error"]["detail"]
         assert "PROTEINA_DESIGN_TIMEOUT_S" in data["error"]["detail"]
+        assert "killed" in data["error"]["detail"], (
+            "a process WAS killed here, and the sibling branch -- the budget "
+            "running out before a chunk is launched -- must not say so")
 
     def test_a_NON_timeout_crash_keeps_its_OWN_check_name(
             self, tmp_path, monkeypatch):
@@ -4113,7 +4176,7 @@ def _drive_registration(tmp_path, monkeypatch, *, target_chain,
     recorded: list[list[str]] = []
     monkeypatch.setattr(
         rp, "run_streaming",
-        lambda cmd, cwd: (recorded.append(list(cmd)) or 0))
+        lambda cmd, cwd, timeout=None: (recorded.append(list(cmd)) or 0))
     with pytest.raises(SystemExit):
         rp.prepare_custom_target(
             input_url="https://example.invalid/target.pdb", job_id="j1",
@@ -4223,3 +4286,455 @@ class TestAcceptedWebPathChanges:
             spans=(("A", 1, 200), ("B", 1, 200)))
         assert error["check"] == "target_registry", (
             f"a fully-present request was refused at {error['check']}")
+
+
+# ===========================================================================
+# The search runs in chunks, and each chunk's designs are banked before the
+# next one starts
+# ===========================================================================
+
+# Eight designs with rewards deliberately INTERLEAVED across the two chunks, so
+# "concatenate the chunks" and "sort the union by reward" are different answers
+# and the tests below can tell them apart. Reward is negative and higher is
+# better (see TestDeliveredRankIsDenseAndOneBased).
+_CHUNK_A = [("a_best", -1.0, b"A1\n"), ("a_mid", -4.0, b"A2\n"),
+            ("a_low", -6.0, b"A3\n"), ("a_worst", -8.0, b"A4\n")]
+_CHUNK_B = [("b_hi", -2.0, b"B1\n"), ("b_mid", -3.0, b"B2\n"),
+            ("b_low", -5.0, b"B3\n"), ("b_worst", -7.0, b"B4\n")]
+_BOTH = _CHUNK_A + _CHUNK_B
+# Best first. Written out rather than derived, so a sort bug in the test
+# helper cannot agree with the same bug in production.
+_REWARD_ORDER = ["a_best", "b_hi", "b_mid", "a_mid",
+                 "b_low", "a_low", "b_worst", "a_worst"]
+# The same name out of both invocations, which is what upstream really emits:
+# each `complexa design` writes its own reward CSV numbered from the start.
+_COLLIDE_A = [("sample_0", -1.0, b"A1\n"), ("sample_1", -4.0, b"A2\n")]
+_COLLIDE_B = [("sample_0", -2.0, b"B1\n"), ("sample_1", -3.0, b"B2\n")]
+# A chunk that exits 0, writes its PDBs and a reward CSV, and leaves the
+# total_reward column BLANK. parse_designs keeps those rows (it sorts them last
+# rather than dropping them) and the delivery loop uploads them, so this is the
+# shape where ``n_scored == 0`` coexists with designs already in Storage — the
+# state the two tests below are about. A column/scoring failure, which
+# delivery_verdict already has a name for (``no_scores_delivered``).
+_UNSCORED = [("u_one", "", b"U1\n"), ("u_two", "", b"U2\n")]
+
+
+def _csv_names(records):
+    """Each record's name with the ``_cN`` invocation suffix taken back off.
+
+    Used where the assertion is about ORDER or about which rows were parsed.
+    The suffix itself belongs to
+    TestChunkedSearch::test_the_same_csv_name_from_two_chunks_stays_two_names,
+    and a single-invocation run carries none (every non-chunked test here
+    asserts the bare name)."""
+    return [re.sub(r"_c[0-9]+$", "", r["name"]) for r in records]
+
+
+def _chunked(tmp_path, monkeypatch, **kw):
+    """``_drive_real_parser`` on a two-chunk plan, through the upload path."""
+    kw.setdefault("chunk_rows", [_CHUNK_A, _CHUNK_B])
+    kw.setdefault("chunk_designs", 4)
+    return _drive_real_parser(
+        tmp_path, monkeypatch, endpoint="https://hub/urls", **kw)
+
+
+class TestTheSearchPlan:
+    """``plan_search_chunks`` and its env override, as pure functions."""
+
+    def test_a_hub_shard_is_split_in_two(self):
+        """nsamples=4 x replicas=2 is what build_payload sends for every hub
+        job (tools/proteina/__init__.py _SHARD_NSAMPLES / _SHARD_REPLICAS), and
+        the default has to actually divide it: a chunk of 8 designs would have
+        been arithmetically inert on the only profile the hub ever runs."""
+        assert rp.plan_search_chunks(
+            4, 2, rp.SEARCH_CHUNK_DEFAULT_DESIGNS) == [2, 2]
+
+    def test_the_direct_64_design_path_is_split_in_four_not_sixteen(self):
+        """tools/proteina/shard_driver.py runs NSAMPLES=16 x REPLICAS=4. At the
+        bare default that is 16 invocations each re-paying the fixed pipeline
+        cost; MAX_SEARCH_CHUNKS raises the chunk size instead."""
+        plan = rp.plan_search_chunks(16, 4, rp.SEARCH_CHUNK_DEFAULT_DESIGNS)
+        assert plan == [4, 4, 4, 4]
+        assert sum(plan) * 4 == 64
+
+    def test_the_plan_never_exceeds_the_chunk_ceiling(self):
+        """And it always sums back to nsamples, with no empty invocation. More
+        chunks than the ceiling is paid-for overhead nobody approved; a plan
+        that does not sum to nsamples silently moves designs_total, which is
+        what the run was quoted on."""
+        for nsamples in range(1, 33):
+            for replicas in (1, 2, 3, 4, 8):
+                plan = rp.plan_search_chunks(
+                    nsamples, replicas, rp.SEARCH_CHUNK_DEFAULT_DESIGNS)
+                assert sum(plan) == nsamples, (nsamples, replicas, plan)
+                assert all(n >= 1 for n in plan), (nsamples, replicas, plan)
+                assert len(plan) <= rp.MAX_SEARCH_CHUNKS, (
+                    nsamples, replicas, plan)
+
+    def test_a_chunk_that_holds_everything_is_one_invocation(self):
+        """This file's behaviour before chunking, still reachable: it is what
+        the override restores."""
+        assert rp.plan_search_chunks(4, 2, 999) == [4]
+
+    def test_the_env_override_is_parsed_as_defensively_as_the_timeout(
+            self, monkeypatch):
+        """Read inside _run_shard, so a bad value must fall back rather than
+        raise: there is no result file to write an error into yet."""
+        for raw in ("", "   ", "nonsense", "0", "-3"):
+            monkeypatch.setenv("PROTEINA_SEARCH_CHUNK_DESIGNS", raw)
+            assert (rp._search_chunk_designs()
+                    == rp.SEARCH_CHUNK_DEFAULT_DESIGNS), raw
+        monkeypatch.delenv("PROTEINA_SEARCH_CHUNK_DESIGNS")
+        assert rp._search_chunk_designs() == rp.SEARCH_CHUNK_DEFAULT_DESIGNS
+        monkeypatch.setenv("PROTEINA_SEARCH_CHUNK_DESIGNS", "16")
+        assert rp._search_chunk_designs() == 16
+
+
+class TestChunkedSearch:
+    """End to end through ``main()`` with two real search invocations."""
+
+    def test_each_chunk_is_banked_before_the_next_search_starts(
+            self, tmp_path, monkeypatch):
+        """THE WHOLE POINT OF CHUNKING. If chunk 1's uploads and heartbeats
+        landed after chunk 2's search, a stop during chunk 2 would still lose
+        everything: shared/job_recovery.py::reconstruct rebuilds a stopped job
+        from the objects already in Storage, so "already uploaded" is the only
+        state that survives.
+
+        Asserted as an ORDERING of the real call stream, not as a count."""
+        _, calls = _chunked(tmp_path, monkeypatch)
+        searches = [i for i, c in enumerate(calls) if c[0] == "search"]
+        assert len(searches) == 2, [c[0] for c in calls]
+        puts = [i for i, c in enumerate(calls) if c[0] == "put"]
+        beats = [i for i, c in enumerate(calls)
+                 if c[0] == "heartbeat" and c[2] is not None]
+        assert len(puts) == 8 and len(beats) == 8
+        assert sum(1 for i in puts if i < searches[1]) == 4, (
+            "chunk 1's designs were not uploaded before chunk 2 started")
+        assert sum(1 for i in beats if i < searches[1]) == 4, (
+            "chunk 1's designs were not announced before chunk 2 started")
+
+    def test_the_search_itself_now_heartbeats(self, tmp_path, monkeypatch):
+        """Before chunking this shard announced ``searching`` once and went
+        quiet until the subprocess returned, which is why an overrunning
+        proteina run is warned about late: the hub had no timestamp fresher
+        than the model load to measure the search against. One per chunk now,
+        each immediately BEFORE its search.
+
+        ``new_candidate is None`` is what separates these from the per-design
+        heartbeat, which carries the same ``searching`` stage."""
+        _, calls = _chunked(tmp_path, monkeypatch)
+        bare = [c for c in calls
+                if c[0] == "heartbeat" and c[1] == "searching" and c[2] is None]
+        assert len(bare) == 2, [(c[1], c[2] is None) for c in calls
+                                if c[0] == "heartbeat"]
+        for n, c in enumerate(calls):
+            if c[0] == "search":
+                assert calls[n - 1] == ("heartbeat", "searching", None), (
+                    f"the search at index {n} was not preceded by its "
+                    f"heartbeat; got {calls[n - 1]}")
+
+    def test_every_chunk_gets_its_own_seed_and_run_name(
+            self, tmp_path, monkeypatch):
+        """gen_njobs=1 pins job_id to 0, so the seed is the ONLY thing that
+        makes two invocations of one config draw different lengths (see
+        build_design_cmd). A reused seed would spend chunk 2's GPU redrawing
+        chunk 1's designs.
+
+        nsamples is split and replicas is NOT: nsamples draws the binder
+        lengths and replicas gives independent designs per length, so each
+        chunk still produces lengths-with-replicates. Splitting replicas
+        instead would be a different experiment, not a smaller one."""
+        _, calls = _chunked(tmp_path, monkeypatch)
+        cmds = [c[1] for c in calls if c[0] == "cmd"]
+        assert len(cmds) == 2
+        assert len({k["seed"] for k in cmds}) == 2, [k["seed"] for k in cmds]
+        assert len({k["run_name"] for k in cmds}) == 2
+        assert [k["nsamples"] for k in cmds] == [2, 2]
+        assert [k["replicas"] for k in cmds] == [2, 2]
+        assert sum(k["nsamples"] * k["replicas"] for k in cmds) == 8
+
+    def test_each_chunk_parses_its_own_directory(self, tmp_path, monkeypatch):
+        """TWO SILENT COLLISIONS, both in ./inference: generate.py early-exits
+        on an existing ``results_<config>_<job_id>.csv`` (job_id pinned to 0),
+        and find_reward_csv returns the first sorted hit of ``**/*.csv``. Either
+        would hand chunk 2 chunk 1's rows on billed GPU. Observable here as the
+        delivered names being the eight the two fixtures wrote: under a
+        collision chunk 1's four arrive twice and chunk 2's four not at all.
+        Compared with the invocation suffix stripped, so that the suffix --
+        which would make a re-emitted row look like a new one -- cannot stand
+        in for the thing being tested."""
+        result, _ = _chunked(tmp_path, monkeypatch)
+        names = _csv_names(result["candidates"])
+        assert sorted(names) == sorted(n for n, _, _ in _BOTH), names
+        assert result["designs_completed"] == 8
+        inference = tmp_path / "proteina" / "inference"
+        subdirs = sorted(p.name for p in inference.iterdir()
+                         if p.is_dir() and p.name.startswith("chunk_"))
+        assert subdirs == ["chunk_00", "chunk_01"], subdirs
+        assert not list(inference.glob("*.csv")), (
+            "a chunk's reward CSV was left at the inference root, where the "
+            "next chunk's find_reward_csv would pick it up")
+
+    def test_the_delivered_ranks_and_keys_are_still_dense_and_unique(
+            self, tmp_path, monkeypatch):
+        """The constraint chunking is most able to break. A rank is assigned
+        ONCE: the live status page keys its rows on the rank value and
+        overwrites them, and re-requesting a signed upload URL for a key that
+        already exists is refused at signing. Per-chunk counters would restart
+        at 1, so chunk 2 would overwrite chunk 1's live rows and ask for URLs
+        for keys already written."""
+        result, calls = _chunked(tmp_path, monkeypatch)
+        assert sorted(c["rank"] for c in result["candidates"]) == list(
+            range(1, 9))
+        keys = sorted(c["pdb_key"] for c in result["candidates"])
+        assert keys == [f"designs/design_{i:03d}.pdb" for i in range(1, 9)]
+        requested = [f for c in calls if c[0] == "request" for f in c[3]]
+        assert len(requested) == 8
+        assert len(set(requested)) == 8, requested
+
+    def test_two_chunks_deliver_the_single_run_order(
+            self, tmp_path, monkeypatch):
+        """THE ORDER THE OPERATOR READS IS THE ORDER ONE INVOCATION PRODUCED.
+        parse_designs only ever sees one chunk, so the rank it counts off is
+        per-chunk; the delivered LISTS are reordered by reward afterwards
+        (``_reward_order``). Checked against the same eight designs run as a
+        single invocation as well as against a written-out expectation, so a
+        sort bug cannot agree with itself.
+
+        Through ``shared.jobs.page_ordered_records`` too: that is the function
+        the CSV, FASTA and ZIP export routes read (blueprints/jobs.py:1558,
+        :1600, :1846), and for a proteina result — a non-empty stored
+        ``candidates`` — it returns the list as stored, which is why the fix
+        had to be made in the list and not in _DESIGNS_PAGE_SORT."""
+        from shared.jobs import page_ordered_records
+
+        (tmp_path / "single").mkdir()
+        (tmp_path / "chunked").mkdir()
+        one, _ = _drive_real_parser(
+            tmp_path / "single", monkeypatch, endpoint="https://hub/urls",
+            chunk_rows=[_BOTH], chunk_designs=999)
+        two, _ = _chunked(tmp_path / "chunked", monkeypatch)
+        assert len(one["candidates"]) == len(two["candidates"]) == 8
+        assert [c["name"] for c in one["candidates"]] == _REWARD_ORDER, (
+            "the single invocation is the reference order, and it carries no "
+            "invocation suffix")
+        assert _csv_names(two["candidates"]) == _REWARD_ORDER
+        assert (_csv_names(page_ordered_records("proteina", two))
+                == _csv_names(page_ordered_records("proteina", one)))
+        assert (_csv_names(two["designs"])
+                == _csv_names(one["designs"]))
+
+    def test_the_same_csv_name_from_two_chunks_stays_two_names(
+            self, tmp_path, monkeypatch):
+        """WHAT UPSTREAM REALLY EMITS. parse_designs takes the name from the
+        reward CSV's sample column and falls back to the row's index within
+        that one CSV, and every invocation writes a fresh CSV numbered from the
+        start beside flat sample_N.pdb files — the premise isolate_chunk_outputs
+        itself is built on. So a two-chunk shard delivered two designs called
+        ``sample_0`` with different scores: rank and pdb_key stayed dense and
+        unique, so no export and no download was wrong, but the label the
+        operator reads and quotes was.
+
+        The suffix has to say WHICH invocation, not merely be unique: a bare
+        counter would renumber silently if the chunk order ever changed."""
+        result, calls = _drive_real_parser(
+            tmp_path, monkeypatch, endpoint="https://hub/urls",
+            chunk_rows=[_COLLIDE_A, _COLLIDE_B], chunk_designs=4)
+        names = [c["name"] for c in result["candidates"]]
+        assert len(set(names)) == 4, names
+        assert sorted(names) == ["sample_0_c1", "sample_0_c2",
+                                 "sample_1_c1", "sample_1_c2"], names
+        # The suffix names the invocation it came from, checked against the
+        # score only that fixture carries: _COLLIDE_A's sample_0 is -1.0,
+        # _COLLIDE_B's is -2.0.
+        reward = {c["name"]: c["scores"]["total_reward"]
+                  for c in result["candidates"]}
+        assert reward["sample_0_c1"] == -1.0, reward
+        assert reward["sample_0_c2"] == -2.0, reward
+        # Still spent once and still dense: the rename happens after the PDB
+        # match and after the key is cut, and touches neither.
+        assert sorted(c["rank"] for c in result["candidates"]) == [1, 2, 3, 4]
+        assert len({c["pdb_key"] for c in result["candidates"]}) == 4
+        # AND EACH NAME CARRIES ITS OWN CHUNK'S STRUCTURE, not just its own
+        # score: the suffix is on the candidate, the bytes went up under the
+        # pdb_key, and these assert the two agree. The fixtures make every
+        # row's bytes distinct so they can.
+        #
+        # NOT PINNED HERE: that the rename sits AFTER find_pdb_for. Moving it
+        # before makes the name match miss (``sample_0_c1`` is not in
+        # ``sample_0.pdb``) and drops the row to find_pdb_for's positional
+        # fallback -- which, with the PDB count equal to the row count, returns
+        # the same file for these fixtures, so this test passes either way
+        # (measured, not assumed: that mutation survives). The ordering is
+        # there because an exact name match beats relying on a sort order
+        # happening to agree, not because a test defends it.
+        uploaded = {c[1].rsplit("/", 1)[-1]: c[2]
+                    for c in calls if c[0] == "put"}
+        by_name = {c["name"]: c["pdb_key"].rsplit("/", 1)[-1]
+                   for c in result["candidates"]}
+        assert uploaded[by_name["sample_0_c1"]] == b"A1\n", uploaded
+        assert uploaded[by_name["sample_0_c2"]] == b"B1\n", uploaded
+        assert uploaded[by_name["sample_1_c1"]] == b"A2\n", uploaded
+
+    def test_reordering_does_not_renumber_a_single_key(
+            self, tmp_path, monkeypatch):
+        """The other half of the fix, and the half that keeps it legal. The
+        rank, the name and the pdb_key are spent the moment the design is
+        heartbeated and PUT, so only the list ORDER may move: row 2 of the page
+        is allowed to carry rank 5, and the "#" column is a position anyway
+        (templates/components/candidate_table.html:824 prints ``loop.index``,
+        never ``cand.rank``). ``designs`` and ``candidates`` must move
+        together, because every consumer pairs them by position."""
+        result, calls = _chunked(tmp_path, monkeypatch)
+        put_order = [c[1].rsplit("/", 1)[-1] for c in calls if c[0] == "put"]
+        by_rank = {c["rank"]: c["pdb_key"].rsplit("/", 1)[-1]
+                   for c in result["candidates"]}
+        assert [by_rank[i] for i in range(1, 9)] == put_order, (
+            "a delivered key no longer names the object that was uploaded "
+            "for it")
+        assert [c["rank"] for c in result["candidates"]] != list(range(1, 9)), (
+            "this fixture is meant to make reward order differ from assignment "
+            "order; if it does not, the test above proves nothing")
+        assert ([(d["rank"], d["name"]) for d in result["designs"]]
+                == [(c["rank"], c["name"]) for c in result["candidates"]])
+
+    def test_the_search_stops_at_the_first_failing_chunk(
+            self, tmp_path, monkeypatch):
+        """A nonzero exit is a property of the RUN far more often than of one
+        draw — a missing weight, an OOM, a config the variant cannot serve — so
+        the next chunk would most likely buy the same failure with another
+        stretch of GPU. What the failing chunk banked is still delivered, and
+        ``partial`` says the set is short."""
+        result, calls = _chunked(tmp_path, monkeypatch, chunk_rcs=(1, 0))
+        assert sum(1 for c in calls if c[0] == "search") == 1, (
+            "chunk 2 was started after chunk 1 exited nonzero")
+        assert result["status"] == "COMPLETED"
+        assert result["partial"] is True
+        assert result["search"]["exit_code"] == 1
+        assert [c["name"] for c in result["candidates"]] == [
+            "a_best_c1", "a_mid_c1", "a_low_c1", "a_worst_c1"], (
+            "chunk 1's designs, and the suffix says which invocation they "
+            "came out of")
+
+    def test_a_nonzero_exit_with_nothing_scored_anywhere_still_fails(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL on the rule above, and the rule production is aligned
+        to: a shard fails exactly when the search exited nonzero AND scored
+        nothing. ``shard_delivery`` (tools/proteina/_canary_scoring.py:2205)
+        judges the same thing from ``n_scored_designs`` alone and cannot see a
+        chunk plan at all, so
+        this condition must not grow a chunk-shaped exception. "Anywhere" is
+        the other half, asserted by the sibling below."""
+        result, calls = _chunked(
+            tmp_path, monkeypatch, chunk_rows=[[], _CHUNK_B],
+            chunk_rcs=(1, 0), expect_exit=True)
+        assert sum(1 for c in calls if c[0] == "search") == 1
+        assert result["error"]["check"] == "complexa"
+
+    def test_a_later_chunk_failing_after_an_earlier_one_scored_is_delivered(
+            self, tmp_path, monkeypatch):
+        """THE SCORED COUNT IS THE WHOLE SEARCH'S, NOT THE LAST CHUNK'S, which
+        is the point of chunking: the run is still worth its GPU when the thing
+        that failed came after the designs. A per-chunk count would read 0 here
+        and fail a shard that has four fully scored designs banked and
+        uploaded — the regression chunking would otherwise introduce into a
+        rule that predates it."""
+        result, calls = _chunked(
+            tmp_path, monkeypatch, chunk_rows=[_CHUNK_A, []],
+            chunk_rcs=(0, 1))
+        assert sum(1 for c in calls if c[0] == "search") == 2
+        assert result["status"] == "COMPLETED"
+        assert result["partial"] is True
+        assert result["search"]["exit_code"] == 1
+        assert [c["name"] for c in result["candidates"]] == [
+            "a_best_c1", "a_mid_c1", "a_low_c1", "a_worst_c1"], (
+            "chunk 1's designs, and the suffix says which invocation they "
+            "came out of")
+
+    def test_a_failing_chunk_keeps_what_an_earlier_one_delivered(
+            self, tmp_path, monkeypatch):
+        """A FAILED result must still carry the designs that are in Storage.
+        ``_fail`` writes status, error, tier and provider_job_id and nothing
+        else — no ``candidates`` key at all — which before chunking was safe
+        because the ladder ran once, before any upload. Between chunks it is
+        not: an unscored first chunk is uploaded and announced as
+        ``new_candidate``, and failing bare would leave coordinates in Storage
+        that no result points at, on a billed A100.
+
+        ``n_scored == 0`` with designs delivered is the reachable combination —
+        parse_designs keeps a row whose total_reward column is blank — and the
+        run is still reported FAILED here, through delivery_verdict, which
+        keeps the list. The verdict is the same; what differs is whether the
+        operator can reach what was paid for."""
+        result, calls = _chunked(
+            tmp_path, monkeypatch, chunk_rows=[_UNSCORED, []],
+            chunk_rcs=(0, 1), expect_exit=True)
+        assert sum(1 for c in calls if c[0] == "put") == 2, (
+            "the fixture is meant to upload chunk 1's two designs before "
+            "chunk 2 fails; if it does not, this test proves nothing")
+        assert result["status"] == "FAILED"
+        assert result["error"]["check"] == "no_scores_delivered", result["error"]
+        assert _csv_names(result["candidates"]) == ["u_one", "u_two"], (
+            "the designs already in Storage were dropped from the result")
+        assert all(c["scores"]["total_reward"] is None
+                   for c in result["candidates"])
+        assert result["partial"] is True
+        assert result["search"]["exit_code"] == 1
+
+    def test_running_out_of_budget_keeps_what_an_earlier_chunk_delivered(
+            self, tmp_path, monkeypatch):
+        """The same rule on the other ladder. Reported as the timeout it is —
+        ``search.status`` and the knob name — rather than as the bare
+        ``_fail_search_timeout`` result, because two designs are in Storage by
+        then."""
+        result, calls = _chunked(
+            tmp_path, monkeypatch, chunk_rows=[_UNSCORED, _CHUNK_B],
+            design_timeout_s=0.05, chunk_delay=0.2, expect_exit=True)
+        assert sum(1 for c in calls if c[0] == "search") == 1, (
+            "chunk 2 was started with no budget left")
+        assert sum(1 for c in calls if c[0] == "put") == 2
+        assert result["status"] == "FAILED"
+        assert result["error"]["check"] == "no_scores_delivered", result["error"]
+        assert _csv_names(result["candidates"]) == ["u_one", "u_two"]
+        assert result["search"]["status"] == "timeout"
+        assert result["search"]["exit_code"] == rp.SEARCH_TIMEOUT_RC
+
+    def test_the_chunks_share_one_deadline_rather_than_one_each(
+            self, tmp_path, monkeypatch):
+        """N chunks each granted the full PROTEINA_DESIGN_TIMEOUT_S would
+        overrun the container ceiling that constant exists to stay under, and
+        the parent would then be killed with no result file written at all —
+        the exact outcome the timeout exists to prevent. Each chunk gets what
+        is LEFT, so the grants strictly decrease."""
+        _, calls = _chunked(tmp_path, monkeypatch,
+                            design_timeout_s=30, chunk_delay=0.05)
+        grants = [c[2] for c in calls if c[0] == "search"]
+        assert len(grants) == 2
+        assert grants[0] <= 30
+        assert grants[1] < grants[0], grants
+
+    def test_running_out_of_budget_mid_plan_is_a_timeout_not_a_clean_finish(
+            self, tmp_path, monkeypatch):
+        """The hole this nearly shipped with: the chunk loop returned when the
+        budget ran out, and a search that had banked nothing then fell through
+        to the zero-survivor branch and wrote ``status: COMPLETED`` — a billed
+        GPU reporting a clean run that produced nothing. Its own check name,
+        because "the search ran out of time" names the knob that moves, where
+        "exited 124" is a number nobody can act on."""
+        result, calls = _chunked(
+            tmp_path, monkeypatch, chunk_rows=[[], _CHUNK_B],
+            design_timeout_s=0.05, chunk_delay=0.2, expect_exit=True)
+        assert sum(1 for c in calls if c[0] == "search") == 1, (
+            "chunk 2 was started with no budget left")
+        assert result["status"] != "COMPLETED"
+        assert result["error"]["check"] == "timeout"
+        assert "PROTEINA_DESIGN_TIMEOUT_S" in result["error"]["detail"]
+        assert "killed" not in result["error"]["detail"], (
+            "the REFUSED chunk was never launched, so nothing was killed. "
+            "Chunk 1 did launch -- the search-call assertion above counts it "
+            "-- it just scored nothing, which is why this path is reached at "
+            "all; telling an operator the container killed the process it "
+            "never started is still a false report of what it did. The killed "
+            "wording belongs to the sibling branch, pinned by "
+            "test_a_timeout_with_NOTHING_banked_is_a_STRUCTURED_failure")

@@ -1600,7 +1600,7 @@ class TestCustomTargetRegistration:
         # stubbed) instead, so the download's own refusal path is exercised.
         monkeypatch.setattr(rp, "download_target", download or fake_download)
 
-        def fake_run(cmd, cwd):
+        def fake_run(cmd, cwd, timeout=None):
             calls.append(list(cmd))
             if cmd[:3] == [rp.COMPLEXA_BIN, "target", "add"] and not fail_registration:
                 key = cmd[3]
@@ -1621,6 +1621,11 @@ class TestCustomTargetRegistration:
                 }
                 registry.write_text(yaml.safe_dump(data, sort_keys=False))
             return 0
+        # ONE SEARCH INVOCATION, PINNED: this fake re-emits the SAME designs
+        # on every call, so a multi-chunk plan would deliver each of them
+        # twice. Chunking is covered by TestChunkedSearch in
+        # tests/test_proteina_delivery.py.
+        monkeypatch.setenv("PROTEINA_SEARCH_CHUNK_DESIGNS", "8")
         monkeypatch.setattr(rp, "run_streaming", fake_run)
 
         payload = {
@@ -7232,7 +7237,7 @@ class TestUploadLoopNumbering:
 
         design = self._design_text() if design_text is None else design_text
 
-        def fake_run(cmd, cwd):
+        def fake_run(cmd, cwd, timeout=None):
             if cmd[:3] == [rp.COMPLEXA_BIN, "target", "add"]:
                 import yaml
                 data = yaml.safe_load(registry.read_text()) or {}
@@ -7261,6 +7266,11 @@ class TestUploadLoopNumbering:
             (run_dir / "rewards_shard.csv").write_bytes(
                 ("\n".join(rows) + "\n").encode("latin-1"))
             return 0
+        # ONE SEARCH INVOCATION, PINNED: this fake re-emits the SAME designs
+        # on every call, so a multi-chunk plan would deliver each of them
+        # twice. Chunking is covered by TestChunkedSearch in
+        # tests/test_proteina_delivery.py.
+        monkeypatch.setenv("PROTEINA_SEARCH_CHUNK_DESIGNS", "8")
         monkeypatch.setattr(rp, "run_streaming", fake_run)
 
         uploaded: dict[str, bytes] = {}
