@@ -90,9 +90,16 @@ def test_preset_specific_shapes_round_trip(tools_app, slug, form):
     assert _resubmit(adapter, html) == _public(inputs)
 
 
-@pytest.mark.parametrize("headers", [("H", "L"), ("heavy_chain", "light_chain")])
-def test_colabfold_multimer_clone_resubmits(tools_app, headers):
-    """Two-record submit -> stored ':'-joined record -> clone form -> the same inputs."""
+@pytest.mark.parametrize("headers,shown", [
+    (("H", "L"), ("H", "L")),
+    (("heavy_chain", "light_chain"), ("chain_1", "chain_2")),
+])
+def test_colabfold_multimer_clone_resubmits(tools_app, headers, shown):
+    """Two-record submit -> stored ':'-joined record -> clone form -> resubmit.
+
+    ``shown`` is the chain names the clone form offers; the second case has
+    more underscores than the join added, so its names fall back.
+    """
     flask_app, adapters = tools_app
     adapter = _adapter(adapters, "colabfold")
     chains = ("MKWVTFISLLFLFSSAYS", "QVQLVESGGGLVQPGG")
@@ -101,8 +108,12 @@ def test_colabfold_multimer_clone_resubmits(tools_app, headers):
     assert err is None, err
     assert inputs["fasta_text"] == f">{'_'.join(headers)}\n{':'.join(chains)}"
     html = _clone(flask_app, "colabfold", inputs)
-    assert ":" not in _posted_value(html, "fasta_text")
-    assert _resubmit(adapter, html) == _public(inputs)
+    assert _posted_value(html, "fasta_text") == "\n".join(
+        f">{n}\n{c}" for n, c in zip(shown, chains)
+    )
+    assert _resubmit(adapter, html) == dict(
+        _public(inputs), fasta_text=f">{'_'.join(shown)}\n{':'.join(chains)}"
+    )
 
 
 def test_iggm_restores_the_qa_fields(tools_app):
