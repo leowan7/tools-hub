@@ -3,9 +3,11 @@
 Modal app: ``ranomics-iggm-prod``. GPU: A100-40GB. Atomic primitive.
 
 IgGM (Tencent AI4S, ICLR 2025, MIT) is a generative diffusion model for
-antibody/nanobody engineering. One model covers antibody-antigen complex
-structure prediction, CDR design, framework redesign / humanization,
-affinity maturation, and inverse (sequence-from-structure) design.
+antibody/nanobody engineering. Upstream, one model covers antibody-antigen
+complex structure prediction, CDR design, framework redesign /
+humanization, affinity maturation, and inverse (sequence-from-structure)
+design. This tool offers the first three; see ``_SEQUENCE_ONLY_PRESETS``
+for why the other two are refused.
 
 Presets map to IgGM's ``--run_task`` (argparse choices are
 ``design`` / ``inverse_design`` / ``fr_design`` / ``affinity_maturation``,
@@ -21,6 +23,10 @@ three each map to their own ``--run_task``:
 - ``affinity_maturation`` — variants to improve binding; needs a wild-type
   reference (``--fasta_origin``) + ``--num_samples``.
 - ``inverse_design``      — sequence from backbone.
+
+``affinity_maturation`` and ``inverse_design`` are REFUSED by ``validate``
+and are not offered as presets; see ``_SEQUENCE_ONLY_PRESETS`` below for the
+upstream line that makes them undeliverable here.
 
 Input model (single-source-of-truth for the antigen):
 the user pastes only the *antibody* chains as FASTA (``>H`` required,
@@ -91,6 +97,35 @@ _PRESETS = tuple(_PRESET_RUN_TASK.keys())
 # (against the wild-type reference), and its total compute scales with their
 # count, so "no masks" is a no-op we reject up front.
 _MASK_REQUIRED = {"cdr_design", "fr_design", "affinity_maturation"}
+# Presets IgGM will run but this pipeline cannot deliver. Refused in
+# ``validate``, before any GPU dispatch. NOT before the wallet hold on the
+# atomic submit: ``@requires_wallet`` places the hold before the handler body
+# runs (blueprints/tools.py::tool_submit), and the refusal's early return
+# leaves ``g.wallet_hold_consumed`` False, which releases the hold uncharged
+# (shared/wallet_guard.py::requires_wallet). The launch, estimate and campaign
+# routes do refuse ahead of any hold.
+#
+# ``AbDesign.infer_pdb`` in upstream ``IgGM/deploy/ab_design.py``, lines
+# 112-114 at the pinned IGGM_SHA=06abc563b3fc8c7ea020543add16b69b6f8a1c8d
+# (tools/iggm/Dockerfile.modal) -- a line cite because that file is not tracked
+# here, and durable because the SHA pins it --
+# writes the FASTA unconditionally and then gates the structure on
+# ``if task == 'design' or task == 'fr_design'``, so these two ``--run_task``
+# values emit no .pdb at all. ``run_pipeline.py::collect_design_pdbs`` globs
+# ``**/*.pdb``, finds nothing, and ``main`` calls ``_fail("run", "output",
+# "IgGM produced no PDB outputs")``, which exits before ``collect_artifacts``
+# globs the FASTA that WAS written. So the run burns its full GPU allocation
+# and delivers nothing. ``shared/jobs.py::classify_terminal_state`` answers
+# ``unclassified`` (bucket "run" is absent from
+# shared/jobs.py::_ERROR_BUCKET_TO_FAILURE_CLASS), that class is listed in
+# ``_REFUNDED_FAILURE_CLASSES``, and
+# ``shared/jobs.py::_settle_wallet_hold_for_completed_job`` calls
+# ``release_hold`` for it -- so the customer is not billed and Ranomics pays
+# for the GPU. The Workspace cap is a separate counter and is still debited:
+# ``shared/jobs.py::_charge_workspace_for_completed_job`` gates on
+# ``status in ("succeeded", "failed")`` and ``gpu_seconds_used > 0`` alone and
+# never reads the failure class (#345, not changed here).
+_SEQUENCE_ONLY_PRESETS = frozenset({"affinity_maturation", "inverse_design"})
 
 
 def _parse_epitope(raw: str) -> tuple[Optional[list[int]], Optional[str]]:
@@ -195,6 +230,14 @@ def validate(
     preset = (form.get("preset") or "complex_prediction").strip()
     if preset not in _PRESETS:
         return None, "Pick a preset."
+    # Kept in _PRESET_RUN_TASK on purpose: a retried or cloned job, or an API
+    # caller, still posts these slugs, and they earn this sentence rather than
+    # the bare "Pick a preset." an unknown slug gets.
+    if preset in _SEQUENCE_ONLY_PRESETS:
+        return None, (
+            "This mode is switched off for now: at the IgGM version we run it "
+            "writes sequences only, and results need a structure."
+        )
 
     antibody, ab_err = _parse_antibody_fasta(form.get("fasta") or "")
     if ab_err:
@@ -365,11 +408,16 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     ``validate``) are RECOMPUTED here from the injected count for every preset
     except ``affinity_maturation``. design.py produces exactly ``num_samples``
     designs for those presets, so ``total_passes == num_samples``.
-    ``affinity_maturation`` is atomic-only (rejected on the campaign route), so
-    its stored ``total_passes`` (= num_samples * n_masked, computed in
-    ``validate``) stays authoritative. The atomic path is unchanged for every
-    preset (there ``inputs['total_passes']`` already equals the recomputed
-    value)."""
+    The ``affinity_maturation`` arm is currently unreachable: every caller of
+    this function is preceded by a ``validate`` that refuses the preset
+    (blueprints/tools.py::tool_submit, targets.py::_collect_launch_specs) or by
+    ``campaign_preset_refusal``, and there is no route that rebuilds a payload
+    from a stored job's inputs. It is kept so the maturation math stays correct
+    if the preset is switched back on: its ``total_passes``
+    (= num_samples * n_masked, computed in ``validate``) is authoritative and
+    must not be overwritten by the injected count. The atomic path is unchanged
+    for every preset (there ``inputs['total_passes']`` already equals the
+    recomputed value)."""
     num_samples = int(inputs["num_samples"])
     if inputs["preset"] == "affinity_maturation":
         total_passes = int(inputs.get("total_passes") or num_samples)
@@ -436,26 +484,6 @@ adapter = ToolAdapter(
             ),
             requires_pdb=True,
             long_running=True,
-        ),
-        Preset(
-            slug="affinity_maturation",
-            label="Affinity maturation",
-            description=(
-                "Improve binding by exploring variants at the positions you "
-                "mask with X, against a wild-type reference (same length, no "
-                "masks). It designs one variant per masked position per sample, "
-                "so a few samples over a short loop already gives a rich set."
-            ),
-            requires_pdb=True,
-            long_running=True,
-        ),
-        Preset(
-            slug="inverse_design",
-            label="Inverse design (sequence from structure)",
-            description=(
-                "Recover the antibody sequence given the complex backbone."
-            ),
-            requires_pdb=True,
         ),
     ),
     validate=validate,

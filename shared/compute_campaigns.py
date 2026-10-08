@@ -76,9 +76,14 @@ SUPPORTED_TOOLS: tuple[str, ...] = (
     # design.py itself (random.seed(time.time()) + un-fixed torch RNG) so
     # shards diverge. num_samples scales the shard count. LINEAR (not
     # fixed-container); its campaign preset is the design VARIANT, like
-    # proteina. Ships behind FLAG_TOOL_IGGM (off). affinity_maturation is
-    # EXCLUDED from campaigns in blueprints/campaigns.py (its delivered count
-    # = num_samples * n_masked breaks the count==chunk invariant).
+    # proteina. Ships behind FLAG_TOOL_IGGM (off). affinity_maturation and
+    # inverse_design are EXCLUDED from campaigns by
+    # blueprints/campaigns.py::campaign_preset_refusal, by
+    # blueprints/targets.py::_REFUSED_PRESETS on the launch and estimate
+    # routes, and by tools/iggm/__init__.py::validate on the atomic submit
+    # and the API. Maturation had its own
+    # campaign-shape reason first: its delivered count = num_samples *
+    # n_masked breaks the count==chunk invariant.
     "iggm",
 )
 
@@ -1916,6 +1921,10 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
       * ``"insufficient_funds"`` — the wallet balance cannot cover this
                           chunk's hold; the campaign should pause (the next
                           chunk cannot be funded either) and resume on top-up.
+      * ``"unsupported"`` — NO child row: the tool no longer offers this
+                          campaign's preset, so NO chunk of it can ever be
+                          dispatched. The only PERMANENT outcome, so the caller
+                          finalizes the campaign instead of retrying.
     On any failure the hold is released so no reservation is stranded.
     """
     from shared.wallet import release_hold, reserve_hold  # noqa: PLC0415
@@ -1931,6 +1940,23 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     if adapter is None:
         logger.error("campaign %s: no adapter for %s", campaign.id, campaign.tool)
         return "skipped"
+
+    # A preset the tool has retired since this campaign was funded.
+    # ``drive_campaign`` resumes a funded or running row and never re-runs
+    # ``adapter.validate``, so without this a campaign created before a
+    # retirement keeps launching containers for a mode the tool will not
+    # deliver. It cannot fire on a campaign created while the preset still
+    # existed: ``blueprints/campaigns.py::compute_campaign_create`` resolves the
+    # slug against this same adapter and refuses an unresolvable one before it
+    # persists the row. No job row and no hold, like the missing-adapter guard
+    # above -- but permanent, so it gets its own outcome and the caller closes
+    # the campaign out instead of retrying this index for ever.
+    if adapter.preset_for(campaign.preset) is None:
+        logger.error(
+            "campaign %s: %s no longer offers preset %s; not dispatching",
+            campaign.id, campaign.tool, campaign.preset,
+        )
+        return "unsupported"
 
     design_count = campaign.designs_for_chunk(chunk_index)
     if design_count <= 0:
@@ -2218,7 +2244,9 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
                            "failed", "cancelled"):
         return 0
 
-    entry_status = campaign.status  # funded | running | paused_insufficient_funds
+    # funded | running | completing | paused_insufficient_funds -- the
+    # statuses the early return above lets through.
+    entry_status = campaign.status
 
     total = campaign.total_subjobs
     dispatched = _count_children(campaign_id)
@@ -2281,6 +2309,19 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
         elif outcome == "insufficient_funds":
             hit_insufficient = True
             break
+        elif outcome == "unsupported":
+            # Permanent: no chunk of this campaign can EVER dispatch. Retrying
+            # would log an error every tick and leave the row in "running" for
+            # good -- _maybe_finalize needs every chunk dispatched, and
+            # sweep_paused_campaigns only looks at paused_insufficient_funds.
+            # The states are the ones _maybe_finalize CASes from, which are
+            # also the ones cron/tick_campaigns.py::_ACTIVE_STATES drives, so
+            # no state this guard is reachable in is left behind.
+            _finalize_undispatchable(
+                campaign_id,
+                ("funded", "running", "completing", "paused_insufficient_funds"),
+            )
+            return launched_count
         else:  # "skipped": transient, no row created; retry this index later.
             break
 
@@ -2410,14 +2451,20 @@ def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:
 _PAUSE_TTL_DAYS = 14
 
 
-def _ttl_finalize_paused(campaign_id: str) -> bool:
-    """CAS-finalize a campaign starved past the pause TTL.
+def _finalize_undispatchable(
+    campaign_id: str, from_states: "tuple[str, ...]"
+) -> bool:
+    """CAS-finalize a campaign whose remaining chunks will never be dispatched.
+
+    The CALLER decides that and passes the states it is finalizing from: a
+    campaign starved past the pause TTL (:func:`sweep_paused_campaigns`), or one
+    whose preset the tool has retired (:func:`drive_campaign`).
 
     Produced designs stay on their sub-job pages (downloadable); undispatched
     chunks never placed a hold, so there is nothing to release. Finalizes to
     ``completed_with_failures`` when any chunk delivered, else ``cancelled``.
-    Fail-safe: a still-in-flight chunk (should not exist after the TTL) or a
-    failed count read leaves the campaign paused for the next sweep.
+    Fail-safe: a still-in-flight chunk or a failed count read leaves the
+    campaign where it is for the next sweep or tick.
     """
     if _count_children(campaign_id, ("pending", "running"), default=1) > 0:
         return False
@@ -2426,8 +2473,7 @@ def _ttl_finalize_paused(campaign_id: str) -> bool:
         return False
     final = "completed_with_failures" if succeeded > 0 else "cancelled"
     return _cas_transition(
-        campaign_id, final, ("paused_insufficient_funds",),
-        {"completed_at": _now_iso()},
+        campaign_id, final, from_states, {"completed_at": _now_iso()},
     )
 
 
@@ -2435,7 +2481,7 @@ def sweep_paused_campaigns(*, now=None, ttl_days: int = _PAUSE_TTL_DAYS) -> dict
     """Cron housekeeping over paused campaigns: TTL auto-finalize + email retry.
 
     * ``paused_at`` older than ``ttl_days`` -> finalize as partial
-      (:func:`_ttl_finalize_paused`), so a never-topped-up campaign does not
+      (:func:`_finalize_undispatchable`), so a never-topped-up campaign does not
       linger forever.
     * ``pause_notified_at`` still NULL -> re-send the pause email (durable
       delivery). Bounded: once the TTL finalizes the campaign it drops out of the
@@ -2465,7 +2511,8 @@ def sweep_paused_campaigns(*, now=None, ttl_days: int = _PAUSE_TTL_DAYS) -> dict
         stale = []
     for row in stale:
         cid = row.get("id")
-        if cid and _ttl_finalize_paused(str(cid)):
+        if cid and _finalize_undispatchable(
+                str(cid), ("paused_insufficient_funds",)):
             summary["finalized"] += 1
 
     try:

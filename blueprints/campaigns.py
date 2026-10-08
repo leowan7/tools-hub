@@ -274,14 +274,22 @@ def campaign_preset_refusal(tool: str, preset: str):
     """The message refusing ``preset`` as a campaign, else None. Also used by tools.tool_validate."""
     if preset == "validate":
         return "The validate tier is a free pre-flight, not a full-size run."
-    # IgGM affinity_maturation runs one design PER masked position PER sample, so
-    # the delivered count != the per-chunk num_samples the driver injects, which
-    # breaks the campaign's delivered-count==chunk-size invariant (holds, progress
-    # counts, and finalize all assume equality). Keep it on the atomic tier only.
-    if tool == "iggm" and preset == "affinity_maturation":
+    # Both of these are refused outright by tools/iggm/__init__.py::validate
+    # (``_SEQUENCE_ONLY_PRESETS``), so the sentence matches the one the atomic
+    # form gives. This arm exists because the campaign route reaches neither
+    # ``validate`` nor its own membership check with a useful message: the
+    # presets no longer have a Preset row.
+    #
+    # affinity_maturation was refused here before that, for a reason that still
+    # holds if it is ever switched back on: it runs one design PER masked
+    # position PER sample, so the delivered count != the per-chunk num_samples
+    # the driver injects, which breaks the campaign's
+    # delivered-count==chunk-size invariant (holds, progress counts and
+    # finalize all assume equality). It would stay atomic-only either way.
+    if tool == "iggm" and preset in ("affinity_maturation", "inverse_design"):
         return (
-            "Affinity maturation is not available as a full-size run (its design "
-            "count expands per masked position). Use the single-run IgGM form."
+            "This mode is switched off for now: at the IgGM version we run it "
+            "writes sequences only, and results need a structure."
         )
     return None
 
@@ -386,17 +394,22 @@ def compute_campaign_create():
     adapter = tool_base.get(tool)
     if adapter is None or cc.campaign_tool_gated_off(tool):
         return _err("Unknown tool.")
-    if adapter.preset_for(preset) is None:
-        return _err("Unknown preset for this tool.")
     # The free `validate` tier is a pre-flight, not a paid campaign; it is
     # omitted from the form and routed separately. Reject it on the paid path
     # so a crafted request can't open a priced campaign on a config-less
     # variant. Free to the CUSTOMER, not GPU-free: it does no GPU work but
     # holds the same A100 container (tools/proteina/run_pipeline.py's "validate
     # tier" header).
+    #
+    # Ahead of the membership check below on purpose: a preset an adapter has
+    # retired no longer has a Preset row, so from here it is indistinguishable
+    # from a typo and would collect the bare "Unknown preset for this tool."
+    # instead of the sentence saying what happened.
     refusal = campaign_preset_refusal(tool, preset)
     if refusal:
         return _err(refusal)
+    if adapter.preset_for(preset) is None:
+        return _err("Unknown preset for this tool.")
 
     # 1. Plan (validates tool + count + sub-job cap).
     try:
