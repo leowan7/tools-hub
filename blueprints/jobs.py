@@ -51,7 +51,7 @@ from shared.jobs import (
     timeout_stuck_job,
 )
 from shared.pdb_intake import job_preflight_for_display
-from shared.run_notices import run_notices, stopped_for_balance
+from shared.run_notices import cancelled_with_designs, run_notices, stopped_for_balance
 from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
@@ -788,6 +788,7 @@ def job_detail(job_id: str):
         preflight=job_preflight_for_display(job.inputs),
         run_notices=run_notices(job),
         stopped_for_balance=stopped_for_balance(job),
+        cancelled_with_designs=cancelled_with_designs(job),
     )
 
 

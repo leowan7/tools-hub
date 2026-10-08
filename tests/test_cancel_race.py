@@ -29,6 +29,8 @@ import pytest
 from shared import jobs as jobs_mod
 from webhooks import modal as modal_webhook
 
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Fakes — a trimmed copy of the fixture pattern in test_jobs_phase4.py.
