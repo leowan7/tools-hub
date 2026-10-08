@@ -90,6 +90,32 @@ def test_preset_specific_shapes_round_trip(tools_app, slug, form):
     assert _resubmit(adapter, html) == _public(inputs)
 
 
+@pytest.mark.parametrize("headers,shown", [
+    (("H", "L"), ("H", "L")),
+    (("heavy_chain", "light_chain"), ("heavy", "chain_light_chain")),
+])
+def test_colabfold_multimer_clone_resubmits(tools_app, headers, shown):
+    """Two-record submit -> stored ':'-joined record -> clone form -> resubmit.
+
+    ``shown`` is the chain names the clone form offers. The second case pins
+    the known label ceiling (see the ponytail note in
+    blueprints/tools.py::_normalize_clone_pre_fill): the names are cut at the
+    wrong underscore, but the resubmitted inputs are identical.
+    """
+    flask_app, adapters = tools_app
+    adapter = _adapter(adapters, "colabfold")
+    chains = ("MKWVTFISLLFLFSSAYS", "QVQLVESGGGLVQPGG")
+    fasta = "\n".join(f">{h}\n{c}" for h, c in zip(headers, chains))
+    inputs, err = adapter.validate({"preset": "standalone", "fasta_text": fasta}, {})
+    assert err is None, err
+    assert inputs["fasta_text"] == f">{'_'.join(headers)}\n{':'.join(chains)}"
+    html = _clone(flask_app, "colabfold", inputs)
+    assert _posted_value(html, "fasta_text") == "\n".join(
+        f">{n}\n{c}" for n, c in zip(shown, chains)
+    )
+    assert _resubmit(adapter, html) == _public(inputs)
+
+
 def test_iggm_restores_the_qa_fields(tools_app):
     flask_app, adapters = tools_app
     inputs = _stored_inputs(_adapter(adapters, "iggm"))
