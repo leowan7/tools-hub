@@ -2632,7 +2632,8 @@ def _fake_rp(home):
     # happens to agree today. tmp_path stands in for PROTEINA_HOME.
     fake._HUB_TARGET_DIR = f"{home}/hub_targets"
     fake.streamed = []
-    fake.run_streaming = lambda cmd, cwd: (fake.streamed.append(list(cmd)) or 0)
+    fake.run_streaming = lambda cmd, cwd, timeout=None: (
+        fake.streamed.append(list(cmd)) or 0)
     fake.read_targets_dict = lambda path: {}
     fake.registration_mismatch = lambda record, expected: None
     # RECORDED, not just stubbed: ``n_designs_expected`` must be the product of
@@ -7007,8 +7008,23 @@ class TestDeliveryIsNotTheExitCode:
         asserting agreement with something that no longer exists. Read the
         source rather than trusting the comment."""
         source = Path(rp.__file__).read_text(encoding="utf-8")
-        assert 'sum(1 for d in designs if d.get("total_reward") is not None)' in source
-        assert "if n_scored == 0:" in source
+        # ``rows`` and ``+=``, not ``designs``: the search now runs in chunks
+        # and the count accumulates across them, which is what keeps the rule
+        # below identical to the one this canary is aligned to — nothing scored
+        # anywhere, not nothing scored in the last chunk.
+        #
+        # ``and not out_designs`` DOES NOT MOVE THE LINE ABOVE, which is why
+        # this guard tracks it rather than refusing it: with designs already
+        # delivered and nothing scored, run_pipeline returns from the chunk
+        # loop instead of calling ``_fail``, and ``delivery_verdict`` then
+        # reports ``no_scores_delivered`` — status FAILED, exit 1, same cell of
+        # the table above. What changes is that the FAILED result keeps the
+        # candidates that are already in Storage instead of dropping them
+        # (test_proteina_delivery.py::TestChunkedSearch::
+        # test_a_failing_chunk_keeps_what_an_earlier_one_delivered).
+        assert 'n_scored += sum(' in source
+        assert '1 for d in rows if d.get("total_reward") is not None)' in source
+        assert "if n_scored == 0 and not out_designs:" in source
         assert '_fail("search", "complexa"' in source
 
 

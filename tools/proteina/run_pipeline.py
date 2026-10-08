@@ -3455,6 +3455,198 @@ def _design_timeout_s() -> float:
 DESIGN_SUBPROCESS_TIMEOUT_S = _design_timeout_s()
 
 
+# THE SEARCH RUNS IN SEVERAL INVOCATIONS SO A STOPPED RUN KEEPS WHAT IT PAID
+# FOR.
+#
+# One `complexa design` per shard means nothing reaches the hub until the whole
+# search is over: a stop, a cancel, a crash or the deadline above arrives with
+# every design still inside the container. Splitting the search lets each
+# piece's designs be uploaded and heartbeated before the next one starts, and
+# ``shared/job_recovery.py::reconstruct`` rebuilds a stopped job from exactly
+# those uploaded partials. It also gives the search a heartbeat WHILE it runs,
+# which it has never had — ``_run_shard`` announced ``searching`` once, just
+# before launching the subprocess, and then went quiet until that subprocess
+# returned.
+#
+# SPLIT ON nsamples, NOT replicas. designs == nsamples * replicas
+# (``designs_total``), where nsamples draws the binder LENGTHS and replicas
+# gives independent designs per length (build_design_cmd names both Hydra
+# keys). Dividing nsamples keeps replicas intact in every chunk, so the run
+# still produces nsamples lengths with replicas designs each — the shape one
+# invocation produces. Dividing replicas instead would return
+# nsamples * n_chunks distinct lengths with no replicate at any of them, which
+# is a different experiment, not a smaller one.
+#
+# COST, AND IT IS NOT MEASURED HERE. Each extra invocation re-pays the
+# pipeline's fixed filter+analyze+parse cost — 54.8 s, fitted to the one
+# metered run behind
+# ``tools/proteina/shard_driver.py::SECONDS_IN_PIPELINE_FIXED`` (673 s total)
+# — plus one model load, which that fit charges to the per-design term and
+# which no measurement in this repo covers FOR PROTEINA (other tools carry
+# one — gpu/modal_client.py:297, :232 — proteina does not), so the figure
+# above is a floor rather than an estimate. Leo approved roughly
+# 10-20% more GPU per run for this on 2026-10-08; a second chunk on that same
+# 673 s run is the bottom of that band, and the overhead is per chunk, so a
+# plan with many chunks costs proportionally more.
+#
+# THE DEFAULT IS TWO CHUNKS FOR A HUB SHARD, which is pinned at nsamples=4 x
+# replicas=2 (``tools/proteina/__init__.py`` _SHARD_NSAMPLES/_SHARD_REPLICAS,
+# sent in build_payload's job_spec). PROTEINA_SEARCH_CHUNK_DESIGNS=8 restores
+# the single invocation this file ran before, with no code change.
+#
+# NOT THE CAMPAIGN'S "CHUNK", which is a different number for a different
+# split: ``_CHUNK_SIZE_OVERRIDE["proteina"]`` is 8
+# (shared/compute_campaigns.py:536) and divides a campaign's num_designs into
+# SHARDS, one A100 container each. This one divides a single shard's own designs
+# into `complexa design` invocations INSIDE that container, so it moves no
+# shard count, no designs_total and nothing the run was quoted on — proteina is
+# in ``_FIXED_CONTAINER_TOOLS``, which prices a shard as one container whatever
+# it returns.
+SEARCH_CHUNK_DEFAULT_DESIGNS = 4
+# AND NEVER MORE THAN THIS MANY INVOCATIONS, whatever the chunk size works out
+# to. The overhead above is per chunk, not per run, so a size tuned for the
+# 8-design hub shard would cut the 64-design direct path
+# (``tools/proteina/shard_driver.py`` NSAMPLES=16 x REPLICAS=4) into 16 pieces
+# and make it re-pay the fixed cost 16 times — far outside the band Leo
+# approved. ``plan_search_chunks`` widens its chunk to ceil(nsamples / this)
+# lengths when it has to, so the hub shard runs 2 chunks of 4 designs and the
+# direct path runs 4 chunks of 16.
+MAX_SEARCH_CHUNKS = 4
+# Where one chunk's outputs are moved so the next chunk cannot inherit them.
+# See ``isolate_chunk_outputs``.
+_CHUNK_DIR_PREFIX = "chunk_"
+
+
+def _search_chunk_designs() -> int:
+    """Parse the chunk-size override defensively, as ``_design_timeout_s`` does.
+
+    Read inside _run_shard rather than bound at import: a bad value must not
+    raise anywhere a result file cannot be written yet.
+    """
+    raw = (os.environ.get("PROTEINA_SEARCH_CHUNK_DESIGNS") or "").strip()
+    if not raw:
+        return SEARCH_CHUNK_DEFAULT_DESIGNS
+    try:
+        value = int(float(raw))
+    except ValueError:
+        logger.warning(
+            "PROTEINA_SEARCH_CHUNK_DESIGNS=%r is not a number; using %d",
+            raw, SEARCH_CHUNK_DEFAULT_DESIGNS,
+        )
+        return SEARCH_CHUNK_DEFAULT_DESIGNS
+    if value < 1:
+        logger.warning(
+            "PROTEINA_SEARCH_CHUNK_DESIGNS=%r is not positive; using %d",
+            raw, SEARCH_CHUNK_DEFAULT_DESIGNS,
+        )
+        return SEARCH_CHUNK_DEFAULT_DESIGNS
+    return value
+
+
+def plan_search_chunks(nsamples: int, replicas: int,
+                       chunk_designs: int) -> list[int]:
+    """Split ``nsamples`` into one entry per `complexa design` invocation.
+
+    Each entry is that invocation's nsamples; replicas is unchanged, so the
+    entries sum back to exactly ``nsamples * replicas`` designs and
+    ``designs_total`` never moves. Returns ``[nsamples]`` — one invocation,
+    this file's behaviour before chunking — whenever a chunk can hold every
+    length the run asks for.
+
+    The chunk is then widened to whatever ``MAX_SEARCH_CHUNKS`` needs, so the
+    returned plan is never longer than that many entries (asserted over both
+    shipped profiles and a sweep over nsamples 1..32 by
+    tests/test_proteina_delivery.py::TestTheSearchPlan::test_the_plan_never_exceeds_the_chunk_ceiling).
+    """
+    per_chunk = max(1, chunk_designs // max(1, replicas))
+    # THE CEILING IS APPLIED IN LENGTHS, NOT IN DESIGNS, because the plan is
+    # counted in lengths and the conversion between them truncates: widening
+    # ``chunk_designs`` to ceil(designs_total / MAX) first and then dividing by
+    # replicas gave 5 chunks of 1 for nsamples=5 x replicas=3 (4 // 3 == 1),
+    # over a ceiling of 4. ``ceil(nsamples / MAX)`` lengths per chunk bounds
+    # ceil(nsamples / per_chunk) -- the plan's own length -- at MAX directly.
+    per_chunk = max(per_chunk, -(-nsamples // MAX_SEARCH_CHUNKS))  # ceil
+    if per_chunk >= nsamples:
+        return [nsamples]
+    plan: list[int] = []
+    left = nsamples
+    while left > 0:
+        take = min(per_chunk, left)
+        plan.append(take)
+        left -= take
+    return plan
+
+
+def isolate_chunk_outputs(run_dir: Path, chunk_index: int) -> Path:
+    """Move one chunk's outputs into ``run_dir/chunk_NN`` and return that dir.
+
+    TWO COLLISIONS, ONE MOVE, and both of them silent:
+
+      * generate.py early-exits when ``./inference/results_<config>_<job_id>.csv``
+        already exists, and that name carries no chunk marker — ``job_id`` is
+        pinned to 0 by build_design_cmd. A second invocation in a run_dir still
+        holding the first one's CSV would re-emit the first chunk's designs
+        instead of searching, on billed GPU. This is the same early-exit
+        _run_shard wipes ./inference for.
+      * ``find_reward_csv`` returns the FIRST sorted hit of a recursive
+        ``**/*.csv`` glob and the sample PDBs are flat ``sample_N.pdb``, so two
+        chunks sharing one directory would hand the second chunk's rows the
+        first chunk's CSV and PDB files.
+
+    One directory per chunk answers both: the root is empty again for the next
+    invocation, and ``parse_designs``/``find_pdb_for`` are pointed at one
+    chunk's files only.
+
+    ``_hub_input`` stays at the root because it is not a search output: it is
+    this wrapper's archive copy of the input, and ``archive_raw_outputs`` files
+    it by that exact path (see ``_hub_input_written``). Directories already
+    moved here are skipped by their prefix, so an earlier chunk is never
+    swallowed by a later one.
+    """
+    dest = run_dir / f"{_CHUNK_DIR_PREFIX}{chunk_index:02d}"
+    dest.mkdir(parents=True, exist_ok=True)
+    for entry in sorted(run_dir.iterdir()):
+        if entry.name == _HUB_INPUT_DIR or entry.name.startswith(_CHUNK_DIR_PREFIX):
+            continue
+        shutil.move(str(entry), str(dest / entry.name))
+    return dest
+
+
+def _fail_search_timeout(seconds: float, killed: bool) -> None:
+    """FAIL a search that ran out of time with nothing banked.
+
+    Its OWN check name, not ``complexa``: "exited 124" is a number nobody can
+    act on, while "the search ran out of time" says which knob moves and rules
+    out the crash reading entirely.
+
+    Shared by the two ways a chunked search can run out of its one budget, and
+    ``killed`` is which: True when the subprocess outlived what was left and
+    was killed mid-run, False when the budget was already gone before the NEXT
+    chunk could be launched, so nothing was killed. Earlier chunks on that
+    second path may well have launched and finished -- what they did not do is
+    score a design, which is why this is reached at all -- so the wording says
+    the chunk that was refused was never started, not that nothing ever ran.
+    The knob and the consequence are the same either way; only the first
+    sentence differs, because telling an operator a process was killed when
+    the one in question was never started is a false report of what the
+    container did.
+    """
+    what = (
+        f"`complexa design` exceeded its {seconds:.0f}s timeout and was killed "
+        f"before it scored a single design."
+        if killed else
+        f"The search used up its {seconds:.0f}s budget before a remaining "
+        f"chunk could be started, and no chunk that did run scored a design."
+    )
+    _fail(
+        "search", "timeout",
+        f"{what} Nothing was banked, so there is nothing to deliver. The "
+        f"partial output tree is in the raw archive. Raise "
+        f"PROTEINA_DESIGN_TIMEOUT_S (it must stay under the container's own "
+        f"ceiling) or reduce the target size / nsamples.",
+    )
+
+
 def run_streaming(cmd: list[str], cwd: Path, timeout: float | None = None) -> int:
     """Run a subprocess, live-streaming stdout/stderr to Modal logs (never
     capture_output for long GPU work, per the Modal-subprocess memory).
@@ -3584,6 +3776,36 @@ def parse_designs(run_dir: Path) -> list[dict]:
     for sort_position, d in enumerate(parsed):
         d["rank"] = sort_position
     return parsed
+
+
+def _reward_order(designs: list[dict]) -> list[int]:
+    """The positions of ``designs`` in reward order, best first.
+
+    THE KEY ABOVE, APPLIED ONCE TO EVERY CHUNK AT ONCE. ``parse_designs`` only
+    ever sees the rows of a single `complexa design` invocation, so with a
+    chunked search its sort — and the delivered ``rank`` counted off it — is
+    per-chunk: rank 1 is the best design of chunk 1. Reordering the delivered
+    lists by this restores the one order a single invocation produced, without
+    touching a rank, a name or a ``pdb_key``, which are spent once and can
+    never be reissued (a signed upload URL for an existing key is refused at
+    signing).
+
+    That reordering is all the operator's "#" column is: it prints a POSITION
+    and never ``cand.rank`` — ``loop.index``, or ``grp.n`` (a position within
+    the block) when the table is grouped
+    (templates/components/candidate_table.html:824) — and the CSV numbers by
+    position and demotes the payload value to ``source_rank``
+    (shared/exports.py::export_key), so both follow list order.
+
+    Equal rewards keep the order they were delivered in; ``sorted`` is stable
+    and stays stable under ``reverse``.
+    """
+    return sorted(
+        range(len(designs)),
+        key=lambda i: (designs[i].get("total_reward") is not None,
+                       designs[i].get("total_reward") or 0.0),
+        reverse=True,
+    )
 
 
 # ===========================================================================
@@ -4257,125 +4479,258 @@ def _run_shard() -> None:
 
         seed = shard_seed(job_id)
         run_name = f"shard_{(job_id or 'x')[:12]}"
-        cmd = build_design_cmd(
-            config_name=config_name, task_name=task_name, seed=seed,
-            nsamples=nsamples, replicas=replicas, nsteps=nsteps,
-            run_name=run_name, rf3_on=rf3_on,
+        chunk_plan = plan_search_chunks(
+            nsamples, replicas, _search_chunk_designs())
+        logger.info(
+            "search plan: %d invocation(s), nsamples=%s x replicas=%d = %d designs",
+            len(chunk_plan), chunk_plan, replicas, designs_total,
         )
-        send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
 
-        # A HUNG SEARCH IS A RESULT, NOT A DEAD CONTAINER. See
-        # DESIGN_SUBPROCESS_TIMEOUT_S: without this except the kill arrives
-        # from Modal or from the wrapper, lands on THIS process, and the shard
-        # returns no result file at all — no scores, no coordinates, no
-        # diagnosis, on a fully billed A100. Catching it here keeps the rest of
-        # the function running, so anything ``complexa design`` had already
-        # written to the reward CSV before it hung is still parsed, still
-        # delivered, and still ranked. That is BindCraft's behaviour on its own
-        # timeout, and the only reason it can bank partial work.
+        # Filled by chunked_search() below and read by the result tail, so each
+        # describes the WHOLE search rather than its last piece: ``designs`` is
+        # every parsed row in delivery order, ``n_scored`` their running scored
+        # count, and ``rc`` / ``search_timeout_s`` the exit of the chunk that
+        # ended the search -- 0 when every chunk returned 0, since the loop
+        # stops at the first one that does not.
+        designs: list[dict] = []
+        n_scored = 0
+        rc = 0
         search_timeout_s: float | None = None
-        try:
-            rc = run_streaming(cmd, work_dir)
-        except FileNotFoundError:
-            _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
-        except subprocess.TimeoutExpired as exc:
-            rc = SEARCH_TIMEOUT_RC
-            search_timeout_s = float(exc.timeout or DESIGN_SUBPROCESS_TIMEOUT_S)
-            logger.error(
-                "`complexa design` exceeded its %.0fs timeout and was killed; "
-                "delivering whatever it had already written", search_timeout_s,
-            )
 
-        designs = parse_designs(run_dir)
-        # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
-        # stage can exit nonzero AFTER the reward CSV (with complete scores) is
-        # already written — observed on the ligand path (P-3 canary: 8 designs fully
-        # RF3-scored, then exit 1). NO DELIVERED SCORE COMES FROM ANALYZE — every
-        # key in ``scores`` is built from one reward-CSV row through
-        # _SCORE_COLUMNS, and evaluate has already written that CSV by this
-        # point.
-        #
-        # THAT RESTS ON THE TABLE, NOT ON FILE ACCESS, and not on knowing what
-        # analyze writes. find_reward_csv's fourth pattern is a bare
-        # ``**/*.csv`` catch-all, so "this script never opens an analyze output"
-        # is more than the code promises; and no analyze output has ever been
-        # inspected here, so "analyze writes none of these names" is unchecked
-        # too. What holds regardless: ``scores`` keys are exactly
-        # _SCORE_COLUMNS.keys(), whatever file the row came out of.
-        #
-        # So we still DELIVER designs that
-        # were fully scored; only fail when the nonzero exit left nothing scored
-        # to deliver (a genuine early failure).
-        n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
-        if rc != 0:
-            if n_scored == 0 and search_timeout_s is not None:
-                # Its OWN check name. "exited 124" is a number nobody can act
-                # on; "the search ran out of time" says which knob moves
-                # (PROTEINA_DESIGN_TIMEOUT_S, or a smaller target) and rules
-                # out the crash reading entirely.
-                _fail(
-                    "search", "timeout",
-                    f"`complexa design` exceeded its {search_timeout_s:.0f}s "
-                    "timeout and was killed before it scored a single design. "
-                    "Nothing was banked, so there is nothing to deliver. The "
-                    "partial output tree is in the raw archive. Raise "
-                    "PROTEINA_DESIGN_TIMEOUT_S (it must stay under the "
-                    "container's own ceiling) or reduce the target size / "
-                    "nsamples.",
-                )
-            if n_scored == 0:
-                _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
-            logger.warning(
-                "complexa design exited %d but %d/%d designs are fully scored — delivering "
-                "(late analyze/eval failure is non-fatal; no delivered score comes from analyze)",
-                rc, n_scored, len(designs),
-            )
+        def chunked_search():
+            """Run the search in chunks, yielding rows as each chunk is parsed.
 
-        if not designs:
-            # A shard that legitimately produced no survivors still COMPLETES
-            # with zero candidates — the campaign pools survivors across shards,
-            # and delivered-only billing releases this shard's hold. NOT a
-            # delivery failure either: nothing was produced, so nothing was
-            # undelivered. The counters ride along at zero purely so
-            # `inline_delivery` is present on EVERY inline result and a caller
-            # can read it without first testing for its existence.
+            Yields ``(row, chunk_dir, rows_in_chunk)`` -- flat, so the delivery
+            loop below still sees one stream of designs and keeps assigning
+            every rank, basename and upload key itself.
+
+            THE RANK COUNTERS ARE DELIBERATELY NOT IN HERE. ``emitted_rank``,
+            ``out_designs`` / ``out_candidates`` and the inline budget live in
+            the enclosing scope and span every chunk, because a delivered rank
+            is assigned ONCE and never renumbered: the live status page keys
+            its rows on rank and overwrites them, and re-requesting a signed
+            upload URL for a key that already exists fails at signing. Per-chunk
+            counters would restart at 1, so chunk 2 would overwrite chunk 1's
+            rows in the live table and ask for URLs for keys already written.
+
+            SO RANK IS ASSIGNMENT ORDER, WHICH CHUNKING CHANGES: parse_designs
+            reward-sorts what it is given, which is now ONE CHUNK, so rank 1 is
+            the best design of chunk 1 rather than of the whole run. That is
+            fixed where the lists are built, not here -- see
+            ``_reward_order`` and its caller below, which reorder the two
+            delivered lists by reward after every rank is spent.
+            """
+            nonlocal rc, search_timeout_s, n_scored
+            # ONE DEADLINE FOR THE WHOLE SEARCH, not one per chunk. The ceiling
+            # DESIGN_SUBPROCESS_TIMEOUT_S keeps this process under is the
+            # container's, and N chunks each granted the full timeout would
+            # overrun it N-fold -- the parent killed with no result file
+            # written, which is the exact outcome that constant exists to
+            # prevent. Each chunk gets what is left, so a one-chunk plan gets
+            # the whole budget: what this file passed before.
             #
-            # WITH A CENSUS, THOUGH. "COMPLETED, 0 designs, 0 failures" is the
-            # same three lines whether the filter culled every sample or
-            # `complexa design` never wrote a reward CSV at all, and those call
-            # for opposite responses. Note this branch is reachable only with
-            # rc == 0: the guard above already _fail()s on a nonzero exit with
-            # nothing scored, which is what a zero-design shard always is. So a
-            # census here is describing a run that claims to have succeeded.
-            runtime = int(time.time() - start)
-            empty_result = {
-                "status": "COMPLETED",
-                "tier": preset,
-                "designs_total": designs_total,
-                "designs_completed": 0,
-                "n_failures": 0,
-                "designs": [],
-                "candidates": [],
-                "output_census": census_output_tree(run_dir),
-                "runtime_seconds": runtime,
-                "provider_job_id": job_id,
-            }
-            if inline_pdbs:
-                empty_result["inline_delivery"] = {
-                    "n_inlined": 0,
-                    "n_inline_capped": 0,
-                    "inline_bytes_used": 0,
-                    "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
-                }
-                # Empty for the same reason the counters are zero: present on
-                # EVERY inline result so a caller can read it without first
-                # testing for its existence. Nothing was parsed here, so
-                # nothing could have been dropped.
-                empty_result["undelivered"] = []
-            _write_result(empty_result)
-            send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
-            logger.info("shard produced 0 survivors in %ds", runtime)
-            return
+            # WHAT IS LEFT ALSO COVERS THE PREVIOUS CHUNK'S UPLOADS, because
+            # this generator is advanced from the delivery loop in the caller:
+            # the launch in the loop below is reached a second time only once
+            # every row of the previous chunk has been pulled out of here and
+            # dealt with -- uploaded and heartbeated, or dropped and counted
+            # (unmatched PDB, read error, zero bytes, or an upload failure
+            # whose bytes miss the inline rescue budget).
+            # A slow Storage write therefore spends search budget.
+            # That is the right accounting for a ceiling whose job is the
+            # CONTAINER's wall clock rather than the subprocess's -- the parent
+            # is killed on that clock regardless of which of the two was slow --
+            # but it does mean a chunk can be refused over a stall that was not
+            # the search's fault, which is one more reason the branch below
+            # reports a timeout without claiming anything was killed.
+            deadline = time.monotonic() + _design_timeout_s()
+            for chunk_index, chunk_nsamples in enumerate(chunk_plan):
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    # Out of budget before this chunk even starts. Recorded as
+                    # a timeout rather than skipped quietly: a search that was
+                    # cut short must not be reported as a complete one, and
+                    # ``partial`` + ``search.status`` in the tail are what say
+                    # so.
+                    rc = SEARCH_TIMEOUT_RC
+                    search_timeout_s = _design_timeout_s()
+                    logger.error(
+                        "no search budget left for chunk %d/%d — delivering "
+                        "the %d chunk(s) already banked",
+                        chunk_index + 1, len(chunk_plan), chunk_index,
+                    )
+                    # Same ladder as a killed chunk, because this IS a timeout:
+                    # returning here with nothing scored AND nothing delivered
+                    # would fall through to the zero-survivor branch at the end
+                    # of _run_shard, which writes COMPLETED — reporting a
+                    # search that ran out of time as one that simply found
+                    # nothing. ``killed=False``: this chunk was never launched,
+                    # so no process was killed. ``not out_designs`` is the same
+                    # second condition the nonzero-exit ladder below carries,
+                    # for the reason given there.
+                    if n_scored == 0 and not out_designs:
+                        _fail_search_timeout(search_timeout_s, killed=False)
+                    return
+                cmd = build_design_cmd(
+                    config_name=config_name, task_name=task_name,
+                    # A DISTINCT SEED PER CHUNK, for the reason build_design_cmd
+                    # gives for a distinct seed per shard: gen_njobs=1 forces
+                    # job_id=0, so the seed is the only thing that makes two
+                    # invocations of one config draw different lengths. Reusing
+                    # it would spend the second chunk's GPU redrawing the first
+                    # chunk's designs.
+                    seed=seed + chunk_index,
+                    nsamples=chunk_nsamples, replicas=replicas, nsteps=nsteps,
+                    run_name=f"{run_name}_c{chunk_index + 1}", rf3_on=rf3_on,
+                )
+                # A HEARTBEAT PER CHUNK, which is the first one the search
+                # sends while it is RUNNING. The single ``searching`` beat this
+                # file already sent went out just before the subprocess
+                # launched, and nothing followed it until the first delivered
+                # design — which is why an overrunning proteina run is warned
+                # about late: for the whole search the hub's freshest timestamp
+                # was that one pre-launch beat.
+                send_heartbeat(
+                    webhook_url, job_id, stage="searching",
+                    designs_completed=len(out_designs),
+                    designs_total=designs_total,
+                )
+
+                # A HUNG SEARCH IS A RESULT, NOT A DEAD CONTAINER. See
+                # DESIGN_SUBPROCESS_TIMEOUT_S: without this except the kill
+                # arrives from the platform instead, lands on THIS process, and
+                # the shard returns no result file at all -- no scores, no
+                # coordinates, no diagnosis, on a fully billed GPU. Catching it
+                # here keeps the rest of the function running, so anything
+                # ``complexa design`` had already written to the reward CSV
+                # before it hung is still parsed, still delivered, still ranked.
+                try:
+                    rc = run_streaming(cmd, work_dir, timeout=budget)
+                except FileNotFoundError:
+                    _fail("search", "complexa",
+                          f"`{COMPLEXA_BIN}` binary not found on PATH")
+                except subprocess.TimeoutExpired as exc:
+                    rc = SEARCH_TIMEOUT_RC
+                    search_timeout_s = float(
+                        exc.timeout or DESIGN_SUBPROCESS_TIMEOUT_S)
+                    logger.error(
+                        "`complexa design` exceeded its %.0fs timeout and was "
+                        "killed; delivering whatever it had already written",
+                        search_timeout_s,
+                    )
+
+                # ONE DIRECTORY PER CHUNK, and only when there IS more than one
+                # chunk: a single-invocation plan parses ./inference exactly
+                # where this file has always parsed it, so its archive layout,
+                # its census and every existing expectation are untouched.
+                chunk_no = chunk_index + 1 if len(chunk_plan) > 1 else 0
+                chunk_dir = (
+                    isolate_chunk_outputs(run_dir, chunk_index)
+                    if chunk_no else run_dir
+                )
+                rows = parse_designs(chunk_dir)
+                designs.extend(rows)
+                # `complexa design` chains generate -> filter -> evaluate ->
+                # analyze. A late stage can exit nonzero AFTER the reward CSV
+                # (with complete scores) is already written — observed on the
+                # ligand path (P-3 canary: 8 designs fully RF3-scored, then exit
+                # 1). NO DELIVERED SCORE COMES FROM ANALYZE — every key in
+                # ``scores`` is built from one reward-CSV row through
+                # _SCORE_COLUMNS, and evaluate has already written that CSV by
+                # this point.
+                #
+                # THAT RESTS ON THE TABLE, NOT ON FILE ACCESS, and not on
+                # knowing what analyze writes. find_reward_csv's fourth pattern
+                # is a bare ``**/*.csv`` catch-all, so "this script never opens
+                # an analyze output" is more than the code promises; and no
+                # analyze output has ever been inspected here, so "analyze
+                # writes none of these names" is unchecked too. What holds
+                # regardless: ``scores`` keys are exactly
+                # _SCORE_COLUMNS.keys(), whatever file the row came out of.
+                #
+                # So we still DELIVER designs that were fully scored; only fail
+                # when the nonzero exit left nothing scored to deliver (a
+                # genuine early failure).
+                # ACROSS CHUNKS, NOT WITHIN ONE (``+=``), so the rule below is
+                # the same rule it was before chunking: a nonzero exit fails the
+                # shard only when NOTHING the whole search produced was scored.
+                # A later chunk failing after an earlier one scored is therefore
+                # a delivered-degraded run, not a failure — which is the point
+                # of chunking, and is asserted by
+                # test_proteina_delivery.py::TestChunkedSearch::test_a_later_chunk_failing_after_an_earlier_one_scored_is_delivered.
+                # It is also what ``shard_delivery``
+                # (tools/proteina/_canary_scoring.py:2205) independently judges
+                # from the shard's own ``n_scored_designs``, which is a count
+                # of the whole search too (its alignment with this branch is
+                # pinned by
+                # test_proteina_canary.py::TestDeliveryIsNotTheExitCode).
+                n_scored += sum(
+                    1 for d in rows if d.get("total_reward") is not None)
+                if rc != 0:
+                    # AND NOTHING DELIVERED YET, which before chunking was
+                    # implied: this whole ladder ran once, BEFORE the delivery
+                    # loop, so ``_fail`` could only ever fire with Storage
+                    # still empty. It now runs between chunks, and ``_fail``
+                    # writes a result carrying only status, error, tier and
+                    # provider_job_id — no ``designs`` key and no
+                    # ``candidates`` key at all. Without this second condition
+                    # a run that had already PUT an earlier chunk's designs and
+                    # announced them as ``new_candidate`` would report FAILED
+                    # with coordinates in Storage that no result points at:
+                    # the loss chunking was added to prevent, inflicted by the
+                    # failure path instead of the stop path.
+                    #
+                    # ``n_scored == 0`` AND a delivered design is reachable, not
+                    # hypothetical: ``parse_designs`` keeps a row whose
+                    # ``total_reward`` column is blank (it sorts those last
+                    # rather than dropping them), and none of the delivery
+                    # loop's four drop arms below is reached by a row that
+                    # merely lacks a score: an unmatched PDB, a read error,
+                    # zero bytes, or an upload failure whose bytes also miss
+                    # the inline rescue budget (``keep_scores(d,
+                    # "upload_failed")``).
+                    #
+                    # Returning instead is not a softer verdict. An unscored
+                    # delivery is ``delivery_verdict``'s
+                    # ``no_scores_delivered``, which sets status FAILED and
+                    # KEEPS the candidate list, and ``partial`` +
+                    # ``search.exit_code`` still carry the nonzero exit, so the
+                    # run is reported as failed either way — the difference is
+                    # whether the operator can reach the structures that were
+                    # billed for. Pinned by
+                    # test_proteina_delivery.py::TestChunkedSearch::test_a_failing_chunk_keeps_what_an_earlier_one_delivered.
+                    if n_scored == 0 and not out_designs:
+                        if search_timeout_s is not None:
+                            # Reached only through the TimeoutExpired handler
+                            # above, which is the kill.
+                            _fail_search_timeout(search_timeout_s, killed=True)
+                        _fail("search", "complexa",
+                              f"`complexa design` exited {rc} with no scored "
+                              f"designs")
+                    logger.warning(
+                        "complexa design exited %d with %d/%d parsed designs "
+                        "fully scored and %d already delivered — delivering "
+                        "rather than failing (a late analyze/eval failure is "
+                        "non-fatal, and a design already announced to the hub "
+                        "must still appear in the result)",
+                        rc, n_scored, len(designs), len(out_designs),
+                    )
+
+                for row in rows:
+                    # The fourth element is which invocation this row came out
+                    # of, 1-based, and 0 when there is only one -- see the
+                    # rename at the head of the delivery loop, which is the
+                    # only thing that reads it.
+                    yield row, chunk_dir, len(rows), chunk_no
+
+                if rc != 0:
+                    # STOP AT THE FIRST FAILING CHUNK. A nonzero exit is a
+                    # property of the RUN -- a missing weight, an OOM, a config
+                    # the variant cannot serve -- far more often than of one
+                    # draw, so the next chunk would most likely buy the same
+                    # failure with another stretch of GPU time. Whatever this
+                    # chunk did bank has already been yielded and delivered.
+                    return
 
         # --- upload and/or inline each design --------------------------------
         # Parsed ONCE, not per design: the reference is the STAGED CROPPED file,
@@ -4456,7 +4811,6 @@ def _run_shard() -> None:
         out_designs: list[dict] = []
         out_candidates: list[dict] = []
         n_failures = 0
-        n_rows = len(designs)
         inline_bytes_used = 0
         n_inlined = 0
         n_inline_capped = 0
@@ -4553,8 +4907,52 @@ def _run_shard() -> None:
                 "scores": design["scores"],
             })
 
-        for d in designs:
-            pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
+        for d, chunk_dir, n_rows, chunk_no in chunked_search():
+            pdb_path = find_pdb_for(d, chunk_dir, d["_row_index"], n_rows)
+            # THE NAME RESTARTS AT EVERY INVOCATION, SO CHUNKING MADE IT
+            # AMBIGUOUS. ``parse_designs`` takes it from the reward CSV's own
+            # sample column (_PDB_NAME_COLUMNS, "sample" first) and falls back
+            # to the row's index within that one CSV, and each `complexa
+            # design` writes a fresh CSV numbered from the start beside flat
+            # ``sample_N.pdb`` files -- the premise ``isolate_chunk_outputs``
+            # is built on. A two-chunk shard therefore delivered two designs
+            # called ``sample_0`` with different scores: ``rank`` and
+            # ``pdb_key`` stay dense and unique, so no export and no download
+            # was wrong, but the label the operator reads and quotes was.
+            #
+            # AFTER ``find_pdb_for``, NOT BEFORE: that match reads this very
+            # key back out of the design dict (``_pick(row,
+            # _PDB_NAME_COLUMNS)`` at find_pdb_for:3722) and the file on disk
+            # is named after the CSV value, so renaming first makes the name
+            # match miss and drops the row to the positional fallback below it.
+            # NOT TEST-ENFORCED, and measured rather than assumed: with the PDB
+            # count equal to the row count that fallback returns the same file,
+            # so moving this line up breaks nothing the suite can see. It is
+            # here because an exact name match beats relying on a sort order
+            # happening to agree. Before the ``pdb_path is None`` branch,
+            # though, so an undelivered record is unambiguous too.
+            #
+            # ``chunk_no`` is 0 for a single-invocation plan, which leaves the
+            # name exactly what this file has always delivered. The slice keeps
+            # the result inside the 64 characters ``parse_designs`` caps at
+            # (:3759) and, the binding reason, inside the 64 the HUB caps the
+            # streamed copy at (``webhooks/modal.py::_sanitize_candidate``,
+            # ``str(name)[:64]``): a longer name would reach the live status
+            # page with its own suffix cut off while the result's copy kept it.
+            # The suffix is 3 characters because ``MAX_SEARCH_CHUNKS`` bounds
+            # the plan at 4 invocations
+            # (test_the_plan_never_exceeds_the_chunk_ceiling).
+            #
+            # THE COST, at 62-64 characters: a base name that long loses its
+            # last characters here, so two rows of ONE chunk differing only
+            # there collapse to one label. Unavoidable while 64 is the bound —
+            # dropping the suffix instead would hand back the cross-chunk
+            # ambiguity this exists to remove, which is worse — and it costs a
+            # label, not a row: ``rank`` and ``pdb_key`` are untouched above.
+            # Names below 62 characters are unchanged, which is every name
+            # upstream has been seen to write (``sample_N``).
+            if chunk_no:
+                d["name"] = f"{d['name'][:61]}_c{chunk_no}"
             if pdb_path is None:
                 n_failures += 1
                 keep_scores(d, "no_pdb_matched")
@@ -4890,6 +5288,80 @@ def _run_shard() -> None:
             )
             logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"),
                         candidate_entry.get("pdb_key") or "(capped, no atoms)")
+
+        if not designs:
+            # A shard that legitimately produced no survivors still COMPLETES
+            # with zero candidates — the campaign pools survivors across shards,
+            # and delivered-only billing releases this shard's hold. NOT a
+            # delivery failure either: nothing was produced, so nothing was
+            # undelivered. The counters ride along at zero purely so
+            # `inline_delivery` is present on EVERY inline result and a caller
+            # can read it without first testing for its existence.
+            #
+            # WITH A CENSUS, THOUGH. "COMPLETED, 0 designs, 0 failures" is the
+            # same three lines whether the filter culled every sample or
+            # `complexa design` never wrote a reward CSV at all, and those call
+            # for opposite responses. Note this branch is reachable only with
+            # rc == 0: every nonzero exit passes through chunked_search's fail
+            # ladder, which _fail()s on a nonzero exit with nothing scored, and
+            # a zero-design shard always is that — in every chunk plan, since
+            # the ladder counts scored designs across all of them. So a census
+            # here is describing a run that claims to have succeeded.
+            runtime = int(time.time() - start)
+            empty_result = {
+                "status": "COMPLETED",
+                "tier": preset,
+                "designs_total": designs_total,
+                "designs_completed": 0,
+                "n_failures": 0,
+                "designs": [],
+                "candidates": [],
+                "output_census": census_output_tree(run_dir),
+                "runtime_seconds": runtime,
+                "provider_job_id": job_id,
+            }
+            if inline_pdbs:
+                empty_result["inline_delivery"] = {
+                    "n_inlined": 0,
+                    "n_inline_capped": 0,
+                    "inline_bytes_used": 0,
+                    "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
+                }
+                # Empty for the same reason the counters are zero: present on
+                # EVERY inline result so a caller can read it without first
+                # testing for its existence. Nothing was parsed here, so
+                # nothing could have been dropped.
+                empty_result["undelivered"] = []
+            _write_result(empty_result)
+            send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
+            logger.info("shard produced 0 survivors in %ds", runtime)
+            return
+
+        # DELIVERED IN REWARD ORDER, WHICH WITH MORE THAN ONE CHUNK IS NOT
+        # ASSIGNMENT ORDER. Both lists are reordered by the same permutation:
+        # they are appended to in lockstep, one each per surviving design, by
+        # the two adjacent lines at the foot of the loop above
+        # (``out_designs.append`` / ``out_candidates.append``), so position i
+        # is the same design in both.
+        #
+        # AFTER the loop, never inside it: ``rank``, ``name`` and ``pdb_key``
+        # are assigned as designs arrive and are spent the moment they are
+        # heartbeated and PUT, so only the LIST ORDER can still move. That is
+        # the half every reader of a finished result goes through — the page
+        # (templates/tools/proteina_results.html reads ``candidates`` as
+        # stored, and shared/jobs.py::page_ordered_records returns a non-empty
+        # ``candidates`` as stored too) and the exports, which follow the page.
+        # Equality with a single invocation's order is asserted by
+        # tests/test_proteina_delivery.py::TestChunkedSearch::test_two_chunks_deliver_the_single_run_order.
+        #
+        # The LIVE table a running job streams into is not covered and cannot
+        # be: it keys its rows on the rank value (renderedRanks[rank], see the
+        # note at templates/components/candidate_table.html:814-823), so
+        # during a chunked search it shows chunk order. The finished table
+        # replaces it on reload.
+        order = _reward_order(out_designs)
+        out_designs[:] = [out_designs[i] for i in order]
+        out_candidates[:] = [out_candidates[i] for i in order]
 
         runtime = int(time.time() - start)
         result = {
