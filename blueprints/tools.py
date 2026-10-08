@@ -838,6 +838,25 @@ def _normalize_clone_pre_fill(slug: str, pre_fill: dict) -> None:
         for box, lines in boxes.items():
             pre_fill.setdefault(box, "\n".join(lines))
         del pre_fill["spec"]
+    # A ColabFold multimer is stored as ONE record, headers joined on "_" and
+    # chains on ":" (tools/colabfold/__init__.py:226-227), and validate()
+    # refuses ":" in a pasted record (tools/colabfold/__init__.py:185). Split
+    # it back into one record per chain. The header is split at its first
+    # n-1 underscores, which the join put there, so the pieces re-join to it
+    # unless the parser (:93) strips or renames a blank piece. A header with
+    # fewer underscores gets that parser's default names instead.
+    # Overwritten, not setdefault: stored key and field share one name.
+    # tests/test_clone_prefill_restore.py::test_colabfold_multimer_clone_resubmits
+    if slug == "colabfold" and isinstance(pre_fill.get("fasta_text"), str):
+        header, _, seq = pre_fill["fasta_text"].partition("\n")
+        chains = "".join(seq.split()).split(":")
+        if header.startswith(">") and len(chains) > 1:
+            names = header[1:].split("_", len(chains) - 1)
+            if len(names) != len(chains):
+                names = [f"chain_{i + 1}" for i in range(len(chains))]
+            pre_fill["fasta_text"] = "\n".join(
+                f">{name}\n{chain}" for name, chain in zip(names, chains)
+            )
 
     # Every remaining list becomes text. LAST, so the shape-specific
     # rules above still see the structure they were written against.

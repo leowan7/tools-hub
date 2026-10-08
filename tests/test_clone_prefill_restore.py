@@ -90,6 +90,21 @@ def test_preset_specific_shapes_round_trip(tools_app, slug, form):
     assert _resubmit(adapter, html) == _public(inputs)
 
 
+@pytest.mark.parametrize("headers", [("H", "L"), ("heavy_chain", "light_chain")])
+def test_colabfold_multimer_clone_resubmits(tools_app, headers):
+    """Two-record submit -> stored ':'-joined record -> clone form -> the same inputs."""
+    flask_app, adapters = tools_app
+    adapter = _adapter(adapters, "colabfold")
+    chains = ("MKWVTFISLLFLFSSAYS", "QVQLVESGGGLVQPGG")
+    fasta = "\n".join(f">{h}\n{c}" for h, c in zip(headers, chains))
+    inputs, err = adapter.validate({"preset": "standalone", "fasta_text": fasta}, {})
+    assert err is None, err
+    assert inputs["fasta_text"] == f">{'_'.join(headers)}\n{':'.join(chains)}"
+    html = _clone(flask_app, "colabfold", inputs)
+    assert ":" not in _posted_value(html, "fasta_text")
+    assert _resubmit(adapter, html) == _public(inputs)
+
+
 def test_iggm_restores_the_qa_fields(tools_app):
     flask_app, adapters = tools_app
     inputs = _stored_inputs(_adapter(adapters, "iggm"))
