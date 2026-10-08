@@ -147,7 +147,8 @@
      the table on this page", `none` says "try the button again" and `noname`
      says "reopen the form" -- and the table, the button and the modal are all
      inside the one `candidate_table` macro, which the results container below
-     includes only under `job.status == 'succeeded' and job.result`. So all
+     includes only for a succeeded job, or a cancelled one that kept designs
+     (shared/run_notices.py::cancelled_with_designs), with a `job.result`. So all
      three vanish together, and in any other state those banners name controls
      that are not on the page. Register item A95 is the same class on
      templates/unavailable.html and names the same three, filed and not fixed;
@@ -308,7 +309,7 @@
       {% endif %}
 
       <div id="results-container">
-        {% if job.status == 'succeeded' and job.result %}
+        {% if (job.status == 'succeeded' or cancelled_with_designs) and job.result %}
           {% include tool_results_partial %}
         {% elif job.status in ('failed', 'timeout') %}
           {# Plain-words cause, what to change, the ledger's refund sentence
