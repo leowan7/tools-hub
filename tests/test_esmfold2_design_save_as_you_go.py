@@ -112,44 +112,29 @@ def test_one_heartbeat_per_design_carrying_its_own_scores(beats):
     """The core of the change: N designs shaped, N beats sent, no sharing.
 
     Asserts the per-beat PAIRING, not just the count: a loop that sent N beats
-    all describing the last design would satisfy a count assertion. Paired on
-    pdb_key rather than name -- see
-    test_the_streamed_name_is_the_pre_sort_name for why name is not stable.
+    all describing the last design would satisfy a count assertion.
     """
     designs = _shape()
     assert len(beats) == 3
-    streamed = {(c["pdb_key"], c["iptm"]) for c in _candidates(beats)}
-    assert streamed == {(d["pdb_key"], d["iptm"]) for d in designs}
+    streamed = {(c["name"], c["pdb_key"], c["iptm"]) for c in _candidates(beats)}
+    assert streamed == {(d["name"], d["pdb_key"], d["iptm"]) for d in designs}
 
 
-def test_the_streamed_name_is_the_pre_sort_name(beats):
-    """KNOWN AND NOT FIXED HERE: the streamed ``name`` is the one assigned
-    while the design is shaped, and ``_shape_designs`` renames every design
-    after sorting by iPTM (``d["name"] = f"{pdb_prefix}design_{rank}"``). So a
-    live row labelled design_0 can be design_2 on the finished page.
+def test_the_streamed_name_is_the_finished_name(beats):
+    """A live row labelled design_0 is design_0 on the finished page too.
 
-    Streaming after the sort is the only way to make them agree, and that
-    means no beat until the whole batch is done -- which is the thing this
-    change exists to stop. What the beat does keep is the name CONSISTENT WITH
-    THE KEY beside it, so the live row's label and the file its "View 3D"
-    fetches are the same design. Recovery does not care either way:
-    ``shared/job_recovery.py::reconstruct`` joins on
-    ``posixpath.basename(part["pdb_key"])`` and rebuilds a candidate of rank,
-    pdb_key and scores only -- it reads no name. The manifest's own name
-    already disagreed with its pdb_key before this change, for the same
-    reason.
+    ``_shape_designs`` used to rename every design after sorting by iPTM, so
+    the beat's name (sent before the sort) and the manifest's disagreed, and
+    the manifest's name stopped matching its own pdb_key. The sort now moves
+    rank only. ``_rows`` gives iPTM rising with generation index, so the sort
+    reverses the order and a rename would show here.
     """
     designs = _shape()
+    assert designs[0]["pdb_key"] == "design_2_complex.pdb"
+    by_key = {d["pdb_key"]: d["name"] for d in designs}
     for cand in _candidates(beats):
         assert cand["pdb_key"] == f"{cand['name']}_complex.pdb"
-    by_key = {d["pdb_key"]: d["name"] for d in designs}
-    renamed = [
-        c for c in _candidates(beats) if by_key[c["pdb_key"]] != c["name"]
-    ]
-    assert renamed, (
-        "the post-sort rename no longer moves any name; if _shape_designs "
-        "stopped renaming, drop this test and pair on name above"
-    )
+        assert by_key[cand["pdb_key"]] == cand["name"]
 
 
 def test_every_beat_goes_to_the_heartbeat_path(beats):

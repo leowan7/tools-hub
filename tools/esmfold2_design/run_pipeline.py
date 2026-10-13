@@ -1326,9 +1326,13 @@ def _shape_designs(
     designs.sort(
         key=lambda d: (float("inf") if d["iptm"] is None else -d["iptm"])
     )
+    # Only rank follows the sort. The name stays the one the PDB was saved
+    # under (``_save_complex_pdb`` writes ``f"{name}_complex.pdb"``), so name,
+    # file and scores describe one design. Renaming here is what labelled
+    # job dffc8f2b's design_1 as "design_0"; pinned by
+    # tests/test_esmfold2_design_name_matches_file.py.
     for rank, d in enumerate(designs):
         d["rank"] = rank
-        d["name"] = f"{pdb_prefix}design_{rank}"
     # After shaping, not before: the check reads the values that actually
     # landed on the designs, which is the only view that catches a proxy
     # sourced off the wrong critic.

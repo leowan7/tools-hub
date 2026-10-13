@@ -79,6 +79,43 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     return merged
 
 
+def _name_after_file(row: Any) -> Any:
+    key = row.get("pdb_key") if isinstance(row, dict) else None
+    if not isinstance(key, str) or not key.endswith("_complex.pdb"):
+        return row
+    name = key.rsplit("/", 1)[-1][: -len("_complex.pdb")]
+    if not name or row.get("name") == name:
+        return row
+    return {**row, "name": name}
+
+
+def _esmfold2_design_names(tool: str, result: Any) -> Any:
+    """Re-derive each esmfold2-design design's ``name`` from its ``pdb_key``.
+
+    Rows written before the fix in run_pipeline.py::_shape_designs and
+    modal_app.py::_aggregate carry a name that follows the design's sorted
+    POSITION while its pdb_key, sequence and scores follow the design itself
+    (job dffc8f2b showed design_1's sequence under "design_0"). The file is
+    saved as ``f"{name}_complex.pdb"`` (run_pipeline.py::_save_complex_pdb),
+    so its stem is the true name. A row whose name already matches is kept
+    as is; a recovered row (``designs/<file>``, no name, from
+    shared/job_recovery.py::_candidate_from_partial) gains its file's stem.
+    The stored dict is copied, not mutated. All three pinned by
+    tests/test_esmfold2_design_name_matches_file.py.
+
+    ponytail: a pre-fix design with no pdb_key keeps its stored name; there
+    is nothing left to derive the right one from.
+    """
+    if tool != "esmfold2-design" or not isinstance(result, dict):
+        return result
+    fixed = {
+        key: [_name_after_file(r) for r in rows]
+        for key in ("candidates", "designs")
+        if is_candidate_array(rows := result.get(key))
+    }
+    return {**result, **fixed} if fixed else result
+
+
 # THE STORED VERDICT IS NOT READ HERE ANY MORE, AND MUST NOT COME BACK.
 #
 # There was a ``PASS_FILTER_STATUSES`` frozenset on this line, and helpers
@@ -691,7 +728,9 @@ class ToolJob:
             preset=row["preset"],
             status=row["status"],
             inputs=row.get("inputs") or {},
-            result=_normalize_result_shape(row.get("result")),
+            result=_esmfold2_design_names(
+                row["tool"], _normalize_result_shape(row.get("result"))
+            ),
             error=row.get("error"),
             modal_function_call_id=row.get("modal_function_call_id"),
             job_token=row["job_token"],

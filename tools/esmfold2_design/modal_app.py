@@ -981,9 +981,12 @@ def _aggregate(
     best = best_pool[0] if best_pool else None
     best_seq = _binder_only(best) if best else None
 
+    # Rank only. Each child's name is already ``seed{N}_design_{i}`` (prefix
+    # set in run_tool, named in run_pipeline.py::_shape_designs), the stem of
+    # its own pdb_key; a position-based name here would point at a different
+    # design's file. Pinned by tests/test_esmfold2_design_name_matches_file.py.
     for rank, c in enumerate(all_candidates):
         c["rank"] = rank
-        c["name"] = f"seed{c.get('seed', 0)}_rank{rank}"
     for rank, d in enumerate(all_designs):
         d["rank"] = rank
 
