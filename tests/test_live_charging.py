@@ -23,7 +23,7 @@ from shared.wallet import (
     live_due_usd,
 )
 from shared.wallet_estimates import TOOL_SPECS, compute_hard_cap, gpu_class_for_job
-from shared.wallet_guard import REASON_WALLET_EMPTY, live_charging_enabled
+from shared.wallet_guard import REASON_WALLET_EMPTY, live_charging_enabled, live_start_usd
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
 LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion"}
+# 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
+RFD_START = Decimal("1.1371")
 
 
 # ---------------------------------------------------------------------------
@@ -183,12 +185,33 @@ LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("af2", {"preset": "batch"}),
               ("colabfold", {"preset": "batch"}), ("esmfold", {"preset": "batch"})]
 
 
-@pytest.mark.parametrize("slug,form", LIVE_FORMS)
+@pytest.mark.parametrize("slug,form", [f for f in LIVE_FORMS if f[0] != "rfdiffusion"])
 def test_live_run_opens_an_anchor_on_any_balance_above_zero(slug, form):
     r = _post(slug, form, balance="0.01")
     assert r.body == "RAN"
     r.open.assert_called_once_with("u-1", slug)
     r.reserve.assert_not_called()
+    assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
+
+
+def test_rfdiffusion_start_minimum_does_not_depend_on_num_designs():
+    for n in (1, 4, 10, 100):
+        assert live_start_usd("rfdiffusion", {"num_designs": n}) == RFD_START
+    for tool in sorted(LIVE):
+        assert live_start_usd(tool, {"preset": "batch"}) == 0
+
+
+def test_rfdiffusion_below_its_start_minimum_is_refused():
+    r = _post("rfdiffusion", {}, balance=RFD_START - Decimal("0.0001"))
+    assert r.body == "GATE"
+    assert r.gate == REASON_INSUFFICIENT
+    r.open.assert_not_called()
+
+
+def test_rfdiffusion_at_its_start_minimum_opens_an_anchor():
+    r = _post("rfdiffusion", {}, balance=RFD_START)
+    assert r.body == "RAN"
+    r.open.assert_called_once_with("u-1", "rfdiffusion")
     assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
 
 
@@ -306,6 +329,8 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     ("af2", {"preset": "batch"}, "0.10", False),
     ("boltz2", {}, "0", True),
     ("af2", {"preset": "standalone"}, "0.10", True),
+    ("rfdiffusion", {}, str(RFD_START - Decimal("0.0001")), True),
+    ("rfdiffusion", {}, str(RFD_START), False),
 ])
 def test_estimate_deficit_matches_the_guard(monkeypatch, tool, params, balance, short):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")

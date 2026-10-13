@@ -24,10 +24,12 @@ from functools import wraps
 from flask import g, render_template, request, session, url_for
 
 from shared.credits import load_user_context
+from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
 from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
     get_or_create_wallet,
+    live_due_usd,
     open_live_run,
     release_hold as wallet_release_hold,
     reserve_hold as wallet_reserve_hold,
@@ -36,6 +38,7 @@ from shared.wallet import (
 from shared.wallet_estimates import (
     cushioned_hold_usd,
     estimated_cost_for_tool,
+    gpu_class_for_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,23 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
         tool_slug in _LIVE_BATCH_ONLY
         and str(params.get("preset") or "").strip() == "batch"
     )
+
+
+def live_start_usd(tool_slug: str, params: dict) -> Decimal:
+    """The balance a live run needs to start: $0, except on rfdiffusion.
+
+    rfdiffusion uploads its first design in the container's AF2 stage, after
+    diffusion and MPNN (llm-proteinDesigner
+    docker/rfdiffusion/run_pipeline.py::stage_af2_validation, not readable from
+    this repo). Leo, 2026-10-13 (PR #427): a run starts only on a balance that
+    covers that stretch. The figure is derived, not measured: the
+    ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
+    is its fixed term plus one per-design term.
+    """
+    if tool_slug != "rfdiffusion":
+        return Decimal("0")
+    seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
+    return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
 
 
 def _balance(user_id: str) -> Decimal:
@@ -294,6 +314,12 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                 return f(*args, **kwargs)
 
             if live:
+                if 0 < pre.balance_usd < live_start_usd(resolved_slug, params):
+                    return _render_topup_gate(
+                        tool_slug=resolved_slug,
+                        reason=REASON_INSUFFICIENT,
+                        form_snapshot=request.form.to_dict() or {},
+                    )
                 hold_tx_id = (
                     open_live_run(user_id, resolved_slug)
                     if pre.balance_usd > 0 else None
