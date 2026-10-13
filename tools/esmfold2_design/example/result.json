@@ -3,7 +3,7 @@
   "binder_name": "minibinder",
   "candidates": [
     {
-      "name": "seed0_rank0",
+      "name": "seed0_design_0",
       "pdb_key": "seed0_design_0_complex.pdb",
       "rank": 0,
       "scores": {
@@ -17,7 +17,7 @@
       "seed": 0
     },
     {
-      "name": "seed1_rank1",
+      "name": "seed1_design_0",
       "pdb_key": "seed1_design_0_complex.pdb",
       "rank": 1,
       "scores": {
