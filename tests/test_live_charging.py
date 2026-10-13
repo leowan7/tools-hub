@@ -70,9 +70,19 @@ def test_live_tools_upload_each_design_mid_run(tool, chain, needs_loop):
         assert in_loop or not needs_loop
 
 
-@pytest.mark.parametrize("tool", sorted(LIVE))
+# Live tools whose container is not in this repo, so the heartbeat check
+# cannot read them.
+OUT_OF_REPO = {"rfdiffusion"}
+
+
+@pytest.mark.parametrize("tool", sorted((LIVE | LIVE_ALL_PRESETS) - OUT_OF_REPO))
 def test_live_tools_send_a_heartbeat(tool):
     assert _upload_sites(tool, "send_heartbeat")
+
+
+@pytest.mark.parametrize("tool", sorted(OUT_OF_REPO))
+def test_out_of_repo_live_tools_have_no_pipeline_here(tool):
+    assert not (ROOT / "tools" / tool / "run_pipeline.py").exists()
 
 
 @pytest.mark.parametrize("tool", ["af2", "colabfold", "esmfold"])
