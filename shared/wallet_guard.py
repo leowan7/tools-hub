@@ -47,7 +47,11 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # the designs already finished. Pinned by
 # tests/test_live_charging.py::test_live_tools_upload_each_design_mid_run and
 # ::test_batch_records_reach_the_container_only_on_the_batch_preset.
-_LIVE_ALL_PRESETS = frozenset({"boltz2"})
+# rfdiffusion uploads each design in the llm-proteinDesigner container
+# (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
+# here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
+# tier the hub can send it.
+_LIVE_ALL_PRESETS = frozenset({"boltz2", "rfdiffusion"})
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 

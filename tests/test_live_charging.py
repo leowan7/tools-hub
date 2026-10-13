@@ -30,6 +30,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
+LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion"}
 
 
 # ---------------------------------------------------------------------------
@@ -86,15 +87,22 @@ def test_batch_records_reach_the_container_only_on_the_batch_preset(tool):
     assert "batch_records" not in build({**inputs, "preset": "standalone"}, "")
 
 
+@pytest.mark.parametrize("preset", ["smoke", "mini_pilot", "full", "batch"])
+def test_rfdiffusion_submits_only_the_pilot_tier(preset):
+    from tools.rfdiffusion import validate
+
+    assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
+
+
 @pytest.mark.parametrize("slug", sorted(TOOL_SPECS))
 def test_live_charging_only_on_the_enabled_tiers(slug):
     for preset in ("", "standalone", "batch", "pilot", "full", "smoke", "validate"):
-        expected = slug == "boltz2" or (slug in LIVE and preset == "batch")
+        expected = slug in LIVE_ALL_PRESETS or (slug in LIVE and preset == "batch")
         assert live_charging_enabled(slug, {"preset": preset}) is expected
 
 
 def test_enabled_tools_are_priced_tools():
-    assert LIVE <= set(TOOL_SPECS)
+    assert LIVE | LIVE_ALL_PRESETS <= set(TOOL_SPECS)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +169,7 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
                            release=release, gate=gate)
 
 
-LIVE_FORMS = [("boltz2", {}), ("af2", {"preset": "batch"}),
+LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("af2", {"preset": "batch"}),
               ("colabfold", {"preset": "batch"}), ("esmfold", {"preset": "batch"})]
 
 
@@ -470,10 +478,11 @@ def test_meter_prices_the_run_on_its_own_params():
     due.assert_called_once_with("boltz2", 60, GPU, {"num_samples": 7})
 
 
-def test_run_stops_when_the_balance_runs_short():
-    store, wallet = _Jobs(_job_row()), _Wallet("0.05")
+@pytest.mark.parametrize("tool", sorted(LIVE_ALL_PRESETS))
+def test_run_stops_when_the_balance_runs_short(tool):
+    store, wallet = _Jobs(_job_row(tool=tool)), _Wallet("0.05")
     t = 300
-    assert _due(t) > Decimal("0.05")
+    assert _due(t, tool) > Decimal("0.05")
     r = _meter(store, t, wallet=wallet, candidates=DESIGNS)
     row = store.rows["job-1"]
     assert r.summary == {"debited": 1, "stopped": 1, "cancel_failed": 0, "errors": []}
@@ -486,7 +495,7 @@ def test_run_stops_when_the_balance_runs_short():
     assert row["result"]["stop_reason"] == jobs_mod.WALLET_STOP_REASON
     assert [c["name"] for c in row["result"]["candidates"]] == ["d1", "d2"]
     r.settle.assert_called_once()
-    assert r.settle.call_args.args[:3] == ("hold-1", t, GPU)
+    assert r.settle.call_args.args[:3] == ("hold-1", t, gpu_class_for_job(tool, None))
     assert not r.settle.call_args.kwargs.get("refund")
     r.settle_hold.assert_not_called()
     r.release.assert_not_called()
@@ -802,10 +811,11 @@ def test_settle_live_run_closes_at_the_metered_cost_or_zero(refund):
     hooks.assert_called_once_with("u-1", {"balance_usd": Decimal("3")}, Decimal("0.10"))
 
 
-def test_live_due_is_clamped_at_the_tool_cap():
-    cap = compute_hard_cap("boltz2", {})
-    assert _due(60) < cap
-    assert _due(10 * 86400) == cap
+@pytest.mark.parametrize("tool", sorted(LIVE_ALL_PRESETS))
+def test_live_due_is_clamped_at_the_tool_cap(tool):
+    cap = compute_hard_cap(tool, {})
+    assert _due(60, tool) < cap
+    assert _due(10 * 86400, tool) == cap
 
 
 # ---------------------------------------------------------------------------
