@@ -8,6 +8,7 @@ not executed here.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+# At module level, not inside _cli: modules app imports bind
+# get_service_client at their own import (shared/idempotency.py:94), so
+# importing app while a test has it patched leaves the fake bound after the
+# test. test_cli_tests_leave_no_fake_client_bound checks this.
+from app import create_app
 from shared import wallet
 from shared.wallet import (
     SIGNUP_CREDIT_EXPIRY_DAYS,
@@ -458,7 +464,6 @@ class _TimeoutAdmin(_Admin):
 
 
 def _cli(args):
-    from app import create_app  # noqa: PLC0415
     return create_app().test_cli_runner().invoke(args=args)
 
 
@@ -501,6 +506,17 @@ def test_credit_expire_list_timeout_is_an_error_not_a_skip(db, sent, monkeypatch
     result = _cli(["credit:expire"])
     assert result.exit_code != 0, result.output
     assert sent == []
+
+
+def test_cli_tests_leave_no_fake_client_bound():
+    """Runs after the _cli tests above; no module keeps a fake this file
+    patched in."""
+    leaked = sorted(
+        name for name, mod in list(sys.modules.items())
+        if getattr(getattr(mod, "get_service_client", None), "__module__", None)
+        == __name__
+    )
+    assert leaked == []
 
 
 def test_gotrue_client_gets_the_bounded_timeout():

@@ -23,8 +23,8 @@ the run set ``rf3_required: False``". That was wrong about both.
 is not a switch: tools/proteina/__init__.py derives it as ``preset in
 {"ligand_binder", "motif_ame"}`` and run_pipeline uses it only as a pre-GPU
 hard-block when RF3 is off. It is a consequence of the preset, not a cause.
-The template renders an absent metric as an em dash, which is the honest output
-of this preset, not a gap in the capture.
+templates/components/candidate_table.html drops a ``rf3_score`` column no row
+fills, which is the honest output of this preset, not a gap in the capture.
 
 ``cluster_id`` is absent because nothing writes it — not this run, and not any
 of the 17,024 designs measured across the four sweep campaigns. It is no longer
@@ -42,8 +42,9 @@ SHARD = "28"
 OUT = Path(__file__).resolve().parent.parent / "tools" / "proteina" / "example" / "result.json"
 
 # Columns templates/tools/proteina_results.html renders that this preset
-# actually produces. rf3_score is a rendered column this preset leaves empty and
-# is deliberately not written; cluster_id is not a rendered column at all.
+# actually produces. rf3_score is a listed column this preset leaves empty (the
+# table then drops it) and is deliberately not written; cluster_id is not a
+# listed column at all.
 SCORE_COLUMNS = ("total_reward", "af2_iptm", "af2_plddt", "binder_scrmsd")
 
 

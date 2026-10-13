@@ -226,6 +226,15 @@ def test_google_account_is_created_linked():
     assert profile.call_args.kwargs["purpose"] is None
 
 
+def test_google_account_takes_a_dict_user_like_register_user():
+    service = MagicMock()
+    service.auth.admin.create_user.return_value = SimpleNamespace(user={"id": "u1"})
+    with patch("shared.credits.get_service_client", return_value=service), \
+            patch("shared.auth._insert_user_profile"):
+        result = register_google_user("ada@gmail.com", ip=None, user_agent=None)
+    assert result.success and result.user_id == "u1"
+
+
 def test_create_race_says_the_account_exists():
     service = MagicMock()
     service.auth.admin.create_user.side_effect = Exception("User already registered")
@@ -235,10 +244,11 @@ def test_create_race_says_the_account_exists():
 
 
 def test_lookup_matches_exactly_and_pages():
-    """filter= is a substring match server-side; only the exact address counts."""
+    """filter= is a case-sensitive substring match server-side, against the
+    lower-cased address GoTrue stores; only the exact address counts."""
     pages = [
         [{"id": f"u{i}", "email": f"xada@example.org{i}"} for i in range(1000)],
-        [{"id": "hit", "email": "Ada@Example.org"}],
+        [{"id": "hit", "email": "ada@example.org"}],
     ]
     calls = []
 

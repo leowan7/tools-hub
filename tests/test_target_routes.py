@@ -234,10 +234,9 @@ def test_create_target_rejects_a_chain_qualified_hotspot(client):
     Whatever is stored here is prefilled by ``target_defaults_for_form`` into
     the ONE shared ``hotspot_residues`` field the launch screen posts to EVERY
     selected tool. Accepting "A241" here was executed against the real
-    ``_collect_launch_specs``: rfdiffusion, bindcraft, boltzgen and pxdesign
-    refuse a token naming a chain the run does not target, and
-    ``tools/rfantibody`` parses it with a bare ``int(tok)`` and refuses a prefix
-    on ANY target chain — and the launch route is all-or-nothing.
+    ``_collect_launch_specs``: rfdiffusion, bindcraft, boltzgen, pxdesign and
+    rfantibody refuse a token naming a chain the run does not target — and the
+    launch route is all-or-nothing.
 
     A protomer reaches proteina through proteina's own ``chain_hotspots``
     field, and reaches the target through

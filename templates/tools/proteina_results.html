@@ -4,7 +4,8 @@
    — a rank, with no diversity or clustering step). Columns map to keys the pipeline
    writes into each candidate's `scores` dict: a composite total reward, AF2 confidence
    (protein binders), the RF3 score (ligand / motif), and binder self-consistency RMSD.
-   Absent metrics render as "—" per variant.
+   Absent metrics render as "—" per variant, except the RF3 score, which
+   components/candidate_table.html drops when no row has one.
 
    `cluster_id` IS DELIBERATELY NOT A COLUMN. It was one until 2026-09-10 and was
    empty on all 17,024 designs anyone has measured, with no code path able to fill

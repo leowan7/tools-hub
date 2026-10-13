@@ -63,11 +63,11 @@ _SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
 
 # Which forms ask the picker for chain-prefixed tokens.
 #
-# rfantibody is OFF on purpose and must stay off: tools/rfantibody/__init__.py
-# parses hotspots with a bare int() and rejects "A25" outright, and
-# llm-proteinDesigner/docker/rfantibody/run_pipeline.py:1391 blindly prepends
-# the chain, turning ["A25"] into "--hotspots AA25". It is also
-# multi_chain_supported=False upstream (a VHH binds one chain).
+# rfantibody is OFF on purpose and must stay off: it is
+# multi_chain_supported=False upstream (a VHH binds one chain), and
+# llm-proteinDesigner/docker/rfantibody/run_pipeline.py:1391 prepends the
+# chain, so its payload must be bare ints (tools/rfantibody/__init__.py
+# validate() strips a target_chain prefix to keep it so).
 #
 # bindcraft is OFF pending verification, not on principle. Its container
 # forwards the token verbatim (llm-proteinDesigner

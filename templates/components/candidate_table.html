@@ -69,6 +69,13 @@
    because the shortlist posts each row's `_source_index` and the lab handoff
    indexes the RAW stored list with it. #}
 {% set candidates = display_rows(candidates) %}
+{# rf3_score is listed for every proteina preset (shared/result_columns.py,
+   templates/tools/proteina_results.html) but protein_binder never writes it
+   (scripts/_build_proteina_example.py docstring), so drop it when no row has
+   one. tests/test_worked_examples.py pins both directions. #}
+{% set _rf3 = namespace(seen=false) %}
+{% for c in candidates %}{% if raw_metric(c, 'rf3_score') is not none %}{% set _rf3.seen = true %}{% endif %}{% endfor %}
+{% if not _rf3.seen %}{% set columns = columns | reject('equalto', 'rf3_score') | list %}{% endif %}
 {% set scope = target_id if target_id else (campaign_id if campaign_id else job_id) %}
 {% set export_base = ('/targets/' ~ target_id) if target_id else (('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id)) %}
 {% set table_id = 'cand-table-' ~ scope %}

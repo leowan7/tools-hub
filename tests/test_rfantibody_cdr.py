@@ -172,3 +172,13 @@ def test_validate_rejects_bad_cdr():
     assert inputs is None
     assert err is not None
     assert "H3" in err
+
+
+def test_validate_takes_chain_prefixed_hotspots_as_ints():
+    """A54,A56 on chain A sends what 54,56 sends; B54 is another chain."""
+    for raw in ("A54,A56", "54,56", "A54, 56"):
+        inputs, err = validate(_base_form(hotspot_residues=raw), {})
+        assert err is None, (raw, err)
+        assert inputs["hotspot_residues"] == [54, 56]
+    inputs, err = validate(_base_form(hotspot_residues="B54"), {})
+    assert inputs is None and "chain A" in err

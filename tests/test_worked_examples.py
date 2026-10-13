@@ -1323,10 +1323,11 @@ class TestExampleNumbersComeFromThePayload:
         assert (statistics.median(col("af2_plddt", cands[:12]))
                 > statistics.median(col("af2_plddt", cands[-12:])))
 
-        # rf3_score is ABSENT, not zero. The narration tells the reader that
-        # column is empty because this preset does not run RF3, and a stub
-        # value of 0 would render a confident "0.00" instead of the em dash —
-        # see templates/components/candidate_table.html.
+        # rf3_score is ABSENT, not zero. The narration tells the reader why
+        # there is no such column: this preset does not run RF3, and
+        # templates/components/candidate_table.html drops the column only when
+        # no row has a value, so a stub 0 would bring it back
+        # (test_proteina_drops_rf3_score_only_when_no_row_has_one).
         #
         # cluster_id is absent too and is NOT narrated, because it is no longer
         # a rendered column (shared/result_columns.py, 2026-09-10). The key set
@@ -1346,6 +1347,27 @@ class TestExampleNumbersComeFromThePayload:
         # payload and so is pinned as prose only.
         nxt = example["what_we_did_next"]
         assert "17,024 designs" in nxt and "29%" in nxt
+
+    def test_proteina_drops_rf3_score_only_when_no_row_has_one(self, tools_app):
+        """protein_binder never writes rf3_score; one row with a value brings
+        the column back."""
+        flask_app, _ = tools_app
+        result = json.loads(
+            (REPO / "tools" / "proteina" / "example" / "result.json")
+            .read_text(encoding="utf-8"),
+        )
+
+        def render():
+            return _render_partial(
+                flask_app, "proteina", job_id="example", example=True,
+                result=result,
+            )
+
+        html = render()
+        assert 'data-col="af2_iptm"' in html
+        assert 'data-col="rf3_score"' not in html
+        result["candidates"][0]["scores"]["rf3_score"] = 0.5
+        assert 'data-col="rf3_score"' in render()
 
     # GPU-seconds behind each example's recorded cost. proteina carries it
     # in the payload; pxdesign's payload records runtime_minutes instead.

@@ -78,8 +78,8 @@ _REVIEWED = {
     (
         "The only variant that designs against a structure you "
         "upload; the others run curated ligand and motif "
-        "benchmarks. It also settles the <code>rf3_score</code> "
-        "column below, which is empty on every row: RF3 is a second "
+        "benchmarks. It is also why the table below has no "
+        "<code>rf3_score</code> column: RF3 is a second "
         "scoring stack those other variants need, a protein binder "
         "run does not, and it is not free. That is a consequence of "
         "this choice rather than a switch of its own &mdash; there "
