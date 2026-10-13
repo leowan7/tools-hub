@@ -424,7 +424,7 @@ def _job_row(job_id="job-1", wallet=None, **over):
         "campaign_id": None, "failure_class": None,
         "inputs": {"_wallet": wallet if wallet is not None else {
             "hold_tx_id": "hold-1", "estimate_usd": "2.00", "live": True,
-            "tool_slug": "boltz2",
+            "tool_slug": over.get("tool", "boltz2"),
         }, "_progress": {"stage": "folding"}},
     }
     row.update(over)
