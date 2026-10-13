@@ -533,12 +533,7 @@ def register_user(
             classification=classification.value,
         )
 
-    user_id: Optional[str] = None
-    if response and getattr(response, "user", None):
-        user_obj = response.user
-        user_id = getattr(user_obj, "id", None)
-        if user_id is None and isinstance(user_obj, dict):
-            user_id = user_obj.get("id")
+    user_id = _created_user_id(response)
 
     if not user_id:
         return SignupResult(
@@ -578,6 +573,16 @@ def register_user(
     )
 
 
+def _created_user_id(response) -> Optional[str]:  # noqa: ANN001
+    """The new user's id from a sign_up or create_user response whose
+    ``user`` is an object or a dict."""
+    user_obj = getattr(response, "user", None) if response else None
+    user_id = getattr(user_obj, "id", None)
+    if user_id is None and isinstance(user_obj, dict):
+        user_id = user_obj.get("id")
+    return user_id
+
+
 _FILTER_PAGE = 1000
 
 
@@ -587,7 +592,12 @@ def find_auth_user_by_email(client, email: str) -> Optional[dict]:  # noqa: ANN0
     GoTrue's ``/admin/users?filter=`` narrows server-side (``email LIKE
     %filter% OR full_name ILIKE %filter%`` in supabase/auth
     internal/models/user.go FindUsersInAudience), so this reads only the
-    users that match the address rather than every user. The exact match
+    users that match the address rather than every user. The email arm is
+    LIKE, not the ILIKE beside it, so that arm is case-sensitive: ``target`` is
+    lower-cased below, which is the form GoTrue stores (``strings.ToLower`` on
+    signup upstream -- not vendored here, so unverified in this repo).
+    ``tests/test_google_signin.py::test_lookup_matches_exactly_and_pages`` pins
+    the lower-cased filter this sends. The exact match
     is done here. supabase-py's ``list_users`` does not pass ``filter``, hence the
     client's own ``_request``. Raises on a transport or API error.
     """
@@ -661,7 +671,7 @@ def register_google_user(
                 "app_metadata": {"google_linked": True},
             }
         )
-        user_id = getattr(getattr(response, "user", None), "id", None)
+        user_id = _created_user_id(response)
     except Exception as exc:
         low = str(exc).lower()
         # Same test as register_user. Reached when find_auth_user_by_email

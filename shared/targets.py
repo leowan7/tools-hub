@@ -1304,9 +1304,9 @@ def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
     # Prefilling `effective_hotspots` here was executed against the real
     # `_collect_launch_specs`: with "A241,B241" in this field,
     # rfdiffusion/bindcraft/boltzgen/pxdesign refuse any token naming a chain
-    # the run does not target, and `tools/rfantibody` is a bare `int(tok)` that
-    # refuses a prefix on ANY chain. The launch route is all-or-nothing, so one
-    # prefixed token in this field kills the whole launch.
+    # the run does not target, and `tools/rfantibody` refuses the same way
+    # (`shared.pdb_inspect.split_hotspot`). The launch route is all-or-nothing,
+    # so one token for another chain in this field kills the whole launch.
     #
     # `chain_hotspots` is proteina's own field, and it is the only one that
     # carries the protomer. Read on the campaign form as `chain_hotspots` and

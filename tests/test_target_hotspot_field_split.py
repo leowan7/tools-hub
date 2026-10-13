@@ -3,11 +3,12 @@
 The shape being pinned here:
 
     hotspot_residues   the SHARED launch field, posted to every selected tool.
-                       PLAIN INTEGERS ONLY. rfdiffusion, bindcraft, boltzgen
-                       and pxdesign refuse a token naming a chain the run does
-                       not target; tools/rfantibody parses it with a bare
-                       ``int(tok)`` and refuses a prefix on ANY chain. So a
-                       target's SAVED hotspots cannot be chain-qualified here —
+                       PLAIN INTEGERS ONLY. All five refuse a token naming a
+                       chain the run does not target (rfdiffusion, bindcraft,
+                       boltzgen, pxdesign via tools/base.py
+                       parse_hotspot_residues; tools/rfantibody via
+                       shared.pdb_inspect.split_hotspot). So a target's SAVED
+                       hotspots cannot name another chain here —
                        they are prefilled into this field for every tool at
                        once, and the launch route is all-or-nothing, so one
                        prefixed token kills the whole launch.
@@ -101,9 +102,9 @@ def test_the_shared_prefill_stays_plain_integers_on_a_chain_qualified_target():
 
     ``target_defaults_for_form`` feeds ``hotspot_residues``, which is the one
     field every selected tool reads. Emitting ``effective_hotspots`` here put
-    "A241,B241" in front of rfantibody's bare ``int(tok)`` and in front of four
-    parsers that refuse a chain the run does not target — for a target the user
-    never edited, on a screen that never mentioned the prefix.
+    "A241,B241" in front of five parsers that refuse a chain the run does not
+    target, and this target names only A — for a target the user never edited,
+    on a screen that never mentioned the prefix.
     """
     out = target_defaults_for_form(_fc(hotspot_spec=["A241", "B241"]))
     assert out["hotspot_residues"] == "241,241"

@@ -70,11 +70,12 @@ shared launch field can still drive proteina alongside the other tools, and is
 REFUSED when the run names more than one chain, where "the target chain" does
 not identify a residue. The shared field is why the split exists: it is posted
 to EVERY tool on the launch screen, and none of the other five will accept a
-chain-qualified token arriving there from a target's saved default. rfdiffusion,
-bindcraft, boltzgen and pxdesign refuse any token naming a chain the RUN does
-not target (``tools/base.py::parse_hotspot_residues``); rfantibody parses it
-with a bare ``int(tok)`` and refuses a prefix on any chain at all. So anything
-chain-qualified has to come in on proteina's own key. See :func:`validate`.
+token for another protomer arriving there from a target's saved default:
+rfdiffusion, bindcraft, boltzgen and pxdesign refuse any token naming a chain
+the RUN does not target (``tools/base.py::parse_hotspot_residues``), and
+rfantibody refuses the same way (``shared.pdb_inspect.split_hotspot`` in its
+own ``validate``). So a hotspot on a chain this run does not target has to come
+in on proteina's own key. See :func:`validate`.
 
 RF3 dependency (product decision): ``ligand_binder`` and ``motif_ame`` score
 on RF3 only — AF2RewardModel has no ligand protocol, so there is no AF2
@@ -642,10 +643,10 @@ def validate(
     #
     # `hotspot_residues` is the ONE field the multi-tool launch screen posts to
     # every selected tool (`blueprints/targets._SHARED_LAUNCH_FIELDS`), and it
-    # can only ever carry plain integers: rfdiffusion, bindcraft, boltzgen and
-    # pxdesign refuse a token naming a chain the run does not target, and
-    # `tools/rfantibody` parses it with a bare `int(tok)` that refuses a prefix
-    # on ANY target chain. So a chain-qualified hotspot cannot travel in it.
+    # can only carry hotspots on the run's target chain: rfdiffusion,
+    # bindcraft, boltzgen, pxdesign and rfantibody refuse a token naming a chain
+    # the run does not target. So a protomer-specific hotspot cannot travel in
+    # it.
     # `chain_hotspots` is proteina-scoped — posted as `proteina__chain_hotspots`
     # on the launch screen, which `_tool_form` un-prefixes, and as
     # `chain_hotspots` on the campaign form — so it can.
