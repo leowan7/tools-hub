@@ -765,6 +765,10 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
         ), patch(
             "shared.wallet_guard.wallet_reserve_hold", return_value="tx-early"
         ), patch(
+            # rfdiffusion charges as it runs (shared/wallet_guard.py::
+            # _LIVE_ALL_PRESETS), so its hold is the live-run anchor.
+            "shared.wallet_guard.open_live_run", return_value="tx-early"
+        ), patch(
             "shared.wallet_guard.wallet_release_hold"
         ) as release:
             with c.session_transaction() as sess:
