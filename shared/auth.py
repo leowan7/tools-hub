@@ -592,10 +592,12 @@ def find_auth_user_by_email(client, email: str) -> Optional[dict]:  # noqa: ANN0
     GoTrue's ``/admin/users?filter=`` narrows server-side (``email LIKE
     %filter% OR full_name ILIKE %filter%`` in supabase/auth
     internal/models/user.go FindUsersInAudience), so this reads only the
-    users that match the address rather than every user. That LIKE is
-    case-sensitive, so ``target`` is lower-cased to match what GoTrue stores
-    (``strings.ToLower`` in internal/models/user.go NewUser and
-    internal/api/mail.go validateEmail). The exact match
+    users that match the address rather than every user. The email arm is
+    LIKE, not the ILIKE beside it, so that arm is case-sensitive: ``target`` is
+    lower-cased below, which is the form GoTrue stores (``strings.ToLower`` on
+    signup upstream -- not vendored here, so unverified in this repo).
+    ``tests/test_google_signin.py::test_lookup_matches_exactly_and_pages`` pins
+    the lower-cased filter this sends. The exact match
     is done here. supabase-py's ``list_users`` does not pass ``filter``, hence the
     client's own ``_request``. Raises on a transport or API error.
     """

@@ -20,7 +20,7 @@ import pytest
 # At module level, not inside _cli: modules app imports bind
 # get_service_client at their own import (shared/idempotency.py:94), so
 # importing app while a test has it patched leaves the fake bound after the
-# test. test_cli_leaves_no_fake_client_bound checks this.
+# test. test_cli_tests_leave_no_fake_client_bound checks this.
 from app import create_app
 from shared import wallet
 from shared.wallet import (
@@ -508,16 +508,13 @@ def test_credit_expire_list_timeout_is_an_error_not_a_skip(db, sent, monkeypatch
     assert sent == []
 
 
-def test_cli_leaves_no_fake_client_bound(monkeypatch):
-    """No module keeps the fake a _cli test patched in once the test ends."""
-    def fake():
-        return None
-    monkeypatch.setattr("shared.credits.get_service_client", fake)
-    _cli(["--help"])
-    monkeypatch.undo()
+def test_cli_tests_leave_no_fake_client_bound():
+    """Runs after the _cli tests above; no module keeps a fake this file
+    patched in."""
     leaked = sorted(
         name for name, mod in list(sys.modules.items())
-        if getattr(mod, "get_service_client", None) is fake
+        if getattr(getattr(mod, "get_service_client", None), "__module__", None)
+        == __name__
     )
     assert leaked == []
 

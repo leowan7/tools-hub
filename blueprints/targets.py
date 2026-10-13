@@ -464,12 +464,14 @@ def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
     ``shared.targets.target_defaults_for_form`` prefills into the ONE shared
     ``hotspot_residues`` launch field that every selected tool reads
     (``_SHARED_LAUNCH_FIELDS``). Widening it to accept ``"A241"`` was executed
-    and refused by five of the six campaign tools:
+    and refused by five of the six campaign tools: each refuses a token naming
+    a chain the RUN does not target, and a saved spec prefilled for every tool
+    at once carries chains this run does not name.
     rfdiffusion/bindcraft/boltzgen/pxdesign answer "does not name one of your
-    target chains" unless the run names that chain, and
-    ``tools/rfantibody/__init__.py`` is a bare ``int(tok)`` per token that
-    cannot accept a prefix on ANY target chain. The launch route is
-    all-or-nothing, so one prefixed token killed the whole launch.
+    target chains" (``tools/base.py::parse_hotspot_residues``) and
+    ``tools/rfantibody/__init__.py`` refuses the same way
+    (``shared.pdb_inspect.split_hotspot``). The launch route is
+    all-or-nothing, so one such token killed the whole launch.
 
     A chain-qualified hotspot reaches proteina through proteina's OWN field
     (``chain_hotspots``), never through this one. See

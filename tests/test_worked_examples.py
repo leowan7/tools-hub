@@ -1326,7 +1326,8 @@ class TestExampleNumbersComeFromThePayload:
         # rf3_score is ABSENT, not zero. The narration tells the reader why
         # there is no such column: this preset does not run RF3, and
         # templates/components/candidate_table.html drops the column only when
-        # no row has a value, so a stub 0 would bring it back as "0.00".
+        # no row has a value, so a stub 0 would bring it back
+        # (test_proteina_drops_rf3_score_only_when_no_row_has_one).
         #
         # cluster_id is absent too and is NOT narrated, because it is no longer
         # a rendered column (shared/result_columns.py, 2026-09-10). The key set

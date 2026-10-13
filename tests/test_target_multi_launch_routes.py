@@ -3074,8 +3074,8 @@ def test_the_confirming_read_is_owner_scoped(client):
 # the whole launch. A previous round widened target creation to accept "A241"
 # and prefilled it into that field; measured against these same six validators,
 # rfdiffusion, bindcraft, boltzgen and pxdesign refuse a token naming a chain
-# the run does not target, and tools/rfantibody is a bare `int(tok)` per token
-# that refuses a prefix on ANY target chain.
+# the run does not target, and tools/rfantibody refuses the same way
+# (shared.pdb_inspect.split_hotspot).
 #
 # These build the form from the REAL `target_defaults_for_form`, so the prefill
 # and the validators are pinned together rather than separately.
@@ -3213,10 +3213,13 @@ def test_every_campaign_tool_launches_against_a_plain_integer_target(app):
 
 def test_every_campaign_tool_launches_against_a_target_carrying_hotspot_spec(app):
     """THE ONE THAT REGRESSED. `target_defaults_for_form` used to prefill the
-    chain-qualified form into the SHARED field, so an enriched target put
-    "A241,A300" in front of `tools/rfantibody`'s bare `int(tok)` — and
-    rfantibody is not flag-gated, so that is live for every user. The launch
-    route is all-or-nothing, so it took the whole launch with it."""
+    chain-qualified form into the SHARED field every selected tool reads, and
+    rfantibody -- not flag-gated, so live for every user -- then parsed it with
+    a bare `int(tok)` and refused every prefix, taking the whole
+    all-or-nothing launch with it. rfantibody now accepts a token naming the
+    run's own target chain (shared.pdb_inspect.split_hotspot), so what still
+    breaks is a token for a chain the run does not target; this pins that the
+    prefill emits plain ints either way."""
     target = _one_chain_target(hotspot_spec=["A241", "A300"])
     results = _specs_for_all_six(app, target)
     failed = {t: r for t, r in results.items() if isinstance(r, str)}
