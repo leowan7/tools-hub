@@ -302,14 +302,13 @@
         surfaceToggleId: 'hotspot-surface-toggle',
         clearBtnId: 'hotspot-clear-btn',
         // chainPrefixed is deliberately ABSENT here, and must stay absent.
-        // Three independent reasons:
+        // Two reasons:
         //   1. rfantibody is multi_chain_supported=False upstream — a VHH is
         //      built against one chain (shared/pdb_preflight_rules.py).
-        //   2. tools/rfantibody/__init__.py parses hotspots with a bare int()
-        //      and refuses "A25" outright, so every click would produce a form
-        //      its own adapter rejects.
-        //   3. llm-proteinDesigner/docker/rfantibody/run_pipeline.py:1391
-        //      prepends the chain blindly: ["A25"] becomes "--hotspots AA25".
+        //   2. llm-proteinDesigner/docker/rfantibody/run_pipeline.py:1391
+        //      prepends the chain, so the payload must be bare ints. validate()
+        //      in tools/rfantibody/__init__.py strips a target_chain prefix to
+        //      keep it so; a bare click needs no stripping.
         // Do not "complete the set". Pinned by
         // tests/test_hotspot_picker_runtime.py::test_bare_int_forms_still_emit_bare_ints.
       });

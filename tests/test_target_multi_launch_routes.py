@@ -3301,8 +3301,8 @@ def test_a_prefixed_token_in_the_shared_field_is_still_refused_by_the_others(app
         f"only {sorted(refused)} refused a chain-prefixed shared field; the "
         "premise of the split is that this field cannot carry one"
     )
-    assert "must be comma-separated integers" in refused["rfantibody"], (
-        "rfantibody no longer refuses a prefix outright; re-check whether the "
+    assert "residue numbers on chain A" in refused["rfantibody"], (
+        "rfantibody no longer refuses B241 on an A target; re-check whether the "
         "shared field still has to be integers-only"
     )
 

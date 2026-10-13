@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from shared.pdb_inspect import split_hotspot
 from tools.base import Preset, ToolAdapter, register
 
 
@@ -117,12 +118,20 @@ def validate(
     raw_hotspots = (form.get("hotspot_residues") or "").strip()
     if not raw_hotspots:
         return None, "At least one hotspot residue is required."
-    try:
-        hotspot_residues = [
-            int(tok.strip()) for tok in raw_hotspots.split(",") if tok.strip()
-        ]
-    except ValueError:
-        return None, "Hotspot residues must be comma-separated integers (e.g. 54,56,115)."
+    # Bare ints in the payload: llm-proteinDesigner
+    # docker/rfantibody/run_pipeline.py:1391 prepends target_chain to each.
+    hotspot_residues = []
+    for tok in raw_hotspots.split(","):
+        if not tok.strip():
+            continue
+        _cid, resnum = split_hotspot(tok, [target_chain])
+        if resnum is None:
+            return None, (
+                "Hotspot residues must be comma-separated residue numbers on "
+                f"chain {target_chain} (e.g. 54,56,115 or "
+                f"{target_chain}54,{target_chain}56)."
+            )
+        hotspot_residues.append(resnum)
     if not hotspot_residues:
         return None, "At least one hotspot residue is required."
 

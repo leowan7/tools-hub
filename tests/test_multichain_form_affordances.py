@@ -305,11 +305,12 @@ def test_proteina_points_at_its_own_multi_chain_route(pages):
 
 @pytest.mark.parametrize("slug", SINGLE_CHAIN_FORMS)
 def test_single_chain_tools_do_not_advertise_the_prefixed_form(slug, pages):
-    """rfantibody's adapter rejects "A25" with a bare int() parse. Showing the
-    prefixed example there would document a form the tool refuses."""
+    """rfantibody is single-chain; its validate() accepts a prefix only when it
+    names target_chain, and strips it. A prefixed example there would advertise
+    a form that adds nothing on one chain."""
     help_text = pages[slug].help_after("hotspot_residues")
     assert not _PREFIXED_EXAMPLE.search(help_text), (
-        f"{slug}: advertises a hotspot form its own validator rejects"
+        f"{slug}: advertises a chain-prefixed hotspot on a single-chain tool"
     )
 
 

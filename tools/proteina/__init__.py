@@ -642,10 +642,10 @@ def validate(
     #
     # `hotspot_residues` is the ONE field the multi-tool launch screen posts to
     # every selected tool (`blueprints/targets._SHARED_LAUNCH_FIELDS`), and it
-    # can only ever carry plain integers: rfdiffusion, bindcraft, boltzgen and
-    # pxdesign refuse a token naming a chain the run does not target, and
-    # `tools/rfantibody` parses it with a bare `int(tok)` that refuses a prefix
-    # on ANY target chain. So a chain-qualified hotspot cannot travel in it.
+    # can only carry hotspots on the run's target chain: rfdiffusion,
+    # bindcraft, boltzgen, pxdesign and rfantibody refuse a token naming a chain
+    # the run does not target. So a protomer-specific hotspot cannot travel in
+    # it.
     # `chain_hotspots` is proteina-scoped — posted as `proteina__chain_hotspots`
     # on the launch screen, which `_tool_form` un-prefixes, and as
     # `chain_hotspots` on the campaign form — so it can.
