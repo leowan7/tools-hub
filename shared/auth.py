@@ -354,6 +354,36 @@ def verify_login(email: str, password: str) -> tuple:
         return False, f"Login failed: {msg}", None
 
 
+# Keys are the reason codes the Supabase Auth server's checkPasswordStrength
+# sends (https://github.com/supabase/auth/blob/master/internal/api/password.go).
+# The installed client passes them on as AuthWeakPasswordError.reasons, built by
+# handle_exception in the supabase_auth package's helpers module.
+_WEAK_PASSWORD_REASONS = {
+    "length": "Password is too short. Choose a longer one.",
+    "characters": (
+        "Password needs a mix of upper and lower case letters, "
+        "numbers and symbols."
+    ),
+    "pwned": (
+        "This password has appeared in a known data breach. "
+        "Choose a different one."
+    ),
+}
+_WEAK_PASSWORD_FALLBACK = "This password was not accepted. Choose a different one."
+
+
+def _weak_password_message(exc: Exception) -> Optional[str]:
+    """The message to show for a Supabase weak-password rejection, or None
+    when *exc* is some other error."""
+    from supabase import AuthWeakPasswordError  # noqa: PLC0415
+
+    if not isinstance(exc, AuthWeakPasswordError):
+        return None
+    reasons = exc.reasons or ()
+    parts = [text for code, text in _WEAK_PASSWORD_REASONS.items() if code in reasons]
+    return " ".join(parts) or _WEAK_PASSWORD_FALLBACK
+
+
 def register_user(
     ctx: SignupContext,
     *,
@@ -516,10 +546,11 @@ def register_user(
                 failure_code="existing_account",
                 classification=classification.value,
             )
-        if "password" in low and "weak" in low:
+        weak = _weak_password_message(exc)
+        if weak:
             return SignupResult(
                 success=False,
-                error_message="Password is too weak. Use at least 8 characters.",
+                error_message=weak,
                 rejection_reason=None,
                 failure_code="weak_password",
                 classification=classification.value,
@@ -831,10 +862,9 @@ def update_password(
         return False, "Password update failed. Please try again."
     except Exception as exc:
         msg = str(exc)
-        if "password" in msg.lower() and (
-            "weak" in msg.lower() or "short" in msg.lower()
-        ):
-            return False, "Password is too weak. Use at least 8 characters."
+        weak = _weak_password_message(exc)
+        if weak:
+            return False, weak
         if "same" in msg.lower() and "password" in msg.lower():
             return False, "New password must differ from your old password."
         logger.warning("Supabase update_user error during reset: %s", exc)
