@@ -355,8 +355,9 @@ def verify_login(email: str, password: str) -> tuple:
 
 
 # Keys are the reason codes the Supabase Auth server's checkPasswordStrength
-# sends (supabase/auth, internal/api/password.go); the client hands them over
-# as AuthWeakPasswordError.reasons (supabase_auth/helpers.py::handle_exception).
+# sends (https://github.com/supabase/auth/blob/master/internal/api/password.go).
+# The installed client passes them on as AuthWeakPasswordError.reasons, built by
+# handle_exception in the supabase_auth package's helpers module.
 _WEAK_PASSWORD_REASONS = {
     "length": "Password is too short. Choose a longer one.",
     "characters": (
