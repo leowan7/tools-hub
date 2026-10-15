@@ -294,44 +294,55 @@ survey of every route. The completion mail goes to `leowan7+t1@gmail.com`, so
 answering the brief's email question needs Leo to open or forward that message.
 Everything else here is readable without his inbox.
 
-### Precondition: the live meter runs only if a Railway cron is scheduled
-
-This is the one thing that could make the whole test unobservable, so it is
-recorded before launch rather than discovered after.
+### Precondition: the live meter depends on a Railway cron
 
 `meter_live_runs` is what debits a live run and stops it at $0. It has exactly
 one caller outside `tests/`: `cron/tick_campaigns.py:68`. That module runs only
 through the Flask CLI command `campaigns:tick` (`app.py:1114-1126`). The
-`Procfile` declares only two process types, `release` and `web` — no worker and
-no scheduler:
+`Procfile` declares only `release` and `web` — no worker, no scheduler — so the
+schedule lives outside this repository.
 
-```
-release: python -m cron.indexnow_ping || true
-web: gunicorn app:app --bind 0.0.0.0:$PORT --preload
-```
+**That cron is scheduled, and was confirmed by direct observation.**
+`docs/audit-2026-07-22-campaign-rework-open-items.md:807` records A46 as
+"**RESOLVED 2026-07-30 by direct observation**": Railway service
+`tools-hub-campaigns-tick`, start command `flask --app app campaigns:tick`,
+schedule `*/5 * * * *`, auto-deploying from `leowan7/tools-hub` branch `main`.
+Executions ran unbroken every 5 minutes across the observed window and all
+succeeded; one fired during the check and took 8 s. `docs/HANDOFF-2026-07-29-qc-round3.md:13`
+records the same resolution.
 
-So the schedule lives outside this repository, in Railway. The code says so
-itself, and files it: `blueprints/targets.py:1458-1468` notes that
-`campaigns:tick` "is a Flask CLI command with no in-repo caller" and that if it
-is not scheduled a funded campaign parks with "nothing to restart it"
-(filed as A46).
+The residual risk is staleness, not absence: that observation is from
+2026-07-30, about two and a half months before this test. A glance at the
+Railway dashboard before launch is worth it as a sanity check. It is not a
+reason to expect the meter to be dead.
 
-**If that cron is not scheduled, an rfdiffusion run is never debited and never
-stopped.** It would run to completion and settle at the end, which from the
-outside looks like a total failure of live charging but would in fact be an
-unscheduled cron. Confirming the cron is live is therefore a precondition of
-step 2, not an observation of it.
+Two in-repo sources still read as though A46 were open, and one of them misled
+an earlier draft of this document:
+
+- `blueprints/targets.py:1458-1468` says `campaigns:tick` has "no in-repo
+  caller" and is "Filed as A46". True when written; the comment was never
+  updated when A46 resolved, so it asserts an open issue that is closed.
+- `cron/tick_campaigns.py:15` and `app.py:1121` both put the tick at
+  "~60-90s". See the cadence note below.
 
 ### The expected stop, computed before the run
 
-Two in-repo sources give the tick cadence as **~60-90 s**:
-`cron/tick_campaigns.py` ("Scheduled separately via Railway cron (~60-90s)")
-and `app.py:1121`. An earlier working note in this test put it at ~5 minutes;
-that was wrong, and it matters, because it sets how long "a couple of ticks
-past $0" is before the escalation rule fires.
+The tick cadence is **5 minutes**, from the `*/5 * * * *` schedule observed in
+the dashboard. The two docstrings that say "~60-90s" are stale: they record
+what was *planned*. `docs/COMPUTE-CAMPAIGNS-PLAN.md:66-69` states the
+discrepancy outright — "planned at ~60-90s, but the Railway cron actually runs
+`*/5 * * * *` -- verified in the dashboard 2026-07-30, see A46 -- so a stranded
+campaign waits up to 5 min".
+
+An earlier draft of this section took those two docstrings as authoritative,
+called them "two in-repo sources", and on that basis revised the cadence from
+5 minutes down to 60-90 s. That was backwards: it replaced the right figure
+with a stale one and did not consult the source that resolves the conflict.
+The figures below are recomputed at 5 minutes.
 
 Measured against the deployed pricing code (`live_due_usd`, `live_start_usd`,
-`gpu_class_for_job`) for `rfdiffusion` at `preset=pilot`, `num_designs=4`:
+`gpu_class_for_job`) for `rfdiffusion` at `preset=pilot`, `num_designs=4`.
+These do not depend on cadence:
 
 | Quantity | Value |
 | --- | --- |
@@ -341,14 +352,18 @@ Measured against the deployed pricing code (`live_due_usd`, `live_start_usd`,
 | Cost of 936 s metered | $1.1361 |
 | Balance $1.20 exhausted at | **989 s = 16.5 min** of metered GPU time |
 
-So with $1.20 the run should get about **16 and a half minutes** of metered
-time after its first heartbeat, then stop. At 60-90 s per tick that is roughly
-**11 to 16 debits** before the stop. Queue and boot are not metered, so this
-window starts at the first heartbeat, not at submit.
+With $1.20 the run should get about **16 and a half minutes** of metered time
+after its first heartbeat, then stop. At one debit every 5 minutes that is
+**about 3 to 4 debits** before the stop (989 / 300 is about 3.3), not the
+11-16 an earlier draft predicted. Queue and boot are not metered, so the window
+starts at the first heartbeat, not at submit.
 
-Escalation threshold, made concrete: two ticks past $0 is about **2 to 3
-minutes**. A run still going more than ~3 minutes after the balance reads $0
-is the billing defect the brief asks to be reported immediately.
+Escalation threshold, made concrete: two ticks past $0 is about **10 minutes**.
+A run still going more than ~10 minutes after the balance reads $0 is the
+billing defect the brief asks to be reported immediately. A single tick's
+overshoot is expected and is not a defect: the stop can only ever fire on a
+tick, so the run can run up to 5 minutes past the moment it owes more than the
+balance covers.
 
 ## Verdict
 
