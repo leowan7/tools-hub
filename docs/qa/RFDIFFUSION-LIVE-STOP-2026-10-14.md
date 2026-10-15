@@ -567,9 +567,11 @@ expanding it yields exactly what the brief asked for:
 | `2026-10-15 04:40` | `-$0.34` |
 | `2026-10-15 04:45` | `-$0.34` |
 
-Three ticks, `$0.81` in total, landing on the `*/5` cron boundaries -- the
-first direct confirmation in this test that the cadence is five minutes rather
-than the `~60-90s` of the stale comments catalogued earlier in this document.
+Three ticks, `$0.81` in total, landing on the `*/5` cron boundaries. The
+schedule itself was already read off the Railway dashboard earlier in this
+document; what is new here is three observed *firings* at five-minute spacing,
+which is behavioural rather than configuration evidence against the `~60-90s`
+of the stale comments catalogued above.
 
 How the error happened is worth recording, because the mechanism is a repeat.
 `find` resolved the summary text to one node with role `generic`, and I read
@@ -583,14 +585,20 @@ What survives is a real but much smaller defect: the disclosure is **collapsed
 by default**, so what a customer sees first for a running job is the prose
 roll-up -- and the roll-up is the figure that is a cent off (Finding 4).
 
-**Finding 2: the opening row's own AMOUNT and BALANCE AFTER columns go stale.**
-At `04:39` that row still read `$0.00` in AMOUNT and `$1.20` in BALANCE AFTER
-while the live balance was `$1.07`. BALANCE AFTER is literally defensible --
-the page's own preamble defines it as "what you had right after each entry
-cleared", and $1.20 was correct right after the anchor cleared -- but the row
-is the only place this job appears, so a reader scanning the AMOUNT column sees
-`$0.00` for a job that has by then taken 13 cents. The true figure is carried
-in free text one cell to the left.
+**Finding 2: the anchor row pairs live roll-up prose with its own frozen
+figures.** At `04:39` that row read `$0.00` in AMOUNT and `$1.20` in BALANCE
+AFTER while the live balance was `$1.07`.
+
+Both figures are individually correct, and calling them "stale" in an earlier
+draft was wrong. The anchor is a zero-amount `hold` row, so `$0.00` *is* its
+amount, and the page's own preamble defines BALANCE AFTER as "what you had
+right after each entry cleared", which `$1.20` was. This is not a data error.
+
+What is left is a presentation complaint, and a mild one: the same row carries
+`charged as it runs; $0.13 so far`, so a single row shows a live cumulative
+figure next to two frozen ones, and the only cell that moves is prose. A reader
+scanning the AMOUNT column for what this job cost sees `$0.00`. The per-tick
+rows that do carry the money are one collapsed disclosure away (Finding 1).
 
 **Finding 4: the roll-up figure is a cent below the rows it summarizes.** At
 `04:42` the page showed `$0.46 so far` against a CURRENT BALANCE of `$0.73`.
@@ -601,8 +609,11 @@ reading could not. By `04:42` two ticks had fired, `$0.13` and `$0.34`, summing
 to `$0.47` -- and $1.20 - $0.47 = $0.73, exactly the balance shown. So the
 balance and the individual rows agree to the cent; it is the `so far` roll-up
 that reads low. The same discrepancy recurs at settlement, in the same
-direction, which is what makes this a finding rather than a one-off rounding
-wobble -- see the sharpened version below.
+direction.
+
+No money is missing, and the mechanism is documented in the code. The resolved
+version is below; it took reading the display helper to get this right, and the
+two drafts before it were both wrong about what the cent meant.
 
 **Rate check, which does hold.** Cumulative went `$0.13` -> `$0.46` between
 about `04:36` and `04:42`, so roughly `$0.33` across one tick interval. The
@@ -638,10 +649,20 @@ Every later reading followed the navigate-then-read rule from
 `reference-preopened-tab-reads-stale`, which means every one of them sampled
 the page within a second or two of load -- inside that five-second window. The
 confirming detail is the design count: `0 of 4 designs complete` comes from a
-*separate* span (`#progress-text`, `:189`) which the server renders **empty**,
-and in all the later readings it was absent rather than reading zero. Both
-spans were simply in their pre-poll state. The `04:34` reading, which showed
-both, is the one where a poll had already landed.
+*separate* span (`#progress-text`, `:189`) which the server renders **empty**.
+In all the later readings that count was absent rather than reading zero, which
+is what both spans in their pre-poll state look like; the `04:34` reading,
+which showed both, is the one where a poll had already landed.
+
+*Those last two sentences are in-session observation, not data this document
+records.* The readings table logs the stage text only, so it cannot be used to
+re-derive either the empty `#progress-text` span or how long after load each
+read happened. The template facts are checkable and cited; the claim that my
+reads landed inside the five-second window rests on the order of the tool calls
+that made them, which lives in the session transcript and not here. The
+template alone is enough for the conclusion that matters -- the placeholder is
+server-rendered and unmodified until the first poll -- and that does not depend
+on when I happened to read.
 
 So there was no eleven-minute stall and no regression. A smaller real defect is
 left: nothing server-renders current progress, so **every** load of a running
@@ -655,11 +676,21 @@ minutes; the in-flight framing overstated it by two orders of magnitude.
 about `04:36` and `04:42`, so roughly `$0.33` across one tick interval. The
 derived rate is `$0.0728` a minute, which over a 5-minute tick predicts
 `$0.364`. Close enough to confirm the meter is billing A100-40GB time at about
-the expected rate rather than drifting. The first tick is consistent too:
-`$0.13` is about 107 seconds at that rate, and the anchor row carries a
-minute-resolution timestamp of `04:33`, so the window to the `04:35` tick is
-between 60 and 120 seconds. 107 falls inside it. No finer claim is possible
-from the UI, which shows no figure to better than a cent or a minute.
+the expected rate rather than drifting.
+
+**The first tick cannot be checked as tightly as an earlier draft of this
+section claimed.** That draft said `$0.13` is about 107 seconds, that the
+window from the `04:33` anchor row to the `04:35` tick is "between 60 and 120
+seconds", and that 107 therefore fits. Two things are wrong with it. Both
+timestamps are minute-truncated, so the true gap is bounded at 60 to 180
+seconds, not 60 to 120 -- the tighter upper bound smuggled in an assumption
+that the tick row is stamped at the cron boundary. More importantly the window
+is the wrong one: metering bills from `started_at`, stamped by the first
+heartbeat (`shared/jobs.py:1856`, `:1904`), which is strictly later than the
+anchor row and is never shown in the UI. So the honest statement is only that
+107 seconds is consistent with the at-most-180-second gap between the anchor
+and the first tick, and that no tighter check is possible from the outside. The
+per-row `gpu_seconds` column in the read-only query is what would settle it.
 
 ### The result: the run finished before the money did
 
@@ -765,38 +796,59 @@ caught up -- and the artifact was indistinguishable from a server-side defect
 until I read the template. A page that hydrates after load needs both: navigate
 first, **then** wait past its own poll interval before quoting it.
 
-### Finding 4 sharpened: the roll-up is a cent under, twice, in the same direction
+### Finding 4 resolved: the money is right, and the display helper says so
 
-The recovered debit rows turn this from an unexplained gap into a localized
-one. Every money figure the page showed now reconciles except the roll-ups:
+The recovered rows make every figure reconcile except the two roll-ups:
 
 | Figure | Source | Value |
 | --- | --- | --- |
 | Three run debits | expanded disclosure | `$0.13` + `$0.34` + `$0.34` = **`$0.81`** |
 | Settlement | `CHARGE` row AMOUNT | **`-$0.19`** |
-| Sum of rows that moved money | | **`$1.00`** |
+| Sum of the rows that moved money | | **`$1.00`** |
 | Balance movement | `$1.20` -> `$0.20` | **`$1.00`** |
-| `so far` roll-up at `04:42` | vs `$0.47` of rows by then | **`$0.46`** |
-| Closing roll-up | `charged as it ran; it closed at` / `net for this job` | **`$0.99`** |
+| `so far` roll-up at `04:42` | against `$0.47` of rows by then | **`$0.46`** |
+| Closing roll-up | `it closed at` / `net for this job` | **`$0.99`** |
 
-The rows and the balance agree exactly, at both readings. The two roll-up
-figures are each one cent below the rows they summarize. One cent, twice, in
-the same direction, computed by the same code path.
+`display_record_usd` explains all of it, and its own docstring says so before
+any of my drafts did (`shared/compute_campaigns.py:391-412`). Amounts round
+**half-up**; with `balance=True` the figure rounds **down**
+(`rounding = ROUND_FLOOR if balance else ROUND_HALF_UP`, `:408`), and the
+BALANCE AFTER cell passes `balance=True`
+(`templates/wallet/transactions.html:194`). The docstring states the
+consequence outright: "Rows rounded this way can be a cent off reconciling",
+with `display_ledger_usd` keeping the exact figure for staff pages.
 
-The rate check says which figure is the accurate one: 816 GPU-seconds at the
-derived `$0.0728`/minute is `$0.9901`, so the roll-up's `$0.99` is right and
-the per-row displays are each rounded up a fraction of a cent, summing to a
-cent of overstatement across four rows.
+Run the real numbers through that and nothing is wrong. The true cost of 816
+GPU-seconds is `$0.9901`, which displays half-up as **`$0.99`** -- the roll-up
+is the accurate figure. The true balance is $1.20 - $0.9901 = `$0.2099`, which
+displays floored as **`$0.20`**. The apparent `$1.00` movement is an artifact
+of flooring the end balance, not a debit.
 
-That leaves one question the UI cannot answer, and it is the only part of this
-finding that could matter: whether the **stored** balance lost that cent or
-merely displays truncated. If `balance_usd` is decremented by rounded per-tick
-amounts, a customer really pays a fraction of a cent extra per tick, and a long
-run has many ticks -- a 10-hour run is 120 ticks. If the balance is stored
-unrounded and only displayed to two places, nothing is lost and this is
-cosmetic. Both fit every figure above, because nothing on screen resolves finer
-than a cent. The read-only query returns unrounded `amount_usd` and
-`balance_after_usd` per row and settles it in one look.
+**That also closes the question the previous draft left open.** It asked
+whether the stored balance loses a cent per tick or only its display truncates,
+and called that the difference between cosmetic and compounding. It is the
+display: the balance cell floors deliberately so that it is never printed above
+the real balance. Nothing compounds. I should not have raised a possible
+per-tick overcharge without first reading the function that formats the number.
+
+**The defect that does survive is a different one, and the codebase already
+names it.** `display_total_usd` exists precisely for a column of
+already-rounded rows shown with a total, and its docstring gives the reason
+(`shared/compute_campaigns.py:415-432`):
+
+> A consent panel whose rows do not add up to its own total is worse than
+> either figure being a cent out, because the sum is the one part of it the
+> reader can check for themselves.
+
+That is exactly the shape of the wallet page: three debit rows each rendered
+half-up at `templates/wallet/transactions.html:166`, under a roll-up computed
+from the exact sum and rendered at `:153`, `:157` and `:174`. The rows add to
+`$1.00` and the roll-up says `$0.99`. The helper written to prevent this is
+wired into the target-launch consent panel (`blueprints/targets.py:1216`,
+`:1219`, `shared/target_launch.py:299`) and nowhere else -- the wallet roll-up
+does not call it. Feeding the roll-up the displayed row strings, as the consent
+panel does, makes the column add up to its own total, and the project has
+already decided that is the figure worth preserving.
 
 ## Verdict
 
@@ -815,38 +867,49 @@ gate can also finish. Exercising the stop needs a job whose actual cost
 overruns that estimate -- more designs than the gate prices, a larger target,
 or a tool that under-quotes.
 
-Three defects survive scrutiny, none of which moves money in the wrong
-direction. Two more were written down in flight and then disproved by reading
-the code; both corrections are in the sections above, and the commit message of
-`4a96a2fa` still carries the false version of the first:
+**No money moved in the wrong direction at any point in this test**, and
+every figure the wallet showed reconciles once the display helper's rounding
+rules are applied. Two defects survive scrutiny; three more were written down
+in flight and then disproved by reading the code they were about. The commit
+message of `4a96a2fa` still carries the false version of the first withdrawal.
 
-1. **The roll-up figures are a cent below the rows they summarize** -- twice,
-   in the same direction, from the same code path. The rows and the balance
-   agree exactly; `$0.46 so far` and the closing `$0.99` are each a cent under.
-   The rate check says `$0.99` is the accurate cost, so the row displays are
-   the ones rounding up. Whether the **stored** balance also loses that cent
-   per tick, or only its display truncates, is the one open question here, and
-   it decides whether this is cosmetic or compounds over a long run's ticks.
-2. **The anchor row's AMOUNT and BALANCE AFTER columns go stale**, reading
-   `$0.00` and `$1.20` for a job that had taken 13 cents by then.
-3. **A running job's page asserts "not started" for five seconds after every
+1. **The wallet roll-up does not use `display_total_usd`.** The per-tick debit
+   rows are each rendered half-up (`templates/wallet/transactions.html:166`)
+   under a roll-up taken from the exact sum (`:153`, `:157`, `:174`), so the
+   rows add to `$1.00` while the roll-up says `$0.99`. The helper written for
+   exactly this case is wired into the target-launch consent panel and not
+   here, and its docstring argues the rows-must-add-up side
+   (`shared/compute_campaigns.py:415-432`). Both figures are individually
+   correct; the inconsistency is the defect.
+2. **A running job's page asserts "not started" for five seconds after every
    load**, because current progress is never server-rendered even though
-   `inputs._progress` holds it. A customer reloading a job that is ten minutes
-   in and visibly being charged is told it has not begun.
+   `inputs._progress` holds it (`templates/job_detail.html:188` vs the first
+   poll at `:803`). A customer reloading a job that is ten minutes in and
+   visibly being charged is told it has not begun.
 
 **Withdrawn on review, recorded because the errors are instructive:**
 
 - *"The per-tick run debits are never rendered."* False. They are rendered,
-  with time and amount, in a `<details>` that is collapsed by default
+  with time and amount, in a `<details>` collapsed by default
   (`templates/wallet/transactions.html:159-169`). I inferred a DOM property
-  from one node's role label without trying to expand it. What is left is that
-  the disclosure is collapsed, so the roll-up -- the figure that is wrong -- is
-  what a customer reads first.
+  from one node's accessibility role without ever trying to expand it. What
+  survives is only that the disclosure is collapsed, so the roll-up is what a
+  customer reads first.
 - *"The progress line showed `Waiting for pipeline to start...` for eleven
   minutes."* A measurement artifact. That string is the server-rendered
   placeholder and the first poll lands five seconds after load; my
   navigate-then-read-immediately protocol sampled inside that window every
   time. Overstated by two orders of magnitude.
+- *"A cent does not reconcile"*, and the follow-up question of whether the
+  stored balance loses a cent per tick. Neither stands. Amounts display
+  half-up and balances display floored by design
+  (`shared/compute_campaigns.py:408`); the true cost is `$0.9901` and the true
+  remaining balance `$0.2099`, so `$0.99` and `$0.20` are both correct and the
+  `$1.00` apparent movement is the floor. I raised a possible overcharge
+  before reading the function that formats the number.
+
+Also corrected: the anchor row's `$0.00` and `$1.20` cells were called "stale".
+They are each correct for that row; the complaint is presentational only.
 
 What the rate model got right: the derivation used throughout this document
 predicted `$0.9901` for 816 GPU-seconds, and the charge was `$0.99`.
