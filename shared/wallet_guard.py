@@ -54,7 +54,7 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
 # here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
 # tier the hub can send it. bindcraft uploads each accepted design on its 60 s
-# heartbeat tick, in the same repo
+# heartbeat tick, in the same repo at 18382cd
 # (docker/bindcraft/run_pipeline.py::_DesignStreamer);
 # ::test_bindcraft_submits_only_the_pilot_tier pins its one tier.
 _LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "rfdiffusion"})
@@ -81,11 +81,12 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
-    bindcraft's figure is measured, not derived: the longest a recorded run
-    went without a design, job d73cfaa5 on 4ZQK chain A, cancelled at 1716 GPU-s
-    with none (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2: paid cancel
-    test"). The ``_BINDCRAFT`` model's one-design run is 600 s, and a second
-    run on the same inputs, f8666763, needed up to 804 s for its first design.
+    bindcraft's figure comes from a recorded run, not the runtime model: job
+    d73cfaa5 on 4ZQK chain A, cancelled at 1716 GPU-s with no design
+    (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2: paid cancel test").
+    The ``_BINDCRAFT`` model's one-design run is 600 s, and a second run on the
+    same inputs, f8666763, needed up to 804 s for its first design. It is not
+    a bound: job 489a17e0 made no design in 103 min (same doc, "(a) to (d)").
     """
     if tool_slug == "rfdiffusion":
         seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
