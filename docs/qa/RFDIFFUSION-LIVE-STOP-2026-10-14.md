@@ -337,7 +337,7 @@ reason to expect the meter to be dead.
 Two searches over the tree, both excluding this report:
 `git grep -n '60-90'` (15 hits) and `git grep -n 'A46'` (8 hits). The block
 lists every hit, with long paths shortened, the three `test_proteina_smoke.py`
-hits folded onto one line, and a one-word annotation added to each:
+hits folded onto one line, and a short annotation added to each:
 
 ```
 $ git grep -n '60-90' -- . ':!docs/qa/RFDIFFUSION-LIVE-STOP-2026-10-14.md'
