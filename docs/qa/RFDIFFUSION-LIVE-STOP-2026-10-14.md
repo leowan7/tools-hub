@@ -317,47 +317,66 @@ The residual risk is staleness, not absence: that observation is from
 Railway dashboard before launch is worth it as a sanity check. It is not a
 reason to expect the meter to be dead.
 
-Several in-repo sources are stale, in three distinct ways. They are listed
-separately because conflating them is what misled an earlier draft of this
-document. The enumeration below is scoped to one sweep with **no file filter**
-— `git grep -n '60-90'` and `git grep -n 'A46'` over the whole tree — and
-excludes hits on an unrelated subject (Modal cold-start time in
-`gpu/modal_client.py:221`, proteina residue ranges such as `A60-90`, and the
-separately-unscheduled storage-purge sweeper).
+The sweep below is `git grep -n '60-90'` and `git grep -n 'A46'` over the whole
+tree with **no file filter**, excluding only this report. Every hit falls in one
+of three buckets, and all three are listed so the enumeration can be checked
+rather than trusted.
 
-- **One asserts A46 is open.** `blueprints/targets.py:1460-1468` says
-  `campaigns:tick` has "no in-repo caller" and is "Filed as A46" (the A46
-  mention is line 1468). True when written; the comment was never updated when
-  A46 resolved, so it asserts an open issue that is closed.
-- **Four assert the stale "~60-90s" cadence.** None of the four mentions A46:
-  `cron/tick_campaigns.py:15` ("Scheduled separately via Railway cron
-  (~60-90s)"), `app.py:1121` ("Scheduled via Railway cron (~60-90s)"),
-  `blueprints/campaigns.py:99` ("The cron tick (~60-90s) reconciles every
-  campaign regardless") and `blueprints/campaigns.py:866` ("until the next cron
-  reconcile (~60-90s), or, absent the cron, the 6-hour stuck-job sweeper").
-  The first three state the cron *is* scheduled and only the parenthesised
-  figure is wrong. The fourth additionally hedges on its existence
-  ("absent the cron").
-- **One design doc contradicts itself.** `docs/design/LIVE-CHARGING-2026-10-01.md:156`
-  still reads "**Tick interval: UNVERIFIED**" and repeats the "~60-90s" figure,
-  and its line 333 still lists "Confirm that the `campaigns:tick` Railway cron
-  is scheduled" as an open action — while line 400 of the same file already has
-  it right: "The tick is 300 s, not the 60-90 s in `cron/tick_campaigns.py`."
-  Line 156's cite of `blueprints/targets.py:1457-1461` is also off; that
-  comment block opens at 1460.
+**Bucket 1 — off-subject, excluded.** `gpu/modal_client.py:221` (Modal
+cold-start time); proteina residue ranges that happen to read `A60-90` or
+`"A46".."A55"` (`tests/test_proteina_smoke.py:401,407,421`,
+`tools/proteina/run_pipeline.py:2028`, `tests/test_multichain_targets.py:1108`);
+and the storage-purge sweeper, a different unscheduled cron
+(`cron/purge_old_storage.py:53`, `cron/purge_old_events.py:28`,
+`docs/PII-RETENTION.md:55`, `shared/targets.py:1090`,
+`docs/audit-2026-07-22-campaign-rework-open-items.md:267,270`).
 
-**Line 400 is independent corroboration of the cadence used below.** It is the
-live-charging design doc's own overshoot bound, and 300 s is exactly the
-5 minutes the dashboard observation recorded. Two unrelated documents, written
-for different purposes, agree on 300 s.
+**Bucket 2 — on-subject and correct.** These quote "60-90" in order to correct
+it, or record the resolution, and are **not** stale:
+`docs/COMPUTE-CAMPAIGNS-PLAN.md:66-68`; the A46 entry's own correction bullet at
+`docs/audit-2026-07-22-campaign-rework-open-items.md:829` and its resolution at
+820-827; `docs/HANDOFF-2026-07-29-qc-round3.md:13`; and
+`docs/design/LIVE-CHARGING-2026-10-01.md:400`.
 
-**Method note — this list said "three" in the first version of this section,
-and was wrong.** It missed both `blueprints/campaigns.py` sites and the
-`LIVE-CHARGING` self-contradiction, because the grep behind it was filtered to
-the files already under discussion. This is the fourth time in this session
-that a count or superlative written from a narrowed grep came out false. The
-count above is tied to the exact unfiltered commands named at the top of this
-section, so it can be re-derived rather than trusted.
+**Bucket 3 — on-subject and stale.** Two different wrong things, and one file
+appears under both:
+
+- **The "~60-90s" cadence figure, five sites.** `cron/tick_campaigns.py:15`,
+  `app.py:1121`, `blueprints/campaigns.py:99`, `blueprints/campaigns.py:866`,
+  and `blueprints/targets.py:1463`. None of the first four mentions A46, and
+  the first three state the cron *is* scheduled, so only the parenthesised
+  figure is wrong in those. `blueprints/campaigns.py:866` additionally hedges
+  on existence ("absent the cron").
+- **A46 asserted open, two sites.** `blueprints/targets.py:1468` ("Filed as
+  A46", inside the 1460-1468 comment block, which also carries the stale
+  cadence at 1463) and `docs/HANDOFF-2026-07-29-qc-round3.md:244` ("**A46**
+  campaign tick has no in-repo schedule", in an open-items recap).
+- **Two files contradict themselves on A46.**
+  `docs/HANDOFF-2026-07-29-qc-round3.md` says "**A46 RESOLVED**" at line 13 and
+  lists it as open at line 244. `docs/design/LIVE-CHARGING-2026-10-01.md` reads
+  "**Tick interval: UNVERIFIED**" with the old figure at line 156 and still
+  lists "Confirm ... Railway cron" as an open action at line 333, while line
+  400 of the same file already has it right. Line 156's cite of
+  `blueprints/targets.py:1457-1461` is also off; that block opens at 1460.
+
+**On line 400 and the cadence used below.** `LIVE-CHARGING-2026-10-01.md:400`
+states "The tick is 300 s", which is the same 5 minutes the dashboard
+observation recorded. It is **not** independent corroboration: it entered the
+repo on 2026-10-07, after the 2026-07-30 observation and into a tree where the
+audit document already said 5 minutes, and it cites no source. Treat it as
+agreement, not as a second measurement. The cadence below rests on the
+dashboard observation alone.
+
+**Method note — this section has now stated a false count twice.** The first
+version said "three in-repo sources", from a grep filtered to the files already
+under discussion. The correction said "four" cadence sites and claimed to be
+tied to an unfiltered sweep — and was itself false, because
+`blueprints/targets.py:1463` was filed under the A46 bullet and so dropped out
+of the cadence count. The repair reproduced the defect it was written to cure:
+the filter was no longer a `--include` flag but a category boundary. That is
+five instances in this session of a count or superlative coming out false. The
+durable fix is not a better grep: it is to publish the buckets, including the
+excluded ones, so a reader can falsify the total without rerunning anything.
 
 ### The expected stop, computed before the run
 
