@@ -40,9 +40,14 @@ live_start_usd("esmfold2_design", ...) = $0
 Three things this shows, each worth keeping:
 
 - **$1.1371 is reproducible**, not just a figure from the PR body.
-- **The minimum ignores `num_designs`**, because `live_due_usd` clamps at
-  `compute_hard_cap`. A 1000-design request faces the same $1.1371 bar as a
-  1-design one.
+- **The minimum ignores `num_designs`**, because `shared/wallet_guard.py:83`
+  hard-codes the runtime it prices as
+  `runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1)` — 120 aa, one design.
+  The submitted design count never reaches the calculation. A 1000-design
+  request faces the same $1.1371 bar as a 1-design one.
+  It is *not* the hard cap doing this: `compute_hard_cap("rfdiffusion", ...)`
+  measures $5.00 at 1 and 4 designs and $500.00 at 1000, all far above
+  $1.1371, so the clamp inside `live_due_usd` never binds at the floor.
 - **The gate is rfdiffusion-only.** `boltz2` is live-charged but returns $0,
   so it has no start floor. That asymmetry is by construction in
   `live_start_usd`, which early-returns 0 for every slug but `rfdiffusion`.
@@ -100,14 +105,26 @@ go back to the rfdiffusion form and run the job once your balance updates.
 Nothing is submitted for you."
 
 **Why that response is the wallet gate and not the input validator.** No PDB
-was attached, and the view body refuses a missing PDB with its own message,
-"Upload a target PDB file." (`blueprints/tools.py:1880`). The decorator stack
-is `@login_required`, `@idempotent()`, `@requires_wallet` (`blueprints/tools.py:1885-1888`),
-all of which run before the view body where `_run_validate` is called. The
-wallet refusal therefore preempted validation. Had the gate let the request
-through, the response would have named the missing file instead. This is the
-one observation that distinguishes the new gate from the pre-existing form
-validation, and it is why the probe was run with no file attached.
+was attached, and `tool_submit` refuses a missing PDB with its own message,
+re-rendering the form with `error="Upload a target PDB file."`
+(`blueprints/tools.py:2008`). The decorator stack is `@login_required`,
+`@idempotent()`, `@requires_wallet` (`blueprints/tools.py:1885-1888`), all of
+which run before the view body, where `_run_validate` is called at line 1926.
+The wallet refusal therefore preempted validation. Had the gate let the
+request through, the response would have named the missing file instead. This
+is the one observation that distinguishes the new gate from the pre-existing
+form validation, and it is why the probe was run with no file attached.
+
+That the no-file path really does reach the view when nothing stops it first
+is not a deduction: the comment above `blueprints/tools.py:2008` records a
+production incident on 2026-04-30 in which a pxdesign submit with no file
+attached created an orphan job that sat PENDING for 2.5 hours. The guard at
+2008 exists because of it.
+
+(The same sentence, "Upload a target PDB file.", also appears at
+`blueprints/tools.py:1881`, but that is a dict-returning preflight helper
+serving the separate `/tools/<tool>/validate` endpoint, which carries neither
+`@idempotent` nor `@requires_wallet`. It is not what answered this POST.)
 
 ### C. Nothing was created
 
