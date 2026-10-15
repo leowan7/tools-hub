@@ -317,20 +317,47 @@ The residual risk is staleness, not absence: that observation is from
 Railway dashboard before launch is worth it as a sanity check. It is not a
 reason to expect the meter to be dead.
 
-Three in-repo sources are stale, in two different ways. They are listed
+Several in-repo sources are stale, in three distinct ways. They are listed
 separately because conflating them is what misled an earlier draft of this
-document:
+document. The enumeration below is scoped to one sweep with **no file filter**
+— `git grep -n '60-90'` and `git grep -n 'A46'` over the whole tree — and
+excludes hits on an unrelated subject (Modal cold-start time in
+`gpu/modal_client.py:221`, proteina residue ranges such as `A60-90`, and the
+separately-unscheduled storage-purge sweeper).
 
 - **One asserts A46 is open.** `blueprints/targets.py:1460-1468` says
-  `campaigns:tick` has "no in-repo caller" and is "Filed as A46". True when
-  written; the comment was never updated when A46 resolved, so it asserts an
-  open issue that is closed.
-- **Two assert a stale cadence, and neither mentions A46.** `cron/tick_campaigns.py:15`
-  ("Scheduled separately via Railway cron (~60-90s)") and `app.py:1121`
-  ("Scheduled via Railway cron (~60-90s)") — verified by `grep -c 'A46'`,
-  which returns 0 for both files. These two do not read as though A46 were
-  open: each states the cron *is* scheduled. Only the figure in parentheses is
-  wrong. See the cadence note below.
+  `campaigns:tick` has "no in-repo caller" and is "Filed as A46" (the A46
+  mention is line 1468). True when written; the comment was never updated when
+  A46 resolved, so it asserts an open issue that is closed.
+- **Four assert the stale "~60-90s" cadence.** None of the four mentions A46:
+  `cron/tick_campaigns.py:15` ("Scheduled separately via Railway cron
+  (~60-90s)"), `app.py:1121` ("Scheduled via Railway cron (~60-90s)"),
+  `blueprints/campaigns.py:99` ("The cron tick (~60-90s) reconciles every
+  campaign regardless") and `blueprints/campaigns.py:866` ("until the next cron
+  reconcile (~60-90s), or, absent the cron, the 6-hour stuck-job sweeper").
+  The first three state the cron *is* scheduled and only the parenthesised
+  figure is wrong. The fourth additionally hedges on its existence
+  ("absent the cron").
+- **One design doc contradicts itself.** `docs/design/LIVE-CHARGING-2026-10-01.md:156`
+  still reads "**Tick interval: UNVERIFIED**" and repeats the "~60-90s" figure,
+  and its line 333 still lists "Confirm that the `campaigns:tick` Railway cron
+  is scheduled" as an open action — while line 400 of the same file already has
+  it right: "The tick is 300 s, not the 60-90 s in `cron/tick_campaigns.py`."
+  Line 156's cite of `blueprints/targets.py:1457-1461` is also off; that
+  comment block opens at 1460.
+
+**Line 400 is independent corroboration of the cadence used below.** It is the
+live-charging design doc's own overshoot bound, and 300 s is exactly the
+5 minutes the dashboard observation recorded. Two unrelated documents, written
+for different purposes, agree on 300 s.
+
+**Method note — this list said "three" in the first version of this section,
+and was wrong.** It missed both `blueprints/campaigns.py` sites and the
+`LIVE-CHARGING` self-contradiction, because the grep behind it was filtered to
+the files already under discussion. This is the fourth time in this session
+that a count or superlative written from a narrowed grep came out false. The
+count above is tied to the exact unfiltered commands named at the top of this
+section, so it can be re-derived rather than trusted.
 
 ### The expected stop, computed before the run
 
