@@ -317,10 +317,10 @@ The residual risk is staleness, not absence: that observation is from
 Railway dashboard before launch is worth it as a sanity check. It is not a
 reason to expect the meter to be dead.
 
-Three earlier versions of this section stated a count, and all three were
-false. What follows is the **literal output** of two commands, annotated line by
-line. There is no total and no completeness claim: the output is the
-enumeration, and re-running the commands checks it.
+Two searches over the tree, both excluding this report:
+`git grep -n '60-90'` (15 hits) and `git grep -n 'A46'` (8 hits). The block
+lists every hit, with long paths shortened, the three `test_proteina_smoke.py`
+hits folded onto one line, and a one-word annotation added to each:
 
 ```
 $ git grep -n '60-90' -- . ':!docs/qa/RFDIFFUSION-LIVE-STOP-2026-10-14.md'
@@ -349,14 +349,12 @@ docs/design/LIVE-CHARGING-2026-10-01.md:333:10. **Confirm** that the ...       S
 tests/test_multichain_targets.py:1108:    union offers "A46".."A55"           OFF-SUBJECT (chain labels)
 ```
 
-Reading the annotations:
-
-- **The "~60-90s" cadence is wrong in five places**, all in code:
-  `app.py:1121`, `blueprints/campaigns.py:99` and `:866`,
-  `blueprints/targets.py:1463`, `cron/tick_campaigns.py:15`. The first three
-  state the cron *is* scheduled, so only the parenthesised figure is wrong
-  there. `campaigns.py:866` additionally hedges on existence ("absent the
-  cron"). `targets.py:1463` sits inside the A46 comment block.
+- **The "~60-90s" cadence is wrong in five places**, all in code.
+  `app.py:1121`, `blueprints/campaigns.py:99` and `cron/tick_campaigns.py:15`
+  state the cron *is* scheduled, so only the parenthesised figure is wrong in
+  those three. `blueprints/campaigns.py:866` hedges on existence ("absent the
+  cron"). `blueprints/targets.py:1463` says the schedule "lives outside this
+  repo" and sits inside the A46 comment block.
 - **A46 is asserted open in two places**: `blueprints/targets.py:1468` (in the
   1460-1468 block) and `docs/HANDOFF-2026-07-29-qc-round3.md:244`.
 - **Two files contradict themselves.** `HANDOFF-2026-07-29-qc-round3.md` says
@@ -366,9 +364,9 @@ Reading the annotations:
   has it right. Line 156's cite of `blueprints/targets.py:1457-1461` is also
   off; that block opens at 1460.
 - **HISTORICAL** marks the A46 entry's own heading and problem statement
-  (`audit:807`, `:812`). They are not stale: the same entry records the
-  resolution at lines 820-827 and the correction at 829. Those two pointers are
-  not themselves sweep hits.
+  (`audit:807`, `:812`). Neither is stale: the same entry records the
+  resolution at lines 820-827 — which is not itself a sweep hit — and the
+  correction at line 829, which is.
 
 **On line 400 and the cadence used below.** `LIVE-CHARGING-2026-10-01.md:400`
 states "The tick is 300 s", the same 5 minutes the dashboard observation
@@ -377,18 +375,6 @@ b89e7531 on 2026-10-07, after the 2026-07-30 observation and into a tree where
 the audit document already said 5 minutes, and it cites no source. Treat it as
 agreement, not a second measurement. The cadence below rests on the dashboard
 observation alone.
-
-**Method note (session history, not checkable from this repo).** This section
-asserted a false count three times running: "three sources" from a grep
-filtered to the files already under discussion; then "four" cadence sites,
-false because `targets.py:1463` was filed under the A46 bullet and dropped out
-of the cadence count; then a three-bucket list that promised "every hit falls
-in one of three buckets" while omitting `audit:807` and `:812`, and that padded
-bucket 1 with storage-purge lines which match **neither** grep — they came from
-a third command the section never named. Each repair reproduced the defect in a
-new form: a flag, then a category boundary, then a mis-attributed command. The
-form above is the first that cannot restate the evidence wrongly, because it
-does not restate it.
 
 ### The expected stop, computed before the run
 
