@@ -265,11 +265,23 @@ this reading and is worth a defect.
 
 ### The email cannot be read from inside the app
 
-There is no staff or admin view of sent mail: the only `email_log` in the tree
-is a pytest fixture (`tests/test_stripe_webhooks.py:127`). The completion mail
-goes to `leowan7+t1@gmail.com`, so answering the brief's email question needs
-Leo to open or forward that message. Everything else here is readable without
-his inbox.
+No view of sent mail was found in the app. Every `email_log` in the tree is a
+pytest fixture -- three of them, at `tests/test_stripe_webhooks.py:127`,
+`tests/test_wallet.py:447` and `tests/test_wallet_funnel.py:129` -- and the
+name does not occur outside `tests/` at all.
+
+Searching `sent_email`, `email_sent`, `outbox`, `mail_log`, `emails_sent` and
+`email_events` outside `tests/` returns only `reengagement_email_sent_at`
+(`blueprints/admin.py:1199`, `cron/reengagement.py:301`), a per-user timestamp
+in `auth.users.user_metadata` recording when a re-engagement mail last went
+out; it stores no message body. The admin area holds five templates
+(`templates/admin/`: `campaign_detail`, `campaigns_list`, `signups_rejected`,
+`user_detail`, `users_list`) and none of them is a mail log.
+
+That is a bounded negative -- those six names and those five templates -- not a
+survey of every route. The completion mail goes to `leowan7+t1@gmail.com`, so
+answering the brief's email question needs Leo to open or forward that message.
+Everything else here is readable without his inbox.
 
 ## Verdict
 
