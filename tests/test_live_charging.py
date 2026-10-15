@@ -30,9 +30,12 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion"}
+LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
+# 1716 s, job d73cfaa5's stretch with no design, at the A100-80GB rate.
+BC_START = Decimal("2.9989")
+STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START}
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +77,7 @@ def test_live_tools_upload_each_design_mid_run(tool, chain, needs_loop):
 
 # Live tools whose container is not in this repo, so the heartbeat check
 # cannot read them.
-OUT_OF_REPO = {"rfdiffusion"}
+OUT_OF_REPO = {"bindcraft", "rfdiffusion"}
 
 
 @pytest.mark.parametrize("tool", sorted((LIVE | LIVE_ALL_PRESETS) - OUT_OF_REPO))
@@ -102,6 +105,13 @@ def test_batch_records_reach_the_container_only_on_the_batch_preset(tool):
 @pytest.mark.parametrize("preset", ["smoke", "mini_pilot", "full", "batch"])
 def test_rfdiffusion_submits_only_the_pilot_tier(preset):
     from tools.rfdiffusion import validate
+
+    assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
+
+
+@pytest.mark.parametrize("preset", ["", "smoke", "full", "batch"])
+def test_bindcraft_submits_only_the_pilot_tier(preset):
+    from tools.bindcraft import validate
 
     assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
 
@@ -181,11 +191,12 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
                            release=release, gate=gate)
 
 
-LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("af2", {"preset": "batch"}),
-              ("colabfold", {"preset": "batch"}), ("esmfold", {"preset": "batch"})]
+LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("bindcraft", {}),
+              ("af2", {"preset": "batch"}), ("colabfold", {"preset": "batch"}),
+              ("esmfold", {"preset": "batch"})]
 
 
-@pytest.mark.parametrize("slug,form", [f for f in LIVE_FORMS if f[0] != "rfdiffusion"])
+@pytest.mark.parametrize("slug,form", [f for f in LIVE_FORMS if f[0] not in STARTS])
 def test_live_run_opens_an_anchor_on_any_balance_above_zero(slug, form):
     r = _post(slug, form, balance="0.01")
     assert r.body == "RAN"
@@ -194,24 +205,37 @@ def test_live_run_opens_an_anchor_on_any_balance_above_zero(slug, form):
     assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
 
 
-def test_rfdiffusion_start_minimum_does_not_depend_on_num_designs():
+@pytest.mark.parametrize("tool", sorted(STARTS))
+def test_start_minimum_does_not_depend_on_num_designs(tool):
     for n in (1, 4, 10, 100):
-        assert live_start_usd("rfdiffusion", {"num_designs": n}) == RFD_START
-    for tool in sorted(LIVE):
+        assert live_start_usd(tool, {"num_designs": n}) == STARTS[tool]
+
+
+def test_start_minimum_is_zero_on_every_other_live_tool():
+    for tool in sorted((LIVE | LIVE_ALL_PRESETS) - set(STARTS)):
         assert live_start_usd(tool, {"preset": "batch"}) == 0
 
 
-def test_rfdiffusion_below_its_start_minimum_is_refused():
-    r = _post("rfdiffusion", {}, balance=RFD_START - Decimal("0.0001"))
+def test_bindcraft_start_minimum_is_above_its_model_one_design_run():
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+
+    assert runtime_estimate_min(TOOL_RULES["bindcraft"], 120, 1) * 60 == 600
+    assert BC_START > live_due_usd("bindcraft", 600, gpu_class_for_job("bindcraft"), {})
+
+
+@pytest.mark.parametrize("tool", sorted(STARTS))
+def test_below_the_start_minimum_is_refused(tool):
+    r = _post(tool, {}, balance=STARTS[tool] - Decimal("0.0001"))
     assert r.body == "GATE"
     assert r.gate == REASON_INSUFFICIENT
     r.open.assert_not_called()
 
 
-def test_rfdiffusion_at_its_start_minimum_opens_an_anchor():
-    r = _post("rfdiffusion", {}, balance=RFD_START)
+@pytest.mark.parametrize("tool", sorted(STARTS))
+def test_at_the_start_minimum_opens_an_anchor(tool):
+    r = _post(tool, {}, balance=STARTS[tool])
     assert r.body == "RAN"
-    r.open.assert_called_once_with("u-1", "rfdiffusion")
+    r.open.assert_called_once_with("u-1", tool)
     assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
 
 
@@ -250,7 +274,7 @@ def test_live_tools_keep_the_other_refusals(why):
     r.open.assert_not_called()
 
 
-@pytest.mark.parametrize("slug,form", [("af2", {"preset": "standalone"}), ("bindcraft", {})])
+@pytest.mark.parametrize("slug,form", [("af2", {"preset": "standalone"}), ("pxdesign", {})])
 def test_other_tools_keep_the_cushioned_hold(slug, form):
     short = _post(slug, form, balance="1.00")
     assert short.gate == REASON_INSUFFICIENT
@@ -331,6 +355,8 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     ("af2", {"preset": "standalone"}, "0.10", True),
     ("rfdiffusion", {}, str(RFD_START - Decimal("0.0001")), True),
     ("rfdiffusion", {}, str(RFD_START), False),
+    ("bindcraft", {}, str(BC_START - Decimal("0.0001")), True),
+    ("bindcraft", {}, str(BC_START), False),
 ])
 def test_estimate_deficit_matches_the_guard(monkeypatch, tool, params, balance, short):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
