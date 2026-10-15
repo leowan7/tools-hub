@@ -11,9 +11,11 @@ Subject: PR #427, merged as squash `5b01615f`. Two things are under test.
 Test account: `leowan7+t1@gmail.com`. Leo signs in and runs every prod write
 himself; this session reads prod and drives the browser only.
 
-Status of this document: **step 1 done and passing, step 2 not yet run.**
-Sections marked "not yet run" contain no observations. Nothing in this file
-is a prediction dressed as a result.
+Status of this document: **both steps run and recorded.** Step 1 passed. Step 2
+ran to completion but did **not** exercise the behaviour it was designed to
+test, because the run finished with money left in the wallet. Figures written
+before the run are kept under headings that say so, and are not restated as
+results. Nothing in this file is a prediction dressed as a result.
 
 ## Build under test
 
@@ -161,10 +163,11 @@ rather than corrected, because this test read the submit form only.
 
 ## Step 2 — paid run at $1.20
 
-Commissioned by the test brief, which asks for exactly one paid run. Not yet
-launched. The balance precondition is now met ($1.20, verified below); what is
-outstanding is Leo's own per-job go-ahead for the GPU spend, which memory
-`feedback-gpu-spend-needs-approval` requires per job rather than per session.
+Commissioned by the test brief, which asks for exactly one paid run. **Launched
+and in progress at the time these lines were written.** The balance precondition
+was met first ($1.20, verified below), and Leo gave the per-job go-ahead for the
+GPU spend in session, which memory `feedback-gpu-spend-needs-approval` requires
+per job rather than per session.
 
 ### The target, fixed before launch
 
@@ -488,11 +491,17 @@ the placeholder and not a value -- the field reads as populated when it is not.
 Anyone scripting this form should assert on the summary chip's hotspot count,
 not on the field.
 
-**Preset naming.** The job page prints `Preset trial run`. The cost derivation
-in this document was computed for the slug `pilot`. The tool page's own preset
-block is headed `TRIAL RUN: 8 BINDERS`, so `trial run` reads as the display
-name for that slug rather than a different preset, but this document has not
-proved that, and the figures below stand or fall with it.
+**Preset naming, resolved.** The job page prints `Preset trial run` while the
+cost derivation in this document was computed for the slug `pilot`. These are
+the same preset, and the chain is short enough to check: `job_detail.html:122`
+renders `Preset <strong>{{ job.preset | preset_label }}</strong>`, and
+`preset_label` (`shared/tool_meta.py:50`) looks the stored slug up in
+`_PRESET_LABELS`, whose first entry is `"pilot": "trial run"`
+(`shared/tool_meta.py:30`). The comment above that table says why the display
+name differs at all -- the `Preset.label` strings are form sentences, too long
+for a badge -- and `tools/rfdiffusion/meta.py:174` carries the long form,
+`Trial run: 8 binders`. So the page shows a label, the row stores `pilot`, and
+the figures below rest on the slug the costing used.
 
 **First ledger row, at submission.** The transactions page gained one row
 within seconds of the submit:
@@ -504,13 +513,272 @@ within seconds of the submit:
 That is the lineage anchor predicted from `0045_live_run_debits.sql`: an opening
 row of amount zero, not a reservation. The balance is untouched at submission,
 which is what "queue and boot are not billed" looks like from the ledger side.
-The status went `PENDING` -> `RUNNING` (`Running RFdiffusion 0 of 4 designs
-complete`) within about a minute of the click.
+**The progress line, read twice.** The status went `PENDING` -> `RUNNING`
+within about a minute of the click. Two reads of that page, verbatim:
+
+| Read at | Status | Progress line |
+| --- | --- | --- |
+| ~`04:34` | `RUNNING` | `Running RFdiffusion 0 of 4 designs complete` |
+| `04:36` | `RUNNING` | `Waiting for pipeline to start...` |
+
+The second read is the earlier-sounding message, so the line moved backwards.
+This document does not claim to know why; a cold GPU container, a progress
+field that is written optimistically at dispatch and then re-derived from the
+job row, and a cached first response all fit what was seen. What matters for
+the test is that `Waiting for pipeline to start...` is the unmetered state:
+the first heartbeat is what stamps `started_at` and begins billing, so a run
+can sit in `RUNNING` without owing anything. The ledger agreed -- still one
+`$0.00` row at that point.
+
+### Observed, as it ran
+
+Both pages were re-navigated before each read, never read off an already-open
+DOM -- an earlier read in this test returned a pre-write balance because the
+first action on a standing tab was a read rather than a navigation.
+
+| Clock (UTC) | Job page status / progress | Balance | Ledger entries | RUN row detail |
+| --- | --- | --- | --- | --- |
+| `04:33` | submitted | `$1.20` | 4 | `charged as it runs; $0.00 so far` |
+| ~`04:34` | `RUNNING` / `Running RFdiffusion 0 of 4 designs complete` | `$1.20` | 4 | `charged as it runs; $0.00 so far` |
+| `04:36` | `RUNNING` / `Waiting for pipeline to start...` | `$1.20` | 4 | (not re-read) |
+| `04:39` | `RUNNING` / `Waiting for pipeline to start...` | `$1.07` | 4 | `charged as it runs; $0.13 so far` / `1 charge while it ran` |
+| `04:40` | `RUNNING` / `Waiting for pipeline to start...` | `$1.07` | 4 | `charged as it runs; $0.13 so far` |
+| `04:42` | `RUNNING` / `Waiting for pipeline to start...` | `$0.73` | 4 | `charged as it runs; $0.46 so far` |
+| `04:45` | `RUNNING` / `Waiting for pipeline to start...` | `$0.73` | 4 | `charged as it runs; $0.46 so far` |
+| `04:47` | `SUCCEEDED` / `Completed in 816 GPU-seconds.` | `$0.20` | 5 | `charged as it ran; it closed at $0.99` / `3 charges while it ran` |
+
+**Finding 1: the per-tick debits are not ledger rows on this page.** The brief
+asks for "each wallet ledger row (kind, amount, time)". The transactions page
+cannot supply them. After the first metered charge the entry count was still
+`4`; the charge appeared only as prose inside the opening row's detail cell
+(`$0.13 so far`, `1 charge while it ran`). `find` resolved that text to
+`ref_118`, role `generic` -- static text, not a disclosure control, so there is
+nothing to expand. The individual `run_debit` rows exist in
+`wallet_transactions` with `parent_tx_id` pointing at the anchor
+(`0045_live_run_debits.sql`); they are simply not rendered. Per-tick amounts and
+times for this test therefore have to come from the read-only query prepared
+for Leo, not from the UI.
+
+**Finding 2: the opening row's own AMOUNT and BALANCE AFTER columns go stale.**
+At `04:39` that row still read `$0.00` in AMOUNT and `$1.20` in BALANCE AFTER
+while the live balance was `$1.07`. BALANCE AFTER is literally defensible --
+the page's own preamble defines it as "what you had right after each entry
+cleared", and $1.20 was correct right after the anchor cleared -- but the row
+is the only place this job appears, so a reader scanning the AMOUNT column sees
+`$0.00` for a job that has by then taken 13 cents. The true figure is carried
+in free text one cell to the left.
+
+**Finding 4: the balance and the "so far" figure do not reconcile to the
+cent.** At `04:42` the page showed `$0.46 so far` against a CURRENT BALANCE of
+`$0.73`. Those cannot both be exact: $1.20 - $0.46 = $0.74. One cent is
+unaccounted for on screen. The likely cause is benign -- a cumulative spend of
+something like $0.4650 to $0.4699 truncates to `$0.46` in the detail cell while
+the balance carries the unrounded remainder -- but this test did not read the
+underlying numbers, so that is a hypothesis and not a finding. What is a
+finding is that the only two money figures a customer can see for a running job
+disagree by a cent, and the page offers nothing to reconcile them. Leo's
+read-only query returns `amount_usd` and `balance_after_usd` per row and will
+settle it.
+
+**Rate check, which does hold.** Cumulative went `$0.13` -> `$0.46` between
+about `04:36` and `04:42`, so roughly `$0.33` across one tick interval. The
+derived rate is `$0.0728` a minute, which over a 5-minute tick predicts
+`$0.364`. Close enough to confirm the meter is billing A100-40GB time at about
+the expected rate rather than drifting.
+
+**Finding 3: the progress line reverted to "not started" after showing real
+progress, and stayed there while the wallet billed.** The sequence, all from
+the table above: at ~`04:34` the page read `Running RFdiffusion 0 of 4 designs
+complete`; from `04:36` through `04:40` it read `Waiting for pipeline to
+start...`; and across that same span the wallet took `$0.13`. So the line did
+not merely lag behind a slow start -- it showed a populated progress state and
+then went back to the empty one.
+
+That ordering matters because the two surfaces are supposed to share a
+precondition. Metering starts only once `inputs._progress` exists and the first
+heartbeat has stamped `started_at`, and the progress line renders from
+`_progress`. A populated-then-empty line means either the page reads a key or a
+nested shape that stops resolving once the pipeline moves past dispatch, or
+`_progress` is itself being rewritten mid-run. This test cannot tell those
+apart from the outside, and does not claim to. It is the same family as
+`esmfold2-design-metering-invisible-mid-run`, where `gpu_seconds_used` went
+null mid-run and `started_at` was rewritten underneath a running job -- fields
+on this platform are known to be rewritten rather than only appended to.
+
+The user-visible effect is the part worth fixing: for twelve minutes and
+counting, the only page a customer watches said nothing had started while their
+balance fell from $1.20 to $0.73.
+
+**A worse reading this test cannot exclude.** A GPU container that started,
+reported progress once, then crashed and was restarted would look exactly like
+what was observed: `_progress` written at dispatch, then reset; heartbeats
+resuming on the new container so metering continues; and a progress line stuck
+at the empty state. On that reading the wallet is billing for wall-clock on a
+pipeline that is making no forward progress. The benign reading -- a render
+that stops resolving `_progress` while the work proceeds normally -- fits the
+same observations. From outside the box the two are indistinguishable, and this
+document does not pick one. `gpu_seconds_used`, `started_at` and whether
+`inputs ? '_progress'` is true are all in the read-only query, and the design
+count at the end discriminates them: a stuck container yields nothing, while a
+working run that was merely invisible should still have produced designs for
+the GPU time paid for.
+
+This is not the billing defect the brief asks to be escalated. Money is moving
+in the right direction and at roughly the right rate: `$0.13` is about 107
+seconds at the derived `$0.0728`/minute, which fits a first tick that caught a
+run whose heartbeat had just landed.
+
+### The result: the run finished before the money did
+
+**The balance stop was never exercised.** This is the central outcome and it is
+a negative result, not a pass. The run completed normally with money left in
+the wallet, so no part of the stop-at-zero path -- the cancellation, the partial
+delivery, the `stopped_for_balance` predicate, the page and email wording, the
+`completed_no_yield` classification -- was reached by this test.
+
+Final state, read off both pages at `04:47`:
+
+| Thing the brief asks for | Observed |
+| --- | --- |
+| Job id | `cbaa3b67-8663-4b6d-8772-34cc5ef576b3` |
+| Status | `SUCCEEDED` |
+| GPU time | `Completed in 816 GPU-seconds.` |
+| Designs kept | `CANDIDATES (4)` / `Returned 4 / 4` -- all four, not a partial |
+| Downloadable | `Download CSV`, `FASTA`, `Structures (ZIP)` offered, plus a per-design `.pdb` on every row |
+| Balance after | `$0.20`, from `$1.20` |
+| Cost as the page states it | `net for this job $0.99` |
+| Page says stopped by balance? | No -- correctly, it was not |
+| Email says stopped by balance? | Not applicable, and not readable from inside the app |
+| CSV says stopped by balance? | Not applicable; the CSV structurally carries no stop reason |
+
+The ledger closed with two rows for this job, one of which is new:
+
+| When | Kind | Detail | Amount | Balance after |
+| --- | --- | --- | --- | --- |
+| `2026-10-15 04:47` | `CHARGE` | `rfdiffusion` / `net for this job $0.99` | `-$0.19` | `$0.20` |
+| `2026-10-15 04:33` | `RUN` | `rfdiffusion` / `charged as it ran; it closed at $0.99` / `3 charges while it ran` | `$0.00` | `$1.20` |
+
+Scores, for the record, since a 4-of-4 return on a 115-residue target is a
+better result than this test expected: ipTM `0.860 / 0.790 / 0.740 / 0.730`,
+pLDDT `95.3 / 89.7 / 51.5 / 89.2`, i_pAE `3.73 / 5.25 / 5.96 / 6.59` A. Three of
+the four meet the page's own quality bar; design 3 fails it on pLDDT `51.5`.
+
+### Why it could not have stopped, which is the finding worth keeping
+
+The brief predicted "0 or 1 design" on the reasoning that "$1.20 sits just
+above the start minimum". That reasoning does not hold, and the arithmetic says
+why. All three figures use the rate derived earlier in this document,
+`$0.0728` a minute on A100-40GB:
+
+| Quantity | GPU-seconds | Dollars |
+| --- | --- | --- |
+| Start minimum, `live_start_usd` | 937 | `$1.1371` |
+| What the test wallet could buy | 989 | `$1.20` |
+| What the run actually needed | **816** | **`$0.99`** |
+
+The start minimum is not the price of *starting*. `live_start_usd` computes it
+as `runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60`, which is the
+estimated cost of a whole small run -- and for this target that estimate (937 s)
+came in **above** what a real 4-design run consumed (816 s). So a wallet holding
+exactly the start minimum can already afford the entire job. The gate and the
+stop are calibrated such that clearing the first makes the second unreachable,
+for this tool at this size.
+
+That is a structural property, not an accident of this run:
+
+- To reach `$0` mid-run, actual GPU time must exceed the estimate the gate
+  charged admission for. Here the estimate was conservative by about 15%.
+- `num_designs=4`, which the brief fixed, is half of what this preset is named
+  for (`tools/rfdiffusion/meta.py:174`, `Trial run: 8 binders`). Eight designs
+  on the same target would plausibly need roughly twice 816 s, about `$1.98`,
+  which `$1.20` cannot cover -- and `live_start_usd` would still have admitted
+  it, because it prices 1 design at 120 residues regardless of the 8 requested.
+
+So the way to exercise the stop is a run whose true cost exceeds the gate's
+one-design estimate: more designs, a larger target, or a tool whose estimate is
+known to under-quote. `bindcraft-runtime-anchor` records bindcraft under-quoting
+by 4.6x on a second run, which is exactly the shape that would trigger it.
+Nothing about that needs this test re-run at a lower balance; a lower balance
+simply fails the gate, which step 1 already proved.
+
+**The rate derivation is confirmed to the cent.** 816 GPU-seconds at
+`$0.0728`/minute is `$0.9901`, and the page charged `$0.99`. The pricing model
+used throughout this document is correct for A100-40GB rfdiffusion.
+
+### Finding 3 resolved: the pipeline was fine, the progress line was not
+
+The 4-of-4 result discriminates the two readings written down while the run was
+in flight. A crashed-and-restarted container cannot produce four scored designs
+in 816 GPU-seconds. So the benign reading is the right one: the work proceeded
+normally throughout, and only the progress render was broken.
+
+That leaves a clean, narrow defect. For roughly eleven minutes -- `04:36`
+through at least `04:45` -- the job page told a paying customer `Waiting for
+pipeline to start...` while the GPU was running and the wallet was being
+debited every few minutes, having already shown correct progress
+(`Running RFdiffusion 0 of 4 designs complete`) at `04:34`. Wall-clock
+`04:33` to `04:47` is about 14 minutes against 816 GPU-seconds of 13.6, so
+there was almost no unbilled boot window for that message to have been
+describing. It is a display bug on the one surface a customer watches while
+being charged, and it is worth a ticket of its own.
+
+### Finding 4 sharpened: a cent does not close, at settlement
+
+The mid-run gap persisted into the final state, where it is easier to pin
+down. Summing only the `AMOUNT` column of the five visible rows gives `$1.01`
+(`+5.00 -3.87 +0.07 +0.00 -0.19`); the balance reads `$0.20`; so the three
+unrendered run debits account for `$0.81`. Against that:
+
+- `$1.20 - $0.20 = $1.00` actually left the wallet.
+- Both the `RUN` row and the `CHARGE` row state the cost as **`$0.99`**.
+
+The page defines the settlement row as "the net for that job, which is what you
+paid for it", so the figure presented as what the customer paid is a cent below
+what the wallet lost. A cumulative true cost near `$0.995` would explain it
+through truncation in one place and rounding in another, and `$0.9901` from the
+rate check sits close to that. This document does not assert which figure is
+the rounded one, because the UI never shows the unrounded values. The read-only
+query returns `amount_usd` and `balance_after_usd` per row and closes it; the
+three missing `run_debit` rows are the ones to sum.
+
+Two separate issues live in this one paragraph and should not be conflated: the
+cent, which is cosmetic unless it compounds, and **Finding 1**, that the
+per-tick debits are not rendered at all -- which is what made the cent
+un-auditable from the UI in the first place.
 
 ## Verdict
 
 Step 1: **PASS.** The start gate refuses rfdiffusion at $1.13 in both layers,
 creates no job and no ledger row, and leaves the balance untouched.
 
-Step 2: not yet run. The wallet now reads $1.20 and the run is staged; it waits
-on Leo's per-job go-ahead, not on any defect.
+Step 2: **ran clean, but did not test the stop.** Job `cbaa3b67` went out at
+`04:33` UTC against the fixed target with the wallet at $1.20, and succeeded at
+`04:47` in 816 GPU-seconds, returning 4 of 4 designs for `$0.99` and leaving
+`$0.20`. The balance never reached zero, so the stop-at-zero path was never
+entered. **The brief's question is therefore still open**, and the reason is
+structural rather than a mistake in the run: `live_start_usd` admits a wallet
+only if it already holds the estimated cost of a whole small run (937
+GPU-seconds here), while the real run needed 816, so anything that clears the
+gate can also finish. Exercising the stop needs a job whose actual cost
+overruns that estimate -- more designs than the gate prices, a larger target,
+or a tool that under-quotes.
+
+Four defects were found along the way, none of which moves money in the wrong
+direction:
+
+1. **The per-tick run debits are never rendered.** They exist in
+   `wallet_transactions` under the anchor's `parent_tx_id`, but the
+   transactions page shows only a prose roll-up, so a customer cannot audit
+   what was taken while a job ran. This is the one worth fixing first.
+2. **The anchor row's AMOUNT and BALANCE AFTER columns go stale**, reading
+   `$0.00` and `$1.20` for a job that had taken 13 cents by then.
+3. **The job page showed `Waiting for pipeline to start...` for about eleven
+   minutes while the GPU ran and the wallet was debited**, after having shown
+   correct progress a minute earlier. The 4-of-4 result proves the pipeline was
+   healthy, so this is purely a display bug -- on the one surface a customer
+   watches while being charged.
+4. **A cent does not reconcile.** `$1.00` left the wallet; both rows call the
+   cost `$0.99`.
+
+What the rate model got right: the derivation used throughout this document
+predicted `$0.9901` for 816 GPU-seconds, and the charge was `$0.99`.
